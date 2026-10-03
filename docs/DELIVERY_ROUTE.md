@@ -12,16 +12,51 @@
    Auto-paste, overlay Insert, and To Agent consult it. They do not invent a
    second king.
 3. **The Codescribe overlay canvas is never a legal Cmd+V target.** Its caret
-   parks Paste Here. A positively latched Agent composer, Alacritty/Zellij
-   (vc-terminal), Notes, or another foreign caret is legal; choosing the Agent
-   route remains an explicit action. Assistive delivers as a first-class Agent
-   message rather than synthesizing a focus-derived paste.
+   parks Paste Here. For an explicit Insert, a positively latched Agent
+   composer, a terminal, Notes, or another foreign caret is legal; choosing the
+   Agent route remains an explicit action. Automatic paste obeys the paste mode
+   below. Assistive delivers as a first-class Agent message rather than
+   synthesizing a focus-derived paste.
 4. **Clipboard is borrowed, never stolen.** On release we snapshot the user's
    pasteboard, Cmd+V into the latched caret, then restore. The overlay must
    resign key first. The foreign target must then be observed as frontmost;
    Codescribe remaining frontmost is a veto. If Cmd+V cannot land, park ⌘⌥V
-   and leave the user's pasteboard alone. Explicit overlay **Copy** is the only
-   verb that writes the pasteboard on purpose and leaves it.
+   and leave the user's pasteboard alone. Two verbs leave text on the
+   pasteboard on purpose: explicit overlay **Copy**, and a **held** automatic
+   paste (`ClipboardHold`), which says so in a notification and waits for the
+   user's own ⌘V.
+
+## Paste modes (`PASTE_MODE`, Founder 2026-09-25)
+
+One persisted choice replaces the old Auto Paste on/off. Settings › Shortcuts
+shows it as a Safe / Comfort / Off segmented control; the tray Quick settings
+row cycles the same value. It governs only automatic Orient paste; explicit
+Insert and To Agent are the user's own confirmation.
+
+| Mode      | Automatic paste                                                                     | Held (`ClipboardHold`)                                                         |
+| --------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `safe`    | into a focused editable field (AX text role); into a terminal when the guard passes | no or unreadable text field; password field; command-shaped text in a terminal |
+| `comfort` | wherever the caret is, terminals included                                           | password field; command-shaped text in a terminal                              |
+| `off`     | never: `ArchiveOnly`, `reason=paste_mode_off`, pasteboard untouched                 | —                                                                              |
+
+- **Password guard** (`hold_secure_field`): `AXSecureTextField` or macOS secure
+  event input (a password prompt owns the keyboard). Holds in every mode.
+- **Executable-content guard** (`hold_executable`, Founder s04-036): for a
+  terminal target (`TERMINAL_APPS`: Terminal, iTerm2, Ghostty, Alacritty,
+  kitty, WezTerm, Warp, …) `looks_executable` holds a copied prompt
+  (`$ …`), a leading command word (`sudo`, `rm`, `git`, `curl`, …), or a
+  chaining/substitution construct (`$(`, backticks around a command, `&&`,
+  `| sh`, `; rm`, `> /path`). It leans toward holding: a false positive costs
+  one ⌘V. There is no interactive prompt in Rust; the notification is the
+  question and the user's ⌘V the only answer that pastes.
+- The caret probe (`observe_paste_target`: frontmost app + focused AX
+  element) runs only for an armed Orient take and can only hold that paste,
+  never redirect it. With Codescribe frontmost the field is unobserved, so
+  Safe holds.
+- Migration: the retired `auto_paste_enabled` bool folds once into
+  `paste_mode` (`true` → `safe`, `false` → `off`); the old key is gone after the
+  next save. `true` → `safe` is Claude's assumption (2026-09-29): no Founder
+  decision records whether "on" meant terminals too.
 
 ## Intent → route
 
@@ -29,7 +64,7 @@
 | ----------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
 | `AgentVoice`      | Double Right Option / assistive hold | `AgentComposer`                                                                                                      |
 | `OverlayToAgent`  | overlay **To Agent**                 | `AgentComposer`                                                                                                      |
-| `OrientDictation` | Hold Fn / Globe                      | `ClipboardPaste` if auto-paste; `OrientCanvas` if overlay caret / no auto-paste                                      |
+| `OrientDictation` | Hold Fn / Globe                      | `ClipboardPaste` / `ClipboardHold` per paste mode; `OrientCanvas` if overlay caret / mode `off`                      |
 | `OrientFormat`    | Double Left Option                   | same as dictation                                                                                                    |
 | `OverlayInsert`   | overlay Insert / defer               | `ClipboardPaste` into a latched foreign caret (Alacritty, Notes, …); `DeferredInsert` when Codescribe owns the caret |
 | `NotesOnly`       | save-only notes                      | `ArchiveOnly`                                                                                                        |
@@ -45,7 +80,7 @@ release. Restored by `delivery_intent_from_session(assistive, force_ai, notes_sa
 Finish and hold release):
 
 - `OrientCanvas` from the table is `ArchiveOnly` with
-  `reason=auto_paste_disabled`: the overlay canvas already shows the
+  `reason=paste_mode_off`: the overlay canvas already shows the
   committed document, nothing else moves.
 - `AgentVoice` resolves to `AgentComposer` with
   `reason=assistive_first_class`; the stop path never pastes it.
@@ -476,8 +511,9 @@ One INFO line per stop / To Agent / overlay Insert / defer:
 
 ```text
 delivery_route: intent=overlay_insert route=clipboard_paste reason=explicit_insert target=Ghostty
-delivery_route: intent=orient_dictation route=clipboard_paste reason=auto_paste target=Ghostty
-delivery_route: intent=orient_dictation route=archive_only reason=auto_paste_disabled target=Ghostty
+delivery_route: intent=orient_dictation route=clipboard_paste reason=paste_safe target=Ghostty
+delivery_route: intent=orient_dictation route=clipboard_hold reason=hold_executable target=Ghostty
+delivery_route: intent=orient_dictation route=archive_only reason=paste_mode_off target=Ghostty
 ```
 
 The stop path adds a `seal_refused` field to that line and follows it with

@@ -112,4 +112,4 @@ Implementation. This ADR freezes the shape so no agent re-derives a
 different one. Anti-pattern to reject on sight: "add one more key slot" or
 "add an endpoint override field" — both re-open the drift maker.
 
-𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI
+𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI

@@ -22,6 +22,8 @@
 //! `teacher`, `engine_contract`, and `supervisor` are re-exported here; the
 //! others are reached through their own module paths.
 
+/// Tiered word-level diff and rule-candidate mining for Voice Lab.
+pub mod diff;
 /// Locked THE ENGINE contract for quality-report HTML and corpus JSON.
 pub mod engine_contract;
 /// Admission gate between extracted correction pairs and the live lexicon.

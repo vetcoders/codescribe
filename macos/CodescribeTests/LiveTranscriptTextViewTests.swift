@@ -5,6 +5,13 @@ import XCTest
 
 @MainActor
 final class LiveTranscriptTextViewTests: XCTestCase {
+  func testNativeTranscriptDisablesWritingTools() {
+    let textView = LiveTranscriptTextView.makeTextView()
+    if #available(macOS 15.0, *) {
+      XCTAssertEqual(textView.writingToolsBehavior, .none)
+    }
+  }
+
   func testAppendingLiveWordsDoesNotInvalidateTheRecordedPrefix() throws {
     let prefix = String(repeating: "Already recorded words.\n", count: 2_000)
     let textView = LiveTranscriptTextView.makeTextView()
@@ -316,6 +323,138 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     XCTAssertEqual(
       storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
       originalColor as? NSColor)
+  }
+
+  // MARK: A6-3 uncertain-word paint
+
+  private func a6Word(_ range: NSRange, word: String = "beta", rewritten: Bool = false)
+    -> OverlayUncertainWord
+  {
+    OverlayUncertainWord(
+      range: range,
+      word: word,
+      source: "whisper_token_logprob",
+      value: -1.9,
+      surfaceRewritten: rewritten,
+      producer: "whisper",
+      occurrenceSessionId: "a6-session",
+      occurrenceCaptureEpoch: 1,
+      slotSampleStart: 32_000,
+      slotSampleEnd: 48_000
+    )
+  }
+
+  private func foreground(
+    _ storage: NSTextStorage, at index: Int
+  ) -> NSColor? {
+    storage.attribute(.foregroundColor, at: index, effectiveRange: nil) as? NSColor
+  }
+
+  func testUncertainWordPaintsExactRangeAndNeighborsStayBase() throws {
+    let textView = LiveTranscriptTextView.makeTextView()
+    let coordinator = LiveTranscriptTextView.Coordinator()
+    textView.delegate = coordinator
+    let word = a6Word(NSRange(location: 6, length: 4))
+    LiveTranscriptTextView(
+      text: "alpha beta gamma", uncertainWords: [word], appearance: .dark
+    ).update(textView, coordinator: coordinator)
+
+    let storage = try XCTUnwrap(textView.textStorage)
+    let palette = OverlayAppearancePalette.dark
+    XCTAssertEqual(foreground(storage, at: 6), palette.uncertainWord.nsColor)
+    XCTAssertEqual(foreground(storage, at: 9), palette.uncertainWord.nsColor)
+    XCTAssertEqual(foreground(storage, at: 0), palette.bodyText.nsColor)
+    XCTAssertEqual(foreground(storage, at: 5), palette.bodyText.nsColor)
+    XCTAssertEqual(foreground(storage, at: 10), palette.bodyText.nsColor)
+    XCTAssertEqual(
+      storage.attribute(.underlineStyle, at: 6, effectiveRange: nil) as? Int,
+      NSUnderlineStyle([.single, .patternDot]).rawValue,
+      "d8: color is never the only signal — the dotted underline travels with it")
+    XCTAssertNil(storage.attribute(.underlineStyle, at: 0, effectiveRange: nil))
+    XCTAssertNotNil(
+      storage.attribute(.accessibilityCustomText, at: 6, effectiveRange: nil),
+      "d8: VoiceOver announces the word as uncertain")
+  }
+
+  func testSurfaceRewrittenPaintsLexiconMarkerNotOrange() throws {
+    let textView = LiveTranscriptTextView.makeTextView()
+    let coordinator = LiveTranscriptTextView.Coordinator()
+    textView.delegate = coordinator
+    let word = a6Word(NSRange(location: 6, length: 4), rewritten: true)
+    LiveTranscriptTextView(
+      text: "alpha beta gamma", uncertainWords: [word], appearance: .dark
+    ).update(textView, coordinator: coordinator)
+
+    let storage = try XCTUnwrap(textView.textStorage)
+    let palette = OverlayAppearancePalette.dark
+    XCTAssertEqual(foreground(storage, at: 6), palette.lexiconMarker.nsColor)
+    XCTAssertNotEqual(foreground(storage, at: 6), palette.uncertainWord.nsColor)
+    XCTAssertEqual(
+      storage.attribute(.underlineStyle, at: 6, effectiveRange: nil) as? Int,
+      NSUnderlineStyle.single.rawValue)
+  }
+
+  func testUncertainPaintDiesWhenRangesChange() throws {
+    let textView = LiveTranscriptTextView.makeTextView()
+    let coordinator = LiveTranscriptTextView.Coordinator()
+    textView.delegate = coordinator
+    let palette = OverlayAppearancePalette.dark
+    let word = a6Word(NSRange(location: 6, length: 4))
+    LiveTranscriptTextView(
+      text: "alpha beta", uncertainWords: [word], appearance: .dark
+    ).update(textView, coordinator: coordinator)
+    let storage = try XCTUnwrap(textView.textStorage)
+    XCTAssertEqual(foreground(storage, at: 6), palette.uncertainWord.nsColor)
+
+    // Same bytes, spans gone (a new projection reclassified): full repaint.
+    LiveTranscriptTextView(
+      text: "alpha beta", uncertainWords: [], appearance: .dark
+    ).update(textView, coordinator: coordinator)
+    XCTAssertEqual(foreground(storage, at: 6), palette.bodyText.nsColor)
+
+    // New bytes, spans gone: the paint must not ride the shifted text.
+    LiveTranscriptTextView(
+      text: "alpha beta", uncertainWords: [word], appearance: .dark
+    ).update(textView, coordinator: coordinator)
+    LiveTranscriptTextView(
+      text: "alpha gamma", uncertainWords: [], appearance: .dark
+    ).update(textView, coordinator: coordinator)
+    XCTAssertEqual(foreground(storage, at: 6), palette.bodyText.nsColor)
+  }
+
+  func testPrefixPathReappliesOnlyRangesIntersectingTheTail() throws {
+    let textView = LiveTranscriptTextView.makeTextView()
+    let coordinator = LiveTranscriptTextView.Coordinator()
+    textView.delegate = coordinator
+    let palette = OverlayAppearancePalette.dark
+    let word = a6Word(NSRange(location: 6, length: 4))
+    LiveTranscriptTextView(
+      text: "alpha beta", uncertainWords: [word], appearance: .dark
+    ).update(textView, coordinator: coordinator)
+    let storage = try XCTUnwrap(textView.textStorage)
+
+    // Tail append: the recorded prefix keeps its paint untouched…
+    let prefixWord = a6Word(NSRange(location: 0, length: 5), word: "alpha")
+    LiveTranscriptTextView(
+      text: "alpha beta", uncertainWords: [prefixWord], appearance: .dark
+    ).update(textView, coordinator: coordinator)
+    LiveTranscriptTextView(
+      text: "alpha beta gamma", uncertainWords: [prefixWord], appearance: .dark
+    ).update(textView, coordinator: coordinator)
+    XCTAssertEqual(foreground(storage, at: 0), palette.uncertainWord.nsColor)
+    XCTAssertEqual(foreground(storage, at: 11), palette.bodyText.nsColor)
+
+    // …and a tail revision under a still-signed range re-applies that range
+    // onto the new tail bytes only.
+    LiveTranscriptTextView(
+      text: "alpha beta", uncertainWords: [word], appearance: .dark
+    ).update(textView, coordinator: coordinator)
+    LiveTranscriptTextView(
+      text: "alpha betamax", uncertainWords: [word], appearance: .dark
+    ).update(textView, coordinator: coordinator)
+    XCTAssertEqual(foreground(storage, at: 6), palette.uncertainWord.nsColor)
+    XCTAssertEqual(foreground(storage, at: 9), palette.uncertainWord.nsColor)
+    XCTAssertEqual(foreground(storage, at: 10), palette.bodyText.nsColor)
   }
 
   func testLiveTranscriptIsReadOnlySelectableAndAcceptsFirstClick() {

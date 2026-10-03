@@ -16,10 +16,17 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
   var formatterRequests:
     [(sessionId: String, sourceRevision: UInt64, level: FormattingPolicyOption?)] = []
   var formatterFailure: Error?
-  var policy = OverlayPolicySnapshot(autoPasteEnabled: true, autoFormatLevel: .correction)
+  var policy = OverlayPolicySnapshot(autoFormatLevel: .correction)
+  var assistiveMode = false
+  var startModes: [Bool] = []
+  var onStart: (() -> Void)?
 
   func setListener(_ listener: CsTranscriptionListener) {}
-  func startRecording(language: CsLanguage?) async throws {}
+  func startsInAssistiveMode() -> Bool { assistiveMode }
+  func startRecording(assistive: Bool, language: CsLanguage?) async throws {
+    startModes.append(assistive)
+    onStart?()
+  }
   func stopRecording() async throws -> String { "" }
   func commitUserRevision(
     sessionId: String, sourceRevision: UInt64, renderedText: String
@@ -50,7 +57,6 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
   func initModel() async throws {}
   func isModelLoaded() -> Bool { true }
   func currentOverlayPolicy() -> OverlayPolicySnapshot? { policy }
-  func setAutoPasteEnabled(_ enabled: Bool) {}
   func pasteText(text: String) async throws -> CsPasteResult { pasteResult() }
   func deferText(text: String) async throws -> CsPasteResult { pasteResult() }
   func copyTaggedTranscript(text: String) async throws {
@@ -98,11 +104,62 @@ private struct OverlayHeaderControlFramesCapture: View {
 
 @MainActor
 final class OverlayIntentRailTests: XCTestCase {
+  func testIdleRecordingControlStartsOnceWithCurrentTrayMode() async {
+    for assistive in [false, true] {
+      let engine = OverlayIntentBoundaryEngine()
+      engine.assistiveMode = assistive
+      let started = expectation(description: "controller start in mode \(assistive)")
+      engine.onStart = { started.fulfill() }
+      let state = OverlayState(micAccessProvider: { true })
+      state.engine = engine
+
+      let control = OverlayRecordingControls(
+        canFinish: false, isPreviewCollapsed: false, compact: false, palette: .dark,
+        onIntent: state.relayIntent, onPreviewToggle: {})
+      XCTAssertEqual(control.recordingSymbol, "mic.fill")
+      XCTAssertEqual(control.recordingIdentifier, "overlay-start-recording")
+      XCTAssertEqual(control.recordingLabel, "Start dictation")
+      control.activateRecordingControl()
+      state.relayIntent(.startRecording)
+      await fulfillment(of: [started], timeout: 2)
+      XCTAssertEqual(engine.startModes, [assistive])
+      XCTAssertTrue(state.recording)
+    }
+  }
+
+  func testFinalizingRecordingControlCannotStart() {
+    var intents: [OverlayIntent] = []
+    let control = OverlayRecordingControls(
+      canFinish: false, isPreviewCollapsed: false, compact: false, palette: .dark,
+      onIntent: { intents.append($0) }, onPreviewToggle: {}, isFinalizing: true)
+    XCTAssertEqual(control.recordingSymbol, "stop.fill")
+    XCTAssertEqual(control.recordingIdentifier, "overlay-stop-recording")
+    control.activateRecordingControl()
+    XCTAssertTrue(intents.isEmpty)
+
+    let finalizing = OverlayState.previewTranscribing()
+    let engine = OverlayIntentBoundaryEngine()
+    finalizing.engine = engine
+    finalizing.relayIntent(.startRecording)
+    XCTAssertTrue(engine.startModes.isEmpty)
+    XCTAssertFalse(finalizing.recording)
+
+    let awaitingProjection = OverlayState.previewListening()
+    awaitingProjection.engine = engine
+    awaitingProjection.handleRecordingPreparing()
+    awaitingProjection.finishControllerRecording()
+    awaitingProjection.relayIntent(.startRecording)
+    XCTAssertTrue(engine.startModes.isEmpty)
+    XCTAssertFalse(awaitingProjection.recording)
+  }
+
   func testLongHistoryPopoverStaysWithinViewport() {
     let history = (1...200).map {
-      CsHistoryEntry(
-        path: "take-\($0).txt", timestampMs: Int64($0),
-        preview: "Transcript \($0)", kind: .raw)
+      TranscriptHistoryRecord(
+        entry: CsHistoryEntry(
+          path: "take-\($0).txt", timestampMs: Int64($0),
+          preview: "Transcript \($0)", kind: .raw),
+        characterCount: 1_000 + $0)
     }
     let host = NSHostingView(
       rootView: OverlayTranscriptHistory().historyList(history)
@@ -292,7 +349,7 @@ final class OverlayIntentRailTests: XCTestCase {
       phase: "formatted", text: "final", canPaste: true, canInsert: true,
       canCopy: true, canRetranscribe: true, canFormat: true, terminal: true)
     let engine = OverlayIntentBoundaryEngine()
-    engine.policy = OverlayPolicySnapshot(autoPasteEnabled: true, autoFormatLevel: .smart)
+    engine.policy = OverlayPolicySnapshot(autoFormatLevel: .smart)
     state.engine = engine
     let settingsBefore = engine.policy
     let rail = OverlayIntentRail(
@@ -569,9 +626,8 @@ final class OverlayIntentRailTests: XCTestCase {
       OverlayIntent.allCases.filter { $0 != .close }.map(\.systemImage)
       + [
         OverlayControlSymbols.history, OverlayControlSymbols.previousTake,
-        OverlayControlSymbols.actions, OverlayControlSymbols.autoPasteOff,
-        OverlayControlSymbols.autoPasteOn, OverlayControlSymbols.placement,
-        "chevron.up", "chevron.down", "pin.fill",
+        OverlayControlSymbols.actions, OverlayControlSymbols.placement,
+        OverlayControlSymbols.collapsePreview, OverlayControlSymbols.expandPreview, "pin.fill",
         "arrow.up.and.down.and.arrow.left.and.right",
       ] + OverlayAnchor.allCases.map(\.systemImage)
     let collisions = Dictionary(grouping: symbols, by: { $0 }).filter { $0.value.count > 1 }
@@ -579,6 +635,22 @@ final class OverlayIntentRailTests: XCTestCase {
     for symbol in symbols {
       XCTAssertNotNil(NSImage(systemSymbolName: symbol, accessibilityDescription: nil), symbol)
     }
+  }
+
+  func testActionsHandleMorphsToCloseOnlyWhileRailIsExpanded() {
+    var actions = OverlayActionsPresentation()
+    XCTAssertEqual(actions.controlSymbol, "ellipsis")
+    XCTAssertEqual(actions.controlTitle, "More actions")
+
+    actions.toggle()
+    XCTAssertEqual(actions.phase, .open)
+    XCTAssertEqual(actions.controlSymbol, "xmark")
+    XCTAssertEqual(actions.controlTitle, "Close actions")
+
+    actions.toggle()
+    XCTAssertEqual(actions.phase, .idle)
+    XCTAssertEqual(actions.controlSymbol, "ellipsis")
+    XCTAssertEqual(actions.controlTitle, "More actions")
   }
 
   /// One formatted take with an uncommitted edit, superseded by a new capture.
@@ -661,10 +733,14 @@ final class OverlayIntentRailTests: XCTestCase {
     hostingView.frame = CGRect(origin: .zero, size: size)
     hostingView.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+    // Annex A2 removed the Auto Paste chip; the width it held went back to
+    // the waveform, so at the window floor (no agent glyph, and no timer in a
+    // windowless host) the full meter fits instead of the compact one.
     try assertHeaderControlsFit(
       expandedRecorder.frames,
       inside: size.width,
-      context: "expanded listening header"
+      context: "expanded listening header",
+      compactMeter: false
     )
 
     let collapsedState = OverlayState.previewListening()
@@ -683,7 +759,8 @@ final class OverlayIntentRailTests: XCTestCase {
     try assertHeaderControlsFit(
       collapsedRecorder.frames,
       inside: size.width,
-      context: "collapsed listening header"
+      context: "collapsed listening header",
+      compactMeter: false
     )
 
     let bitmap = try XCTUnwrap(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
@@ -732,6 +809,17 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertGreaterThanOrEqual(
       preview.height, 22, "\(context) preview hit target is too short", file: file, line: line
     )
+    // Founder, 2026-09-29: "ten stop jest olbrzymi". Stop is the chevron's
+    // twin — one hairline circle, no word — so it can never outgrow the row.
+    XCTAssertEqual(
+      stop.width, preview.width, accuracy: 0.5,
+      "\(context) Stop is wider than the chevron", file: file, line: line)
+    XCTAssertEqual(
+      stop.height, preview.height, accuracy: 0.5,
+      "\(context) Stop is taller than the chevron", file: file, line: line)
+    XCTAssertEqual(
+      stop.width, OverlayRecordingControls.controlDiameter, accuracy: 0.5,
+      "\(context) Stop left the shared control diameter", file: file, line: line)
     XCTAssertFalse(stop.intersects(preview), "\(context) controls overlap", file: file, line: line)
     XCTAssertFalse(
       stop.intersects(waveform), "\(context) Stop overlaps the meter", file: file, line: line
@@ -818,6 +906,8 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertEqual(routedIntents, [.finish])
     XCTAssertTrue(previewCollapsed)
     XCTAssertEqual(expanded.previewAccessibilityLabel, "Hide live preview")
+    // Annex A1: chevrons, never an eye. Expanded offers ^ (fold).
+    XCTAssertEqual(expanded.previewSymbol, "chevron.up")
 
     let collapsed = OverlayRecordingControls(
       canFinish: true,
@@ -829,6 +919,7 @@ final class OverlayIntentRailTests: XCTestCase {
     )
     XCTAssertTrue(collapsed.showsStop)
     XCTAssertEqual(collapsed.previewAccessibilityLabel, "Show live preview")
+    XCTAssertEqual(collapsed.previewSymbol, "chevron.down", "collapsed offers v (unfold)")
 
     let unavailable = OverlayRecordingControls(
       canFinish: false,

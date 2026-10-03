@@ -47,6 +47,7 @@ pub struct CoalesceFlush {
 /// Rolling buffer of sealed Apple fragments for one Layer 1 decode.
 #[derive(Debug, Default)]
 pub struct Layer1Coalesce {
+    adaptive: bool,
     pieces: Vec<CoalescedPiece>,
     neighbour_before: String,
     segments: usize,
@@ -77,8 +78,36 @@ impl Layer1Coalesce {
     /// A pause this long is a sentence boundary — flush what we have.
     pub const PAUSE_SECS: f32 = 1.2;
 
+    /// Preserve sealed phrase boundaries up to 8 s, with the same 1.2 s
+    /// oldest-member latency bound. This is bounded buffering, not a streaming encoder.
+    pub fn adaptive() -> Self {
+        Self {
+            adaptive: true,
+            ..Self::default()
+        }
+    }
+
+    fn max_audio_secs(&self) -> f32 {
+        if self.adaptive {
+            8.0
+        } else {
+            Self::MAX_AUDIO_SECS
+        }
+    }
+
+    fn max_samples(&self) -> u64 {
+        (self.max_audio_secs() * self.sample_rate.max(1) as f32) as u64
+    }
+
     pub fn is_empty(&self) -> bool {
         self.pieces.is_empty()
+    }
+
+    /// A reserved frontier may already be owned by a not-yet-submitted window.
+    pub(crate) fn holds_occurrence(&self, occurrence: &OccurrenceIdentity) -> bool {
+        self.pieces
+            .iter()
+            .any(|piece| &piece.occurrence == occurrence)
     }
 
     /// Remember the canvas already sealed before the next piece.
@@ -105,11 +134,15 @@ impl Layer1Coalesce {
         let mut out = self.flush_due(now);
         if let Some(last) = self.pieces.last() {
             let gap = piece.start_ts - last.covered_through_secs;
-            if gap >= Self::PAUSE_SECS {
+            if gap >= Self::PAUSE_SECS
+                || (self.adaptive
+                    && (last.sample_end != piece.sample_start
+                        || !last.occurrence.same_capture(&piece.occurrence)))
+            {
                 out.extend(self.take_flushes());
             }
         }
-        let max_samples = window_samples(self.sample_rate);
+        let max_samples = self.max_samples();
         let piece_samples = piece.sample_end.saturating_sub(piece.sample_start);
         if !self.pieces.is_empty() {
             let pending = self
@@ -167,14 +200,14 @@ impl Layer1Coalesce {
         if self.pieces.is_empty() {
             return false;
         }
-        if self.segments >= Self::TARGET_SEGMENTS {
+        if !self.adaptive && self.segments >= Self::TARGET_SEGMENTS {
             return true;
         }
         let samples = self
             .held_samples()
             .saturating_add(self.prefix_samples_for_held());
         let rate = sample_rate.max(1) as f32;
-        (samples as f32 / rate) >= Self::MAX_AUDIO_SECS
+        (samples as f32 / rate) >= self.max_audio_secs()
     }
 
     fn held_samples(&self) -> u64 {
@@ -213,11 +246,11 @@ impl Layer1Coalesce {
     }
 
     /// One occurrence that does not fit in the observation budget becomes
-    /// several 4 s windows stepped by 3 s. A retained prefix consumes part of
+    /// bounded observations with 1 s overlap. A retained prefix consumes part of
     /// the first window. Exclusive admit ranges partition the occurrence; the
     /// shared second is PCM context, not a second member.
     fn emit_long_piece(&mut self, piece: CoalescedPiece) -> Vec<CoalesceFlush> {
-        let max_samples = window_samples(self.sample_rate);
+        let max_samples = self.max_samples();
         let overlap = overlap_samples(self.sample_rate).min(max_samples.saturating_sub(1));
         let mut cursor = piece.sample_start;
         let mut flushes = Vec::new();
@@ -310,6 +343,7 @@ impl OverlapTail {
     }
 }
 
+#[cfg(test)]
 fn window_samples(sample_rate: u32) -> u64 {
     (Layer1Coalesce::MAX_AUDIO_SECS * sample_rate.max(1) as f32) as u64
 }

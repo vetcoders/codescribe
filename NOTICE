@@ -13,6 +13,16 @@ Derived files:
 The derived portions retain Apache-2.0 attribution. Codescribe's repository
 license metadata remains authoritative for this project.
 
+Unicode CLDR plural rules
+-------------------------
+
+scripts/data/cldr/plurals.json is an unmodified copy of
+cldr-json/cldr-core/supplemental/plurals.json from the unicode-org/cldr-json
+release 48.2.3 (CLDR 48). Copyright © 2015-2024 Unicode, Inc., distributed
+under the Unicode License V3; the licence text is
+scripts/data/cldr/UNICODE-LICENSE.txt. The file is read by the catalog lint
+(scripts/l10n-lint.py) and is not part of the shipped application.
+
 Third-party OAuth client identity
 ---------------------------------
 

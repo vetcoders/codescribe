@@ -72,7 +72,7 @@ mechanizmem przejściowym, nie dowodem zakończonego monitora.
 
 ## Incydent referencyjny
 
-W sesji `a7b48906-38af-44e7-b669-1aab5a5240f5` recorder:
+W sesji `00000000-0000-4000-8000-000000000001` recorder:
 
 - zatrzymał stream poprawnie;
 - zapisał 35.818667 s mono PCM 48 kHz Int16;

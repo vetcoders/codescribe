@@ -1666,7 +1666,7 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     terminal.phase = "coverage_refused"
     terminal.reducerAction = "session_ended"
     terminal.sealCoverage = CsProjectedSealCoverageReceipt(
-      status: .unavailable, unavailableReason: .partialObservation, speechSamples: 0,
+      status: .unavailable, sampleRateHz: nil, unavailableReason: .partialObservation, speechSamples: 0,
       coveredSamples: 0, uncoveredSpeechRanges: [], maxUncoveredSamples: 0,
       incompleteThresholdSamples: 4_000, speechProducer: "capture_energy",
       availability: "discontinuous", observedSamples: nil, coverageRatio: nil)

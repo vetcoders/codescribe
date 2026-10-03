@@ -13,6 +13,7 @@ import Foundation
 //   WHISPER_LANGUAGE      "pl" | "en"
 //   AI_FORMATTING_ENABLED "1" | "0"
 //   FORMATTING_LEVEL      "off" | "correction" | "smart" | "max"
+//   PASTE_MODE            "safe" | "comfort" | "off"
 //   USE_LOCAL_STT         "1" | "0"
 //   LOCAL_MODEL / STT_{FILE,LIVE}_ENDPOINT / LLM_<LANE>_PROVIDER / LLM_<LANE>_MODEL ...  free strings
 //   (no endpoint keys: endpoints belong to providers — vendors factory-pinned, custom rows CRUD)
@@ -50,11 +51,13 @@ protocol SettingsEngine {
   func calibrateEnergy(seconds: UInt32) async throws -> CsEnergyCalibrationReport
 
   // Voice Lab quality truth (JSONL stays behind the Rust bridge)
-  func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord]
+  func loadQualityRecentListing(limit: UInt64) throws -> CsQualityListing
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry]
+  func loadRuleCandidates(minOccurrences: UInt64) throws -> [CsRuleCandidate]
   func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsVoiceLabSaveResult
   func teachDictionaryFromStore() throws -> CsDictionaryTeachResult
   func teachDictionaryFromStoreAsync() async throws -> CsDictionaryTeachResult
+  func teachSpan(variant: String, canonical: String, kind: String) throws -> CsQualityCommitResult
 
   // Keychain-backed API keys — presence booleans only, secrets never read back
   func keyStatus() -> CsKeyStatus
@@ -185,11 +188,14 @@ final class RealSettingsEngine: SettingsEngine {
   func calibrateEnergy(seconds: UInt32) async throws -> CsEnergyCalibrationReport {
     try await hotkeys.calibrateEnergy(seconds: seconds)
   }
-  func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
-    try qualityRecentRecords(limit: limit)
+  func loadQualityRecentListing(limit: UInt64) throws -> CsQualityListing {
+    try qualityRecentListing(limit: limit)
   }
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
     try lexiconCustomEntries()
+  }
+  func loadRuleCandidates(minOccurrences: UInt64) throws -> [CsRuleCandidate] {
+    try qualityRuleCandidates(minOccurrences: minOccurrences)
   }
   func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsVoiceLabSaveResult {
     try qualityFinalizeCorrection(correctionId: id, canonical: canonical)
@@ -201,6 +207,9 @@ final class RealSettingsEngine: SettingsEngine {
     try await Task.detached(priority: .userInitiated) {
       try qualityTeachDictionaryFromStore()
     }.value
+  }
+  func teachSpan(variant: String, canonical: String, kind: String) throws -> CsQualityCommitResult {
+    try qualityTeachSpan(variant: variant, canonical: canonical, kind: kind)
   }
 
   func keyStatus() -> CsKeyStatus { config.keyStatus() }
@@ -312,6 +321,7 @@ struct MockSettingsEngine: SettingsEngine {
   var mode: String? = "agentic"
   var qualityRecords: [CsQualityRecord] = []
   var lexiconEntries: [CsLexiconEntry] = []
+  var unchangedQualityTakes: UInt64 = 0
   var qualityRecordsLoader: (() throws -> [CsQualityRecord])?
   var lexiconEntriesLoader: (() throws -> [CsLexiconEntry])?
   var audioSnapshot: CsAudioInputSnapshot = .sample
@@ -336,6 +346,9 @@ struct MockSettingsEngine: SettingsEngine {
   var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
   var resetAudioInputDeviceObserver: (() throws -> Void)?
   var voiceLabEditObserver: ((String, String) throws -> CsVoiceLabSaveResult)?
+  var ruleCandidates: [CsRuleCandidate] = []
+  var ruleCandidatesLoader: (() throws -> [CsRuleCandidate])?
+  var teachSpanObserver: ((String, String, String) throws -> CsQualityCommitResult)?
   // Keep the long-standing config observer last so existing trailing-closure
   // call sites continue to bind to config writes, not Voice Lab edits.
   var updateConfigObserver: ((String, String) throws -> Void)?
@@ -380,12 +393,18 @@ struct MockSettingsEngine: SettingsEngine {
     }
     return calibrationReport
   }
-  func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
+  func loadQualityRecentListing(limit: UInt64) throws -> CsQualityListing {
     let records = try qualityRecordsLoader?() ?? qualityRecords
-    return Array(records.prefix(Int(clamping: limit)))
+    return CsQualityListing(
+      records: Array(records.prefix(Int(clamping: limit))),
+      unchangedTakes: unchangedQualityTakes
+    )
   }
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
     try lexiconEntriesLoader?() ?? lexiconEntries
+  }
+  func loadRuleCandidates(minOccurrences: UInt64) throws -> [CsRuleCandidate] {
+    try ruleCandidatesLoader?() ?? ruleCandidates
   }
   func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsVoiceLabSaveResult {
     if let voiceLabEditObserver {
@@ -421,6 +440,18 @@ struct MockSettingsEngine: SettingsEngine {
       fromProposed: 0,
       totalRules: total,
       rulesFromCorrectionSource: fromCorrection
+    )
+  }
+  func teachSpan(variant: String, canonical: String, kind: String) throws -> CsQualityCommitResult {
+    if let teachSpanObserver {
+      return try teachSpanObserver(variant, canonical, kind)
+    }
+    return CsQualityCommitResult(
+      pairsLearned: 1,
+      evidenceOnly: false,
+      acknowledgement: "Saved — 1 rule learned",
+      teachSeen: nil,
+      teachRequired: nil
     )
   }
 
@@ -739,9 +770,13 @@ extension CsLanguage {
   /// Human-readable label for the language picker.
   var displayName: String {
     switch self {
-    case .auto: return "Auto"
-    case .polish: return "Polish"
-    case .english: return "English"
+    case .auto:
+      return String(
+        localized: "Auto",
+        comment: "Dictation language picker: detect the spoken language automatically"
+      )
+    case .polish: return String(localized: "Polish", comment: "Dictation language name")
+    case .english: return String(localized: "English", comment: "Dictation language name")
     }
   }
 }
@@ -755,6 +790,8 @@ extension CsSettings {
     doubleTapIntervalMs: 320,
     toggleSilenceSec: 1.5,
     whisperContextWindowSec: 8,
+    whisperAdaptiveBuffer: false,
+    formatOnDevice: false,
     lightPlusSentencePauseSec: 0.7,
     deferredInsertShortcut: "disabled",
     channelModifier: "ctrl",
@@ -762,6 +799,7 @@ extension CsSettings {
     middleMouseActsAsFn: false,
     whisperLanguage: .polish,
     aiFormattingEnabled: true,
+    pasteMode: .safe,
     transcriptSendMode: "end_of_utterance",
     transcriptTaggingEnabled: false,
     transcriptTagTemplate: "<codescribe mode=\"{mode}\" lang=\"{lang}\">\n{text}\n</codescribe>",

@@ -118,8 +118,10 @@ struct OversizedMessageBody<Head: View>: View {
         )
         Text(
           showFull
-            ? "Collapse"
-            : "Show full text · \(OversizedBubblePolicy.byteSummary(fullText))"
+            ? String(localized: "Collapse", comment: "Fold the message back to its head")
+            : String(
+              localized: "Show full text · \(OversizedBubblePolicy.byteSummary(fullText))",
+              comment: "The placeholder is a size, e.g. 142 KB")
         )
         .font(CSFont.mono(10.5, .medium))
         .foregroundStyle(Color.secondary)
@@ -129,8 +131,8 @@ struct OversizedMessageBody<Head: View>: View {
     .csFocusRing()
     .help(
       showFull
-        ? "Fold this message back to its head"
-        : "Open the full text in a scrollable, selectable view")
+        ? String(localized: "Fold this message back to its head")
+        : String(localized: "Open the full text in a scrollable, selectable view"))
   }
 }
 
@@ -141,7 +143,8 @@ struct StreamWindowNote: View {
 
   var body: some View {
     Text(
-      "live view shows the newest output · full text kept (\(OversizedBubblePolicy.byteSummary(fullText)))"
+      "live view shows the newest output · full text kept (\(OversizedBubblePolicy.byteSummary(fullText)))",
+      comment: "The placeholder is a size, e.g. 142 KB"
     )
     .font(CSFont.mono(9.5, .medium))
     .foregroundStyle(CSColor.textTertiary)
@@ -162,6 +165,11 @@ struct FullTextView: NSViewRepresentable {
     // Explicit TextKit 2 stack (viewport-based layout); the convenience
     // `NSTextView.scrollableTextView()` can still wire up TextKit 1.
     let textView = NSTextView(usingTextLayoutManager: true)
+    // Build 1487's NSWritingToolsEditTracker crash applies to streamed text
+    // here too: proofreading must not rewrite a view updated by the app.
+    if #available(macOS 15.0, *) {
+      textView.writingToolsBehavior = .none
+    }
     textView.isEditable = false
     textView.isSelectable = true
     textView.isRichText = false

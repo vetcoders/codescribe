@@ -8,6 +8,7 @@
 //! - `.env` is optional and only supplies env-managed / power-user overrides.
 //! - explicit process env can still override for tests and developer runs.
 
+#[cfg(not(any(test, feature = "test-isolation")))]
 use directories::BaseDirs;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -29,8 +30,9 @@ use super::settings::{
     SettingsSnapshotValidationError, UserSettings, normalize_agent_workspace_roots,
     parse_agent_workspace_roots,
 };
-use super::types::{Config, DeferredInsertShortcut};
+use super::types::{Config, DeferredInsertShortcut, PasteMode};
 use crate::llm::account_auth;
+use crate::llm::on_device::FORMAT_ON_DEVICE_ENV;
 use crate::llm::provider::{LlmMode, ProviderKind, ProviderRef, ProviderRegistry, WireFamily};
 
 /// Has the process already seeded its environment from config? Seeding happens
@@ -316,11 +318,10 @@ impl Config {
         ] {
             overrides.insert(key.to_string(), Self::config_runtime_env_var(key));
         }
-        // This single documented key also honors the seeded .env value.
-        overrides.insert(
-            SILERO_FUSION_ENV.to_string(),
-            std::env::var(SILERO_FUSION_ENV),
-        );
+        // These documented power-user keys also honor the seeded .env value.
+        for key in [SILERO_FUSION_ENV, FORMAT_ON_DEVICE_ENV] {
+            overrides.insert(key.to_string(), std::env::var(key));
+        }
         let mut input = CapturedRuntimeInputs {
             values,
             user_settings,
@@ -376,6 +377,12 @@ impl Config {
         let (seal_lane_armed, seal_lane_env_override) = Self::resolve_seal_lane_armed(&input);
         if seal_lane_env_override {
             input.env_overlay_keys.push(SILERO_FUSION_ENV.to_string());
+        }
+        if let Some(enabled) = Self::format_on_device_env_override(&input) {
+            input.values.format_on_device = enabled;
+            input
+                .env_overlay_keys
+                .push(FORMAT_ON_DEVICE_ENV.to_string());
         }
         input.env_overlay_keys.sort_unstable();
         input.env_overlay_keys.dedup();
@@ -523,6 +530,18 @@ impl Config {
             ),
             Err(_) => (configured, false),
         }
+    }
+
+    /// The on-device formatting lane has the same two writers as the seal lane:
+    /// the developer Lab toggle in Settings and a process value (shell or the
+    /// optional `.env` injected during bootstrap), which outranks Settings.
+    fn format_on_device_env_override(input: &CapturedRuntimeInputs) -> Option<bool> {
+        input.env(FORMAT_ON_DEVICE_ENV).ok().map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
     }
 
     /// Resolve prompt, retry, and shared Agent/formatter timing once for the
@@ -790,6 +809,7 @@ impl Config {
         let _bootstrap_guard = Self::config_env_bootstrap_guard();
         let seed_process_env = Self::can_seed_process_env();
         let env_path = Self::env_path();
+        crate::test_isolation::assert_test_read_allowed(&env_path);
         let mut file_env_vars: Option<HashMap<String, String>> = None;
 
         // Load .env file if it exists. It is optional and never required for
@@ -1009,11 +1029,15 @@ impl Config {
 
     /// Inject optional .env values into the process environment without allowing
     /// legacy file overrides to shadow promoted settings.json-backed keys.
-    /// `CODESCRIBE_SILERO_FUSION` is the deliberate exception: it remains a
-    /// documented power-user override of the product-owned settings field.
+    /// `CODESCRIBE_SILERO_FUSION` and `CODESCRIBE_FORMAT_ON_DEVICE` are the
+    /// deliberate exceptions: each remains a documented power-user override of
+    /// a product-owned settings field.
     fn inject_file_env_for_runtime(file_env: &HashMap<String, String>) {
         for (key, value) in file_env {
-            if super::settings::is_promoted_key(key) && key != SILERO_FUSION_ENV {
+            if super::settings::is_promoted_key(key)
+                && key != SILERO_FUSION_ENV
+                && key != FORMAT_ON_DEVICE_ENV
+            {
                 debug_assert!(
                     !super::settings::is_promoted_key(key) || !key.is_empty(),
                     "promoted key bookkeeping should never see empty names"
@@ -1074,6 +1098,7 @@ impl Config {
         env_parse!("HOLD_START_DELAY_MS", self.hold_start_delay_ms);
         env_parse!("DOUBLE_TAP_INTERVAL_MS", self.double_tap_interval_ms);
         env_parse!("TOGGLE_SILENCE_SEC", self.toggle_silence_sec);
+        env_flag!("WHISPER_ADAPTIVE_BUFFER", self.whisper_adaptive_buffer);
         env_parse!(
             "WHISPER_CONTEXT_WINDOW_SEC",
             self.whisper_context_window_sec
@@ -1092,7 +1117,8 @@ impl Config {
 
         // AI Formatting
         env_flag_enabled!("AI_FORMATTING_ENABLED", self.ai_formatting_enabled);
-        env_flag_enabled!("AUTO_PASTE_ENABLED", self.auto_paste_enabled);
+        env_flag!("CODESCRIBE_FORMAT_ON_DEVICE", self.format_on_device);
+        env_parse!("PASTE_MODE", self.paste_mode);
         env_parse!("TRANSCRIPT_SEND_MODE", self.transcript_send_mode);
         env_flag_enabled!(
             "CODESCRIBE_TRANSCRIPT_TAGGING",
@@ -1296,6 +1322,11 @@ impl Config {
             settings.toggle_silence_sec
         );
         apply_copy!(
+            "WHISPER_ADAPTIVE_BUFFER",
+            self.whisper_adaptive_buffer,
+            settings.whisper_adaptive_buffer
+        );
+        apply_copy!(
             "WHISPER_CONTEXT_WINDOW_SEC",
             self.whisper_context_window_sec,
             settings.whisper_context_window_sec
@@ -1339,10 +1370,11 @@ impl Config {
             settings.ai_formatting_enabled
         );
         apply_copy!(
-            "AUTO_PASTE_ENABLED",
-            self.auto_paste_enabled,
-            settings.auto_paste_enabled
+            "CODESCRIBE_FORMAT_ON_DEVICE",
+            self.format_on_device,
+            settings.format_on_device
         );
+        apply_copy!("PASTE_MODE", self.paste_mode, settings.paste_mode);
         apply_copy!(
             "CODESCRIBE_TRANSCRIPT_TAGGING",
             self.transcript_tagging_enabled,
@@ -1582,7 +1614,14 @@ impl Config {
             .then(|| FormattingPolicy::parse(value))
             .transpose()?
             .map(|policy| policy.as_str().to_string());
-        let value = normalized_formatting.as_deref().unwrap_or(value);
+        let normalized_paste_mode = (key == "PASTE_MODE")
+            .then(|| value.parse::<PasteMode>().map_err(anyhow::Error::msg))
+            .transpose()?
+            .map(PasteMode::as_str);
+        let value = normalized_formatting
+            .as_deref()
+            .or(normalized_paste_mode)
+            .unwrap_or(value);
 
         // API keys (vendor and custom-provider accounts) → Keychain
         if super::keychain::is_known_account(key) {
@@ -1649,6 +1688,9 @@ impl Config {
             );
             if *key == "FORMATTING_LEVEL" {
                 FormattingPolicy::parse(value)?;
+            }
+            if *key == "PASTE_MODE" {
+                value.parse::<PasteMode>().map_err(anyhow::Error::msg)?;
             }
         }
 
@@ -1745,6 +1787,7 @@ impl Config {
         // (config_dir()/.env, or the `CODESCRIBE_ENV_PATH` override used by tests
         // and power users) — never raw request or end-user input. No external
         // path-traversal source reaches this read.
+        crate::test_isolation::assert_test_read_allowed(path);
         let path = canonical_existing_file(path)?;
         let contents = fs::read_to_string(&path)?;
         let mut vars = HashMap::new();
@@ -1900,6 +1943,9 @@ impl Config {
     ///
     /// Can be overridden with `CODESCRIBE_DATA_DIR` environment variable.
     pub fn config_dir() -> PathBuf {
+        if let Some(host) = super::runtime_host::selected() {
+            return host.data_directory.clone();
+        }
         // Helper to canonicalize if path exists (resolves macOS /var → /private/var)
         let maybe_canonicalize = |p: PathBuf| -> PathBuf { p.canonicalize().unwrap_or(p) };
 
@@ -1908,14 +1954,27 @@ impl Config {
             return maybe_canonicalize(PathBuf::from(shellexpand::tilde(&custom).into_owned()));
         }
 
+        // Test builds never default to the account's real `$HOME/.codescribe`:
+        // a per-process temporary root is the default so tests cannot observe
+        // the host's real configuration.
+        #[cfg(any(test, feature = "test-isolation"))]
+        {
+            crate::test_isolation::test_process_config_root()
+        }
         // Default to $HOME/.codescribe (lowercase - Unix convention)
-        BaseDirs::new()
-            .map(|dirs| dirs.home_dir().join(".codescribe"))
-            .unwrap_or_else(|| PathBuf::from(".codescribe"))
+        #[cfg(not(any(test, feature = "test-isolation")))]
+        {
+            BaseDirs::new()
+                .map(|dirs| dirs.home_dir().join(".codescribe"))
+                .unwrap_or_else(|| PathBuf::from(".codescribe"))
+        }
     }
 
     /// Get the full path to the .env file.
     pub fn env_path() -> PathBuf {
+        if let Some(host) = super::runtime_host::selected() {
+            return host.data_directory.join(".env");
+        }
         if let Ok(custom) = std::env::var("CODESCRIBE_ENV_PATH") {
             return PathBuf::from(shellexpand::tilde(&custom).into_owned());
         }
@@ -2002,17 +2061,17 @@ mod tests {
         let _pack = TestEnvGuard::unset("CODESCRIBE_VOICE_LAB_SRC");
         let _key = TestEnvGuard::unset("STT_FILE_API_KEY");
         let _retired = TestEnvGuard::unset("STT_API_KEY");
-        let _auto_paste = TestEnvGuard::unset("AUTO_PASTE_ENABLED");
+        let _paste_mode = TestEnvGuard::unset("PASTE_MODE");
         let _roots = TestEnvGuard::unset("AGENT_WORKSPACE_ROOTS");
         let _bundle = super::super::keychain::test_support::install_bundle(&[]);
         let dir = TempDir::new().unwrap();
         set_env_for_test("CODESCRIBE_DATA_DIR", dir.path());
-        let env = "STT_FILE_API_KEY=synthetic-import-key\nAUTO_PASTE_ENABLED=false\nAGENT_WORKSPACE_ROOTS=/tmp/synthetic-workspace\n";
+        let env = "STT_FILE_API_KEY=synthetic-import-key\nPASTE_MODE=off\nAGENT_WORKSPACE_ROOTS=/tmp/synthetic-workspace\n";
         fs::write(dir.path().join(".env"), env).unwrap();
         {
             let probe = super::super::keychain::CredentialAcquisitionProbe::forbid();
             let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
-            assert_eq!(snapshot.user_settings().auto_paste_enabled, Some(false));
+            assert_eq!(snapshot.user_settings().paste_mode, Some(PasteMode::Off));
             assert_eq!(
                 snapshot
                     .user_settings()
@@ -2023,7 +2082,7 @@ mod tests {
             );
             assert!(UserSettings::settings_path().exists());
             let mut edited = UserSettings::load();
-            assert_eq!(edited.auto_paste_enabled, Some(false));
+            assert_eq!(edited.paste_mode, Some(PasteMode::Off));
             assert_eq!(edited.pending_env_key_imports.len(), 1);
             edited.show_dock_icon = Some(true);
             edited.save().unwrap();
@@ -2034,7 +2093,7 @@ mod tests {
         }
         // Unit-test secret writes use synthetic env, never the OS credential store.
         let snapshot = Config::load_runtime_snapshot().unwrap();
-        assert_eq!(snapshot.user_settings().auto_paste_enabled, Some(false));
+        assert_eq!(snapshot.user_settings().paste_mode, Some(PasteMode::Off));
         assert_eq!(snapshot.user_settings().show_dock_icon, Some(true));
         assert!(snapshot.user_settings().pending_env_key_imports.is_empty());
         assert!(UserSettings::settings_path().exists());
@@ -2735,6 +2794,170 @@ mod tests {
         assert_eq!(snapshot.seal_lane_source().as_str(), "env_override");
     }
 
+    /// A take binds one snapshot at its start (`bind_session_authority`) and
+    /// `apple_stream_worker` reads `whisper_adaptive_buffer` from it once. A
+    /// Lab write during the take cannot reach that snapshot; the next take's can.
+    #[test]
+    #[serial]
+    fn whisper_adaptive_buffer_change_reaches_only_the_next_take_snapshot() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset("WHISPER_ADAPTIVE_BUFFER");
+        let current_take =
+            Config::load_runtime_snapshot_without_keychain().expect("seal current take");
+        assert!(!current_take.values().whisper_adaptive_buffer);
+
+        Config::default()
+            .save_to_env("WHISPER_ADAPTIVE_BUFFER", "1")
+            .expect("Lab toggle during the take");
+        assert_eq!(UserSettings::load().whisper_adaptive_buffer, Some(true));
+        assert!(
+            !current_take.values().whisper_adaptive_buffer,
+            "the running take keeps the mode it started with"
+        );
+
+        let next_take = Config::load_runtime_snapshot_without_keychain().expect("seal next take");
+        assert!(next_take.values().whisper_adaptive_buffer);
+        assert_ne!(current_take.digest(), next_take.digest());
+
+        Config::default()
+            .save_to_env("WHISPER_ADAPTIVE_BUFFER", "0")
+            .expect("Lab toggle back");
+        assert!(next_take.values().whisper_adaptive_buffer);
+        let third_take = Config::load_runtime_snapshot_without_keychain().expect("seal third take");
+        assert!(!third_take.values().whisper_adaptive_buffer);
+    }
+
+    fn format_on_device_overlay(snapshot: &RuntimeSettingsSnapshot) -> bool {
+        snapshot
+            .provenance()
+            .env_overlay_keys
+            .iter()
+            .any(|key| key == FORMAT_ON_DEVICE_ENV)
+    }
+
+    #[test]
+    #[serial]
+    fn format_on_device_lab_toggle_persists_to_settings_and_reaches_the_snapshot() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset(FORMAT_ON_DEVICE_ENV);
+        let default =
+            Config::load_runtime_snapshot_without_keychain().expect("seal default snapshot");
+        assert!(!default.values().format_on_device, "opt-in lane is off");
+        assert!(!format_on_device_overlay(&default));
+
+        Config::default()
+            .save_to_env(FORMAT_ON_DEVICE_ENV, "1")
+            .expect("persist Lab toggle through canonical writer");
+        assert_eq!(UserSettings::load().format_on_device, Some(true));
+        assert!(!Config::env_path().exists(), "the toggle never writes .env");
+        let wire: serde_json::Value = serde_json::from_slice(
+            &fs::read(UserSettings::settings_path()).expect("read settings.json"),
+        )
+        .expect("settings.json parses");
+        assert_eq!(
+            wire.pointer("/speech/formatting/on_device"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        let on = Config::load_runtime_snapshot_without_keychain().expect("seal toggled snapshot");
+        assert!(on.values().format_on_device);
+        assert!(!format_on_device_overlay(&on));
+        assert_ne!(default.digest(), on.digest());
+
+        Config::default()
+            .save_to_env(FORMAT_ON_DEVICE_ENV, "0")
+            .expect("persist Lab toggle off");
+        assert_eq!(UserSettings::load().format_on_device, Some(false));
+        let off =
+            Config::load_runtime_snapshot_without_keychain().expect("seal untoggled snapshot");
+        assert!(!off.values().format_on_device);
+    }
+
+    #[test]
+    #[serial]
+    fn format_on_device_process_env_override_wins_in_both_directions() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset(FORMAT_ON_DEVICE_ENV);
+        let mut settings = UserSettings {
+            format_on_device: Some(true),
+            ..Default::default()
+        };
+        settings.save().expect("save toggle on");
+
+        set_env_for_test(FORMAT_ON_DEVICE_ENV, "0");
+        let forced_off =
+            Config::load_runtime_snapshot_without_keychain().expect("seal forced-off snapshot");
+        assert!(!forced_off.values().format_on_device);
+        assert!(format_on_device_overlay(&forced_off));
+
+        settings.format_on_device = Some(false);
+        settings.save().expect("save toggle off");
+        set_env_for_test(FORMAT_ON_DEVICE_ENV, "1");
+        let forced_on =
+            Config::load_runtime_snapshot_without_keychain().expect("seal forced-on snapshot");
+        assert!(forced_on.values().format_on_device);
+        assert!(format_on_device_overlay(&forced_on));
+        assert_ne!(forced_off.digest(), forced_on.digest());
+    }
+
+    /// Production hides `.env`-seeded keys from the loader's own env layer once
+    /// bootstrapped, so `Config::format_on_device` can carry the toggle while
+    /// the captured process value says otherwise. The snapshot is the one place
+    /// that reconciles them.
+    #[test]
+    fn format_on_device_snapshot_folds_the_captured_process_value_over_settings() {
+        let root = TempDir::new().expect("captured inputs root");
+        let sealed = |toggle: bool, process: Option<&str>| {
+            let mut input = CapturedRuntimeInputs::defaults_at(root.path().to_path_buf(), 1);
+            input.values.format_on_device = toggle;
+            input.user_settings.format_on_device = Some(toggle);
+            if let Some(raw) = process {
+                input
+                    .overrides
+                    .insert(FORMAT_ON_DEVICE_ENV.to_string(), Ok(raw.to_string()));
+            }
+            Config::runtime_snapshot_from_captured(input)
+        };
+
+        let toggle_only = sealed(true, None);
+        assert!(toggle_only.values().format_on_device);
+        assert!(!format_on_device_overlay(&toggle_only));
+
+        let knob_on = sealed(false, Some("on"));
+        assert!(knob_on.values().format_on_device);
+        assert!(format_on_device_overlay(&knob_on));
+
+        let knob_off = sealed(true, Some("0"));
+        assert!(!knob_off.values().format_on_device);
+        assert!(format_on_device_overlay(&knob_off));
+        assert_ne!(knob_on.digest(), knob_off.digest());
+    }
+
+    #[test]
+    #[serial]
+    fn format_on_device_env_file_knob_survives_canonical_settings_write() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset(FORMAT_ON_DEVICE_ENV);
+        fs::write(Config::env_path(), format!("{FORMAT_ON_DEVICE_ENV}=1\n"))
+            .expect("write power-user env knob");
+
+        Config::default()
+            .save_to_env(FORMAT_ON_DEVICE_ENV, "0")
+            .expect("persist Lab toggle through canonical writer");
+        assert_eq!(UserSettings::load().format_on_device, Some(false));
+        assert_eq!(
+            fs::read_to_string(Config::env_path()).expect("read untouched env knob"),
+            format!("{FORMAT_ON_DEVICE_ENV}=1\n")
+        );
+
+        let snapshot =
+            Config::load_runtime_snapshot_without_keychain().expect("seal knob snapshot");
+        assert!(
+            snapshot.values().format_on_device,
+            ".env knob outranks Settings"
+        );
+        assert!(format_on_device_overlay(&snapshot));
+    }
+
     /// Distinct UI writes are one read-modify-write transaction each. Start two
     /// callers together and prove the later atomic rename cannot erase the
     /// field persisted by the other caller.
@@ -2767,15 +2990,15 @@ mod tests {
         }
 
         let _tmp = setup_isolated_data_dir();
-        let _auto_paste = TestEnvGuard::unset("AUTO_PASTE_ENABLED");
+        let _paste_mode = TestEnvGuard::unset("PASTE_MODE");
         let _dock = TestEnvGuard::unset("SHOW_DOCK_ICON");
         let start = std::sync::Arc::new(std::sync::Barrier::new(3));
         let first_start = start.clone();
         let first = std::thread::spawn(move || {
             first_start.wait();
             Config::default()
-                .save_to_env("AUTO_PASTE_ENABLED", "0")
-                .expect("persist auto paste")
+                .save_to_env("PASTE_MODE", "off")
+                .expect("persist paste mode")
         });
         let second_start = start.clone();
         let second = std::thread::spawn(move || {
@@ -2789,7 +3012,7 @@ mod tests {
         second.join().expect("second config writer joins");
 
         let persisted = UserSettings::load();
-        assert_eq!(persisted.auto_paste_enabled, Some(false));
+        assert_eq!(persisted.paste_mode, Some(PasteMode::Off));
         assert_eq!(persisted.show_dock_icon, Some(false));
         fs::write(
             std::env::var_os(CHILD_WITNESS).expect("config RMW child witness path"),
@@ -2984,32 +3207,45 @@ mod tests {
         assert_eq!(live.restore_clipboard_delay_ms, 450);
     }
 
-    /// AUTO_PASTE single/batch writes reload live without shadowing process env.
+    /// PASTE_MODE single/batch writes reload live without shadowing process
+    /// env, normalize case, and refuse an unknown mode without touching disk.
     #[test]
     #[serial]
-    fn auto_paste_single_and_batch_writes_are_hot_reloadable_without_env_shadow() {
+    fn paste_mode_single_and_batch_writes_are_hot_reloadable_without_env_shadow() {
         let _tmp = setup_isolated_data_dir();
-        let _runtime = TestEnvGuard::unset("AUTO_PASTE_ENABLED");
+        let _runtime = TestEnvGuard::unset("PASTE_MODE");
         let config = Config::default();
+        assert_eq!(
+            Config::load_without_keychain().paste_mode,
+            PasteMode::Safe,
+            "a fresh install arms Safe"
+        );
 
         config
-            .save_to_env("AUTO_PASTE_ENABLED", "0")
-            .expect("save auto paste off");
-        assert_eq!(UserSettings::load().auto_paste_enabled, Some(false));
-        assert!(!Config::load_without_keychain().auto_paste_enabled);
+            .save_to_env("PASTE_MODE", "Off")
+            .expect("save paste mode off");
+        assert_eq!(UserSettings::load().paste_mode, Some(PasteMode::Off));
+        assert_eq!(Config::load_without_keychain().paste_mode, PasteMode::Off);
 
         config
-            .save_to_env_many(&[("AUTO_PASTE_ENABLED", "1")])
-            .expect("save auto paste on");
-        assert_eq!(UserSettings::load().auto_paste_enabled, Some(true));
-        assert!(Config::load_without_keychain().auto_paste_enabled);
+            .save_to_env_many(&[("PASTE_MODE", "comfort")])
+            .expect("save paste mode comfort");
+        assert_eq!(UserSettings::load().paste_mode, Some(PasteMode::Comfort));
+        assert_eq!(
+            Config::load_without_keychain().paste_mode,
+            PasteMode::Comfort
+        );
+
+        assert!(config.save_to_env("PASTE_MODE", "always").is_err());
+        assert!(config.save_to_env_many(&[("PASTE_MODE", "on")]).is_err());
+        assert_eq!(UserSettings::load().paste_mode, Some(PasteMode::Comfort));
 
         let env_path = Config::env_path();
         if env_path.exists() {
             let env = Config::parse_env_file(&env_path).expect("parse optional env");
-            assert!(!env.contains_key("AUTO_PASTE_ENABLED"));
+            assert!(!env.contains_key("PASTE_MODE"));
         }
-        assert!(std::env::var("AUTO_PASTE_ENABLED").is_err());
+        assert!(std::env::var("PASTE_MODE").is_err());
     }
 
     /// FORMATTING_LEVEL aliases normalize identically on single and batch paths.
@@ -3637,6 +3873,7 @@ mod local_tail_decision_tests {
 mod captured_startup_tests {
     use super::super::repair::{ConfigUnrepairable, RepairAction};
     use super::*;
+    use serial_test::serial;
 
     fn inputs() -> CapturedRuntimeInputs {
         let mut input =
@@ -3836,7 +4073,11 @@ mod captured_startup_tests {
         }
     }
 
+    /// `#[serial]`: each tripwire load resolves the process-global
+    /// `CODESCRIBE_DATA_DIR`; off the serial lane it can consume or rewrite a
+    /// serial settings test's private fixture (X-hermetic-test-config).
     #[test]
+    #[serial]
     fn acquisition_tripwires_cover_lower_level_sources() {
         let sources: [(&str, fn()); 8] = [
             ("config files/env/keychain", || {

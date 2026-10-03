@@ -43,7 +43,7 @@ pub struct OpenAiProvider {
     client: Client,
     /// Full Responses endpoint URL for the resolved lane.
     endpoint: String,
-    /// Fixed credential used only by direct internal fixtures. Lane-built
+    /// Fixed credential supplied by an embedding host for this turn. Lane-built
     /// providers leave it empty and resolve `api_key_account` for every send.
     api_key: String,
     /// Keychain/env account resolved at the request boundary. This prevents a
@@ -123,17 +123,29 @@ impl OpenAiProvider {
         lane: &RuntimeLlmLane,
         request_timing: &RuntimeAiRequestTiming,
     ) -> Result<Self> {
-        let endpoint = lane.endpoint().to_string();
-        let default_model = lane.model().to_string();
-        let snapshot_key_present = lane.credential().api_key().is_some();
-        let api_key_account = Some(lane.credential().key_account().to_string());
-        let use_account_auth = lane.credential().account_auth();
-        // Account auth is only ever sealed for a vendor lane; a Custom
-        // provider never reaches the token path, so the default is inert.
-        let provider = lane.vendor().unwrap_or_default();
-
-        let use_previous_response_id =
+        let mut result = Self::from_configuration(
+            lane.endpoint().to_string(),
+            lane.model().to_string(),
+            String::new(),
+            request_timing,
+        )?;
+        result.api_key_account = Some(lane.credential().key_account().to_string());
+        result.use_account_auth = lane.credential().account_auth();
+        result.provider = lane.vendor().unwrap_or_default();
+        result.use_previous_response_id =
             parse_env_bool("CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID", true);
+        Ok(result)
+    }
+
+    /// Per-turn configuration supplied by an embedding application. Credentials
+    /// belong to that caller; this provider never reads a different app's keys.
+    pub fn from_configuration(
+        endpoint: String,
+        default_model: String,
+        api_key: String,
+        request_timing: &RuntimeAiRequestTiming,
+    ) -> Result<Self> {
+        let use_previous_response_id = true;
         let initial_response_timeout = request_timing.attempt_timeout();
         let inter_chunk_timeout = request_timing.inter_chunk_timeout();
 
@@ -142,28 +154,18 @@ impl OpenAiProvider {
             .build()
             .context("Failed to create OpenAI agent HTTP client")?;
 
-        info!(
-            "OpenAI agent provider configured (model={}, account_auth={}, snapshot_key_present={}, initial_timeout={}s, inter_chunk_timeout={}s, previous_response_id={})",
-            default_model,
-            use_account_auth,
-            snapshot_key_present,
-            initial_response_timeout.as_secs(),
-            inter_chunk_timeout.as_secs(),
-            use_previous_response_id
-        );
-
         Ok(Self {
             client,
             endpoint,
-            api_key: String::new(),
-            api_key_account,
+            api_key,
+            api_key_account: None,
             default_model,
             use_previous_response_id,
             previous_response_id: Arc::new(Mutex::new(None)),
             initial_response_timeout,
             inter_chunk_timeout,
-            use_account_auth,
-            provider,
+            use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
         })
     }
 }
@@ -1188,8 +1190,12 @@ mod tests {
 
     /// Restored thread images still serialize as native input_image data URIs.
     #[test]
+    #[serial_test::serial]
     fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         // Turn 2 on a restored thread: an inline composer image persisted via
         // the thread store must come back as a disk-backed asset and still
         // reach the request payload instead of being skipped as byteless.
@@ -1212,20 +1218,19 @@ mod tests {
             .as_str()
             .expect("image_url should be a string");
         assert_eq!(image_url, to_data_uri(&image_bytes, "image/png"));
-
-        if let ContentBlock::ImageAsset(asset) = &restored.content[0] {
-            std::fs::remove_file(&asset.path).ok();
-        }
     }
 
     /// Disk-backed tool image assets add a native input_image item beside output.
     #[test]
+    #[serial_test::serial]
     fn tool_result_image_asset_adds_native_input_image_item() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         let asset = AgentAssetStore::save_image(b"png bytes", "image/png")
             .expect("image asset should save");
         let asset_id = asset.asset_id.clone();
-        let asset_path = asset.path.clone();
         let messages = vec![Message::new(
             Role::User,
             vec![ContentBlock::ToolResult {
@@ -1254,7 +1259,6 @@ mod tests {
                 .expect("image_url should be a string")
                 .starts_with("data:image/png;base64,")
         );
-        std::fs::remove_file(asset_path).ok();
     }
 
     /// Empty restored tool images are dropped, never empty data URIs.

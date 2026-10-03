@@ -54,6 +54,25 @@ final class OverlayPlacementTests: XCTestCase {
     XCTAssertTrue(visible.contains(NSRect(origin: clamped, size: size)))
   }
 
+  func testAnchorsLandOnTheWholePointsAppKitGivesTheWindow() {
+    // AppKit floors a window origin and rounds its size up. The anchor math
+    // floors too, so the requested size and the size AppKit rounds it up to
+    // resolve to one origin: the one the panel really lands on.
+    let requested = NSSize(width: 470.3, height: 283.37)
+    let landed = NSSize(width: 471, height: 284)
+    for anchor in OverlayAnchor.allCases {
+      let origin = OverlayPlacement.origin(for: anchor, size: requested, in: visible)
+      XCTAssertEqual(origin.x, origin.x.rounded(.down), "\(anchor)")
+      XCTAssertEqual(origin.y, origin.y.rounded(.down), "\(anchor)")
+      XCTAssertEqual(
+        OverlayPlacement.origin(for: anchor, size: landed, in: visible), origin, "\(anchor)")
+    }
+    XCTAssertEqual(
+      OverlayPlacement.origin(for: .topCenter, size: landed, in: visible),
+      NSPoint(x: 664, y: 654)
+    )
+  }
+
   func testClampIsIdentityForAnOriginAlreadyInside() {
     let inside = NSPoint(x: visible.midX, y: visible.minY + 20)
     let clamped = OverlayPlacement.clampOrigin(inside, size: size, in: visible)
@@ -230,6 +249,10 @@ final class OverlayPlacementTests: XCTestCase {
       panel.orderOut(nil)
       panel.invalidatePresence()
     }
+    // The panel size is part of every anchor's origin. Pin it instead of
+    // inheriting whatever size an earlier run or the app persisted; the odd
+    // width keeps the center anchors on the half-point case AppKit rounds.
+    panel.setContentSize(NSSize(width: 471, height: 283))
     let controller = OverlayController(
       state: state, engine: nil,
       overlayEnabledProvider: { true }, assistiveStatusProvider: { false },

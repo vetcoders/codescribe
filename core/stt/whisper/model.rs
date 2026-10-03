@@ -55,11 +55,10 @@ fn layer_norm(size: usize, vb: VarBuilder) -> Result<LayerNorm> {
 
 /// Multi-head attention serving both self- and cross-attention.
 ///
-/// `kv_cache` only ever holds **cross-attention** keys and values: the encoder
-/// output is constant for a whole decode window, so K/V are computed once and
-/// reused, while self-attention recomputes them from the growing token prefix
-/// every step. Moving to a new audio window must therefore flush the cache —
-/// see the `flush_cache` flag on `forward`.
+/// Cross-attention caches the fixed audio projection. Incremental decoder
+/// self-attention appends new token projections to its own cache. Encoder and
+/// alignment passes use the full sequence without appending. Both caches are
+/// cleared when a new audio window starts.
 ///
 /// The `tracing` spans are permanent instrumentation: they are how the Metal vs
 /// CPU cost split (softmax vs matmul) is measured.
@@ -137,9 +136,25 @@ impl MultiHeadAttention {
                 }
             }
         };
-        let wv = self.qkv_attention(&q, &k, &v, mask)?;
+        let wv = self.qkv_attention(&q, &k, &v, mask, 0)?;
         let out = self.out.forward(&wv)?;
         Ok(out)
+    }
+
+    fn forward_incremental(&mut self, x: &Tensor, mask: &Tensor, offset: usize) -> Result<Tensor> {
+        let q = self.query.forward(x)?;
+        let k = self.key.forward(x)?;
+        let v = self.value.forward(x)?;
+        let (k, v) = match &self.kv_cache {
+            Some((past_k, past_v)) => (
+                Tensor::cat(&[past_k, &k], 1)?,
+                Tensor::cat(&[past_v, &v], 1)?,
+            ),
+            None => (k, v),
+        };
+        self.kv_cache = Some((k.clone(), v.clone()));
+        let wv = self.qkv_attention(&q, &k, &v, Some(mask), offset)?;
+        self.out.forward(&wv)
     }
 
     /// Split the model dimension into `n_head` heads: `(B, T, D)` → `(B, H, T, D/H)`.
@@ -161,23 +176,25 @@ impl MultiHeadAttention {
         k: &Tensor,
         v: &Tensor,
         mask: Option<&Tensor>,
+        offset: usize,
     ) -> Result<Tensor> {
         let (_, n_ctx, n_state) = q.dims3()?;
+        let n_keys = k.dim(1)?;
         let scale = ((n_state / self.n_head) as f64).powf(-0.25);
         let q = (self.reshape_head(q)? * scale)?;
         let k = (self.reshape_head(k)?.transpose(2, 3)? * scale)?;
         let v = self.reshape_head(v)?.contiguous()?;
         let mut qk = {
             let _enter = self.matmul_span.enter();
-            q.matmul(&k)?
+            q.matmul(&k)?.to_dtype(DType::F32)?
         };
         if let Some(mask) = mask {
-            let mask = mask.i((0..n_ctx, 0..n_ctx))?;
+            let mask = mask.i((offset..offset + n_ctx, 0..n_keys))?;
             qk = qk.broadcast_add(&mask)?
         }
         let w = {
             let _enter = self.softmax_span.enter();
-            candle_nn::ops::softmax_last_dim(&qk)?
+            candle_nn::ops::softmax_last_dim(&qk)?.to_dtype(v.dtype())?
         };
         let wv = {
             let _enter = self.matmul_span.enter();
@@ -218,11 +235,11 @@ impl MultiHeadAttention {
         let v = self.reshape_head(&v)?.contiguous()?;
         let qk = {
             let _enter = self.matmul_span.enter();
-            q.matmul(&k)?
+            q.matmul(&k)?.to_dtype(DType::F32)?
         };
         let w = {
             let _enter = self.softmax_span.enter();
-            candle_nn::ops::softmax_last_dim(&qk)?
+            candle_nn::ops::softmax_last_dim(&qk)?.to_dtype(v.dtype())?
         };
         let wv = {
             let _enter = self.matmul_span.enter();
@@ -303,6 +320,29 @@ impl ResidualAttentionBlock {
         let mut x = (x + attn)?;
         if let Some((attn, ln)) = &mut self.cross_attn {
             x = (&x + attn.forward(&ln.forward(&x)?, xa, None, flush_kv_cache)?)?;
+        }
+        let mlp = self.mlp_linear2.forward(
+            &self
+                .mlp_linear1
+                .forward(&self.mlp_ln.forward(&x)?)?
+                .gelu()?,
+        )?;
+        x + mlp
+    }
+
+    fn forward_incremental(
+        &mut self,
+        x: &Tensor,
+        xa: &Tensor,
+        mask: &Tensor,
+        offset: usize,
+    ) -> Result<Tensor> {
+        let attn = self
+            .attn
+            .forward_incremental(&self.attn_ln.forward(x)?, mask, offset)?;
+        let mut x = (x + attn)?;
+        if let Some((attn, ln)) = &mut self.cross_attn {
+            x = (&x + attn.forward(&ln.forward(&x)?, Some(xa), None, false)?)?;
         }
         let mlp = self.mlp_linear2.forward(
             &self
@@ -420,7 +460,7 @@ impl AudioEncoder {
         };
         let conv1 = conv1d(cfg.num_mel_bins, n_state, 3, cfg1, vb.pp("conv1"))?;
         let conv2 = conv1d(n_state, n_state, 3, cfg2, vb.pp("conv2"))?;
-        let positional_embedding = sinusoids(n_ctx, n_state, vb.device())?;
+        let positional_embedding = sinusoids(n_ctx, n_state, vb.device())?.to_dtype(vb.dtype())?;
         let blocks = (0..cfg.encoder_layers)
             .map(|i| {
                 ResidualAttentionBlock::load(n_state, n_head, false, vb.pp(format!("layers.{i}")))
@@ -486,6 +526,7 @@ pub struct TextDecoder {
     mask: Tensor,
     span: tracing::Span,
     span_final: tracing::Span,
+    cached_token_count: usize,
 }
 
 impl TextDecoder {
@@ -517,11 +558,49 @@ impl TextDecoder {
             mask,
             span,
             span_final,
+            cached_token_count: 0,
         })
+    }
+
+    pub fn dtype(&self) -> DType {
+        self.token_embedding.embeddings().dtype()
+    }
+
+    /// Prefill once per audio window, then process only the newly appended
+    /// token. Project only the last hidden position onto the vocabulary.
+    pub fn next_token_logits(
+        &mut self,
+        tokens: &Tensor,
+        xa: &Tensor,
+        new_window: bool,
+    ) -> Result<Tensor> {
+        if new_window {
+            self.reset_kv_cache();
+        }
+        let _enter = self.span.enter();
+        let total = tokens.dim(1)?;
+        if total == 0 || (self.cached_token_count > 0 && total != self.cached_token_count + 1) {
+            candle_core::bail!("decoder token prefix must extend the current window by one token");
+        }
+        let offset = self.cached_token_count;
+        let new_tokens = tokens.narrow(1, offset, total - offset)?;
+        let embedding = self.token_embedding.forward(&new_tokens)?;
+        let positions = self
+            .positional_embedding
+            .narrow(0, offset, total - offset)?;
+        let mut hidden = embedding.broadcast_add(&positions)?;
+        for block in self.blocks.iter_mut() {
+            hidden = block.forward_incremental(&hidden, xa, &self.mask, offset)?;
+        }
+        hidden = self.ln.forward(&hidden)?;
+        self.cached_token_count = total;
+        let last = hidden.narrow(1, hidden.dim(1)? - 1, 1)?.contiguous()?;
+        self.final_linear(&last)?.squeeze(1)?.to_dtype(DType::F32)
     }
 
     /// Run the token prefix `x` against the encoder output `xa`, returning hidden
     /// states — call [`TextDecoder::final_linear`] to turn them into logits.
+    #[cfg(test)]
     pub fn forward(&mut self, x: &Tensor, xa: &Tensor, flush_kv_cache: bool) -> Result<Tensor> {
         let _enter = self.span.enter();
         let last = x.dim(D::Minus1)?;
@@ -600,6 +679,7 @@ impl TextDecoder {
 
     /// Clear every decoder block's attention cache.
     pub fn reset_kv_cache(&mut self) {
+        self.cached_token_count = 0;
         for block in self.blocks.iter_mut() {
             block.reset_kv_cache();
         }
@@ -657,4 +737,211 @@ fn cross_attention_heads(qk: &Tensor, heads: &[usize]) -> Result<Vec<Vec<Vec<f32
         captured.push(matrix);
     }
     Ok(captured)
+}
+
+#[cfg(test)]
+mod incremental_decode_tests {
+    use super::*;
+    use candle_nn::VarMap;
+
+    fn decoder(device: &Device, dtype: DType) -> Result<TextDecoder> {
+        let cfg = Config {
+            num_mel_bins: 4,
+            max_source_positions: 12,
+            d_model: 8,
+            encoder_attention_heads: 2,
+            encoder_layers: 2,
+            vocab_size: 17,
+            max_target_positions: 32,
+            decoder_attention_heads: 2,
+            decoder_layers: 2,
+            suppress_tokens: Vec::new(),
+        };
+        let vars = VarMap::new();
+        let decoder = TextDecoder::load(VarBuilder::from_varmap(&vars, dtype, device), &cfg)?;
+        // Nonzero deterministic parameters make stale audio and wrong positions
+        // observable. Zero weights would let every cache mistake pass.
+        for (name, var) in vars.data().lock().unwrap().iter() {
+            let seed = name.bytes().map(usize::from).sum::<usize>();
+            let values: Vec<f32> = (0..var.elem_count())
+                .map(|i| {
+                    let wave = ((i + seed) as f32 * 0.137).sin();
+                    if name.contains("layer_norm") && name.ends_with("weight") {
+                        1.0 + wave * 0.1
+                    } else {
+                        wave * 0.2
+                    }
+                })
+                .collect();
+            var.set(&Tensor::from_vec(values, var.shape(), device)?.to_dtype(dtype)?)?;
+        }
+        Ok(decoder)
+    }
+
+    fn audio(device: &Device, dtype: DType, phase: f32) -> Result<Tensor> {
+        let values: Vec<f32> = (0..40).map(|i| (i as f32 * 0.31 + phase).sin()).collect();
+        Tensor::from_vec(values, (1, 5, 8), device)?.to_dtype(dtype)
+    }
+
+    fn tokens(device: &Device, length: usize) -> Result<Tensor> {
+        let ids: Vec<u32> = (0..length).map(|i| ((i * 3 + 1) % 17) as u32).collect();
+        Tensor::new(ids.as_slice(), device)?.unsqueeze(0)
+    }
+
+    fn reference(decoder: &mut TextDecoder, tokens: &Tensor, audio: &Tensor) -> Result<Tensor> {
+        let hidden = decoder.forward(tokens, audio, true)?;
+        decoder
+            .final_linear(&hidden)?
+            .i((.., tokens.dim(1)? - 1, ..))?
+            .to_dtype(DType::F32)
+    }
+
+    fn assert_logits(actual: &Tensor, expected: &Tensor, tolerance: f32) -> Result<()> {
+        assert_eq!(actual.dims(), expected.dims());
+        let a = actual.flatten_all()?.to_vec1::<f32>()?;
+        let b = expected.flatten_all()?.to_vec1::<f32>()?;
+        let max_error = a
+            .iter()
+            .zip(&b)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(
+            max_error <= tolerance,
+            "logits differ by {max_error}, allowed {tolerance}"
+        );
+        let argmax = |v: &[f32]| {
+            v.iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .unwrap()
+                .0
+        };
+        assert_eq!(argmax(&a), argmax(&b), "next token must be unchanged");
+        Ok(())
+    }
+
+    fn compare_decode(device: &Device, dtype: DType, tolerance: f32) -> Result<()> {
+        let mut cached = decoder(device, dtype)?;
+        let mut full = decoder(device, dtype)?;
+        let audio = audio(device, dtype, 0.0)?;
+        let mut cross_ids = Vec::new();
+        for length in 3..11 {
+            let prefix = tokens(device, length)?;
+            let actual = cached.next_token_logits(&prefix, &audio, length == 3)?;
+            assert_logits(&actual, &reference(&mut full, &prefix, &audio)?, tolerance)?;
+            assert_eq!(actual.dims(), &[1, 17]);
+            for (layer, block) in cached.blocks.iter().enumerate() {
+                assert_eq!(block.attn.kv_cache.as_ref().unwrap().0.dim(1)?, length);
+                let cross_id = block
+                    .cross_attn
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .kv_cache
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .id();
+                if length == 3 {
+                    cross_ids.push(cross_id);
+                } else {
+                    assert_eq!(cross_ids[layer], cross_id, "audio K/V must be reused");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn incremental_logits_match_full_prefix_with_prompt_and_reuse_audio() -> Result<()> {
+        compare_decode(&Device::Cpu, DType::F32, 1e-5)
+    }
+
+    #[test]
+    fn new_window_discards_old_audio_and_token_positions() -> Result<()> {
+        let device = Device::Cpu;
+        let mut cached = decoder(&device, DType::F32)?;
+        let old_audio = audio(&device, DType::F32, 0.0)?;
+        let new_audio = audio(&device, DType::F32, 2.0)?;
+        cached.next_token_logits(&tokens(&device, 6)?, &old_audio, true)?;
+        let prefix = tokens(&device, 2)?;
+        let actual = cached.next_token_logits(&prefix, &new_audio, true)?;
+        let mut full = decoder(&device, DType::F32)?;
+        let expected = reference(&mut full, &prefix, &new_audio)?;
+        assert_logits(&actual, &expected, 1e-5)?;
+        let stale = reference(&mut full, &prefix, &old_audio)?;
+        assert!((&expected - stale)?.abs()?.max_all()?.to_scalar::<f32>()? > 1e-4);
+        assert_eq!(cached.cached_token_count, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_or_skipped_token_prefix_is_refused_without_mutating_cache() -> Result<()> {
+        let device = Device::Cpu;
+        let mut cached = decoder(&device, DType::F32)?;
+        let audio = audio(&device, DType::F32, 0.0)?;
+        cached.next_token_logits(&tokens(&device, 3)?, &audio, true)?;
+        for length in [2, 3, 5] {
+            assert!(
+                cached
+                    .next_token_logits(&tokens(&device, length)?, &audio, false)
+                    .is_err()
+            );
+            assert_eq!(cached.cached_token_count, 3);
+        }
+        let actual = cached.next_token_logits(&tokens(&device, 4)?, &audio, false)?;
+        let mut full = decoder(&device, DType::F32)?;
+        assert_logits(
+            &actual,
+            &reference(&mut full, &tokens(&device, 4)?, &audio)?,
+            1e-5,
+        )
+    }
+
+    #[test]
+    fn explicit_reset_clears_self_and_cross_attention() -> Result<()> {
+        let device = Device::Cpu;
+        let mut cached = decoder(&device, DType::F32)?;
+        cached.next_token_logits(
+            &tokens(&device, 3)?,
+            &audio(&device, DType::F32, 0.0)?,
+            true,
+        )?;
+        cached.reset_kv_cache();
+        assert_eq!(cached.cached_token_count, 0);
+        for block in &cached.blocks {
+            assert!(block.attn.kv_cache.is_none());
+            assert!(block.cross_attn.as_ref().unwrap().0.kv_cache.is_none());
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_half_incremental_logits_match_half_full_prefix() -> Result<()> {
+        compare_decode(&Device::new_metal(0)?, DType::F16, 0.02)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_half_logits_and_alignment_remain_close_to_float_reference() -> Result<()> {
+        let device = Device::new_metal(0)?;
+        let mut half = decoder(&device, DType::F16)?;
+        let mut float = decoder(&device, DType::F32)?;
+        let prefix = tokens(&device, 4)?;
+        let half_audio = audio(&device, DType::F16, 0.0)?;
+        let float_audio = audio(&device, DType::F32, 0.0)?;
+        let actual = half.next_token_logits(&prefix, &half_audio, true)?;
+        assert_logits(
+            &actual,
+            &reference(&mut float, &prefix, &float_audio)?,
+            0.02,
+        )?;
+        let heads = half.alignment_qk(&prefix, &half_audio, &[(0, 0)])?;
+        assert_eq!(heads[0].len(), 4);
+        assert_eq!(heads[0][0].len(), 5);
+        assert!(heads[0].iter().flatten().all(|v| v.is_finite()));
+        let resumed = half.next_token_logits(&prefix, &half_audio, true)?;
+        assert_logits(&resumed, &actual, 0.02)
+    }
 }

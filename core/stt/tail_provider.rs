@@ -250,6 +250,11 @@ pub struct TimedTailSegment {
     /// Phrase unless this pin was measured as a word.
     #[serde(default)]
     pub grain: TailSegmentGrain,
+    /// Per-word acoustic confidence from the producer that emitted this pin
+    /// (Whisper min subtoken logprob / vendor probability). `None` = the
+    /// producer supplied no metric (A6).
+    #[serde(default)]
+    pub confidence: Option<crate::pipeline::word_confidence::WordConfidence>,
 }
 
 /// Bounded, typed result returned by every provider incarnation.
@@ -484,6 +489,7 @@ impl InProcessTailProvider {
                             sample_end: request.range_end_for(source_end),
                         },
                         grain,
+                        confidence: segment.confidence,
                     })
                 })
                 .collect()
@@ -1319,6 +1325,8 @@ fn remote_phrase_segments(
                     sample_start,
                     sample_end: remote_sample_at(request, segment.end).max(sample_start),
                 },
+                // Remote phrase rows carry no per-word metric.
+                confidence: None,
             }
         })
         .collect()
@@ -1371,6 +1379,15 @@ fn remote_word_segments(
                     sample_start,
                     sample_end: remote_sample_at(request, word.end).max(sample_start),
                 },
+                // Vendor probability already validated finite by
+                // `remote_word_times_admissible`; absence stays `None` (A6).
+                confidence: word.probability.map(|probability| {
+                    crate::pipeline::word_confidence::WordConfidence::new(
+                        crate::pipeline::word_confidence::WordConfidenceSource::VendorWordProbability,
+                        probability,
+                        1,
+                    )
+                }),
             }
         })
         .collect()
@@ -1641,6 +1658,7 @@ mod tests {
         };
         let segments = vec![
             TimedTailSegment {
+                confidence: None,
                 grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "Iwo".into(),
                 range: TailSampleRange {
@@ -1649,6 +1667,7 @@ mod tests {
                 },
             },
             TimedTailSegment {
+                confidence: None,
                 grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "Iwo".into(),
                 range: TailSampleRange {
@@ -1674,6 +1693,7 @@ mod tests {
         };
         let segments = vec![
             TimedTailSegment {
+                confidence: None,
                 grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "pierwszy przebieg".into(),
                 range: TailSampleRange {
@@ -1683,6 +1703,7 @@ mod tests {
                 },
             },
             TimedTailSegment {
+                confidence: None,
                 grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "poprawiony przebieg".into(),
                 range: TailSampleRange {
@@ -1732,6 +1753,7 @@ mod tests {
         };
         let segments = vec![
             TimedTailSegment {
+                confidence: None,
                 grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "jeden".into(),
                 range: TailSampleRange {
@@ -1741,6 +1763,7 @@ mod tests {
                 },
             },
             TimedTailSegment {
+                confidence: None,
                 grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "dwa".into(),
                 range: TailSampleRange {
@@ -1772,6 +1795,7 @@ mod tests {
             identity: identity.clone(),
             text: "typed result".to_string(),
             segments: vec![TimedTailSegment {
+                confidence: None,
                 grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "typed".to_string(),
                 range: TailSampleRange {
@@ -1847,6 +1871,7 @@ mod tests {
             text: "dwa jeden".into(),
             segments: vec![
                 TimedTailSegment {
+                    confidence: None,
                     grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                     text: "dwa".into(),
                     range: TailSampleRange {
@@ -1856,6 +1881,7 @@ mod tests {
                     },
                 },
                 TimedTailSegment {
+                    confidence: None,
                     grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                     text: "jeden".into(),
                     range: TailSampleRange {
@@ -1964,6 +1990,7 @@ mod tests {
         sample_end: u64,
     ) -> TimedTailSegment {
         TimedTailSegment {
+            confidence: None,
             text: text.to_string(),
             grain,
             range: TailSampleRange {
@@ -2038,12 +2065,26 @@ mod tests {
         assert_eq!(response.compression_ratio, Some(1.25));
         let (segments, grain) = remote_tail_segments(&response, &request);
         assert_eq!(grain, TailSegmentGrain::Word);
+        // A6: vendor `probability` survives into the pin; absence stays None.
+        let vendor = |value: f32| {
+            Some(crate::pipeline::word_confidence::WordConfidence::new(
+                crate::pipeline::word_confidence::WordConfidenceSource::VendorWordProbability,
+                value,
+                1,
+            ))
+        };
         assert_eq!(
             segments,
             vec![
-                timed(&request, "raz", TailSegmentGrain::Word, 1_000, 5_000),
+                TimedTailSegment {
+                    confidence: vendor(0.5),
+                    ..timed(&request, "raz", TailSegmentGrain::Word, 1_000, 5_000)
+                },
                 timed(&request, "dwa", TailSegmentGrain::Word, 5_000, 9_000),
-                timed(&request, "koniec", TailSegmentGrain::Word, 9_000, 17_000),
+                TimedTailSegment {
+                    confidence: vendor(1.0),
+                    ..timed(&request, "koniec", TailSegmentGrain::Word, 9_000, 17_000)
+                },
             ]
         );
         TailProviderPayload {

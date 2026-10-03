@@ -1,13 +1,11 @@
 //! Transcription pipeline: the event contracts every stage speaks, the sinks
 //! that fan those events out to consumers, the acoustic ledger that records
-//! occurrence identity, highlight spans, and streaming session management.
+//! occurrence identity, and streaming session management.
 
 /// Acoustic occurrence identity, observation identity, and mutation receipts.
 pub mod acoustic_ledger;
 /// Event contracts: EngineEvent, sinks trait, and shared pipeline types.
 pub mod contracts;
-/// W13-6B overlay highlight layer (lexicon corrections + speech-gap pustki).
-pub mod highlight;
 /// Light+ — deterministic, idempotent sentence shaping (L2 floor, no LLM).
 pub mod light_plus;
 /// Local, observational word-slot evidence emitted only when an occurrence seals.
@@ -18,6 +16,10 @@ pub mod sinks;
 pub mod streaming;
 /// Take truth sidecar (`.truth.json`) — the schema-v2 observer contract.
 pub mod take_truth;
+/// Versioned diagnostic decision history, asynchronous persistence and replay.
+pub mod trail;
+/// Per-word acoustic confidence: raw engine evidence, per-source thresholds.
+pub mod word_confidence;
 
 // Re-export core event types for ergonomic access
 pub use contracts::{DropKind, EngineEvent, EventSink};

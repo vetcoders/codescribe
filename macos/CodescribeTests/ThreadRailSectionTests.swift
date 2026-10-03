@@ -39,6 +39,8 @@ final class ThreadRailSectionTests: XCTestCase {
   private var calendar: Calendar = {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(identifier: "UTC")!
+    // The rail takes month names and month/day order from the calendar's locale.
+    calendar.locale = Locale(identifier: "en_US")
     return calendar
   }()
 

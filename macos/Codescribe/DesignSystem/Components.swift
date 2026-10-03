@@ -328,7 +328,7 @@ struct Wordmark: View {
   var body: some View {
     HStack(spacing: 9) {
       ModeDot(color: dotColor, size: size * 0.6)
-      Text("codescribe")
+      Text(verbatim: "codescribe")
         .font(CSFont.ui(size, .bold))
         .tracking(-0.3)
         .foregroundStyle(CSColor.textHigh)

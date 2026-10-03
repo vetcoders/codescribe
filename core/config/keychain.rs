@@ -63,6 +63,13 @@ fn note_credential_acquisition(operation: &'static str) {
 
 /// Keychain service identity for every Codescribe generic-password item.
 const SERVICE: &str = "com.vetcoders.codescribe";
+
+/// Credential namespace sealed before the first engine credential lookup.
+pub fn credential_service() -> &'static str {
+    super::runtime_host::selected()
+        .map(|host| host.keychain_service.as_str())
+        .unwrap_or(SERVICE)
+}
 /// Account name of the single bundled secret item (all API keys together).
 const BUNDLE_ACCOUNT: &str = "codescribe_keychain_bundle_v1";
 
@@ -122,7 +129,7 @@ pub fn apply_key_moves(moves: &[KeyMove]) -> Result<usize> {
     );
     // Do not collapse denial/corruption into an empty bundle: that would erase
     // the durable retry intent. -25300 is Security.framework errSecItemNotFound.
-    let mut bundle = match get_generic_password(SERVICE, BUNDLE_ACCOUNT) {
+    let mut bundle = match get_generic_password(credential_service(), BUNDLE_ACCOUNT) {
         Ok(bytes) => decode_bundle(&bytes).context("Keychain bundle cannot be decoded")?,
         Err(error) if error.code() == -25300 => KeychainBundle::default(),
         Err(error) => return Err(error).context("Keychain relocation read failed"),
@@ -347,7 +354,7 @@ fn load_bundle() -> Option<KeychainBundle> {
     if let Some(bundle) = read_bundle_cache() {
         return Some(bundle);
     }
-    match get_generic_password(SERVICE, BUNDLE_ACCOUNT) {
+    match get_generic_password(credential_service(), BUNDLE_ACCOUNT) {
         Ok(bytes) => {
             let bundle = decode_bundle(&bytes);
             if bundle.is_some() {
@@ -370,7 +377,7 @@ fn load_bundle() -> Option<KeychainBundle> {
 fn save_bundle(bundle: &KeychainBundle) -> Result<()> {
     note_credential_acquisition("write bundle");
     let payload = encode_bundle(bundle)?;
-    set_generic_password(SERVICE, BUNDLE_ACCOUNT, &payload)
+    set_generic_password(credential_service(), BUNDLE_ACCOUNT, &payload)
         .with_context(|| "Failed to save Keychain bundle")?;
     write_bundle_cache(Some(bundle.clone()));
     Ok(())
@@ -391,15 +398,10 @@ fn is_test_env() -> bool {
     if cfg!(test) {
         return true;
     }
-    if let Ok(exe_path) = std::env::current_exe() {
-        let exe = exe_path.to_string_lossy();
-        if exe.contains("/target/debug/deps/")
-            || exe.contains("/target/release/deps/")
-            || exe.contains("\\target\\debug\\deps\\")
-            || exe.contains("\\target\\release\\deps\\")
-        {
-            return true;
-        }
+    if let Ok(exe_path) = std::env::current_exe()
+        && is_cargo_test_executable(&exe_path)
+    {
+        return true;
     }
     // app/* tests link codescribe-core as a dependency, so cfg!(test) is false there.
     // libtest sets RUST_TEST_THREADS for the harness process; use it as a
@@ -415,6 +417,21 @@ fn is_test_env() -> bool {
         std::env::var_os("CODESCRIBE_DATA_DIR").is_some(),
         std::env::var_os("CI").is_some(),
     )
+}
+
+/// True when `exe` is a cargo test binary: it sits in `<profile>/deps/`, the layout
+/// cargo writes for every test harness, whatever the target directory is called.
+///
+/// The fence used to require a literal `/target/debug/deps/`. On 2026-10-01 four
+/// worker worktrees shared `CARGO_TARGET_DIR=…/_shared-target`; the path then read
+/// `-target/debug/deps/`, an `app/*` test reached the real Keychain item and macOS
+/// asked the Founder for the login password on behalf of `codescribe-<hash>`.
+fn is_cargo_test_executable(exe: &std::path::Path) -> bool {
+    let mut parents = exe.ancestors().skip(1);
+    let deps = parents.next().and_then(|p| p.file_name());
+    let profile = parents.next().and_then(|p| p.file_name());
+    deps == Some(std::ffi::OsStr::new("deps"))
+        && profile.is_some_and(|name| name == "debug" || name == "release")
 }
 
 /// Pure Keychain-skip policy over explicit environment signals.
@@ -638,7 +655,7 @@ pub fn delete_key(account: &str) -> Result<()> {
     let mut bundle = load_bundle().unwrap_or_default();
     if bundle.keys.remove(account).is_some() {
         if bundle.keys.is_empty() {
-            match delete_generic_password(SERVICE, BUNDLE_ACCOUNT) {
+            match delete_generic_password(credential_service(), BUNDLE_ACCOUNT) {
                 Ok(()) => {
                     write_bundle_cache(None);
                     info!("Deleted Keychain bundle (last key removed)");
@@ -721,6 +738,33 @@ fn seed_bundle_env(bundle: &KeychainBundle, seed_process_env: bool) {
 /// Keychain bypass and runtime-key priority regressions (no live Keychain I/O).
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cargo_test_binaries_are_recognised_whatever_the_target_dir_is_called() {
+        use std::path::Path;
+        for test_binary in [
+            "/repo/target/debug/deps/codescribe-8f05f1ac863abf47",
+            "/w/2026_1001/_shared-target/debug/deps/codescribe-8f05f1ac863abf47",
+            "/w/target-integrate/release/deps/codescribe_core-0123",
+            "/w/target/aarch64-apple-darwin/debug/deps/codescribe-0123",
+        ] {
+            assert!(
+                super::is_cargo_test_executable(Path::new(test_binary)),
+                "{test_binary} is a cargo test binary"
+            );
+        }
+        for shipped in [
+            "/Applications/Codescribe.app/Contents/MacOS/Codescribe",
+            "/repo/target/debug/codescribe",
+            "/usr/local/bin/codescribe",
+            "/repo/deps/codescribe",
+        ] {
+            assert!(
+                !super::is_cargo_test_executable(Path::new(shipped)),
+                "{shipped} is not a test binary"
+            );
+        }
+    }
+
     #[test]
     #[serial_test::serial]
     fn failed_fan_out_write_preserves_source_and_existing_destinations() {

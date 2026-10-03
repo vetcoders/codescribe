@@ -64,15 +64,15 @@ not to crown either engine.
 2026-08-13/21 snapshots. Their state table is retained as archaeology, not as a
 queue for the lineage after executable cut `484095ce`.
 
-| Cut   | One line                                                                                                                                  | State                                                        |
-| ----- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| W13-0 | Clock falsification + frozen golden replay (171939 / 191351 / 193523)                                                                     | landed                                                       |
-| W13-1 | Inline-format buffer: sealed chunks stream to the formatting LLM during dictation (`previous_response_id` chain); stop pays only the tail | `[~]` in progress — `CODESCRIBE_INLINE_FORMAT` default OFF   |
-| W13-2 | Tail-patch behind a provider seam: local ws sidecar (default target), remote opt-in, in-process fallback                                  | landed OFF — 2A contract + 2B sidecar slot                   |
-| W13-3 | **Keystone**: time-pinned canvas — Silero-bounded utterances, words pinned to seconds, sealed ledger                                      | landed OFF — 3A provenance + 3B `CODESCRIBE_SILERO_FUSION=0` |
-| W13-4 | Gap-append dedup by time-span (shrinks to a corollary of W13-3) + in-span hallucination fence                                             | landed ON — PCM identity law; `=0` is diagnostic only        |
-| W13-5 | Capture-level receipt + Audio menu truth (level, device, quality)                                                                         | landed — WARN is non-terminal                                |
-| W13-6 | Lexicon gets a voice (Whisper `initial_prompt`, Apple `contextualStrings`) + word/gap highlighting feeding Teach                          | landed OFF — 6A voice + 6B `CODESCRIBE_OVERLAY_HIGHLIGHTS=0` |
+| Cut   | One line                                                                                                                                  | State                                                                                                                         |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| W13-0 | Clock falsification + frozen golden replay (171939 / 191351 / 193523)                                                                     | landed                                                                                                                        |
+| W13-1 | Inline-format buffer: sealed chunks stream to the formatting LLM during dictation (`previous_response_id` chain); stop pays only the tail | `[~]` in progress — `CODESCRIBE_INLINE_FORMAT` default OFF                                                                    |
+| W13-2 | Tail-patch behind a provider seam: local ws sidecar (default target), remote opt-in, in-process fallback                                  | landed OFF — 2A contract + 2B sidecar slot                                                                                    |
+| W13-3 | **Keystone**: time-pinned canvas — Silero-bounded utterances, words pinned to seconds, sealed ledger                                      | landed OFF — 3A provenance + 3B `CODESCRIBE_SILERO_FUSION=0`                                                                  |
+| W13-4 | Gap-append dedup by time-span (shrinks to a corollary of W13-3) + in-span hallucination fence                                             | landed ON — PCM identity law; `=0` is diagnostic only                                                                         |
+| W13-5 | Capture-level receipt + Audio menu truth (level, device, quality)                                                                         | landed — WARN is non-terminal                                                                                                 |
+| W13-6 | Lexicon gets a voice (Whisper `initial_prompt`, Apple `contextualStrings`) + word/gap highlighting feeding Teach                          | 6A voice landed; 6B highlight layer removed in A6 (d11) — never wired to Swift; the A6 reducer projection owns word spans now |
 
 **Current structural truth (2026-08-25, C11 working cut):**
 
@@ -547,7 +547,7 @@ The W13 close-the-gap machinery **already landed** in the settlement
 (`13b1eed8`). Its mutation lanes are fail-closed: Layer 1 itself and the
 **W13 flip flags**
 (`CODESCRIBE_SILERO_FUSION`, `CODESCRIBE_SPAN_IDEMPOTENCE`,
-`CODESCRIBE_OVERLAY_HIGHLIGHTS`, `CODESCRIBE_INLINE_FORMAT`) require explicit
+`CODESCRIBE_INLINE_FORMAT`) require explicit
 arming. Silero-boundary fusion (3B, synthetic starvation
 −67%), span idempotence (4), typed tail providers (2A/2B), and lexicon
 voice (6A) sit behind those OFF flags. "Catching up" is therefore not
@@ -583,4 +583,4 @@ de-risk recon with file:line evidence), the triple-agent feasibility
 study `rese-260813-190311-53919`, and the operator's engine doctrine as
 recorded in the session registry._
 
-𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI
+𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI

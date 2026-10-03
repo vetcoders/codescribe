@@ -690,6 +690,13 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
     func resolveToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool, remember: Bool)  -> Bool
 
     /**
+     * Run the same agent loop against the embedding editor's live document.
+     * Requires an explicit host identity; cannot inherit the desktop app's
+     * documents, credentials, tools, or conversation directory.
+     */
+    func streamDocument(text: String, threadId: String, document: CsDocumentToolHost, provider: CsDocumentProvider?, listener: CsAgentListener) async throws  -> String
+
+    /**
      * Stream one agent reply for `text` on the conversation identified by
      * `thread_id`, forwarding token/reasoning/tool events to `listener` as they
      * arrive. Returns the final assembled assistant text.
@@ -911,6 +918,28 @@ open func resolveToolApproval(sessionId: String, threadId: String, callId: Strin
         FfiConverterBool.lower(remember),$0
     )
 })
+}
+
+    /**
+     * Run the same agent loop against the embedding editor's live document.
+     * Requires an explicit host identity; cannot inherit the desktop app's
+     * documents, credentials, tools, or conversation directory.
+     */
+open func streamDocument(text: String, threadId: String, document: CsDocumentToolHost, provider: CsDocumentProvider?, listener: CsAgentListener)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribeagent_stream_document(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(text),FfiConverterString.lower(threadId),FfiConverterTypeCsDocumentToolHost_lower(document),FfiConverterOptionTypeCsDocumentProvider.lower(provider),FfiConverterTypeCsAgentListener_lower(listener)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
 }
 
     /**
@@ -1438,9 +1467,9 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func setAutoFormatLevel(level: String) throws  -> CsTrayToggles
 
     /**
-     * Persist Auto Paste and return the prompt-free post-write truth in one
-     * result. Callers may re-read `tray_toggles()` after an error; no optimistic
-     * bridge cache is retained.
+     * On/off switch over the same stored `paste_mode`, for binary surfaces
+     * (the overlay chip). Off stores `off`; on re-arms `safe` only when the
+     * mode is `off`, so an armed `comfort` choice survives a redundant on.
      */
     func setAutoPasteEnabled(enabled: Bool) throws  -> CsTrayToggles
 
@@ -1479,6 +1508,13 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
      * Persist the pin only on a changed user choice.
      */
     func setOverlayKeepVisibleBetweenTakes(enabled: Bool)  -> Bool
+
+    /**
+     * Persist the paste mode and return the prompt-free post-write truth in
+     * one result. Callers may re-read `tray_toggles()` after an error; no
+     * optimistic bridge cache is retained.
+     */
+    func setPasteMode(mode: CsPasteMode) throws  -> CsTrayToggles
 
     /**
      * Settings JSON belongs to the settings loader, not the app-data directory.
@@ -2070,9 +2106,9 @@ open func setAutoFormatLevel(level: String)throws  -> CsTrayToggles  {
 }
 
     /**
-     * Persist Auto Paste and return the prompt-free post-write truth in one
-     * result. Callers may re-read `tray_toggles()` after an error; no optimistic
-     * bridge cache is retained.
+     * On/off switch over the same stored `paste_mode`, for binary surfaces
+     * (the overlay chip). Off stores `off`; on re-arms `safe` only when the
+     * mode is `off`, so an armed `comfort` choice survives a redundant on.
      */
 open func setAutoPasteEnabled(enabled: Bool)throws  -> CsTrayToggles  {
     return try  FfiConverterTypeCsTrayToggles_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
@@ -2161,6 +2197,20 @@ open func setOverlayKeepVisibleBetweenTakes(enabled: Bool) -> Bool  {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_set_overlay_keep_visible_between_takes(
             self.uniffiCloneHandle(),
         FfiConverterBool.lower(enabled),$0
+    )
+})
+}
+
+    /**
+     * Persist the paste mode and return the prompt-free post-write truth in
+     * one result. Callers may re-read `tray_toggles()` after an error; no
+     * optimistic bridge cache is retained.
+     */
+open func setPasteMode(mode: CsPasteMode)throws  -> CsTrayToggles  {
+    return try  FfiConverterTypeCsTrayToggles_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_set_paste_mode(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCsPasteMode_lower(mode),$0
     )
 })
 }
@@ -2388,6 +2438,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func cancelVoiceTurn(threadId: String)  -> Bool
 
     /**
+     * Roster snapshot for the overlay popover: every bound digit, open or
+     * closed, with follower liveness (fresh lease heartbeat). Display-only.
+     */
+    func channelRosterSnapshot() async  -> [CsChannelRosterState]
+
+    /**
      * Format one exact terminal reducer revision through the production Rust
      * formatter and commit the applied result as a provenance-bearing ledger
      * revision. Failure is returned to Swift without publishing any evidence.
@@ -2574,6 +2630,13 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func setModeBinding(mode: CsWorkMode, binding: CsShortcutBinding) throws
 
     /**
+     * Install the host on-device formatter (bootstrap; re-register replaces).
+     * Selection stays with the engine: the formatter only runs when the
+     * `CODESCRIBE_FORMAT_ON_DEVICE` knob picks the on-device lane.
+     */
+    func setOnDeviceFormatter(formatter: CsOnDeviceFormatter)
+
+    /**
      * Start or replace the process-global hotkey listener.
      */
     func start() async throws
@@ -2628,6 +2691,13 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func stopRecording() async throws
 
     /**
+     * Toggle the per-digit agent channel — the exact engine entry ctrl+N
+     * uses. A roster click is a channel toggle only: it never starts,
+     * resumes, or resurrects an agent session (Founder veto, 2026-09-30).
+     */
+    func toggleAgentChannel(digit: UInt8) async throws
+
+    /**
      * Explicit file consumers use `hq:` / `cloud:` prefixes to pick the pass.
      * Bare paths are a Full HQ file pass; daily Overlay never calls this API.
      */
@@ -2646,6 +2716,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * entries.
      */
     func validateBindings(candidate: [CsModeBinding])  -> [CsHotkeyConflict]
+
+    /**
+     * Export one word's PCM from the retained take audio as a temp WAV clip
+     * with `pad_ms` of context on both sides (the overlay plays it back).
+     */
+    func wordAudioClip(sessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, padMs: UInt32) throws  -> String
 
 }
 /**
@@ -2809,6 +2885,28 @@ open func cancelVoiceTurn(threadId: String) -> Bool  {
         FfiConverterString.lower(threadId),$0
     )
 })
+}
+
+    /**
+     * Roster snapshot for the overlay popover: every bound digit, open or
+     * closed, with follower liveness (fresh lease heartbeat). Display-only.
+     */
+open func channelRosterSnapshot()async  -> [CsChannelRosterState]  {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_channel_roster_snapshot(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeCsChannelRosterState.lift,
+            errorHandler: nil
+
+        )
 }
 
     /**
@@ -3329,6 +3427,19 @@ open func setModeBinding(mode: CsWorkMode, binding: CsShortcutBinding)throws   {
 }
 
     /**
+     * Install the host on-device formatter (bootstrap; re-register replaces).
+     * Selection stays with the engine: the formatter only runs when the
+     * `CODESCRIBE_FORMAT_ON_DEVICE` knob picks the on-device lane.
+     */
+open func setOnDeviceFormatter(formatter: CsOnDeviceFormatter)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribehotkeys_set_on_device_formatter(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCsOnDeviceFormatter_lower(formatter),$0
+    )
+}
+}
+
+    /**
      * Start or replace the process-global hotkey listener.
      */
 open func start()async throws   {
@@ -3478,6 +3589,28 @@ open func stopRecording()async throws   {
 }
 
     /**
+     * Toggle the per-digit agent channel — the exact engine entry ctrl+N
+     * uses. A roster click is a channel toggle only: it never starts,
+     * resumes, or resurrects an agent session (Founder veto, 2026-09-30).
+     */
+open func toggleAgentChannel(digit: UInt8)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_toggle_agent_channel(
+                    self.uniffiCloneHandle(),
+                    FfiConverterUInt8.lower(digit)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_void,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_void,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
      * Explicit file consumers use `hq:` / `cloud:` prefixes to pick the pass.
      * Bare paths are a Full HQ file pass; daily Overlay never calls this API.
      */
@@ -3530,6 +3663,23 @@ open func validateBindings(candidate: [CsModeBinding]) -> [CsHotkeyConflict]  {
     uniffi_codescribe_ffi_fn_method_codescribehotkeys_validate_bindings(
             self.uniffiCloneHandle(),
         FfiConverterSequenceTypeCsModeBinding.lower(candidate),$0
+    )
+})
+}
+
+    /**
+     * Export one word's PCM from the retained take audio as a temp WAV clip
+     * with `pad_ms` of context on both sides (the overlay plays it back).
+     */
+open func wordAudioClip(sessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, padMs: UInt32)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribehotkeys_word_audio_clip(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sessionId),
+        FfiConverterUInt64.lower(captureEpoch),
+        FfiConverterUInt64.lower(sampleStart),
+        FfiConverterUInt64.lower(sampleEnd),
+        FfiConverterUInt32.lower(padMs),$0
     )
 })
 }
@@ -5881,6 +6031,427 @@ public func FfiConverterTypeCsAppActionListener_lower(_ value: CsAppActionListen
 
 
 /**
+ * The embedding editor owns buffer identity, revision checks and undo. No
+ * filesystem or desktop focus is used to discover the document being edited.
+ */
+public protocol CsDocumentToolHost: AnyObject, Sendable {
+
+    func isActive()  -> Bool
+
+    func execute(name: String, argumentsJson: String) throws  -> String
+
+}
+/**
+ * The embedding editor owns buffer identity, revision checks and undo. No
+ * filesystem or desktop focus is used to discover the document being edited.
+ */
+open class CsDocumentToolHostImpl: CsDocumentToolHost, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_codescribe_ffi_fn_clone_csdocumenttoolhost(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        try! rustCall { uniffi_codescribe_ffi_fn_free_csdocumenttoolhost(handle, $0) }
+    }
+
+
+
+
+open func isActive() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csdocumenttoolhost_is_active(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+open func execute(name: String, argumentsJson: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_csdocumenttoolhost_execute(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),
+        FfiConverterString.lower(argumentsJson),$0
+    )
+})
+}
+
+
+
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceCsDocumentToolHost {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceCsDocumentToolHost] = [UniffiVTableCallbackInterfaceCsDocumentToolHost(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeCsDocumentToolHost.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface CsDocumentToolHost: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeCsDocumentToolHost.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface CsDocumentToolHost: handle missing in uniffiClone")
+            }
+        },
+        isActive: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutablePointer<Int8>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> Bool in
+                guard let uniffiObj = try? FfiConverterTypeCsDocumentToolHost.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.isActive(
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterBool.lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        execute: { (
+            uniffiHandle: UInt64,
+            name: RustBuffer,
+            argumentsJson: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> String in
+                guard let uniffiObj = try? FfiConverterTypeCsDocumentToolHost.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.execute(
+                     name: try FfiConverterString.lift(name),
+                     argumentsJson: try FfiConverterString.lift(argumentsJson)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterString.lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeCsError_lower
+            )
+        }
+    )]
+}
+
+private func uniffiCallbackInitCsDocumentToolHost() {
+    uniffi_codescribe_ffi_fn_init_callback_vtable_csdocumenttoolhost(UniffiCallbackInterfaceCsDocumentToolHost.vtable)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDocumentToolHost: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<CsDocumentToolHost>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = CsDocumentToolHost
+
+    public static func lift(_ handle: UInt64) throws -> CsDocumentToolHost {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return CsDocumentToolHostImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: CsDocumentToolHost) -> UInt64 {
+         if let rustImpl = value as? CsDocumentToolHostImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDocumentToolHost {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: CsDocumentToolHost, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentToolHost_lift(_ handle: UInt64) throws -> CsDocumentToolHost {
+    return try FfiConverterTypeCsDocumentToolHost.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentToolHost_lower(_ value: CsDocumentToolHost) -> UInt64 {
+    return FfiConverterTypeCsDocumentToolHost.lower(value)
+}
+
+
+
+
+
+
+/**
+ * Foreign capability: format `user_message` under the sealed `instructions`
+ * on the device model. Swift receives the sealed prompt VERBATIM as the
+ * session instructions and must not amend it (operator-owned prompt).
+ */
+public protocol CsOnDeviceFormatter: AnyObject, Sendable {
+
+    func format(instructions: String, userMessage: String)  -> CsOnDeviceFormatOutcome
+
+}
+/**
+ * Foreign capability: format `user_message` under the sealed `instructions`
+ * on the device model. Swift receives the sealed prompt VERBATIM as the
+ * session instructions and must not amend it (operator-owned prompt).
+ */
+open class CsOnDeviceFormatterImpl: CsOnDeviceFormatter, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_codescribe_ffi_fn_clone_csondeviceformatter(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        try! rustCall { uniffi_codescribe_ffi_fn_free_csondeviceformatter(handle, $0) }
+    }
+
+
+
+
+open func format(instructions: String, userMessage: String) -> CsOnDeviceFormatOutcome  {
+    return try!  FfiConverterTypeCsOnDeviceFormatOutcome_lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csondeviceformatter_format(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(instructions),
+        FfiConverterString.lower(userMessage),$0
+    )
+})
+}
+
+
+
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceCsOnDeviceFormatter {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceCsOnDeviceFormatter] = [UniffiVTableCallbackInterfaceCsOnDeviceFormatter(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeCsOnDeviceFormatter.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface CsOnDeviceFormatter: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeCsOnDeviceFormatter.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface CsOnDeviceFormatter: handle missing in uniffiClone")
+            }
+        },
+        format: { (
+            uniffiHandle: UInt64,
+            instructions: RustBuffer,
+            userMessage: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> CsOnDeviceFormatOutcome in
+                guard let uniffiObj = try? FfiConverterTypeCsOnDeviceFormatter.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.format(
+                     instructions: try FfiConverterString.lift(instructions),
+                     userMessage: try FfiConverterString.lift(userMessage)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeCsOnDeviceFormatOutcome_lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )]
+}
+
+private func uniffiCallbackInitCsOnDeviceFormatter() {
+    uniffi_codescribe_ffi_fn_init_callback_vtable_csondeviceformatter(UniffiCallbackInterfaceCsOnDeviceFormatter.vtable)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsOnDeviceFormatter: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<CsOnDeviceFormatter>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = CsOnDeviceFormatter
+
+    public static func lift(_ handle: UInt64) throws -> CsOnDeviceFormatter {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return CsOnDeviceFormatterImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: CsOnDeviceFormatter) -> UInt64 {
+         if let rustImpl = value as? CsOnDeviceFormatterImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsOnDeviceFormatter {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: CsOnDeviceFormatter, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOnDeviceFormatter_lift(_ handle: UInt64) throws -> CsOnDeviceFormatter {
+    return try FfiConverterTypeCsOnDeviceFormatter.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOnDeviceFormatter_lower(_ value: CsOnDeviceFormatter) -> UInt64 {
+    return FfiConverterTypeCsOnDeviceFormatter.lower(value)
+}
+
+
+
+
+
+
+/**
  * Foreign callback trait — dictation events forwarded to Swift.
  *
  * `on_transcript_projection` is the sole transcript callback. Raw preview,
@@ -7943,6 +8514,90 @@ public func FfiConverterTypeCsCaptureHandle_lower(_ value: CsCaptureHandle) -> R
 
 
 /**
+ * One overlay roster row: per-digit channel state plus follower liveness
+ * from the session bridge. Closed bound digits appear with `open: false`.
+ */
+public struct CsChannelRosterState: Equatable, Hashable {
+    public var channel: String
+    public var audience: String
+    public var `open`: Bool
+    public var loud: Bool
+    /**
+     * Milliseconds since the Unix epoch; `None` when no autoseal is armed.
+     */
+    public var autosealDeadlineUnixMs: Int64?
+    /**
+     * `None` = the snapshot made no liveness claim for this row.
+     */
+    public var followerAlive: Bool?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(channel: String, audience: String, `open`: Bool, loud: Bool,
+        /**
+         * Milliseconds since the Unix epoch; `None` when no autoseal is armed.
+         */autosealDeadlineUnixMs: Int64?,
+        /**
+         * `None` = the snapshot made no liveness claim for this row.
+         */followerAlive: Bool?) {
+        self.channel = channel
+        self.audience = audience
+        self.`open` = `open`
+        self.loud = loud
+        self.autosealDeadlineUnixMs = autosealDeadlineUnixMs
+        self.followerAlive = followerAlive
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsChannelRosterState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsChannelRosterState {
+        return
+            try CsChannelRosterState(
+                channel: FfiConverterString.read(from: &buf),
+                audience: FfiConverterString.read(from: &buf),
+                open: FfiConverterBool.read(from: &buf),
+                loud: FfiConverterBool.read(from: &buf),
+                autosealDeadlineUnixMs: FfiConverterOptionInt64.read(from: &buf),
+                followerAlive: FfiConverterOptionBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsChannelRosterState, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.channel, into: &buf)
+        FfiConverterString.write(value.audience, into: &buf)
+        FfiConverterBool.write(value.`open`, into: &buf)
+        FfiConverterBool.write(value.loud, into: &buf)
+        FfiConverterOptionInt64.write(value.autosealDeadlineUnixMs, into: &buf)
+        FfiConverterOptionBool.write(value.followerAlive, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsChannelRosterState_lift(_ buf: RustBuffer) throws -> CsChannelRosterState {
+    return try FfiConverterTypeCsChannelRosterState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsChannelRosterState_lower(_ value: CsChannelRosterState) -> RustBuffer {
+    return FfiConverterTypeCsChannelRosterState.lower(value)
+}
+
+
+/**
  * Capture-bound ephemeral paint. No document or delivery mutation is exposed.
  */
 public struct CsCompactProjection: Equatable, Hashable {
@@ -8256,6 +8911,85 @@ public func FfiConverterTypeCsDictionaryTeachResult_lower(_ value: CsDictionaryT
 }
 
 
+/**
+ * One content change between the raw STT text and the human-edited text.
+ */
+public struct CsDiffSpan: Equatable, Hashable {
+    public var raw: String
+    public var edited: String
+    public var tier: CsDiffTier
+    public var contextBefore: String
+    public var contextAfter: String
+    /**
+     * PCM occurrence identity pinned to this span's words — `None` until cut
+     * A6/T attaches per-word PCM identity to quality records.
+     */
+    public var occurrenceRef: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(raw: String, edited: String, tier: CsDiffTier, contextBefore: String, contextAfter: String,
+        /**
+         * PCM occurrence identity pinned to this span's words — `None` until cut
+         * A6/T attaches per-word PCM identity to quality records.
+         */occurrenceRef: String?) {
+        self.raw = raw
+        self.edited = edited
+        self.tier = tier
+        self.contextBefore = contextBefore
+        self.contextAfter = contextAfter
+        self.occurrenceRef = occurrenceRef
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsDiffSpan: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDiffSpan: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDiffSpan {
+        return
+            try CsDiffSpan(
+                raw: FfiConverterString.read(from: &buf),
+                edited: FfiConverterString.read(from: &buf),
+                tier: FfiConverterTypeCsDiffTier.read(from: &buf),
+                contextBefore: FfiConverterString.read(from: &buf),
+                contextAfter: FfiConverterString.read(from: &buf),
+                occurrenceRef: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsDiffSpan, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.raw, into: &buf)
+        FfiConverterString.write(value.edited, into: &buf)
+        FfiConverterTypeCsDiffTier.write(value.tier, into: &buf)
+        FfiConverterString.write(value.contextBefore, into: &buf)
+        FfiConverterString.write(value.contextAfter, into: &buf)
+        FfiConverterOptionString.write(value.occurrenceRef, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDiffSpan_lift(_ buf: RustBuffer) throws -> CsDiffSpan {
+    return try FfiConverterTypeCsDiffSpan.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDiffSpan_lower(_ value: CsDiffSpan) -> RustBuffer {
+    return FfiConverterTypeCsDiffSpan.lower(value)
+}
+
+
 public struct CsDocumentHistoryEntry: Equatable, Hashable {
     public var revision: UInt64
     public var renderedText: String
@@ -8313,6 +9047,70 @@ public func FfiConverterTypeCsDocumentHistoryEntry_lift(_ buf: RustBuffer) throw
 #endif
 public func FfiConverterTypeCsDocumentHistoryEntry_lower(_ value: CsDocumentHistoryEntry) -> RustBuffer {
     return FfiConverterTypeCsDocumentHistoryEntry.lower(value)
+}
+
+
+/**
+ * Explicit API configuration owned by the embedding application. Omit it only
+ * when using an account authenticated in that application's runtime profile.
+ */
+public struct CsDocumentProvider: Equatable, Hashable {
+    public var wire: String
+    public var endpoint: String
+    public var model: String
+    public var apiKey: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(wire: String, endpoint: String, model: String, apiKey: String) {
+        self.wire = wire
+        self.endpoint = endpoint
+        self.model = model
+        self.apiKey = apiKey
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsDocumentProvider: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDocumentProvider: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDocumentProvider {
+        return
+            try CsDocumentProvider(
+                wire: FfiConverterString.read(from: &buf),
+                endpoint: FfiConverterString.read(from: &buf),
+                model: FfiConverterString.read(from: &buf),
+                apiKey: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsDocumentProvider, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.wire, into: &buf)
+        FfiConverterString.write(value.endpoint, into: &buf)
+        FfiConverterString.write(value.model, into: &buf)
+        FfiConverterString.write(value.apiKey, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentProvider_lift(_ buf: RustBuffer) throws -> CsDocumentProvider {
+    return try FfiConverterTypeCsDocumentProvider.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentProvider_lower(_ value: CsDocumentProvider) -> RustBuffer {
+    return FfiConverterTypeCsDocumentProvider.lower(value)
 }
 
 
@@ -9804,94 +10602,6 @@ public func FfiConverterTypeCsOverlayCorrectionInput_lower(_ value: CsOverlayCor
 
 
 /**
- * Span-based canvas highlight. Sample fields are the 3A PCM identity;
- * char offsets are the Swift adapter onto already-committed utterance text.
- */
-public struct CsOverlayHighlight: Equatable, Hashable {
-    public var kind: CsOverlayHighlightKind
-    public var utteranceId: UInt64
-    public var charStart: UInt64
-    public var charEnd: UInt64
-    public var session: String
-    public var captureEpoch: UInt64
-    public var sampleStart: UInt64
-    public var sampleEnd: UInt64
-    public var before: String
-    public var after: String
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(kind: CsOverlayHighlightKind, utteranceId: UInt64, charStart: UInt64, charEnd: UInt64, session: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, before: String, after: String) {
-        self.kind = kind
-        self.utteranceId = utteranceId
-        self.charStart = charStart
-        self.charEnd = charEnd
-        self.session = session
-        self.captureEpoch = captureEpoch
-        self.sampleStart = sampleStart
-        self.sampleEnd = sampleEnd
-        self.before = before
-        self.after = after
-    }
-
-
-}
-
-#if compiler(>=6)
-extension CsOverlayHighlight: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCsOverlayHighlight: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsOverlayHighlight {
-        return
-            try CsOverlayHighlight(
-                kind: FfiConverterTypeCsOverlayHighlightKind.read(from: &buf),
-                utteranceId: FfiConverterUInt64.read(from: &buf),
-                charStart: FfiConverterUInt64.read(from: &buf),
-                charEnd: FfiConverterUInt64.read(from: &buf),
-                session: FfiConverterString.read(from: &buf),
-                captureEpoch: FfiConverterUInt64.read(from: &buf),
-                sampleStart: FfiConverterUInt64.read(from: &buf),
-                sampleEnd: FfiConverterUInt64.read(from: &buf),
-                before: FfiConverterString.read(from: &buf),
-                after: FfiConverterString.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CsOverlayHighlight, into buf: inout [UInt8]) {
-        FfiConverterTypeCsOverlayHighlightKind.write(value.kind, into: &buf)
-        FfiConverterUInt64.write(value.utteranceId, into: &buf)
-        FfiConverterUInt64.write(value.charStart, into: &buf)
-        FfiConverterUInt64.write(value.charEnd, into: &buf)
-        FfiConverterString.write(value.session, into: &buf)
-        FfiConverterUInt64.write(value.captureEpoch, into: &buf)
-        FfiConverterUInt64.write(value.sampleStart, into: &buf)
-        FfiConverterUInt64.write(value.sampleEnd, into: &buf)
-        FfiConverterString.write(value.before, into: &buf)
-        FfiConverterString.write(value.after, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsOverlayHighlight_lift(_ buf: RustBuffer) throws -> CsOverlayHighlight {
-    return try FfiConverterTypeCsOverlayHighlight.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsOverlayHighlight_lower(_ value: CsOverlayHighlight) -> RustBuffer {
-    return FfiConverterTypeCsOverlayHighlight.lower(value)
-}
-
-
-/**
  * Full delivery truth for one overlay Insert, including the app names observed
  * at the exact delivery boundary and the Paste Here shortcut (or the reason it
  * was unavailable), so Swift can explain any degradation instead of guessing.
@@ -10554,6 +11264,7 @@ public func FfiConverterTypeCsProjectedSealCoverageRange_lower(_ value: CsProjec
 
 public struct CsProjectedSealCoverageReceipt: Equatable, Hashable {
     public var status: CsSealCoverageStatus
+    public var sampleRateHz: UInt32?
     public var unavailableReason: CsCoverageUnavailableReason?
     public var speechSamples: UInt64
     public var coveredSamples: UInt64
@@ -10567,8 +11278,9 @@ public struct CsProjectedSealCoverageReceipt: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(status: CsSealCoverageStatus, unavailableReason: CsCoverageUnavailableReason?, speechSamples: UInt64, coveredSamples: UInt64, uncoveredSpeechRanges: [CsProjectedSealCoverageRange], maxUncoveredSamples: UInt64, incompleteThresholdSamples: UInt64, speechProducer: String, availability: String, observedSamples: UInt64?, coverageRatio: Double?) {
+    public init(status: CsSealCoverageStatus, sampleRateHz: UInt32?, unavailableReason: CsCoverageUnavailableReason?, speechSamples: UInt64, coveredSamples: UInt64, uncoveredSpeechRanges: [CsProjectedSealCoverageRange], maxUncoveredSamples: UInt64, incompleteThresholdSamples: UInt64, speechProducer: String, availability: String, observedSamples: UInt64?, coverageRatio: Double?) {
         self.status = status
+        self.sampleRateHz = sampleRateHz
         self.unavailableReason = unavailableReason
         self.speechSamples = speechSamples
         self.coveredSamples = coveredSamples
@@ -10596,6 +11308,7 @@ public struct FfiConverterTypeCsProjectedSealCoverageReceipt: FfiConverterRustBu
         return
             try CsProjectedSealCoverageReceipt(
                 status: FfiConverterTypeCsSealCoverageStatus.read(from: &buf),
+                sampleRateHz: FfiConverterOptionUInt32.read(from: &buf),
                 unavailableReason: FfiConverterOptionTypeCsCoverageUnavailableReason.read(from: &buf),
                 speechSamples: FfiConverterUInt64.read(from: &buf),
                 coveredSamples: FfiConverterUInt64.read(from: &buf),
@@ -10611,6 +11324,7 @@ public struct FfiConverterTypeCsProjectedSealCoverageReceipt: FfiConverterRustBu
 
     public static func write(_ value: CsProjectedSealCoverageReceipt, into buf: inout [UInt8]) {
         FfiConverterTypeCsSealCoverageStatus.write(value.status, into: &buf)
+        FfiConverterOptionUInt32.write(value.sampleRateHz, into: &buf)
         FfiConverterOptionTypeCsCoverageUnavailableReason.write(value.unavailableReason, into: &buf)
         FfiConverterUInt64.write(value.speechSamples, into: &buf)
         FfiConverterUInt64.write(value.coveredSamples, into: &buf)
@@ -10899,6 +11613,63 @@ public func FfiConverterTypeCsQualityCommitResult_lower(_ value: CsQualityCommit
 
 
 /**
+ * Dictionary listing over the bridge: real corrections plus the count of
+ * takes that changed nothing and recorded no telemetry (Founder report
+ * 2026-09-30 — whole untouched takes padded the corrections list).
+ */
+public struct CsQualityListing: Equatable, Hashable {
+    public var records: [CsQualityRecord]
+    public var unchangedTakes: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(records: [CsQualityRecord], unchangedTakes: UInt64) {
+        self.records = records
+        self.unchangedTakes = unchangedTakes
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsQualityListing: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsQualityListing: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsQualityListing {
+        return
+            try CsQualityListing(
+                records: FfiConverterSequenceTypeCsQualityRecord.read(from: &buf),
+                unchangedTakes: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsQualityListing, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeCsQualityRecord.write(value.records, into: &buf)
+        FfiConverterUInt64.write(value.unchangedTakes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsQualityListing_lift(_ buf: RustBuffer) throws -> CsQualityListing {
+    return try FfiConverterTypeCsQualityListing.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsQualityListing_lower(_ value: CsQualityListing) -> RustBuffer {
+    return FfiConverterTypeCsQualityListing.lower(value)
+}
+
+
+/**
  * UI-safe projection of a persisted overlay correction.
  */
 public struct CsQualityRecord: Equatable, Hashable {
@@ -11054,6 +11825,66 @@ public func FfiConverterTypeCsResetPreview_lower(_ value: CsResetPreview) -> Rus
 
 
 /**
+ * A target canonical term the user may want to teach, backed by repeated raw
+ * variants across corrections.
+ */
+public struct CsRuleCandidate: Equatable, Hashable {
+    public var target: String
+    public var variants: [String]
+    public var occurrences: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(target: String, variants: [String], occurrences: UInt64) {
+        self.target = target
+        self.variants = variants
+        self.occurrences = occurrences
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsRuleCandidate: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsRuleCandidate: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsRuleCandidate {
+        return
+            try CsRuleCandidate(
+                target: FfiConverterString.read(from: &buf),
+                variants: FfiConverterSequenceString.read(from: &buf),
+                occurrences: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsRuleCandidate, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.target, into: &buf)
+        FfiConverterSequenceString.write(value.variants, into: &buf)
+        FfiConverterUInt64.write(value.occurrences, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsRuleCandidate_lift(_ buf: RustBuffer) throws -> CsRuleCandidate {
+    return try FfiConverterTypeCsRuleCandidate.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsRuleCandidate_lower(_ value: CsRuleCandidate) -> RustBuffer {
+    return FfiConverterTypeCsRuleCandidate.lower(value)
+}
+
+
+/**
  * Complete canonical projection for one sealed LLM lane. Credentials never cross the
  * bridge: only the owning account name and presence/auth booleans are exposed.
  */
@@ -11166,6 +11997,11 @@ public struct CsSettings: Equatable, Hashable {
      * `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
      */
     public var whisperContextWindowSec: Float
+    public var whisperAdaptiveBuffer: Bool
+    /**
+     * `CODESCRIBE_FORMAT_ON_DEVICE`: Apple system model formats first.
+     */
+    public var formatOnDevice: Bool
     public var lightPlusSentencePauseSec: Float
     /**
      * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
@@ -11189,6 +12025,10 @@ public struct CsSettings: Equatable, Hashable {
     public var middleMouseActsAsFn: Bool
     public var whisperLanguage: CsLanguage
     public var aiFormattingEnabled: Bool
+    /**
+     * Automatic paste policy (`PASTE_MODE`). Written back via `update_config`.
+     */
+    public var pasteMode: CsPasteMode
     /**
      * `TranscriptSendMode::as_str()` — `"end_of_utterance"` / `"streaming"`.
      */
@@ -11279,7 +12119,10 @@ public struct CsSettings: Equatable, Hashable {
          */holdArmModifier: String, holdStartDelayMs: UInt64, doubleTapIntervalMs: UInt64, toggleSilenceSec: Float,
         /**
          * `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
-         */whisperContextWindowSec: Float, lightPlusSentencePauseSec: Float,
+         */whisperContextWindowSec: Float, whisperAdaptiveBuffer: Bool,
+        /**
+         * `CODESCRIBE_FORMAT_ON_DEVICE`: Apple system model formats first.
+         */formatOnDevice: Bool, lightPlusSentencePauseSec: Float,
         /**
          * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
          * from the canonical merged config snapshot. `"disabled"` is the
@@ -11296,6 +12139,9 @@ public struct CsSettings: Equatable, Hashable {
          * Middle mouse button follows Fn press/release. Default off.
          * The tap stays listen-only, so the click still reaches the frontmost app.
          */middleMouseActsAsFn: Bool, whisperLanguage: CsLanguage, aiFormattingEnabled: Bool,
+        /**
+         * Automatic paste policy (`PASTE_MODE`). Written back via `update_config`.
+         */pasteMode: CsPasteMode,
         /**
          * `TranscriptSendMode::as_str()` — `"end_of_utterance"` / `"streaming"`.
          */transcriptSendMode: String, transcriptTaggingEnabled: Bool, transcriptTagTemplate: String, aiMaxTokens: Int32, aiAssistiveMaxTokens: Int32, showTrayGlyph: Bool, showDockIcon: Bool, transcriptionOverlayEnabled: Bool, holdIndicator: Bool, holdBadgeSize: UInt32, holdBadgeOffsetX: Int32, holdBadgeOffsetY: Int32,
@@ -11335,6 +12181,8 @@ public struct CsSettings: Equatable, Hashable {
         self.doubleTapIntervalMs = doubleTapIntervalMs
         self.toggleSilenceSec = toggleSilenceSec
         self.whisperContextWindowSec = whisperContextWindowSec
+        self.whisperAdaptiveBuffer = whisperAdaptiveBuffer
+        self.formatOnDevice = formatOnDevice
         self.lightPlusSentencePauseSec = lightPlusSentencePauseSec
         self.deferredInsertShortcut = deferredInsertShortcut
         self.channelModifier = channelModifier
@@ -11342,6 +12190,7 @@ public struct CsSettings: Equatable, Hashable {
         self.middleMouseActsAsFn = middleMouseActsAsFn
         self.whisperLanguage = whisperLanguage
         self.aiFormattingEnabled = aiFormattingEnabled
+        self.pasteMode = pasteMode
         self.transcriptSendMode = transcriptSendMode
         self.transcriptTaggingEnabled = transcriptTaggingEnabled
         self.transcriptTagTemplate = transcriptTagTemplate
@@ -11412,6 +12261,8 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 doubleTapIntervalMs: FfiConverterUInt64.read(from: &buf),
                 toggleSilenceSec: FfiConverterFloat.read(from: &buf),
                 whisperContextWindowSec: FfiConverterFloat.read(from: &buf),
+                whisperAdaptiveBuffer: FfiConverterBool.read(from: &buf),
+                formatOnDevice: FfiConverterBool.read(from: &buf),
                 lightPlusSentencePauseSec: FfiConverterFloat.read(from: &buf),
                 deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 channelModifier: FfiConverterString.read(from: &buf),
@@ -11419,6 +12270,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 middleMouseActsAsFn: FfiConverterBool.read(from: &buf),
                 whisperLanguage: FfiConverterTypeCsLanguage.read(from: &buf),
                 aiFormattingEnabled: FfiConverterBool.read(from: &buf),
+                pasteMode: FfiConverterTypeCsPasteMode.read(from: &buf),
                 transcriptSendMode: FfiConverterString.read(from: &buf),
                 transcriptTaggingEnabled: FfiConverterBool.read(from: &buf),
                 transcriptTagTemplate: FfiConverterString.read(from: &buf),
@@ -11477,6 +12329,8 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.doubleTapIntervalMs, into: &buf)
         FfiConverterFloat.write(value.toggleSilenceSec, into: &buf)
         FfiConverterFloat.write(value.whisperContextWindowSec, into: &buf)
+        FfiConverterBool.write(value.whisperAdaptiveBuffer, into: &buf)
+        FfiConverterBool.write(value.formatOnDevice, into: &buf)
         FfiConverterFloat.write(value.lightPlusSentencePauseSec, into: &buf)
         FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterString.write(value.channelModifier, into: &buf)
@@ -11484,6 +12338,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterBool.write(value.middleMouseActsAsFn, into: &buf)
         FfiConverterTypeCsLanguage.write(value.whisperLanguage, into: &buf)
         FfiConverterBool.write(value.aiFormattingEnabled, into: &buf)
+        FfiConverterTypeCsPasteMode.write(value.pasteMode, into: &buf)
         FfiConverterString.write(value.transcriptSendMode, into: &buf)
         FfiConverterBool.write(value.transcriptTaggingEnabled, into: &buf)
         FfiConverterString.write(value.transcriptTagTemplate, into: &buf)
@@ -12103,62 +12958,6 @@ public func FfiConverterTypeCsThreadSummary_lower(_ value: CsThreadSummary) -> R
 
 
 /**
- * Typed carrier for future per-token confidence (W11-C spike; unused by UI yet).
- * Wire is present so W12 overlay "yellow words" can land without another bridge reshape.
- */
-public struct CsTokenConfidence: Equatable, Hashable {
-    public var token: String
-    public var logprob: Float
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(token: String, logprob: Float) {
-        self.token = token
-        self.logprob = logprob
-    }
-
-
-}
-
-#if compiler(>=6)
-extension CsTokenConfidence: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCsTokenConfidence: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsTokenConfidence {
-        return
-            try CsTokenConfidence(
-                token: FfiConverterString.read(from: &buf),
-                logprob: FfiConverterFloat.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CsTokenConfidence, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.token, into: &buf)
-        FfiConverterFloat.write(value.logprob, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsTokenConfidence_lift(_ buf: RustBuffer) throws -> CsTokenConfidence {
-    return try FfiConverterTypeCsTokenConfidence.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsTokenConfidence_lower(_ value: CsTokenConfidence) -> RustBuffer {
-    return FfiConverterTypeCsTokenConfidence.lower(value)
-}
-
-
-/**
  * Cumulative token accounting for a thread. Mirrors `TokenUsage`
  * (`thread_store.rs:105`).
  */
@@ -12560,6 +13359,12 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
     public var acousticReceipts: [CsProjectedAcousticReceipt]
     public var sealCoverage: CsProjectedSealCoverageReceipt?
     public var consultationPresentations: [CsProjectedConsultationPresentation]
+    /**
+     * A6 uncertain-word spans over `rendered_text` (UTF-16 ranges), computed
+     * by the reducer from ledger-pinned per-word confidence. Empty until the
+     * per-source thresholds classify words; never synthesized on Swift.
+     */
+    public var uncertainSpans: [CsUncertainSpan]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -12577,7 +13382,12 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
          * Controller-owned delivery disposition, forwarded verbatim. Swift branches
          * on this typed state; the human-facing `label` above stays presentation and
          * never carries control meaning.
-         */delivery: CsTranscriptDelivery, acousticReceipts: [CsProjectedAcousticReceipt], sealCoverage: CsProjectedSealCoverageReceipt?, consultationPresentations: [CsProjectedConsultationPresentation]) {
+         */delivery: CsTranscriptDelivery, acousticReceipts: [CsProjectedAcousticReceipt], sealCoverage: CsProjectedSealCoverageReceipt?, consultationPresentations: [CsProjectedConsultationPresentation],
+        /**
+         * A6 uncertain-word spans over `rendered_text` (UTF-16 ranges), computed
+         * by the reducer from ledger-pinned per-word confidence. Empty until the
+         * per-source thresholds classify words; never synthesized on Swift.
+         */uncertainSpans: [CsUncertainSpan]) {
         self.schema = schema
         self.sequence = sequence
         self.emittedAt = emittedAt
@@ -12606,6 +13416,7 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
         self.acousticReceipts = acousticReceipts
         self.sealCoverage = sealCoverage
         self.consultationPresentations = consultationPresentations
+        self.uncertainSpans = uncertainSpans
     }
 
 
@@ -12649,7 +13460,8 @@ public struct FfiConverterTypeCsTranscriptProjectionEvent: FfiConverterRustBuffe
                 delivery: FfiConverterTypeCsTranscriptDelivery.read(from: &buf),
                 acousticReceipts: FfiConverterSequenceTypeCsProjectedAcousticReceipt.read(from: &buf),
                 sealCoverage: FfiConverterOptionTypeCsProjectedSealCoverageReceipt.read(from: &buf),
-                consultationPresentations: FfiConverterSequenceTypeCsProjectedConsultationPresentation.read(from: &buf)
+                consultationPresentations: FfiConverterSequenceTypeCsProjectedConsultationPresentation.read(from: &buf),
+                uncertainSpans: FfiConverterSequenceTypeCsUncertainSpan.read(from: &buf)
         )
     }
 
@@ -12682,6 +13494,7 @@ public struct FfiConverterTypeCsTranscriptProjectionEvent: FfiConverterRustBuffe
         FfiConverterSequenceTypeCsProjectedAcousticReceipt.write(value.acousticReceipts, into: &buf)
         FfiConverterOptionTypeCsProjectedSealCoverageReceipt.write(value.sealCoverage, into: &buf)
         FfiConverterSequenceTypeCsProjectedConsultationPresentation.write(value.consultationPresentations, into: &buf)
+        FfiConverterSequenceTypeCsUncertainSpan.write(value.uncertainSpans, into: &buf)
     }
 }
 
@@ -12776,19 +13589,15 @@ public struct CsTrayStatusPayload: Equatable, Hashable {
     public var tone: CsTrayStatusTone
     public var indicatorMode: CsIndicatorMode
     public var assistive: Bool
-    public var tooltip: String
-    public var menuLabel: String
     public var generation: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(kind: CsTrayStatusKind, tone: CsTrayStatusTone, indicatorMode: CsIndicatorMode, assistive: Bool, tooltip: String, menuLabel: String, generation: UInt64) {
+    public init(kind: CsTrayStatusKind, tone: CsTrayStatusTone, indicatorMode: CsIndicatorMode, assistive: Bool, generation: UInt64) {
         self.kind = kind
         self.tone = tone
         self.indicatorMode = indicatorMode
         self.assistive = assistive
-        self.tooltip = tooltip
-        self.menuLabel = menuLabel
         self.generation = generation
     }
 
@@ -12810,8 +13619,6 @@ public struct FfiConverterTypeCsTrayStatusPayload: FfiConverterRustBuffer {
                 tone: FfiConverterTypeCsTrayStatusTone.read(from: &buf),
                 indicatorMode: FfiConverterTypeCsIndicatorMode.read(from: &buf),
                 assistive: FfiConverterBool.read(from: &buf),
-                tooltip: FfiConverterString.read(from: &buf),
-                menuLabel: FfiConverterString.read(from: &buf),
                 generation: FfiConverterUInt64.read(from: &buf)
         )
     }
@@ -12821,8 +13628,6 @@ public struct FfiConverterTypeCsTrayStatusPayload: FfiConverterRustBuffer {
         FfiConverterTypeCsTrayStatusTone.write(value.tone, into: &buf)
         FfiConverterTypeCsIndicatorMode.write(value.indicatorMode, into: &buf)
         FfiConverterBool.write(value.assistive, into: &buf)
-        FfiConverterString.write(value.tooltip, into: &buf)
-        FfiConverterString.write(value.menuLabel, into: &buf)
         FfiConverterUInt64.write(value.generation, into: &buf)
     }
 }
@@ -12851,8 +13656,13 @@ public struct CsTrayToggles: Equatable, Hashable {
     public var showDockIcon: Bool
     public var transcriptionOverlayEnabled: Bool
     /**
-     * User-owned automatic delivery policy. Assistive and controller safety
-     * vetoes can still prevent a paste for a particular recording.
+     * User-owned automatic paste policy. Assistive and controller safety
+     * vetoes can still prevent or hold a paste for a particular recording.
+     */
+    public var pasteMode: CsPasteMode
+    /**
+     * Read-only projection `paste_mode != off` for binary on/off surfaces.
+     * Never persisted; `paste_mode` is the one stored choice.
      */
     public var autoPasteEnabled: Bool
     /**
@@ -12881,8 +13691,12 @@ public struct CsTrayToggles: Equatable, Hashable {
     // declare one manually.
     public init(showDockIcon: Bool, transcriptionOverlayEnabled: Bool,
         /**
-         * User-owned automatic delivery policy. Assistive and controller safety
-         * vetoes can still prevent a paste for a particular recording.
+         * User-owned automatic paste policy. Assistive and controller safety
+         * vetoes can still prevent or hold a paste for a particular recording.
+         */pasteMode: CsPasteMode,
+        /**
+         * Read-only projection `paste_mode != off` for binary on/off surfaces.
+         * Never persisted; `paste_mode` is the one stored choice.
          */autoPasteEnabled: Bool,
         /**
          * Normalized automatic formatting policy: off, correction, smart, or max.
@@ -12902,6 +13716,7 @@ public struct CsTrayToggles: Equatable, Hashable {
          */holdBadgeSize: UInt32) {
         self.showDockIcon = showDockIcon
         self.transcriptionOverlayEnabled = transcriptionOverlayEnabled
+        self.pasteMode = pasteMode
         self.autoPasteEnabled = autoPasteEnabled
         self.formattingLevel = formattingLevel
         self.startAssistive = startAssistive
@@ -12926,6 +13741,7 @@ public struct FfiConverterTypeCsTrayToggles: FfiConverterRustBuffer {
             try CsTrayToggles(
                 showDockIcon: FfiConverterBool.read(from: &buf),
                 transcriptionOverlayEnabled: FfiConverterBool.read(from: &buf),
+                pasteMode: FfiConverterTypeCsPasteMode.read(from: &buf),
                 autoPasteEnabled: FfiConverterBool.read(from: &buf),
                 formattingLevel: FfiConverterString.read(from: &buf),
                 startAssistive: FfiConverterBool.read(from: &buf),
@@ -12938,6 +13754,7 @@ public struct FfiConverterTypeCsTrayToggles: FfiConverterRustBuffer {
     public static func write(_ value: CsTrayToggles, into buf: inout [UInt8]) {
         FfiConverterBool.write(value.showDockIcon, into: &buf)
         FfiConverterBool.write(value.transcriptionOverlayEnabled, into: &buf)
+        FfiConverterTypeCsPasteMode.write(value.pasteMode, into: &buf)
         FfiConverterBool.write(value.autoPasteEnabled, into: &buf)
         FfiConverterString.write(value.formattingLevel, into: &buf)
         FfiConverterBool.write(value.startAssistive, into: &buf)
@@ -13024,6 +13841,124 @@ public func FfiConverterTypeCsUnanchoredEvidence_lift(_ buf: RustBuffer) throws 
 #endif
 public func FfiConverterTypeCsUnanchoredEvidence_lower(_ value: CsUnanchoredEvidence) -> RustBuffer {
     return FfiConverterTypeCsUnanchoredEvidence.lower(value)
+}
+
+
+/**
+ * A6: one uncertain word located in the projected `rendered_text`. Identity
+ * is the physical occurrence + the slot's PCM range, never the word text.
+ * `utf16_start`/`utf16_end` are NSRange-ready against the same revision's
+ * `rendered_text`.
+ */
+public struct CsUncertainSpan: Equatable, Hashable {
+    public var occurrenceSessionId: String
+    public var occurrenceCaptureEpoch: UInt64
+    public var slotSampleStart: UInt64
+    public var slotSampleEnd: UInt64
+    public var utf16Start: UInt32
+    public var utf16End: UInt32
+    /**
+     * `whisper_token_logprob` | `apple_segment_confidence` |
+     * `vendor_word_probability` — scales are incomparable across sources.
+     */
+    public var source: String
+    /**
+     * Raw source-scale value (Whisper: logprob; Apple/vendor: probability).
+     */
+    public var value: Float
+    /**
+     * Live lexicon rewrote this word's surface; the value describes the
+     * heard audio (d5). Renderers mark lexicon, not uncertainty, for these.
+     */
+    public var surfaceRewritten: Bool
+    /**
+     * `whisper` | `cloud_live` (d7: only these producers paint live).
+     */
+    public var producer: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(occurrenceSessionId: String, occurrenceCaptureEpoch: UInt64, slotSampleStart: UInt64, slotSampleEnd: UInt64, utf16Start: UInt32, utf16End: UInt32,
+        /**
+         * `whisper_token_logprob` | `apple_segment_confidence` |
+         * `vendor_word_probability` — scales are incomparable across sources.
+         */source: String,
+        /**
+         * Raw source-scale value (Whisper: logprob; Apple/vendor: probability).
+         */value: Float,
+        /**
+         * Live lexicon rewrote this word's surface; the value describes the
+         * heard audio (d5). Renderers mark lexicon, not uncertainty, for these.
+         */surfaceRewritten: Bool,
+        /**
+         * `whisper` | `cloud_live` (d7: only these producers paint live).
+         */producer: String) {
+        self.occurrenceSessionId = occurrenceSessionId
+        self.occurrenceCaptureEpoch = occurrenceCaptureEpoch
+        self.slotSampleStart = slotSampleStart
+        self.slotSampleEnd = slotSampleEnd
+        self.utf16Start = utf16Start
+        self.utf16End = utf16End
+        self.source = source
+        self.value = value
+        self.surfaceRewritten = surfaceRewritten
+        self.producer = producer
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsUncertainSpan: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsUncertainSpan: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsUncertainSpan {
+        return
+            try CsUncertainSpan(
+                occurrenceSessionId: FfiConverterString.read(from: &buf),
+                occurrenceCaptureEpoch: FfiConverterUInt64.read(from: &buf),
+                slotSampleStart: FfiConverterUInt64.read(from: &buf),
+                slotSampleEnd: FfiConverterUInt64.read(from: &buf),
+                utf16Start: FfiConverterUInt32.read(from: &buf),
+                utf16End: FfiConverterUInt32.read(from: &buf),
+                source: FfiConverterString.read(from: &buf),
+                value: FfiConverterFloat.read(from: &buf),
+                surfaceRewritten: FfiConverterBool.read(from: &buf),
+                producer: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsUncertainSpan, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.occurrenceSessionId, into: &buf)
+        FfiConverterUInt64.write(value.occurrenceCaptureEpoch, into: &buf)
+        FfiConverterUInt64.write(value.slotSampleStart, into: &buf)
+        FfiConverterUInt64.write(value.slotSampleEnd, into: &buf)
+        FfiConverterUInt32.write(value.utf16Start, into: &buf)
+        FfiConverterUInt32.write(value.utf16End, into: &buf)
+        FfiConverterString.write(value.source, into: &buf)
+        FfiConverterFloat.write(value.value, into: &buf)
+        FfiConverterBool.write(value.surfaceRewritten, into: &buf)
+        FfiConverterString.write(value.producer, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsUncertainSpan_lift(_ buf: RustBuffer) throws -> CsUncertainSpan {
+    return try FfiConverterTypeCsUncertainSpan.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsUncertainSpan_lower(_ value: CsUncertainSpan) -> RustBuffer {
+    return FfiConverterTypeCsUncertainSpan.lower(value)
 }
 
 
@@ -13556,6 +14491,95 @@ public func FfiConverterTypeCsCoverageUnavailableReason_lift(_ buf: RustBuffer) 
 #endif
 public func FfiConverterTypeCsCoverageUnavailableReason_lower(_ value: CsCoverageUnavailableReason) -> RustBuffer {
     return FfiConverterTypeCsCoverageUnavailableReason.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Classification of one changed span.
+ */
+
+public enum CsDiffTier: Equatable, Hashable {
+
+    case vocabulary
+    case casing
+    case punctuation
+    case insert
+    case delete
+
+
+
+}
+
+#if compiler(>=6)
+extension CsDiffTier: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDiffTier: FfiConverterRustBuffer {
+    typealias SwiftType = CsDiffTier
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDiffTier {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .vocabulary
+
+        case 2: return .casing
+
+        case 3: return .punctuation
+
+        case 4: return .insert
+
+        case 5: return .delete
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsDiffTier, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .vocabulary:
+            writeInt(&buf, Int32(1))
+
+
+        case .casing:
+            writeInt(&buf, Int32(2))
+
+
+        case .punctuation:
+            writeInt(&buf, Int32(3))
+
+
+        case .insert:
+            writeInt(&buf, Int32(4))
+
+
+        case .delete:
+            writeInt(&buf, Int32(5))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDiffTier_lift(_ buf: RustBuffer) throws -> CsDiffTier {
+    return try FfiConverterTypeCsDiffTier.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDiffTier_lower(_ value: CsDiffTier) -> RustBuffer {
+    return FfiConverterTypeCsDiffTier.lower(value)
 }
 
 
@@ -14194,51 +15218,116 @@ public func FfiConverterTypeCsMcpRowTone_lower(_ value: CsMcpRowTone) -> RustBuf
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
- * W13-6B highlight kind. Stringly so Swift can switch without another enum
- * reshape if a third kind appears.
+ * Outcome of one host formatting attempt. Error kinds mirror the SDK 27
+ * `LanguageModelError` cases the engine logs distinctly; every error falls
+ * back to the configured cloud lane.
  */
 
-public enum CsOverlayHighlightKind: Equatable, Hashable {
+public enum CsOnDeviceFormatOutcome: Equatable, Hashable {
 
-    case lexiconCorrected
-    case speechGap
+    /**
+     * The model produced formatted text.
+     */
+    case formatted(text: String
+    )
+    /**
+     * Model or Apple Intelligence unavailable (`availability != available`).
+     */
+    case unavailable(message: String
+    )
+    /**
+     * `unsupportedLanguageOrLocale`.
+     */
+    case unsupportedLanguage(message: String
+    )
+    /**
+     * `refusal` or `guardrailViolation`.
+     */
+    case refused(message: String
+    )
+    /**
+     * `contextSizeExceeded` — the take does not fit the 8k window.
+     */
+    case contextExceeded(message: String
+    )
+    /**
+     * Anything else (timeout, rate limit, unexpected error).
+     */
+    case failed(message: String
+    )
 
 
 
 }
 
 #if compiler(>=6)
-extension CsOverlayHighlightKind: Sendable {}
+extension CsOnDeviceFormatOutcome: Sendable {}
 #endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeCsOverlayHighlightKind: FfiConverterRustBuffer {
-    typealias SwiftType = CsOverlayHighlightKind
+public struct FfiConverterTypeCsOnDeviceFormatOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = CsOnDeviceFormatOutcome
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsOverlayHighlightKind {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsOnDeviceFormatOutcome {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        case 1: return .lexiconCorrected
+        case 1: return .formatted(text: try FfiConverterString.read(from: &buf)
+        )
 
-        case 2: return .speechGap
+        case 2: return .unavailable(message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 3: return .unsupportedLanguage(message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 4: return .refused(message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 5: return .contextExceeded(message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 6: return .failed(message: try FfiConverterString.read(from: &buf)
+        )
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
-    public static func write(_ value: CsOverlayHighlightKind, into buf: inout [UInt8]) {
+    public static func write(_ value: CsOnDeviceFormatOutcome, into buf: inout [UInt8]) {
         switch value {
 
 
-        case .lexiconCorrected:
+        case let .formatted(text):
             writeInt(&buf, Int32(1))
+            FfiConverterString.write(text, into: &buf)
 
 
-        case .speechGap:
+        case let .unavailable(message):
             writeInt(&buf, Int32(2))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .unsupportedLanguage(message):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .refused(message):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .contextExceeded(message):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .failed(message):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(message, into: &buf)
 
         }
     }
@@ -14248,15 +15337,101 @@ public struct FfiConverterTypeCsOverlayHighlightKind: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeCsOverlayHighlightKind_lift(_ buf: RustBuffer) throws -> CsOverlayHighlightKind {
-    return try FfiConverterTypeCsOverlayHighlightKind.lift(buf)
+public func FfiConverterTypeCsOnDeviceFormatOutcome_lift(_ buf: RustBuffer) throws -> CsOnDeviceFormatOutcome {
+    return try FfiConverterTypeCsOnDeviceFormatOutcome.lift(buf)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeCsOverlayHighlightKind_lower(_ value: CsOverlayHighlightKind) -> RustBuffer {
-    return FfiConverterTypeCsOverlayHighlightKind.lower(value)
+public func FfiConverterTypeCsOnDeviceFormatOutcome_lower(_ value: CsOnDeviceFormatOutcome) -> RustBuffer {
+    return FfiConverterTypeCsOnDeviceFormatOutcome.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Automatic paste policy (`PASTE_MODE`), one-to-one with core [`PasteMode`].
+ */
+
+public enum CsPasteMode: Equatable, Hashable {
+
+    /**
+     * Paste only into a focused, editable, non-password field; terminals
+     * only past the executable-content guard. Otherwise held on the clipboard.
+     */
+    case safe
+    /**
+     * Paste wherever the caret is, terminals included; password fields and
+     * the terminal guard still hold.
+     */
+    case comfort
+    /**
+     * Never paste automatically.
+     */
+    case off
+
+
+
+}
+
+#if compiler(>=6)
+extension CsPasteMode: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsPasteMode: FfiConverterRustBuffer {
+    typealias SwiftType = CsPasteMode
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsPasteMode {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .safe
+
+        case 2: return .comfort
+
+        case 3: return .off
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsPasteMode, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .safe:
+            writeInt(&buf, Int32(1))
+
+
+        case .comfort:
+            writeInt(&buf, Int32(2))
+
+
+        case .off:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsPasteMode_lift(_ buf: RustBuffer) throws -> CsPasteMode {
+    return try FfiConverterTypeCsPasteMode.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsPasteMode_lower(_ value: CsPasteMode) -> RustBuffer {
+    return FfiConverterTypeCsPasteMode.lower(value)
 }
 
 
@@ -15211,6 +16386,30 @@ fileprivate struct FfiConverterOptionDouble: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionBool: FfiConverterRustBuffer {
+    typealias SwiftType = Bool?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterBool.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterBool.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
     typealias SwiftType = String?
 
@@ -15251,6 +16450,30 @@ fileprivate struct FfiConverterOptionTypeCsWhisperDownloadListener: FfiConverter
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeCsWhisperDownloadListener.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCsDocumentProvider: FfiConverterRustBuffer {
+    typealias SwiftType = CsDocumentProvider?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCsDocumentProvider.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCsDocumentProvider.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -15527,6 +16750,31 @@ fileprivate struct FfiConverterSequenceTypeCsCapabilityRow: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCsChannelRosterState: FfiConverterRustBuffer {
+    typealias SwiftType = [CsChannelRosterState]
+
+    public static func write(_ value: [CsChannelRosterState], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsChannelRosterState.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsChannelRosterState] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsChannelRosterState]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsChannelRosterState.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCsConfigEntry: FfiConverterRustBuffer {
     typealias SwiftType = [CsConfigEntry]
 
@@ -15544,6 +16792,31 @@ fileprivate struct FfiConverterSequenceTypeCsConfigEntry: FfiConverterRustBuffer
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeCsConfigEntry.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCsDiffSpan: FfiConverterRustBuffer {
+    typealias SwiftType = [CsDiffSpan]
+
+    public static func write(_ value: [CsDiffSpan], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsDiffSpan.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsDiffSpan] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsDiffSpan]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsDiffSpan.read(from: &buf))
         }
         return seq
     }
@@ -15952,6 +17225,31 @@ fileprivate struct FfiConverterSequenceTypeCsQualityRecord: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCsRuleCandidate: FfiConverterRustBuffer {
+    typealias SwiftType = [CsRuleCandidate]
+
+    public static func write(_ value: [CsRuleCandidate], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsRuleCandidate.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsRuleCandidate] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsRuleCandidate]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsRuleCandidate.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCsSttLane: FfiConverterRustBuffer {
     typealias SwiftType = [CsSttLane]
 
@@ -16152,6 +17450,31 @@ fileprivate struct FfiConverterSequenceTypeCsUnanchoredEvidence: FfiConverterRus
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCsUncertainSpan: FfiConverterRustBuffer {
+    typealias SwiftType = [CsUncertainSpan]
+
+    public static func write(_ value: [CsUncertainSpan], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsUncertainSpan.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsUncertainSpan] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsUncertainSpan]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsUncertainSpan.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCsLlmLane: FfiConverterRustBuffer {
     typealias SwiftType = [CsLlmLane]
 
@@ -16267,6 +17590,17 @@ public func configRepairSummary() -> String?  {
 })
 }
 /**
+ * Seal the embedding application's state and credential identity before any
+ * config, agent, account or recording handle is constructed.
+ */
+public func configureEmbeddedRuntime(dataDirectory: String, keychainService: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_configure_embedded_runtime(
+        FfiConverterString.lower(dataDirectory),
+        FfiConverterString.lower(keychainService),$0
+    )
+}
+}
+/**
  * Snapshot the last serving verdict, if any stop completed in this process.
  * `None` renders as "Not yet served" Swift-side.
  */
@@ -16344,11 +17678,13 @@ public func modelDirectories()throws  -> [CsModelDirectory]  {
 })
 }
 /**
- * W13-6B lane flag. Default OFF. Read-only; no permission prompt.
+ * Tiered word-level diff between the raw STT text and the human-edited text.
  */
-public func overlayHighlightsEnabled() -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
-    uniffi_codescribe_ffi_fn_func_overlay_highlights_enabled($0
+public func qualityDiffSpans(raw: String, edited: String) -> [CsDiffSpan]  {
+    return try!  FfiConverterSequenceTypeCsDiffSpan.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_quality_diff_spans(
+        FfiConverterString.lower(raw),
+        FfiConverterString.lower(edited),$0
     )
 })
 }
@@ -16365,13 +17701,25 @@ public func qualityFinalizeCorrection(correctionId: String, canonical: String)th
 })
 }
 /**
- * Read the newest persisted corrections, newest first. Missing storage is an
- * empty list; genuine I/O failures cross the bridge as a quality error.
+ * Read the newest persisted corrections, newest first, with the
+ * unchanged-take count alongside. Missing storage is an empty listing;
+ * genuine I/O failures cross the bridge as a quality error.
  */
-public func qualityRecentRecords(limit: UInt64)throws  -> [CsQualityRecord]  {
-    return try  FfiConverterSequenceTypeCsQualityRecord.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
-    uniffi_codescribe_ffi_fn_func_quality_recent_records(
+public func qualityRecentListing(limit: UInt64)throws  -> CsQualityListing  {
+    return try  FfiConverterTypeCsQualityListing_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_quality_recent_listing(
         FfiConverterUInt64.lower(limit),$0
+    )
+})
+}
+/**
+ * Mine repeated vocabulary corrections into dictionary-rule candidates.
+ * Targets already present in the dictionary are excluded.
+ */
+public func qualityRuleCandidates(minOccurrences: UInt64)throws  -> [CsRuleCandidate]  {
+    return try  FfiConverterSequenceTypeCsRuleCandidate.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_quality_rule_candidates(
+        FfiConverterUInt64.lower(minOccurrences),$0
     )
 })
 }
@@ -16412,6 +17760,17 @@ public func removeModelDirectory(name: String)throws   {try rustCallWithError(Ff
 public func requestMicPermission() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_func_request_mic_permission($0
+    )
+})
+}
+/**
+ * Swift checks the developer/Lab gate before entering this blocking worker.
+ * The executable is resolved beside the host app, never from URL input or PATH.
+ */
+public func runVocabularyAb(sample: UInt32)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_run_vocabulary_ab(
+        FfiConverterUInt32.lower(sample),$0
     )
 })
 }
@@ -16518,6 +17877,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_config_repair_summary() != 26554) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_configure_embedded_runtime() != 38648) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_current_serving_verdict() != 14135) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -16539,13 +17901,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_model_directories() != 32805) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_overlay_highlights_enabled() != 21886) {
+    if (uniffi_codescribe_ffi_checksum_func_quality_diff_spans() != 11032) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_quality_finalize_correction() != 53355) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_quality_recent_records() != 51586) {
+    if (uniffi_codescribe_ffi_checksum_func_quality_recent_listing() != 34225) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_quality_rule_candidates() != 65230) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_quality_teach_dictionary_from_store() != 46244) {
@@ -16558,6 +17923,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_request_mic_permission() != 61967) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_run_vocabulary_ab() != 12817) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_runtime_llm_lane() != 23153) {
@@ -16600,6 +17968,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_resolve_tool_approval() != 55035) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_document() != 12706) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_reply() != 57150) {
@@ -16734,7 +18105,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_auto_format_level() != 8217) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_auto_paste_enabled() != 24726) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_auto_paste_enabled() != 24266) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_formatting_prompt() != 21880) {
@@ -16756,6 +18127,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_overlay_keep_visible_between_takes() != 23903) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_paste_mode() != 45447) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_settings_file_path() != 60048) {
@@ -16801,6 +18175,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_cancel_voice_turn() != 32656) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_channel_roster_snapshot() != 39720) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_commit_formatter_revision() != 59971) {
@@ -16890,6 +18267,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_mode_binding() != 13711) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_on_device_formatter() != 41290) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start() != 63389) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -16911,6 +18291,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_stop_recording() != 38552) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_toggle_agent_channel() != 29288) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_transcribe_file() != 1637) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -16918,6 +18301,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_validate_bindings() != 29971) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_word_audio_clip() != 51086) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_add_server() != 12098) {
@@ -17064,6 +18450,15 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_max_approvals_changed() != 29603) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_csdocumenttoolhost_is_active() != 53329) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_csdocumenttoolhost_execute() != 56439) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_csondeviceformatter_format() != 2611) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_transcript_projection() != 430) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -17137,6 +18532,8 @@ private let initializationResult: InitializationResult = {
     uniffiCallbackInitCsAgentDeliveryListener()
     uniffiCallbackInitCsAgentListener()
     uniffiCallbackInitCsAppActionListener()
+    uniffiCallbackInitCsDocumentToolHost()
+    uniffiCallbackInitCsOnDeviceFormatter()
     uniffiCallbackInitCsTranscriptionListener()
     uniffiCallbackInitCsTrayStatusListener()
     uniffiCallbackInitCsWhisperDownloadListener()

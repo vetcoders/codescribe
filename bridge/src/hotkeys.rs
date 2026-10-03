@@ -1043,6 +1043,25 @@ impl CodescribeHotkeys {
         crate::recording::session_audio_path(&session_id)
     }
 
+    /// Export one word's PCM from the retained take audio as a temp WAV clip
+    /// with `pad_ms` of context on both sides (the overlay plays it back).
+    pub fn word_audio_clip(
+        &self,
+        session_id: String,
+        capture_epoch: u64,
+        sample_start: u64,
+        sample_end: u64,
+        pad_ms: u32,
+    ) -> Result<String, CsError> {
+        crate::recording::word_audio_clip(
+            &session_id,
+            capture_epoch,
+            sample_start,
+            sample_end,
+            pad_ms,
+        )
+    }
+
     /// Stop the active legacy-controller recording flow, if one is live.
     pub async fn stop_recording(&self) -> Result<(), CsError> {
         application_runtime::run(async move {
@@ -1468,6 +1487,73 @@ impl CodescribeHotkeys {
     /// so the next assistive turn mints a fresh one.
     pub fn set_assistive_target_thread(&self, backend_id: Option<String>) {
         codescribe::controller::set_assistive_target_thread(backend_id);
+    }
+}
+
+/// One overlay roster row: per-digit channel state plus follower liveness
+/// from the session bridge. Closed bound digits appear with `open: false`.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsChannelRosterState {
+    pub channel: String,
+    pub audience: String,
+    pub open: bool,
+    pub loud: bool,
+    /// Milliseconds since the Unix epoch; `None` when no autoseal is armed.
+    pub autoseal_deadline_unix_ms: Option<i64>,
+    /// `None` = the snapshot made no liveness claim for this row.
+    pub follower_alive: Option<bool>,
+}
+
+#[uniffi::export]
+impl CodescribeHotkeys {
+    /// Toggle the per-digit agent channel — the exact engine entry ctrl+N
+    /// uses. A roster click is a channel toggle only: it never starts,
+    /// resumes, or resurrects an agent session (Founder veto, 2026-09-30).
+    pub async fn toggle_agent_channel(&self, digit: u8) -> Result<(), CsError> {
+        application_runtime::run(async move {
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "channel toggle unavailable: recording controller not started yet"
+                        .to_string(),
+                })?;
+            controller
+                .toggle_agent_channel(digit)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
+    /// Roster snapshot for the overlay popover: every bound digit, open or
+    /// closed, with follower liveness (fresh lease heartbeat). Display-only.
+    pub async fn channel_roster_snapshot(&self) -> Vec<CsChannelRosterState> {
+        application_runtime::run(async move {
+            let Some(controller) = current_controller(&shared_controller()) else {
+                return Vec::new();
+            };
+            controller
+                .channel_roster_states()
+                .await
+                .into_iter()
+                .map(|state| CsChannelRosterState {
+                    channel: state.channel,
+                    audience: state.audience,
+                    open: state.open,
+                    loud: state.loud,
+                    autoseal_deadline_unix_ms: state.autoseal_deadline.and_then(|deadline| {
+                        deadline
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|since| since.as_millis() as i64)
+                    }),
+                    follower_alive: state.follower_alive,
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
     }
 }
 

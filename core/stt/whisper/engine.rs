@@ -19,7 +19,7 @@ use flate2::write::GzEncoder;
 use rand::RngExt;
 
 use candle_core::safetensors::Load;
-use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_core::{DType, Device, Tensor};
 use candle_transformers::models::whisper::{self as whisper, Config};
 use ndarray::Array2;
 use ndarray_npy::ReadNpyExt;
@@ -378,6 +378,10 @@ pub struct LocalWhisperEngine {
     /// clone either.
     capture_word_alignment: bool,
     captured_tokens: Vec<u32>,
+    /// Per-token logprob parallel to `captured_tokens` (no EOT entry), kept
+    /// only for the L1 tail decode so word pins can carry per-word
+    /// confidence (A6).
+    captured_token_logprobs: Vec<f32>,
     captured_encoder: Option<Tensor>,
     captured_sample_len: usize,
 }
@@ -529,6 +533,7 @@ impl LocalWhisperEngine {
             alignment_heads,
             capture_word_alignment: false,
             captured_tokens: Vec::new(),
+            captured_token_logprobs: Vec::new(),
             captured_encoder: None,
             captured_sample_len: 0,
         })
@@ -594,6 +599,7 @@ impl LocalWhisperEngine {
             alignment_heads,
             capture_word_alignment: false,
             captured_tokens: Vec::new(),
+            captured_token_logprobs: Vec::new(),
             captured_encoder: None,
             captured_sample_len: 0,
         })
@@ -629,7 +635,8 @@ impl LocalWhisperEngine {
         self.transcribe_file_with_language_observed(path, language, options, &mut |_| Ok(()))
     }
 
-    /// Observe admitted segments after each window, before decoding the next.
+    /// Observe settled segments after each window, before decoding the next.
+    /// The overlap stays pending until its two window descriptions are settled.
     /// Streaming and ordinary file calls use the same assembly and verdict.
     pub fn transcribe_file_with_language_observed(
         &mut self,
@@ -717,7 +724,7 @@ impl LocalWhisperEngine {
             &samples,
             sample_rate,
             language,
-            &silence_spans,
+            (&silence_spans, &stats.probabilities),
             on_segments,
             &crate::stt::LocalExecutionControl::default(),
         )?;
@@ -817,8 +824,8 @@ impl LocalWhisperEngine {
     ///
     /// The overlap exists so a word split across a boundary is still heard
     /// whole; [`merge_chunk_transcripts`] then removes the duplicated region by
-    /// segment time. Non-empty output without timestamped segments is refused
-    /// because text is not replay identity.
+    /// measured word coverage. Non-empty output without timestamped segments
+    /// is refused because text is not replay identity.
     /// Segment timestamps are rebased onto the full recording, `avg_logprob` is
     /// averaged across chunks, and `compression_ratio` reports the **worst**
     /// chunk — one hallucinating window must not be hidden by good neighbours.
@@ -876,7 +883,7 @@ impl LocalWhisperEngine {
             audio,
             sample_rate,
             language,
-            &silence_spans,
+            (&silence_spans, &stats.probabilities),
             &mut |_| Ok(()),
             control,
         )
@@ -895,7 +902,7 @@ impl LocalWhisperEngine {
         audio: &[f32],
         sample_rate: u32,
         language: Option<&str>,
-        silence_spans: &[(f32, f32)],
+        vad_timeline: (&[(f32, f32)], &[f32]),
         on_segments: &mut dyn FnMut(&[crate::pipeline::contracts::TranscriptSegment]) -> Result<()>,
         control: &crate::stt::LocalExecutionControl,
     ) -> Result<RawTranscript> {
@@ -920,7 +927,8 @@ impl LocalWhisperEngine {
         };
 
         let total_secs = samples.len() as f32 / 16_000.0;
-        let windows = plan_vad_aligned_windows(silence_spans, total_secs);
+        let (silence_spans, speech_probabilities) = vad_timeline;
+        let windows = plan_vad_aligned_windows(silence_spans, total_secs, speech_probabilities);
         tracing::debug!(
             window_count = windows.len(),
             silence_span_count = silence_spans.len(),
@@ -936,6 +944,9 @@ impl LocalWhisperEngine {
         };
 
         let mut merged = RawTranscript::default();
+        let mut accepted_word_ranges = Vec::new();
+        let mut emitted_segments = 0usize;
+        let mut prior_word_times_measured = true;
         let mut covered_until_secs = 0.0_f32;
         let mut logprob_sum = 0.0_f32;
         let mut logprob_count = 0_u32;
@@ -959,8 +970,55 @@ impl LocalWhisperEngine {
                 continue;
             }
             let chunk = &samples[start..end];
-            let mut transcript =
-                self.transcribe_samples_16k_raw(chunk, language, debug_tokens, control)?;
+            self.capture_word_alignment = true;
+            let transcript =
+                self.transcribe_samples_16k_raw(chunk, language, debug_tokens, control);
+            self.capture_word_alignment = false;
+            let mut transcript = transcript?;
+            let words = control
+                .check()
+                .and_then(|()| self.align_captured_words(language));
+            self.captured_tokens.clear();
+            self.captured_token_logprobs.clear();
+            self.captured_encoder = None;
+            self.captured_sample_len = 0;
+            control.check()?;
+            let mut words = match words {
+                Ok(Some(words)) => {
+                    // Alignment must account for the same decoded label. It
+                    // may not silently replace a closed phrase with a subset
+                    // or add tokens outside its timestamp provenance.
+                    let measured_text = words
+                        .iter()
+                        .map(|word| word.text.as_str())
+                        .collect::<String>();
+                    if measured_text
+                        .chars()
+                        .filter(|ch| !ch.is_whitespace())
+                        .eq(transcript.text.chars().filter(|ch| !ch.is_whitespace()))
+                    {
+                        Some(words)
+                    } else {
+                        tracing::warn!(
+                            window_start = start_sec,
+                            window_end = end_sec,
+                            "file_word_times_incomplete: retaining timestamped phrase segments"
+                        );
+                        None
+                    }
+                }
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        window_start = start_sec,
+                        window_end = end_sec,
+                        %error,
+                        "file_word_times_unavailable: retaining timestamped phrase segments"
+                    );
+                    None
+                }
+            };
+            control.check()?;
 
             // `merge_chunk_transcripts` refuses words without timestamp
             // provenance by contract. That refusal is the WINDOW's verdict,
@@ -972,12 +1030,30 @@ impl LocalWhisperEngine {
                 if splits < SEGMENTLESS_WINDOW_MAX_SPLITS
                     && end_sec - start_sec >= SEGMENTLESS_WINDOW_MIN_SPLIT_SECS
                 {
-                    let mid_sec = (start_sec + end_sec) / 2.0;
+                    let target = (start_sec + end_sec) / 2.0;
+                    let third = (end_sec - start_sec) / 3.0;
+                    let lo = start_sec + third;
+                    let hi = end_sec - third;
+                    let silence = silence_spans
+                        .iter()
+                        .filter_map(|&(start, end)| {
+                            let start = start.max(lo);
+                            let end = end.min(hi);
+                            (end > start).then_some((start + end) / 2.0)
+                        })
+                        .max_by(f32::total_cmp);
+                    let (mid_sec, speech_probability) =
+                        silence.map(|point| (point, None)).unwrap_or_else(|| {
+                            least_speech_point(speech_probabilities, lo, hi, target)
+                        });
                     tracing::warn!(
                         window_start = start_sec,
                         window_end = end_sec,
                         chars = window_chars,
                         split = splits + 1,
+                        split_at = mid_sec,
+                        start_forced = silence.is_none(),
+                        speech_probability = ?speech_probability,
                         "long-file window decoded words without a closed timestamp span; \
                          retrying as two halves"
                     );
@@ -1013,22 +1089,69 @@ impl LocalWhisperEngine {
                     segment.end_ts += offset_sec;
                 });
             }
+            if let Some(words) = words.as_mut() {
+                let offset_sec = start as f32 / 16_000.0;
+                for word in words {
+                    word.start_ts += offset_sec;
+                    word.end_ts += offset_sec;
+                }
+            }
 
             let overlap_end_secs = covered_until_secs.max(start_sec);
             let window_segments = transcript.segments.len();
             let window_chars = transcript.text.chars().count();
-            let prior_segments = merged.segments.len();
-            merge_chunk_transcripts(&mut merged, transcript, overlap_end_secs).with_context(
-                || {
-                    format!(
-                        "long-file window {start_sec:.2}-{end_sec:.2}s \
-                         (overlap_end {overlap_end_secs:.2}s, {window_segments} segments, \
-                         {window_chars} chars)"
-                    )
-                },
-            )?;
-            on_segments(&merged.segments[prior_segments..])?;
+            // Retain only measured coverage that can intersect this decode.
+            accepted_word_ranges.retain(|&(_, end)| end > start_sec);
+            let word_times_measured = words.is_some();
+            let words = if prior_word_times_measured {
+                words
+            } else {
+                tracing::warn!(
+                    overlap_end_secs,
+                    "file_seam_prior_word_times_unavailable: retaining segment-end ownership"
+                );
+                None
+            };
+            merge_chunk_transcripts(
+                &mut merged,
+                transcript,
+                overlap_end_secs,
+                &mut accepted_word_ranges,
+                words,
+                (start as f32 / 16_000.0, end as f32 / 16_000.0),
+                vad_timeline,
+            )
+            .with_context(|| {
+                format!(
+                    "long-file window {start_sec:.2}-{end_sec:.2}s \
+                     (overlap_end {overlap_end_secs:.2}s, {window_segments} segments, \
+                     {window_chars} chars)"
+                )
+            })?;
+            prior_word_times_measured = word_times_measured;
+            // A future window may replace this window's overlap words. Only
+            // publish the prefix no pending decode can touch, including halves
+            // queued by timestamp retries. The observer never needs retractions.
+            let unsettled_start = pending
+                .iter()
+                .map(|&(start, _, _)| start)
+                .min_by(f32::total_cmp)
+                .unwrap_or(f32::INFINITY);
+            let settled_segments = merged.segments[emitted_segments..]
+                .iter()
+                .take_while(|segment| segment.end_ts <= unsettled_start)
+                .count();
+            if settled_segments > 0 {
+                let settled_end = emitted_segments + settled_segments;
+                on_segments(&merged.segments[emitted_segments..settled_end])?;
+                emitted_segments = settled_end;
+            }
             covered_until_secs = covered_until_secs.max(end_sec);
+        }
+
+        // Refused/empty final windows cannot strand an earlier pending tail.
+        if emitted_segments < merged.segments.len() {
+            on_segments(&merged.segments[emitted_segments..])?;
         }
 
         if refused_windows > 0 {
@@ -1110,7 +1233,8 @@ impl LocalWhisperEngine {
                 mel_len / self.config.num_mel_bins,
             ),
             &self.device,
-        )?;
+        )?
+        .to_dtype(self.model.decoder.dtype())?;
 
         control.check()?;
         let encoder_output = self.model.encoder.forward(&mel, true)?;
@@ -1122,13 +1246,11 @@ impl LocalWhisperEngine {
             .ok_or_else(|| anyhow!("Tokenizer missing <|startoftranscript|>"))?;
 
         let token_tensor = Tensor::new(&[start_token], &self.device)?.unsqueeze(0)?;
-        let hidden = self
+        let last_logits = self
             .model
             .decoder
-            .forward(&token_tensor, &encoder_output, true)?;
-        let logits = self.model.decoder.final_linear(&hidden)?;
-        let (_b, seq_len, _vocab) = logits.dims3()?;
-        let last_logits = logits.i((.., seq_len - 1, ..))?.squeeze(0)?;
+            .next_token_logits(&token_tensor, &encoder_output, true)?
+            .squeeze(0)?;
         let logits_vec = last_logits.to_vec1::<f32>()?;
         control.check()?;
 
@@ -1178,6 +1300,7 @@ impl LocalWhisperEngine {
 
         if self.capture_word_alignment {
             self.captured_tokens.clear();
+            self.captured_token_logprobs.clear();
             self.captured_encoder = None;
             self.captured_sample_len = 0;
         }
@@ -1195,7 +1318,8 @@ impl LocalWhisperEngine {
                 mel_len / self.config.num_mel_bins,
             ),
             &self.device,
-        )?;
+        )?
+        .to_dtype(self.model.decoder.dtype())?;
 
         // Decode
         let start_token = self
@@ -1271,6 +1395,7 @@ impl LocalWhisperEngine {
         }
 
         let mut all_tokens = Vec::new();
+        let mut token_logprobs: Vec<f32> = Vec::new();
 
         // Run encoder once
         control.check()?;
@@ -1303,15 +1428,11 @@ impl LocalWhisperEngine {
                 break;
             }
             let token_tensor = Tensor::new(tokens.as_slice(), &self.device)?.unsqueeze(0)?;
-            let hidden = self
+            let last_logits = self
                 .model
                 .decoder
-                .forward(&token_tensor, &encoder_output, true)?;
-            let logits = self.model.decoder.final_linear(&hidden)?;
-
-            // Get logits for last position
-            let (_b, seq_len, _vocab) = logits.dims3()?;
-            let last_logits = logits.i((.., seq_len - 1, ..))?.squeeze(0)?;
+                .next_token_logits(&token_tensor, &encoder_output, step == 0)?
+                .squeeze(0)?;
             let mut logits_vec = last_logits.to_vec1::<f32>()?;
             control.check()?;
 
@@ -1389,13 +1510,14 @@ impl LocalWhisperEngine {
             };
 
             // Track logprobs (5. Logprob Threshold)
-            {
+            let step_logprob = {
                 let max_val = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
                 let exp_sum: f32 = logits_vec.iter().map(|&x| (x - max_val).exp()).sum();
                 let token_prob = (logits_vec[best_token as usize] - max_val).exp() / exp_sum;
                 sum_logprob += token_prob.ln();
                 token_count += 1;
-            }
+                token_prob.ln()
+            };
 
             if debug_tokens && step < 16 {
                 if let Some(tok) = self.tokenizer.id_to_token(best_token) {
@@ -1416,6 +1538,8 @@ impl LocalWhisperEngine {
 
             tokens.push(best_token);
             all_tokens.push(best_token);
+            // Parallel to `all_tokens`; the EOT step above never lands here.
+            token_logprobs.push(step_logprob);
         }
 
         let (text, segments) = if timestamps_enabled {
@@ -1466,6 +1590,7 @@ impl LocalWhisperEngine {
 
         if self.capture_word_alignment {
             self.captured_tokens = all_tokens;
+            self.captured_token_logprobs = token_logprobs;
             self.captured_encoder = Some(encoder_output);
             self.captured_sample_len = samples_16k.len();
         }
@@ -1521,6 +1646,7 @@ impl LocalWhisperEngine {
             "tail_window_latency"
         );
         self.captured_tokens.clear();
+        self.captured_token_logprobs.clear();
         self.captured_encoder = None;
         self.captured_sample_len = 0;
         Ok((transcript, words))
@@ -1554,6 +1680,22 @@ impl LocalWhisperEngine {
         if text_tokens.is_empty() {
             return Ok(None);
         }
+        // Same `< eot` predicate on the parallel logprob stream, so span
+        // indices address both vectors identically. A length mismatch means
+        // the capture did not record logprobs; absence stays honest (None).
+        let text_logprobs: Option<Vec<f32>> =
+            if self.captured_token_logprobs.len() == self.captured_tokens.len() {
+                Some(
+                    self.captured_tokens
+                        .iter()
+                        .zip(self.captured_token_logprobs.iter())
+                        .filter(|(token, _)| **token < eot)
+                        .map(|(_, logprob)| *logprob)
+                        .collect(),
+                )
+            } else {
+                None
+            };
         let pieces = text_tokens
             .iter()
             .map(|id| self.tokenizer.id_to_token(*id).unwrap_or_default())
@@ -1652,10 +1794,25 @@ impl LocalWhisperEngine {
                 return Ok(None);
             }
             previous_end = end;
+            let confidence = text_logprobs.as_ref().and_then(|logprobs| {
+                crate::pipeline::word_confidence::min_logprob_in_span(
+                    logprobs,
+                    word.token_start,
+                    word.token_len,
+                )
+                .map(|min_logprob| {
+                    crate::pipeline::word_confidence::WordConfidence::new(
+                        crate::pipeline::word_confidence::WordConfidenceSource::WhisperTokenLogprob,
+                        min_logprob,
+                        word.token_len as u16,
+                    )
+                })
+            });
             segments.push(crate::pipeline::contracts::TranscriptSegment {
                 text: word.text,
                 start_ts: start,
                 end_ts: end,
+                confidence,
             });
         }
         tracing::info!(
@@ -1813,6 +1970,12 @@ fn build_varbuilder_from_tensors(
         raw_tensors.keys().map(String::as_str),
     )?;
     let mut tensor_map = HashMap::new();
+    // Keep unquantized half weights on Metal. CPU retains single precision.
+    let dtype = if device.is_metal() {
+        DType::F16
+    } else {
+        DType::F32
+    };
 
     // alignment_heads is integer metadata used by upstream timestamp tooling,
     // not a model weight consumed by Candle's Whisper loader.
@@ -1822,8 +1985,8 @@ fn build_varbuilder_from_tensors(
         }
         let mapped_name = crate::whisper_weights::map_whisper_tensor_name(name);
         let mut t = tensor.clone();
-        if t.dtype() != DType::F32 {
-            t = t.to_dtype(DType::F32)?;
+        if t.dtype() != dtype {
+            t = t.to_dtype(dtype)?;
         }
 
         // Fix shape for conv weights (MLX [out, kernel, in] -> Candle [out, in, kernel])
@@ -1839,9 +2002,7 @@ fn build_varbuilder_from_tensors(
     }
 
     Ok(candle_nn::VarBuilder::from_tensors(
-        tensor_map,
-        DType::F32,
-        device,
+        tensor_map, dtype, device,
     ))
 }
 
@@ -1850,6 +2011,24 @@ mod model_payload_tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn tensor_builder_keeps_half_weights_on_metal() -> Result<()> {
+        let device = Device::new_metal(0)?;
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "decoder.token_embedding.weight".to_string(),
+            Tensor::from_vec(vec![0.25_f32; 8], (2, 4), &Device::Cpu)?.to_dtype(DType::F16)?,
+        );
+        let vb = build_varbuilder_from_tensors(tensors, &device)?;
+        assert_eq!(vb.dtype(), DType::F16);
+        assert_eq!(
+            vb.get((2, 4), "model.decoder.embed_tokens.weight")?.dtype(),
+            DType::F16
+        );
+        Ok(())
+    }
 
     fn decode_hex(raw: &str) -> Vec<u8> {
         let digits: String = raw.chars().filter(|ch| !ch.is_whitespace()).collect();
@@ -2348,19 +2527,11 @@ mod dedup_tests {
     }
 }
 
-// ─── stt-live-first-v2 TDD stubs (dispatch 2026-08-10) ──────────────────────
-//
-// The seam function below remains a contract stub for cut w1-c. Ground truth
-// for both cuts is the operator's three-way recording
-// (tests/e2e_long_window_truth.rs).
-
 /// Plan long-file decode windows aligned to VAD silence spans.
 ///
-/// Contract (w1-a): boundaries between consecutive windows land INSIDE a
-/// silence span whenever one exists near the target step; windows stay within
-/// [`VAD_WINDOW_MIN_SECS`, `VAD_WINDOW_MAX_SECS`]; consecutive windows overlap
-/// so no audio is skipped. A fixed-step grid is only the fallback for audio
-/// with no usable silences (constant speech).
+/// Ends use the silence nearest the target; starts use the latest silence
+/// before that end within the next window's maximum decode horizon.
+/// Without a probability timeline, forced cuts are explicitly unmeasured.
 ///
 pub const VAD_WINDOW_MIN_SECS: f32 = 6.0;
 pub const VAD_WINDOW_MAX_SECS: f32 = 28.0;
@@ -2369,39 +2540,13 @@ const TARGET_WINDOW_SECS: f32 = 25.0;
 const VAD_WINDOW_OVERLAP_SECS: f32 = 5.0;
 const VAD_BOUNDARY_TOLERANCE_SECS: f32 = 5.0;
 
-/// Calibration for the shared VAD-aligned window planner.
-///
-/// File decode and the live rolling lane use the same boundary algorithm with
-/// different competence horizons. Keeping the policy explicit prevents the
-/// live bridge from forking a second silence picker.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct VadWindowPlanConfig {
-    pub min_secs: f32,
-    pub target_secs: f32,
-    pub max_secs: f32,
-    pub overlap_secs: f32,
-    pub boundary_tolerance_secs: f32,
-}
-
-impl VadWindowPlanConfig {
-    const FILE: Self = Self {
-        min_secs: VAD_WINDOW_MIN_SECS,
-        target_secs: TARGET_WINDOW_SECS,
-        max_secs: VAD_WINDOW_MAX_SECS,
-        overlap_secs: VAD_WINDOW_OVERLAP_SECS,
-        boundary_tolerance_secs: VAD_BOUNDARY_TOLERANCE_SECS,
-    };
-}
-
-pub fn plan_vad_aligned_windows(silences: &[(f32, f32)], total_secs: f32) -> Vec<(f32, f32)> {
-    plan_vad_aligned_windows_with_config(silences, total_secs, VadWindowPlanConfig::FILE)
-}
-
-/// Shared planner with an explicit window calibration.
-pub(crate) fn plan_vad_aligned_windows_with_config(
+/// The file path supplies the Silero timeline it already measured. Each
+/// forced end/start selects its lowest finite speech probability, never a
+/// text-derived boundary or a second VAD pass.
+pub fn plan_vad_aligned_windows(
     silences: &[(f32, f32)],
     total_secs: f32,
-    config: VadWindowPlanConfig,
+    probabilities: &[f32],
 ) -> Vec<(f32, f32)> {
     if !total_secs.is_finite() || total_secs <= 0.0 {
         return Vec::new();
@@ -2422,42 +2567,98 @@ pub(crate) fn plan_vad_aligned_windows_with_config(
     let mut windows = Vec::new();
     let mut start = 0.0_f32;
     while start < total_secs {
-        if total_secs - start <= config.max_secs {
+        if total_secs - start <= VAD_WINDOW_MAX_SECS {
             windows.push((start, total_secs));
             break;
         }
 
-        let target = start + config.target_secs;
-        let candidate_min = (start + config.min_secs).max(target - config.boundary_tolerance_secs);
-        let candidate_max = (start + config.max_secs)
-            .min(target + config.boundary_tolerance_secs)
+        let target = start + TARGET_WINDOW_SECS;
+        let candidate_min = (start + VAD_WINDOW_MIN_SECS).max(target - VAD_BOUNDARY_TOLERANCE_SECS);
+        let candidate_max = (start + VAD_WINDOW_MAX_SECS)
+            .min(target + VAD_BOUNDARY_TOLERANCE_SECS)
             .min(total_secs);
 
-        let boundary = usable_silences
+        let silence_boundary = usable_silences
             .iter()
             .filter_map(|&(silence_start, silence_end)| {
                 let lo = silence_start.max(candidate_min);
                 let hi = silence_end.min(candidate_max);
-                if hi < lo {
+                if hi <= lo {
                     return None;
                 }
                 let point = target.clamp(lo, hi);
                 Some((point, (point - target).abs()))
             })
             .min_by(|(_, a_distance), (_, b_distance)| a_distance.total_cmp(b_distance))
-            .map(|(point, _)| point)
-            .unwrap_or_else(|| (start + config.target_secs).min(total_secs));
+            .map(|(point, _)| point);
+        let (boundary, end_probability) = silence_boundary
+            .map(|point| (point, None))
+            .unwrap_or_else(|| {
+                least_speech_point(probabilities, candidate_min, candidate_max, target)
+            });
 
-        let boundary = boundary.min(start + config.max_secs).min(total_secs);
+        let boundary = boundary.min(start + VAD_WINDOW_MAX_SECS).min(total_secs);
         windows.push((start, boundary));
 
-        let next_start = (boundary - config.overlap_secs).max(0.0);
+        let nominal_start = (boundary - VAD_WINDOW_OVERLAP_SECS).max(0.0);
+        // Reserve the next nominal end before extending its overlap. This
+        // allows 20s to retreat to the 17-19s pause without a >28s window.
+        let next_end = (nominal_start + TARGET_WINDOW_SECS).min(total_secs);
+        let start_min = (next_end - VAD_WINDOW_MAX_SECS)
+            .max(start + VAD_WINDOW_MIN_SECS)
+            .max(0.0);
+        let start_max = boundary - 1.0 / whisper::SAMPLE_RATE as f32;
+        if start_min > start_max {
+            break;
+        }
+        let silence_start = usable_silences
+            .iter()
+            .filter_map(|&(silence_start, silence_end)| {
+                let lo = silence_start.max(start_min);
+                let hi = silence_end.min(start_max);
+                (hi > lo).then_some((lo + hi) / 2.0)
+            })
+            .max_by(f32::total_cmp);
+        let (next_start, start_probability) =
+            silence_start.map(|point| (point, None)).unwrap_or_else(|| {
+                least_speech_point(probabilities, start_min, start_max, nominal_start)
+            });
+        tracing::debug!(
+            window_start = start,
+            window_end = boundary,
+            next_start,
+            end_forced = silence_boundary.is_none(),
+            start_forced = silence_start.is_none(),
+            end_speech_probability = ?end_probability,
+            start_speech_probability = ?start_probability,
+            "planned VAD-aligned long-file window seam"
+        );
         if next_start <= start {
             break;
         }
         start = next_start;
     }
     windows
+}
+
+/// Pick a point in the lowest finite 500 ms Silero bin intersecting the
+/// bounded search interval. No measurement means an explicit `None` receipt.
+fn least_speech_point(probabilities: &[f32], lo: f32, hi: f32, target: f32) -> (f32, Option<f32>) {
+    let hop = crate::vad::DISCRIMINATOR_WINDOW_MS as f32 / 1000.0;
+    probabilities
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &probability)| {
+            let begin = (index as f32 * hop).max(lo);
+            let end = ((index + 1) as f32 * hop).min(hi);
+            (probability.is_finite() && end > begin).then_some(((begin + end) / 2.0, probability))
+        })
+        .min_by(|(a, ap), (b, bp)| {
+            ap.total_cmp(bp)
+                .then_with(|| (a - target).abs().total_cmp(&(b - target).abs()))
+        })
+        .map(|(point, probability)| (point, Some(probability)))
+        .unwrap_or((target.clamp(lo, hi), None))
 }
 
 /// Convert the existing 500 ms Silero probability stream into contiguous
@@ -2475,12 +2676,15 @@ pub(crate) fn silence_spans_from_vad_probabilities(
     let mut spans = Vec::new();
     let mut index = 0usize;
     while index < probabilities.len() {
-        if probabilities[index] >= threshold {
+        if !probabilities[index].is_finite() || probabilities[index] >= threshold {
             index += 1;
             continue;
         }
         let run_start = index;
-        while index < probabilities.len() && probabilities[index] < threshold {
+        while index < probabilities.len()
+            && probabilities[index].is_finite()
+            && probabilities[index] < threshold
+        {
             index += 1;
         }
         let start = run_start as f32 * window_sec;
@@ -2501,38 +2705,216 @@ const SEGMENTLESS_WINDOW_MAX_SPLITS: u8 = 2;
 /// two seconds of audio is refused outright.
 const SEGMENTLESS_WINDOW_MIN_SPLIT_SECS: f32 = 2.0;
 
-/// Merge the next window's transcript onto the accumulated one, deduplicating
-/// the overlap REGION by segment time instead of by text.
-///
-/// Contract (w1-c): segments of `next` that end before `overlap_end_secs`
-/// re-describe audio the previous window already decoded (usually with
-/// divergent text — that is WHY text-based dedup misses them) and must be
-/// dropped; segments past the overlap are appended verbatim.
-///
+/// Maximum gap between two DTW word ranges describing the same overlap PCM.
+/// Covers a 100 ms decode drift without treating a one-second hole as coverage.
+const FILE_SEAM_DTW_DRIFT_TOLERANCE_SECS: f32 = 0.2;
+
+/// Sole file seam judge. A single Silero point divides the overlap: words
+/// whose range midpoint precedes it belong to the previous window; words at
+/// or after it belong to the next. Discarded alternate PCM descriptions are
+/// traced, never declared wordless. A word outside its window ownership is
+/// retained unless the owning window describes its PCM within DTW tolerance.
+/// Text equality has no ownership authority.
+/// Missing word times retain the segment-end rule with an explicit receipt.
+/// Returns newly admitted segments; observers must withhold any prefix still
+/// exposed to a pending window, because a later seam can replace prior words.
 pub fn merge_chunk_transcripts(
     out: &mut crate::pipeline::contracts::RawTranscript,
     next: crate::pipeline::contracts::RawTranscript,
     overlap_end_secs: f32,
-) -> Result<()> {
+    accepted_word_ranges: &mut Vec<(f32, f32)>,
+    next_words: Option<Vec<crate::pipeline::contracts::TranscriptSegment>>,
+    decode_window: (f32, f32),
+    vad_timeline: (&[(f32, f32)], &[f32]),
+) -> Result<Vec<crate::pipeline::contracts::TranscriptSegment>> {
     ensure!(
         out.text.trim().is_empty() || !out.segments.is_empty(),
         "overlap assembly requires segment provenance for accumulated text"
     );
 
     if next.text.trim().is_empty() && next.segments.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     ensure!(
         next.text.trim().is_empty() || !next.segments.is_empty(),
         "overlap assembly refused non-empty decode without timestamped segments"
     );
-
-    out.segments.extend(
-        next.segments
-            .into_iter()
-            .filter(|segment| segment.end_ts > overlap_end_secs),
+    ensure!(
+        accepted_word_ranges.iter().all(|&(start, end)| {
+            out.segments
+                .iter()
+                .any(|segment| segment.start_ts == start && segment.end_ts == end)
+        }),
+        "file seam word coverage requires an admitted segment for every range"
     );
+
+    let (overlap_start_secs, window_end_secs) = decode_window;
+    let ownership_end_secs = overlap_end_secs
+        .min(window_end_secs)
+        .max(overlap_start_secs);
+    let unmeasured_prior_overlap = next_words.is_some()
+        && out.segments.iter().any(|segment| {
+            segment.start_ts < ownership_end_secs
+                && segment.end_ts > overlap_start_secs
+                && !accepted_word_ranges.contains(&(segment.start_ts, segment.end_ts))
+        });
+    let next_words = if unmeasured_prior_overlap {
+        tracing::warn!(
+            overlap_end_secs,
+            "file_seam_prior_word_times_unavailable: retaining segment-end ownership"
+        );
+        None
+    } else {
+        next_words
+    };
+
+    let mut admitted = Vec::new();
+    if let Some(words) = next_words {
+        ensure!(
+            !words.is_empty()
+                && words.iter().all(|word| {
+                    word.start_ts.is_finite()
+                        && word.end_ts.is_finite()
+                        && word.end_ts > word.start_ts
+                        && !word.text.trim().is_empty()
+                }),
+            "file seam requires positive measured word ranges"
+        );
+        ensure!(
+            overlap_start_secs.is_finite()
+                && overlap_end_secs.is_finite()
+                && window_end_secs.is_finite()
+                && window_end_secs >= overlap_start_secs,
+            "file seam requires a bounded overlap interval"
+        );
+        let (silences, probabilities) = vad_timeline;
+        let target = (overlap_start_secs + ownership_end_secs) / 2.0;
+        let silence = silences
+            .iter()
+            .filter_map(|&(start, end)| {
+                if !start.is_finite() || !end.is_finite() {
+                    return None;
+                }
+                let lo = start.max(overlap_start_secs);
+                let hi = end.min(ownership_end_secs);
+                (hi > lo).then_some((lo + hi) / 2.0)
+            })
+            .min_by(|a, b| (a - target).abs().total_cmp(&(b - target).abs()));
+        let (cut_secs, speech_probability) =
+            silence.map(|point| (point, None)).unwrap_or_else(|| {
+                least_speech_point(
+                    probabilities,
+                    overlap_start_secs,
+                    ownership_end_secs,
+                    target,
+                )
+            });
+        // Only descriptions on the owning side of the cut can replace a word.
+        // Snapshot prior ownership before mutation so both directions judge the
+        // same evidence, never a word admitted or removed by this seam itself.
+        let prior_owned_ranges: Vec<_> = accepted_word_ranges
+            .iter()
+            .copied()
+            .filter(|&(start, end)| (start + end) / 2.0 < cut_secs)
+            .collect();
+        let next_owned_ranges: Vec<_> = words
+            .iter()
+            .filter(|word| (word.start_ts + word.end_ts) / 2.0 >= cut_secs)
+            .map(|word| (word.start_ts, word.end_ts))
+            .collect();
+        let has_alternate_description = |start: f32, end: f32, ranges: &[(f32, f32)]| {
+            ranges.iter().any(|&(other_start, other_end)| {
+                let gap = (start - other_end).max(other_start - end).max(0.0);
+                gap <= FILE_SEAM_DTW_DRIFT_TOLERANCE_SECS
+            })
+        };
+        let mut kept_words = 0usize;
+        let mut kept_range: Option<(f32, f32)> = None;
+        let mut record_kept = |start: f32, end: f32| {
+            kept_words += 1;
+            kept_range = Some(match kept_range {
+                Some((lo, hi)) => (lo.min(start), hi.max(end)),
+                None => (start, end),
+            });
+        };
+        let mut discarded_prior_words = 0usize;
+        let mut discarded_prior_range: Option<(f32, f32)> = None;
+        out.segments.retain(|word| {
+            let midpoint = (word.start_ts + word.end_ts) / 2.0;
+            let outside_ownership = midpoint >= cut_secs
+                && midpoint < ownership_end_secs
+                && accepted_word_ranges.contains(&(word.start_ts, word.end_ts));
+            let discard = outside_ownership
+                && has_alternate_description(word.start_ts, word.end_ts, &next_owned_ranges);
+            if discard {
+                discarded_prior_words += 1;
+                discarded_prior_range = Some(match discarded_prior_range {
+                    Some((start, end)) => (start.min(word.start_ts), end.max(word.end_ts)),
+                    None => (word.start_ts, word.end_ts),
+                });
+            } else if outside_ownership {
+                record_kept(word.start_ts, word.end_ts);
+            }
+            !discard
+        });
+        accepted_word_ranges.retain(|&(start, end)| {
+            out.segments
+                .iter()
+                .any(|word| word.start_ts == start && word.end_ts == end)
+        });
+        let mut discarded_next_words = 0usize;
+        let mut discarded_next_range: Option<(f32, f32)> = None;
+        for word in words {
+            if (word.start_ts + word.end_ts) / 2.0 < cut_secs {
+                if has_alternate_description(word.start_ts, word.end_ts, &prior_owned_ranges) {
+                    discarded_next_words += 1;
+                    discarded_next_range = Some(match discarded_next_range {
+                        Some((start, end)) => (start.min(word.start_ts), end.max(word.end_ts)),
+                        None => (word.start_ts, word.end_ts),
+                    });
+                    continue;
+                }
+                record_kept(word.start_ts, word.end_ts);
+            }
+            accepted_word_ranges.push((word.start_ts, word.end_ts));
+            admitted.push(word);
+        }
+        tracing::debug!(
+            overlap_start_secs,
+            overlap_end_secs,
+            ownership_end_secs,
+            cut_secs,
+            cut_forced = silence.is_none() && ownership_end_secs > overlap_start_secs,
+            speech_probability = ?speech_probability,
+            admitted_words = admitted.len(),
+            kept_words,
+            kept_range = ?kept_range,
+            kept_reason = "kept: no alternate description",
+            discarded_prior_words,
+            discarded_prior_range = ?discarded_prior_range,
+            discarded_next_words,
+            discarded_next_range = ?discarded_next_range,
+            "file_seam_window_ownership: alternate descriptions of overlap PCM withheld"
+        );
+    } else {
+        tracing::warn!(
+            overlap_end_secs,
+            segments = next.segments.len(),
+            "file_seam_word_times_unavailable: using segment-end ownership"
+        );
+        admitted.extend(
+            next.segments
+                .into_iter()
+                .filter(|segment| segment.end_ts > overlap_end_secs),
+        );
+    }
+    out.segments.extend(admitted.iter().cloned());
+    out.segments.sort_by(|a, b| {
+        a.start_ts
+            .total_cmp(&b.start_ts)
+            .then_with(|| a.end_ts.total_cmp(&b.end_ts))
+    });
     out.text = out
         .segments
         .iter()
@@ -2540,7 +2922,7 @@ pub fn merge_chunk_transcripts(
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    Ok(())
+    Ok(admitted)
 }
 
 #[cfg(test)]
@@ -2576,7 +2958,7 @@ mod stt_live_first_v2_red {
     #[test]
     fn window_boundaries_land_inside_silence_spans() {
         let silences = [(22.0_f32, 23.0_f32), (41.0, 42.5)];
-        let windows = plan_vad_aligned_windows(&silences, 60.0);
+        let windows = plan_vad_aligned_windows(&silences, 60.0, &[]);
         assert!(windows.len() >= 2, "60 s must yield multiple windows");
         for pair in windows.windows(2) {
             let boundary = pair[0].1; // end of the earlier window
@@ -2597,7 +2979,7 @@ mod stt_live_first_v2_red {
     #[test]
     fn windows_stay_within_competence_bounds() {
         let silences = [(7.0_f32, 7.4), (14.0, 14.5), (21.0, 21.5), (28.0, 28.5)];
-        let windows = plan_vad_aligned_windows(&silences, 30.0);
+        let windows = plan_vad_aligned_windows(&silences, 30.0, &[]);
         for (start, end) in &windows {
             let len = end - start;
             let is_tail = (*end - 30.0).abs() < f32::EPSILON;
@@ -2616,7 +2998,7 @@ mod stt_live_first_v2_red {
     /// Constant speech keeps the historical 25 s window / 20 s step exactly.
     #[test]
     fn constant_speech_falls_back_to_legacy_grid() {
-        let windows = plan_vad_aligned_windows(&[], 60.0);
+        let windows = plan_vad_aligned_windows(&[], 60.0, &[]);
         assert_eq!(windows, vec![(0.0, 25.0), (20.0, 45.0), (40.0, 60.0)]);
         assert!(
             windows
@@ -2640,6 +3022,7 @@ mod stt_live_first_v2_red {
         let mut out = RawTranscript {
             text: "mówię teraz spokojnie prostymi słowami bez żadnych pułapek".into(),
             segments: vec![TranscriptSegment {
+                confidence: None,
                 text: "mówię teraz spokojnie prostymi słowami bez żadnych pułapek".into(),
                 start_ts: 15.0,
                 end_ts: 24.0,
@@ -2653,11 +3036,13 @@ mod stt_live_first_v2_red {
             text: "Zdanie pierwsze. Zdanie drugie. Whisper, Codescribe i Loctree".into(),
             segments: vec![
                 TranscriptSegment {
+                    confidence: None,
                     text: "Zdanie pierwsze.".into(),
                     start_ts: 20.5,
                     end_ts: 24.0,
                 },
                 TranscriptSegment {
+                    confidence: None,
                     text: "Zdanie drugie. Whisper, Codescribe i Loctree".into(),
                     start_ts: 25.5,
                     end_ts: 33.0,
@@ -2666,8 +3051,16 @@ mod stt_live_first_v2_red {
             energy: None,
             ..Default::default()
         };
-        merge_chunk_transcripts(&mut out, next, 25.0)
-            .expect("timestamped overlap merge must succeed");
+        merge_chunk_transcripts(
+            &mut out,
+            next,
+            25.0,
+            &mut Vec::new(),
+            None,
+            (20.0, 45.0),
+            (&[], &[]),
+        )
+        .expect("timestamped overlap merge must succeed");
         assert!(
             !out.text.contains("Zdanie pierwsze"),
             "overlap re-decode leaked into the merged text: {}",
@@ -2692,6 +3085,7 @@ mod stt_live_first_v2_red {
         let mut out = RawTranscript {
             text: "trusted earlier middle".into(),
             segments: vec![TranscriptSegment {
+                confidence: None,
                 text: "trusted earlier middle".into(),
                 start_ts: 2.0,
                 end_ts: 10.0,
@@ -2703,16 +3097,19 @@ mod stt_live_first_v2_red {
             text: "divergent head boundary bridge clean tail".into(),
             segments: vec![
                 TranscriptSegment {
+                    confidence: None,
                     text: "divergent head".into(),
                     start_ts: 8.0,
                     end_ts: 9.8,
                 },
                 TranscriptSegment {
+                    confidence: None,
                     text: "boundary bridge".into(),
                     start_ts: 9.8,
                     end_ts: 11.0,
                 },
                 TranscriptSegment {
+                    confidence: None,
                     text: "clean tail".into(),
                     start_ts: 11.0,
                     end_ts: 13.0,
@@ -2722,8 +3119,16 @@ mod stt_live_first_v2_red {
             ..Default::default()
         };
 
-        merge_chunk_transcripts(&mut out, next, 10.0)
-            .expect("timestamped boundary merge must succeed");
+        merge_chunk_transcripts(
+            &mut out,
+            next,
+            10.0,
+            &mut Vec::new(),
+            None,
+            (8.0, 13.0),
+            (&[], &[]),
+        )
+        .expect("timestamped boundary merge must succeed");
 
         assert_eq!(out.segments.len(), 3);
         assert_eq!(
@@ -2740,6 +3145,7 @@ mod stt_live_first_v2_red {
         let mut out = RawTranscript {
             text: "one two".into(),
             segments: vec![TranscriptSegment {
+                confidence: None,
                 text: "one two".into(),
                 start_ts: 0.0,
                 end_ts: 2.0,
@@ -2753,8 +3159,16 @@ mod stt_live_first_v2_red {
             ..Default::default()
         };
 
-        let error = merge_chunk_transcripts(&mut out, next, 2.0)
-            .expect_err("segmentless non-empty decode must fail closed");
+        let error = merge_chunk_transcripts(
+            &mut out,
+            next,
+            2.0,
+            &mut Vec::new(),
+            None,
+            (1.0, 4.0),
+            (&[], &[]),
+        )
+        .expect_err("segmentless non-empty decode must fail closed");
 
         assert!(
             error
@@ -2779,6 +3193,7 @@ mod stt_live_first_v2_red {
         let next = RawTranscript {
             text: "two three four".into(),
             segments: vec![TranscriptSegment {
+                confidence: None,
                 text: "four".into(),
                 start_ts: 3.0,
                 end_ts: 4.0,
@@ -2787,8 +3202,16 @@ mod stt_live_first_v2_red {
             ..Default::default()
         };
 
-        let error = merge_chunk_transcripts(&mut out, next, 3.0)
-            .expect_err("accumulated text without segments must fail closed");
+        let error = merge_chunk_transcripts(
+            &mut out,
+            next,
+            3.0,
+            &mut Vec::new(),
+            None,
+            (2.0, 4.0),
+            (&[], &[]),
+        )
+        .expect_err("accumulated text without segments must fail closed");
 
         assert!(
             error
@@ -2805,6 +3228,7 @@ mod stt_live_first_v2_red {
         let mut out = RawTranscript {
             text: "one two".into(),
             segments: vec![TranscriptSegment {
+                confidence: None,
                 text: "one two".into(),
                 start_ts: 0.0,
                 end_ts: 2.0,
@@ -2821,11 +3245,13 @@ mod stt_live_first_v2_red {
             text: "two replay four five".into(),
             segments: vec![
                 TranscriptSegment {
+                    confidence: None,
                     text: "two replay".into(),
                     start_ts: 1.5,
                     end_ts: 2.0,
                 },
                 TranscriptSegment {
+                    confidence: None,
                     text: "four five".into(),
                     start_ts: 3.0,
                     end_ts: 4.0,
@@ -2835,8 +3261,16 @@ mod stt_live_first_v2_red {
             ..Default::default()
         };
 
-        let error = merge_chunk_transcripts(&mut out, middle, 2.0)
-            .expect_err("segmentless middle decode must fail closed");
+        let error = merge_chunk_transcripts(
+            &mut out,
+            middle,
+            2.0,
+            &mut Vec::new(),
+            None,
+            (1.0, 4.0),
+            (&[], &[]),
+        )
+        .expect_err("segmentless middle decode must fail closed");
         assert!(
             error
                 .to_string()
@@ -2846,14 +3280,170 @@ mod stt_live_first_v2_red {
         assert_eq!(out.segments.len(), 1);
         assert_eq!(out.segments[0].text, "one two");
 
-        merge_chunk_transcripts(&mut out, tail, 2.0)
-            .expect("timestamped retry must succeed after segmentless failure");
+        merge_chunk_transcripts(
+            &mut out,
+            tail,
+            2.0,
+            &mut Vec::new(),
+            None,
+            (1.5, 4.0),
+            (&[], &[]),
+        )
+        .expect("timestamped retry must succeed after segmentless failure");
 
         assert_eq!(out.text, "one two four five");
         assert_eq!(out.segments.len(), 2);
         assert_eq!(out.segments[0].text, "one two");
         assert_eq!(out.segments[1].text, "four five");
         assert!(!out.text.contains("middle"));
+    }
+
+    fn word(text: &str, start_ts: f32, end_ts: f32) -> TranscriptSegment {
+        TranscriptSegment {
+            confidence: None,
+            text: text.into(),
+            start_ts,
+            end_ts,
+        }
+    }
+
+    /// Prior window words already admitted with measured ranges.
+    fn admitted(words: &[TranscriptSegment]) -> (RawTranscript, Vec<(f32, f32)>) {
+        let out = RawTranscript {
+            text: words
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+            segments: words.to_vec(),
+            energy: None,
+            ..Default::default()
+        };
+        let ranges = words
+            .iter()
+            .map(|word| (word.start_ts, word.end_ts))
+            .collect();
+        (out, ranges)
+    }
+
+    fn decode(words: &[TranscriptSegment]) -> RawTranscript {
+        RawTranscript {
+            text: words
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+            segments: words.to_vec(),
+            energy: None,
+            ..Default::default()
+        }
+    }
+
+    /// Both windows describe the 20–25 s overlap. The Silero pause at
+    /// 21.3–21.9 s splits it: the earlier window keeps what precedes the
+    /// pause, the later window owns what follows. Each PCM range is described
+    /// exactly once.
+    #[test]
+    fn integrator_seam_overlap_is_described_once_split_at_the_silero_pause() {
+        let (mut out, mut ranges) = admitted(&[
+            word("z", 15.0, 15.4),
+            word("a", 20.2, 20.6),
+            word("b", 20.8, 21.2),
+            word("c", 22.0, 22.4),
+            word("d", 22.5, 23.0),
+        ]);
+        let next_words = vec![
+            word("a2", 20.2, 20.6),
+            word("b2", 20.8, 21.2),
+            word("c2", 22.0, 22.4),
+            word("d2", 22.5, 23.0),
+            word("e", 25.5, 26.0),
+        ];
+        merge_chunk_transcripts(
+            &mut out,
+            decode(&next_words),
+            25.0,
+            &mut ranges,
+            Some(next_words),
+            (20.0, 45.0),
+            (&[(21.3, 21.9)], &[]),
+        )
+        .expect("measured overlap merge must succeed");
+
+        assert_eq!(out.text, "z a b c2 d2 e");
+    }
+
+    /// Field shape from the 2026-10-01 localisation take: the later window
+    /// re-decoded a phrase the earlier window already held, shifted by
+    /// 100 ms, so no prior word covered a later word's whole range and the
+    /// phrase was assembled twice.
+    #[test]
+    fn integrator_seam_shifted_redecode_of_a_held_phrase_is_not_doubled() {
+        let (mut out, mut ranges) = admitted(&[
+            word("translate", 30.0, 30.5),
+            word("to", 30.5, 30.7),
+            word("polish", 30.7, 31.2),
+        ]);
+        let next_words = vec![
+            word("translate", 30.1, 30.6),
+            word("to", 30.6, 30.8),
+            word("polish", 30.8, 31.3),
+            word("bo", 31.6, 31.8),
+        ];
+        merge_chunk_transcripts(
+            &mut out,
+            decode(&next_words),
+            32.0,
+            &mut ranges,
+            Some(next_words),
+            (29.0, 54.0),
+            (&[(31.3, 31.5)], &[]),
+        )
+        .expect("measured overlap merge must succeed");
+
+        assert_eq!(out.text, "translate to polish bo");
+        assert_eq!(out.text.matches("polish").count(), 1);
+    }
+
+    /// The later window heard nothing in 21.3–25 s, but Silero measured no
+    /// pause there. An empty decode is not a silence verdict, so the earlier
+    /// window's word over that speech is the only description and stays.
+    #[test]
+    fn integrator_seam_never_drops_a_prior_word_the_next_window_did_not_redescribe() {
+        let (mut out, mut ranges) = admitted(&[word("x", 20.2, 20.6), word("y", 23.0, 23.4)]);
+        let next_words = vec![word("w", 26.0, 26.4)];
+        merge_chunk_transcripts(
+            &mut out,
+            decode(&next_words),
+            25.0,
+            &mut ranges,
+            Some(next_words),
+            (20.0, 45.0),
+            (&[(21.0, 21.6)], &[]),
+        )
+        .expect("measured overlap merge must succeed");
+
+        assert_eq!(out.text, "x y w");
+    }
+
+    /// Mirror case: the earlier window's decode stopped at 15.4 s, so the
+    /// later window's word before the pause is the only description of it.
+    #[test]
+    fn integrator_seam_never_drops_a_next_word_the_prior_window_did_not_describe() {
+        let (mut out, mut ranges) = admitted(&[word("p", 15.0, 15.4)]);
+        let next_words = vec![word("q", 20.4, 20.8), word("r", 22.0, 22.4)];
+        merge_chunk_transcripts(
+            &mut out,
+            decode(&next_words),
+            25.0,
+            &mut ranges,
+            Some(next_words),
+            (20.0, 45.0),
+            (&[(21.0, 21.6)], &[]),
+        )
+        .expect("measured overlap merge must succeed");
+
+        assert_eq!(out.text, "p q r");
     }
 }
 
@@ -2912,6 +3502,7 @@ mod local_execution_control_tests {
             alignment_heads: Vec::new(),
             capture_word_alignment: false,
             captured_tokens: Vec::new(),
+            captured_token_logprobs: Vec::new(),
             captured_encoder: None,
             captured_sample_len: 0,
         }
@@ -2930,7 +3521,7 @@ mod local_execution_control_tests {
                     &[0.25; 3200],
                     16_000,
                     Some("en"),
-                    &[],
+                    (&[], &[]),
                     &mut |_| Ok(()),
                     &control,
                 )

@@ -82,6 +82,18 @@ struct BridgeRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     contextual_strings: Option<&'a [String]>,
     allow_download: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deadline_policy: Option<AppleDeadlinePolicy>,
+}
+
+/// Caller intent for URL recognition; file length only sizes the chosen budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppleDeadlinePolicy {
+    /// Interactive stop path: retain the short SFSpeech deadline and env override.
+    LiveFinal,
+    /// Offline recognition: collect every phrase until the task finishes.
+    WholeFile,
 }
 
 /// Apple bridge backend selected for a locale (matches Swift `AppleSttBackend`).
@@ -223,6 +235,11 @@ struct BridgeSegment {
     text: String,
     start_ts: f32,
     end_ts: f32,
+    /// `SFTranscriptionSegment.confidence` (0…1) when the bridge supplies it.
+    /// 0.0 is Apple's "no metric" sentinel; SpeechTranscriber results omit the
+    /// attribute entirely (A6, d4: never invented).
+    #[serde(default)]
+    confidence: Option<f32>,
 }
 
 /// Initialize Apple STT backend (platform + bridge + locale readiness).
@@ -396,15 +413,24 @@ pub(crate) fn try_transcribe_long_with_segments(
 
 /// Convenience helper for batch/offline file transcription.
 pub fn transcribe_file(path: &Path, language: Option<&str>) -> Result<RawTranscript> {
-    Ok(transcribe_file_with_backend(path, language)?.0)
+    Ok(transcribe_file_with_backend(path, language, AppleDeadlinePolicy::WholeFile)?.0)
 }
 
-/// File transcription with Apple backend provenance for final-pass adjudication.
+/// Whole-file transcription with Apple backend provenance.
 pub fn transcribe_file_verdict(
     path: &Path,
     language: Option<&str>,
 ) -> Result<TranscriptionVerdict> {
-    let (raw, backend) = transcribe_file_with_backend(path, language)?;
+    transcribe_file_verdict_with_policy(path, language, AppleDeadlinePolicy::WholeFile)
+}
+
+/// URL transcription with an explicit interactive or offline caller budget.
+pub fn transcribe_file_verdict_with_policy(
+    path: &Path,
+    language: Option<&str>,
+    policy: AppleDeadlinePolicy,
+) -> Result<TranscriptionVerdict> {
+    let (raw, backend) = transcribe_file_with_backend(path, language, policy)?;
     let mode = backend
         .map(AppleSttBackend::engine_mode)
         .unwrap_or(TranscriptionEngineMode::SfSpeechOnDevice);
@@ -419,10 +445,11 @@ pub fn transcribe_file_verdict(
     ))
 }
 
-/// Transcribe a path already on disk without re-encoding (preferred final-pass path).
+/// Transcribe a path already on disk with the caller's URL recognition policy.
 fn transcribe_file_with_backend(
     path: &Path,
     language: Option<&str>,
+    policy: AppleDeadlinePolicy,
 ) -> Result<(RawTranscript, Option<AppleSttBackend>)> {
     init()?;
     let locale = resolved_locale(language);
@@ -434,8 +461,19 @@ fn transcribe_file_with_backend(
         audio_path: Some(audio_path.as_str()),
         contextual_strings: None,
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+        deadline_policy: Some(policy),
     };
-    let response = run_bridge_with_timeout(&request, Some(BRIDGE_TRANSCRIBE_TIMEOUT))
+    let timeout = match policy {
+        AppleDeadlinePolicy::LiveFinal => BRIDGE_TRANSCRIBE_TIMEOUT,
+        AppleDeadlinePolicy::WholeFile => {
+            let (samples, rate) = crate::audio::load_audio_file(path)
+                .context("read whole-file Apple recognition duration")?;
+            let audio_seconds = samples.len() as f64 / f64::from(rate.max(1));
+            // Same recognition budget as Swift, plus process/setup margin.
+            Duration::from_secs_f64((audio_seconds + 25.0).max(20.0) + 30.0)
+        }
+    };
+    let response = run_bridge_with_timeout(&request, Some(timeout))
         .context("Apple STT bridge transcribe failed")?;
     let backend = response
         .backend
@@ -503,6 +541,7 @@ fn transcribe_via_bridge_wav_live(
         audio_path: Some(audio_path.as_str()),
         contextual_strings: contextual_strings.as_deref(),
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+        deadline_policy: None,
     };
     let audio_secs = audio.len() as f64 / sample_rate.max(1) as f64;
     let timeout = Duration::from_secs_f64((audio_secs + 20.0).clamp(30.0, 180.0));
@@ -560,6 +599,7 @@ fn run_bridge_stream(
             audio_path: None,
             contextual_strings: contextual_strings.as_deref(),
             allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+            deadline_policy: None,
         };
         let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
         stdin
@@ -679,6 +719,16 @@ fn bridge_segment_to_transcript_segment(seg: BridgeSegment) -> Option<Transcript
         text,
         start_ts: seg.start_ts,
         end_ts: seg.end_ts,
+        confidence: seg
+            .confidence
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(|value| {
+                crate::pipeline::word_confidence::WordConfidence::new(
+                    crate::pipeline::word_confidence::WordConfidenceSource::AppleSegmentConfidence,
+                    value,
+                    1,
+                )
+            }),
     })
 }
 
@@ -870,6 +920,7 @@ fn probe_bridge(locale: &str, allow_download: bool) -> Result<ProbeResult> {
         audio_path: None,
         contextual_strings: None,
         allow_download,
+        deadline_policy: None,
     };
     let response = run_bridge_with_timeout(&request, Some(BRIDGE_PROBE_TIMEOUT))
         .context("Apple STT bridge probe failed")?;
@@ -887,6 +938,7 @@ fn request_speech_auth_bridge(locale: &str, allow_download: bool) -> Result<Brid
         audio_path: None,
         contextual_strings: None,
         allow_download,
+        deadline_policy: None,
     };
     // Dialog can wait on the user; reuse the generous probe budget.
     run_bridge_with_timeout(&request, Some(BRIDGE_PROBE_TIMEOUT))
@@ -1041,14 +1093,27 @@ fn bridge_binary() -> PathBuf {
 }
 
 /// Resolution order: explicit env override → bridge bundled beside the `.app`
-/// executable → bare command name left for `PATH` lookup at spawn time.
+/// executable → PATH → installed Codescribe.app (standalone CLI fallback).
 /// Testable seam: `current_exe` is injected rather than read from the process.
 fn bridge_binary_for_current_exe(current_exe: Option<&Path>) -> PathBuf {
+    bridge_binary_with_installed_app(
+        current_exe,
+        Path::new("/Applications/Codescribe.app/Contents/MacOS/Codescribe"),
+    )
+}
+
+fn bridge_binary_with_installed_app(current_exe: Option<&Path>, installed_exe: &Path) -> PathBuf {
     if let Some(override_bin) = bridge_override_binary() {
         return override_bin;
     }
-
-    bundled_bridge_binary_for_exe(current_exe).unwrap_or_else(|| PathBuf::from(DEFAULT_BRIDGE_BIN))
+    if let Some(bundled) = bundled_bridge_binary_for_exe(current_exe) {
+        return bundled;
+    }
+    if which_in_path(DEFAULT_BRIDGE_BIN).is_some() {
+        return PathBuf::from(DEFAULT_BRIDGE_BIN);
+    }
+    bundled_bridge_binary_for_exe(Some(installed_exe))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_BRIDGE_BIN))
 }
 
 /// The `CODESCRIBE_APPLE_STT_BRIDGE` override, if set to a non-blank value.
@@ -1085,8 +1150,8 @@ fn bundled_bridge_binary_for_exe(current_exe: Option<&Path>) -> Option<PathBuf> 
 /// Cheap, process-cached check that the Apple STT bridge binary can actually be
 /// launched: an explicit `CODESCRIBE_APPLE_STT_BRIDGE` path wins first, then a
 /// bridge bundled beside the current `.app` executable, then the default bare
-/// command name on `PATH`. Automatic router selection gates on this so it
-/// never advertises Apple on a host where the bridge is absent.
+/// command name on `PATH`, then the installed Codescribe.app. Automatic router
+/// selection gates on this so it never advertises Apple with no bridge.
 pub(crate) fn is_bridge_resolvable() -> bool {
     /// Cached answer to "can we launch the bridge binary" for AUTO engine selection.
     static RESOLVABLE: OnceLock<bool> = OnceLock::new();
@@ -1103,14 +1168,7 @@ fn bridge_binary_resolvable() -> bool {
 /// exist" instead of "what would we spawn". An explicit override is checked as
 /// a real file: a broken override must fail here rather than at spawn time.
 fn bridge_binary_resolvable_for_current_exe(current_exe: Option<&Path>) -> bool {
-    if let Some(override_bin) = bridge_override_binary() {
-        return bridge_candidate_resolvable(&override_bin);
-    }
-    if bundled_bridge_binary_for_exe(current_exe).is_some() {
-        return true;
-    }
-
-    which_in_path(DEFAULT_BRIDGE_BIN).is_some()
+    bridge_candidate_resolvable(&bridge_binary_for_current_exe(current_exe))
 }
 
 /// A path-like candidate must exist as a file; a bare command name is looked
@@ -1463,6 +1521,34 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[serial]
+    fn standalone_cli_can_use_installed_bridge_without_overriding_a_broken_explicit_path() {
+        let _bridge = crate::test_isolation::EnvGuard::capture(ENV_STT_BRIDGE);
+        let _path = crate::test_isolation::EnvGuard::capture("PATH");
+        let root = tempfile::tempdir().unwrap();
+        let installed_exe = root.path().join("Codescribe.app/Contents/MacOS/Codescribe");
+        let installed_bridge = installed_exe.with_file_name(DEFAULT_BRIDGE_BIN);
+        std::fs::create_dir_all(installed_exe.parent().unwrap()).unwrap();
+        std::fs::write(&installed_bridge, b"bridge").unwrap();
+        // SAFETY: serialized; guards restore both variables.
+        unsafe {
+            std::env::remove_var(ENV_STT_BRIDGE);
+            std::env::set_var("PATH", root.path());
+        }
+        assert_eq!(
+            bridge_binary_with_installed_app(None, &installed_exe),
+            installed_bridge
+        );
+        let missing = root.path().join("explicit-missing");
+        unsafe { std::env::set_var(ENV_STT_BRIDGE, &missing) };
+        assert_eq!(
+            bridge_binary_with_installed_app(None, &installed_exe),
+            missing
+        );
+        assert!(!bridge_candidate_resolvable(&missing));
     }
 
     /// Short language codes expand to the product default region (pl→pl-PL, en→en-US).

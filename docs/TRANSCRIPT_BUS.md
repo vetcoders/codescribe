@@ -138,7 +138,9 @@ microphone. It reaches the overlay as a typed
 copy. Guided calibration publishes `calibration_succeeded` (including the new
 profile version) or `calibration_failed` through the same IPC/listener lane.
 These passive status cards are not Bus rows and carry no occurrence, reducer,
-or acoustic receipt fields.
+or acoustic receipt fields. A card is shown even when the transcription overlay
+preference is off; it then leaves on the ordinary terminal auto-hide countdown,
+which the keep-visible pin does not suspend while that preference is off.
 
 `codescribe.transcript-evidence.v1` is the committed projection family. Every
 line is created only by `TranscriptBus::publish_revision(revision, ledger)` and
@@ -543,7 +545,7 @@ shortcut and no disabled animation.
 
 One seam is not closable inside the receiver. `CsTrayStatusPayload`
 (`bridge/src/tray_status.rs`) carries `kind`, `tone`, `indicator_mode`,
-`assistive`, `tooltip`, `menu_label` and a monotonic tray `generation`, but no
+`assistive` and a monotonic tray `generation`, but no
 session or capture identity. `TrayStatusStore` already refuses non-monotonic
 ticks, so ordering is sound; what the payload cannot express is whether a current
 `assistive` reading belongs to the live capture or to a different route. The
@@ -775,8 +777,18 @@ not rewritten.
 An open channel session also appends `codescribe.channel-session.v1` (`kind: channel_session`). `state: open` with `loud: true` means the microphone is
 live. `state: sealed` with `reason: silence` means
 `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` elapsed without new channel text. `0`
-disables that cap. The row names `opened_at`, `provider`,
-`provider_session_id`, and `utterance_silence_sec`. `ChannelHudState` carries
+disables that cap. `state: sealed` with `reason: hangup` means Fn+digit was
+pressed again and nothing reopens the session. `state: sealed` with
+`reason: orphan` means the process that opened the session ended without
+sealing it (quit or crash); the next controller start writes it for every
+session whose `open` row is still the newest `channel-session` row of its
+channel, reading only the last 64 MiB of each bus (shared, and every
+dedicated bus the binding names). A session followed by a newer row of its
+channel is already over and gets no orphan row. Each channel session gets at
+most one `sealed` row, on the bus that carried its `open` row, after its
+capture closed and whether or not the ledger issued a terminal seal. The row names `opened_at`, `provider`,
+`provider_session_id`, and `utterance_silence_sec`, repeated from the `open`
+row; followers pair the two rows on them. `ChannelHudState` carries
 the same open fact, including provider and session, for the overlay. The
 overlay paint itself is a separate cut.
 

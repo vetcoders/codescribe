@@ -92,12 +92,24 @@ impl AnthropicProvider {
         lane: &RuntimeLlmLane,
         request_timing: &RuntimeAiRequestTiming,
     ) -> Result<Self> {
-        let api_key_account = Some(lane.credential().key_account().to_string());
-        let endpoint = lane.endpoint().to_string();
-        // Model comes from the shared assistive-lane setting; Settings supplies a
-        // Claude model when the assistive provider is Anthropic.
-        let default_model = lane.model().to_string();
+        let mut result = Self::from_configuration(
+            lane.endpoint().to_string(),
+            lane.model().to_string(),
+            String::new(),
+            request_timing,
+        )?;
+        result.api_key_account = Some(lane.credential().key_account().to_string());
+        Ok(result)
+    }
 
+    /// Per-turn configuration supplied by an embedding application. Credentials
+    /// belong to that caller; this provider never reads a different app's keys.
+    pub fn from_configuration(
+        endpoint: String,
+        default_model: String,
+        api_key: String,
+        request_timing: &RuntimeAiRequestTiming,
+    ) -> Result<Self> {
         let initial_response_timeout = request_timing.attempt_timeout();
         let inter_chunk_timeout = request_timing.inter_chunk_timeout();
 
@@ -116,8 +128,8 @@ impl AnthropicProvider {
         Ok(Self {
             client,
             endpoint,
-            api_key: String::new(),
-            api_key_account,
+            api_key,
+            api_key_account: None,
             anthropic_version: ANTHROPIC_VERSION.to_string(),
             default_model,
             default_max_tokens: DEFAULT_MAX_TOKENS,
@@ -1288,12 +1300,15 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     /// Tool-result image assets load and encode as base64 inside the result content.
     fn tool_result_carries_image_asset_as_base64() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         let asset = AgentAssetStore::save_image(b"png bytes", "image/png")
             .expect("image asset should save");
-        let path = asset.path.clone();
         let message = Message::new(
             Role::User,
             vec![ContentBlock::ToolResult {
@@ -1305,7 +1320,6 @@ mod tests {
         let blocks = message_content_blocks(&message).unwrap();
         assert_eq!(blocks[0]["content"][0]["type"], "image");
         assert_eq!(blocks[0]["content"][0]["source"]["type"], "base64");
-        std::fs::remove_file(path).ok();
     }
 
     #[test]
@@ -1337,15 +1351,18 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     /// ImageAsset paths are read from disk when the request body is built, not earlier.
     fn request_body_loads_image_asset_from_disk_at_request_time() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         // D8: an ImageAsset (screenshot pipeline, C9) rides through
         // build_request_body as base64 read from disk at request time — the
         // asset reference itself never reaches the wire.
         let asset = AgentAssetStore::save_image(b"asset bytes on disk", "image/png")
             .expect("image asset should save");
-        let path = asset.path.clone();
         let messages = vec![Message::new(
             Role::User,
             vec![
@@ -1367,13 +1384,16 @@ mod tests {
             content[1]["source"]["data"].as_str().unwrap(),
             BASE64.encode(b"asset bytes on disk")
         );
-        std::fs::remove_file(path).ok();
     }
 
     #[test]
+    #[serial_test::serial]
     /// Persisted thread images rehydrate as assets and still enter the next-turn prompt.
     fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         // Turn 2 on a restored thread: an inline composer image persisted via
         // the thread store must come back as a disk-backed asset and still
         // reach the request payload instead of being skipped as byteless.
@@ -1394,10 +1414,6 @@ mod tests {
             blocks[0]["source"]["data"].as_str().unwrap(),
             BASE64.encode(&image_bytes)
         );
-
-        if let ContentBlock::ImageAsset(asset) = &restored.content[0] {
-            std::fs::remove_file(&asset.path).ok();
-        }
     }
 
     #[test]

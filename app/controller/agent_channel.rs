@@ -3,11 +3,12 @@
 //! The channel is not a dictation take and not a `State` variant. It subscribes
 //! to the shared capture, seals on a repeated digit, on its own utterance
 //! silence, or after `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` without new channel
-//! text, and stamps `audience` on Bus rows. Paste and the overlay document
-//! stay off. The hold badge is the preview; `ChannelHudState` is the open-mic
-//! fact the overlay paints from.
+//! text, and stamps `audience` on Bus rows. A session a previous process left
+//! open is sealed as an orphan when the controller starts. Paste and the
+//! overlay document stay off. The hold badge is the preview; `ChannelHudState`
+//! is the open-mic fact the overlay paints from.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -110,6 +111,16 @@ struct BindingEntry {
     bus: Option<String>,
 }
 
+impl BindingEntry {
+    fn bus(&self) -> Option<PathBuf> {
+        self.bus
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct OpenAgentChannel {
     pub subscriber: CaptureSubscriberId,
@@ -126,6 +137,10 @@ pub(crate) struct OpenAgentChannel {
     pub bus: Option<PathBuf>,
     /// Last non-empty projection, so the archived take carries its words.
     pub last_text: Arc<StdMutex<String>>,
+    pub refinement_warnings: Arc<StdMutex<Vec<String>>>,
+    /// The same bus session used by the reducer, including its fanout and
+    /// per-destination persistence state, retained through the closing receipt.
+    pub transcript_bus: Option<Arc<TranscriptBus>>,
 }
 
 /// Open-channel fact for the overlay. W2 exposes it; the overlay paint is separate.
@@ -145,6 +160,9 @@ pub struct ChannelHudState {
     pub utterance_silence_ms: u32,
     pub provider: Option<String>,
     pub provider_session_id: Option<String>,
+    /// Whether the bound provider session has a live bridge follower
+    /// (fresh lease heartbeat). `None` = the snapshot made no liveness claim.
+    pub follower_alive: Option<bool>,
 }
 
 fn utterance_silence_ms(seconds: f32) -> u32 {
@@ -199,6 +217,223 @@ pub(crate) enum ChannelOpenMode {
     /// Test seam: exercised by this module's tests; prod opens `Live`.
     #[allow(dead_code)]
     AttachedOnly,
+}
+
+/// Why a channel session ended: the `reason` of its one `sealed` receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChannelSealReason {
+    /// Utterance silence delivered the words; the quiet contract reopens
+    /// the channel on the same binding.
+    Silence,
+    /// Fn+digit pressed again: the Founder hung up and nothing reopens it.
+    Hangup,
+    /// The process that opened the session ended without closing it (quit,
+    /// crash, or a build that wrote no hang-up row). The next controller
+    /// start seals it; no microphone of this process ever belonged to it.
+    Orphan,
+}
+
+impl ChannelSealReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Silence => "silence",
+            Self::Hangup => "hangup",
+            Self::Orphan => "orphan",
+        }
+    }
+}
+
+/// The one writer of a channel session's `sealed` row, for every reason.
+/// `open` is the session as its `open` row stated it; the seal repeats that
+/// identity — channel, agent, `session_id`, `opened_at`, provider — because
+/// followers pair the two rows on it (the overlay projection closes a
+/// channel only when the seal's `opened_at` equals the open session's).
+fn append_seal_receipt(
+    bus: &Path,
+    reason: ChannelSealReason,
+    open: &crate::presentation::agent_ack::ChannelSessionLine<'_>,
+    refinement_warnings: &[String],
+) -> std::io::Result<()> {
+    crate::presentation::agent_ack::append_json_line(
+        bus,
+        &seal_receipt_line(reason, open, refinement_warnings),
+    )
+}
+
+fn seal_receipt_line(
+    reason: ChannelSealReason,
+    open: &crate::presentation::agent_ack::ChannelSessionLine<'_>,
+    refinement_warnings: &[String],
+) -> serde_json::Value {
+    let mut line = crate::presentation::agent_ack::channel_session_line(
+        &crate::presentation::agent_ack::ChannelSessionLine {
+            state: "sealed",
+            reason: reason.as_str(),
+            ..*open
+        },
+    );
+    line["raw_processing_status"] = serde_json::json!(if reason == ChannelSealReason::Orphan {
+        "not_applicable"
+    } else if refinement_warnings.is_empty() {
+        "settled"
+    } else if refinement_warnings
+        .iter()
+        .all(|code| code == "agent_raw_whisper_disabled")
+    {
+        "whisper_disabled"
+    } else {
+        "refinement_incomplete"
+    });
+    line["refinement_warnings"] = serde_json::json!(refinement_warnings);
+    line
+}
+
+/// Bytes of each bus tail the orphan reconciliation reads: the budget of one
+/// ack-scan pass. The shared bus runs to tens of GB and a full rescan once
+/// took the machine's RAM; an orphan's `open` row is followed only by what
+/// its own process wrote before it ended (on the Founder's bus, 64 MiB is
+/// about twelve hours of dictation).
+const ORPHAN_SCAN_WINDOW_BYTES: u64 = 64 << 20;
+
+/// One `sealed` row the startup reconciliation appended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OrphanSeal {
+    pub bus: PathBuf,
+    pub channel: String,
+    pub session_id: String,
+}
+
+/// The newest `channel-session` row of each channel within the last `window`
+/// bytes of `bus`. Streams the tail one row at a time, so memory holds a
+/// row, never the file; only rows naming the schema are parsed. A missing
+/// bus has no rows.
+fn latest_channel_rows(
+    bus: &Path,
+    window: u64,
+) -> std::io::Result<BTreeMap<String, serde_json::Value>> {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+    let schema = crate::presentation::agent_ack::CHANNEL_SESSION_SCHEMA;
+    let file = match std::fs::File::open(bus) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(BTreeMap::new());
+        }
+        Err(error) => return Err(error),
+    };
+    let start = file.metadata()?.len().saturating_sub(window);
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    if start > 0 {
+        // Start on a row boundary: from the byte before the window, drop
+        // everything through the first newline — only the row the window
+        // cut in half, or nothing when the window begins exactly on a row.
+        reader.seek(SeekFrom::Start(start - 1))?;
+        reader.read_until(b'\n', &mut line)?;
+    }
+    let mut latest = BTreeMap::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        let Ok(text) = std::str::from_utf8(&line) else {
+            continue;
+        };
+        if !text.contains(schema) {
+            continue;
+        }
+        let Ok(row) = serde_json::from_str::<serde_json::Value>(text) else {
+            continue;
+        };
+        if row.get("schema").and_then(serde_json::Value::as_str) != Some(schema) {
+            continue;
+        }
+        if let Some(channel) = row.get("channel").and_then(serde_json::Value::as_str) {
+            latest.insert(channel.to_string(), row);
+        }
+    }
+    Ok(latest)
+}
+
+/// An `open` row as the session line its seal repeats, or `None` when the
+/// row is not an open session, names no session, or belongs to `live`.
+fn orphan_open_line<'a>(
+    row: &'a serde_json::Value,
+    live: &BTreeSet<String>,
+) -> Option<crate::presentation::agent_ack::ChannelSessionLine<'a>> {
+    use serde_json::Value;
+
+    if row.get("state").and_then(Value::as_str) != Some("open") {
+        return None;
+    }
+    let session_id = row.get("session_id").and_then(Value::as_str)?;
+    if live.contains(session_id) {
+        return None;
+    }
+    let opened_at =
+        chrono::DateTime::parse_from_rfc3339(row.get("opened_at").and_then(Value::as_str)?).ok()?;
+    Some(crate::presentation::agent_ack::ChannelSessionLine {
+        state: "open",
+        reason: "opened",
+        channel: row.get("channel").and_then(Value::as_str)?,
+        agent: row.get("agent").and_then(Value::as_str)?,
+        session_id: Some(session_id),
+        autoseal_secs: row
+            .get("autoseal_secs")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        opened_at: SystemTime::from(opened_at),
+        utterance_silence_sec: row
+            .get("utterance_silence_sec")
+            .and_then(Value::as_f64)
+            .unwrap_or_default() as f32,
+        provider: row.get("provider").and_then(Value::as_str),
+        provider_session_id: row.get("provider_session_id").and_then(Value::as_str),
+    })
+}
+
+/// Seals with `reason: orphan` every session whose `open` row is still the
+/// newest `channel-session` row of its channel on its bus, unless this
+/// process owns it (`live`). The seal lands on that same bus. A session
+/// already followed by a newer row of its channel was ended for every
+/// follower by that row — a seal, or the successor's `open` — and gets
+/// nothing. Idempotent: the seal becomes the channel's newest row, so the
+/// next start finds nothing open.
+fn seal_orphaned_sessions(
+    buses: &[PathBuf],
+    live: &BTreeSet<String>,
+    window: u64,
+) -> Vec<OrphanSeal> {
+    let mut sealed = Vec::new();
+    for bus in buses {
+        let latest = match latest_channel_rows(bus, window) {
+            Ok(latest) => latest,
+            Err(error) => {
+                tracing::warn!(%error, bus = %bus.display(), "orphan channel scan could not read the bus");
+                continue;
+            }
+        };
+        for row in latest.values() {
+            let Some(open) = orphan_open_line(row, live) else {
+                continue;
+            };
+            match append_seal_receipt(bus, ChannelSealReason::Orphan, &open, &[]) {
+                Ok(()) => sealed.push(OrphanSeal {
+                    bus: bus.clone(),
+                    channel: open.channel.to_string(),
+                    session_id: open.session_id.unwrap_or_default().to_string(),
+                }),
+                Err(error) => tracing::warn!(
+                    %error,
+                    bus = %bus.display(),
+                    channel = open.channel,
+                    "orphan channel seal was not appended"
+                ),
+            }
+        }
+    }
+    sealed
 }
 
 pub fn binding_path() -> PathBuf {
@@ -258,17 +493,11 @@ pub fn resolve_digit(digit: u8, path: &Path) -> Result<BoundAgentSession, Channe
             detail: format!("digit {digit} must name audience, provider, and provider_session_id"),
         });
     }
-    let bus = entry
-        .bus
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
     Ok(BoundAgentSession {
         audience: audience.to_string(),
         provider: Some(provider.to_string()),
         provider_session_id: Some(provider_session_id.to_string()),
-        bus,
+        bus: entry.bus(),
     })
 }
 
@@ -277,33 +506,69 @@ fn refusal(error: ChannelOpenRefusal) -> anyhow::Error {
 }
 
 impl RecordingController {
-    /// Fn+digit toggle. A second press of the same digit seals and closes.
-    /// Dictation state is not changed.
+    /// Fn+digit toggle. A second press of the same digit hangs up: the
+    /// session seals with `reason: hangup` and does not reopen. Dictation
+    /// state is not changed.
     pub async fn toggle_agent_channel(&self, digit: u8) -> Result<()> {
-        self.dispatch_agent_channel(digit, &binding_path(), ChannelOpenMode::Live)
-            .await
+        self.dispatch_agent_channel(
+            digit,
+            &binding_path(),
+            &crate::presentation::transcript_bus::transcript_bus_path(),
+            ChannelOpenMode::Live,
+        )
+        .await
     }
 
+    /// `shared_bus` carries the rows and receipts of a channel whose binding
+    /// names no dedicated bus.
     pub(crate) async fn dispatch_agent_channel(
         &self,
         digit: u8,
         binding_file: &Path,
+        shared_bus: &Path,
         mode: ChannelOpenMode,
     ) -> Result<()> {
         let mut channels = self.agent_channels.lock().await;
         if let Some(open) = channels.remove(&digit) {
             drop(channels);
-            self.close_open_channel(open).await?;
+            self.close_open_channel(
+                digit,
+                open,
+                ChannelSealReason::Hangup,
+                shared_bus,
+                channel_autoseal_secs(),
+            )
+            .await?;
             return Ok(());
         }
 
         let bound = resolve_digit(digit, binding_file).map_err(refusal)?;
+        // Fn+0 always includes the shared bus. Freeze the binding's distinct
+        // dedicated paths for this take so hang-up closes the same destinations.
+        let mut broadcast_buses = Vec::new();
+        if digit == 0 {
+            match load_binding(binding_file) {
+                Ok(binding) => {
+                    for bus in binding.bindings.values().filter_map(BindingEntry::bus) {
+                        if bus != shared_bus && !broadcast_buses.contains(&bus) {
+                            broadcast_buses.push(bus);
+                        }
+                    }
+                }
+                Err(ChannelOpenRefusal::BindingMissing { .. }) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "broadcast could not read dedicated destinations; shared bus remains active")
+                }
+            }
+        }
         let runtime_settings = self.runtime_settings_arc().await;
         let silence_sec = runtime_settings.values().toggle_silence_sec;
         let opened_at = SystemTime::now();
         let last_voice_at = Arc::new(StdMutex::new(opened_at));
         let last_text = Arc::new(StdMutex::new(String::new()));
+        let refinement_warnings = Arc::new(StdMutex::new(Vec::new()));
         let mut session_id = None;
+        let mut transcript_bus = None;
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = recorder_guard.as_mut().ok_or_else(|| {
             anyhow!("agent channel refused: recording controller has no recorder")
@@ -321,9 +586,7 @@ impl RecordingController {
                     .whisper_language
                     .whisper_hint()
                     .map(str::to_string);
-                // W5: a binding with a dedicated bus routes this channel's
-                // rows there; without one the shared bus stays authoritative.
-                let bus = Some(Arc::new(TranscriptBus::open_with_path(
+                let bus = Arc::new(TranscriptBus::open_with_paths(
                     TranscriptSession {
                         session_id: session_label.clone(),
                         mode: TranscriptMode::Agent,
@@ -335,8 +598,10 @@ impl RecordingController {
                     bound
                         .bus
                         .clone()
-                        .unwrap_or_else(crate::presentation::transcript_bus::transcript_bus_path),
-                )));
+                        .unwrap_or_else(|| shared_bus.to_path_buf()),
+                    broadcast_buses,
+                ));
+                transcript_bus = Some(Arc::clone(&bus));
                 // The Pointer Indicator knob rules every badge path: Settings
                 // promises "Base size; Agent mode stays proportionally larger",
                 // so the channel dot is the persisted base times the Assistive
@@ -360,7 +625,7 @@ impl RecordingController {
                         Arc::new(TokioMutex::new(String::new())),
                         None,
                         None,
-                        bus,
+                        Some(bus),
                         Some(Arc::clone(&ledger)),
                         None,
                     )
@@ -381,7 +646,8 @@ impl RecordingController {
                             projection.degraded,
                         );
                     }))
-                    .with_sentence_pause_sec(sentence_pause),
+                    .with_sentence_pause_sec(sentence_pause)
+                    .with_refinement_warnings(Arc::clone(&refinement_warnings)),
                 );
                 let sink: Arc<dyn EventSink> = emitter;
                 match recorder
@@ -410,7 +676,7 @@ impl RecordingController {
         let receipt_session = session_id.clone();
         let receipt_provider = bound.provider.clone();
         let receipt_provider_session = bound.provider_session_id.clone();
-        let receipt_bus = bound.bus.clone();
+        let receipt_bus = transcript_bus.clone();
         channels.insert(
             digit,
             OpenAgentChannel {
@@ -425,6 +691,8 @@ impl RecordingController {
                 mode,
                 bus: bound.bus,
                 last_text,
+                refinement_warnings,
+                transcript_bus,
             },
         );
         drop(recorder_guard);
@@ -444,18 +712,31 @@ impl RecordingController {
                     provider_session_id: receipt_provider_session.as_deref(),
                 },
             );
-            let open_receipt_bus = receipt_bus
-                .unwrap_or_else(crate::presentation::transcript_bus::transcript_bus_path);
-            if let Err(error) =
-                crate::presentation::agent_ack::append_json_line(&open_receipt_bus, &line)
-            {
-                tracing::warn!(%error, digit, "channel open receipt was not appended");
+            if let Some(bus) = receipt_bus {
+                bus.record_channel_receipt(&line);
             }
         }
         Ok(())
     }
 
-    async fn close_open_channel(&self, open: OpenAgentChannel) -> Result<()> {
+    /// The one closing throne of a live channel session, for silence and
+    /// hang-up alike (a session no live process owns is sealed by
+    /// [`Self::seal_orphaned_channel_sessions`]). It consumes the open record,
+    /// which its caller removed from `agent_channels` exactly once, so a
+    /// session gets at most one `sealed` receipt. The receipt follows the
+    /// capture close: `end_channel_session` joins the transcription task, so
+    /// every evidence row of the session is already on the bus when a
+    /// follower reads the boundary. It does not wait for a ledger terminal
+    /// seal: a take whose coverage was refused has no other row that
+    /// releases its words.
+    async fn close_open_channel(
+        &self,
+        digit: u8,
+        open: OpenAgentChannel,
+        reason: ChannelSealReason,
+        shared_bus: &Path,
+        autoseal_secs: u64,
+    ) -> Result<()> {
         let retained_audio = {
             let mut recorder_guard = self.recorder.lock().await;
             match recorder_guard.as_mut() {
@@ -481,6 +762,38 @@ impl RecordingController {
                 codescribe_core::state::SessionTranscriptArchive::Committed(&heard),
             );
         }
+        let opened = crate::presentation::agent_ack::ChannelSessionLine {
+            state: "open",
+            reason: "opened",
+            channel: &digit.to_string(),
+            agent: &open.audience,
+            session_id: open.session_id.as_deref(),
+            autoseal_secs,
+            opened_at: open.opened_at,
+            utterance_silence_sec: open.silence_sec,
+            provider: open.provider.as_deref(),
+            provider_session_id: open.provider_session_id.as_deref(),
+        };
+        let refinement_warnings = open
+            .refinement_warnings
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        if let Some(bus) = open.transcript_bus.as_ref() {
+            bus.record_channel_receipt(&seal_receipt_line(reason, &opened, &refinement_warnings));
+        } else if let Err(error) = append_seal_receipt(
+            open.bus.as_deref().unwrap_or(shared_bus),
+            reason,
+            &opened,
+            &refinement_warnings,
+        ) {
+            tracing::warn!(
+                %error,
+                digit,
+                reason = reason.as_str(),
+                "channel seal receipt was not appended"
+            );
+        }
         let state = self.current_state().await;
         let channels = self.agent_channels.lock().await;
         if channels.is_empty() && state == super::State::Idle {
@@ -489,15 +802,68 @@ impl RecordingController {
         Ok(())
     }
 
-    /// Ack watcher plus the channel silence cap. Started once, from the live
-    /// controller, so unit tests that only construct a controller do not scan
-    /// the real bridge home.
+    /// Startup reconciliation of the channel-session ledger. A session whose
+    /// `open` row is still the newest row of its channel belongs to a
+    /// process that ended without sealing it — this controller has only just
+    /// started, so no such microphone is live. Each gets one `sealed` row
+    /// with `reason: orphan` on the bus that carried its `open` row: the
+    /// shared bus, or a dedicated bus the binding names. Sessions this
+    /// controller already owns are left alone. The channel lock is held for
+    /// the scan and the appends, so a digit pressed meanwhile opens after
+    /// them and no orphan row can follow a new session's `open` row.
+    pub(crate) async fn seal_orphaned_channel_sessions(
+        &self,
+        shared_bus: &Path,
+        binding_file: &Path,
+    ) -> Vec<OrphanSeal> {
+        let channels = self.agent_channels.lock().await;
+        let live: BTreeSet<String> = channels
+            .values()
+            .filter_map(|open| open.session_id.clone())
+            .collect();
+        let mut buses = vec![shared_bus.to_path_buf()];
+        if let Ok(binding) = load_binding(binding_file) {
+            for bus in binding.bindings.values().filter_map(BindingEntry::bus) {
+                if !buses.contains(&bus) {
+                    buses.push(bus);
+                }
+            }
+        }
+        let sealed = tokio::task::spawn_blocking(move || {
+            seal_orphaned_sessions(&buses, &live, ORPHAN_SCAN_WINDOW_BYTES)
+        })
+        .await;
+        drop(channels);
+        match sealed {
+            Ok(sealed) => sealed,
+            Err(error) => {
+                tracing::warn!(%error, "orphan channel reconciliation stopped");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Orphan reconciliation, then the ack watcher plus the channel silence
+    /// cap. Started once, from the live controller, so unit tests that only
+    /// construct a controller do not scan the real bridge home.
     pub fn spawn_channel_guards(self: &Arc<Self>, handle: tokio::runtime::Handle) {
         if self.channel_guards_started.swap(true, Ordering::SeqCst) {
             return;
         }
         let controller = Arc::clone(self);
         handle.spawn(async move {
+            let orphans = controller
+                .seal_orphaned_channel_sessions(
+                    &crate::presentation::transcript_bus::transcript_bus_path(),
+                    &binding_path(),
+                )
+                .await;
+            if !orphans.is_empty() {
+                tracing::info!(
+                    ?orphans,
+                    "sealed channel sessions a previous process left open"
+                );
+            }
             loop {
                 if controller.shutdown_requested.load(Ordering::SeqCst) {
                     break;
@@ -561,42 +927,17 @@ impl RecordingController {
         };
         let mut sealed = Vec::new();
         for (digit, open) in due {
-            let channel = digit.to_string();
-            let agent = open.audience.clone();
-            let session_id = open.session_id.clone();
-            let opened_at = open.opened_at;
-            let silence_sec = open.silence_sec;
-            let provider = open.provider.clone();
-            let provider_session_id = open.provider_session_id.clone();
             let mode = open.mode;
-            let channel_bus = open.bus.clone();
-            if let Err(error) = self.close_open_channel(open).await {
+            if let Err(error) = self
+                .close_open_channel(digit, open, ChannelSealReason::Silence, bus, secs)
+                .await
+            {
                 tracing::warn!(%error, digit, "channel auto-seal could not close the capture");
                 continue;
             }
-            let line = crate::presentation::agent_ack::channel_session_line(
-                &crate::presentation::agent_ack::ChannelSessionLine {
-                    state: "sealed",
-                    reason: "silence",
-                    channel: &channel,
-                    agent: &agent,
-                    session_id: session_id.as_deref(),
-                    autoseal_secs: secs,
-                    opened_at,
-                    utterance_silence_sec: silence_sec,
-                    provider: provider.as_deref(),
-                    provider_session_id: provider_session_id.as_deref(),
-                },
-            );
-            let seal_receipt_bus = channel_bus.as_deref().unwrap_or(bus);
-            if let Err(error) =
-                crate::presentation::agent_ack::append_json_line(seal_receipt_bus, &line)
-            {
-                tracing::warn!(%error, digit, "channel silence receipt was not appended");
-            }
             sealed.push(digit);
             if let Some(binding) = reopen_binding
-                && let Err(error) = self.dispatch_agent_channel(digit, binding, mode).await
+                && let Err(error) = self.dispatch_agent_channel(digit, binding, bus, mode).await
             {
                 tracing::warn!(
                     %error,
@@ -637,9 +978,81 @@ impl RecordingController {
                     utterance_silence_ms: utterance_silence_ms(open.silence_sec),
                     provider: open.provider.clone(),
                     provider_session_id: open.provider_session_id.clone(),
+                    follower_alive: None,
                 })
             })
             .collect()
+    }
+
+    /// Roster truth for the overlay popover: every bound digit — open or not —
+    /// with follower liveness read from the session-bridge leases (fresh
+    /// heartbeat, same convention as the helper's `--status`). Open channels
+    /// keep their full HUD fields; a bound-but-closed digit carries
+    /// `open: false` and `UNIX_EPOCH` in `opened_at`, which no consumer reads
+    /// for closed rows. A roster row never starts anything — display only.
+    pub async fn channel_roster_states(&self) -> Vec<ChannelHudState> {
+        let bridge = codescribe_core::stt::active_names::bridge_home();
+        self.channel_roster_states_at(&binding_path(), &bridge)
+            .await
+    }
+
+    pub(crate) async fn channel_roster_states_at(
+        &self,
+        binding: &Path,
+        bridge_home: &Path,
+    ) -> Vec<ChannelHudState> {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|duration| duration.as_secs_f64())
+            .unwrap_or(0.0);
+        let live = codescribe_core::stt::active_names::live_follower_sessions_at(
+            bridge_home,
+            now,
+            codescribe_core::stt::active_names::LEASE_TTL_SECONDS,
+        );
+        let alive = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
+            match (provider.as_deref(), session.as_deref()) {
+                (Some(provider), Some(session)) => {
+                    Some(live.contains(&(provider.to_lowercase(), session.to_string())))
+                }
+                _ => None,
+            }
+        };
+        let mut states = self.channel_hud_states().await;
+        for state in &mut states {
+            state.follower_alive = alive(&state.provider, &state.provider_session_id);
+        }
+        let Ok(file) = load_binding(binding) else {
+            return states;
+        };
+        for (digit, entry) in &file.bindings {
+            if digit.len() != 1 || !digit.chars().all(|c| ('1'..='9').contains(&c)) {
+                continue;
+            }
+            if states.iter().any(|state| &state.channel == digit) {
+                continue;
+            }
+            let provider = Some(entry.provider.trim().to_string()).filter(|s| !s.is_empty());
+            let session =
+                Some(entry.provider_session_id.trim().to_string()).filter(|s| !s.is_empty());
+            states.push(ChannelHudState {
+                open: false,
+                loud: false,
+                channel: digit.clone(),
+                audience: entry.audience.trim().to_string(),
+                label: String::new(),
+                autoseal_secs: 0,
+                autoseal_deadline: None,
+                tts_ducking: false,
+                opened_at: SystemTime::UNIX_EPOCH,
+                utterance_silence_ms: 0,
+                follower_alive: alive(&provider, &session),
+                provider,
+                provider_session_id: session,
+            });
+        }
+        states.sort_by(|a, b| a.channel.cmp(&b.channel));
+        states
     }
 
     /// Conversation and energy calibration stay exclusive owners.
@@ -693,6 +1106,68 @@ mod tests {
         let path = dir.join(BINDING_FILENAME);
         std::fs::write(&path, body).expect("write binding");
         path
+    }
+
+    fn bus_rows(bus: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(bus)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("json"))
+            .collect()
+    }
+
+    /// Digit 3 bound to Leon on a dedicated `buses/channel-3.jsonl`.
+    fn write_dedicated_binding(dir: &Path) -> (PathBuf, PathBuf) {
+        let channel_bus = dir.join("buses/channel-3.jsonl");
+        let binding = format!(
+            r#"{{"schema":"vc.agent-audience-binding.v1","bindings":{{"3":{{"audience":"Leon","provider":"codex","provider_session_id":"leon-session","bus":"{}"}}}}}}"#,
+            channel_bus.display()
+        );
+        (write_binding(dir, &binding), channel_bus)
+    }
+
+    /// Opens digit 3 without a device and stamps the session label a Live
+    /// open mints, so receipts carry the identity followers key on. Returns
+    /// the open instant.
+    async fn open_stamped(
+        controller: &RecordingController,
+        binding: &Path,
+        shared_bus: &Path,
+        session: &str,
+    ) -> SystemTime {
+        controller
+            .dispatch_agent_channel(3, binding, shared_bus, ChannelOpenMode::AttachedOnly)
+            .await
+            .expect("open");
+        stamp_session(controller, session).await
+    }
+
+    async fn stamp_session(controller: &RecordingController, session: &str) -> SystemTime {
+        let mut channels = controller.agent_channels.lock().await;
+        let open = channels.get_mut(&3).expect("channel 3 is open");
+        open.session_id = Some(session.to_string());
+        open.opened_at
+    }
+
+    async fn hear_voice_at(controller: &RecordingController, at: SystemTime) {
+        let open = controller.agent_channel_snapshot(3).await.expect("open");
+        *open
+            .last_voice_at
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = at;
+    }
+
+    fn sealed_rows(rows: &[serde_json::Value]) -> Vec<(String, String)> {
+        rows.iter()
+            .filter(|row| row["schema"] == "codescribe.channel-session.v1")
+            .filter(|row| row["state"] == "sealed")
+            .map(|row| {
+                (
+                    row["session_id"].as_str().unwrap_or_default().to_string(),
+                    row["reason"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -759,8 +1234,9 @@ mod tests {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
         let path = dir.path().join(BINDING_FILENAME);
+        let shared_bus = dir.path().join("shared-bus.jsonl");
         let error = controller
-            .dispatch_agent_channel(4, &path, ChannelOpenMode::AttachedOnly)
+            .dispatch_agent_channel(4, &path, &shared_bus, ChannelOpenMode::AttachedOnly)
             .await
             .expect_err("missing binding must refuse");
         let message = format!("{error:#}");
@@ -777,6 +1253,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(agent_ack_duck)]
     async fn second_press_closes_the_channel_and_leaves_dictation_idle() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -784,8 +1261,9 @@ mod tests {
             dir.path(),
             r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"3":{"audience":"Leon","provider":"codex","provider_session_id":"leon-session"}}}"#,
         );
+        let shared_bus = dir.path().join("shared-bus.jsonl");
         controller
-            .dispatch_agent_channel(3, &path, ChannelOpenMode::AttachedOnly)
+            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::AttachedOnly)
             .await
             .expect("open");
         let open = controller.agent_channel_snapshot(3).await.expect("open");
@@ -804,7 +1282,7 @@ mod tests {
         assert!(!take);
 
         controller
-            .dispatch_agent_channel(3, &path, ChannelOpenMode::Live)
+            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::Live)
             .await
             .expect("second press closes");
         assert!(controller.agent_channel_snapshot(3).await.is_none());
@@ -812,6 +1290,13 @@ mod tests {
         assert_eq!(count, 0);
         assert!(!channel);
         assert_eq!(controller.current_state().await, super::super::State::Idle);
+        let rows = bus_rows(&shared_bus);
+        assert_eq!(
+            rows.len(),
+            1,
+            "a binding without a dedicated bus seals on the shared bus: {rows:?}"
+        );
+        assert_eq!(rows[0]["reason"], "hangup", "{rows:?}");
     }
 
     #[tokio::test]
@@ -822,8 +1307,9 @@ mod tests {
             dir.path(),
             r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"1":{"audience":"Ada","provider":"claude","provider_session_id":"ada-session"}}}"#,
         );
+        let shared_bus = dir.path().join("shared-bus.jsonl");
         controller
-            .dispatch_agent_channel(1, &path, ChannelOpenMode::AttachedOnly)
+            .dispatch_agent_channel(1, &path, &shared_bus, ChannelOpenMode::AttachedOnly)
             .await
             .expect("open");
         let error = controller
@@ -886,8 +1372,9 @@ mod tests {
             dir.path(),
             r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"3":{"audience":"Leon","provider":"codex","provider_session_id":"leon-session"}}}"#,
         );
+        let bus = dir.path().join("bus.jsonl");
         controller
-            .dispatch_agent_channel(3, &path, ChannelOpenMode::AttachedOnly)
+            .dispatch_agent_channel(3, &path, &bus, ChannelOpenMode::AttachedOnly)
             .await
             .expect("open");
         let hud = controller.channel_hud_states().await;
@@ -900,7 +1387,6 @@ mod tests {
         assert_eq!(hud[0].provider.as_deref(), Some("codex"));
         assert_eq!(hud[0].provider_session_id.as_deref(), Some("leon-session"));
 
-        let bus = dir.path().join("bus.jsonl");
         let snapshot = controller.agent_channel_snapshot(3).await.expect("open");
         let opened = snapshot.opened_at;
         let still_open = controller
@@ -1013,18 +1499,14 @@ mod tests {
         crate::audio::tts_duck::clear();
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
-        let channel_bus = dir.path().join("buses/channel-3.jsonl");
-        let binding = format!(
-            r#"{{"schema":"vc.agent-audience-binding.v1","bindings":{{"3":{{"audience":"Leon","provider":"codex","provider_session_id":"leon-session","bus":"{}"}}}}}}"#,
-            channel_bus.display()
-        );
-        let path = write_binding(dir.path(), &binding);
+        let (path, channel_bus) = write_dedicated_binding(dir.path());
 
         let bound = resolve_digit(3, &path).expect("bound session");
         assert_eq!(bound.bus.as_deref(), Some(channel_bus.as_path()));
 
+        let shared_bus = dir.path().join("shared-bus.jsonl");
         controller
-            .dispatch_agent_channel(3, &path, ChannelOpenMode::AttachedOnly)
+            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::AttachedOnly)
             .await
             .expect("open");
         let snapshot = controller.agent_channel_snapshot(3).await.expect("open");
@@ -1035,7 +1517,6 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = opened + Duration::from_secs(60);
 
-        let shared_bus = dir.path().join("shared-bus.jsonl");
         let sealed = controller
             .seal_channels_silent_for(opened + Duration::from_secs(180), &shared_bus, 120, None)
             .await;
@@ -1068,8 +1549,9 @@ mod tests {
             dir.path(),
             r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"3":{"audience":"Leon","provider":"codex","provider_session_id":"leon-session"}}}"#,
         );
+        let bus = dir.path().join("bus.jsonl");
         controller
-            .dispatch_agent_channel(3, &path, ChannelOpenMode::AttachedOnly)
+            .dispatch_agent_channel(3, &path, &bus, ChannelOpenMode::AttachedOnly)
             .await
             .expect("open");
         let snapshot = controller.agent_channel_snapshot(3).await.expect("open");
@@ -1079,7 +1561,6 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = opened + Duration::from_secs(1);
 
-        let bus = dir.path().join("bus.jsonl");
         let sealed = controller
             .seal_channels_silent_for(opened + Duration::from_secs(6), &bus, 5, Some(&path))
             .await;
@@ -1108,6 +1589,526 @@ mod tests {
             text.lines().count(),
             1,
             "one silence seal writes one receipt; the attached-only reopen adds none: {text}"
+        );
+    }
+
+    /// The observed loss: drafts reached the bus, the ledger refused terminal
+    /// finality, and the Founder hung up before the silence boundary. The
+    /// hang-up itself must put the closing row on the channel's own bus.
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn hang_up_before_any_seal_writes_one_hangup_receipt_on_the_channel_bus() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (path, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+        let session = "agent-channel-3-hangup";
+        let opened = open_stamped(&controller, &path, &shared_bus, session).await;
+        // Voice was heard one second in; the five-second silence boundary
+        // has not passed, so no silence seal can precede the hang-up.
+        hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
+        assert!(
+            controller
+                .seal_channels_silent_for(opened + Duration::from_secs(2), &shared_bus, 5, None)
+                .await
+                .is_empty()
+        );
+
+        controller
+            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::Live)
+            .await
+            .expect("second press hangs up");
+
+        assert!(controller.agent_channel_snapshot(3).await.is_none());
+        let (count, channel, _) = controller.capture_subscriber_view().await;
+        assert_eq!(count, 0);
+        assert!(!channel);
+        assert!(
+            !shared_bus.exists(),
+            "a dedicated-bus channel writes nothing to the shared bus"
+        );
+        let rows = bus_rows(&channel_bus);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let row = &rows[0];
+        assert_eq!(row["schema"], "codescribe.channel-session.v1");
+        assert_eq!(row["kind"], "channel_session");
+        assert_eq!(row["state"], "sealed");
+        assert_eq!(row["reason"], "hangup");
+        assert_eq!(row["channel"], "3");
+        assert_eq!(row["agent"], "Leon");
+        assert_eq!(row["session_id"], session);
+        assert_eq!(row["loud"], false);
+        assert_eq!(row["provider"], "codex");
+        assert_eq!(row["provider_session_id"], "leon-session");
+        assert_eq!(row["autoseal_secs"], channel_autoseal_secs());
+        assert!(
+            row["opened_at"]
+                .as_str()
+                .is_some_and(|stamp| stamp.ends_with('Z')),
+            "{row}"
+        );
+        assert!(
+            row["emitted_at"]
+                .as_str()
+                .is_some_and(|stamp| stamp.ends_with('Z')),
+            "{row}"
+        );
+
+        // The hung-up session is gone: a later silence poll seals nothing.
+        let later = controller
+            .seal_channels_silent_for(
+                opened + Duration::from_secs(600),
+                &shared_bus,
+                5,
+                Some(&path),
+            )
+            .await;
+        assert!(later.is_empty());
+        assert_eq!(bus_rows(&channel_bus).len(), 1);
+    }
+
+    /// The roster names every bound digit and says who is actually listening:
+    /// a fresh lease heartbeat marks the follower alive, a missing lease marks
+    /// it dead, and a bound-but-closed digit still appears with `open: false`.
+    #[tokio::test]
+    async fn a_roster_row_carries_follower_liveness_for_bound_closed_channels() {
+        let dir = tempfile::tempdir().expect("temp");
+        let binding = dir.path().join("binding.json");
+        std::fs::write(
+            &binding,
+            r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"1":{"audience":"Ada","provider":"claude-code","provider_session_id":"ada-session"},"3":{"audience":"Leon","provider":"codex","provider_session_id":"leon-session"}}}"#,
+        )
+        .expect("binding");
+        let bridge = dir.path().join("bridge");
+        std::fs::create_dir_all(bridge.join("leases")).expect("leases dir");
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs_f64();
+        std::fs::write(
+            bridge.join("leases/ada.json"),
+            format!(
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"ada","name":"ada","active":true,"heartbeat_unix":{now},"provider":"claude-code","provider_session_id":"ada-session"}}"#,
+            ),
+        )
+        .expect("lease");
+
+        let controller = RecordingController::new_without_keychain();
+        let roster = controller.channel_roster_states_at(&binding, &bridge).await;
+
+        assert_eq!(roster.len(), 2, "{roster:?}");
+        assert_eq!(roster[0].channel, "1");
+        assert_eq!(roster[0].audience, "Ada");
+        assert!(!roster[0].open);
+        assert_eq!(roster[0].follower_alive, Some(true));
+        assert_eq!(roster[1].channel, "3");
+        assert_eq!(roster[1].audience, "Leon");
+        assert!(!roster[1].open);
+        assert_eq!(
+            roster[1].follower_alive,
+            Some(false),
+            "no lease means nobody is listening"
+        );
+    }
+
+    /// One closing throne: a session sealed by silence is never sealed again
+    /// by a hang-up. The hang-up closes the session the quiet contract
+    /// reopened, and a digit press after a seal without reopen opens.
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn a_silence_sealed_session_is_never_sealed_again_by_a_hang_up() {
+        crate::audio::tts_duck::clear();
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (path, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+
+        let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-first").await;
+        hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
+        let sealed = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(6), &shared_bus, 5, Some(&path))
+            .await;
+        assert_eq!(sealed, vec![3]);
+        stamp_session(&controller, "agent-channel-3-reopened").await;
+        controller
+            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::Live)
+            .await
+            .expect("hang up the reopened session");
+        assert!(controller.agent_channel_snapshot(3).await.is_none());
+        assert_eq!(
+            sealed_rows(&bus_rows(&channel_bus)),
+            vec![
+                ("agent-channel-3-first".to_string(), "silence".to_string()),
+                ("agent-channel-3-reopened".to_string(), "hangup".to_string()),
+            ]
+        );
+
+        // Silence without a reopen leaves the digit closed; the next press
+        // opens a fresh session instead of sealing the finished one twice.
+        let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-last").await;
+        hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
+        let sealed = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(6), &shared_bus, 5, None)
+            .await;
+        assert_eq!(sealed, vec![3]);
+        controller
+            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::AttachedOnly)
+            .await
+            .expect("press after a seal opens");
+        assert!(controller.agent_channel_snapshot(3).await.is_some());
+        let sealed = sealed_rows(&bus_rows(&channel_bus));
+        assert_eq!(sealed.len(), 3, "{sealed:?}");
+        for session in [
+            "agent-channel-3-first",
+            "agent-channel-3-reopened",
+            "agent-channel-3-last",
+        ] {
+            assert_eq!(
+                sealed.iter().filter(|(id, _)| id == session).count(),
+                1,
+                "{session} is sealed exactly once: {sealed:?}"
+            );
+        }
+        assert!(!shared_bus.exists());
+    }
+
+    /// A hang-up ends one session, not the channel: the next press reopens
+    /// on the same binding and the quiet contract runs as before.
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn reopen_after_a_hang_up_keeps_the_quiet_contract() {
+        crate::audio::tts_duck::clear();
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (path, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+
+        open_stamped(&controller, &path, &shared_bus, "agent-channel-3-before").await;
+        controller
+            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::Live)
+            .await
+            .expect("hang up");
+        assert!(controller.channel_hud_states().await.is_empty());
+
+        let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-after").await;
+        let hud = controller.channel_hud_states().await;
+        assert_eq!(hud.len(), 1);
+        assert!(hud[0].open && hud[0].loud, "{hud:?}");
+        assert_eq!(hud[0].audience, "Leon");
+        hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
+        let sealed = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(6), &shared_bus, 5, Some(&path))
+            .await;
+        assert_eq!(sealed, vec![3]);
+        let reopened = controller
+            .agent_channel_snapshot(3)
+            .await
+            .expect("the quiet contract reopens after a hang-up cycle");
+        assert_eq!(reopened.audience, "Leon");
+        assert_eq!(reopened.bus.as_deref(), Some(channel_bus.as_path()));
+        assert_eq!(
+            sealed_rows(&bus_rows(&channel_bus)),
+            vec![
+                ("agent-channel-3-before".to_string(), "hangup".to_string()),
+                ("agent-channel-3-after".to_string(), "silence".to_string()),
+            ]
+        );
+    }
+
+    /// Byte shape of the `open` row the writer put on the shared bus for a
+    /// channel whose app was then quit (observed 2026-09-29, channel 2).
+    /// Identities are neutral; field order and formats are the writer's.
+    const ORPHAN_SESSION: &str = "agent-channel-2-5f0c1d2e-20df-4f28-954f-0a1b2c3d4e5f";
+    const ORPHAN_OPEN_ROW: &str = r#"{"agent":"Leon","autoseal_secs":5,"channel":"2","emitted_at":"2026-09-29T17:22:06.346400Z","kind":"channel_session","loud":true,"opened_at":"2026-09-29T17:22:06.265163Z","provider":"claude-code","provider_session_id":"leon-session","reason":"opened","schema":"codescribe.channel-session.v1","session_id":"agent-channel-2-5f0c1d2e-20df-4f28-954f-0a1b2c3d4e5f","state":"open","utterance_silence_sec":5.0}"#;
+    /// The session's ledger terminal seal, which followed its `open` row.
+    /// It is transcript evidence, not a channel-session boundary.
+    const ORPHAN_TERMINAL_SEAL_ROW: &str = r#"{"schema":"codescribe.transcript-evidence.v1","sequence":3,"session_id":"agent-channel-2-5f0c1d2e-20df-4f28-954f-0a1b2c3d4e5f","reducer_revision":5,"reducer_action":"record_ledger_terminal_seal","document_index":0,"rendered_text":"Iwo","terminal":false,"audience":"Leon"}"#;
+    /// An earlier session of the same channel that the orphan superseded.
+    const SUPERSEDED_OPEN_ROW: &str = r#"{"agent":"Leon","autoseal_secs":5,"channel":"2","emitted_at":"2026-09-29T16:34:23.279789Z","kind":"channel_session","loud":true,"opened_at":"2026-09-29T16:34:23.199613Z","provider":"claude-code","provider_session_id":"leon-session","reason":"opened","schema":"codescribe.channel-session.v1","session_id":"agent-channel-2-superseded","state":"open","utterance_silence_sec":5.0}"#;
+    const CHANNEL_2_BINDING: &str = r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"2":{"audience":"Leon","provider":"claude-code","provider_session_id":"leon-session"}}}"#;
+
+    /// Appends rows exactly as another process left them.
+    fn append_raw(bus: &Path, rows: &[&str]) {
+        use std::io::Write;
+        if let Some(parent) = bus.parent() {
+            std::fs::create_dir_all(parent).expect("bus dir");
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(bus)
+            .expect("bus");
+        for row in rows {
+            writeln!(file, "{row}").expect("row");
+        }
+    }
+
+    /// The `open` row a Live dispatch writes for `session` on channel 3.
+    fn live_open_line(session: &str) -> crate::presentation::agent_ack::ChannelSessionLine<'_> {
+        crate::presentation::agent_ack::ChannelSessionLine {
+            state: "open",
+            reason: "opened",
+            channel: "3",
+            agent: "Leon",
+            session_id: Some(session),
+            autoseal_secs: 5,
+            opened_at: SystemTime::now(),
+            utterance_silence_sec: 5.0,
+            provider: Some("codex"),
+            provider_session_id: Some("leon-session"),
+        }
+    }
+
+    fn write_open_row(bus: &Path, open: &crate::presentation::agent_ack::ChannelSessionLine<'_>) {
+        crate::presentation::agent_ack::append_json_line(
+            bus,
+            &crate::presentation::agent_ack::channel_session_line(open),
+        )
+        .expect("open row");
+    }
+
+    /// The observed bug: channel 2's newest row stayed `open` after the app
+    /// quit, and the overlay painted a live microphone forever. One start
+    /// seals it with the key the overlay projection pairs on.
+    #[tokio::test]
+    async fn a_session_a_previous_process_left_open_gets_one_orphan_seal() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let binding = write_binding(dir.path(), CHANNEL_2_BINDING);
+        let shared_bus = dir.path().join("transcript-events.jsonl");
+        append_raw(
+            &shared_bus,
+            &[
+                SUPERSEDED_OPEN_ROW,
+                ORPHAN_OPEN_ROW,
+                ORPHAN_TERMINAL_SEAL_ROW,
+            ],
+        );
+
+        let sealed = controller
+            .seal_orphaned_channel_sessions(&shared_bus, &binding)
+            .await;
+
+        assert_eq!(
+            sealed,
+            vec![OrphanSeal {
+                bus: shared_bus.clone(),
+                channel: "2".to_string(),
+                session_id: ORPHAN_SESSION.to_string(),
+            }]
+        );
+        let rows = bus_rows(&shared_bus);
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        assert_eq!(
+            sealed_rows(&rows),
+            vec![(ORPHAN_SESSION.to_string(), "orphan".to_string())],
+            "the superseded session was ended by its successor's open row"
+        );
+        let (open, seal) = (&rows[1], &rows[3]);
+        assert_eq!(seal["schema"], "codescribe.channel-session.v1");
+        assert_eq!(seal["kind"], "channel_session");
+        assert_eq!(seal["state"], "sealed");
+        assert_eq!(seal["reason"], "orphan");
+        assert_eq!(seal["loud"], false);
+        // OverlayChannelDelivery.Bus keys a channel's session on these and
+        // lets a non-open row close it only when `opened_at` is the open
+        // session's own, byte for byte.
+        for key in [
+            "channel",
+            "agent",
+            "session_id",
+            "opened_at",
+            "provider",
+            "provider_session_id",
+            "autoseal_secs",
+            "utterance_silence_sec",
+        ] {
+            assert_eq!(seal[key], open[key], "{key}");
+        }
+        let latest = latest_channel_rows(&shared_bus, ORPHAN_SCAN_WINDOW_BYTES).expect("scan");
+        assert_eq!(
+            latest["2"]["state"], "sealed",
+            "channel 2 is no longer open"
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_seal_records_whisper_timeout_and_disabled_status() {
+        for (codes, status) in [
+            (
+                vec!["live_refinement_stop_deadline".to_string()],
+                "refinement_incomplete",
+            ),
+            (
+                vec!["agent_raw_whisper_disabled".to_string()],
+                "whisper_disabled",
+            ),
+            (Vec::new(), "settled"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("channel.jsonl");
+            let warnings = Arc::new(StdMutex::new(Vec::new()));
+            let mut emitter =
+                PresentationEmitter::new(Arc::new(TokioMutex::new(String::new())), None, None)
+                    .with_refinement_warnings(warnings.clone());
+            for code in &codes {
+                emitter.on_event(
+                    &codescribe_core::pipeline::contracts::EngineEvent::Warning {
+                        code: code.clone(),
+                        message: "refinement_not_completed=true".into(),
+                    },
+                );
+            }
+            emitter.finish().await;
+            let open = live_open_line("agent-raw-receipt");
+            append_seal_receipt(
+                &path,
+                ChannelSealReason::Hangup,
+                &open,
+                &warnings.lock().unwrap(),
+            )
+            .unwrap();
+            let rows = bus_rows(&path);
+            assert_eq!(rows[0]["raw_processing_status"], status);
+            assert_eq!(rows[0]["refinement_warnings"], serde_json::json!(codes));
+        }
+    }
+
+    #[tokio::test]
+    async fn sessions_sealed_by_silence_or_hang_up_get_no_orphan_row() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+        for (session, reason) in [
+            ("agent-channel-3-silence", ChannelSealReason::Silence),
+            ("agent-channel-3-hangup", ChannelSealReason::Hangup),
+        ] {
+            let open = live_open_line(session);
+            write_open_row(&channel_bus, &open);
+            append_seal_receipt(&channel_bus, reason, &open, &[]).expect("seal");
+        }
+        let before = std::fs::read(&channel_bus).expect("bus");
+
+        let sealed = controller
+            .seal_orphaned_channel_sessions(&shared_bus, &binding)
+            .await;
+
+        assert!(sealed.is_empty(), "{sealed:?}");
+        assert_eq!(std::fs::read(&channel_bus).expect("bus"), before);
+        assert!(!shared_bus.exists());
+    }
+
+    #[tokio::test]
+    async fn a_second_start_writes_no_second_orphan_row() {
+        let dir = tempfile::tempdir().expect("temp");
+        let binding = write_binding(dir.path(), CHANNEL_2_BINDING);
+        let shared_bus = dir.path().join("transcript-events.jsonl");
+        append_raw(&shared_bus, &[ORPHAN_OPEN_ROW, ORPHAN_TERMINAL_SEAL_ROW]);
+
+        let first = RecordingController::new_without_keychain()
+            .seal_orphaned_channel_sessions(&shared_bus, &binding)
+            .await;
+        let second = RecordingController::new_without_keychain()
+            .seal_orphaned_channel_sessions(&shared_bus, &binding)
+            .await;
+
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert!(second.is_empty(), "{second:?}");
+        assert_eq!(
+            sealed_rows(&bus_rows(&shared_bus)),
+            vec![(ORPHAN_SESSION.to_string(), "orphan".to_string())]
+        );
+    }
+
+    /// W5 buses: the `open` row sits on the binding's dedicated bus, so the
+    /// orphan seal lands there and the shared bus is not touched.
+    #[tokio::test]
+    async fn an_open_row_on_a_dedicated_bus_is_sealed_on_that_bus() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+        append_raw(&shared_bus, &[ORPHAN_TERMINAL_SEAL_ROW]);
+        let shared_before = std::fs::read(&shared_bus).expect("shared bus");
+        let open = live_open_line("agent-channel-3-orphan");
+        write_open_row(&channel_bus, &open);
+
+        let sealed = controller
+            .seal_orphaned_channel_sessions(&shared_bus, &binding)
+            .await;
+
+        assert_eq!(
+            sealed,
+            vec![OrphanSeal {
+                bus: channel_bus.clone(),
+                channel: "3".to_string(),
+                session_id: "agent-channel-3-orphan".to_string(),
+            }]
+        );
+        assert_eq!(
+            sealed_rows(&bus_rows(&channel_bus)),
+            vec![("agent-channel-3-orphan".to_string(), "orphan".to_string())]
+        );
+        assert_eq!(
+            std::fs::read(&shared_bus).expect("shared bus"),
+            shared_before
+        );
+    }
+
+    /// A session this controller opened is live, not an orphan, even when its
+    /// `open` row is its channel's newest.
+    #[tokio::test]
+    async fn a_session_this_process_owns_is_never_sealed_as_an_orphan() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+        open_stamped(&controller, &binding, &shared_bus, "agent-channel-3-live").await;
+        write_open_row(&channel_bus, &live_open_line("agent-channel-3-live"));
+        let before = std::fs::read(&channel_bus).expect("bus");
+
+        let sealed = controller
+            .seal_orphaned_channel_sessions(&shared_bus, &binding)
+            .await;
+
+        assert!(sealed.is_empty(), "{sealed:?}");
+        assert_eq!(std::fs::read(&channel_bus).expect("bus"), before);
+        assert!(controller.agent_channel_snapshot(3).await.is_some());
+    }
+
+    /// The scan reads a bounded tail and starts on a row boundary: a row the
+    /// window cuts is dropped whole, a row the window starts on is kept.
+    #[test]
+    fn the_orphan_scan_reads_only_whole_rows_of_the_bus_tail() {
+        let dir = tempfile::tempdir().expect("temp");
+        let bus = dir.path().join("bus.jsonl");
+        let older = SUPERSEDED_OPEN_ROW.replace(r#""channel":"2""#, r#""channel":"4""#);
+        append_raw(&bus, &[older.as_str(), ORPHAN_OPEN_ROW]);
+        let newest = ORPHAN_OPEN_ROW.len() as u64 + 1;
+
+        let exact = latest_channel_rows(&bus, newest).expect("scan");
+        assert_eq!(exact.keys().collect::<Vec<_>>(), vec!["2"]);
+        let one_more = latest_channel_rows(&bus, newest + 1).expect("scan");
+        assert_eq!(one_more.keys().collect::<Vec<_>>(), vec!["2"]);
+        let cut = latest_channel_rows(&bus, newest - 1).expect("scan");
+        assert!(cut.is_empty(), "{cut:?}");
+        let whole = latest_channel_rows(&bus, ORPHAN_SCAN_WINDOW_BYTES).expect("scan");
+        assert_eq!(whole.keys().collect::<Vec<_>>(), vec!["2", "4"]);
+
+        let sealed = seal_orphaned_sessions(std::slice::from_ref(&bus), &BTreeSet::new(), newest);
+        assert_eq!(
+            sealed
+                .iter()
+                .map(|seal| seal.channel.as_str())
+                .collect::<Vec<_>>(),
+            vec!["2"],
+            "an open row outside the window is not read"
+        );
+        assert!(
+            latest_channel_rows(&dir.path().join("missing.jsonl"), newest)
+                .expect("missing bus")
+                .is_empty()
         );
     }
 }

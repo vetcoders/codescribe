@@ -156,6 +156,17 @@ case "$PROFILE" in
   *) echo "usage: $0 [debug|local-release|release]" >&2; exit 2 ;;
 esac
 
+# Resolve before Cargo as well as Xcode: both halves use the same build bit.
+CS_DEVELOPER_SURFACE=0
+if [[ "$PROFILE" != "release" && "${CODESCRIBE_DEVELOPER_SURFACE:-0}" == "1" ]]; then
+  CS_DEVELOPER_SURFACE="$(./scripts/developer-surface-gate.sh)"
+  if [[ "$CS_DEVELOPER_SURFACE" != "1" ]]; then
+    echo "Developer build requires verified private Voice Lab access and its settings pack." >&2
+    exit 1
+  fi
+fi
+export CODESCRIBE_DEVELOPER_SURFACE="$CS_DEVELOPER_SURFACE"
+
 # ── Preflight: a clean checkout on a fresh Mac otherwise dies deep in the
 # pipeline with a cryptic "command not found". Fail early, actionably.
 require() {
@@ -343,11 +354,6 @@ if [ "${SKIP_XCODEBUILD:-0}" = "1" ]; then
   exit 0
 fi
 
-if [ "$PROFILE" = "release" ]; then
-  CS_DEVELOPER_SURFACE=0
-else
-  CS_DEVELOPER_SURFACE="${CODESCRIBE_DEVELOPER_SURFACE:-0}"
-fi
 echo "==> [5/7] Building app (xcodebuild, $CONFIG)"
 echo "    stamp: v${STAMP_VERSION} build ${STAMP_BUILD_NUM} commit ${STAMP_COMMIT} built ${STAMP_BUILT_AT}"
 echo "    developer surface: ${CS_DEVELOPER_SURFACE}"
@@ -458,11 +464,21 @@ else
   echo "warning: Codescribe.app will build without the bundled helper and use runtime STT fallback resolution." >&2
 fi
 
+# Install/release lanes only (`make install-app`, scripts/build-dmg.sh set
+# CODESCRIBE_INSTALL_LANE=1): the installed app refuses a second generation.
+# Dev builds and the XCTest host (same target, distinct Debug bundle id) stay
+# launchable while an installed build runs. Stamped here, before stage 7,
+# because an Info.plist edit after codesign breaks the seal.
+INSTALL_LANE="${CODESCRIBE_INSTALL_LANE:-0}"
+if [ "$INSTALL_LANE" = "1" ]; then
+  "$REPO_ROOT/scripts/lib/stamp-single-instance.sh" "$APP"
+fi
+
 # Ad-hoc sign the finished bundle with a STABLE identifier so macOS TCC
 # (Accessibility / Input Monitoring) keeps its grant across rebuilds instead of
-# re-prompting every time an unsigned binary's cdhash changes — the same
-# identifier make install-app uses. `--deep` also covers the just-embedded dylib.
-BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.codescribe}"
+# re-prompting every time an unsigned binary's cdhash changes. Use the built
+# plist identity for this configuration; `--deep` covers the embedded dylib.
+BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")}"
 # Prefer a REAL signing identity (Developer ID / Apple Development). Its designated
 # requirement is certificate-based, so a TCC grant (Accessibility / Input
 # Monitoring) survives rebuilds. Ad-hoc (`--sign -`) is cdhash-based, so the grant
@@ -478,6 +494,11 @@ if [ -n "$SIGN_ID" ]; then
 else
   echo "==> [7/7] Ad-hoc signing $SCHEME.app (no stable identity — TCC re-grants per build)"
   codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
+fi
+if [ "$INSTALL_LANE" = "1" ]; then
+  # The stamped plist must sit inside the seal, not beside it.
+  codesign --verify --deep --strict "$APP"
+  echo "    codesign --verify --deep --strict: ok (single-instance stamp is sealed)"
 fi
 
 echo "==> App built: $APP"

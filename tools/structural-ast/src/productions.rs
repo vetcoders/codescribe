@@ -14,10 +14,10 @@ pub(super) fn overlay(g: &mut Grammar, body: &Block) {
         (parse_quote!(let intent = DeliveryIntent::OverlayInsert;), "explicit overlay intent"),
         (parse_quote!(let decision = resolve_delivery_route(intent, overlay_insert_facts(!trimmed.is_empty(), false));), "resolve explicit route"),
         (parse_quote!(info!("{}", format_delivery_route_line(intent, decision, target_app.as_deref()));), "observational route log"),
+        // `noop()` is admitted only together with its own body (see `noop`
+        // below): the constructor never inherits its meaning from its name.
         (parse_quote!(if trimmed.is_empty() || decision.route == DeliveryRoute::ArchiveOnly {
-            return Ok(OverlayPasteResult { delivery: OverlayPasteDelivery::Noop,
-                target_app_name: None, frontmost_app_name: None,
-                deferred_insert_shortcut: None, deferred_insert_failure: None, });
+            return Ok(OverlayPasteResult::noop());
         }), "only empty/archive early success is Noop"),
         (parse_quote!(let config = self.get_config().await;), "read immutable delivery config"),
         (parse_quote!(let payload = self.delivery_tagger.render(trimmed, &config, None);), "render delivery-only transcript tag"),
@@ -26,6 +26,25 @@ pub(super) fn overlay(g: &mut Grammar, body: &Block) {
         }), "deferred route return"),
         (Stmt::Expr(parse_quote!(self.execute_clipboard_paste(payload, target_app, "Overlay paste").await), None), "await guarded helper tail"),
     ]);
+}
+
+/// The overlay early return's `OverlayPasteResult::noop()`: no transport ran,
+/// so the result names no delivery, no target, no frontmost app and no
+/// deferred-insert outcome. Any other field value is a new proof obligation.
+pub(super) fn noop(g: &mut Grammar, body: &Block) {
+    let expected: Block = parse_quote!({
+        Self {
+            delivery: OverlayPasteDelivery::Noop,
+            target_app_name: None,
+            frontmost_app_name: None,
+            deferred_insert_shortcut: None,
+            deferred_insert_failure: None,
+        }
+    });
+    g.require(
+        body == &expected,
+        "BOUNDARY: unsupported Noop result constructor: every field must stay empty",
+    );
 }
 
 pub(super) fn paste(g: &mut Grammar, body: &Block) {

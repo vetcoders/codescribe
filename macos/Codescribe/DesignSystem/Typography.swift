@@ -35,7 +35,8 @@ struct EyebrowLabel: View {
   let text: String
   var color: Color = CSColor.eyebrowOlive
   var body: some View {
-    Text(text.uppercased())
+    Text(text)
+      .textCase(.uppercase)
       .font(CSFont.eyebrow)
       .tracking(2.2)
       .foregroundStyle(color)

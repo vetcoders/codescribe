@@ -16,7 +16,7 @@ final class OverlayChromeV3Tests: XCTestCase {
     let header = try XCTUnwrap(source.range(of: "private func justifiedHeader(compact: Bool)"))
     let tail = String(source[header.lowerBound...])
     let button = try XCTUnwrap(tail.range(of: "Button {\n          state.relayIntent(.close)"))
-    let wordmark = try XCTUnwrap(tail.range(of: "Text(\"codescribe\")"))
+    let wordmark = try XCTUnwrap(tail.range(of: "Text(verbatim: \"codescribe\")"))
     XCTAssertLessThan(button.lowerBound, wordmark.lowerBound)
     let close = String(tail[button.lowerBound..<wordmark.lowerBound])
     XCTAssertTrue(close.contains("ModeDot("))
@@ -58,7 +58,7 @@ final class OverlayChromeV3Tests: XCTestCase {
   func testCloseUsesProductionIntentRoute() {
     let state = OverlayState.previewFormatted()
     var closed = false
-    state.onClose = { closed = true }
+    state.onCloseIntent = { closed = true }
     XCTAssertTrue(OverlayIntentRail.projectedIntents(for: state).contains(.close))
     state.relayIntent(.close)
     XCTAssertTrue(closed)

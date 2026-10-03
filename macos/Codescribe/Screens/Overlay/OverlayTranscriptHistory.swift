@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 struct OverlayTranscriptHistory: View {
+  @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.locale) private var locale
   @State private var model = OverlayTranscriptHistoryModel()
   @State private var copied = false
 
@@ -61,19 +63,25 @@ struct OverlayTranscriptHistory: View {
     .accessibilityIdentifier("overlay-transcription-history")
   }
 
-  func historyList(_ entries: [CsHistoryEntry]) -> some View {
+  func historyList(_ entries: [TranscriptHistoryRecord]) -> some View {
     ScrollView {
       LazyVStack(alignment: .leading, spacing: 4) {
         ForEach(entries, id: \.path) { entry in
           Button {
             copied = false
-            Task { await model.select(entry) }
+            Task { await model.select(entry.entry) }
           } label: {
             VStack(alignment: .leading, spacing: 4) {
-              Text(date(entry), format: .dateTime.month(.abbreviated).day().hour().minute())
-                .font(.caption)
-                .foregroundStyle(.secondary)
-              Text(entry.preview.isEmpty ? "Untitled transcript" : entry.preview)
+              HStack(spacing: 4) {
+                Text(date(entry.entry), format: .dateTime.month(.abbreviated).day().hour().minute())
+                  .foregroundStyle(.secondary)
+                Text(
+                  verbatim: "· \(Self.characterCountLabel(entry.characterCount, locale: locale))"
+                )
+                .foregroundStyle(OverlayAppearancePalette.resolve(colorScheme).mutedText.color)
+              }
+              .font(.caption)
+              Text(entry.entry.preview.isEmpty ? Self.untitledLabel : entry.entry.preview)
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -81,11 +89,24 @@ struct OverlayTranscriptHistory: View {
             .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
+          .accessibilityLabel(
+            "\(date(entry.entry).formatted(.dateTime.month(.abbreviated).day().hour().minute().locale(locale))), "
+              + "\(Self.characterCountLabel(entry.characterCount, locale: locale)), "
+              + (entry.entry.preview.isEmpty ? Self.untitledLabel : entry.entry.preview))
           Divider()
         }
       }
     }
     .frame(height: 280)
+  }
+
+  static func characterCountLabel(_ count: Int?, locale: Locale) -> String {
+    OverlayTranscriptHistoryModel.formattedCharacterCount(count, locale: locale)
+  }
+
+  /// Stand-in for an archived take whose preview is empty.
+  static var untitledLabel: String {
+    String(localized: "Untitled transcript", comment: "Archived take with no preview text")
   }
 
   private func date(_ entry: CsHistoryEntry) -> Date {

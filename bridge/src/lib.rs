@@ -18,6 +18,21 @@
 
 uniffi::setup_scaffolding!();
 
+/// Seal the embedding application's state and credential identity before any
+/// config, agent, account or recording handle is constructed.
+#[uniffi::export]
+pub fn configure_embedded_runtime(
+    data_directory: String,
+    keychain_service: String,
+) -> Result<(), CsError> {
+    let host = codescribe_core::config::runtime_host::RuntimeHost::new(
+        data_directory.into(),
+        keychain_service,
+    )?;
+    codescribe_core::config::runtime_host::configure(host)?;
+    Ok(())
+}
+
 /// Streaming agent chat surface (`CodescribeAgent` + listener).
 mod agent;
 /// Agent delivery callbacks into Swift UI.
@@ -28,6 +43,8 @@ mod agent_status;
 mod application_runtime;
 /// Settings, prompts, keychain, and onboarding config.
 mod config;
+/// Live buffer tools supplied by an embedding document editor.
+mod document_agent;
 /// Global hotkey registration and app-action callbacks.
 mod hotkeys;
 /// CSK1 license state exposed to the Swift shell.
@@ -36,6 +53,8 @@ mod licensing;
 mod mcp_admin;
 /// Notes surface bridged for agent tools / UI.
 mod notes;
+/// Host on-device formatting (Apple FoundationModels) registration (W6).
+mod on_device_format;
 /// Overlay quality records and lexicon commit helpers.
 mod quality;
 /// Dictation / STT streaming into the Swift app.
@@ -46,6 +65,8 @@ mod speech;
 mod threads;
 /// Menu-bar tray status payloads and listener.
 mod tray_status;
+/// Private, app-owned vocabulary replay.
+mod vocabulary_ab;
 
 pub use agent::{CodescribeAgent, CsAgentListener};
 pub use agent_delivery::CsAgentDeliveryListener;
@@ -53,11 +74,12 @@ pub use application_runtime::CsApplicationRuntimeSnapshot;
 pub use hotkeys::CodescribeHotkeys;
 pub use hotkeys::CsAppActionListener;
 pub use licensing::{CsLicenseState, CsLicenseStatus};
+pub use on_device_format::{CsOnDeviceFormatOutcome, CsOnDeviceFormatter};
 pub use quality::{
-    CsLexiconEntry, CsOverlayHighlight, CsOverlayHighlightKind, CsQualityCommitResult,
-    CsQualityRecord, commit_overlay_quality_record, lexicon_custom_entries,
-    overlay_highlights_enabled, quality_finalize_correction, quality_recent_records,
-    quality_teach_span,
+    CsDiffSpan, CsDiffTier, CsLexiconEntry, CsQualityCommitResult, CsQualityListing,
+    CsQualityRecord, CsRuleCandidate, commit_overlay_quality_record, lexicon_custom_entries,
+    quality_diff_spans, quality_finalize_correction, quality_recent_listing,
+    quality_rule_candidates, quality_teach_span,
 };
 pub use recording::{CsCaptureHandle, CsConditionalStop, CsTranscriptDelivery};
 pub use speech::{CsSpeechResult, speak_text, speech_availability, stop_speaking};

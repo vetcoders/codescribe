@@ -82,7 +82,10 @@ struct LicenseKeychainError: LocalizedError {
 
   var errorDescription: String? {
     SecCopyErrorMessageString(status, nil) as String?
-      ?? "Keychain error \(status)"
+      ?? String(
+        localized: "Keychain error \(String(status))",
+        comment: "Fallback when macOS has no message; the placeholder is the status code"
+      )
   }
 }
 
@@ -129,8 +132,11 @@ final class LicenseService: ObservableObject {
   }
   var agenticBlockMessage: String {
     status.state == .expiredUpdates
-      ? "Your license period ended. Renew to keep using Agentic — Basic dictation remains free."
-      : "Agentic requires a license. Basic dictation remains free."
+      ? String(
+        localized:
+          "Your license period ended. Renew to keep using Agentic — Basic dictation remains free."
+      )
+      : String(localized: "Agentic requires a license. Basic dictation remains free.")
   }
 
   private let keychain: LicenseKeychainStoring?
@@ -181,7 +187,10 @@ final class LicenseService: ObservableObject {
   func activate(_ rawKey: String) -> Bool {
     let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !key.isEmpty else {
-      lastError = "Enter a CSK1 license key."
+      lastError = String(
+        localized: "Enter a CSK1 license key.",
+        comment: "CSK1 is the license-key prefix — keep it verbatim"
+      )
       return false
     }
     do {

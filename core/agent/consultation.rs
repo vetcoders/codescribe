@@ -1960,8 +1960,13 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn accepted_waiting_instruction_is_durable_before_provider_execution() {
         let dir = tempfile::tempdir().unwrap();
+        // The attached image is spilled to the agent asset store under the
+        // data root when the thread persists; keep that root in the tempdir.
+        let _data_dir =
+            crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", dir.path().join("data"));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let entered = Arc::new(Semaphore::new(0));
         let release = Arc::new(Semaphore::new(0));

@@ -17,7 +17,7 @@ final class TrayViewModel: ObservableObject {
   // Quick config toggles (reflected on disk via the engine).
   @Published var showDockIcon: Bool = true
   @Published var overlayEnabled: Bool = true
-  @Published var autoPasteEnabled: Bool = true
+  @Published var pasteMode: CsPasteMode = .safe
   @Published var autoFormatLevel: FormattingPolicyOption = .correction
   @Published var notesModeEnabled: Bool = false
   @Published var startInAssistive: Bool = false
@@ -55,6 +55,9 @@ final class TrayViewModel: ObservableObject {
   // Navigation intents — bound by App.swift to the actual window/scene opens.
   var onIntent: (TrayIntent) -> Void = { _ in }
   var onDictationStartRequested: () -> Void = {}
+  /// Fired after the "Transcription Overlay" toggle is written, so the overlay's
+  /// owner can close a panel that is already on screen.
+  var onOverlayPreferenceChanged: () -> Void = {}
 
   // App-level actions — injected by App.swift. Defaults are best-effort / no-op
   // so the screen is fully interactive in isolation and in #Preview.
@@ -98,8 +101,12 @@ final class TrayViewModel: ObservableObject {
 
   /// Olive "Idle" when stopped, terracotta "Recording" when live.
   var statusText: String {
-    if isStartingDictation { return "Starting" }
-    return isRecording ? "Recording" : "Idle"
+    if isStartingDictation {
+      return String(localized: "Starting", comment: "Tray status: a recording start is in flight")
+    }
+    return isRecording
+      ? String(localized: "Recording", comment: "Tray status: a recording is live")
+      : String(localized: "Idle", comment: "Tray status: ready, not recording")
   }
 
   /// Pull prompt-free runtime flags from the engine (call on appear).
@@ -116,7 +123,7 @@ final class TrayViewModel: ObservableObject {
     if let toggles = engine.currentToggles() {
       showDockIcon = toggles.showDockIcon
       overlayEnabled = toggles.overlayEnabled
-      autoPasteEnabled = toggles.autoPasteEnabled
+      pasteMode = toggles.pasteMode
       autoFormatLevel = toggles.autoFormatLevel
       notesModeEnabled = toggles.notesMode
       startInAssistive = toggles.startInAssistive
@@ -193,16 +200,17 @@ final class TrayViewModel: ObservableObject {
     }
     engine.setQuickToggle(.transcriptionOverlay, enabled: enabled)
     refreshStatus()
+    onOverlayPreferenceChanged()
   }
 
-  /// Persisted delivery policy. Re-read the complete tray snapshot after the
-  /// write so a rejected save never leaves an optimistic switch behind.
-  func setAutoPasteEnabled(_ enabled: Bool) {
+  /// Persisted paste mode. Re-read the complete tray snapshot after the
+  /// write so a rejected save never leaves an optimistic mode behind.
+  func setPasteMode(_ mode: CsPasteMode) {
     guard let engine else {
-      autoPasteEnabled = enabled
+      pasteMode = mode
       return
     }
-    engine.setAutoPasteEnabled(enabled)
+    engine.setPasteMode(mode)
     refreshStatus()
   }
 
@@ -276,7 +284,7 @@ final class TrayViewModel: ObservableObject {
     guard let text = engine?.transcriptText(forPath: path) else { return }
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
-    showCopyStatus("Copied")
+    showCopyStatus(String(localized: "Copied", comment: "Tray banner: the transcript was copied"))
   }
 
   /// Reveal the folder holding the most recent transcript in Finder.
@@ -291,7 +299,7 @@ final class TrayViewModel: ObservableObject {
     guard let text = engine?.latestTranscriptText() else { return }
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
-    showCopyStatus("Copied")
+    showCopyStatus(String(localized: "Copied", comment: "Tray banner: the transcript was copied"))
   }
 
   /// Flash a transient "Copied" banner beside the copy actions, then auto-clear

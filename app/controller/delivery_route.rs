@@ -22,14 +22,21 @@
 //!   [`DeliveryRoute`]. Auto-paste, overlay Insert, and To Agent consult it;
 //!   they do not invent a second destination.
 //! - The overlay canvas is never a legal Cmd+V target (caret in our panel).
-//!   The Agent window, Alacritty/Zellij, Notes, and every other caret are
-//!   legal ambulances. Assistive still delivers as a first-class Agent
+//!   The Agent window, Notes, and every other caret are legal ambulances for
+//!   an explicit Insert. Assistive still delivers as a first-class Agent
 //!   message — that is a different intent, not a paste ban.
+//! - Automatic (Orient) paste obeys one persisted [`PasteMode`] (Founder
+//!   2026-09-25: safe / comfort / off). Its gate only ever downgrades
+//!   `ClipboardPaste` to [`DeliveryRoute::ClipboardHold`]; terminals get Cmd+V
+//!   only when [`looks_executable`] is false, password fields never.
 //!
 //! # Intended W2 consumers
 //! - `app/controller/mod.rs` stop / overlay Insert / To Agent paths that
 //!   already import this module. Clipboard, Agent composer, and canvas execute
 //!   a decided route; they do not invent one.
+
+use crate::os::hold_badge::FocusedInputField;
+use codescribe_core::config::PasteMode;
 
 /// Where a finished transcript is allowed to land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +52,11 @@ pub enum DeliveryRoute {
     DeferredInsert,
     /// History / notes / RAW only — no user-visible delivery.
     ArchiveOnly,
+    /// An armed automatic paste the paste-mode gate or the executable-content
+    /// guard stopped. The transcript is left on the pasteboard on purpose and
+    /// a notification names why; the user's own ⌘V is the confirmation. No
+    /// synthetic Cmd+V is ever posted for this route.
+    ClipboardHold,
 }
 
 /// Transport result for an explicit overlay delivery action. Destination
@@ -89,6 +101,7 @@ impl DeliveryRoute {
             Self::ClipboardPaste => "clipboard_paste",
             Self::DeferredInsert => "deferred_insert",
             Self::ArchiveOnly => "archive_only",
+            Self::ClipboardHold => "clipboard_hold",
         }
     }
 }
@@ -153,12 +166,36 @@ pub fn delivery_intent_from_session(
     }
 }
 
-/// Facts the destination function is allowed to read. Focus-at-stop is not here.
+/// The caret an automatic paste would land in, observed at stop. It can only
+/// hold an armed paste; it never names a destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PasteTarget {
+    /// The receiving app is a terminal emulator ([`is_terminal_app`]).
+    pub terminal: bool,
+    /// Text-input shape of the focused element.
+    pub field: FocusedInputField,
+}
+
+impl PasteTarget {
+    /// Nothing observed: not a terminal, field unreadable.
+    pub const UNOBSERVED: Self = Self {
+        terminal: false,
+        field: FocusedInputField::Unobserved,
+    };
+}
+
+/// Facts the destination function is allowed to read. Focus-at-stop is not a
+/// destination input; [`PasteTarget`] may only hold an armed paste.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeliveryFacts {
     pub has_text: bool,
     pub no_speech: bool,
-    pub auto_paste_enabled: bool,
+    /// Automatic paste policy. Only Orient intents read it.
+    pub paste_mode: PasteMode,
+    /// Caret facts for the paste-mode gate. Only Orient intents read it.
+    pub paste_target: PasteTarget,
+    /// [`looks_executable`] on the committed (untagged) text.
+    pub executable_payload: bool,
     pub overlay_enabled: bool,
     pub live_stream_session: bool,
     pub commit_required: bool,
@@ -203,7 +240,9 @@ pub fn overlay_insert_facts(has_text: bool, latched_target_is_self: bool) -> Del
     DeliveryFacts {
         has_text,
         no_speech: false,
-        auto_paste_enabled: false,
+        paste_mode: PasteMode::Off,
+        paste_target: PasteTarget::UNOBSERVED,
+        executable_payload: false,
         overlay_enabled: true,
         live_stream_session: false,
         commit_required: false,
@@ -211,8 +250,9 @@ pub fn overlay_insert_facts(has_text: bool, latched_target_is_self: bool) -> Del
     }
 }
 
-/// Single destination function. Advisors (quality gate, overlay flag, auto-paste
-/// toggle) may veto a paste; they may not pick a different throne.
+/// Single destination function. Advisors (quality gate, overlay flag, paste
+/// mode, executable-content guard) may veto or hold a paste; they may not pick
+/// a different throne.
 pub fn resolve_delivery_route(intent: DeliveryIntent, facts: DeliveryFacts) -> DeliveryDecision {
     if !facts.has_text || facts.no_speech {
         return DeliveryDecision {
@@ -241,17 +281,17 @@ pub fn resolve_delivery_route(intent: DeliveryIntent, facts: DeliveryFacts) -> D
 
 /// Stop-path Orient (Hold Fn / Globe, Double Left Option, toggle Finish).
 ///
-/// Auto Paste is one persisted setting shared by every Orient gesture. The
-/// vetoes that keep Orient off the paste gun, in order: the setting itself, a
+/// [`PasteMode`] is one persisted setting shared by every Orient gesture. The
+/// vetoes that keep Orient off the paste gun, in order: mode Off, a
 /// live-stream consumer that already owns the text, a pending quality commit,
 /// and the overlay canvas holding the caret. The doc table's `OrientCanvas` is
 /// `ArchiveOnly` here: the canvas already shows the committed document, so
-/// nothing else moves.
+/// nothing else moves. What survives goes through [`paste_gate`].
 fn orient_route(facts: DeliveryFacts) -> DeliveryDecision {
-    if !facts.auto_paste_enabled {
+    if facts.paste_mode == PasteMode::Off {
         return DeliveryDecision {
             route: DeliveryRoute::ArchiveOnly,
-            reason: "auto_paste_disabled",
+            reason: "paste_mode_off",
         };
     }
     if facts.live_stream_session {
@@ -272,10 +312,304 @@ fn orient_route(facts: DeliveryFacts) -> DeliveryDecision {
             reason: "refuse_paste_into_self",
         };
     }
+    paste_gate(
+        facts.paste_mode,
+        facts.paste_target,
+        facts.executable_payload,
+    )
+}
+
+/// May an armed automatic paste fire at this caret?
+///
+/// - A password field (or a prompt holding secure input) holds in every mode:
+///   dictation never lands in a secret field (Founder s03-028).
+/// - A terminal gets Cmd+V only when the text does not look executable; a
+///   command-shaped take is held for the user's own ⌘V (Founder s04-036).
+/// - Safe pastes into anything else only when an editable text field is
+///   observed; Comfort pastes wherever the caret is (Founder s04-023).
+///
+/// The gate can only answer `ClipboardPaste` or `ClipboardHold`.
+fn paste_gate(mode: PasteMode, target: PasteTarget, executable: bool) -> DeliveryDecision {
+    let hold = |reason| DeliveryDecision {
+        route: DeliveryRoute::ClipboardHold,
+        reason,
+    };
+    if target.field == FocusedInputField::Secure {
+        return hold("hold_secure_field");
+    }
+    if target.terminal {
+        if executable {
+            return hold("hold_executable");
+        }
+    } else if mode == PasteMode::Safe {
+        match target.field {
+            FocusedInputField::Text | FocusedInputField::Secure => {}
+            FocusedInputField::NotText => return hold("hold_no_text_field"),
+            FocusedInputField::Unobserved => return hold("hold_field_unobserved"),
+        }
+    }
     DeliveryDecision {
         route: DeliveryRoute::ClipboardPaste,
-        reason: "auto_paste",
+        reason: if mode == PasteMode::Comfort {
+            "paste_comfort"
+        } else {
+            "paste_safe"
+        },
     }
+}
+
+/// User-facing words for a held paste, keyed by the gate's reason token.
+/// `None` for every decision that is not a hold.
+pub fn paste_hold_notice(decision: DeliveryDecision) -> Option<&'static str> {
+    if decision.route != DeliveryRoute::ClipboardHold {
+        return None;
+    }
+    Some(match decision.reason {
+        "hold_executable" => {
+            "Held: this looks like a shell command. It is on your clipboard — press ⌘V to paste it."
+        }
+        "hold_secure_field" => {
+            "Held: a password field has focus. It is on your clipboard — press ⌘V where you want it."
+        }
+        "hold_no_text_field" => {
+            "Held: no text field had focus. It is on your clipboard — press ⌘V to paste it."
+        }
+        _ => {
+            "Held: Codescribe could not confirm a text field. It is on your clipboard — press ⌘V to paste it."
+        }
+    })
+}
+
+/// Terminal emulators, matched case-insensitively against the app name the
+/// latch and the frontmost probe report (`NSRunningApplication.localizedName`).
+/// Zellij and tmux run inside one of these, so they are covered by the host.
+pub const TERMINAL_APPS: &[&str] = &[
+    "Terminal",
+    "iTerm2",
+    "iTerm",
+    "Ghostty",
+    "Alacritty",
+    "kitty",
+    "WezTerm",
+    "Warp",
+    "Hyper",
+    "Tabby",
+    "Rio",
+    "Wave",
+    "vc-terminal",
+];
+
+/// Whether `app_name` is a terminal emulator from [`TERMINAL_APPS`].
+pub fn is_terminal_app(app_name: &str) -> bool {
+    let name = app_name.trim();
+    TERMINAL_APPS
+        .iter()
+        .any(|terminal| terminal.eq_ignore_ascii_case(name))
+}
+
+/// First words that make a line a shell command on their own.
+const COMMAND_WORDS: &[&str] = &[
+    "sudo",
+    "su",
+    "doas",
+    "rm",
+    "rmdir",
+    "mv",
+    "cp",
+    "ln",
+    "chmod",
+    "chown",
+    "chgrp",
+    "dd",
+    "mkfs",
+    "diskutil",
+    "launchctl",
+    "killall",
+    "pkill",
+    "curl",
+    "wget",
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "git",
+    "gh",
+    "brew",
+    "npm",
+    "npx",
+    "pnpm",
+    "yarn",
+    "bun",
+    "deno",
+    "node",
+    "pip",
+    "pip3",
+    "pipx",
+    "uv",
+    "uvx",
+    "python",
+    "python3",
+    "ruby",
+    "perl",
+    "cargo",
+    "rustup",
+    "rustc",
+    "docker",
+    "podman",
+    "kubectl",
+    "helm",
+    "terraform",
+    "bash",
+    "sh",
+    "zsh",
+    "fish",
+    "eval",
+    "exec",
+    "osascript",
+    "xattr",
+    "codesign",
+    "spctl",
+    "csrutil",
+    "nvram",
+    "sqlite3",
+    "psql",
+    "mysql",
+    "systemctl",
+    "apt",
+    "apt-get",
+    "dnf",
+    "yum",
+    "tmux",
+    "zellij",
+    "ls",
+    "cd",
+    "mkdir",
+    "grep",
+    "rg",
+    "sed",
+    "awk",
+    "tar",
+    "unzip",
+    "crontab",
+    "shred",
+    "xargs",
+    "nohup",
+    "chsh",
+    "pbcopy",
+    "pbpaste",
+    "ps",
+    "du",
+    "df",
+];
+
+/// Binaries that are also everyday English words. They count only when the
+/// next token looks like a CLI argument (`make sure` is prose, `kill -9` not).
+const AMBIGUOUS_COMMAND_WORDS: &[&str] = &[
+    "make", "find", "open", "kill", "cat", "echo", "export", "source", "set", "unset", "test",
+    "touch", "top", "less", "more", "head", "tail", "sort", "cut", "date", "which", "man", "say",
+    "type", "go", "defaults", "alias", "history", "clear", "exit", "time", "watch", "tee", "diff",
+    "file", "who",
+];
+
+/// Prompt glyphs a pasted line may carry from a copied shell session.
+const PROMPT_MARKERS: &[&str] = &["$ ", "% ", "❯ ", "➜ "];
+
+/// Case-insensitive: dictation capitalizes the first word ("Sudo rm …") and
+/// the default macOS volume resolves `Git` to `git` all the same.
+fn word_in(list: &[&str], token: &str) -> bool {
+    list.iter().any(|word| word.eq_ignore_ascii_case(token))
+}
+
+fn is_command_word(token: &str) -> bool {
+    word_in(COMMAND_WORDS, token) || word_in(AMBIGUOUS_COMMAND_WORDS, token)
+}
+
+/// `-9`, `/tmp`, `~/x`, `./run`, `$HOME`, `a=b`, `*.log`, `notes.txt`, `4242`.
+fn looks_like_argument(token: &str) -> bool {
+    let inner = token.trim_end_matches(['.', ',', '!', '?', ':', ';']);
+    token.starts_with(['-', '/', '~', '.', '$', '"', '\''])
+        || token.contains(['=', '*', '/'])
+        || inner.contains('.')
+        || (!token.is_empty() && token.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn is_env_assignment(token: &str) -> bool {
+    token.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+            && !name.starts_with(|ch: char| ch.is_ascii_digit())
+    })
+}
+
+/// A command-shaped word sequence: optional `VAR=value` prefixes, then a
+/// command word (ambiguous ones need an argument-looking next token).
+fn starts_with_command(tokens: &[&str]) -> bool {
+    let mut rest = tokens
+        .iter()
+        .copied()
+        .skip_while(|token| is_env_assignment(token));
+    let Some(first) = rest.next() else {
+        return false;
+    };
+    if word_in(COMMAND_WORDS, first) {
+        return true;
+    }
+    word_in(AMBIGUOUS_COMMAND_WORDS, first) && rest.next().is_some_and(looks_like_argument)
+}
+
+/// The word right after `separator` names a command (`| sh`, `; rm`).
+fn command_follows(line: &str, separator: char) -> bool {
+    line.split(separator)
+        .skip(1)
+        .any(|tail| tail.split_whitespace().next().is_some_and(is_command_word))
+}
+
+/// Shell constructs that execute or chain even inside prose.
+fn has_shell_construct(line: &str) -> bool {
+    if ["$(", "${", "&&", "||", "<(", ">>", "2>&1"]
+        .iter()
+        .any(|construct| line.contains(construct))
+    {
+        return true;
+    }
+    // Backticks run their content in a shell; only a command inside counts,
+    // so `parse_mode` in a sentence stays prose.
+    let quoted_command = line.split('`').skip(1).step_by(2).any(|inside| {
+        let tokens: Vec<&str> = inside.split_whitespace().collect();
+        starts_with_command(&tokens)
+    });
+    if quoted_command || command_follows(line, '|') || command_follows(line, ';') {
+        return true;
+    }
+    // Redirection into a path (`> /etc/hosts`, `>~/out`), not `2 > 1`.
+    line.match_indices('>')
+        .any(|(index, _)| line[index + 1..].trim_start().starts_with(['/', '~', '.']))
+}
+
+/// Executable-content guard for terminal targets (Founder s04-036): does this
+/// text look like something a shell would run?
+///
+/// Deliberately a heuristic that leans toward holding: a false positive costs
+/// one ⌘V, a false negative can run a command. Checked per line: a copied
+/// prompt (`$ git status`), a leading command word (`sudo`, `rm`, `git`,
+/// `curl`, …), or a chaining / substitution construct (`$(`, backticks around
+/// a command, `&&`, `| sh`, `; rm`, `> /path`).
+pub fn looks_executable(text: &str) -> bool {
+    text.lines().map(str::trim).any(|line| {
+        if line.is_empty() {
+            return false;
+        }
+        if let Some(body) = PROMPT_MARKERS
+            .iter()
+            .find_map(|marker| line.strip_prefix(marker))
+        {
+            return !body.trim().is_empty();
+        }
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        starts_with_command(&tokens) || has_shell_construct(line)
+    })
 }
 
 /// Derive canvas availability through the delivery throne plus immutable book,
@@ -382,11 +716,18 @@ mod tests {
     use super::*;
     use crate::os::selection::is_codescribe_app;
 
+    const TEXT_FIELD: PasteTarget = PasteTarget {
+        terminal: false,
+        field: FocusedInputField::Text,
+    };
+
     fn facts(overrides: impl FnOnce(&mut DeliveryFacts)) -> DeliveryFacts {
         let mut f = DeliveryFacts {
             has_text: true,
             no_speech: false,
-            auto_paste_enabled: true,
+            paste_mode: PasteMode::Safe,
+            paste_target: TEXT_FIELD,
+            executable_payload: false,
             overlay_enabled: true,
             live_stream_session: false,
             commit_required: false,
@@ -426,27 +767,234 @@ mod tests {
     }
 
     #[test]
-    fn orient_auto_pastes_into_the_latched_target() {
+    fn orient_pastes_into_the_latched_target_when_safe_sees_a_field() {
         for intent in [
             DeliveryIntent::OrientDictation,
             DeliveryIntent::OrientFormat,
         ] {
             let decision = resolve_delivery_route(intent, facts(|_| {}));
             assert_eq!(decision.route, DeliveryRoute::ClipboardPaste, "{intent:?}");
-            assert_eq!(decision.reason, "auto_paste");
+            assert_eq!(decision.reason, "paste_safe");
         }
     }
 
     #[test]
-    fn orient_with_auto_paste_off_archives_only() {
-        let decision = resolve_delivery_route(
+    fn paste_mode_off_archives_only_whatever_the_caret() {
+        for target in [
+            TEXT_FIELD,
+            PasteTarget::UNOBSERVED,
+            PasteTarget {
+                terminal: true,
+                field: FocusedInputField::Unobserved,
+            },
+        ] {
+            let decision = resolve_delivery_route(
+                DeliveryIntent::OrientDictation,
+                facts(|f| {
+                    f.paste_mode = PasteMode::Off;
+                    f.paste_target = target;
+                    f.executable_payload = true;
+                }),
+            );
+            assert_eq!(decision.route, DeliveryRoute::ArchiveOnly, "{target:?}");
+            assert_eq!(decision.reason, "paste_mode_off");
+        }
+    }
+
+    /// (mode, terminal, field, executable) → (route, reason). The gate only
+    /// ever answers ClipboardPaste or ClipboardHold.
+    #[test]
+    fn paste_gate_matrix_for_safe_and_comfort() {
+        use DeliveryRoute::{ClipboardHold as Hold, ClipboardPaste as Paste};
+        use FocusedInputField::{NotText, Secure, Text, Unobserved};
+        use PasteMode::{Comfort, Safe};
+        let cases = [
+            (Safe, false, Text, false, Paste, "paste_safe"),
+            (Safe, false, NotText, false, Hold, "hold_no_text_field"),
+            (
+                Safe,
+                false,
+                Unobserved,
+                false,
+                Hold,
+                "hold_field_unobserved",
+            ),
+            (Safe, false, Secure, false, Hold, "hold_secure_field"),
+            // Executable text into a non-terminal field is not a shell.
+            (Safe, false, Text, true, Paste, "paste_safe"),
+            // Terminals rarely expose an AX text role; the guard decides.
+            (Safe, true, Unobserved, false, Paste, "paste_safe"),
+            (Safe, true, Text, true, Hold, "hold_executable"),
+            (Safe, true, Secure, false, Hold, "hold_secure_field"),
+            (Comfort, false, Text, false, Paste, "paste_comfort"),
+            (Comfort, false, NotText, false, Paste, "paste_comfort"),
+            (Comfort, false, Unobserved, false, Paste, "paste_comfort"),
+            (Comfort, false, Secure, false, Hold, "hold_secure_field"),
+            (Comfort, true, Unobserved, false, Paste, "paste_comfort"),
+            (Comfort, true, Unobserved, true, Hold, "hold_executable"),
+            (Comfort, true, Secure, true, Hold, "hold_secure_field"),
+        ];
+        for (mode, terminal, field, executable, route, reason) in cases {
+            let decision = resolve_delivery_route(
+                DeliveryIntent::OrientFormat,
+                facts(|f| {
+                    f.paste_mode = mode;
+                    f.paste_target = PasteTarget { terminal, field };
+                    f.executable_payload = executable;
+                }),
+            );
+            let case = format!("{mode:?} terminal={terminal} {field:?} exec={executable}");
+            assert_eq!(decision.route, route, "{case}");
+            assert_eq!(decision.reason, reason, "{case}");
+        }
+    }
+
+    #[test]
+    fn orient_vetoes_outrank_the_paste_gate() {
+        let into_self = resolve_delivery_route(
             DeliveryIntent::OrientDictation,
             facts(|f| {
-                f.auto_paste_enabled = false;
+                f.latched_target_is_self = true;
+                f.paste_target.field = FocusedInputField::Secure;
             }),
         );
-        assert_eq!(decision.route, DeliveryRoute::ArchiveOnly);
-        assert_eq!(decision.reason, "auto_paste_disabled");
+        assert_eq!(into_self.route, DeliveryRoute::DeferredInsert);
+        let live = resolve_delivery_route(
+            DeliveryIntent::OrientDictation,
+            facts(|f| {
+                f.live_stream_session = true;
+                f.paste_target.terminal = true;
+                f.executable_payload = true;
+            }),
+        );
+        assert_eq!(live.route, DeliveryRoute::ArchiveOnly);
+    }
+
+    /// The explicit Insert click is the user's confirmation: neither the paste
+    /// mode nor the executable guard applies to it.
+    #[test]
+    fn explicit_insert_is_not_gated_by_paste_mode_or_guard() {
+        let decision = resolve_delivery_route(
+            DeliveryIntent::OverlayInsert,
+            facts(|f| {
+                f.paste_mode = PasteMode::Off;
+                f.paste_target = PasteTarget {
+                    terminal: true,
+                    field: FocusedInputField::Secure,
+                };
+                f.executable_payload = true;
+            }),
+        );
+        assert_eq!(decision.route, DeliveryRoute::ClipboardPaste);
+        assert_eq!(decision.reason, "explicit_insert");
+    }
+
+    #[test]
+    fn hold_notice_speaks_only_for_holds() {
+        let paste = DeliveryDecision {
+            route: DeliveryRoute::ClipboardPaste,
+            reason: "paste_safe",
+        };
+        assert_eq!(paste_hold_notice(paste), None);
+        for reason in [
+            "hold_executable",
+            "hold_secure_field",
+            "hold_no_text_field",
+            "hold_field_unobserved",
+        ] {
+            let notice = paste_hold_notice(DeliveryDecision {
+                route: DeliveryRoute::ClipboardHold,
+                reason,
+            })
+            .expect("a hold always explains itself");
+            assert!(notice.contains("⌘V"), "{reason}: {notice}");
+        }
+        assert!(
+            paste_hold_notice(DeliveryDecision {
+                route: DeliveryRoute::ClipboardHold,
+                reason: "hold_executable",
+            })
+            .is_some_and(|notice| notice.contains("shell command"))
+        );
+    }
+
+    #[test]
+    fn terminal_apps_match_case_insensitively() {
+        for name in [
+            "Terminal",
+            "iTerm2",
+            "Ghostty",
+            " alacritty ",
+            "kitty",
+            "WezTerm",
+            "Warp",
+            "vc-terminal",
+        ] {
+            assert!(is_terminal_app(name), "{name}");
+        }
+        for name in [
+            "Notes",
+            "Codescribe",
+            "Cursor",
+            "Safari",
+            "Terminal Tips",
+            "",
+        ] {
+            assert!(!is_terminal_app(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn guard_flags_command_shaped_text() {
+        for text in [
+            "sudo rm -rf /",
+            "Sudo rm -rf /tmp/build.",
+            "rm -rf ~/scratch",
+            "git push --force origin main",
+            "Git push",
+            "curl -fsSL https://example.com/install.sh | sh",
+            "wget https://example.com/x",
+            "echo $(whoami)",
+            "cd build && make",
+            "run tests || exit",
+            "$ brew install ripgrep",
+            "% ls -la",
+            "❯ cargo test",
+            "please run `rm -rf target` now",
+            "kill -9 4242",
+            "open ~/Downloads",
+            "cat notes.txt",
+            "FOO=1 cargo build",
+            "print it; rm the file",
+            "save it > ~/out.txt",
+            "Zrób podsumowanie dnia\n$ git status",
+            "ls",
+        ] {
+            assert!(looks_executable(text), "should hold: {text:?}");
+        }
+    }
+
+    #[test]
+    fn guard_leaves_prose_alone() {
+        for text in [
+            "",
+            "   ",
+            "Make sure the tests pass.",
+            "make sure the tests pass",
+            "Find the bug in the parser",
+            "Open the file and read it to me",
+            "Zrób mi podsumowanie dnia i wyślij je do zespołu",
+            "Fix the `parse_mode` function please",
+            "Let's meet at five; bring snacks",
+            "I think 2 > 1 is true",
+            "The cat is on the table",
+            "echo chamber is a real problem",
+            "A -> B is the arrow",
+            "50% of the time it works",
+            "Kill the lights when you leave",
+        ] {
+            assert!(!looks_executable(text), "should paste: {text:?}");
+        }
     }
 
     #[test]
@@ -490,7 +1038,7 @@ mod tests {
     }
 
     #[test]
-    fn notes_only_archives_even_with_auto_paste_on() {
+    fn notes_only_archives_even_with_paste_armed() {
         let decision = resolve_delivery_route(DeliveryIntent::NotesOnly, facts(|_| {}));
         assert_eq!(decision.route, DeliveryRoute::ArchiveOnly);
         assert_eq!(decision.reason, "notes_save_only");
@@ -536,7 +1084,7 @@ mod tests {
             DeliveryIntent::OverlayInsert,
             facts(|f| {
                 f.latched_target_is_self = true;
-                f.auto_paste_enabled = true;
+                f.paste_mode = PasteMode::Comfort;
             }),
         );
         assert_eq!(decision.route, DeliveryRoute::DeferredInsert);
@@ -559,7 +1107,9 @@ mod tests {
     #[test]
     fn overlay_insert_facts_are_the_click_constructor() {
         let click = overlay_insert_facts(true, true);
-        assert!(!click.auto_paste_enabled);
+        assert_eq!(click.paste_mode, PasteMode::Off);
+        assert_eq!(click.paste_target, PasteTarget::UNOBSERVED);
+        assert!(!click.executable_payload);
         assert!(click.overlay_enabled);
         assert!(click.latched_target_is_self);
         let decision = resolve_delivery_route(DeliveryIntent::OverlayInsert, click);

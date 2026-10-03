@@ -95,31 +95,46 @@ struct LiveTranscriptTextView: NSViewRepresentable {
   /// look like no change and `updateNSView` is skipped. The engine owns its
   /// bytes; this identity makes every byte-level revision reach the canvas.
   private let utf8Identity: [UInt8]
+  /// A6 uncertain (or lexicon-rewritten) words to paint. Ranges are UTF-16
+  /// into `text`, already clamped and edge-trimmed by `OverlayState`.
+  let uncertainWords: [OverlayUncertainWord]
   let isEditable: Bool
   let appearance: OverlayAppearance
+  /// Power-mode diagnostics: the popover shows the raw source-scale value.
+  let showsDiagnostics: Bool
   let contentInsets: NSEdgeInsets
   let onEditingChanged: ((Bool) -> Void)?
   let onTextChange: ((String) -> Void)?
   let onCancelEdit: (() -> Void)?
+  let onPlayUncertainWord: ((OverlayUncertainWord) -> Void)?
+  let onTeachUncertainWord: ((OverlayUncertainWord, String) -> Void)?
   @Environment(\.csTextScale) private var textScale
 
   init(
     text: String,
+    uncertainWords: [OverlayUncertainWord] = [],
     isEditable: Bool = false,
     appearance: OverlayAppearance,
+    showsDiagnostics: Bool = false,
     contentInsets: NSEdgeInsets = NSEdgeInsetsZero,
     onEditingChanged: ((Bool) -> Void)? = nil,
     onTextChange: ((String) -> Void)? = nil,
-    onCancelEdit: (() -> Void)? = nil
+    onCancelEdit: (() -> Void)? = nil,
+    onPlayUncertainWord: ((OverlayUncertainWord) -> Void)? = nil,
+    onTeachUncertainWord: ((OverlayUncertainWord, String) -> Void)? = nil
   ) {
     self.text = text
     self.utf8Identity = Array(text.utf8)
+    self.uncertainWords = uncertainWords
     self.isEditable = isEditable
     self.appearance = appearance
+    self.showsDiagnostics = showsDiagnostics
     self.contentInsets = contentInsets
     self.onEditingChanged = onEditingChanged
     self.onTextChange = onTextChange
     self.onCancelEdit = onCancelEdit
+    self.onPlayUncertainWord = onPlayUncertainWord
+    self.onTeachUncertainWord = onTeachUncertainWord
   }
 
   func makeCoordinator() -> Coordinator { Coordinator() }
@@ -167,6 +182,11 @@ struct LiveTranscriptTextView: NSViewRepresentable {
 
   static func makeTextView() -> LiveTranscriptNativeTextView {
     let textView = LiveTranscriptNativeTextView(usingTextLayoutManager: true)
+    // Build 1487 crashed in NSWritingToolsEditTracker when proofreading raced
+    // a live transcript revision; the reducer alone owns these text changes.
+    if #available(macOS 15.0, *) {
+      textView.writingToolsBehavior = .none
+    }
     textView.isEditable = false
     textView.isSelectable = true
     textView.isRichText = true
@@ -184,7 +204,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
       height: CGFloat.greatestFiniteMagnitude
     )
     textView.setAccessibilityIdentifier("overlay-transcript-live")
-    textView.setAccessibilityLabel("Live transcript")
+    textView.setAccessibilityLabel(String(localized: "Live transcript"))
     return textView
   }
 
@@ -195,6 +215,11 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     coordinator.onEditingChanged = onEditingChanged
     coordinator.onTextChange = onTextChange
     coordinator.onCancelEdit = onCancelEdit
+    coordinator.uncertainWords = uncertainWords
+    coordinator.showsDiagnostics = showsDiagnostics
+    coordinator.onPlayUncertainWord = onPlayUncertainWord
+    coordinator.onTeachUncertainWord = onTeachUncertainWord
+    coordinator.popoverPalette = OverlayAppearancePalette.resolve(appearance)
     let attributes = transcriptAttributes()
     textView.isEditable = isEditable
     textView.allowsUndo = isEditable
@@ -206,10 +231,13 @@ struct LiveTranscriptTextView: NSViewRepresentable {
       coordinator.renderedAttributes.map {
         NSDictionary(dictionary: $0).isEqual(to: attributes)
       } ?? false
+    // The uncertain-word signature is part of the attribute diff: a range
+    // change with identical bytes must never leave stale paint behind.
+    let sameUncertain = coordinator.renderedUncertainWords == uncertainWords
     // While the caret is in the canvas the bytes we are handed are the bytes
     // the user just typed; repainting storage would throw the caret away.
     if sameBytes, coordinator.isEditing { return }
-    guard !sameBytes || !sameAttributes else { return }
+    guard !sameBytes || !sameAttributes || !sameUncertain else { return }
 
     let previousSelection = textView.selectedRange()
     let wasFollowingTail = coordinator.followsTail
@@ -217,7 +245,8 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     coordinator.applyingUpdate = true
     let previous = textView.string as NSString
     let incoming = text as NSString
-    if sameAttributes {
+    let palette = OverlayAppearancePalette.resolve(appearance)
+    if sameAttributes, sameUncertain {
       // Preserve the recorded prefix in TextKit. Replacing the whole storage
       // invalidates every paragraph on each live append or open-tail revision.
       // Compare UTF-16 units, not Characters: canonical Unicode equivalence
@@ -237,11 +266,18 @@ struct LiveTranscriptTextView: NSViewRepresentable {
         string: incoming.substring(from: prefix), attributes: attributes)
       textView.textStorage?.replaceCharacters(
         in: NSRange(location: prefix, length: previous.length - prefix), with: tail)
+      // The replaced tail carried base attributes only; re-apply the uncertain
+      // ranges that intersect it. Ranges before the prefix kept their paint.
+      applyUncertainAttributes(to: textView, palette: palette, tailStart: prefix)
     } else {
+      // Base attributes or the uncertain ranges themselves changed: repaint
+      // the whole storage so stale uncertainty paint cannot survive a revision.
       textView.textStorage?.setAttributedString(
         NSAttributedString(string: text, attributes: attributes))
+      applyUncertainAttributes(to: textView, palette: palette, tailStart: nil)
     }
     coordinator.renderedAttributes = attributes
+    coordinator.renderedUncertainWords = uncertainWords
 
     let updatedLength = incoming.length
     if previousSelection.length > 0 || !wasFollowingTail {
@@ -278,6 +314,58 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     ]
   }
 
+  /// Uncertain words get the uncertainty orange plus a dotted underline and a
+  /// VoiceOver custom-text marker (d8: color alone is never the only signal).
+  /// `surface_rewritten` words belong to the dictionary (d5): steel-blue
+  /// lexicon style, never orange. The custom-text attribute is the documented
+  /// string-array form of `NSAccessibilityCustomTextAttribute`.
+  static func uncertainAttributes(
+    for word: OverlayUncertainWord,
+    palette: OverlayAppearancePalette
+  ) -> [NSAttributedString.Key: Any] {
+    if word.surfaceRewritten {
+      return [
+        .foregroundColor: palette.lexiconMarker.nsColor,
+        .underlineStyle: NSUnderlineStyle.single.rawValue,
+        .underlineColor: palette.lexiconMarker.nsColor,
+        .accessibilityCustomText: [
+          String(
+            localized: "rewritten by your dictionary",
+            comment: "VoiceOver marker spoken on a word the user's dictionary replaced")
+        ],
+      ]
+    }
+    return [
+      .foregroundColor: palette.uncertainWord.nsColor,
+      .underlineStyle: NSUnderlineStyle([.single, .patternDot]).rawValue,
+      .underlineColor: palette.uncertainWord.nsColor,
+      .accessibilityCustomText: [
+        String(
+          localized: "uncertain",
+          comment: "VoiceOver marker spoken on a word the engine was unsure of")
+      ],
+    ]
+  }
+
+  private func applyUncertainAttributes(
+    to textView: LiveTranscriptNativeTextView,
+    palette: OverlayAppearancePalette,
+    tailStart: Int?
+  ) {
+    guard let storage = textView.textStorage else { return }
+    let length = storage.length
+    for word in uncertainWords {
+      if let tailStart, NSMaxRange(word.range) <= tailStart { continue }
+      let start = min(word.range.location, length)
+      let end = min(NSMaxRange(word.range), length)
+      guard end > start else { continue }
+      storage.addAttributes(
+        Self.uncertainAttributes(for: word, palette: palette),
+        range: NSRange(location: start, length: end - start)
+      )
+    }
+  }
+
   @MainActor
   final class Coordinator: NSObject, NSTextViewDelegate {
     private(set) var scrollFollowState = LiveTranscriptScrollFollowState()
@@ -285,9 +373,16 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     var applyingUpdate = false
     var isEditing = false
     var renderedAttributes: [NSAttributedString.Key: Any]?
+    var renderedUncertainWords: [OverlayUncertainWord]?
+    var uncertainWords: [OverlayUncertainWord] = []
+    var showsDiagnostics = false
+    var popoverPalette = OverlayAppearancePalette.dark
     var onEditingChanged: ((Bool) -> Void)?
     var onTextChange: ((String) -> Void)?
     var onCancelEdit: (() -> Void)?
+    var onPlayUncertainWord: ((OverlayUncertainWord) -> Void)?
+    var onTeachUncertainWord: ((OverlayUncertainWord, String) -> Void)?
+    let uncertainWordPopover = UncertainWordPopoverPresenter()
     private weak var observedScrollView: NSScrollView?
     private var scrollObservers: [NSObjectProtocol] = []
 
@@ -405,9 +500,10 @@ struct LiveTranscriptTextView: NSViewRepresentable {
         let textView = notification.object as? NSTextView
       else { return }
       let scrollView = textView.enclosingScrollView
-      let viewportAtLiveEdge = scrollView.flatMap { scrollView in
-        scrollView.documentView.map { isAtLiveEdge(documentView: $0, in: scrollView) }
-      } ?? false
+      let viewportAtLiveEdge =
+        scrollView.flatMap { scrollView in
+          scrollView.documentView.map { isAtLiveEdge(documentView: $0, in: scrollView) }
+        } ?? false
       scrollFollowState.selectionChanged(
         textView.selectedRange(),
         textLength: (textView.string as NSString).length,
@@ -420,7 +516,31 @@ struct LiveTranscriptTextView: NSViewRepresentable {
       // Native edits (including rich paste) can change attributes independently
       // of the projection. Reapply the transcript style when editing finishes.
       renderedAttributes = nil
+      renderedUncertainWords = nil
       onTextChange?(textView.string)
+    }
+
+    /// Click on a painted word opens its explainer popover; a click anywhere
+    /// else dismisses it.
+    func presentUncertainWordPopoverIfNeeded(
+      characterIndex: Int,
+      in textView: LiveTranscriptNativeTextView
+    ) {
+      guard
+        let word = OverlayUncertainWordProjection.hit(
+          at: characterIndex, in: uncertainWords)
+      else {
+        uncertainWordPopover.dismiss()
+        return
+      }
+      uncertainWordPopover.present(
+        word: word,
+        in: textView,
+        palette: popoverPalette,
+        showsDiagnostics: showsDiagnostics,
+        onPlay: onPlayUncertainWord.map { play in { play(word) } },
+        onTeach: onTeachUncertainWord.map { teach in { canonical in teach(word, canonical) } }
+      )
     }
 
     func textView(
@@ -496,14 +616,23 @@ final class LiveTranscriptNativeTextView: NSTextView {
     // final glyph. Revealing only that glyph can leave the viewport one line
     // short of the document's live edge, so place the document extent at the
     // viewport bottom after TextKit has laid out the requested tail range.
-    var origin = scroll.contentView.bounds.origin
-    origin.y = Self.liveBottomScrollOrigin(
-      documentMaxY: bounds.maxY,
-      clipHeight: scroll.contentView.bounds.height,
-      contentInsets: scroll.contentView.contentInsets
-    )
-    scroll.contentView.scroll(to: origin)
-    scroll.reflectScrolledClipView(scroll.contentView)
+    // TextKit 2 lays that trailing line out only once the viewport reaches it,
+    // so the document grows after the scroll that uncovered it. Lay the new
+    // viewport out and re-place the bottom while the extent still moves; the
+    // growth is the uncovered tail, so the second pass settles.
+    for _ in 0..<3 {
+      let documentMaxY = bounds.maxY
+      var origin = scroll.contentView.bounds.origin
+      origin.y = Self.liveBottomScrollOrigin(
+        documentMaxY: documentMaxY,
+        clipHeight: scroll.contentView.bounds.height,
+        contentInsets: scroll.contentView.contentInsets
+      )
+      scroll.contentView.scroll(to: origin)
+      scroll.reflectScrolledClipView(scroll.contentView)
+      textLayoutManager?.textViewportLayoutController.layoutViewport()
+      if bounds.maxY == documentMaxY { return }
+    }
   }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -526,11 +655,32 @@ final class LiveTranscriptNativeTextView: NSTextView {
   }
 
   override func mouseDown(with event: NSEvent) {
+    mouseDownCharacterIndex = characterIndex(for: event)
     super.mouseDown(with: event)
     // AppKit can preselect this view while the take is still read-only. An
     // explicit later click must open the edit gate even if responder identity
     // does not change and becomeFirstResponder is therefore not called again.
     if window?.firstResponder === self { beginEditingIfNeeded() }
+  }
+
+  override func mouseUp(with event: NSEvent) {
+    super.mouseUp(with: event)
+    defer { mouseDownCharacterIndex = nil }
+    guard event.clickCount == 1,
+      selectedRange().length == 0,
+      let downIndex = mouseDownCharacterIndex,
+      let upIndex = characterIndex(for: event),
+      upIndex == downIndex
+    else { return }
+    editCoordinator?.presentUncertainWordPopoverIfNeeded(characterIndex: upIndex, in: self)
+  }
+
+  private var mouseDownCharacterIndex: Int?
+
+  private func characterIndex(for event: NSEvent) -> Int? {
+    let point = convert(event.locationInWindow, from: nil)
+    let index = characterIndexForInsertion(at: point)
+    return index == NSNotFound ? nil : index
   }
 
   override func resignFirstResponder() -> Bool {

@@ -95,6 +95,7 @@ fn recovery_open_silero_final_waits_for_stable_extent() {
     state.fusion_seal_armed = true;
     let (tx, _) = mpsc::unbounded_channel();
     let words = vec![TranscriptSegment {
+        confidence: None,
         text: "Iwo".into(),
         start_ts: 0.1,
         end_ts: 0.8,
@@ -164,16 +165,19 @@ fn overlapping_pad_occurrences_project_each_apple_word() {
     let (tx, _) = mpsc::unbounded_channel();
     let words = [
         TranscriptSegment {
+            confidence: None,
             text: "Leftside".into(),
             start_ts: 3_600_000.0 / RATE as f32,
             end_ts: 3_700_000.0 / RATE as f32,
         },
         TranscriptSegment {
+            confidence: None,
             text: "Middlephrase".into(),
             start_ts: 4_000_000.0 / RATE as f32,
             end_ts: 4_100_000.0 / RATE as f32,
         },
         TranscriptSegment {
+            confidence: None,
             text: "Rightside".into(),
             start_ts: 4_400_000.0 / RATE as f32,
             end_ts: 4_500_000.0 / RATE as f32,
@@ -245,6 +249,7 @@ fn recovery_closed_occurrence_submits_owned_tail_job() {
         &mut state,
         &tx,
         &[TranscriptSegment {
+            confidence: None,
             text: "Iwo".into(),
             start_ts: 0.1,
             end_ts: 1.8,

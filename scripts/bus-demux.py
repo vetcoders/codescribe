@@ -41,7 +41,23 @@ CLEAN_SCHEMA = "codescribe.transcript.v1"
 #: knows only CLEAN_SCHEMA sees lifecycle rows and reports nothing for a real
 #: take — deaf, while looking healthy.
 EVIDENCE_SCHEMA = "codescribe.transcript-evidence.v1"
+#: Channel lifecycle receipts from the agent channel (open / silence seal).
+#: The bridge reads them only as flush boundaries for the coverage-refused
+#: safety net below; it never turns them into transcript envelopes.
+CHANNEL_SESSION_SCHEMA = "codescribe.channel-session.v1"
+#: Clean lifecycle terminal. For the flush net it is the hang-up boundary:
+#: a channel closed by a second digit / Fn press is not reopened, so no
+#: later channel-session row would ever release its refused take.
+SESSION_ENDED = "session_ended"
 TERMINAL_SEAL = "record_ledger_terminal_seal"
+#: A ledger that refuses terminal finality (incomplete acoustic coverage or
+#: pending text recovery) emits no terminal seal at all, and before this net
+#: the utterance silently vanished for the agent (observed live 2026-09-29:
+#: two Founder takes at 98% and 53% coverage were never delivered). The
+#: flush delivers the words with ``coverage: "refused"`` and
+#: ``state_change_allowed: false`` — parity with the Stop lane's degraded
+#: handoff: the take is delivered but no longer allowed to certify itself.
+COVERAGE_REFUSED = "refused"
 INSTALL_INTERLOCK_FILENAME = "install-runtime.lock"
 AGENT_TURN_LEASE_FILENAME = "agent-turn.lock"
 SEALED = "transcript_sealed"
@@ -57,6 +73,9 @@ AUDIENCE_BINDING_FILENAME = "vc.agent-audience-binding.v1.json"
 ATTACH_RECEIPT_SCHEMA = "codescribe.agent-bridge.attach-receipt.v1"
 STATUS_SCHEMA = "codescribe.agent-bridge.status.v1"
 DEFAULT_LEASE_TTL_SECONDS = 120.0
+PLAYBACK_WAIT_SECONDS = 120.0
+TAKE_WAIT_SECONDS = 120.0
+PLAYBACK_POLL_SECONDS = 0.5
 DEFAULT_SPEECH_SPEED = 1.25
 ASSIGN_RE = re.compile(
     r"(?i)(?:będziesz(?:\s+od)?\s+teraz|nazywam\s+cię|nazywasz\s+się|"
@@ -147,7 +166,13 @@ def agent_turn_lease_path() -> Path:
     return install_interlock_path().with_name(AGENT_TURN_LEASE_FILENAME)
 
 
-def installation_idle(path: Path) -> bool:
+def installation_idle(
+    path: Path,
+    *,
+    sealed_is_idle: bool = True,
+    cursor: dict[str, Any] | None = None,
+    bridge_root: Path | None = None,
+) -> bool:
     """True when no current take is in flight.
 
     One microphone: the live app take is the most recently started app
@@ -165,53 +190,172 @@ def installation_idle(path: Path) -> bool:
     it must not refuse installs forever. An unpaired CLI start whose
     ``emitted_at`` is missing or unparseable stays live: abandonment must
     be proven, not presumed.
+    Channel buses from the binding file and ``buses/channel-*.jsonl`` share
+    this guard. Only ``open`` holds a channel; any other lifecycle state or
+    a successor session on that channel ends it, as in the channel consumer.
+    Silence alone does not release it. An open channel with no receipt for
+    six hours uses the CLI abandonment threshold; unknown timestamps keep
+    blocking. Evidence rows refresh the session's last known activity.
     """
-    if not path.exists():
-        return True
-    if not path.is_file():
-        return False
-    open_cli: dict[str, str | None] = {}
-    live_app: str | None = None
+    root = bridge_root if bridge_root is not None else bridge_home()
+    cursors = cursor if cursor is not None else {}
+    channel_cursors = cursors.setdefault("channel_buses", {})
     try:
-        with path.open(encoding="utf-8", errors="strict") as handle:
-            for raw in handle:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    event = json.loads(raw)
-                except json.JSONDecodeError:
+        paths = {path, *channel_cursors}
+        paths.update((root / "buses").glob("channel-*.jsonl"))
+        binding_path = root / AUDIENCE_BINDING_FILENAME
+        try:
+            binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            binding = {"schema": AUDIENCE_BINDING_SCHEMA, "bindings": {}}
+        if (
+            not isinstance(binding, dict)
+            or binding.get("schema") != AUDIENCE_BINDING_SCHEMA
+            or not isinstance(binding.get("bindings"), dict)
+        ):
+            return False
+        for entry in binding["bindings"].values():
+            if not isinstance(entry, dict):
+                return False
+            raw_bus = entry.get("bus")
+            if raw_bus is not None:
+                if not isinstance(raw_bus, str) or not raw_bus.strip():
                     return False
-                if not isinstance(event, dict):
-                    return False
-                status = event.get("status")
-                if status not in ("session_started", "session_ended", SEALED):
-                    continue
-                session_id = event.get("session_id")
-                if not isinstance(session_id, str) or not session_id:
-                    return False
-                is_cli = event.get("source") == CLI_FILE_VERDICT_SOURCE
-                if status == "session_started":
-                    if is_cli:
-                        emitted = event.get("emitted_at")
-                        open_cli[session_id] = (
-                            emitted if isinstance(emitted, str) else None
-                        )
-                    else:
-                        live_app = session_id
-                elif is_cli:
-                    open_cli.pop(session_id, None)
-                elif session_id == live_app:
-                    live_app = None
-    except (OSError, UnicodeDecodeError):
+                paths.add(Path(os.path.expanduser(raw_bus.strip())))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
-    now = time.time()
-    live_cli = [
-        session_id
-        for session_id, emitted_at in open_cli.items()
-        if not _cli_session_abandoned(emitted_at, now)
-    ]
-    return live_app is None and not live_cli
+    idle = True
+    for source in sorted(paths):
+        state = cursors if source == path else channel_cursors.setdefault(source, {})
+        if not source.exists():
+            # A disappearing known bus is no terminal receipt. Preserve its
+            # open channels until their timestamp proves abandonment.
+            if any(
+                not _cli_session_abandoned(activity, time.time())
+                for _, activity in state.get("open_channels", {}).values()
+            ):
+                idle = False
+            continue
+        if not source.is_file():
+            return False
+        open_cli: dict[str, str | None] = {}
+        open_channels: dict[str, tuple[str, str | None]] = {}
+        live_app: str | None = None
+        try:
+            with source.open(encoding="utf-8", errors="strict") as handle:
+                stat = os.fstat(handle.fileno())
+                identity = (stat.st_dev, stat.st_ino, sealed_is_idle)
+                if (
+                    state
+                    and state.get("identity") == identity
+                    and state["offset"] <= stat.st_size
+                ):
+                    handle.seek(state["offset"])
+                    open_cli = dict(state["open_cli"])
+                    live_app = state["live_app"]
+                    open_channels = dict(state["open_channels"])
+                # readline keeps tell() usable: playback can consume only the new
+                # tail after its initial scan, instead of rescanning a large bus.
+                while True:
+                    offset = handle.tell()
+                    raw = handle.readline()
+                    if not raw:
+                        break
+                    if not raw.endswith("\n"):
+                        raise ValueError("incomplete bus row")
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    event = json.loads(raw)
+                    if not isinstance(event, dict):
+                        raise ValueError("bus row is not an object")
+                    session_id = event.get("session_id")
+                    if event.get("schema") == CHANNEL_SESSION_SCHEMA:
+                        channel = str(event.get("channel") or "")
+                        if (
+                            not channel
+                            or not isinstance(session_id, str)
+                            or not session_id
+                        ):
+                            raise ValueError("channel row has no identity")
+                        # A newer session on this channel supersedes its old open
+                        # receipt, matching _consume_channel_row and orphan seals.
+                        open_channels = {
+                            sid: value
+                            for sid, value in open_channels.items()
+                            if value[0] != channel
+                        }
+                        if str(event.get("state") or "") == "open":
+                            emitted = event.get("emitted_at") or event.get("opened_at")
+                            open_channels[session_id] = (
+                                channel, emitted if isinstance(emitted, str) else None
+                            )
+                        continue
+                    if (
+                        event.get("schema") == EVIDENCE_SCHEMA
+                        and isinstance(session_id, str)
+                        and session_id in open_channels
+                    ):
+                        channel, _ = open_channels[session_id]
+                        emitted = event.get("emitted_at")
+                        # Missing or invalid activity never proves abandonment.
+                        if isinstance(emitted, str):
+                            open_channels[session_id] = (channel, emitted)
+                    status = event.get("status")
+                    # Speech must wait for session_ended: a channel can seal an
+                    # utterance while the microphone keeps capturing the room.
+                    if status == SEALED and not sealed_is_idle:
+                        continue
+                    if status not in ("session_started", "session_ended", SEALED):
+                        continue
+                    if not isinstance(session_id, str) or not session_id:
+                        raise ValueError("lifecycle row has no session")
+                    is_cli = event.get("source") == CLI_FILE_VERDICT_SOURCE
+                    if status == "session_started":
+                        if is_cli:
+                            emitted = event.get("emitted_at")
+                            open_cli[session_id] = (
+                                emitted if isinstance(emitted, str) else None
+                            )
+                        else:
+                            live_app = session_id
+                    elif is_cli:
+                        open_cli.pop(session_id, None)
+                    elif session_id == live_app:
+                        live_app = None
+                state.update(
+                    identity=identity,
+                    offset=handle.tell(),
+                    open_cli=open_cli,
+                    live_app=live_app,
+                    open_channels=open_channels,
+                )
+        except ValueError:
+            # Retry the offending row, without replaying the valid prefix of
+            # a multi-gigabyte bus while its writer finishes a partial tail.
+            state.update(
+                identity=identity,
+                offset=offset,
+                open_cli=open_cli,
+                live_app=live_app,
+                open_channels=open_channels,
+            )
+            return False
+        except (OSError, UnicodeDecodeError):
+            return False
+        now = time.time()
+        live_cli = [
+            session_id
+            for session_id, emitted_at in open_cli.items()
+            if not _cli_session_abandoned(emitted_at, now)
+        ]
+        live_channels = any(
+            not _cli_session_abandoned(activity, now)
+            for _, activity in open_channels.values()
+        )
+        if live_app is not None or live_cli or live_channels:
+            idle = False
+    return idle
 
 
 # A CLI file transcription is bounded by its audio; six hours is generous.
@@ -377,8 +521,15 @@ def slim(
         "producer_schema": producer_schema,
         "source_event_id": event.get("source_event_id") or source_event_identity(event),
         "text": event.get("text") if isinstance(event.get("text"), str) else "",
-        "state_change_allowed": status == SEALED,
+        # A coverage-refused flush delivers the words but not the authority:
+        # the ledger declined to certify the take, so the envelope may inform
+        # a reply and may not authorize a state change.
+        "state_change_allowed": status == SEALED
+        and event.get("coverage") != COVERAGE_REFUSED,
     }
+    coverage = event.get("coverage")
+    if isinstance(coverage, str) and coverage:
+        payload["coverage"] = coverage
     wav = assigned_session_wav(event)
     if wav:
         payload["wav"] = wav
@@ -407,7 +558,11 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         return None
     if not isinstance(event, dict):
         return None
-    if event.get("schema") not in (CLEAN_SCHEMA, EVIDENCE_SCHEMA):
+    if event.get("schema") not in (
+        CLEAN_SCHEMA,
+        EVIDENCE_SCHEMA,
+        CHANNEL_SESSION_SCHEMA,
+    ):
         return None
     return event
 
@@ -458,6 +613,12 @@ def terminal_seal_identity(event: dict[str, Any]) -> str:
     )
 
 
+def channel_of_session(session_id: str) -> str | None:
+    """The channel digit a session belongs to, from its stable label prefix."""
+    match = re.match(r"agent-channel-(\d+)-", session_id or "")
+    return match.group(1) if match else None
+
+
 class EvidenceNormalizer:
     """Translate ``transcript-evidence.v1`` rows into the shape the bridge speaks.
 
@@ -466,24 +627,126 @@ class EvidenceNormalizer:
     or finality from characters.  Terminal rows are coalesced only by the
     reducer's stable terminal phase identity, because one terminal receipt can
     project once per document entry.
+
+    Channel safety net: a ledger that refuses terminal finality emits no
+    terminal seal, so an addressed utterance would vanish without a trace.
+    The normalizer keeps the latest snapshot per document of each unsealed
+    channel session and, when the session is over — a ``channel-session``
+    receipt shows the channel moved on (any non-open state for the session,
+    or a fresh open of the same channel), or the session's own
+    ``session_ended`` lifecycle row marks a hang-up — flushes those documents
+    as ``coverage: "refused"`` seal envelopes via :meth:`pop_flushes`.  The
+    words are delivered once; certification is honestly withheld.
     """
+
+    #: Unsealed channel sessions retained for the flush net. The quiet
+    #: contract reopens a channel within seconds of every real utterance, so
+    #: anything beyond a handful of sessions is an abandoned bus replay.
+    MAX_TRACKED_SESSIONS = 16
 
     def __init__(self) -> None:
         self._terminal_seals: set[str] = set()
+        # Sessions whose delivery is settled: a terminal seal was reported or
+        # the refused flush already carried their words. A late row for such
+        # a session must not re-arm the net and deliver the take twice.
+        self._settled_sessions: set[str] = set()
+        self._session_docs: dict[str, dict[Any, dict[str, Any]]] = {}
+        self._flushes: list[dict[str, Any]] = []
+
+    def pop_flushes(self) -> list[dict[str, Any]]:
+        """Coverage-refused envelopes triggered by the last normalized row."""
+        flushes, self._flushes = self._flushes, []
+        return flushes
 
     def normalize(self, event: dict[str, Any] | None) -> dict[str, Any] | None:
-        if event is None or event.get("schema") != EVIDENCE_SCHEMA:
+        if event is None:
+            return None
+        if event.get("schema") == CHANNEL_SESSION_SCHEMA:
+            self._consume_channel_row(event)
+            return None
+        if event.get("schema") != EVIDENCE_SCHEMA:
+            if event.get("status") == SESSION_ENDED:
+                self._flush_session(
+                    str(event.get("session_id") or ""), event.get("emitted_at")
+                )
             return event
         document = event.get("rendered_text")
         if not isinstance(document, str):
             return None
         if str(event.get("reducer_action") or "") == TERMINAL_SEAL:
+            session = str(event.get("session_id") or "")
+            self._settled_sessions.add(session)
+            self._session_docs.pop(session, None)
             seal_id = terminal_seal_identity(event)
             if seal_id in self._terminal_seals:
                 return None
             self._terminal_seals.add(seal_id)
             return self._as_clean(event, SEALED, document)
-        return self._as_clean(event, LIVE_STATUSES[1], document)
+        clean = self._as_clean(event, LIVE_STATUSES[1], document)
+        self._remember_channel_document(event, clean)
+        return clean
+
+    def _remember_channel_document(
+        self, event: dict[str, Any], clean: dict[str, Any]
+    ) -> None:
+        session = str(event.get("session_id") or "")
+        if not clean.get("audience") or channel_of_session(session) is None:
+            return
+        if session in self._settled_sessions:
+            return
+        docs = self._session_docs.setdefault(session, {})
+        docs[clean.get("document_index")] = clean
+        while len(self._session_docs) > self.MAX_TRACKED_SESSIONS:
+            self._session_docs.pop(next(iter(self._session_docs)))
+
+    def _consume_channel_row(self, row: dict[str, Any]) -> None:
+        channel = str(row.get("channel") or "")
+        session = str(row.get("session_id") or "")
+        due: list[str] = []
+        # Only "open" keeps a session alive; a silence seal or any closing
+        # state the app writes for this session ends it.
+        if str(row.get("state") or "") != "open" and session in self._session_docs:
+            due.append(session)
+        for cached in list(self._session_docs):
+            if (
+                cached != session
+                and cached not in due
+                and channel_of_session(cached) == channel
+            ):
+                due.append(cached)
+        for stale in due:
+            self._flush_session(stale, row.get("emitted_at"))
+
+    def _flush_session(self, session: str, emitted_at: Any) -> None:
+        docs = self._session_docs.pop(session, None)
+        if not docs or session in self._settled_sessions:
+            return
+        self._settled_sessions.add(session)
+        seen_texts: set[str] = set()
+        for doc_index, clean in sorted(docs.items(), key=lambda item: str(item[0])):
+            text = clean.get("text") or ""
+            if not text.strip():
+                continue
+            # Channel documents often re-project one full-session snapshot
+            # under several document indexes; identical words are one refused
+            # delivery, not N.
+            if text in seen_texts:
+                continue
+            seen_texts.add(text)
+            # A stable per-document identity keys the delivery, so a bus
+            # replay after restart is the same refused phase, not a repeat.
+            identity = _identity(("coverage-refused-seal", session, doc_index))
+            refused = dict(clean)
+            refused.update(
+                {
+                    "status": SEALED,
+                    "coverage": COVERAGE_REFUSED,
+                    "utterance_id": identity,
+                    "source_event_id": identity,
+                    "emitted_at": emitted_at or clean.get("emitted_at"),
+                }
+            )
+            self._flushes.append(refused)
 
     def _as_clean(
         self, event: dict[str, Any], status: str, text: str
@@ -517,6 +780,64 @@ class EvidenceNormalizer:
 def emit(payload: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
     sys.stdout.flush()
+
+
+FOLLOWER_TEXT_LIMIT = 200
+
+
+def follower_paths(root: Path, lease_id: str) -> tuple[Path, Path]:
+    base = root / "runtime" / "followers" / lease_id
+    return base.with_suffix(".log"), base.with_suffix(".events.jsonl")
+
+
+def human_line(payload: dict[str, Any], channel: str | None = None) -> str:
+    stamp = str(payload.get("emitted_at") or utc_now())
+    try:
+        clock = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone()
+        when = clock.strftime("%H:%M:%S")
+    except ValueError:
+        when = datetime.datetime.now().strftime("%H:%M:%S")
+    kind = str(payload.get("kind") or "notice")
+    audience = str(payload.get("audience") or payload.get("name") or "*")
+    who = f"{channel}·{audience}" if channel else audience
+    if kind == "attach":
+        return f"{when} attach {who} cursor={payload.get('cursor')} follower={payload.get('follower_pid')}"
+    if kind == "routing_ambiguity":
+        kind = "routing?"
+    elif payload.get("coverage") == COVERAGE_REFUSED:
+        kind = "refused"
+    elif kind == "revised":
+        kind = "draft"
+    delivery = payload.get("delivery_id")
+    identity = f" id={delivery}" if delivery else ""
+    revision = payload.get("reducer_revision")
+    revision_label = f" (rev {revision})" if kind == "draft" and revision is not None else ""
+    words = " ".join(str(payload.get("text") or "").split())[:FOLLOWER_TEXT_LIMIT]
+    return f"{when} {kind:<7} {who}{identity}{revision_label} {json.dumps(words, ensure_ascii=False)}"
+
+
+def emit_follower(
+    payload: dict[str, Any], events_path: Path | None, channel: str | None,
+    *, human_output: bool = True,
+) -> None:
+    if events_path is None:
+        emit(payload)
+        return
+    encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+    descriptor = os.open(events_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        remaining = memoryview(encoded)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written == 0:
+                raise OSError("follower event write made no progress")
+            remaining = remaining[written:]
+    finally:
+        os.close(descriptor)
+    if human_output:
+        sys.stdout.write(human_line(payload, channel) + "\n")
+        sys.stdout.flush()
 
 
 def consider(
@@ -735,6 +1056,18 @@ def lease_identifier(provider: str, provider_session_id: str) -> str:
     # greeting follower onto a fresh cursor.
     identity = "\0".join((provider.casefold(), provider_session_id))
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+
+
+#: Providers that hand their own conversation id to child processes. Codex
+#: exposes none, so its session is never guessed and stays an explicit flag.
+PROVIDER_SESSION_ENV = {"claude-code": "CLAUDE_CODE_SESSION_ID"}
+
+
+def provider_session_from_env(provider: str) -> str | None:
+    """The provider's own session id from its environment, when it sets one."""
+    key = PROVIDER_SESSION_ENV.get(provider.casefold())
+    value = os.environ.get(key, "").strip() if key else ""
+    return value or None
 
 
 def process_is_alive(pid: Any) -> bool:
@@ -1046,6 +1379,7 @@ class SessionLease:
             "cursor": self.cursor,
             "resumed": self.resumed,
             "active_names": names,
+            "follower_pid": os.getpid(),
         }
 
     def close(self) -> None:
@@ -1061,9 +1395,16 @@ def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str) -> bool:
 
 
 def acknowledge_delivery(args: argparse.Namespace) -> int:
-    delivery_id = args.ack
-    if not re.fullmatch(r"[0-9a-f]{24}", delivery_id):
-        raise ValueError("invalid delivery id")
+    """Record receipt of one or more deliveries, all or nothing.
+
+    Every id is checked before any marker is written: one unknown id refuses
+    the whole call, so a batch never half-acknowledges the mailbox.
+    """
+    delivery_ids = list(dict.fromkeys(args.ack))
+    if not delivery_ids or any(
+        not re.fullmatch(r"[0-9a-f]{24}", delivery_id) for delivery_id in delivery_ids
+    ):
+        raise ValueError("invalid delivery id; nothing acknowledged")
     lease_id = lease_identifier(args.provider, args.session)
     state = read_json(args.bridge_home / "leases" / f"{lease_id}.json")
     if (
@@ -1080,18 +1421,34 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
         raise ValueError(
             "acknowledgment does not belong to this provider session and bus"
         )
-    if not delivery_acknowledged(args.bridge_home, lease_id, delivery_id):
-        pending = state.get("pending", [])
-        if not isinstance(pending, list) or not any(
-            isinstance(payload, dict) and payload.get("delivery_id") == delivery_id
+    pending = state.get("pending", [])
+    pending_ids = (
+        {
+            payload.get("delivery_id")
             for payload in pending
-        ):
-            raise ValueError("delivery is not pending for this provider session")
+            if isinstance(payload, dict)
+        }
+        if isinstance(pending, list)
+        else set()
+    )
+    unread = [
+        delivery_id
+        for delivery_id in delivery_ids
+        if not delivery_acknowledged(args.bridge_home, lease_id, delivery_id)
+    ]
+    for delivery_id in unread:
+        if delivery_id not in pending_ids:
+            raise ValueError(
+                f"delivery {delivery_id} is not pending for this provider session; "
+                "nothing acknowledged"
+            )
+    for delivery_id in unread:
         atomic_json(
             args.bridge_home / "acknowledgments" / lease_id / f"{delivery_id}.json",
             {"lease_id": lease_id, "delivery_id": delivery_id},
         )
-    emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id})
+    for delivery_id in delivery_ids:
+        emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id})
     return 0
 
 
@@ -1132,6 +1489,8 @@ def run(args: argparse.Namespace) -> int:
         return 2
 
     lease: SessionLease | None = None
+    events_path: Path | None = getattr(args, "follower_events", None)
+    follower_channel: str | None = getattr(args, "follower_channel", None)
     if args.provider:
         try:
             lease = SessionLease(
@@ -1151,97 +1510,136 @@ def run(args: argparse.Namespace) -> int:
         if lease.name:
             name = lease.name
             hear_all = False
-        emit(lease.attach_receipt())
+        emit_follower(lease.attach_receipt(), events_path, follower_channel)
 
     # One normalizer for the whole run: the evidence grain is stateful (it
     # remembers each session's document and whether its seal was reported), and
     # a fresh one per line would re-emit the entire document every time.
     normalizer = EvidenceNormalizer()
     event_trigger: BusEventTrigger | None = None
-    deferred: tuple[dict[str, Any], int | None] | None = None
+    deferred: tuple[list[dict[str, Any]], int | None] | None = None
     recipients: set[str] | None = None
+    human_drafts: dict[tuple[Any, Any], dict[str, Any]] = {}
 
-    def deliver(payload: dict[str, Any], next_cursor: int | None) -> None:
+    def draft_key(payload: dict[str, Any]) -> tuple[Any, Any]:
+        return payload.get("session_id"), payload.get("document_index")
+
+    def flush_human_drafts(key: tuple[Any, Any] | None = None) -> None:
+        keys = [key] if key is not None else list(human_drafts)
+        for current in keys:
+            draft = human_drafts.pop(current, None)
+            if draft is not None:
+                sys.stdout.write(human_line(draft, follower_channel) + "\n")
+        sys.stdout.flush()
+
+    def publish(payload: dict[str, Any]) -> None:
+        if events_path is not None and lease and lease.coalesce:
+            key = draft_key(payload)
+            if payload.get("kind") in ("draft", "revised"):
+                emit_follower(payload, events_path, follower_channel, human_output=False)
+                human_drafts[key] = payload
+                return
+            flush_human_drafts(key)
+        emit_follower(payload, events_path, follower_channel)
+
+    def deliver(payloads: list[dict[str, Any]], next_cursor: int | None) -> None:
         nonlocal deferred
+        remaining = list(payloads)
         try:
-            if not lease or lease.queue_delivery(payload):
-                emit(payload)
-                if args.on_seal and payload.get("kind") == "seal":
-                    fire_seal_hook(args.on_seal, payload)
+            while remaining:
+                payload = remaining[0]
+                if not lease or lease.queue_delivery(payload):
+                    publish(payload)
+                    if args.on_seal and payload.get("kind") == "seal":
+                        fire_seal_hook(args.on_seal, payload)
+                remaining.pop(0)
         except BufferError:
-            # Preserve the already normalized envelope. Re-normalizing its
-            # raw evidence row would suppress a terminal phase on retry.
-            deferred = (payload, next_cursor)
+            # Preserve the already normalized envelopes. Re-normalizing their
+            # raw evidence rows would suppress a terminal phase — or a
+            # coverage-refused flush — on retry.
+            deferred = (remaining, next_cursor)
             raise
         if lease and next_cursor is not None:
             lease.persist(
-                active=True, cursor=next_cursor, sequence=payload.get("sequence")
+                active=True,
+                cursor=next_cursor,
+                sequence=payloads[-1].get("sequence") if payloads else None,
             )
         deferred = None
 
     def handle(raw: str, next_cursor: int | None = None) -> None:
         nonlocal name, hear_all
         event = normalizer.normalize(parse_line(raw))
-        if event is None:
-            if lease and next_cursor is not None:
-                lease.persist(active=True, cursor=next_cursor)
-            return
-        payload = consider(
-            event,
-            name=name,
-            hear_all=hear_all,
-            drafts=args.drafts,
-            debug=args.debug,
-            recipients=recipients,
-        )
-        if payload is None:
+        # Coverage-refused flushes precede the row that triggered them: they
+        # carry utterances older than the channel receipt on this line.
+        events = normalizer.pop_flushes()
+        if event is not None:
+            events.append(event)
+        payloads: list[dict[str, Any]] = []
+        for event in events:
+            payload = consider(
+                event,
+                name=name,
+                hear_all=hear_all,
+                drafts=args.drafts,
+                debug=args.debug,
+                recipients=recipients,
+            )
+            if payload is None:
+                continue
+            if args.become and payload.get("kind") == "name_assignment" and not name:
+                name = str(payload["name"])
+                hear_all = False
+                if lease:
+                    lease.bind_name(name)
+                sys.stderr.write(f"bus-demux: bound name={name}\n")
+            if lease:
+                lease.enrich(payload)
+            payloads.append(payload)
+        if not payloads:
             if lease and next_cursor is not None:
                 lease.persist(
                     active=True,
                     cursor=next_cursor,
-                    sequence=event.get("sequence"),
+                    sequence=events[-1].get("sequence") if events else None,
                 )
             return
-        if args.become and payload.get("kind") == "name_assignment" and not name:
-            name = str(payload["name"])
-            hear_all = False
-            if lease:
-                lease.bind_name(name)
-            sys.stderr.write(f"bus-demux: bound name={name}\n")
-        if lease:
-            lease.enrich(payload)
-        # Read progress is independent of receipt. The original envelope is
-        # made durable before emission and remains pending until acknowledged.
-        deliver(payload, next_cursor)
+        # Read progress is independent of receipt. The original envelopes are
+        # made durable before emission and remain pending until acknowledged.
+        deliver(payloads, next_cursor)
 
     try:
         if lease:
             lease.collect_acknowledgments()
             for payload in lease.pending.values():
-                emit(payload)
+                publish(payload)
+            flush_human_drafts()
         if args.once:
             last = None
             recipients = registered_recipients(args.bridge_home, path)
             for raw in replay(path):
                 event = normalizer.normalize(parse_line(raw))
-                if event is None:
-                    continue
-                payload = consider(
-                    event,
-                    name=name,
-                    hear_all=hear_all,
-                    drafts=args.drafts,
-                    debug=False,
-                    recipients=recipients,
-                )
-                if payload is not None:
-                    last = payload
+                events = normalizer.pop_flushes()
+                if event is not None:
+                    events.append(event)
+                for event in events:
+                    payload = consider(
+                        event,
+                        name=name,
+                        hear_all=hear_all,
+                        drafts=args.drafts,
+                        debug=False,
+                        recipients=recipients,
+                    )
+                    if payload is not None:
+                        last = payload
             if last is None:
                 return 1
             if lease:
                 lease.enrich(last)
             if not lease or lease.queue_delivery(last):
-                emit(last)
+                publish(last)
+            flush_human_drafts()
             return 0
 
         if lease:
@@ -1278,6 +1676,7 @@ def run(args: argparse.Namespace) -> int:
                     recipients = registered_recipients(args.bridge_home, path)
                 for raw, next_cursor in entries:
                     handle(raw, next_cursor)
+                flush_human_drafts()
                 if lease and not entries and offset != previous_offset:
                     lease.persist(active=True, cursor=offset)
             except BufferError:
@@ -1372,51 +1771,216 @@ def _openai_speech_key() -> str | None:
     return key or None
 
 
-def bound_voice(root: Path, name: str | None) -> str:
-    """Voice bound to a name in <bridge-home>/voices.json; the male default otherwise."""
+VOICES_FILENAME = "voices.json"
+DEFAULT_VOICE = "leo"
+
+
+def _stored_voice(root: Path, name: str | None) -> str | None:
+    """The flat ``bindings`` voice for a name, when the store has one."""
     if name:
-        mapping = read_json(root / "voices.json") or {}
+        mapping = read_json(root / VOICES_FILENAME) or {}
         bindings = mapping.get("bindings", mapping)
         voice = bindings.get(str(name).lower()) if isinstance(bindings, dict) else None
         if isinstance(voice, str) and voice:
             return voice
-    return "leo"
+    return None
 
 
-def voice_profile(root: Path, name: str | None) -> dict[str, Any]:
-    """Full voice profile for a name from <bridge-home>/voices.json.
+def voice_profile_with_source(
+    root: Path, name: str | None
+) -> tuple[dict[str, Any], str]:
+    """Voice profile plus where its voice came from: ``profile`` or ``default``.
 
-    `profiles.<name>` (voice, speed, style) wins over the flat `bindings`
-    entry; both fall back to the male default so an unprofiled agent still
-    speaks. The Founder's approved profiles are the single voice truth —
-    callers must not hardcode a voice around this.
+    `profiles.<name>` (voice, speed, style, provider) wins over the flat
+    `bindings` entry; both fall back to the male default so an unprofiled
+    agent still speaks.
     """
     profile: dict[str, Any] = {}
     if name:
-        mapping = read_json(root / "voices.json") or {}
+        mapping = read_json(root / VOICES_FILENAME) or {}
         profiles = mapping.get("profiles")
         if isinstance(profiles, dict):
             candidate = profiles.get(str(name).lower())
             if isinstance(candidate, dict):
                 profile = dict(candidate)
+    source = "profile"
     if not isinstance(profile.get("voice"), str) or not profile.get("voice"):
-        profile["voice"] = bound_voice(root, name)
+        stored = _stored_voice(root, name)
+        profile["voice"] = stored or DEFAULT_VOICE
+        source = "profile" if stored else "default"
     speed = profile.get("speed")
     if not isinstance(speed, (int, float)) or speed <= 0:
         profile["speed"] = DEFAULT_SPEECH_SPEED
-    return profile
+    return profile, source
 
 
-def _speak_xai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
-    """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
+def voice_profile(root: Path, name: str | None) -> dict[str, Any]:
+    """Full voice profile for a name from <bridge-home>/voices.json.
+
+    The Founder's approved profiles are the single voice truth — callers must
+    not hardcode a voice around this.
+    """
+    return voice_profile_with_source(root, name)[0]
+
+
+def _voice_store(path: Path) -> dict[str, Any]:
+    """Current voices.json content; an unreadable store refuses, never resets."""
+    if not path.exists():
+        return {}
+    state = read_json(path)
+    if state is None or (
+        "profiles" in state and not isinstance(state.get("profiles"), dict)
+    ):
+        raise OSError("voice profiles are unreadable or invalid; nothing changed")
+    return state
+
+
+def write_voice_profile(
+    root: Path,
+    name: str,
+    *,
+    voice: str | None,
+    speed: float | None,
+    vendor: str | None,
+) -> Path:
+    """Merge one name's voice profile into voices.json; other profiles stay.
+
+    Same convention as :func:`write_channel_binding`: an exclusive lock on a
+    stable sibling around read/merge/atomic replace, so concurrent attaches
+    cannot drop each other's profiles.
+    """
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = root / VOICES_FILENAME
+    with open(path.with_suffix(".lock"), "a+b") as lock:
+        os.fchmod(lock.fileno(), 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        state = _voice_store(path)
+        profiles = dict(state.get("profiles") or {})
+        key = name.lower()
+        entry = profiles.get(key)
+        entry = dict(entry) if isinstance(entry, dict) else {}
+        if voice:
+            entry["voice"] = voice
+        if speed is not None:
+            entry["speed"] = speed
+        if vendor:
+            entry["provider"] = vendor
+        profiles[key] = entry
+        state["profiles"] = profiles
+        atomic_json(path, state)
+    return path
+
+
+#: Bounded read of a refused TTS response, for classification only.
+TTS_ERROR_BODY_BYTES = 8192
+#: Error-code field markers. Only these named fields of a JSON error body are
+#: inspected, and only the resulting enum ever leaves the classifier: a vendor
+#: body can quote the rejected credential back.
+TTS_QUOTA_MARKERS = (
+    "spending-limit",
+    "spending limit",
+    "insufficient_quota",
+    "credits",
+    "quota",
+)
+TTS_CREDENTIAL_MARKERS = (
+    "could not be validated",
+    "invalid_api_key",
+    "invalid api key",
+    "incorrect api key",
+    "invalid_token",
+    "unauthenticated",
+    "unauthorized",
+)
+
+
+def tts_failure_reason(status: int, body: bytes) -> str:
+    """``quota_exhausted`` | ``credential_rejected`` | ``http_<status>``.
+
+    xAI answers both an unvalidated token and an exhausted spending limit
+    with 403 (two Founder replies failed that way on 2026-09-29 as a bare
+    "tts request failed (403)"), so the status alone cannot tell the agent
+    whether to re-login or to top up.
+    """
+    fields: list[str] = []
+
+    def collect(node: Any, depth: int) -> None:
+        # Vendors nest at most one ``error`` object; deeper is not an error code.
+        if not isinstance(node, dict) or depth > 2:
+            return
+        for key in ("code", "error", "message", "type"):
+            value = node.get(key)
+            if isinstance(value, str):
+                fields.append(value.casefold())
+            elif isinstance(value, dict):
+                collect(value, depth + 1)
+
+    try:
+        collect(json.loads(body.decode("utf-8", errors="replace")), 0)
+    except (ValueError, RecursionError):
+        pass
+    marker_text = "\n".join(fields)
+    if any(marker in marker_text for marker in TTS_QUOTA_MARKERS):
+        return "quota_exhausted"
+    if status == 401 or any(
+        marker in marker_text for marker in TTS_CREDENTIAL_MARKERS
+    ):
+        return "credential_rejected"
+    return f"http_{status}"
+
+
+def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
+    """POST one TTS request: (pcm, None, None) or (None, error, reason).
+
+    Install only TLS transport: no file handler, proxy or redirect handler.
+    Certificate and hostname verification are enabled explicitly by the
+    default TLS context. The error string names the status or exception
+    class only; the reason is an enum. Neither echoes the body.
+    """
     import http.client
     import ssl
     import urllib.error
     import urllib.request
 
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(
+        urllib.request.HTTPSHandler(context=ssl.create_default_context())
+    )
+    try:
+        with opener.open(request, timeout=60) as response:
+            if not 200 <= response.status < 300:
+                try:
+                    detail = response.read(TTS_ERROR_BODY_BYTES)
+                except (OSError, http.client.HTTPException):
+                    detail = b""
+                return (
+                    None,
+                    f"tts request failed ({response.status})",
+                    tts_failure_reason(response.status, detail),
+                )
+            return response.read(), None, None
+    except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
+        return None, f"tts request failed ({error.__class__.__name__})", "network"
+
+
+def _speak_xai(
+    text: str,
+    voice: str,
+    speed: float,
+    *,
+    playback_root: Path | None = None,
+    bus: Path | None = None,
+) -> tuple[bool, str | None, str | None]:
+    """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
+    import urllib.request
+
     key = _xai_speech_key()
     if not key:
-        return False, "no xAI credential (run: grok login, or Keychain LLM_XAI_API_KEY)"
+        return (
+            False,
+            "no xAI credential (run: grok login, or Keychain LLM_XAI_API_KEY)",
+            "credential_missing",
+        )
     body = json.dumps(
         {
             "text": text,
@@ -1426,38 +1990,84 @@ def _speak_xai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
             "speed": speed,
         }
     ).encode("utf-8")
-    # Install only TLS transport: no file handler, proxy or redirect handler.
-    # The URL remains literal at the actual I/O call, with certificate and
-    # hostname verification enabled explicitly by the default TLS context.
-    opener = urllib.request.OpenerDirector()
-    opener.add_handler(
-        urllib.request.HTTPSHandler(context=ssl.create_default_context())
-    )
-    # Headers ride on the Request: opener.addheaders lose to the default
-    # Content-Type that do_request_ installs first for any request with data,
-    # and the API rejects a JSON body labelled x-www-form-urlencoded (415).
+    # The URL stays literal where the Request is built. Headers ride on the
+    # Request: opener.addheaders lose to the default Content-Type that
+    # do_request_ installs first for any request with data, and the API
+    # rejects a JSON body labelled x-www-form-urlencoded (415).
     request = urllib.request.Request(
         "https://api.x.ai/v1/tts",
         data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
+    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus)
+
+
+def _speak_pcm(
+    pcm: bytes | None,
+    error: str | None,
+    reason: str | None,
+    *,
+    playback_root: Path | None = None,
+    bus: Path | None = None,
+) -> tuple[bool, str | None, str | None]:
+    if pcm is None:
+        return False, error, reason
+    return _play_pcm_24k(pcm, playback_root=playback_root, bus=bus)
+
+
+def _acquire_playback_lock(descriptor: int) -> bool:
+    """Bound the wait with a monotonic clock; the kernel owns exclusivity."""
+    deadline = time.monotonic() + PLAYBACK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.05, remaining))
+
+
+def _wait_for_take_end(
+    bus: Path, cursor: dict[str, Any], *, bridge_root: Path | None = None
+) -> bool:
+    deadline = time.monotonic() + TAKE_WAIT_SECONDS
+    while not installation_idle(
+        bus, sealed_is_idle=False, cursor=cursor, bridge_root=bridge_root
+    ):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(PLAYBACK_POLL_SECONDS, remaining))
+    return True
+
+
+def _stop_playback(player: Any) -> None:
+    import subprocess
+
+    player.terminate()
     try:
-        with opener.open(request, timeout=60) as response:
-            if not 200 <= response.status < 300:
-                return False, f"tts request failed ({response.status})"
-            pcm = response.read()
-    except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
-        return False, f"tts request failed ({error.__class__.__name__})"
-    return _play_pcm_24k(pcm)
+        player.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        player.kill()
+        player.wait()
 
 
-def _play_pcm_24k(pcm: bytes) -> tuple[bool, str | None]:
-    """Wrap mono s16le 24 kHz PCM as WAV and play it via afplay."""
+def _play_pcm_24k(
+    pcm: bytes,
+    *,
+    playback_root: Path | None = None,
+    bus: Path | None = None,
+) -> tuple[bool, str | None, str | None]:
+    """Prepare WAV independently, then serialize only playback across agents."""
     import subprocess
     import tempfile
     import wave
 
     wav_path = None
+    lock_descriptor = None
+    player = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
             wav_path = handle.name
@@ -1466,29 +2076,73 @@ def _play_pcm_24k(pcm: bytes) -> tuple[bool, str | None]:
                 sink.setsampwidth(2)
                 sink.setframerate(24000)
                 sink.writeframes(pcm)
-        played = subprocess.run(["afplay", wav_path], capture_output=True)
-        if played.returncode != 0:
-            return False, "afplay failed"
+        root = playback_root if playback_root is not None else bridge_home()
+        runtime = root / "runtime"
+        runtime.mkdir(parents=True, exist_ok=True)
+        # Never unlink this file: all current and waiting processes must share
+        # the same inode even when the runtime payload is replaced.
+        lock_descriptor = os.open(
+            runtime / "playback.lock", os.O_RDWR | os.O_CREAT, 0o600
+        )
+        if not _acquire_playback_lock(lock_descriptor):
+            return False, "playback wait timed out", "playback_busy"
+        # A take may have started during synthesis or the lock wait.
+        speech_bus = bus if bus is not None else bus_path()
+        cursor: dict[str, Any] = {}
+        if not _wait_for_take_end(speech_bus, cursor, bridge_root=root):
+            return False, "live take wait timed out", "take_live"
+        player = subprocess.Popen(
+            ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        while True:
+            if not installation_idle(
+                speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root
+            ):
+                _stop_playback(player)
+                return False, "take started during playback", "take_started"
+            result = player.poll()
+            if result is not None:
+                if result != 0:
+                    return False, "afplay failed", "playback_failed"
+                break
+            time.sleep(PLAYBACK_POLL_SECONDS)
+    except OSError as error:
+        return False, f"playback failed ({error.__class__.__name__})", "playback_failed"
     finally:
+        if player is not None and player.poll() is None:
+            _stop_playback(player)
+        if lock_descriptor is not None:
+            os.close(lock_descriptor)
         if wav_path:
             try:
                 os.unlink(wav_path)
             except OSError:
                 pass
-    return True, None
+    return True, None, None
 
 
-def _speak_openai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
+def _speak_openai(
+    text: str,
+    voice: str,
+    speed: float,
+    *,
+    playback_root: Path | None = None,
+    bus: Path | None = None,
+) -> tuple[bool, str | None, str | None]:
     """Same TTS lane as the app (api.openai.com/v1/audio/speech, PCM s16le 24 kHz)."""
-    import http.client
-    import ssl
-    import urllib.error
     import urllib.request
 
     key = _openai_speech_key()
     if not key:
-        return False, "no OpenAI credential (add Keychain item LLM_OPENAI_API_KEY or export it)"
-    model = os.environ.get("SPEECH_TTS_MODEL_OPENAI", "").strip() or "gpt-4o-mini-tts-2025-12-15"
+        return (
+            False,
+            "no OpenAI credential (add Keychain item LLM_OPENAI_API_KEY or export it)",
+            "credential_missing",
+        )
+    model = (
+        os.environ.get("SPEECH_TTS_MODEL_OPENAI", "").strip()
+        or "gpt-4o-mini-tts-2025-12-15"
+    )
     body = json.dumps(
         {
             "model": model,
@@ -1498,31 +2152,35 @@ def _speak_openai(text: str, voice: str, speed: float) -> tuple[bool, str | None
             "speed": speed,
         }
     ).encode("utf-8")
-    # The same TLS-only opener discipline as the xAI speaker.
-    opener = urllib.request.OpenerDirector()
-    opener.add_handler(
-        urllib.request.HTTPSHandler(context=ssl.create_default_context())
-    )
     request = urllib.request.Request(
         "https://api.openai.com/v1/audio/speech",
         data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
-    try:
-        with opener.open(request, timeout=60) as response:
-            if not 200 <= response.status < 300:
-                return False, f"tts request failed ({response.status})"
-            pcm = response.read()
-    except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
-        return False, f"tts request failed ({error.__class__.__name__})"
-    return _play_pcm_24k(pcm)
+    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus)
+
+
+def lease_name(root: Path, provider: str, session: str) -> str | None:
+    """The name a provider session's lease already carries, if any."""
+    lease_id = lease_identifier(provider, session)
+    state = read_json(root / "leases" / f"{lease_id}.json")
+    if (
+        not state
+        or state.get("schema") != LEASE_SCHEMA
+        or state.get("provider") != provider.casefold()
+        or state.get("provider_session_id") != session
+    ):
+        return None
+    name = state.get("name")
+    return name if isinstance(name, str) and name else None
 
 
 def say_reply(args: argparse.Namespace) -> int:
     """Append one agent-reply row to the canonical Bus, then speak it.
 
     The Bus is the canonical relay for agent replies; xAI is only the speaker,
-    so a failed synthesis still lands the row (spoken=false with the reason).
+    so a failed synthesis still lands the row (spoken=false with the error
+    and a ``reason`` enum the agent can act on).
     """
     profile = voice_profile(args.bridge_home, args.name)
     voice = args.voice or str(profile["voice"])
@@ -1543,10 +2201,14 @@ def say_reply(args: argparse.Namespace) -> int:
         "spoken": False,
     }
     speaker = _speak_openai if vendor == "openai" else _speak_xai
-    spoken, error = speaker(args.say, voice, speed)
+    spoken, error, reason = speaker(
+        args.say, voice, speed, playback_root=args.bridge_home, bus=bus_path()
+    )
     reply["spoken"] = spoken
     if error:
         reply["tts_error"] = error
+    if reason:
+        reply["reason"] = reason
     line = json.dumps(reply, ensure_ascii=False) + "\n"
     descriptor = os.open(args.bus, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
@@ -1649,15 +2311,25 @@ def attach_command(args: argparse.Namespace) -> int:
     Writes the audience binding for the channel, ensures exactly one follower
     owns this provider session's lease (spawning a coalescing one when none is
     alive), and prints a receipt with the lease, cursor, voice profile and
-    follower pid. The receipt alone never proves listening — only a take that
-    lands in the mailbox does, so callers verify with a fresh seal before
-    claiming they hear anything.
+    follower pid. ``--voice`` / ``--speed`` / ``--tts-vendor`` persist into
+    this name's profile in voices.json, so every later ``--say`` speaks with
+    it. The receipt alone never proves listening — only a take that lands in
+    the mailbox does, so callers verify with a fresh seal before claiming
+    they hear anything.
     """
     import signal
     import subprocess
 
     root: Path = args.bridge_home
     name = args.name.casefold()
+    persist_voice = bool(args.voice or args.speed is not None or args.tts_vendor)
+    voice_source = voice_profile_with_source(root, name)[1]
+    if persist_voice:
+        # Refuse an unreadable profile store before claiming the channel, so a
+        # refusal still means nothing changed.
+        _voice_store(root / VOICES_FILENAME)
+    if args.voice:
+        voice_source = "flag"
     if not getattr(args, "bus_overridden", False):
         # W5: every channel owns a dedicated bus so one follower never chews
         # another audience's rows. An explicit --bus keeps the caller's word.
@@ -1671,6 +2343,10 @@ def attach_command(args: argparse.Namespace) -> int:
     binding_path = write_channel_binding(
         root, args.channel, name, args.provider, args.session, bus=resolved_bus
     )
+    if persist_voice:
+        write_voice_profile(
+            root, name, voice=args.voice, speed=args.speed, vendor=args.tts_vendor
+        )
     lease_id = lease_identifier(args.provider, args.session)
     lease_path = root / "leases" / f"{lease_id}.json"
     resumed = lease_path.exists()
@@ -1701,7 +2377,8 @@ def attach_command(args: argparse.Namespace) -> int:
         lease_state["active"] = False
         atomic_json(lease_path, lease_state)
     spawned = False
-    log_path = root / "runtime" / "followers" / f"{lease_id}.log"
+    log_path, events_path = follower_paths(root, lease_id)
+    errors_path = log_path.with_suffix(".errors.log")
     if pid is None:
         command = [
             sys.executable,
@@ -1719,16 +2396,24 @@ def attach_command(args: argparse.Namespace) -> int:
             "--drafts",
             "--follow",
             "--coalesce",
+            "--follower-events",
+            str(events_path),
+            "--follower-channel",
+            str(args.channel),
         ]
         if args.on_seal:
             command += ["--on-seal", args.on_seal]
         log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with open(log_path, "ab") as log:
+        log_descriptor = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        os.fchmod(log_descriptor, 0o600)
+        errors_descriptor = os.open(errors_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        os.fchmod(errors_descriptor, 0o600)
+        with os.fdopen(log_descriptor, "ab") as log, os.fdopen(errors_descriptor, "ab") as errors:
             child = subprocess.Popen(
                 command,
                 stdin=subprocess.DEVNULL,
                 stdout=log,
-                stderr=log,
+                stderr=errors,
                 start_new_session=True,
             )
         atomic_json(
@@ -1744,12 +2429,13 @@ def attach_command(args: argparse.Namespace) -> int:
                 state
                 and state.get("schema") == LEASE_SCHEMA
                 and state.get("pid") == pid
+                and events_path.exists()
             ):
                 break
             if not process_is_alive(pid):
                 sys.stderr.write(
                     "bus-demux: attach failed: follower exited during startup; "
-                    f"see {log_path}\n"
+                    f"see {errors_path}\n"
                 )
                 return 3
             time.sleep(0.1)
@@ -1767,10 +2453,15 @@ def attach_command(args: argparse.Namespace) -> int:
             "resumed": resumed,
             "follower_pid": pid,
             "follower_spawned": spawned,
-            "follower_log": str(log_path) if spawned else None,
+            "follower_log": str(log_path),
+            "follower_events": str(events_path),
             "coalesce_requested": True,
             "on_seal_hook": bool(args.on_seal),
             "voice": voice_profile(root, name),
+            "voice_source": voice_source,
+            "voices_file": "present"
+            if (root / VOICES_FILENAME).exists()
+            else "missing",
             "binding_path": str(binding_path),
         }
     )
@@ -1786,6 +2477,7 @@ def status_command(args: argparse.Namespace) -> int:
     """
     root: Path = args.bridge_home
     lease_id = lease_identifier(args.provider, args.session)
+    log_path, events_path = follower_paths(root, lease_id)
     state = read_json(root / "leases" / f"{lease_id}.json")
     pending = state.get("pending") if isinstance(state, dict) else None
     if not isinstance(pending, list):
@@ -1831,6 +2523,8 @@ def status_command(args: argparse.Namespace) -> int:
             "schema": STATUS_SCHEMA,
             "kind": "status",
             "lease_id": lease_id,
+            "follower_log": str(log_path),
+            "follower_events": str(events_path),
             "attached": state is not None,
             "channel": channel,
             "name": name,
@@ -1854,6 +2548,137 @@ def status_command(args: argparse.Namespace) -> int:
         }
     )
     return 0
+
+
+WATCH_TEXT_LIMIT = 500
+
+
+def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
+    """One compact monitor line for an envelope worth waking the agent for.
+
+    Drafts and revisions stay in the mailbox. The watch surfaces seals
+    (certified or coverage-refused), anything allowed to change state, and
+    routing-ambiguity notices that need the Founder to re-address.
+    """
+    if not isinstance(payload, dict) or payload.get("schema") != EVENT_SCHEMA:
+        return None
+    if lease_id and payload.get("lease_id") not in (None, lease_id):
+        return None
+    if not (
+        payload.get("status") == SEALED
+        or payload.get("state_change_allowed") is True
+        or payload.get("kind") == "routing_ambiguity"
+        or payload.get("coverage") == COVERAGE_REFUSED
+    ):
+        return None
+    return {
+        "kind": payload.get("kind"),
+        "status": payload.get("status"),
+        "coverage": payload.get("coverage"),
+        "sca": payload.get("state_change_allowed") is True,
+        "delivery_id": payload.get("delivery_id"),
+        "text": str(payload.get("text") or "")[:WATCH_TEXT_LIMIT],
+    }
+
+
+def watch_command(args: argparse.Namespace) -> int:
+    """Compact, line-buffered monitor of one session's follower output.
+
+    Reads the follower events that ``--attach`` writes (or ``--from-file``) and
+    prints one JSON line per notable envelope, each delivery once. It never
+    touches the lease, cursor or acknowledgments: the watch observes, the
+    conversation acknowledges with ``--ack`` after it accepted the words.
+    """
+    lease_id = (
+        lease_identifier(args.provider, args.session) if args.provider else None
+    )
+    if args.from_file is not None:
+        source = args.from_file
+    else:
+        old_log, events_path = follower_paths(args.bridge_home, lease_id)
+        source = events_path
+        if not events_path.exists() and old_log.is_file():
+            # A pre-sidecar follower still writes JSON to .log. An empty or
+            # human .log belongs to the new writer, whose sidecar may not yet
+            # exist when the monitor starts.
+            with old_log.open(encoding="utf-8", errors="replace") as old:
+                if any(line.lstrip().startswith("{") for _, line in zip(range(8), old)):
+                    source = old_log
+    channel = None
+    bindings = (read_json(args.bridge_home / AUDIENCE_BINDING_FILENAME) or {}).get("bindings")
+    if isinstance(bindings, dict):
+        for slot, binding in bindings.items():
+            if (
+                isinstance(binding, dict)
+                and binding.get("provider") == (args.provider or "").casefold()
+                and binding.get("provider_session_id") == args.session
+            ):
+                channel = str(slot)
+                break
+    seen: set[str] = set()
+
+    def pump(entries: list[tuple[str, int]]) -> None:
+        drafts: dict[tuple[Any, Any], dict[str, Any]] = {}
+
+        def flush(key: tuple[Any, Any] | None = None) -> None:
+            keys = [key] if key is not None else list(drafts)
+            for current in keys:
+                draft = drafts.pop(current, None)
+                if draft is not None:
+                    print(human_line(draft, channel), flush=True)
+
+        for raw, _cursor in entries:
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                continue  # older logs can contain diagnostics
+            line = watch_line(payload, lease_id)
+            if args.human:
+                if not isinstance(payload, dict) or payload.get("schema") not in (EVENT_SCHEMA, ATTACH_SCHEMA):
+                    continue
+                if lease_id and payload.get("lease_id") not in (None, lease_id):
+                    continue
+            elif line is None:
+                continue
+            identity = str(payload.get("delivery_id") or payload.get("source_event_id") or raw)
+            if identity in seen:
+                continue  # a restarted follower replays its pending mailbox
+            seen.add(identity)
+            if args.human:
+                key = (payload.get("session_id"), payload.get("document_index"))
+                if payload.get("kind") in ("draft", "revised"):
+                    drafts[key] = payload
+                    continue
+                flush(key)
+                print(human_line(payload, channel), flush=True)
+            else:
+                emit(line)
+        if args.human:
+            flush()
+
+    if args.once:
+        if not source.is_file():
+            sys.stderr.write(f"bus-demux: watch source missing: {source}\n")
+            return 1
+        pump(iter_new_lines(source, 0)[0])
+        return 0
+    offset = 0
+    if not args.from_start:
+        try:
+            offset = source.stat().st_size
+        except FileNotFoundError:
+            offset = 0
+    sys.stderr.write(f"bus-demux: watching {source}\n")
+    trigger = BusEventTrigger(source, args.interval)
+    try:
+        while True:
+            entries, offset = iter_new_lines(source, offset)
+            pump(entries)
+            trigger.wait(timeout=1.0)
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        trigger.close()
 
 
 def main() -> int:
@@ -1930,13 +2755,38 @@ def main() -> int:
         "acknowledgment markers) and exit",
     )
     parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="print one compact JSON line per seal, refused take, state-changing "
+        "or routing-ambiguity envelope from this session's follower events "
+        "(line-buffered; --once reads the events and exits)",
+    )
+    parser.add_argument("--human", action="store_true", help="--watch as readable one-line envelopes")
+    parser.add_argument(
+        "--from-file",
+        dest="from_file",
+        type=Path,
+        default=None,
+        help="--watch source instead of the session's follower events",
+    )
+    parser.add_argument("--follower-events", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--follower-channel", help=argparse.SUPPRESS)
+    parser.add_argument(
         "--provider", help="client id, for example codex or claude-code"
     )
     parser.add_argument(
-        "--session", help="stable provider-session id used for cursor recovery"
+        "--session",
+        help="stable provider-session id used for cursor recovery; with "
+        "--provider claude-code it defaults to $CLAUDE_CODE_SESSION_ID",
     )
     parser.add_argument("--lease", help="reattach to an explicit lease id")
-    parser.add_argument("--ack", help="acknowledge a delivery for --provider/--session")
+    parser.add_argument(
+        "--ack",
+        nargs="+",
+        metavar="DELIVERY_ID",
+        help="acknowledge one or more deliveries for --provider/--session "
+        "(all or nothing)",
+    )
     parser.add_argument(
         "--bridge-home", type=Path, default=None, help="override lease/receipt root"
     )
@@ -1950,25 +2800,28 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=0.15)
     parser.add_argument(
         "--say",
-        help="append an agent reply to the canonical Bus and speak it through vendor TTS",
+        help="append an agent reply to the canonical Bus and speak it through "
+        "vendor TTS; --name defaults to the name on this session's lease",
     )
     parser.add_argument(
         "--tts-vendor",
         choices=("xai", "openai"),
         default=None,
-        help="TTS speaker; defaults to the name's profile provider in voices.json, then xai",
+        help="TTS speaker; defaults to the name's profile provider in voices.json, "
+        "then xai; with --attach it is stored in the profile",
     )
     parser.add_argument(
         "--voice",
         default=None,
-        help="TTS voice id; defaults to the name's binding in <bridge-home>/voices.json",
+        help="TTS voice id; defaults to the name's profile in "
+        "<bridge-home>/voices.json; with --attach it is stored in the profile",
     )
     parser.add_argument(
         "--speed",
         type=float,
         default=None,
         help="TTS speed; defaults to the name's profile in voices.json, "
-        f"then {DEFAULT_SPEECH_SPEED}",
+        f"then {DEFAULT_SPEECH_SPEED}; with --attach it is stored in the profile",
     )
     args = parser.parse_args()
     args.bus_overridden = args.bus is not None
@@ -1983,14 +2836,42 @@ def main() -> int:
     if args.print_agent_turn_lease_path:
         print(agent_turn_lease_path())
         return 0
-    if args.assert_install_idle:
-        return 0 if installation_idle(args.bus) else 2
     if args.bridge_home is None:
         args.bridge_home = bridge_home()
+    if args.assert_install_idle:
+        return 0 if installation_idle(args.bus, bridge_root=args.bridge_home) else 2
+    if args.provider and not args.session:
+        args.session = provider_session_from_env(args.provider)
     if bool(args.provider) != bool(args.session):
-        parser.error("--provider and --session must be supplied together")
+        parser.error(
+            "--provider and --session must be supplied together "
+            "(only claude-code falls back to $CLAUDE_CODE_SESSION_ID)"
+        )
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.speed is not None and args.speed <= 0:
+        parser.error("--speed must be positive")
+    if args.voice is not None and not args.voice.strip():
+        parser.error("--voice needs a voice id")
+    if args.human and not args.watch:
+        parser.error("--human travels with --watch")
+    if args.watch or args.from_file is not None:
+        if not args.watch:
+            parser.error("--from-file travels with --watch")
+        if (
+            args.ack
+            or args.attach
+            or args.channel is not None
+            or args.status
+            or args.say is not None
+            or args.active_names
+        ):
+            parser.error("--watch combines with no other command")
+        if args.follow or args.all or args.become or args.lease:
+            parser.error("--watch takes only --once or --from-start")
+        if not args.provider and args.from_file is None:
+            parser.error("--watch requires --provider/--session or --from-file")
+        return watch_command(args)
     if args.ack:
         if not args.provider or args.follow or args.once or args.from_start:
             parser.error("--ack requires --provider/--session and no read mode")
@@ -2022,12 +2903,18 @@ def main() -> int:
             parser.error("--status combines with no other command")
         return status_command(args)
     if args.say is not None:
-        if not args.provider or not args.name:
-            parser.error("--say requires --provider/--session and --name")
+        if not args.provider:
+            parser.error("--say requires --provider/--session")
         if args.follow or args.once or args.from_start or args.all or args.become:
             parser.error("--say takes no read mode")
         if not args.say.strip():
             parser.error("--say needs non-empty text")
+        if not args.name:
+            # The lease already knows the name --status reports; an explicit
+            # --name still wins.
+            args.name = lease_name(args.bridge_home, args.provider, args.session)
+            if not args.name:
+                parser.error("--say needs --name, or an attached lease carrying one")
         try:
             return say_reply(args)
         except OSError as error:

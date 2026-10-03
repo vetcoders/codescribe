@@ -125,11 +125,11 @@ pub fn migrate_if_needed(
     if let Some(v) = migrated_value(file_env, "AI_FORMATTING_ENABLED") {
         settings.ai_formatting_enabled = Some(v == "1" || v.eq_ignore_ascii_case("true"));
     }
-    if let Some(v) = migrated_value(file_env, "AUTO_PASTE_ENABLED") {
-        settings.auto_paste_enabled = Some(matches!(
-            v.to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on" | "enabled"
-        ));
+    if let Some(v) = migrated_value(file_env, "PASTE_MODE") {
+        match v.parse::<super::types::PasteMode>() {
+            Ok(mode) => settings.paste_mode = Some(mode),
+            Err(error) => tracing::warn!("Migration: ignored invalid paste mode: {error}"),
+        }
     }
     if let Some(v) = migrated_value(file_env, "BEEP_ON_START") {
         settings.beep_on_start = Some(v == "1" || v.eq_ignore_ascii_case("true"));
@@ -542,22 +542,25 @@ mod tests {
         }
     }
 
-    /// AUTO_PASTE_ENABLED truthy/falsey strings map into an explicit bool setting.
+    /// A `.env` PASTE_MODE imports as the typed choice; an unknown mode is
+    /// dropped rather than promoted to a more permissive default.
     #[test]
     #[serial]
-    fn auto_paste_env_migration_preserves_explicit_policy() {
-        for (input, expected) in [("0", false), ("1", true), ("false", false), ("true", true)] {
+    fn paste_mode_env_migration_preserves_explicit_policy() {
+        use super::super::types::PasteMode;
+        for (input, expected) in [
+            ("safe", Some(PasteMode::Safe)),
+            ("Comfort", Some(PasteMode::Comfort)),
+            ("off", Some(PasteMode::Off)),
+            ("always", None),
+        ] {
             let _tmp = setup_isolated_data_dir();
             let mut file_env = HashMap::new();
-            file_env.insert("AUTO_PASTE_ENABLED".to_string(), input.to_string());
+            file_env.insert("PASTE_MODE".to_string(), input.to_string());
 
             migrate_if_needed(Some(&file_env), true);
 
-            assert_eq!(
-                UserSettings::load().auto_paste_enabled,
-                Some(expected),
-                "input={input}"
-            );
+            assert_eq!(UserSettings::load().paste_mode, expected, "input={input}");
         }
     }
 

@@ -32,8 +32,11 @@ enum ComposerPaletteCommand: String, CaseIterable, Equatable {
 
   var summary: String {
     switch self {
-    case .model: "Wybierz model asystenta"
-    case .grants: "Narzędzia z „zawsze zezwalaj”"
+    case .model: String(localized: "Choose the assistant model")
+    case .grants:
+      String(
+        localized: "Tools with “always allow”",
+        comment: "Palette command: tools that carry a standing approval")
     }
   }
 
@@ -173,11 +176,13 @@ final class RealComposerPaletteSource: ComposerPaletteSourcing {
     // A revoke list that silently swallowed its error would tell the
     // operator "nothing is granted" while grants keep letting tools run.
     guard let grants = try? mcpAdmin.listToolGrants() else {
+      let grantsFile = "~/.codescribe/tool_grants.json"
       return [
         ComposerPaletteEntry(
           id: "",
-          title: "Nie udało się odczytać uprawnień",
-          subtitle: "sprawdź ~/.codescribe/tool_grants.json"
+          title: String(localized: "Couldn't read tool grants"),
+          subtitle: String(
+            localized: "Check \(grantsFile)", comment: "The placeholder is a file path")
         )
       ]
     }
@@ -185,7 +190,9 @@ final class RealComposerPaletteSource: ComposerPaletteSourcing {
       ComposerPaletteEntry(
         id: grant.key,
         title: grant.key,
-        subtitle: "nadane \(grant.grantedAt) · wybierz, aby cofnąć"
+        subtitle: String(
+          localized: "granted \(grant.grantedAt) · select to revoke",
+          comment: "The placeholder is when the tool grant was given")
       )
     }
   }

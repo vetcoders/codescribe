@@ -4,7 +4,10 @@ import SwiftUI
 // Slim evidence-first dictation overlay.
 //
 // Layout (top → bottom):
-//   header   brand · compact waveform · timer · Stop and live-preview controls
+//   header   brand · compact waveform · agent glyph · timer · status mic/Stop and
+//            live-preview controls. Paste mode lives in Settings and the tray,
+//            never here: the waveform keeps the width (Founder direction as
+//            relayed in the Codex handoff, Annex A2, 2026-09-29).
 //   body     transcript is the product surface (listening / formatted / terminal)
 //   header and footer float above the full-height transcript viewport
 //
@@ -40,24 +43,77 @@ struct OverlayBottomChromeSlots: Equatable {
 
 struct OverlayRecordingControls: View {
   @Environment(\.displayScale) private var displayScale
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   let canFinish: Bool
+  let recordingLight: OverlayRecordingLight?
+  let animates: Bool
+  let isFinalizing: Bool
   let isPreviewCollapsed: Bool
   let compact: Bool
   let palette: OverlayAppearancePalette
   let onIntent: (OverlayIntent) -> Void
   let onPreviewToggle: () -> Void
 
+  /// Recording and preview keep fixed hairline circles, leaving the remaining
+  /// width to the waveform (Founder, 2026-09-29: "ten stop jest olbrzymi").
+  static let controlDiameter: CGFloat = 22
+
+  init(
+    canFinish: Bool, isPreviewCollapsed: Bool, compact: Bool,
+    palette: OverlayAppearancePalette, onIntent: @escaping (OverlayIntent) -> Void,
+    onPreviewToggle: @escaping () -> Void, isFinalizing: Bool = false,
+    recordingLight: OverlayRecordingLight? = nil, animates: Bool = true
+  ) {
+    self.canFinish = canFinish
+    self.recordingLight = recordingLight
+    self.animates = animates
+    self.isFinalizing = isFinalizing
+    self.isPreviewCollapsed = isPreviewCollapsed
+    self.compact = compact
+    self.palette = palette
+    self.onIntent = onIntent
+    self.onPreviewToggle = onPreviewToggle
+  }
+
+  var recordingDisabled: Bool {
+    recordingLight == .processing || (isFinalizing && !canFinish)
+  }
+  var recordingTint: Color {
+    switch recordingLight {
+    case .holdToTalk, .handsFree: palette.errorStatus.color
+    case .silence: OverlayRecordingLight.silence.color
+    case .processing: OverlayRecordingLight.processing.color
+    case .agent: OverlayRecordingLight.agent.color
+    case nil: canFinish || isFinalizing ? palette.errorStatus.color : palette.listeningStatus.color
+    }
+  }
+  var recordingStatusValue: String {
+    recordingLight?.name
+      ?? (isFinalizing ? String(localized: "Transcribing") : String(localized: "Ready"))
+  }
   var showsStop: Bool { canFinish }
+  var recordingSymbol: String { canFinish || isFinalizing ? "stop.fill" : "mic.fill" }
+  var recordingLabel: String {
+    canFinish || isFinalizing
+      ? String(localized: "Stop recording") : String(localized: "Start dictation")
+  }
+  var recordingIdentifier: String {
+    canFinish || isFinalizing ? "overlay-stop-recording" : "overlay-start-recording"
+  }
   var previewAccessibilityLabel: String {
-    isPreviewCollapsed ? "Show live preview" : "Hide live preview"
+    isPreviewCollapsed
+      ? String(localized: "Show live preview") : String(localized: "Hide live preview")
+  }
+  /// The chevron points where the transcript goes on click: ^ folds it into
+  /// the bar, v unfolds it.
+  var previewSymbol: String {
+    isPreviewCollapsed ? OverlayControlSymbols.expandPreview : OverlayControlSymbols.collapsePreview
   }
 
   var body: some View {
     HStack(spacing: compact ? 4 : 7) {
-      if showsStop {
-        stopButton
-      }
+      recordingButton
       previewButton
     }
     .fixedSize()
@@ -68,6 +124,13 @@ struct OverlayRecordingControls: View {
   func finishRecording() {
     guard showsStop else { return }
     onIntent(.finish)
+  }
+
+  func activateRecordingControl() {
+    guard !recordingDisabled else { return }
+    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+      if canFinish { finishRecording() } else { onIntent(.startRecording) }
+    }
   }
 
   func togglePreview() {
@@ -82,34 +145,30 @@ struct OverlayRecordingControls: View {
     projectedIntents.filter { $0 != .finish }
   }
 
-  private var stopButton: some View {
-    Button(action: finishRecording) {
-      HStack(spacing: compact ? 0 : 4) {
-        if !compact {
-          Image(systemName: "stop.fill")
-            .font(.system(size: 9, weight: .semibold))
+  private var recordingButton: some View {
+    Button(action: activateRecordingControl) {
+      Group {
+        if recordingLight?.pulses == true && animates && !reduceMotion {
+          TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            recordingGlyph.opacity(
+              OverlayRecordingLight.pulseOpacity(at: timeline.date.timeIntervalSinceReferenceDate))
+          }
+        } else {
+          recordingGlyph
         }
-        Text("Stop")
-          .font(CSFont.ui(compact ? 10 : 11, .semibold))
       }
-      .foregroundStyle(palette.errorStatus.color)
-      .padding(.horizontal, compact ? 3 : 9)
-      .frame(height: compact ? 22 : 26)
-      .contentShape(Capsule())
-      .overlay {
-        Capsule()
-          .strokeBorder(
-            palette.errorStatus.color.opacity(0.42),
-            lineWidth: 1 / max(displayScale, 1)
-          )
-          .accessibilityHidden(true)
-      }
+      .frame(width: Self.controlDiameter, height: Self.controlDiameter)
+      .contentShape(Circle())
     }
     .buttonStyle(.plain)
+    .disabled(recordingDisabled)
+    .opacity(recordingDisabled ? 0.45 : 1)
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: recordingSymbol)
     .csFocusOutline()
-    .help("Stop recording")
-    .accessibilityLabel("Stop recording")
-    .accessibilityIdentifier("overlay-stop-recording")
+    .help(recordingLabel + (recordingLight.map { ". " + $0.tooltip } ?? ""))
+    .accessibilityLabel(recordingLabel)
+    .accessibilityValue(recordingStatusValue)
+    .accessibilityIdentifier(recordingIdentifier)
     .background {
       GeometryReader { geometry in
         Color.clear.preference(
@@ -124,12 +183,25 @@ struct OverlayRecordingControls: View {
     }
   }
 
+  private var recordingGlyph: some View {
+    Image(systemName: recordingSymbol)
+      .font(.system(size: 9, weight: .semibold))
+      .foregroundStyle(recordingTint)
+      .frame(width: Self.controlDiameter, height: Self.controlDiameter)
+      .background { Circle().fill(recordingTint.opacity(0.12)) }
+      .overlay {
+        Circle()
+          .strokeBorder(recordingTint.opacity(0.42), lineWidth: 1 / max(displayScale, 1))
+          .accessibilityHidden(true)
+      }
+  }
+
   private var previewButton: some View {
     Button(action: togglePreview) {
-      Image(systemName: isPreviewCollapsed ? "eye" : "eye.slash")
+      Image(systemName: previewSymbol)
         .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(palette.mutedText.color)
-        .frame(width: 22, height: 22)
+        .frame(width: Self.controlDiameter, height: Self.controlDiameter)
         .contentShape(Circle())
         .overlay {
           Circle()
@@ -316,7 +388,8 @@ struct DictationOverlayView: View {
                   actions.toggle()
                 } label: {
                   HStack(spacing: 4) {
-                    Image(systemName: OverlayControlSymbols.actions)
+                    Image(systemName: actions.controlSymbol)
+                      .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
 
                   }
                   .font(.system(size: 11, weight: .medium))
@@ -342,15 +415,15 @@ struct DictationOverlayView: View {
                 .buttonStyle(.plain)
                 .focusable()
                 .focused($actionsFocused)
-                .accessibilityLabel("Actions")
-                .accessibilityValue(actions.phase == .open ? "Open" : "Collapsed")
+                .accessibilityLabel(actions.controlTitle)
+                .accessibilityValue(actions.phase == .open ? "Expanded" : "Collapsed")
                 .accessibilityHint(
                   state.hasRecoverableSupersededWork
                     ? "Previous take available. Open actions to copy or discard it."
                     : "Show or hide transcript tools"
                 )
                 .accessibilityIdentifier("overlay-tools-handle")
-                .modifier(OverlayMiniTooltip(title: "Actions", palette: palette))
+                .modifier(OverlayMiniTooltip(title: actions.controlTitle, palette: palette))
                 if actions.phase == .open {
                   intentRail
                 }
@@ -531,7 +604,8 @@ struct DictationOverlayView: View {
         .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
         .accessibilityIdentifier("overlay-brand-close-dot")
 
-        Text("codescribe")
+        // The wordmark is the product name, never translated copy.
+        Text(verbatim: "codescribe")
           .font(CSFont.ui(compact ? 12 : 15, .bold))
           .tracking(-0.3)
           .foregroundStyle(palette.primaryText.color)
@@ -566,8 +640,8 @@ struct DictationOverlayView: View {
         if showsDiagnostics && state.compactProjection?.degraded == true {
           Image(systemName: "exclamationmark.bubble.fill")
             .foregroundStyle(palette.processingStatus.color)
-            .help("Detected speech is not fully transcribed")
-            .accessibilityLabel("Detected speech is not fully transcribed")
+            .help(OverlayWarningCopy.liveTranscriptBehind.sentence)
+            .accessibilityLabel(OverlayWarningCopy.liveTranscriptBehind.sentence)
             .accessibilityIdentifier("overlay-acoustic-warning")
         }
         if let error = state.expansionPreferenceError {
@@ -577,59 +651,37 @@ struct DictationOverlayView: View {
             .accessibilityLabel(error)
             .accessibilityIdentifier("overlay-preference-save-error")
         }
-        if !state.channelDelivery.isEmpty || state.channelStatusUnavailable {
+        if !state.visibleChannelRows.isEmpty || state.channelStatusUnavailable {
           OverlayChannelStatusView(
-            channels: state.channelDelivery, unavailable: state.channelStatusUnavailable,
-            palette: palette
+            channels: state.visibleChannelRows, unavailable: state.channelStatusUnavailable,
+            palette: palette, animates: overlayVisible,
+            hudStates: state.channelHudStates,
+            onToggleChannel: { digit in
+              Task { await state.toggleAgentChannel(digit) }
+            },
+            toggleError: state.channelToggleError
           )
         }
-        autoPasteControl
         sessionTimer
           .allowsHitTesting(false)
         OverlayPlacementMenu(state: state, palette: palette)
         OverlayRecordingControls(
-          canFinish: OverlayRecordingControls.showsStop(for: projectedIntents),
+          canFinish: state.recording && !state.transcribing,
           isPreviewCollapsed: state.isCollapsed,
           compact: compact,
           palette: palette,
           onIntent: state.relayIntent,
-          onPreviewToggle: { state.toggleCollapsed() }
+          onPreviewToggle: { state.toggleCollapsed() },
+          isFinalizing: !state.terminal
+            && (state.transcribing || state.mode == .finalizing
+              || (!state.recording && state.showsSessionTimer)),
+          recordingLight: state.recordingLight, animates: overlayVisible
         )
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("overlay-header-trailing")
     }
-  }
-
-  /// Compact header auto-paste control: discrete icon + indicator dot.
-  private var autoPasteControl: some View {
-    Button {
-      state.setAutoPasteEnabled(!state.autoPasteEnabled)
-    } label: {
-      HStack(spacing: 4) {
-        Image(
-          systemName: state.autoPasteEnabled
-            ? OverlayControlSymbols.autoPasteOn : OverlayControlSymbols.autoPasteOff
-        )
-        .font(.system(size: 10, weight: .semibold))
-        Circle()
-          .fill(state.autoPasteEnabled ? CSColor.oliveLight : CSColor.textFaint)
-          .frame(width: 5, height: 5)
-      }
-      .foregroundStyle(palette.mutedText.color)
-      .padding(.horizontal, 6)
-      .padding(.vertical, 4)
-      .background(CSColor.surfaceRaised(0.04))
-      .overlay(Capsule().strokeBorder(palette.border.color, lineWidth: 1))
-      .clipShape(Capsule())
-    }
-    .buttonStyle(.plain)
-    .disabled(!state.autoPasteControlAvailable)
-    .help("Auto-paste: \(state.autoPasteEnabled ? "On" : "Off")")
-    .accessibilityLabel("Auto-paste toggle")
-    .accessibilityValue(state.autoPasteEnabled ? "On" : "Off")
-    .accessibilityIdentifier("overlay-auto-paste")
   }
 
   /// Audio-evidence strip in the primary bar. Amplitude/VAD only — word/PCM
@@ -684,14 +736,16 @@ struct DictationOverlayView: View {
     if let error = state.revisionCommitError ?? state.formatterError ?? state.recoveryFailure {
       return error
     }
-    if state.formatterCommitPending { return "Formatting revision…" }
-    if state.revisionCommitPending { return "Committing revision…" }
-    if state.isRevisionDraftDirty { return "Draft · not committed" }
+    if state.formatterCommitPending { return String(localized: "Formatting revision…") }
+    if state.revisionCommitPending { return String(localized: "Committing revision…") }
+    if state.isRevisionDraftDirty { return String(localized: "Draft · not committed") }
     if let notice = state.toast { return notice }
     if let status = state.presentationStatus { return status.headline }
     if state.mode == .error {
       return state.errorMessage
-        ?? (state.activeText.isEmpty ? "Transcription failed" : "Delivery interrupted")
+        ?? (state.activeText.isEmpty
+          ? String(localized: "Transcription failed")
+          : String(localized: "Delivery interrupted"))
     }
     if state.mode == .noSpeech { return state.noSpeechNotice }
     return nil
@@ -715,11 +769,11 @@ struct DictationOverlayView: View {
           transcriptStatus
         }
       }
-    } else if bottomChromeSlots.showsCoverageWarning {
+    } else if bottomChromeSlots.showsCoverageWarning, let warning = state.footerWarning {
       OverlayCoverageStatus(
-        palette: palette, canRetranscribe: state.terminal && state.canRetranscribe,
+        warning: warning, palette: palette,
+        canRetranscribe: state.terminal && state.canRetranscribe,
         cloudConfigured: state.cloudRetranscribeConfigured,
-        diagnosticNotice: showsDiagnostics ? state.coverageRefusalNotice : nil,
         diagnosticDetail: showsDiagnostics ? state.coverageRefusalDetail : nil,
         onRetranscribe: { state.retranscribe(pass: $0) }
       )
@@ -760,15 +814,19 @@ struct DictationOverlayView: View {
     VStack(alignment: .leading, spacing: 0) {
       LiveTranscriptTextView(
         text: state.canvasText,
+        uncertainWords: state.canvasUncertainWords,
         isEditable: state.isTranscriptEditable,
         appearance: palette.appearance,
+        showsDiagnostics: showsDiagnostics,
         contentInsets: NSEdgeInsets(
           top: headerHeight + 4, left: 0, bottom: footerHeight + 10, right: 0),
         onEditingChanged: { editing in
           if editing { state.beginTranscriptEdit() } else { state.endTranscriptEdit() }
         },
         onTextChange: { state.updateRevisionDraft($0) },
-        onCancelEdit: { state.discardRevisionDraft() }
+        onCancelEdit: { state.discardRevisionDraft() },
+        onPlayUncertainWord: { state.playUncertainWord($0) },
+        onTeachUncertainWord: { state.teachUncertainWord($0, canonical: $1) }
       )
       .modifier(OverlayScrollEdgeEffects())
       .overlay(alignment: .bottomTrailing) {
@@ -782,10 +840,11 @@ struct DictationOverlayView: View {
       }
       .frame(minHeight: transcriptMinHeight)
       .accessibilityIdentifier("overlay-transcript-area")
+      // The empty branch is absence of a hint, not copy, so it stays verbatim.
       .accessibilityHint(
         state.isTranscriptEditable
-          ? "Click to edit. Edits stay local until committed to the transcript ledger."
-          : ""
+          ? Text("Click to edit. Edits stay local until committed to the transcript ledger.")
+          : Text(verbatim: "")
       )
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -875,8 +934,10 @@ struct DictationOverlayView: View {
           Text(
             state.errorMessage
               ?? (state.retainedComposerDelivery != nil
-                ? "Delivery interrupted — the transcript is still here"
-                : state.activeText.isEmpty ? "Transcription failed" : "Delivery interrupted")
+                ? String(localized: "Delivery interrupted — the transcript is still here")
+                : state.activeText.isEmpty
+                  ? String(localized: "Transcription failed")
+                  : String(localized: "Delivery interrupted"))
           )
           .csFont(15, .medium)
           .foregroundStyle(palette.bodyText.color)

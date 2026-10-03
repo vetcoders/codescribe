@@ -140,8 +140,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(header.contains("if let error = state.expansionPreferenceError"))
     let refusal = try section(of: source, from: "case .coverageRefused:", to: "case .noSpeech:")
     XCTAssertFalse(refusal.contains("coverageRefusedBody"))
-    XCTAssertTrue(source.contains("if bottomChromeSlots.showsCoverageWarning {"))
+    XCTAssertTrue(
+      source.contains(
+        "if bottomChromeSlots.showsCoverageWarning, let warning = state.footerWarning {"))
     XCTAssertTrue(source.contains("OverlayCoverageStatus("))
+    XCTAssertFalse(
+      source.contains("diagnosticNotice"),
+      "the refusal sentence is the chip's own copy, never a lab-only second notice")
   }
 
   func testExpansionClampsBottomAnchorsLowDragsAndSmallerNegativeDisplay() {
@@ -416,7 +421,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(tools.contains("actions.toggle()"))
     XCTAssertTrue(tools.contains(".onHover { actions.pointerChanged($0) }"))
     XCTAssertTrue(tools.contains(".focusable()"))
-    XCTAssertTrue(tools.contains("actions.phase == .open ? \"Open\" : \"Collapsed\""))
+    XCTAssertTrue(tools.contains("actions.phase == .open ? \"Expanded\" : \"Collapsed\""))
     XCTAssertTrue(tools.contains("overlay-retained-work-badge"))
     XCTAssertFalse(source.contains("togglePin"))
     XCTAssertFalse(source.contains("isPinned"))
@@ -485,7 +490,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(cap.contains("actions.toggle()"))
     XCTAssertTrue(cap.contains(".accessibilityIdentifier(\"overlay-tools-handle\")"))
     XCTAssertTrue(
-      cap.contains(".accessibilityValue(actions.phase == .open ? \"Open\" : \"Collapsed\")"))
+      cap.contains(".accessibilityValue(actions.phase == .open ? \"Expanded\" : \"Collapsed\")"))
     XCTAssertTrue(cap.contains("if state.hasRecoverableSupersededWork && actions.phase != .open {"))
     XCTAssertTrue(cap.contains("overlay-retained-work-badge"))
     XCTAssertTrue(containsGuardedIntentRail(tools))
@@ -525,6 +530,19 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(source.contains("accessibilityVoiceOverEnabled"))
     XCTAssertTrue(source.contains("@State private var actions = OverlayActionsPresentation()"))
     XCTAssertEqual(OverlayActionsPresentation().phase, .idle)
+  }
+
+  func testActionsHandleUsesPhaseForSymbolLabelAndTooltip() throws {
+    let source = try overlaySource()
+    let handle = try section(
+      of: source, from: "Button {\n                  actions.toggle()",
+      to: "if actions.phase == .open {")
+    XCTAssertTrue(handle.contains("Image(systemName: actions.controlSymbol)"))
+    XCTAssertTrue(
+      handle.contains(".contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))"))
+    XCTAssertTrue(handle.contains(".accessibilityLabel(actions.controlTitle)"))
+    XCTAssertTrue(handle.contains("OverlayMiniTooltip(title: actions.controlTitle"))
+    XCTAssertTrue(handle.contains(".accessibilityIdentifier(\"overlay-tools-handle\")"))
   }
 
   func testFormatRequiresAnExplicitChoiceAndNeverUsesAPrimaryAction() throws {
@@ -778,7 +796,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let header = try headerSource(overlaySource())
       let close = try section(
         of: header, from: "Button {\n          state.relayIntent(.close)",
-        to: "Text(\"codescribe\")")
+        to: "Text(verbatim: \"codescribe\")")
       XCTAssertTrue(close.contains("ModeDot("))
       XCTAssertTrue(close.contains("color: CSColor.terracotta"))
       XCTAssertTrue(close.contains("if closeDotHovered {"))
@@ -792,15 +810,20 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   func testBrandDotClosesTheOverlay() throws {
     let state = OverlayState.previewListening()
     var closes = 0
-    state.onClose = { closes += 1 }
+    var lifecycleCloses = 0
+    state.onCloseIntent = { closes += 1 }
+    state.onClose = { lifecycleCloses += 1 }
     state.relayIntent(.close)
-    XCTAssertEqual(closes, 1, "The close intent the brand dot relays must reach onClose")
+    XCTAssertEqual(closes, 1, "The close intent the brand dot relays must reach onCloseIntent")
+    XCTAssertEqual(
+      lifecycleCloses, 0,
+      "The human close is not an automatic hide an open channel may veto")
 
     let source = try overlaySource()
     let header = try headerSource(source)
     let close = try section(
       of: header, from: "Button {\n          state.relayIntent(.close)",
-      to: "Text(\"codescribe\")")
+      to: "Text(verbatim: \"codescribe\")")
     XCTAssertTrue(
       close.contains("state.relayIntent(.close)"),
       "The brand dot must relay the close intent")
@@ -828,7 +851,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(close.contains(".onHover { closeDotHovered = $0 }"))
     XCTAssertTrue(close.contains(".contentShape(Circle().inset(by: -8.5))"))
     XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")
-    XCTAssertTrue(header.contains("Text(\"codescribe\")"))
+    XCTAssertTrue(header.contains("Text(verbatim: \"codescribe\")"))
     XCTAssertTrue(header.contains(".allowsHitTesting(false)"))
     // The brand block sits on an inert drag region so the dot answers clicks,
     // not window drags (Founder 19:18: the dot next to codescribe closes).
@@ -863,41 +886,90 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(rail.contains("Text(phase"))
   }
 
-  func testAutoPasteToggleMirrorsStateAndFlipsIt() throws {
-    let engine = OverlayChromePolicyEngine()
+  /// Annex A2: Auto Paste leaves the overlay header. Paste mode itself stays
+  /// where it is — Settings › Shortcuts and the tray cycle own `paste_mode` —
+  /// and the overlay keeps no path that could write it.
+  func testHeaderHasNoAutoPasteControlAndOverlayCannotWritePasteMode() throws {
+    try withPanel(state: .previewListening()) { _, root in
+      let elements = accessibilityTree(root)
+      XCTAssertFalse(elements.isEmpty, "The rendered accessibility hierarchy must be observable")
+      XCTAssertFalse(elements.contains { $0.accessibilityIdentifier() == "overlay-auto-paste" })
+    }
+    let overlay = try overlaySource()
+    let header = try headerSource(overlay)
+    for gone in ["overlay-auto-paste", "autoPaste", "AutoPaste", "pasteMode"] {
+      XCTAssertFalse(overlay.contains(gone), "overlay view still carries \(gone)")
+    }
+    // The microphone mark belongs to recording only; the header spends its
+    // width on the waveform, the recording control and one agent glyph.
+    XCTAssertTrue(header.contains("chromeWaveform(barCount:"))
+    XCTAssertFalse(header.contains("OverlayRecordingLightView("))
+    XCTAssertTrue(header.contains("recordingLight: state.recordingLight"))
+    XCTAssertTrue(header.contains("OverlayChannelStatusView("))
+    XCTAssertTrue(header.contains("OverlayRecordingControls("))
+
+    let state = try source(at: "Codescribe/Screens/Overlay/OverlayState.swift")
+    for writer in ["setAutoPasteEnabled", "setPasteMode", "autoPasteEnabled"] {
+      XCTAssertFalse(state.contains(writer), "overlay state still reaches \(writer)")
+    }
+    XCTAssertFalse(
+      try source(at: "Codescribe/Core/AppModel.swift").contains("setAutoPasteControlAvailable"))
+  }
+
+  /// Annex A1: the live-preview toggle folds and unfolds the transcript and
+  /// shows ^ while expanded, v while folded — never an eye.
+  func testLivePreviewToggleFoldsAndShowsTheMatchingChevron() throws {
     let state = OverlayState.previewListening()
-    state.engine = engine
-    XCTAssertTrue(state.autoPasteEnabled)
-    XCTAssertTrue(state.autoPasteControlAvailable)
+    func controls() -> OverlayRecordingControls {
+      OverlayRecordingControls(
+        canFinish: true, isPreviewCollapsed: state.isCollapsed, compact: false,
+        palette: .dark, onIntent: { _ in }, onPreviewToggle: { state.toggleCollapsed() })
+    }
+    let startedCollapsed = state.isCollapsed
+    let before = controls()
+    XCTAssertEqual(before.previewSymbol, startedCollapsed ? "chevron.down" : "chevron.up")
+    before.togglePreview()
+    XCTAssertNotEqual(state.isCollapsed, startedCollapsed, "the toggle folds or unfolds")
+    let after = controls()
+    XCTAssertEqual(after.previewSymbol, state.isCollapsed ? "chevron.down" : "chevron.up")
+    XCTAssertNotEqual(before.previewSymbol, after.previewSymbol)
+    XCTAssertEqual(
+      after.previewAccessibilityLabel, state.isCollapsed ? "Show live preview" : "Hide live preview"
+    )
+    after.togglePreview()
+    XCTAssertEqual(state.isCollapsed, startedCollapsed)
 
-    // The header control flips the durable policy through the engine and
-    // re-reads truth; it never paints an optimistic switch.
-    state.setAutoPasteEnabled(!state.autoPasteEnabled)
-    XCTAssertEqual(engine.writes, [false])
-    XCTAssertFalse(state.autoPasteEnabled)
-    state.setAutoPasteEnabled(!state.autoPasteEnabled)
-    XCTAssertEqual(engine.writes, [false, true])
-    XCTAssertTrue(state.autoPasteEnabled)
+    let overlay = try overlaySource()
+    XCTAssertFalse(overlay.contains("\"eye"), "no eye pictogram on the preview toggle")
+    XCTAssertTrue(overlay.contains("Image(systemName: previewSymbol)"))
+    XCTAssertTrue(overlay.contains(".accessibilityIdentifier(\"overlay-live-preview-toggle\")"))
+  }
 
-    // Unavailable (agent session armed): the control is disabled and writes
-    // are refused, the policy stays where it was.
-    state.setAutoPasteControlAvailable(false)
-    XCTAssertFalse(state.autoPasteControlAvailable)
-    state.setAutoPasteEnabled(false)
-    XCTAssertEqual(engine.writes, [false, true])
-    XCTAssertTrue(state.autoPasteEnabled)
-
+  func testRecordingControlMorphsBetweenIdleLiveAndFinalizing() throws {
     let source = try overlaySource()
-    let header = try headerSource(source)
-    XCTAssertTrue(
-      header.contains("autoPasteControl"),
-      "Both header widths are built by justifiedHeader and must carry the toggle")
-    let control = try autoPasteControlSource(source)
-    XCTAssertTrue(control.contains("state.setAutoPasteEnabled(!state.autoPasteEnabled)"))
-    XCTAssertTrue(control.contains(".disabled(!state.autoPasteControlAvailable)"))
-    XCTAssertTrue(control.contains(".accessibilityIdentifier(\"overlay-auto-paste\")"))
-    XCTAssertTrue(
-      control.contains(".accessibilityValue(state.autoPasteEnabled ? \"On\" : \"Off\")"))
+    XCTAssertTrue(source.contains("HStack(spacing: compact ? 4 : 7) {\n      recordingButton"))
+    XCTAssertTrue(source.contains("Image(systemName: recordingSymbol)"))
+    XCTAssertTrue(source.contains(".accessibilityIdentifier(recordingIdentifier)"))
+    XCTAssertTrue(source.contains(".disabled(recordingDisabled)"))
+    XCTAssertTrue(source.contains("canFinish: state.recording && !state.transcribing"))
+    XCTAssertTrue(source.contains("|| (!state.recording && state.showsSessionTimer)"))
+
+    for state in [OverlayState(), OverlayState.previewFormatted()] {
+      XCTAssertFalse(state.recording)
+      let control = OverlayRecordingControls(
+        canFinish: false, isPreviewCollapsed: state.isCollapsed, compact: false,
+        palette: .dark, onIntent: { _ in }, onPreviewToggle: {})
+      XCTAssertEqual(control.recordingSymbol, "mic.fill")
+      XCTAssertEqual(control.recordingIdentifier, "overlay-start-recording")
+    }
+    let live = OverlayState.previewListening()
+    live.handleRecordingPreparing()
+    XCTAssertTrue(live.recording)
+    let stop = OverlayRecordingControls(
+      canFinish: live.recording, isPreviewCollapsed: false, compact: false,
+      palette: .dark, onIntent: { _ in }, onPreviewToggle: {})
+    XCTAssertEqual(stop.recordingSymbol, "stop.fill")
+    XCTAssertEqual(stop.recordingIdentifier, "overlay-stop-recording")
   }
 
   private func withPanel(
@@ -957,11 +1029,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   private func headerSource(_ source: String) throws -> String {
     try section(
       of: source, from: "private func justifiedHeader(compact: Bool)",
-      to: "private var autoPasteControl")
-  }
-
-  private func autoPasteControlSource(_ source: String) throws -> String {
-    try section(of: source, from: "private var autoPasteControl", to: "private func chromeWaveform")
+      to: "private func chromeWaveform")
   }
 
   private func containsGuardedIntentRail(_ source: String) -> Bool {
@@ -997,20 +1065,15 @@ private final class OverlayChromePolicyEngine: DictationEngine {
     expanded = enabled
     return true
   }
-  var writes: [Bool] = []
-  var enabled = true
   func setListener(_ listener: CsTranscriptionListener) {}
-  func startRecording(language: CsLanguage?) async throws {}
+  func startsInAssistiveMode() -> Bool { false }
+  func startRecording(assistive: Bool, language: CsLanguage?) async throws {}
   func stopRecording() async throws -> String { "" }
   func isRecording() async -> Bool { false }
   func initModel() async throws {}
   func isModelLoaded() -> Bool { true }
   func currentOverlayPolicy() -> OverlayPolicySnapshot? {
-    OverlayPolicySnapshot(autoPasteEnabled: enabled, autoFormatLevel: .correction)
-  }
-  func setAutoPasteEnabled(_ enabled: Bool) {
-    writes.append(enabled)
-    self.enabled = enabled
+    OverlayPolicySnapshot(autoFormatLevel: .correction)
   }
   func commitUserRevision(
     sessionId: String, sourceRevision: UInt64, renderedText: String

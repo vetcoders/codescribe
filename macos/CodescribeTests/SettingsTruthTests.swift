@@ -779,6 +779,33 @@ final class SettingsTruthTests: XCTestCase {
       ])
   }
 
+  /// The Lab pickers write their exact promoted keys on a developer build and
+  /// nothing at all on a production bundle.
+  func testLabPickersWriteExactPromotedKeysOnlyOnTheDeveloperSurface() {
+    var writes: [(key: String, value: String)] = []
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(updateConfigObserver: { key, value in
+        writes.append((key, value))
+      }))
+
+    model.setWhisperAdaptiveBuffer(true)
+    model.setFormatOnDevice(true)
+    model.setFormatOnDevice(false)
+
+    guard DeveloperSurface.isEnabled() else {
+      XCTAssertTrue(writes.isEmpty, "production bundle must not persist Lab knobs")
+      return
+    }
+    XCTAssertEqual(
+      writes.map(\.key),
+      [
+        "WHISPER_ADAPTIVE_BUFFER",
+        "CODESCRIBE_FORMAT_ON_DEVICE",
+        "CODESCRIBE_FORMAT_ON_DEVICE",
+      ])
+    XCTAssertEqual(writes.map(\.value), ["1", "1", "0"])
+  }
+
   func testLocalWhisperDiagnosticEnvTokensMatchRuntimePolicy() {
     for value in ["", "  ", "phase1", " PHASE1 ", "1"] {
       XCTAssertEqual(
@@ -910,9 +937,16 @@ final class SettingsTruthTests: XCTestCase {
       batches.append(entries)
     })
     let model = SettingsViewModel(engine: engine)
+    var overlayPreferenceNotices = 0
+    model.onOverlayPreferenceChanged = { overlayPreferenceNotices += 1 }
+
+    model.applyPreviewTimingPreset(.custom)
+    XCTAssertEqual(batches.count, 0)
+    XCTAssertEqual(overlayPreferenceNotices, 0, "Custom writes nothing and announces nothing")
 
     model.applyPreviewTimingPreset(.smooth)
 
+    XCTAssertEqual(overlayPreferenceNotices, 1)
     XCTAssertEqual(batches.count, 1)
     let values = Dictionary(uniqueKeysWithValues: batches[0].map { ($0.key, $0.value) })
     XCTAssertEqual(values["TRANSCRIPTION_OVERLAY_ENABLED"], "1")
@@ -925,6 +959,9 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(batches.count, 2)
     XCTAssertEqual(batches[1].map(\.key), ["TRANSCRIPTION_OVERLAY_ENABLED"])
     XCTAssertEqual(batches[1].map(\.value), ["0"])
+    XCTAssertEqual(
+      overlayPreferenceNotices, 2,
+      "Off tells the overlay's owner, so a panel already on screen can close")
   }
 
   /// Agent owns the one lane-edit grammar: a lane binds a provider (through
@@ -1283,7 +1320,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(model.resetPreview.audioFiles, 5_000)
     XCTAssertEqual(
       model.resetImpactDescription(includeKeys: false, includePrompts: false),
-      "Moves 5000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
+      "Moves 5,000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
         + "Your assistive.txt and three formatting prompt files will be preserved. "
         + "Codescribe will relaunch as a fresh install."
     )
@@ -1484,6 +1521,35 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertTrue(writes.isEmpty, "passive refresh must not write the picker value back")
   }
 
+  /// Safe / Comfort / Off write the one promoted `PASTE_MODE` key with the
+  /// core wire spelling, and a passive load restores the persisted mode
+  /// without writing it back.
+  func testPasteModePickerRoundTripsAndRestoresWithoutWriteBack() {
+    var persisted = CsSettings.sample
+    persisted.pasteMode = .comfort
+    var writes: [(String, String)] = []
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(
+        settingsLoader: { persisted },
+        updateConfigObserver: { writes.append(($0, $1)) })
+    )
+    _ = ShortcutsPanel(model: model)
+    XCTAssertEqual(model.pasteMode, .comfort)
+    model.refresh()
+    XCTAssertTrue(writes.isEmpty, "a passive load must not write the paste mode back")
+
+    let cases: [(CsPasteMode, String)] = [(.safe, "safe"), (.comfort, "comfort"), (.off, "off")]
+    for (mode, wireValue) in cases {
+      persisted.pasteMode = mode
+      model.setPasteMode(mode)
+      XCTAssertEqual(writes.last?.0, "PASTE_MODE")
+      XCTAssertEqual(writes.last?.1, wireValue)
+      XCTAssertEqual(model.pasteMode, mode)
+    }
+    XCTAssertEqual(CsPasteMode.allModes.count, 3)
+    XCTAssertEqual(Set(CsPasteMode.allModes.map(\.blurb)).count, 3, "one sentence per mode")
+  }
+
   /// Active STT consumes last serving verdict; Apple→Whisper fallback must not
   /// display configured Apple preference.
   func testActiveSTTUsesServingVerdictNotConfiguredEngine() {
@@ -1515,6 +1581,13 @@ final class SettingsTruthTests: XCTestCase {
     )
     XCTAssertEqual(model.activeSTT, "Apple")
     XCTAssertFalse(model.activeSTT.contains("Smart final pass"))
+
+    let labels = ["streaming_whisper": "Streaming Whisper", "cloud_stt": "Cloud"]
+    for (engine, label) in labels {
+      let verdict = LastServingVerdict(
+        engine: engine, routingMode: "smart", disposition: nil, fallbackUsed: false)
+      XCTAssertEqual(formatActiveSTT(lastServing: verdict), label)
+    }
     XCTAssertFalse(model.activeSTT.contains("Not yet served"))
   }
 

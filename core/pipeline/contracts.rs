@@ -71,6 +71,11 @@ pub struct TranscriptSegment {
     pub text: String,
     pub start_ts: f32,
     pub end_ts: f32,
+    /// Per-word acoustic confidence from the engine that emitted this
+    /// segment, on its own per-source scale. `None` means the engine
+    /// supplied no metric — never "low" (A6, d4).
+    #[serde(default)]
+    pub confidence: Option<crate::pipeline::word_confidence::WordConfidence>,
 }
 
 /// Explicit options for file-based transcription.
@@ -1686,6 +1691,7 @@ mod tests {
             start_ts: 1.5,
             end_ts: 3.2,
             segments: vec![TranscriptSegment {
+                confidence: None,
                 text: "cleaned".to_string(),
                 start_ts: 1.5,
                 end_ts: 3.2,
@@ -2155,6 +2161,7 @@ mod tests {
             RawTranscript {
                 text: "Cześć, jak się masz".to_string(),
                 segments: vec![TranscriptSegment {
+                    confidence: None,
                     text: "Cześć, jak się masz".to_string(),
                     start_ts: 0.0,
                     end_ts: 2.5,
@@ -2534,6 +2541,7 @@ mod tests {
             RawTranscript {
                 text: "smoke text".to_string(),
                 segments: vec![TranscriptSegment {
+                    confidence: None,
                     text: "smoke text".to_string(),
                     start_ts: 0.0,
                     end_ts: 1.5,

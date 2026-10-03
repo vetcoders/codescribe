@@ -27,7 +27,8 @@ import SwiftUI
 @MainActor
 protocol DictationEngine: AnyObject {
   func setListener(_ listener: CsTranscriptionListener)
-  func startRecording(language: CsLanguage?) async throws
+  func startRecording(assistive: Bool, language: CsLanguage?) async throws
+  func startsInAssistiveMode() -> Bool
   func stopRecording() async throws -> String
   func commitUserRevision(
     sessionId: String, sourceRevision: UInt64, renderedText: String
@@ -47,7 +48,6 @@ protocol DictationEngine: AnyObject {
   func isModelLoaded() -> Bool
   func currentOverlayPolicy() -> OverlayPolicySnapshot?
   func cloudRetranscribeConfigured() -> Bool
-  func setAutoPasteEnabled(_ enabled: Bool)
   func overlayExpandedByDefault() -> Bool
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool
   func overlayKeepVisibleBetweenTakes() -> Bool
@@ -59,8 +59,20 @@ protocol DictationEngine: AnyObject {
   func sendAssistiveTranscript(text: String) async throws -> Bool
   func lastSessionAudioPath() -> String?
   func sessionAudioPath(sessionId: String) -> String?
+  /// Export one word's PCM from the retained take audio as a temp WAV clip
+  /// with `padMs` of context on both sides. The sample window is pinned to the
+  /// physical occurrence (session + capture epoch), never to word text.
+  func wordAudioClip(
+    sessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64,
+    padMs: UInt32
+  ) throws -> String
+  /// One-click Teach from a canvas span through the existing quality path.
+  func teachSpan(variant: String, canonical: String, kind: String) throws
+    -> CsQualityCommitResult
   func transcribeFile(path: String) async throws -> CsTranscription
   func transcribeTake(sessionId: String, path: String) async throws -> CsTranscription
+  func channelRosterSnapshot() async -> [CsChannelRosterState]
+  func toggleAgentChannel(digit: UInt8) async throws
 }
 
 extension DictationEngine {
@@ -79,6 +91,17 @@ extension DictationEngine {
   }
   func lastSessionAudioPath() -> String? { nil }
   func sessionAudioPath(sessionId: String) -> String? { nil }
+  func wordAudioClip(
+    sessionId _: String, captureEpoch _: UInt64, sampleStart _: UInt64, sampleEnd _: UInt64,
+    padMs _: UInt32
+  ) throws -> String {
+    throw NSError(domain: "Word audio unavailable", code: 1)
+  }
+  func teachSpan(variant _: String, canonical _: String, kind _: String) throws
+    -> CsQualityCommitResult
+  {
+    throw NSError(domain: "Teach unavailable", code: 1)
+  }
   func transcribeTake(sessionId _: String, path: String) async throws -> CsTranscription {
     try await transcribeFile(path: path)
   }
@@ -86,10 +109,16 @@ extension DictationEngine {
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool { false }
   func overlayKeepVisibleBetweenTakes() -> Bool { false }
   func setOverlayKeepVisibleBetweenTakes(_ enabled: Bool) -> Bool { false }
+  func channelRosterSnapshot() async -> [CsChannelRosterState] { [] }
+  func toggleAgentChannel(digit _: UInt8) async throws {
+    throw NSError(domain: "Agent channel unavailable", code: 1)
+  }
 }
 
+/// Paste mode is not part of it: Settings › Shortcuts and the tray cycle own
+/// `paste_mode`, and the overlay neither shows nor writes it (Founder direction
+/// as relayed in the Codex handoff, Annex A2, 2026-09-29).
 struct OverlayPolicySnapshot: Equatable {
-  let autoPasteEnabled: Bool
   let autoFormatLevel: FormattingPolicyOption
 }
 
@@ -188,20 +217,22 @@ enum OverlayRetranscribePass: String, CaseIterable, Identifiable {
 
   var visibleName: String {
     switch self {
-    case .fullHq: "Full HQ file pass"
-    case .cloud: "Cloud pass"
+    case .fullHq: String(localized: "Full HQ file pass")
+    case .cloud: String(localized: "Cloud pass")
     }
   }
 
   var help: String {
     switch self {
-    case .fullHq: "Full local Whisper file pass over the last session audio"
-    case .cloud: "Cloud STT pass over the last session audio"
+    case .fullHq:
+      String(localized: "Full local Whisper file pass over the last session audio")
+    case .cloud: String(localized: "Cloud STT pass over the last session audio")
     }
   }
 }
 
 enum OverlayIntent: String, Equatable, Hashable, CaseIterable {
+  case startRecording = "start-recording"
   case finish
   case commitRevision = "commit-revision"
   case discardRevision = "discard-revision"
@@ -301,7 +332,15 @@ final class OverlayState {
   // MARK: Published state
   private(set) var transcriptMode = "dictation"
   private(set) var mode: OverlayMode = .listening
-  var formattedText: String { latestTranscriptProjection?.renderedText ?? "" }
+  var formattedText: String {
+    guard let projection = latestTranscriptProjection else { return "" }
+    return projection.reducerAction == "derived_projection"
+      ? projection.deliveryText ?? projection.renderedText : projection.renderedText
+  }
+  /// A6 uncertain-word spans from the reducer projection (UTF-16 ranges into
+  /// `formattedText`). The overlay stays a pure projection: classification
+  /// happened in Rust; `canvasUncertainWords` maps them onto the canvas.
+  var uncertainSpans: [CsUncertainSpan] { latestTranscriptProjection?.uncertainSpans ?? [] }
   /// View-local editor payload. It is never delivery or transcript truth; only
   /// `formattedText`, repainted from the Rust projection, feeds downstream
   /// actions. The canvas paints it while the formatted take is under review.
@@ -342,7 +381,7 @@ final class OverlayState {
   private(set) var presentationStatus: OverlayPresentationStatus?
   private(set) var compactProjection: CsCompactProjection?
   private(set) var errorLifecycleDetail =
-    "No transcript was delivered."
+    String(localized: "No transcript was delivered.")
   /// Standing explanation for a take whose terminal seal the ledger refused,
   /// independently of measured coverage. Non-nil while the terminal projection carried
   /// `coverage_refused`, so the surface cannot outlive the fact it describes.
@@ -354,11 +393,7 @@ final class OverlayState {
   /// Prompt-free policy snapshot from C02's persisted settings owner. These
   /// values are replaced only by a fresh engine read, never by optimistic UI.
   private(set) var cloudRetranscribeConfigured = false
-  private(set) var autoPasteEnabled = true
   private(set) var autoFormatLevel: FormattingPolicyOption = .correction
-  /// Assistive sessions never expose delivery controls. The controller owns
-  /// that authoritative session gate and updates this presentation fence.
-  private(set) var autoPasteControlAvailable = true
   /// Serving-engine label latched once per session. Rendering never performs
   /// settings I/O or a UniFFI read.
   private(set) var engineChip = "not yet served"
@@ -433,8 +468,13 @@ final class OverlayState {
   /// Handoff to the agent surface — wired by the orchestrator (routes the text
   /// into AgentChat, which streams it through `CodescribeAgent.streamReply`).
   var onSendToAgent: ((String) -> Void)?
-  /// Dismiss the floating window — wired by the orchestrator.
+  /// Dismiss the floating window when the overlay's own lifecycle ends
+  /// (auto-hide, warmup watchdog, agent delivery) — wired by the orchestrator,
+  /// which keeps an open agent channel on screen against it.
   var onClose: (() -> Void)?
+  /// The human Close intent (the brand dot) — wired by the orchestrator to a
+  /// dismissal that no automatic visibility rule can veto.
+  var onCloseIntent: (() -> Void)?
   /// Window chrome only: folding never ends capture or creates text edits.
   /// Leaving an edited canvas uses its existing commit-on-blur path.
   private(set) var isCollapsed = true
@@ -451,7 +491,7 @@ final class OverlayState {
   /// The menu toggle alone persists the take-start preference.
   func setExpandedByDefault(_ expanded: Bool) {
     guard let engine, engine.setOverlayExpandedByDefault(expanded) else {
-      expansionPreferenceError = "Couldn't save overlay preference"
+      expansionPreferenceError = String(localized: "Couldn't save overlay preference")
       return
     }
     expansionPreferenceError = nil
@@ -469,12 +509,12 @@ final class OverlayState {
 
   func setKeepVisibleBetweenTakes(_ enabled: Bool) {
     guard let engine, engine.setOverlayKeepVisibleBetweenTakes(enabled) else {
-      expansionPreferenceError = "Couldn't save overlay preference"
+      expansionPreferenceError = String(localized: "Couldn't save overlay preference")
       return
     }
     expansionPreferenceError = nil
     keepVisibleBetweenTakes = engine.overlayKeepVisibleBetweenTakes()
-    if keepVisibleBetweenTakes {
+    if pinKeepsOverlayVisible {
       cancelAutoHide()
     } else if terminal {
       restartAutoHideCountdown()
@@ -525,36 +565,33 @@ final class OverlayState {
   @ObservationIgnored private let eventStream: AsyncStream<OverlayListenerEvent>
   @ObservationIgnored private var eventTask: Task<Void, Never>?
 
-  static let defaultNoSpeechNotice = "No speech detected"
-  /// Missing coverage is unverified, never proof of missing words.
-  static let defaultCoverageRefusalNotice =
-    "Coverage could not be verified — these words were kept, not sealed"
+  static let defaultNoSpeechNotice = String(localized: "No speech detected")
 
   /// Display copy distinguishes measured coverage from refused finality.
   /// Absent coverage is unknown; complete coverage does not mint a terminal seal.
+  /// The notice is the observation sentence the footer chip also shows.
   private var coverageRefusalCopy: (status: String, notice: String) {
-    guard let coverage = latestTranscriptProjection?.sealCoverage else {
-      return ("unverified coverage", Self.defaultCoverageRefusalNotice)
+    let coverage = latestTranscriptProjection?.sealCoverage
+    let notice = OverlayWarningCopy.sealRefused(
+      coverage, sampleRateHz: coverage?.sampleRateHz
+    ).sentence
+    switch coverage?.status {
+    case .incomplete: return (String(localized: "incomplete coverage"), notice)
+    case .unavailable: return (String(localized: "measurement unavailable"), notice)
+    case .complete: return (String(localized: "unsealed transcript"), notice)
+    case .unknown, nil: return (String(localized: "unverified coverage"), notice)
     }
-    switch coverage.status {
-    case .incomplete:
-      return ("incomplete coverage", "Incomplete coverage — these words were kept, not sealed")
-    case .unavailable:
-      let explanation: String
-      switch coverage.unavailableReason {
-      case .notObserved: explanation = "No acoustic measurement was available for this take"
-      case .identityMismatch: explanation = "The acoustic measurement did not match this take"
-      case .invalidMeasurement: explanation = "The acoustic measurement could not be used"
-      case .partialObservation:
-        explanation = "The acoustic measurement covered only part of this take"
-      case .unknown, nil: explanation = "The acoustic measurement was unavailable"
-      }
-      return ("measurement unavailable", "\(explanation) — these words were kept, not sealed")
-    case .complete:
-      return ("unsealed transcript", "These words were kept, but the transcript was not sealed")
-    case .unknown:
-      return ("unverified coverage", Self.defaultCoverageRefusalNotice)
+  }
+
+  /// The footer reports seal coverage or measured quiet microphone input.
+  /// Nil when neither applies.
+  var footerWarning: OverlayWarningCopy? {
+    if mode == .coverageRefused {
+      let coverage = latestTranscriptProjection?.sealCoverage
+      return .sealRefused(coverage, sampleRateHz: coverage?.sampleRateHz)
     }
+    if mode == .listening && levelMeter.hasLowInputSignal { return .quietInput }
+    return nil
   }
 
   /// Admission metadata only; no transcript or acoustic adjudication is stored.
@@ -639,18 +676,21 @@ final class OverlayState {
   private var isPointerHovering = false
   private let nowProvider: () -> TimeInterval
   private let autoSendEnabled: () -> Bool
+  private let micAccessProvider: () -> Bool
   /// Terminal countdown for non-Agent outcomes and opted-in Agent delivery.
   static let autoHideDelaySeconds: TimeInterval = 5
 
   init(
     nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
-    autoSendEnabled: @escaping () -> Bool = { CodescribeConfig().loadSettings().agentAutoSend }
+    autoSendEnabled: @escaping () -> Bool = { CodescribeConfig().loadSettings().agentAutoSend },
+    micAccessProvider: @escaping () -> Bool = { micPermissionGranted() || requestMicPermission() }
   ) {
     let channel = AsyncStream<OverlayListenerEvent>.makeStream()
     eventStream = channel.stream
     listener = DictationListener(continuation: channel.continuation)
     self.nowProvider = nowProvider
     self.autoSendEnabled = autoSendEnabled
+    self.micAccessProvider = micAccessProvider
     eventTask = Task { @MainActor [weak self, eventStream] in
       for await event in eventStream {
         guard let self else { return }
@@ -671,7 +711,27 @@ final class OverlayState {
 
   private(set) var channelDelivery: [OverlayChannelDelivery] = []
   private(set) var channelStatusUnavailable = false
-  var hasOpenChannel: Bool { channelDelivery.contains(where: \.isOpen) }
+  private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:]
+  private(set) var channelRosterNames: [String: String] = [:]
+  private(set) var channelToggleError: String?
+  var visibleChannelRows: [OverlayChannelDelivery] {
+    let deliveredDigits = Set(channelDelivery.map(\.channel))
+    let boundWithoutDelivery = channelRosterNames.keys.sorted().compactMap {
+      digit -> OverlayChannelDelivery? in
+      guard !deliveredDigits.contains(digit), let audience = channelRosterNames[digit] else {
+        return nil
+      }
+      return OverlayChannelDelivery(
+        channel: digit, agent: audience, deliveryID: nil, stage: nil,
+        isOpen: channelHudStates[digit]?.open ?? false)
+    }
+    return (channelDelivery + boundWithoutDelivery).sorted { $0.channel < $1.channel }
+  }
+  var hasOpenChannel: Bool {
+    visibleChannelRows.contains { channel in
+      channelHudStates[channel.channel]?.open ?? channel.isOpen
+    }
+  }
   @ObservationIgnored var onChannelPresentationChanged: (() -> Void)?
   @ObservationIgnored private var channelObservationTask: Task<Void, Never>?
 
@@ -679,6 +739,10 @@ final class OverlayState {
     channelObservationTask?.cancel()
     channelObservationTask = Task { @MainActor [weak self] in
       while !Task.isCancelled {
+        if let snapshot = await self?.engine?.channelRosterSnapshot() {
+          guard !Task.isCancelled, let self else { return }
+          self.applyChannelRoster(snapshot)
+        }
         do {
           let snapshot = try await reader.read()
           guard !Task.isCancelled, self != nil else { return }
@@ -692,6 +756,44 @@ final class OverlayState {
         }
         do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
       }
+    }
+  }
+
+  func applyChannelRoster(_ snapshot: [CsChannelRosterState]) {
+    let names = Dictionary(
+      snapshot.map { ($0.channel, $0.audience) }, uniquingKeysWith: { _, latest in latest })
+    let projected = Dictionary(
+      snapshot.map { row in
+        (
+          row.channel,
+          OverlayChannelHudProjection(
+            open: row.open, loud: row.loud,
+            autosealDeadline: row.autosealDeadlineUnixMs.map {
+              Date(timeIntervalSince1970: Double($0) / 1_000)
+            },
+            followerAlive: row.followerAlive)
+        )
+      }, uniquingKeysWith: { _, latest in latest })
+    guard projected != channelHudStates || names != channelRosterNames else { return }
+    let wasOpen = hasOpenChannel
+    channelHudStates = projected
+    channelRosterNames = names
+    if hasOpenChannel {
+      cancelAutoHide()
+    } else if wasOpen && terminal {
+      restartAutoHideCountdown()
+    }
+    onChannelPresentationChanged?()
+  }
+
+  func toggleAgentChannel(_ digit: UInt8) async {
+    guard (1...9).contains(digit), let engine else { return }
+    do {
+      try await engine.toggleAgentChannel(digit: digit)
+      channelToggleError = nil
+      applyChannelRoster(await engine.channelRosterSnapshot())
+    } catch {
+      channelToggleError = error.userFacingMessage
     }
   }
 
@@ -730,15 +832,15 @@ final class OverlayState {
   var statusText: String {
     if let presentationStatus { return presentationStatus.statusLabel }
     switch mode {
-    case .listening: return "listening"
-    case .finalizing: return "finalizing"
-    case .formatted: return "formatted"
+    case .listening: return String(localized: "listening")
+    case .finalizing: return String(localized: "finalizing")
+    case .formatted: return String(localized: "formatted")
     // Never "formatted": the pill is the first thing a user reads, and the
     // one word it must not say about a refused take is the word that means
     // sealed.
     case .coverageRefused: return coverageRefusalCopy.status
-    case .noSpeech: return "no speech"
-    case .error: return "error"
+    case .noSpeech: return String(localized: "no speech")
+    case .error: return String(localized: "error", comment: "Overlay status pill: the take failed")
     }
   }
 
@@ -746,6 +848,15 @@ final class OverlayState {
   var statusRippling: Bool {
     mode == .listening
       && (audioReady || vadActive)
+  }
+
+  /// The header status light, or nil when no take is live. Projection only:
+  /// phase from the reducer, mode from the tray feed, silence from measured
+  /// capture level.
+  var recordingLight: OverlayRecordingLight? {
+    OverlayRecordingLight.resolve(
+      mode: mode, terminal: terminal, recording: recording, transcribing: transcribing,
+      indicatorMode: indicatorMode, silent: levelMeter.isSilent)
   }
 
   private static func displayEngineChip(_ engine: String) -> String {
@@ -801,6 +912,62 @@ final class OverlayState {
     isRevisionDraftDirty ? revisionDraft : formattedText
   }
 
+  /// Uncertain words painted on the canvas. The spans index into
+  /// `formattedText`, so a dirty local draft (or any canvas text that is not
+  /// the projection) invalidates them all — the renderer drops the paint
+  /// rather than color the wrong bytes. `coverage_refused` / `degraded` never
+  /// create spans upstream, so they can never create color here.
+  var canvasUncertainWords: [OverlayUncertainWord] {
+    guard !isRevisionDraftDirty else { return [] }
+    return OverlayUncertainWordProjection.project(spans: uncertainSpans, text: formattedText)
+  }
+
+  // MARK: Uncertain word actions (A6-3)
+
+  /// The word clip currently playing; a new Play stops the previous one.
+  private var uncertainWordSound: NSSound?
+
+  /// Play the word's own PCM: the span pins the occurrence, the bridge cuts
+  /// the clip with ±150 ms of context. Absent retained audio is an honest
+  /// footer notice, never silence.
+  func playUncertainWord(_ word: OverlayUncertainWord) {
+    guard let engine else { return }
+    uncertainWordSound?.stop()
+    uncertainWordSound = nil
+    do {
+      let clip = try engine.wordAudioClip(
+        sessionId: word.occurrenceSessionId,
+        captureEpoch: word.occurrenceCaptureEpoch,
+        sampleStart: word.slotSampleStart,
+        sampleEnd: word.slotSampleEnd,
+        padMs: 150
+      )
+      guard let sound = NSSound(contentsOfFile: clip, byReference: true) else {
+        showFooterNotice(String(localized: "Word audio unavailable"))
+        return
+      }
+      uncertainWordSound = sound
+      sound.play()
+    } catch {
+      showFooterNotice(String(localized: "Word audio unavailable"))
+    }
+  }
+
+  /// Teach the dictionary through the existing `quality_teach_span` path —
+  /// no parallel mechanism. The acknowledgement comes from the quality core.
+  func teachUncertainWord(_ word: OverlayUncertainWord, canonical: String) {
+    guard let engine else { return }
+    let trimmed = canonical.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    do {
+      let result = try engine.teachSpan(
+        variant: word.word, canonical: trimmed, kind: "lexicon_corrected")
+      showFooterNotice(result.acknowledgement)
+    } catch {
+      showFooterNotice(String(localized: "Could not save the correction"))
+    }
+  }
+
   /// Read-only words Rust keeps visible without mutation authority — for
   /// example a Whisper alternative the ledger refused as a whole-span
   /// replacement — in PCM order. They ride the capture-bound compact paint,
@@ -826,34 +993,46 @@ final class OverlayState {
   /// missing seal separately. None of these facts grants terminal acceptance.
   var coverageRefusalDetail: String {
     if retainedComposerDelivery != nil {
-      return
-        "The handover came back. These words are retained here — recover them before the next take."
+      return String(
+        localized:
+          "The handover came back. These words are retained here — recover them before the next take."
+      )
     }
     if latestTranscriptProjection?.sealCoverage?.status == .complete {
-      return
-        "Acoustic coverage was measured as complete, but this transcript has no current terminal seal."
+      return String(
+        localized:
+          "Acoustic coverage was measured as complete, but this transcript has no current terminal seal."
+      )
     }
-    return "No seal was recorded for this take, so nothing here is certified complete."
+    return String(
+      localized: "No seal was recorded for this take, so nothing here is certified complete.")
   }
 
   var audioLevelAccessibilityValue: String {
-    guard let gain = levelMeter.gain else { return "Waiting for measured level" }
+    guard let gain = levelMeter.gain else {
+      return String(localized: "Waiting for measured level")
+    }
     switch gain {
-    case ..<0.12: return "Very quiet"
-    case ..<0.35: return "Quiet"
-    case ..<0.68: return "Good level"
-    default: return "Strong level"
+    case ..<0.12: return String(localized: "Very quiet", comment: "Measured microphone level")
+    case ..<0.35: return String(localized: "Quiet", comment: "Measured microphone level")
+    case ..<0.68: return String(localized: "Good level", comment: "Measured microphone level")
+    default: return String(localized: "Strong level", comment: "Measured microphone level")
     }
   }
 
   // MARK: Recording lifecycle (engine-backed; no-op when engine is absent)
 
-  /// Start mic dictation. Gated on `micPermissionGranted()`; requests access
-  /// once when undetermined. Fires the async bridge work in a Task so the view
-  /// can call it from a synchronous context (onAppear / hotkey).
+  /// Start through the same controller and current mode snapshot as the tray.
+  /// Preparing synchronously reserves this take against a second click.
   func start(language: CsLanguage? = nil) {
-    guard engine != nil, !recording else { return }
-    Task { @MainActor in await self.runStart(language: language) }
+    guard let engine, !recording,
+      terminal || (!transcribing && mode != .finalizing && captureStartedAtUptime == nil)
+    else {
+      return
+    }
+    let assistive = engine.startsInAssistiveMode()
+    prepareForExternalStart()
+    Task { @MainActor in await self.runStart(assistive: assistive, language: language) }
   }
 
   /// Whole seconds of capture for the open session; nil before any capture.
@@ -892,22 +1071,19 @@ final class OverlayState {
     Task { @MainActor in await self.runStop() }
   }
 
-  private func runStart(language: CsLanguage?) async {
+  private func runStart(assistive: Bool, language: CsLanguage?) async {
     guard let engine else { return }
-    guard micPermissionGranted() || requestMicPermission() else {
+    guard micAccessProvider() else {
       presentTerminalError(
-        message:
-          "Microphone access is off for Codescribe. Enable it in System Settings › Privacy & Security › Microphone.",
-        toast: "Microphone access denied"
+        message: String(
+          localized:
+            "Microphone access is off for Codescribe. Enable it in System Settings › Privacy & Security › Microphone."
+        ),
+        toast: String(localized: "Microphone access denied")
       )
       return
     }
     engine.setListener(listener)
-    warmingUp = true
-    resetTranscript()
-    errorMessage = nil
-    beginCaptureClock()
-    recording = true
     do {
       // Whisper is optional gap-fill when Apple is live. initModel soft-fails
       // in the bridge for that path; never treat a missing Whisper model as
@@ -921,9 +1097,9 @@ final class OverlayState {
           NSLog("codescribe: optional Whisper warm skipped: \(error)")
         }
       }
-      try await engine.startRecording(language: language)
+      try await engine.startRecording(assistive: assistive, language: language)
     } catch {
-      await handleStartFailure(error, language: language)
+      await handleStartFailure(error, assistive: assistive, language: language)
     }
   }
 
@@ -933,20 +1109,23 @@ final class OverlayState {
   /// and retry the start once when authorized. Every other failure — and a
   /// declined dialog — funnels into the terminal error path, where
   /// `speechAuthNotice` rewrites raw `speech_auth_*` markers.
-  private func handleStartFailure(_ error: Error, language: CsLanguage?) async {
+  private func handleStartFailure(_ error: Error, assistive: Bool, language: CsLanguage?) async {
     let described = "\(error)"
     if described.contains("speech_auth_not_determined"), !speechAuthRequestAttempted {
       speechAuthRequestAttempted = true
       abortRecordingSession()
       let state = await SpeechRecognitionPermission.request()
       if state == .granted {
-        await runStart(language: language)
+        prepareForExternalStart()
+        await runStart(assistive: assistive, language: language)
         return
       }
     }
     presentTerminalError(
-      message: "Couldn't start recording: \(described)",
-      toast: "Couldn't start recording"
+      message: String(
+        localized: "Couldn't start recording: \(described)",
+        comment: "The placeholder is the engine's own failure text"),
+      toast: String(localized: "Couldn't start recording")
     )
   }
 
@@ -965,19 +1144,22 @@ final class OverlayState {
       isFinalPass = false
     } catch {
       presentTerminalError(
-        message: "Couldn't finalize transcript: \(error)",
-        toast: "Couldn't finalize transcript"
+        message: String(
+          localized: "Couldn't finalize transcript: \(String(describing: error))",
+          comment: "The placeholder is the engine's own failure text"),
+        toast: String(localized: "Couldn't finalize transcript")
       )
     }
   }
 
   // MARK: Action row
 
-  /// Thin relay from the projection-driven rail into existing controller
-  /// routes. No branch here changes phase, text, or availability optimistically;
-  /// those fields move only when the next Rust projection arrives.
+  /// Thin relay from overlay controls into the controller routes. Start reserves
+  /// capture locally; transcript phase and text still come from Rust projections.
   func relayIntent(_ intent: OverlayIntent) {
     switch intent {
+    case .startRecording:
+      start()
     case .finish:
       stop()
     case .commitRevision:
@@ -1008,28 +1190,36 @@ final class OverlayState {
 
   private func relayCopyIntent() {
     guard let engine else {
-      presentActionFailure("Copy needs the recording engine", notice: "copy unavailable")
+      presentActionFailure(
+        String(localized: "Copy needs the recording engine"),
+        notice: String(localized: "copy unavailable"))
       return
     }
     let text = activeText
     Task { @MainActor in
       do {
         try await engine.copyTaggedTranscript(text: text)
-        self.showFooterNotice("copied")
+        self.showFooterNotice(String(localized: "copied"))
       } catch {
-        self.presentActionFailure("Couldn't copy transcript: \(error)", notice: "copy failed")
+        self.presentActionFailure(
+          String(
+            localized: "Couldn't copy transcript: \(String(describing: error))",
+            comment: "The placeholder is the engine's own failure text"),
+          notice: String(localized: "copy failed"))
       }
     }
   }
 
   private func relayInsertPasteIntent() {
     if engine == nil {
-      presentActionFailure("Insert needs the recording engine", notice: "insert unavailable")
+      presentActionFailure(
+        String(localized: "Insert needs the recording engine"),
+        notice: String(localized: "insert unavailable"))
     }
     guard let engine else { return }
     captureQualityIfEdited(action: "paste")
     cancelAutoHide()
-    showFooterNotice("inserting…", persists: true)
+    showFooterNotice(String(localized: "inserting…"), persists: true)
     let text = activeText
     let shouldDefer = insertCaretInCodescribeProbe()
     Task { @MainActor in
@@ -1046,17 +1236,20 @@ final class OverlayState {
           let shortcut = result.deferredInsertShortcut ?? "⌘⌥V"
           self.showFooterNotice(shortcut, persists: true)
         case .copiedToClipboard:
-          self.showFooterNotice("copied")
+          self.showFooterNotice(String(localized: "copied"))
         case .accessibilityPermissionNeeded:
-          self.showFooterNotice("no ax")
+          self.showFooterNotice(
+            String(localized: "no ax", comment: "Footer notice: no Accessibility permission"))
         case .pasted:
-          self.showFooterNotice("inserted")
+          self.showFooterNotice(String(localized: "inserted"))
         case .noop:
-          self.showFooterNotice("no insert")
+          self.showFooterNotice(String(localized: "no insert"))
         }
       } catch {
-        self.errorMessage = "Couldn't paste transcript: \(error)"
-        self.showFooterNotice("no paste")
+        self.errorMessage = String(
+          localized: "Couldn't paste transcript: \(String(describing: error))",
+          comment: "The placeholder is the engine's own failure text")
+        self.showFooterNotice(String(localized: "no paste"))
       }
     }
   }
@@ -1072,27 +1265,36 @@ final class OverlayState {
   private func relayRetranscribeIntent(pass: OverlayRetranscribePass) {
     guard let engine else {
       presentActionFailure(
-        "Retranscription needs the recording engine", notice: "retranscribe unavailable")
+        String(localized: "Retranscription needs the recording engine"),
+        notice: String(localized: "retranscribe unavailable"))
       return
     }
     guard let projection = latestTranscriptProjection else {
       presentActionFailure(
-        "The visible take has no session identity", notice: "retranscribe unavailable")
+        String(localized: "The visible take has no session identity"),
+        notice: String(localized: "retranscribe unavailable"))
       return
     }
     guard let path = engine.sessionAudioPath(sessionId: projection.sessionId) else {
       presentActionFailure(
-        "The visible take's audio is unavailable", notice: "take audio unavailable")
+        String(localized: "The visible take's audio is unavailable"),
+        notice: String(localized: "take audio unavailable"))
       return
     }
     let prefixedPath = "\(pass.pathPrefix)\(path)"
 
     cancelAutoHide()
-    let passEngine = pass == .cloud ? "cloud" : "local Whisper HQ"
+    let passEngine =
+      pass == .cloud
+      ? String(localized: "cloud", comment: "Retranscribe pass: the cloud engine")
+      : String(localized: "local Whisper HQ", comment: "Retranscribe pass: the local engine")
     let previousChip = engineChip
-    engineChip = "retranscribing · \(passEngine)"
+    let running = String(
+      localized: "retranscribing · \(passEngine)",
+      comment: "The placeholder is the name of the engine running the pass")
+    engineChip = running
     engineChipLatched = true
-    showFooterNotice("retranscribing · \(passEngine)", persists: true)
+    showFooterNotice(running, persists: true)
     Task { @MainActor [weak self] in
       guard let self else { return }
       do {
@@ -1102,7 +1304,10 @@ final class OverlayState {
         guard !text.isEmpty else {
           self.engineChip = previousChip
           self.presentActionFailure(
-            "The \(passEngine) pass returned no text", notice: "retranscribe returned no text")
+            String(
+              localized: "The \(passEngine) pass returned no text",
+              comment: "The placeholder is the name of the engine that ran the pass"),
+            notice: String(localized: "retranscribe returned no text"))
           return
         }
         if !text.isEmpty {
@@ -1125,7 +1330,9 @@ final class OverlayState {
             }
           } else {
             self.engineChip = previousChip
-            self.presentActionFailure("A newer take replaced this overlay", notice: "take changed")
+            self.presentActionFailure(
+              String(localized: "A newer take replaced this overlay"),
+              notice: String(localized: "take changed"))
             return
           }
           if self.mode == .noSpeech {
@@ -1135,12 +1342,19 @@ final class OverlayState {
         self.engineChip = passEngine
         self.showFooterNotice(
           self.retranscribeRollback == nil
-            ? "retranscribed" : "retranscribed — Back keeps the old text")
+            ? String(localized: "retranscribed")
+            : String(localized: "retranscribed — Back keeps the old text"))
         self.restartAutoHideCountdown()
       } catch {
         self.engineChip = previousChip
+        let described = String(describing: error)
         self.presentActionFailure(
-          "Couldn't retranscribe recording: \(error)", notice: "retranscribe refused · \(error)")
+          String(
+            localized: "Couldn't retranscribe recording: \(described)",
+            comment: "The placeholder is the engine's own failure text"),
+          notice: String(
+            localized: "retranscribe refused · \(described)",
+            comment: "The placeholder is the engine's own failure text"))
         self.restartAutoHideCountdown()
       }
     }
@@ -1172,17 +1386,20 @@ final class OverlayState {
     guard let sessionId = rollback.sessionId else {
       revisionDraft = rollback.renderedText
       retranscribeRollback = nil
-      showFooterNotice("retranscribe undone")
+      showFooterNotice(String(localized: "retranscribe undone"))
       return
     }
     guard let engine else {
-      presentActionFailure("Undo needs the recording engine", notice: "undo unavailable")
+      presentActionFailure(
+        String(localized: "Undo needs the recording engine"),
+        notice: String(localized: "undo unavailable"))
       return
     }
     guard let projection = latestTranscriptProjection, projection.sessionId == sessionId else {
       retranscribeRollback = nil
       presentActionFailure(
-        "The retranscribed take is no longer current", notice: "nothing to undo")
+        String(localized: "The retranscribed take is no longer current"),
+        notice: String(localized: "nothing to undo"))
       return
     }
     Task { @MainActor [weak self] in
@@ -1194,10 +1411,13 @@ final class OverlayState {
           renderedText: rollback.renderedText
         )
         self.retranscribeRollback = nil
-        self.showFooterNotice("retranscribe undone")
+        self.showFooterNotice(String(localized: "retranscribe undone"))
       } catch {
         self.presentActionFailure(
-          "Couldn't undo retranscribe: \(error)", notice: "undo failed — kept")
+          String(
+            localized: "Couldn't undo retranscribe: \(String(describing: error))",
+            comment: "The placeholder is the engine's own failure text"),
+          notice: String(localized: "undo failed — kept"))
       }
     }
   }
@@ -1254,20 +1474,6 @@ final class OverlayState {
     }
   }
 
-  /// Persist through C02's single config seam, then immediately replace local
-  /// state with a fresh disk-backed snapshot. A rejected write therefore snaps
-  /// back to durable truth instead of leaving an optimistic switch behind.
-  func setAutoPasteEnabled(_ enabled: Bool) {
-    guard autoPasteControlAvailable, let engine else { return }
-    engine.setAutoPasteEnabled(enabled)
-    refreshOverlayPolicyTruth()
-    restartAutoHideCountdown()
-  }
-
-  func setAutoPasteControlAvailable(_ available: Bool) {
-    autoPasteControlAvailable = available
-  }
-
   func close() {
     discardRevisionDraft()
     // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
@@ -1284,7 +1490,7 @@ final class OverlayState {
     warmingUp = false
     transcribing = false
     isFinalPass = false
-    onClose?()
+    onCloseIntent?()
   }
 
   func refreshRetranscriptionAvailability() {
@@ -1294,7 +1500,6 @@ final class OverlayState {
   private func refreshOverlayPolicyTruth() {
     refreshRetranscriptionAvailability()
     guard let truth = engine?.currentOverlayPolicy() else { return }
-    autoPasteEnabled = truth.autoPasteEnabled
     autoFormatLevel = truth.autoFormatLevel
   }
 
@@ -1320,7 +1525,6 @@ final class OverlayState {
     indicatorMode = mode
     if mode == .assistive {
       agentSessionArmed = true
-      autoPasteControlAvailable = false
     }
   }
 
@@ -1503,11 +1707,11 @@ final class OverlayState {
     }
     let proposed = revisionDraft
     guard !proposed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      revisionCommitError = "A transcript revision cannot be empty"
+      revisionCommitError = String(localized: "A transcript revision cannot be empty")
       return
     }
     guard let projection = latestTranscriptProjection, let engine else {
-      revisionCommitError = "Transcript revision authority is unavailable"
+      revisionCommitError = String(localized: "Transcript revision authority is unavailable")
       return
     }
     revisionCommitPending = true
@@ -1532,7 +1736,7 @@ final class OverlayState {
           revisionCommitPending = false
           pendingRevisionSessionId = nil
           pendingRevisionSource = nil
-          revisionCommitError = "Transcript revision receipt was inconsistent"
+          revisionCommitError = String(localized: "Transcript revision receipt was inconsistent")
           return
         }
         // The callback can arrive before this acknowledgement. Either way,
@@ -1541,7 +1745,9 @@ final class OverlayState {
         revisionCommitPending = false
         pendingRevisionSessionId = nil
         pendingRevisionSource = nil
-        revisionCommitError = "Couldn't commit transcript revision: \(error)"
+        revisionCommitError = String(
+          localized: "Couldn't commit transcript revision: \(String(describing: error))",
+          comment: "The placeholder is the engine's own failure text")
       }
     }
   }
@@ -1575,13 +1781,11 @@ final class OverlayState {
     // failure for another.
     if recording, captureProvedLife {
       agentSessionArmed = indicatorMode == .assistive
-      autoPasteControlAvailable = !agentSessionArmed
       refreshOverlayPolicyTruth()
       onRecordingPreparing?()
       return
     }
     agentSessionArmed = indicatorMode == .assistive
-    autoPasteControlAvailable = !agentSessionArmed
     finalized = false
     isFinalPass = false
     warmingUp = true
@@ -1702,6 +1906,18 @@ final class OverlayState {
     terminal
   }
 
+  /// The "Transcription Overlay" preference as the panel's owner last read it
+  /// (take start, status card, preference write). A plain value, never a
+  /// settings read: the countdown runs on hover-out and every terminal paint.
+  /// The pin keeps the transcript overlay between takes; with the preference
+  /// off there is no such overlay, so a status card shown despite it leaves on
+  /// the ordinary countdown instead of staying until closed by hand.
+  @ObservationIgnored var transcriptOverlayEnabled = true
+
+  private var pinKeepsOverlayVisible: Bool {
+    keepVisibleBetweenTakes && transcriptOverlayEnabled
+  }
+
   private var mayAutoSendRefusedAgentTake: Bool {
     agentSessionArmed && agentFinalTranscriptAppeared && !agentAutoSendCancelled
       && canSendToAgent
@@ -1713,7 +1929,7 @@ final class OverlayState {
       cancelAutoHide()
       return
     }
-    if keepVisibleBetweenTakes && !agentSessionArmed {
+    if pinKeepsOverlayVisible && !agentSessionArmed {
       cancelAutoHide()
       return
     }
@@ -1762,7 +1978,7 @@ final class OverlayState {
   private func evaluateAutoHideDeadline(rescheduleIfEarly: Bool, generation: UInt64) {
     guard generation == captureGeneration else { return }
     autoHideTask = nil
-    if keepVisibleBetweenTakes && !agentSessionArmed {
+    if pinKeepsOverlayVisible && !agentSessionArmed {
       cancelAutoHide()
       return
     }
@@ -1831,13 +2047,15 @@ final class OverlayState {
 
   @discardableResult
   private func deliverAgentTranscript() -> Task<Void, Never>? {
-    let text = activeText.trimmingCharacters(in: .whitespacesAndNewlines)
+    let text = latestTranscriptProjection?.renderedText ?? activeText
     // No `agentSessionArmed` here: the explicit Send button is live for
     // every terminal overlay (dictation and formatting included), and the
     // controller falls back to the session trigger context when no
     // assistive context was armed (review P0-03). Auto-send remains gated
     // on the armed latch by its caller.
-    guard !agentDeliveryStarted, !text.isEmpty, let engine else { return nil }
+    guard !agentDeliveryStarted,
+      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let engine
+    else { return nil }
     agentDeliveryStarted = true
     let generation = captureGeneration
     cancelAutoHide()
@@ -1853,12 +2071,12 @@ final class OverlayState {
           onClose?()
         } else {
           agentDeliveryStarted = false
-          showToast("Agent delivery is no longer available")
+          showToast(String(localized: "Agent delivery is no longer available"))
         }
       } catch {
         guard generation == captureGeneration else { return }
         agentDeliveryStarted = false
-        showToast("Couldn't send to Agent")
+        showToast(String(localized: "Couldn't send to Agent"))
       }
     }
   }
@@ -1916,7 +2134,7 @@ final class OverlayState {
       // before abort wipes capture identity — same throne as a clean stop.
       admitComposerDelivery(projection)
       abortRecordingSession()
-      showToast("Dictation failed — transcript kept")
+      showToast(String(localized: "Dictation failed — transcript kept"))
       return
     }
     presentTerminalError(message: message, toast: message)
@@ -1928,17 +2146,23 @@ final class OverlayState {
   /// is one System Settings toggle. Returns nil for every other error.
   static func speechAuthNotice(from message: String) -> String? {
     guard message.contains("speech_auth_") else { return nil }
+    // One sentence per branch: a translation must be free to reorder it.
     if message.contains("speech_auth_not_determined") {
-      return "Apple dictation needs Speech Recognition access — "
-        + "grant it in Settings › Dictation or System Settings › "
-        + "Privacy & Security › Speech Recognition"
+      return String(
+        localized:
+          "Apple dictation needs Speech Recognition access — grant it in Settings › Dictation or System Settings › Privacy & Security › Speech Recognition"
+      )
     }
     if message.contains("speech_auth_denied") || message.contains("speech_auth_restricted") {
-      return "Speech Recognition is off for Codescribe — enable it in "
-        + "System Settings › Privacy & Security › Speech Recognition"
+      return String(
+        localized:
+          "Speech Recognition is off for Codescribe — enable it in System Settings › Privacy & Security › Speech Recognition"
+      )
     }
-    return "Speech Recognition access is unavailable — check System "
-      + "Settings › Privacy & Security › Speech Recognition"
+    return String(
+      localized:
+        "Speech Recognition access is unavailable — check System Settings › Privacy & Security › Speech Recognition"
+    )
   }
 
   private func presentTerminalError(message: String, toast: String) {
@@ -1953,8 +2177,8 @@ final class OverlayState {
     errorMessage = message
     errorLifecycleDetail =
       captureHadStarted
-      ? "No transcript was delivered."
-      : "Recording did not start."
+      ? String(localized: "No transcript was delivered.")
+      : String(localized: "Recording did not start.")
     finalized = true
     showToast(toast)
   }
@@ -2141,9 +2365,9 @@ final class OverlayState {
     let revisionReceipt = projection.acousticReceipts
       .compactMap(\.manualEditReceipt)
       .first(where: { $0.hasPrefix("user-edit-") })
-    let formatterReceipt = projection.acousticReceipts
-      .compactMap(\.manualEditReceipt)
-      .first(where: { $0.hasPrefix("formatter-") })
+    let formatterReceipt =
+      projection.reducerAction == "derived_projection"
+        && projection.label.hasPrefix("formatter-") ? projection.label : nil
     let completesPendingRevision =
       revisionCommitPending
       && projection.reducerAction == "apply_manual_edit"
@@ -2153,10 +2377,10 @@ final class OverlayState {
       && revisionReceipt != nil
     let completesPendingFormatter =
       formatterCommitPending
-      && projection.reducerAction == "apply_manual_edit"
+      && projection.reducerAction == "derived_projection"
       && projection.terminal
       && projection.sessionId == pendingRevisionSessionId
-      && projection.reducerRevision > (pendingRevisionSource ?? UInt64.max)
+      && projection.reducerRevision == pendingRevisionSource
       && formatterReceipt != nil
     // A successful acoustic terminal has its own callback. Agent auto-send
     // below uses lifecycle completion and nonempty text, not this seal signal.
@@ -2208,6 +2432,9 @@ final class OverlayState {
       abortRecordingSession()
     }
     latestTranscriptProjection = projection
+    if projection.reducerAction == "light_plus_tick_deadline" {
+      showFooterNotice(projection.label)
+    }
     // Mirror this accepted projection; a successor or a later document verdict
     // cannot inherit a notice belonging to its predecessor.
     coverageRefusalNotice =
@@ -2238,16 +2465,17 @@ final class OverlayState {
       pendingRevisionSessionId = nil
       pendingRevisionSource = nil
       revisionCommitError = nil
-      revisionDraft = projection.renderedText
+      revisionDraft = formattedText
     } else if completesPendingFormatter {
       formatterCommitPending = false
       pendingRevisionSessionId = nil
       pendingRevisionSource = nil
       formatterError = nil
-      revisionDraft = projection.renderedText
-      showFooterNotice("formatted")
+      revisionDraft = formattedText
+      showFooterNotice(String(localized: "formatted"))
+      loadDocumentHistory()
     } else if !draftWasDirty || isNewSession {
-      revisionDraft = projection.renderedText
+      revisionDraft = formattedText
     }
 
     if projection.terminal {
@@ -2264,7 +2492,7 @@ final class OverlayState {
         agentFinalTranscriptAppeared =
           !projection.renderedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if projection.delivery == .copiedToClipboard {
-          showFooterNotice("copied")
+          showFooterNotice(String(localized: "copied"))
         }
       }
       if signalsFirstSuccessfulTerminal {
@@ -2306,7 +2534,8 @@ final class OverlayState {
     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     guard let onComposerTranscript else {
       retainComposerDelivery(
-        text, sessionID: projection.sessionId, notice: "no composer receiver",
+        text, sessionID: projection.sessionId,
+        notice: String(localized: "no composer receiver"),
         showsNotice: affectsCurrentCapture)
       return
     }
@@ -2319,11 +2548,14 @@ final class OverlayState {
     case .retained(let refused):
       if receiverOwnsRecovery?() == true {
         retainedComposerDocuments.removeAll { $0.id == projection.sessionId }
-        if affectsCurrentCapture { showFooterNotice("kept in composer recovery") }
+        if affectsCurrentCapture {
+          showFooterNotice(String(localized: "kept in composer recovery"))
+        }
         return
       }
       retainComposerDelivery(
-        refused, sessionID: projection.sessionId, notice: "kept for recovery",
+        refused, sessionID: projection.sessionId,
+        notice: String(localized: "kept for recovery"),
         showsNotice: affectsCurrentCapture)
     case .empty:
       break
@@ -2363,8 +2595,8 @@ final class OverlayState {
       !revisionCommitPending, !formatterCommitPending
     else { return }
     guard let projection = latestTranscriptProjection, let engine else {
-      formatterError = "Transcript formatter authority is unavailable"
-      showFooterNotice("format unavailable")
+      formatterError = String(localized: "Transcript formatter authority is unavailable")
+      showFooterNotice(String(localized: "format unavailable"))
       return
     }
     formatterCommitPending = true
@@ -2372,7 +2604,7 @@ final class OverlayState {
     pendingRevisionSessionId = projection.sessionId
     pendingRevisionSource = projection.reducerRevision
     cancelAutoHide()
-    showFooterNotice("formatting…", persists: true)
+    showFooterNotice(String(localized: "formatting…"), persists: true)
     Task { @MainActor [weak self] in
       guard let self else { return }
       do {
@@ -2390,8 +2622,8 @@ final class OverlayState {
           formatterCommitPending = false
           pendingRevisionSessionId = nil
           pendingRevisionSource = nil
-          formatterError = "Formatter revision receipt was inconsistent"
-          showFooterNotice("format failed")
+          formatterError = String(localized: "Formatter revision receipt was inconsistent")
+          showFooterNotice(String(localized: "format failed"))
           restartAutoHideCountdown()
           return
         }
@@ -2401,8 +2633,10 @@ final class OverlayState {
         formatterCommitPending = false
         pendingRevisionSessionId = nil
         pendingRevisionSource = nil
-        formatterError = "Couldn't format transcript: \(error)"
-        showFooterNotice("format failed")
+        formatterError = String(
+          localized: "Couldn't format transcript: \(String(describing: error))",
+          comment: "The placeholder is the engine's own failure text")
+        showFooterNotice(String(localized: "format failed"))
         restartAutoHideCountdown()
       }
     }
@@ -2434,7 +2668,7 @@ final class OverlayState {
           revisionCommitPending = false
           pendingRevisionSessionId = nil
           pendingRevisionSource = nil
-          revisionCommitError = "Transcript restore receipt was inconsistent"
+          revisionCommitError = String(localized: "Transcript restore receipt was inconsistent")
           return
         }
         // Only the matching reducer callback repaints the canvas.
@@ -2442,7 +2676,9 @@ final class OverlayState {
         revisionCommitPending = false
         pendingRevisionSessionId = nil
         pendingRevisionSource = nil
-        revisionCommitError = "Couldn't restore transcript version: \(error)"
+        revisionCommitError = String(
+          localized: "Couldn't restore transcript version: \(String(describing: error))",
+          comment: "The placeholder is the engine's own failure text")
       }
     }
   }
@@ -2464,7 +2700,9 @@ final class OverlayState {
         self.documentHistory = entries
       } catch {
         guard let self, self.latestTranscriptProjection?.sessionId == sessionId else { return }
-        self.revisionCommitError = "Couldn't read transcript history: \(error)"
+        self.revisionCommitError = String(
+          localized: "Couldn't read transcript history: \(String(describing: error))",
+          comment: "The placeholder is the engine's own failure text")
       }
     }
   }
@@ -2486,7 +2724,7 @@ final class OverlayState {
     let message: String
     switch reason {
     case "all_speech_rejected_by_quality_gate":
-      message = "Speech too quiet or short — adjust the mic and try again"
+      message = String(localized: "Speech too quiet or short — adjust the mic and try again")
     default:
       message = OverlayState.defaultNoSpeechNotice
     }
@@ -2539,13 +2777,14 @@ final class OverlayState {
   }
   /// Human-readable retention state. It reports how many decisions are waiting;
   /// it does not cap them. See `supersededTakes` for the disclosed boundary.
+  /// One plural key, so the count agreement is the catalog's business and no
+  /// branch here can disagree with the translation.
   var supersededRecoveryNotice: String {
     let edits = unacknowledgedSupersededEditCount
-    switch edits {
-    case 0: return "previous take retained"
-    case 1: return "1 unsaved edit to recover"
-    default: return "\(edits) unsaved edits to recover"
-    }
+    guard edits > 0 else { return String(localized: "previous take retained") }
+    return String(
+      localized: "\(edits) unsaved edits to recover",
+      comment: "The placeholder is how many retained edits are waiting")
   }
 
   /// The single write the recovery action performs, and its honest outcome.
@@ -2583,19 +2822,22 @@ final class OverlayState {
     guard recoveryClipboardWriter(take.recoverableText) else {
       recoveryFailure =
         take.hasUnsavedEdits
-        ? "Couldn't copy the unsaved edit — it is still retained, try again"
-        : "Couldn't copy the previous take — it is still retained, try again"
+        ? String(localized: "Couldn't copy the unsaved edit — it is still retained, try again")
+        : String(localized: "Couldn't copy the previous take — it is still retained, try again")
       // Persisting: a failure the user must be able to read after the 2.6 s
       // fade, and the retained work already keeps this rail revealed. The
       // `.formatted` body shows the full sentence; the footer covers every
       // other phase, including a live capture.
-      showFooterNotice("recover failed — kept", persists: true)
+      showFooterNotice(String(localized: "recover failed — kept"), persists: true)
       if terminal, !isEditingTranscript { restartAutoHideCountdown() }
       return
     }
     recoveryFailure = nil
     supersededTakes.removeFirst()
-    showFooterNotice(take.hasUnsavedEdits ? "unsaved edit copied" : "previous take copied")
+    showFooterNotice(
+      take.hasUnsavedEdits
+        ? String(localized: "unsaved edit copied")
+        : String(localized: "previous take copied"))
     // Mirrors `discardRevisionDraft`: interacting with the panel must not be
     // the reason a terminal take closes under the user's hand.
     if terminal, !isEditingTranscript { restartAutoHideCountdown() }
@@ -2607,7 +2849,10 @@ final class OverlayState {
     guard !supersededTakes.isEmpty else { return }
     let take = supersededTakes.removeFirst()
     recoveryFailure = nil
-    showFooterNotice(take.hasUnsavedEdits ? "unsaved edit discarded" : "previous take discarded")
+    showFooterNotice(
+      take.hasUnsavedEdits
+        ? String(localized: "unsaved edit discarded")
+        : String(localized: "previous take discarded"))
     if terminal, !isEditingTranscript { restartAutoHideCountdown() }
   }
 
@@ -2696,7 +2941,7 @@ final class OverlayState {
     toastTask = nil
     toast = nil
     presentationStatus = nil
-    errorLifecycleDetail = "No transcript was delivered."
+    errorLifecycleDetail = String(localized: "No transcript was delivered.")
     finalized = false
     agentFinalTranscriptAppeared = false
     agentAutoSendCancelled = false
@@ -2853,7 +3098,7 @@ final class OverlayState {
       canFormat: isFormatted,
       canSendToAgent: isFormatted,
       terminal: terminal, lifecycleTerminal: terminal, delivery: .unattempted, acousticReceipts: [],
-      sealCoverage: nil, consultationPresentations: [])
+      sealCoverage: nil, consultationPresentations: [], uncertainSpans: [])
   }
 }
 
@@ -2867,9 +3112,14 @@ final class ControllerDictationEngine: DictationEngine {
   func setListener(_ listener: CsTranscriptionListener) {
     hotkeys.setListener(listener: listener)
   }
-  func startRecording(language: CsLanguage?) async throws {
-    try await hotkeys.startRecording()
+  func startRecording(assistive: Bool, language: CsLanguage?) async throws {
+    if assistive {
+      try await hotkeys.startAssistiveRecording()
+    } else {
+      try await hotkeys.startRecording()
+    }
   }
+  func startsInAssistiveMode() -> Bool { config.trayToggles().startAssistive }
   func stopRecording() async throws -> String {
     try await hotkeys.stopRecording()
     return ""
@@ -2914,13 +3164,7 @@ final class ControllerDictationEngine: DictationEngine {
     guard let formatLevel = FormattingPolicyOption(rawValue: toggles.formattingLevel) else {
       return nil
     }
-    return OverlayPolicySnapshot(
-      autoPasteEnabled: toggles.autoPasteEnabled,
-      autoFormatLevel: formatLevel
-    )
-  }
-  func setAutoPasteEnabled(_ enabled: Bool) {
-    _ = try? config.setAutoPasteEnabled(enabled: enabled)
+    return OverlayPolicySnapshot(autoFormatLevel: formatLevel)
   }
   func overlayExpandedByDefault() -> Bool {
     config.overlayExpandedByDefault()
@@ -2955,6 +3199,19 @@ final class ControllerDictationEngine: DictationEngine {
   func sessionAudioPath(sessionId: String) -> String? {
     hotkeys.sessionAudioPath(sessionId: sessionId)
   }
+  func wordAudioClip(
+    sessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64,
+    padMs: UInt32
+  ) throws -> String {
+    try hotkeys.wordAudioClip(
+      sessionId: sessionId, captureEpoch: captureEpoch, sampleStart: sampleStart,
+      sampleEnd: sampleEnd, padMs: padMs)
+  }
+  func teachSpan(variant: String, canonical: String, kind: String) throws
+    -> CsQualityCommitResult
+  {
+    try qualityTeachSpan(variant: variant, canonical: canonical, kind: kind)
+  }
   func commitRetranscribeRevision(
     sessionId: String, sourceRevision: UInt64, renderedText: String
   ) async throws -> CsUserRevisionResult {
@@ -2966,5 +3223,11 @@ final class ControllerDictationEngine: DictationEngine {
   }
   func transcribeTake(sessionId: String, path: String) async throws -> CsTranscription {
     try await hotkeys.transcribeTake(sessionId: sessionId, path: path)
+  }
+  func channelRosterSnapshot() async -> [CsChannelRosterState] {
+    await hotkeys.channelRosterSnapshot()
+  }
+  func toggleAgentChannel(digit: UInt8) async throws {
+    try await hotkeys.toggleAgentChannel(digit: digit)
   }
 }

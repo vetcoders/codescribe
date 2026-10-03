@@ -372,29 +372,29 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
         assert_eq!(ledger.lock().unwrap().consultation_presentations().len(), 1);
         drop(sink);
         Arc::get_mut(&mut emitter).unwrap().finish().await;
-        assert_eq!(delivery.lock().await.as_str(), "pong later words");
+        let raw = delivery.lock().await.clone();
+        assert_eq!(raw, "Reply with the single word: pong later words");
+        let selected = emitter
+            .delivery_projection(codescribe_core::config::FormattingPolicy::Max, &raw)
+            .expect("Max is selected without revising Raw");
+        assert_eq!(selected.source_raw_text, raw);
+        assert_eq!(selected.rendered_text, "pong later words");
+        assert_eq!(delivery.lock().await.as_str(), raw);
         let rows = std::fs::read_to_string(bus_path).unwrap();
         let row = rows
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .rfind(|row| row["reducer_action"] == "apply_consultation_presentation")
+            .rfind(|row| row["schema"] == "codescribe.derived-transcript.v1")
             .unwrap();
         assert_eq!(row["rendered_text"], "pong later words");
-        assert_eq!(
-            row["consultation_presentations"][0]["consultation_id"],
-            consultation.id()
-        );
-        assert_eq!(
-            row["consultation_presentations"][0]["turn_id"],
-            input.turn_id_for_group()
-        );
-        assert_eq!(
-            row["consultation_presentations"][0]["members"]
-                .as_array()
-                .unwrap()
-                .len(),
-            2
-        );
+        assert_eq!(row["source_raw_text"], raw);
+        {
+            let ledger = ledger.lock().unwrap();
+            let receipt = &ledger.consultation_presentations()[0];
+            assert_eq!(receipt.consultation_id, consultation.id());
+            assert_eq!(receipt.turn_id, input.turn_id_for_group());
+            assert_eq!(receipt.members.len(), 2);
+        }
         consultation.close_if_idle().await.unwrap();
         mock.assert_async().await;
         return;

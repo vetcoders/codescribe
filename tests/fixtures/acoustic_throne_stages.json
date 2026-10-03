@@ -846,7 +846,11 @@
                 "return None;",
                 "if !ledger.is_qualified(&occurrence) {",
                 "return None;",
-                "let receipt = ledger.admit_pinned_label(&observation, label, words);",
+                "let receipt = if producer == LedgerObservationProducer::Lexicon",
+                "&& !ledger.is_sealed(&occurrence)",
+                "if rewrites.is_empty() { ledger.admit_pinned_label(&observation, label, words)",
+                ".rewrite_dictionary_slots(&observation, &rewrites)",
+                "} else { ledger.admit_pinned_label(&observation, label, words)",
                 "EngineEvent::LedgerMutation {",
                 "let closed = ledger.note_frontier_return(&occurrence, producer);",
                 "EngineEvent::LedgerSeal { receipt: seal }",
@@ -861,7 +865,7 @@
                 "|| self.is_sealed(occurrence)",
                 "|| words.is_empty()",
                 "return self.admit(observation, label);",
-                "if end <= start",
+                "if pin.sample_end <= pin.sample_start",
                 "|| midpoint < occurrence.sample_start",
                 "|| midpoint >= occurrence.sample_end",
                 "return self.admit(observation, label);",
@@ -869,6 +873,8 @@
                 ".any(|pair| pair[0].sample_end > pair[1].sample_start)",
                 "|| compose_label(&slots) != label",
                 "return self.admit(observation, label);",
+                "if self.committed.contains_key(occurrence) {",
+                "return self.admit_word_slots(observation, words);",
                 "self.admit_with_slots(observation, label, Some(slots), false)"
               ]
             },
@@ -1181,7 +1187,7 @@
                 "latestTranscriptProjection = projection",
                 "mode = OverlayMode(rawValue: projection.phase) ?? mode",
                 "terminal = projection.terminal",
-                "revisionDraft = projection.renderedText"
+                "revisionDraft = formattedText"
               ]
             },
             {
@@ -1195,9 +1201,11 @@
               "file": "macos/Codescribe/Screens/Overlay/DictationOverlayView.swift",
               "signature_contains": "struct DictationOverlayView: View",
               "required_code": [
+                "OverlayIntentRail.projectedIntents(for: state)",
+                "OverlayRecordingControls.railIntents(from: projectedIntents)",
                 "var body: some View",
                 "OverlayIntentRail(",
-                "intents: OverlayIntentRail.projectedIntents(for: state)",
+                "intents: railIntents",
                 "onIntent: state.relayIntent"
               ]
             },
@@ -1261,7 +1269,7 @@
               "required_code": [
                 "has_text",
                 "latched_target_is_self",
-                "auto_paste_enabled: false",
+                "paste_mode: PasteMode::Off",
                 "overlay_enabled: true",
                 "live_stream_session: false",
                 "commit_required: false"
@@ -1354,13 +1362,6 @@
               "minimum_count": 1
             },
             {
-              "callee": "OverlayIntentRail",
-              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
-              "caller": "body",
-              "caller_file": "macos/Codescribe/Screens/Overlay/DictationOverlayView.swift",
-              "minimum_count": 1
-            },
-            {
               "callee": "dispatch",
               "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "caller": "body",
@@ -1372,13 +1373,6 @@
               "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "caller": "dispatch",
               "caller_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
-              "minimum_count": 1
-            },
-            {
-              "callee": "relayIntent",
-              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
-              "caller": "body",
-              "caller_file": "macos/Codescribe/Screens/Overlay/DictationOverlayView.swift",
               "minimum_count": 1
             },
             {
@@ -1839,7 +1833,7 @@
                 "latestTranscriptProjection = projection",
                 "mode = OverlayMode(rawValue: projection.phase) ?? mode",
                 "terminal = projection.terminal",
-                "revisionDraft = projection.renderedText"
+                "revisionDraft = formattedText"
               ]
             }
           ],

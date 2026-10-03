@@ -42,6 +42,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Inspect per-PCM-pin decision history (engine hypotheses are diagnostic)
+    Trace {
+        /// Session ID, or an explicit .trail.jsonl file for offline inspection
+        session: String,
+        #[arg(long)]
+        word: Option<String>,
+    },
     /// Transcribe files or follow the app-owned live transcript bus
     ///
     /// stdout carries the payload and nothing else: transcript text in file
@@ -53,6 +60,12 @@ enum Command {
         /// File language; live accepts it for compatibility but app settings own capture
         #[arg(short, long, global = true)]
         language: Option<String>,
+        /// Force Apple file recognition (no Whisper fallback; comparison lane)
+        #[arg(long, conflicts_with = "whisper")]
+        apple: bool,
+        /// Force the local Whisper file final-pass
+        #[arg(long, conflicts_with = "apple")]
+        whisper: bool,
         /// Print admitted segments after each decode window, without repeating the final text
         #[arg(long)]
         stream: bool,
@@ -66,8 +79,8 @@ enum Command {
         #[arg(long)]
         raw: bool,
         /// Print the take truth under one time axis: segments, the 32 ms Silero
-        /// row and the energy row (stderr, so stdout stays the transcript)
-        #[arg(long)]
+        /// row, log-mel energy, and PCM RMS/dBFS chart (stderr only)
+        #[arg(long, visible_aliases = ["sparkline", "power"])]
         inspect: bool,
         /// Do not write the <file>.truth.json observer sidecar beside the input
         #[arg(long)]
@@ -234,6 +247,8 @@ fn dispatch(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
         Command::Transcribe {
             files,
             language,
+            apple,
+            whisper,
             stream,
             no_bus,
             json,
@@ -244,15 +259,15 @@ fn dispatch(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
         } => match mode {
             Some(TranscribeMode::Live) => {
                 anyhow::ensure!(
-                    files.is_empty() && !stream && !raw && !inspect && !no_truth,
-                    "`transcribe live` does not accept a file, --stream, --raw, --inspect or --no-truth (the app decides the lane)"
+                    files.is_empty() && !stream && !raw && !inspect && !no_truth && !apple && !whisper,
+                    "`transcribe live` does not accept file engine/inspection flags (the app decides the lane)"
                 );
                 transcribe_live(language, json)
             }
             Some(TranscribeMode::Last) => {
                 anyhow::ensure!(
-                    files.is_empty() && !stream && !json && !raw && !inspect && !no_truth,
-                    "`transcribe last` does not accept a file, --stream, --json, --raw, --inspect or --no-truth"
+                    files.is_empty() && !stream && !json && !raw && !inspect && !no_truth && !apple && !whisper,
+                    "`transcribe last` does not accept file engine/inspection flags or --json"
                 );
                 transcribe_last()
             }
@@ -267,16 +282,35 @@ fn dispatch(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
                 );
                 transcribe_batch(
                     &files,
-                    language.as_deref(),
-                    stream,
-                    !no_bus,
-                    raw,
-                    inspect,
-                    !no_truth,
+                    FileTranscribeOptions {
+                        language: language.as_deref(),
+                        stream,
+                        publish_bus: !no_bus,
+                        raw,
+                        inspect,
+                        write_truth: !no_truth,
+                        engine: if apple {
+                            FileEngine::Apple
+                        } else if whisper {
+                            FileEngine::Whisper
+                        } else {
+                            FileEngine::Default
+                        },
+                    },
                 )
             }
         }
         .map(|()| success),
+        Command::Trace { session, word } => {
+            let path = if session.ends_with(".trail.jsonl") {
+                std::path::PathBuf::from(&session)
+            } else {
+                codescribe_core::pipeline::trail::trail_path(&codescribe_core::config::Config::config_dir(), &session)?
+            };
+            let records = codescribe_core::pipeline::trail::read_trail(&path)?;
+            print!("{}", codescribe_core::pipeline::trail::render_trace(&records, word.as_deref()));
+            Ok(success)
+        }
         Command::Bus { action } => run_bus(action).map(|()| success),
         Command::Lexicon { action } => run_lexicon(action).map(|()| success),
         Command::Report(args) => {
@@ -509,16 +543,28 @@ fn run_lexicon(action: LexiconAction) -> anyhow::Result<()> {
     }
 }
 
-/// Transcribe files in order. One failing file reports on stderr and the batch
-/// continues; the exit code stays non-zero so scripts still see the failure.
-fn transcribe_batch(
-    files: &[std::path::PathBuf],
-    language: Option<&str>,
+#[derive(Clone, Copy)]
+enum FileEngine {
+    Default,
+    Apple,
+    Whisper,
+}
+
+#[derive(Clone, Copy)]
+struct FileTranscribeOptions<'a> {
+    language: Option<&'a str>,
     stream: bool,
     publish_bus: bool,
     raw: bool,
     inspect: bool,
     write_truth: bool,
+    engine: FileEngine,
+}
+
+/// Transcribe files in order, continuing on failure with a nonzero batch exit.
+fn transcribe_batch(
+    files: &[std::path::PathBuf],
+    options: FileTranscribeOptions<'_>,
 ) -> anyhow::Result<()> {
     let mut failures = Vec::new();
     for (index, file) in files.iter().enumerate() {
@@ -534,15 +580,7 @@ fn transcribe_batch(
                 println!();
             }
         }
-        if let Err(error) = transcribe(
-            file,
-            language,
-            stream,
-            publish_bus,
-            raw,
-            inspect,
-            write_truth,
-        ) {
+        if let Err(error) = transcribe(file, options) {
             eprintln!("FAILED {}: {error:#}", file.display());
             failures.push(file.display().to_string());
         }
@@ -868,21 +906,27 @@ fn bus_tail(ndjson: &str) -> Option<BusTail> {
     tail
 }
 
-fn transcribe(
-    file: &std::path::Path,
-    language: Option<&str>,
-    stream: bool,
-    publish_bus: bool,
-    raw: bool,
-    inspect: bool,
-    write_truth: bool,
-) -> anyhow::Result<()> {
+fn transcribe(file: &std::path::Path, options: FileTranscribeOptions<'_>) -> anyhow::Result<()> {
     use codescribe::presentation::cli_transcript_lane::CliTranscriptLane;
     use codescribe::presentation::transcript_bus::{TranscriptMode, TranscriptSessionEndReason};
     use codescribe_core::pipeline::take_truth::{TakeTruth, write_truth_sidecar};
     use std::io::Write as _;
 
+    let FileTranscribeOptions {
+        language,
+        stream,
+        publish_bus,
+        raw,
+        inspect,
+        write_truth,
+        engine,
+    } = options;
+
     anyhow::ensure!(file.exists(), "file not found: {}", file.display());
+    // Pin aliases such as last_session.wav once. A newer take must not swap
+    // the audio between recognition, PCM inspection and the truth sidecar.
+    let source_path = file.canonicalize()?;
+    let file = source_path.as_path();
 
     // The bus is an observer, never a gate: a transcription that cannot be
     // published must still print. Every failure below is reported on stderr and
@@ -905,28 +949,44 @@ fn transcribe(
     let started = std::time::Instant::now();
     let stdout = std::io::stdout();
     let mut streamed_text = String::new();
-    let verdict =
-        codescribe_core::stt::transcribe_file_verdict_observed(file, language, &mut |segments| {
-            if stream {
-                let lines = match lane.as_mut() {
-                    Some(lane) => lane.publish_segments(segments).unwrap_or_else(|error| {
-                        eprintln!("bus draft write failed: {error}");
-                        CliTranscriptLane::segment_texts(segments)
-                    }),
-                    None => CliTranscriptLane::segment_texts(segments),
-                };
-                let mut out = stdout.lock();
-                for line in lines {
-                    writeln!(out, "{line}")?;
-                    if !streamed_text.is_empty() {
-                        streamed_text.push(' ');
-                    }
-                    streamed_text.push_str(&line);
+    let mut observe = |segments: &[codescribe_core::pipeline::contracts::TranscriptSegment]| {
+        if stream {
+            let lines = match lane.as_mut() {
+                Some(lane) => lane.publish_segments(segments).unwrap_or_else(|error| {
+                    eprintln!("bus draft write failed: {error}");
+                    CliTranscriptLane::segment_texts(segments)
+                }),
+                None => CliTranscriptLane::segment_texts(segments),
+            };
+            let mut out = stdout.lock();
+            for line in lines {
+                writeln!(out, "{line}")?;
+                if !streamed_text.is_empty() {
+                    streamed_text.push(' ');
                 }
-                out.flush()?;
+                streamed_text.push_str(&line);
             }
-            Ok(())
-        });
+            out.flush()?;
+        }
+        Ok(())
+    };
+    let verdict = match engine {
+        // Whole-file selection is independent of the live engine and Apple readiness.
+        FileEngine::Default | FileEngine::Whisper => {
+            codescribe_core::stt::whisper::transcribe_file_verdict_observed(
+                file,
+                language,
+                Default::default(),
+                &mut observe,
+            )
+        }
+        FileEngine::Apple => (|| {
+            codescribe_core::stt::apple_stt::ensure_noninteractive_ready(language)?;
+            let verdict = codescribe_core::stt::apple_stt::transcribe_file_verdict(file, language)?;
+            observe(&verdict.raw.segments)?;
+            Ok(verdict)
+        })(),
+    };
     let verdict = match verdict {
         Ok(verdict) => verdict,
         Err(error) => {
@@ -1000,8 +1060,26 @@ fn transcribe(
         let width = std::env::var("COLUMNS")
             .ok()
             .and_then(|columns| columns.parse::<usize>().ok())
-            .unwrap_or(INSPECT_DEFAULT_WIDTH);
+            .unwrap_or(INSPECT_DEFAULT_WIDTH)
+            .clamp(20, 240);
         eprint!("{}", render_inspect(&verdict, width));
+        match codescribe_core::audio::load_audio_file(file) {
+            Ok((pcm, rate)) => {
+                eprint!("{}", render_pcm_power(&pcm, rate, width));
+                if verdict.vad.is_none() {
+                    // Observation only: never trim or gate Apple's input/text.
+                    let (_, stats) = codescribe_core::vad::extract_speech(&pcm, rate);
+                    if !stats.fine_sparkline.is_empty() {
+                        eprintln!("Silero observer: {:.1}% speech", stats.speech_pct);
+                        eprintln!(
+                            "fine:   {}",
+                            resample_sparkline_max(&stats.fine_sparkline, width)
+                        );
+                    }
+                }
+            }
+            Err(error) => eprintln!("PCM power unavailable: {error:#}"),
+        }
     }
 
     if let Some(lane) = lane.as_mut() {
@@ -1034,6 +1112,65 @@ const INSPECT_DEFAULT_WIDTH: usize = 100;
 const TRUTH_ENERGY_BUCKETS: usize = 100;
 /// The shared octile bar alphabet (`▁` = floor, `█` = peak).
 const SPARKLINE_BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// Absolute PCM amplitude: 1.0 is full scale, not this file's loudest frame.
+fn rms_dbfs(samples: &[f32]) -> f64 {
+    if samples.is_empty() {
+        return f64::NEG_INFINITY;
+    }
+    let mean_square =
+        samples.iter().map(|&v| f64::from(v).powi(2)).sum::<f64>() / samples.len() as f64;
+    10.0 * mean_square.log10()
+}
+
+/// One RMS measurement per equal-duration bucket on the original file clock.
+/// Keep an absolute -90..0 dBFS scale so quiet files do not masquerade as loud.
+fn render_pcm_power(samples: &[f32], rate: u32, width: usize) -> String {
+    if samples.is_empty() || rate == 0 || samples.iter().any(|v| !v.is_finite()) {
+        return "PCM power: n/a (empty or invalid PCM)\n".into();
+    }
+    let width = width.clamp(20, 240);
+    let duration = samples.len() as f64 / f64::from(rate);
+    let buckets = (0..width)
+        .map(|column| {
+            let start = column * samples.len() / width;
+            let end = ((column + 1) * samples.len() / width)
+                .max(start + 1)
+                .min(samples.len());
+            rms_dbfs(&samples[start..end])
+        })
+        .collect::<Vec<_>>();
+    let peak = samples
+        .iter()
+        .map(|v| f64::from(v.abs()))
+        .fold(0.0_f64, f64::max);
+    let bars: String = buckets
+        .iter()
+        .map(|&db| {
+            let index = (((db.clamp(-90.0, 0.0) + 90.0) / 90.0) * 7.0).round() as usize;
+            SPARKLINE_BARS[index]
+        })
+        .collect();
+    let mut out = format!(
+        "PCM power: RMS={:.1} dBFS peak={:.1} dBFS duration={duration:.3}s\nRMS:    {bars}  [-90..0 dBFS]\n",
+        rms_dbfs(samples),
+        20.0 * peak.log10(),
+    );
+    for level in (0..=9).map(|step| -10 * step) {
+        let row: String = buckets
+            .iter()
+            .map(|&db| if db >= f64::from(level) { '█' } else { ' ' })
+            .collect();
+        out.push_str(&format!("{level:>3} dBFS |{row}|\n"));
+    }
+    let end_label = format!("{duration:.3}s");
+    out.push_str(&format!(
+        "          0s{:>end_width$}\n",
+        end_label,
+        end_width = width - 2
+    ));
+    out
+}
 
 /// Level of one sparkline bar in the octile alphabet. Glyphs outside it (a
 /// space, the 500 ms `█▓░` row's chars) read as the floor.
@@ -1175,6 +1312,92 @@ mod tests {
     use super::*;
 
     #[test]
+    fn engine_flags_are_exclusive_and_inspection_aliases_work() {
+        assert!(
+            Cli::try_parse_from([
+                "codescribe",
+                "transcribe",
+                "take.wav",
+                "--apple",
+                "--whisper"
+            ])
+            .is_err()
+        );
+        for engine in ["--apple", "--whisper"] {
+            for view in ["--inspect", "--sparkline", "--power"] {
+                let cli = Cli::try_parse_from([
+                    "codescribe",
+                    "transcribe",
+                    "take.wav",
+                    engine,
+                    view,
+                    "--no-bus",
+                ])
+                .unwrap();
+                let Command::Transcribe {
+                    apple,
+                    whisper,
+                    inspect,
+                    no_bus,
+                    ..
+                } = cli.command
+                else {
+                    panic!("expected file transcription");
+                };
+                assert_eq!(apple, engine == "--apple");
+                assert_eq!(whisper, engine == "--whisper");
+                assert!(inspect && no_bus);
+            }
+        }
+    }
+
+    #[test]
+    fn file_engine_flags_cannot_override_live_or_last() {
+        for mode in ["live", "last"] {
+            for flag in ["--apple", "--whisper", "--power"] {
+                let cli = Cli::try_parse_from(["codescribe", "transcribe", flag, mode]).unwrap();
+                assert!(
+                    dispatch(cli).is_err(),
+                    "must refuse before opening the bus: {mode} {flag}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pcm_power_uses_absolute_dbfs_and_keeps_the_original_clock() {
+        assert!((rms_dbfs(&[0.5, -0.5]) + 6.0206).abs() < 1e-4);
+        let pcm = [vec![0.0; 10], vec![0.1; 10]].concat();
+        let view = render_pcm_power(&pcm, 10, 20);
+        assert!(view.contains("RMS=-23.0 dBFS peak=-20.0 dBFS duration=2.000s"));
+        assert!(view.contains("2.000s"));
+        let row = view
+            .lines()
+            .find(|line| line.starts_with("-20 dBFS"))
+            .unwrap();
+        assert!(row.contains("|          ██████████|"));
+        let low = render_pcm_power(&[0.001; 20], 10, 20);
+        assert!(low.contains("peak=-60.0 dBFS"));
+        let low_bars = low.lines().find(|line| line.starts_with("RMS:")).unwrap();
+        assert!(
+            !low_bars.contains('█'),
+            "a quiet file must not normalize to full scale"
+        );
+    }
+
+    #[test]
+    fn pcm_power_handles_silence_invalid_samples_and_subpixel_audio() {
+        let silence = render_pcm_power(&[0.0; 20], 10, 20);
+        assert!(silence.contains("RMS=-inf"));
+        assert!(!silence.contains('█'));
+        for samples in [&[][..], &[f32::NAN][..], &[f32::INFINITY][..]] {
+            assert!(render_pcm_power(samples, 10, 20).starts_with("PCM power: n/a"));
+        }
+        assert!(render_pcm_power(&[0.5], 0, 20).contains("n/a"));
+        assert!(render_pcm_power(&[0.5], 10, usize::MAX).contains("duration=0.100s"));
+    }
+
+    #[test]
     fn stream_does_not_repeat_delivery_but_exposes_a_real_final_correction() {
         assert_eq!(
             final_stdout(true, "Pierwsze zdanie. Drugie.", "Pierwsze zdanie. Drugie."),
@@ -1211,11 +1434,13 @@ mod tests {
                         text: "pierwsze".to_string(),
                         start_ts: 0.0,
                         end_ts: 2.4,
+                        confidence: None,
                     },
                     TranscriptSegment {
                         text: "drugie".to_string(),
                         start_ts: 2.4,
                         end_ts: 12.4,
+                        confidence: None,
                     },
                 ],
                 avg_logprob: Some(-0.2),

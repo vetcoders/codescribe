@@ -121,6 +121,72 @@ pub struct AiFormatResult {
     pub status: AiFormatStatus,
 }
 
+/// Corrections changes punctuation and case, never the ordered spoken words.
+/// Repeated words are counted separately. These offsets are text evidence,
+/// not acoustic identities or permission to change a ledger slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorrectionsWordReceipt {
+    pub raw_word_count: usize,
+    pub output_word_count: usize,
+    pub first_difference: Option<usize>,
+}
+
+impl CorrectionsWordReceipt {
+    pub fn preserves_words(&self) -> bool {
+        self.first_difference.is_none()
+    }
+}
+
+fn corrections_words(text: &str) -> Vec<String> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+pub fn corrections_word_receipt(raw: &str, output: &str) -> CorrectionsWordReceipt {
+    let raw = corrections_words(raw);
+    let output = corrections_words(output);
+    let first_difference = raw
+        .iter()
+        .zip(&output)
+        .position(|(before, after)| before != after)
+        .or_else(|| (raw.len() != output.len()).then_some(raw.len().min(output.len())));
+    CorrectionsWordReceipt {
+        raw_word_count: raw.len(),
+        output_word_count: output.len(),
+        first_difference,
+    }
+}
+
+/// Light+ is a candidate floor too: until its word-preserving API is admitted,
+/// a rejected shape retains Raw rather than dropping a hesitation or marker.
+pub fn corrections_floor(raw: &str) -> String {
+    let shaped = crate::pipeline::light_plus::apply(raw);
+    if corrections_word_receipt(raw, &shaped).preserves_words() {
+        shaped
+    } else {
+        raw.to_string()
+    }
+}
+
+fn guard_corrections_result(raw: &str, mut result: AiFormatResult) -> AiFormatResult {
+    let receipt = corrections_word_receipt(raw, &result.text);
+    if !receipt.preserves_words() {
+        warn!(
+            rule = "corrections-words-v1",
+            raw_words = receipt.raw_word_count,
+            output_words = receipt.output_word_count,
+            first_difference = receipt.first_difference,
+            "Corrections rejected: ordered Raw words changed; retaining deterministic floor"
+        );
+        result.text = corrections_floor(raw);
+        result.reasoning_text = None;
+        result.status = AiFormatStatus::Failed;
+    }
+    result
+}
+
 /// One provider reply split into its two channels.
 ///
 /// Reasoning text is kept separate from assistant text so a reasoning model's
@@ -1123,6 +1189,32 @@ async fn format_text_with_status_channels_for_policy(
     on_reasoning_delta: Option<AiReasoningCallback>,
     consultation: Option<FormattingConsultation<'_>>,
 ) -> AiFormatResult {
+    let result = request_format_text_with_status_channels_for_policy(
+        text,
+        language,
+        assistive,
+        runtime_settings,
+        on_assistant_delta,
+        on_reasoning_delta,
+        consultation,
+    )
+    .await;
+    if !assistive && runtime_settings.formatting_policy() == FormattingPolicy::Correction {
+        guard_corrections_result(text, result)
+    } else {
+        result
+    }
+}
+
+async fn request_format_text_with_status_channels_for_policy(
+    text: &str,
+    language: Option<&str>,
+    assistive: bool,
+    runtime_settings: &RuntimeSettingsSnapshot,
+    on_assistant_delta: Option<AiStreamCallback>,
+    on_reasoning_delta: Option<AiReasoningCallback>,
+    consultation: Option<FormattingConsultation<'_>>,
+) -> AiFormatResult {
     let policy = runtime_settings.formatting_policy();
     if !assistive && policy == FormattingPolicy::Max {
         // Commands and corrections must not pass through the text-only floor,
@@ -1284,7 +1376,46 @@ async fn format_text_with_status_channels_for_policy(
             inter_chunk_timeout: request_timing.inter_chunk_timeout(),
         };
         let mut retryable_error = true;
-        let result_opt = if should_stream {
+        // On-device lane (opt-in knob, W6): one host attempt first. Any
+        // failure falls back to the cloud wire below inside the same retry
+        // budget, so refusal detection, `AiNoop` handling and the retry
+        // policy apply to both engines identically.
+        let on_device_output = if !assistive && runtime_settings.values().format_on_device {
+            match crate::llm::on_device::on_device_formatter() {
+                Some(formatter) => match formatter.format(&system_prompt, &user_message).await {
+                    Ok(assistant_text) => {
+                        if let Some(callback) = stream_context.callbacks.assistant.as_ref() {
+                            callback(&assistant_text);
+                        }
+                        info!(
+                            "Formatted on-device ({} -> {} chars)",
+                            user_message.len(),
+                            assistant_text.len()
+                        );
+                        Some(ProviderOutput {
+                            assistant_text,
+                            reasoning_text: None,
+                        })
+                    }
+                    Err(error) => {
+                        warn!(%error, "on-device formatter failed; falling back to the cloud lane");
+                        None
+                    }
+                },
+                None => {
+                    warn!(
+                        "on-device formatting selected but no host formatter is registered; \
+                         using the cloud lane"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let result_opt = if on_device_output.is_some() {
+            on_device_output
+        } else if should_stream {
             match call_provider_once(
                 wire_family,
                 &user_message,
@@ -1857,6 +1988,78 @@ pub fn is_formatting_available(lane: &RuntimeLlmLane) -> bool {
 /// would otherwise read each other's overrides.
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn corrections_word_receipt_counts_repetitions_and_order() {
+        use super::corrections_word_receipt;
+        for output in ["Iwo Iwo.", "Iwo Ola Iwo.", "Iwo Iwo Iwo Iwo."] {
+            assert!(!corrections_word_receipt("Iwo Iwo Iwo", output).preserves_words());
+        }
+        assert!(corrections_word_receipt("iwo iwo iwo", "Iwo, Iwo. Iwo!").preserves_words());
+        assert!(!corrections_word_receipt("plan był dobry", "dobry był plan").preserves_words());
+    }
+
+    #[test]
+    fn corrections_word_guard_rejects_loss_and_delivers_safe_light_plus() {
+        use super::{AiFormatResult, AiFormatStatus, guard_corrections_result};
+        let raw = "czy plan który przedstawiles był dobry";
+        let result = guard_corrections_result(
+            raw,
+            AiFormatResult {
+                text: "Czy który przedstawiles był dobry?".into(),
+                reasoning_text: Some("private reasoning".into()),
+                status: AiFormatStatus::Applied,
+            },
+        );
+        assert_eq!(result.status, AiFormatStatus::Failed);
+        assert_eq!(result.text, crate::pipeline::light_plus::apply(raw));
+        assert!(result.reasoning_text.is_none());
+    }
+
+    #[test]
+    fn corrections_floor_accounts_for_hesitations_markers_and_numbers() {
+        use super::{corrections_floor, corrections_word_receipt};
+        let raw = "yyy hm mhm no właśnie [laugh] dawka 1,4 mg";
+        let output = corrections_floor(raw);
+        assert!(corrections_word_receipt(raw, &output).preserves_words());
+        assert!(!corrections_word_receipt(raw, "no właśnie dawka 14 mg").preserves_words());
+    }
+
+    #[test]
+    fn corrections_word_guard_also_checks_failed_and_noop_text() {
+        use super::{AiFormatResult, AiFormatStatus, guard_corrections_result};
+        for status in [
+            AiFormatStatus::Failed,
+            AiFormatStatus::AiNoop,
+            AiFormatStatus::Skipped,
+        ] {
+            let result = guard_corrections_result(
+                "Iwo Iwo Iwo",
+                AiFormatResult {
+                    text: "Iwo".into(),
+                    reasoning_text: None,
+                    status,
+                },
+            );
+            assert_eq!(result.status, AiFormatStatus::Failed);
+            assert_eq!(result.text, "Iwo Iwo Iwo.");
+        }
+    }
+
+    #[test]
+    fn corrections_word_guard_accepts_case_punctuation_and_paragraphs() {
+        use super::{AiFormatResult, AiFormatStatus, guard_corrections_result};
+        let formatted = "Plan, który przedstawiłeś.\n\nIwo, Iwo!";
+        let result = guard_corrections_result(
+            "plan który przedstawiłeś Iwo Iwo",
+            AiFormatResult {
+                text: formatted.into(),
+                reasoning_text: None,
+                status: AiFormatStatus::Applied,
+            },
+        );
+        assert_eq!(result.status, AiFormatStatus::Applied);
+        assert_eq!(result.text, formatted);
+    }
     use super::*;
     use crate::config::Config;
     use mockito::Matcher;
@@ -2263,7 +2466,13 @@ mod tests {
     /// Statically proves that all public formatting entry points require the immutable
     /// runtime settings generation (`&RuntimeSettingsSnapshot`) without polling futures,
     /// guaranteeing zero network activity.
+    ///
+    /// `#[serial]`: the snapshot load resolves the process-global
+    /// `CODESCRIBE_DATA_DIR`; running off the serial lane let this load consume a
+    /// serial settings test's one-time V1 migration and rewrite its private
+    /// fixture (traced 2026-10-01, X-hermetic-test-config load loop).
     #[test]
+    #[serial]
     fn formatter_entry_requires_runtime_settings_snapshot() {
         let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
         let _f1 = format_text("test", None, false, &runtime_settings);

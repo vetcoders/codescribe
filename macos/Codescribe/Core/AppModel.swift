@@ -55,6 +55,8 @@ final class AppModel: ObservableObject {
     // The composer is a gesture-only adapter over RecordingController. Right
     // Option, composer mic, Dictation, and Formatting share one recorder/STT.
     chat.dictation = RealComposerDictation(store: chat)
+    // The tray toggle only persists the preference; the panel's owner applies it.
+    tray.onOverlayPreferenceChanged = { [overlay] in overlay.overlayPreferenceChanged() }
     AgentPerf.log("app bootstrap (AppModel init)", since: bootstrapStart)
   }
 }
@@ -201,8 +203,13 @@ final class OverlayController: ObservableObject {
     }
     // Admission and calibration outcomes are product feedback even when the
     // transcript overlay preference is off. The typed status is passive; this
-    // seam only brings its already-reduced card on screen.
-    state.onPresentationStatus = { [weak self] in self?.show() }
+    // seam only brings its already-reduced card on screen. With the preference
+    // off the card leaves on the ordinary countdown; the pin does not hold it.
+    state.onPresentationStatus = { [weak self] in
+      guard let self else { return }
+      self.readOverlayPreference()
+      self.show()
+    }
     state.onTranscriptPresentationChanged = { [weak self] in
       self?.resizeForProjectedContent()
     }
@@ -218,6 +225,7 @@ final class OverlayController: ObservableObject {
       }
     }
     state.onClose = { [weak self] in self?.hide() }
+    state.onCloseIntent = { [weak self] in self?.dismiss() }
     state.onSendToAgent = { [weak self] text in
       guard !text.isEmpty else { return }
       // Rust already persisted and streamed the turn. TurnStarted opened
@@ -246,12 +254,39 @@ final class OverlayController: ObservableObject {
       hide()
       return
     }
-    guard overlayEnabledProvider() else {
+    guard readOverlayPreference() else {
       DictationOverlayGate.logger.info("overlay suppressed: tray toggle off")
       if panel != nil { hide() }
       return
     }
     show()
+  }
+
+  /// The "Transcription Overlay" preference was written (tray toggle, Settings
+  /// preview preset). Off closes an overlay that is already on screen instead
+  /// of leaving it up until the next take; the persisted value is re-read, so
+  /// a rejected write closes nothing. On needs no action here: the next take
+  /// or status brings the panel back.
+  ///
+  /// A take under review (caret in the canvas, or an uncommitted draft) is not
+  /// closed out from under the user. Once the draft is committed or discarded
+  /// the ordinary countdown closes the panel, which the pin no longer holds.
+  func overlayPreferenceChanged() {
+    guard !readOverlayPreference(), panel != nil else { return }
+    guard !state.isEditingTranscript, !state.isRevisionDraftDirty else { return }
+    DictationOverlayGate.logger.info("overlay closed: tray toggle off")
+    hide()
+  }
+
+  /// Reads the persisted preference once and hands the same value to the
+  /// state's pin logic. The read loads the settings snapshot, so it happens
+  /// only where the preference decides something: a take start, a status card,
+  /// a preference write.
+  @discardableResult
+  private func readOverlayPreference() -> Bool {
+    let enabled = overlayEnabledProvider()
+    state.transcriptOverlayEnabled = enabled
+    return enabled
   }
 
   func show() {
@@ -368,7 +403,6 @@ final class OverlayController: ObservableObject {
       sessionWasAssistive = true
       hide()
     }
-    state.setAutoPasteControlAvailable(!sessionWasAssistive)
     state.applyIndicatorMode(mode)
   }
 
@@ -380,8 +414,24 @@ final class OverlayController: ObservableObject {
     handleAssistiveStatusChange(assistiveStatusProvider())
   }
 
+  /// Automatic hides — auto-hide, agent handoff, the Assistive lane, the
+  /// overlay toggle — yield to an open agent channel: its live microphone
+  /// stays on screen.
   func hide() {
     guard !state.hasOpenChannel else { return }
+    orderOut()
+  }
+
+  /// The human Close intent (brand dot). An open channel keeps the panel up
+  /// against every automatic hide, never against this click. Build 1502
+  /// swallowed it behind a channel-session `open` row that no `sealed` row or
+  /// `session_ended` ever closed (Founder, 2026-09-29: "Przycisk zamykania NIE
+  /// reaguje"). New channel evidence may show the panel again.
+  func dismiss() {
+    orderOut()
+  }
+
+  private func orderOut() {
     // Persist the user's chosen size for next launch (replaces frame autosave,
     // which used to write back the old feedback loop's runaway sizes) — and,
     // in free motion, the dragged origin.

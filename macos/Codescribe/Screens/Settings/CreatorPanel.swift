@@ -11,9 +11,9 @@ struct CreatorPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsPageHeader("Get set up.")
+      SettingsPageHeader(String(localized: "Get set up."))
 
-      SettingsSectionLabel("Permission checklist")
+      SettingsSectionLabel(String(localized: "Permission checklist"))
         .padding(.top, CSSpace.section)
       VStack(spacing: 8) {
         ForEach([
@@ -32,13 +32,14 @@ struct CreatorPanel: View {
       }
       .padding(.top, CSSpace.control)
 
-      SettingsSectionLabel("Voice & formatting")
+      SettingsSectionLabel(String(localized: "Voice & formatting"))
         .padding(.top, CSSpace.section)
       VStack(spacing: 8) {
         LanguageIdentityRow(selection: languageBinding)
         SettingsControlRow(
-          title: "AI formatting",
-          subtitle: "Compatibility gate; Off below always bypasses the LLM"
+          title: String(localized: "AI formatting"),
+          subtitle: String(
+            localized: "Master switch. The Off level below always skips the LLM.")
         ) {
           Toggle("", isOn: formattingEnabledBinding)
             .toggleStyle(.switch)
@@ -46,8 +47,9 @@ struct CreatorPanel: View {
             .tint(CSColor.chromeAccent)
         }
         SettingsControlRow(
-          title: "Auto Format",
-          subtitle: "Correction, balanced editing, or a tool-enabled Max consultation"
+          title: String(localized: "Auto Format"),
+          subtitle: String(
+            localized: "Correction, balanced editing, or a tool-enabled Max consultation")
         ) {
           Picker("", selection: formattingLevelBinding) {
             ForEach(FormattingPolicyOption.allCases) { policy in
@@ -61,8 +63,11 @@ struct CreatorPanel: View {
         }
         if model.maxConsultationEnabled {
           SettingsControlRow(
-            title: "Max consultation",
-            subtitle: "Continue across takes, or start fresh without deleting previous history."
+            title: String(localized: "Max consultation"),
+            subtitle: String(
+              localized:
+                "Continue across takes, or start fresh without deleting previous history."
+            )
           ) {
             Button(model.newMaxConsultationPending ? "Starting…" : "New consultation") {
               Task { await model.beginNewMaxConsultation() }
@@ -87,7 +92,7 @@ struct CreatorPanel: View {
       agentBridgeSection
         .padding(.top, CSSpace.section)
 
-      SettingsSectionLabel("Quick start")
+      SettingsSectionLabel(String(localized: "Quick start"))
         .padding(.top, CSSpace.section)
       HStack(spacing: 10) {
         QuickStartCard(
@@ -105,7 +110,7 @@ struct CreatorPanel: View {
         QuickStartCard(
           icon: .shortcuts,
           title: "Tune shortcuts",
-          subtitle: "Hotkeys & cadence",
+          subtitle: "Hotkeys",
           accessibilityId: "settings-quickstart-tune-shortcuts"
         ) { model.performQuickStart(.tuneShortcuts) }
       }
@@ -114,6 +119,12 @@ struct CreatorPanel: View {
     .padding(.horizontal, CSSpace.xl)
     .padding(.vertical, CSSpace.section)
     .onAppear { model.refreshCreatorAgentBridge() }
+    .onReceive(
+      NotificationCenter.default.publisher(
+        for: SettingsViewModel.agentBridgeLaunchSynchronizationDidFinish)
+    ) { _ in
+      model.refreshCreatorAgentBridge()
+    }
     .confirmationDialog(
       "Replace a manually installed Codescribe skill?",
       isPresented: Binding(
@@ -137,7 +148,7 @@ struct CreatorPanel: View {
 
   private var agentBridgeSection: some View {
     VStack(alignment: .leading, spacing: CSSpace.control) {
-      SettingsSectionLabel("Connect your coding agent")
+      SettingsSectionLabel(String(localized: "Connect your coding agent"))
       Text(
         "Install the Codescribe skill and bus helper from this app. No repository clone or manual file copying is needed."
       )
@@ -146,7 +157,7 @@ struct CreatorPanel: View {
       ForEach(AgentBridgeClient.allCases) { client in
         SettingsControlRow(
           title: client.displayName,
-          subtitle: "Named voice messages to your existing conversation"
+          subtitle: String(localized: "Named voice messages to your existing conversation")
         ) {
           Button(
             model.creatorAgentBridgeStatus.installedClients.contains(client)
@@ -210,7 +221,7 @@ struct MaxApprovalCards: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: CSSpace.control) {
-      SettingsSectionLabel("Max permissions")
+      SettingsSectionLabel(String(localized: "Max permissions"))
       Button(model.maxApprovalBusy ? "Refreshing…" : "Refresh pending requests") {
         Task { await model.refreshMaxToolApprovals() }
       }
@@ -247,20 +258,29 @@ struct LanguageIdentityPresentation: Identifiable, Equatable {
   var id: String { language.shortCode }
 
   var accessibilityLabel: String {
-    isFineTuned ? "\(title), Fine-tuned" : title
+    isFineTuned
+      ? String(
+        localized: "\(title), Fine-tuned",
+        comment: "VoiceOver label for a language choice with a specialized model")
+      : title
   }
 
   func accessibilityValue(isSelected: Bool) -> String {
-    isSelected ? "Selected" : "Not selected"
+    isSelected
+      ? String(localized: "Selected", comment: "VoiceOver value for a chosen language")
+      : String(localized: "Not selected", comment: "VoiceOver value for a language not chosen")
   }
 
-  static let supportingCopy =
-    "Programming vocabulary and your \(SettingsSection.voiceLab.title) entries enrich the selected language."
+  static let supportingCopy = String(
+    localized:
+      "Programming vocabulary and your \(SettingsSection.voiceLab.title) entries enrich the selected language.",
+    comment: "The placeholder is the name of the Voice Lab settings section"
+  )
 
   static let choices: [LanguageIdentityPresentation] = [
-    .init(language: .auto, title: "Multilingual", isFineTuned: false),
-    .init(language: .polish, title: "Polish", isFineTuned: true),
-    .init(language: .english, title: "English", isFineTuned: true),
+    .init(language: .auto, title: String(localized: "Multilingual"), isFineTuned: false),
+    .init(language: .polish, title: String(localized: "Polish"), isFineTuned: true),
+    .init(language: .english, title: String(localized: "English"), isFineTuned: true),
   ]
 }
 
@@ -391,12 +411,12 @@ private struct PermissionChecklistRow: View {
   var body: some View {
     HStack(spacing: 12) {
       statusBadge
-      Text(kind.rawValue)
+      Text(kind.displayName)
         .font(CSFont.ui(13.5, .medium))
         .foregroundStyle(Color.primary)
         .frame(maxWidth: .infinity, alignment: .leading)
       if granted {
-        Text("granted")
+        Text("granted", comment: "Permission status: this permission is granted")
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(CSColor.oliveLight)
       } else {
@@ -412,7 +432,7 @@ private struct PermissionChecklistRow: View {
         } label: {
           Text(
             state == .notDetermined && kind.supportsInAppPermissionRequest
-              ? "allow \(kind.rawValue)"
+              ? "allow \(kind.displayName)"
               : "open System Settings"
           )
           .font(CSFont.mono(11, .semibold))
@@ -456,8 +476,8 @@ private struct PermissionChecklistRow: View {
 /// and the duplicate "Launchpads" decoration row below them was removed with it.
 private struct QuickStartCard: View {
   let icon: CSIcon
-  let title: String
-  let subtitle: String
+  let title: LocalizedStringKey
+  let subtitle: LocalizedStringKey
   let accessibilityId: String
   let action: () -> Void
 

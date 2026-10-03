@@ -220,6 +220,32 @@ impl QualityRecord {
         }
         format!("legacy-{}", hex::encode(digest.finalize()))
     }
+
+    /// Text changed after whitespace normalization: the delivered or edited
+    /// surface differs from the raw STT. Rewrapping alone is not a change.
+    pub fn has_text_change(&self) -> bool {
+        let raw = normalized_correction_text(&self.raw_text);
+        normalized_correction_text(&self.delivered_text) != raw
+            || normalized_correction_text(&self.edited_text) != raw
+    }
+
+    /// Any confidence evidence rides along (logprob, speech fraction, flags).
+    pub fn has_confidence_telemetry(&self) -> bool {
+        self.avg_logprob.is_some() || self.speech_pct.is_some() || !self.confidence_flags.is_empty()
+    }
+
+    /// Read-side truth for the Dictionary surface (Founder report 2026-09-30):
+    /// a record is a correction when the text changed or telemetry was
+    /// recorded. A take with neither stays on disk for history but is an
+    /// unchanged take, never a listed correction.
+    pub fn is_correction(&self) -> bool {
+        self.has_text_change() || self.has_confidence_telemetry()
+    }
+}
+
+/// Whitespace runs collapse to single spaces so reflowed text compares equal.
+fn normalized_correction_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Directory for quality records: ~/.codescribe/quality/
@@ -264,14 +290,51 @@ fn assert_test_data_dir_isolated(caller: &str) {
     let _ = caller;
 }
 
+/// Dictionary read projection: real corrections (newest first, at most
+/// `limit`) plus the total count of collapsed records that carry no text
+/// change and no confidence telemetry — "takes without changes", reported
+/// separately instead of padding the corrections list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QualityListing {
+    pub corrections: Vec<QualityRecord>,
+    pub unchanged_takes: u64,
+}
+
+/// Filtered read for product surfaces. Writes are untouched: no-op records
+/// stay in the log so existing telemetry history is never lost; the filter
+/// lives here so every client shares one truth.
+pub fn recent_quality_listing(limit: usize) -> Result<QualityListing> {
+    let mut unchanged_takes = 0u64;
+    let mut corrections = Vec::new();
+    for (_, record) in read_collapsed_quality_records()? {
+        if record.is_correction() {
+            if corrections.len() < limit {
+                corrections.push(record);
+            }
+        } else {
+            unchanged_takes += 1;
+        }
+    }
+    Ok(QualityListing {
+        corrections,
+        unchanged_takes,
+    })
+}
+
 /// Return the newest correction records first, bounded to `limit` entries.
 /// A missing log is the honest empty state. Malformed historical lines are
 /// skipped individually so one damaged entry cannot hide the remaining truth.
+/// Records with no text change and no telemetry are excluded; count them via
+/// [`recent_quality_listing`].
 pub fn recent_quality_records(limit: usize) -> Result<Vec<QualityRecord>> {
     if limit == 0 {
         return Ok(Vec::new());
     }
+    Ok(recent_quality_listing(limit)?.corrections)
+}
 
+/// Newest revision per correction, newest first, unfiltered and unbounded.
+fn read_collapsed_quality_records() -> Result<Vec<(usize, QualityRecord)>> {
     let path = quality_dir().join("corrections.jsonl");
     let file = match File::open(&path) {
         Ok(file) => file,
@@ -312,11 +375,7 @@ pub fn recent_quality_records(limit: usize) -> Result<Vec<QualityRecord>> {
 
     let mut recent: Vec<_> = resolved.into_values().collect();
     recent.sort_by_key(|entry| std::cmp::Reverse(entry.0));
-    Ok(recent
-        .into_iter()
-        .take(limit)
-        .map(|(_, record)| record)
-        .collect())
+    Ok(recent)
 }
 
 /// Every correction record in file order, revisions included.
@@ -359,6 +418,12 @@ pub fn custom_lexicon_entries() -> Result<Vec<CustomLexiconEntry>> {
     if let Some(parent) = path.parent() {
         cleanup_orphaned_lexicon_temps(parent);
     }
+    custom_lexicon_entries_read_only()
+}
+
+/// Read the dictionary without removing temporary files or writing state.
+pub fn custom_lexicon_entries_read_only() -> Result<Vec<CustomLexiconEntry>> {
+    let path = Config::config_dir().join("lexicon.custom.jsonl");
     let file = match File::open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -2462,6 +2527,29 @@ mod tests {
         assert!(stored.source.is_none());
     }
 
+    #[test]
+    #[serial]
+    fn lab_dictionary_read_keeps_temporary_files_and_source_bytes() {
+        let _fixture = QualityFixture::new("lab read only");
+        let root = Config::config_dir();
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("lexicon.custom.jsonl");
+        let bytes = r#"{"term":"Iwo","mispronunciations":["ivo"]}"#;
+        fs::write(&path, bytes).unwrap();
+        let orphan = root.join(".lexicon.custom.jsonl.tmp.lab-test");
+        fs::write(&orphan, "untouched").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&orphan)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH)
+            .unwrap();
+        let entries = custom_lexicon_entries_read_only().unwrap();
+        assert_eq!(entries[0].canonical, "Iwo");
+        assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
+        assert_eq!(fs::read_to_string(&orphan).unwrap(), "untouched");
+    }
+
     /// A deliberately cleared lexicon is neither resurrected nor treated as an
     /// error by the writer.
     ///
@@ -3200,6 +3288,102 @@ mod tests {
         assert_eq!(lexicon_min_corrections(), 1);
     }
 
+    /// Founder report 2026-09-30: takes with no text change and no telemetry
+    /// are not corrections — excluded from the list, counted separately;
+    /// telemetry-only takes stay listed and order survives the filter.
+    #[test]
+    #[serial]
+    fn recent_quality_listing_filters_noop_takes_and_keeps_order() {
+        let _fixture = QualityFixture::new("temp quality root");
+
+        let write = |raw: &str, delivered: &str, edited: &str, flags: Vec<String>| {
+            save_quality_record(&QualityRecord {
+                correction_id: String::new(),
+                revision: 0,
+                timestamp_ms: 0,
+                session_id: None,
+                mode: "overlay".to_string(),
+                model: None,
+                formatting_level: None,
+                raw_text: raw.to_string(),
+                delivered_text: delivered.to_string(),
+                edited_text: edited.to_string(),
+                avg_logprob: None,
+                speech_pct: None,
+                confidence_flags: flags,
+                meta: serde_json::Value::Null,
+            })
+            .expect("write quality record");
+        };
+        // Oldest first: a real correction, a no-op take (whitespace-only
+        // differences are not a change), then telemetry without a text delta.
+        write("uni agentka", "uni agentka", "Junie", vec![]);
+        write("to  jest   take", "to jest take", "to jest take", vec![]);
+        write(
+            "pełny take",
+            "pełny take",
+            "pełny take",
+            vec!["speech_gap".into()],
+        );
+
+        let listing = recent_quality_listing(10).expect("listing");
+        assert_eq!(listing.unchanged_takes, 1);
+        assert_eq!(listing.corrections.len(), 2);
+        assert_eq!(
+            listing.corrections[0].confidence_flags,
+            vec!["speech_gap".to_string()],
+            "newest correction first"
+        );
+        assert_eq!(listing.corrections[1].edited_text, "Junie");
+        assert_eq!(
+            recent_quality_records(10).expect("filtered records"),
+            listing.corrections,
+            "recent_quality_records is the same filtered truth"
+        );
+
+        let noop = &listing.corrections[1];
+        assert!(noop.has_text_change());
+        assert!(noop.is_correction());
+        let telemetry_only = &listing.corrections[0];
+        assert!(!telemetry_only.has_text_change());
+        assert!(telemetry_only.has_confidence_telemetry());
+        assert!(telemetry_only.is_correction());
+    }
+
+    /// Limit applies after the no-op filter: two corrections plus one
+    /// unchanged take with limit 1 yields the single newest correction.
+    #[test]
+    #[serial]
+    fn recent_quality_records_limit_counts_only_real_corrections() {
+        let _fixture = QualityFixture::new("temp quality root");
+
+        seed_voice_lab_record("uni agentka", "Junie");
+        save_quality_record(&QualityRecord {
+            correction_id: String::new(),
+            revision: 0,
+            timestamp_ms: 0,
+            session_id: None,
+            mode: "overlay".to_string(),
+            model: None,
+            formatting_level: None,
+            raw_text: "no op take".to_string(),
+            delivered_text: "no op take".to_string(),
+            edited_text: "no op take".to_string(),
+            avg_logprob: None,
+            speech_pct: None,
+            confidence_flags: vec![],
+            meta: serde_json::Value::Null,
+        })
+        .expect("write no-op take");
+
+        let records = recent_quality_records(1).expect("limited records");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].edited_text, "Junie");
+        let listing = recent_quality_listing(1).expect("limited listing");
+        assert_eq!(listing.corrections.len(), 1);
+        assert_eq!(listing.unchanged_takes, 1);
+    }
+
     /// One committed record inside an isolated data dir; returns its logical ID.
     fn seed_voice_lab_record(delivered: &str, edited: &str) -> String {
         commit_overlay_correction(OverlayCorrectionInput {
@@ -3213,7 +3397,14 @@ mod tests {
             ..Default::default()
         })
         .expect("seed correction");
-        recent_quality_records(1).expect("seed projection")[0].logical_id()
+        // The listing read filters unchanged takes (no text delta, no
+        // telemetry); seeds may be exactly that, so identity comes from the
+        // unfiltered store — the filter is a presentation rule, not storage.
+        all_quality_records()
+            .expect("seed projection")
+            .last()
+            .expect("seed record on disk")
+            .logical_id()
     }
 
     /// Count lines in the isolated corrections.jsonl audit log.

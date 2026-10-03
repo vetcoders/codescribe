@@ -40,85 +40,189 @@ enum SettingsTab: String, CaseIterable, Identifiable {
   /// label, and six of them must fit the pane at the 880pt minimum window.
   var title: String {
     switch self {
-    case .agentLanes: "LLM lanes"
-    case .agentPrompts: "Prompts"
-    case .agentWorkspace: "Workspace"
-    case .agentStatus: "Capabilities"
-    case .agentTools: "Tools"
+    case .agentLanes: String(localized: "LLM lanes", comment: "Settings tab: LLM request lanes")
+    case .agentPrompts: String(localized: "Prompts", comment: "Settings tab: editable prompts")
+    case .agentWorkspace:
+      String(localized: "Workspace", comment: "Settings tab: agent workspace roots")
+    case .agentStatus:
+      String(localized: "Capabilities", comment: "Settings tab: agent capability matrix")
+    case .agentTools: String(localized: "Tools", comment: "Settings tab: tool permissions")
     case .agentMcp: "MCP"
-    case .dictationEngine: "Engine"
+    case .dictationEngine:
+      String(localized: "Engine", comment: "Settings tab: speech-to-text engine")
     case .dictationWhisper: "Whisper"
-    case .dictationPreview: "Preview"
-    case .dictationHandsFree: "Hands-free"
-    case .dictationPrivacy: "Privacy"
-    case .dictationPermissions: "Permissions"
+    case .dictationPreview:
+      String(localized: "Preview", comment: "Settings tab: live transcript preview timing")
+    case .dictationHandsFree:
+      String(localized: "Hands-free", comment: "Settings tab: hands-free dictation")
+    case .dictationPrivacy: String(localized: "Privacy", comment: "Settings tab: cloud and privacy")
+    case .dictationPermissions:
+      String(localized: "Permissions", comment: "Settings tab: macOS permission matrix")
     }
   }
 
   var headline: String {
     switch self {
-    case .agentLanes: "Request lanes."
-    case .agentPrompts: "Prompts."
-    case .agentWorkspace: "Workspace roots."
-    case .agentStatus: "Capabilities."
-    case .agentTools: "Tool permissions."
-    case .agentMcp: "MCP servers."
-    case .dictationEngine: "What's actually running."
-    case .dictationWhisper: "Local Whisper model."
-    case .dictationPreview: "Preview timing."
-    case .dictationHandsFree: "Hands-free silence."
+    case .agentLanes: String(localized: "Request lanes.")
+    case .agentPrompts: String(localized: "Prompts.")
+    case .agentWorkspace: String(localized: "Workspace roots.")
+    case .agentStatus: String(localized: "Capabilities.")
+    case .agentTools: String(localized: "Tool permissions.")
+    case .agentMcp: String(localized: "MCP servers.")
+    case .dictationEngine: String(localized: "What's actually running.")
+    case .dictationWhisper: String(localized: "Local Whisper model.")
+    case .dictationPreview: String(localized: "Preview timing.")
+    case .dictationHandsFree: String(localized: "Hands-free silence.")
     case .dictationPrivacy: "\(CloudPrivacyCopy.title)."
-    case .dictationPermissions: "Permission matrix."
+    case .dictationPermissions: String(localized: "Permission matrix.")
     }
   }
 
   var blurb: String {
     switch self {
     case .agentLanes:
-      "Provider and model per request path. Endpoints and keys live on Providers; the resolved runtime truth is below the editors."
+      String(
+        localized:
+          "Provider and model per request path. Endpoints and keys live on Providers; the resolved runtime truth is below the editors."
+      )
     case .agentPrompts:
-      "Edits the BASE prompt file. The core still appends its tuning prompt at runtime."
+      String(
+        localized:
+          "Edits the BASE prompt file. The core still appends its tuning prompt at runtime."
+      )
     case .agentWorkspace:
-      "Directories the agent may read and write. Everything outside them is out of reach."
+      String(
+        localized:
+          "Directories the agent may read and write. Everything outside them is out of reach."
+      )
     case .agentStatus:
-      "What the local agent substrate can currently do, and why."
+      String(localized: "What the local agent substrate can currently do, and why.")
     case .agentTools:
-      "Allow, ask, or deny — per tool. Deny wins over everything."
+      String(localized: "Allow, ask, or deny — per tool. Deny wins over everything.")
     case .agentMcp:
-      "External MCP servers the agent can call, and their transports."
+      String(localized: "External MCP servers the agent can call, and their transports.")
     case .dictationEngine:
-      "Runtime rows reflect the live engine — changes apply on the next recording session."
+      String(
+        localized:
+          "Runtime rows reflect the live engine — changes apply on the next recording session."
+      )
     case .dictationWhisper:
-      "The on-device model behind the direct Whisper engine and Local power refinement."
+      String(
+        localized:
+          "The on-device model behind the direct Whisper engine and Local power refinement."
+      )
     case .dictationPreview:
-      "How the overlay paces live text. Committed transcripts are unchanged."
+      String(localized: "How the overlay paces live text. Committed transcripts are unchanged.")
     case .dictationHandsFree:
-      "How long the Apple engine waits in silence before it rests."
+      String(localized: "How long the Apple engine waits in silence before it rests.")
     case .dictationPrivacy:
-      "Where audio lives, and the one condition under which it leaves this Mac."
+      String(localized: "Where audio lives, and the one condition under which it leaves this Mac.")
     case .dictationPermissions:
-      "Live macOS permission status. Click a missing permission to grant it."
+      String(localized: "Live macOS permission status. Click a missing permission to grant it.")
     }
   }
 
   var searchKeywords: [String] {
     switch self {
-    case .agentLanes: ["provider", "model", "endpoint", "assistive", "formatting"]
+    case .agentLanes:
+      settingsSearchTerms(
+        localized: String(
+          localized: "settings.search.tab.agentLanes",
+          defaultValue: "provider, model, endpoint, assistive, formatting",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
     case .agentPrompts:
-      [
-        "prompt", "system prompt", "persona", "instructions", "assistive", "correction", "smart",
-        "max", "formatting.txt", "assistive.txt",
-      ]
-    case .agentWorkspace: ["roots", "directory", "repo", "path"]
-    case .agentStatus: ["capability", "native", "enhanced", "readiness"]
-    case .agentTools: ["permission", "allow", "ask", "deny", "tool"]
-    case .agentMcp: ["mcp", "server", "stdio", "transport"]
-    case .dictationEngine: ["asr", "stt", "engine", "apple", "whisper", "runtime"]
-    case .dictationWhisper: ["whisper", "model", "download", "fp16", "local"]
-    case .dictationPreview: ["preview", "timing", "typing", "cadence", "overlay"]
-    case .dictationHandsFree: ["hands-free", "silence", "toggle", "epoch"]
-    case .dictationPrivacy: ["cloud", "privacy", "consent", "egress"]
-    case .dictationPermissions: ["permission", "accessibility", "input monitoring", "tcc"]
+      settingsSearchTerms(
+        fixed: ["formatting.txt", "assistive.txt"],
+        localized: String(
+          localized: "settings.search.tab.agentPrompts",
+          defaultValue:
+            "prompt, system prompt, persona, instructions, assistive, correction, smart, max",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .agentWorkspace:
+      settingsSearchTerms(
+        localized: String(
+          localized: "settings.search.tab.agentWorkspace",
+          defaultValue: "roots, directory, repo, path",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .agentStatus:
+      settingsSearchTerms(
+        localized: String(
+          localized: "settings.search.tab.agentStatus",
+          defaultValue: "capability, native, enhanced, readiness",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .agentTools:
+      settingsSearchTerms(
+        localized: String(
+          localized: "settings.search.tab.agentTools",
+          defaultValue: "permission, allow, ask, deny, tool",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .agentMcp:
+      settingsSearchTerms(
+        fixed: ["mcp", "stdio"],
+        localized: String(
+          localized: "settings.search.tab.agentMcp", defaultValue: "server, transport",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .dictationEngine:
+      settingsSearchTerms(
+        fixed: ["asr", "stt", "apple", "whisper"],
+        localized: String(
+          localized: "settings.search.tab.dictationEngine", defaultValue: "engine, runtime",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .dictationWhisper:
+      settingsSearchTerms(
+        fixed: ["whisper", "fp16"],
+        localized: String(
+          localized: "settings.search.tab.dictationWhisper", defaultValue: "model, download, local",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .dictationPreview:
+      settingsSearchTerms(
+        localized: String(
+          localized: "settings.search.tab.dictationPreview",
+          defaultValue: "preview, timing, typing, cadence, overlay",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .dictationHandsFree:
+      settingsSearchTerms(
+        localized: String(
+          localized: "settings.search.tab.dictationHandsFree",
+          defaultValue: "hands-free, silence, toggle, epoch",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .dictationPrivacy:
+      settingsSearchTerms(
+        localized: String(
+          localized: "settings.search.tab.dictationPrivacy",
+          defaultValue: "cloud, privacy, consent, egress",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .dictationPermissions:
+      settingsSearchTerms(
+        fixed: ["tcc"],
+        localized: String(
+          localized: "settings.search.tab.dictationPermissions",
+          defaultValue: "permission, accessibility, input monitoring",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
     }
   }
 
@@ -158,4 +262,16 @@ extension SettingsSection {
       : direct.union(SettingsTab.matching(query: query).map(\.section))
     return allCases.filter { hits.contains($0) && $0.availability != .hidden }
   }
+}
+
+/// Search aliases for a settings surface, in two parts. `fixed` names what
+/// nobody translates — products, protocols, file names — and matches in every
+/// interface language. `localized` is one catalog row: a comma-separated list
+/// the translator owns and may extend with the words their users type.
+func settingsSearchTerms(fixed: [String] = [], localized: String = "") -> [String] {
+  let separators: Set<Character> = [",", "，", "、"]
+  let words = localized.split(whereSeparator: separators.contains)
+    .map { $0.trimmingCharacters(in: .whitespaces) }
+    .filter { !$0.isEmpty }
+  return fixed + words
 }

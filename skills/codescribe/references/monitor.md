@@ -18,6 +18,41 @@ Retain both the follower handle and the monitor handle with the same provider
 session and lease. Notifications must use the existing named follower's
 envelopes, preserving delivery identity and draft/seal permission.
 
+## Watch stream
+
+`--watch` is the stream a monitor consumes. It replaces a hand-built
+`tail -F <log> | python` filter:
+
+```bash
+python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+  --watch --provider <provider> --session <provider-session-id>
+```
+
+It reads the follower's private, append-only
+`agent-bridge/runtime/followers/<lease_id>.events.jsonl` and prints one JSON line per
+envelope that needs the agent: `kind`, `status`, `coverage`, `sca`
+(`state_change_allowed`), `delivery_id` and `text` (first 500 characters).
+Seals, coverage-refused takes, state-changing envelopes and routing-ambiguity
+notices pass; drafts stay in the mailbox. Each delivery prints once per watch
+process, including replays after a follower restart. Output is line-buffered.
+
+The adjacent `<lease_id>.log` is the readable tail: one line per emitted
+envelope with time, channel and name, full delivery ID, seal or draft label,
+and up to 200 characters of text. Use `--watch --human` to render that format
+from the event file. Never tail `events.jsonl` as a notification bell: its
+transport fields precede the words and may be truncated by the monitor.
+An older session with only a JSON `.log` remains readable by `--watch`.
+
+Run it under the provider's output-notifying monitor (for example the Claude
+Code `Monitor` tool), not as a bare background shell. `--once` prints what the
+event file already holds and exits; `--from-start` replays it before following;
+`--from-file <path>` reads another JSON event file or an older JSON log. The watch never acknowledges and never
+moves the lease cursor.
+
+A line with `coverage: "refused"` carries words the ledger would not certify
+(incomplete acoustic coverage). `sca` is `false`: reply to it, do not execute
+it as a command.
+
 ## Verify independently
 
 Use a fresh utterance containing the bound name. Check these hops separately:
@@ -44,9 +79,9 @@ another provider runtime. An attach-only setup remains `attached_unverified`.
 ## Active-turn notifications with functions.exec
 
 When this provider exposes `functions.exec`, `tools.write_stdin` and
-`notify`, use a yielded, bounded exec loop to read the existing follower and
-notify on each new envelope while other work proceeds. Do not await an
-infinite follower's exit. Use the shortest supported read wait, retain partial
+`notify`, use a yielded, bounded exec loop to read `--watch` (or the existing
+follower) and notify on each new envelope while other work proceeds. Do not
+await an infinite follower's exit. Use the shortest supported read wait, retain partial
 JSON lines, and preserve delivery_id, session_id, text and state_change_allowed.
 Deduplicate delivery IDs across notification windows, not just within one read.
 
@@ -68,11 +103,13 @@ retain its delivery ID and disposition in the conversation record, then run:
 
 ```bash
 python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
-  --provider codex --session SESSION_ID --ack DELIVERY_ID
+  --provider codex --session SESSION_ID --ack DELIVERY_ID [DELIVERY_ID ...]
 ```
 
 Use the actual provider/session and the same `--bus`/`--bridge-home` overrides
-as the follower. This command does not start another reader. A successful
+as the follower. Several ids are all or nothing: one id that is not pending
+refuses the call and no marker is written. Each accepted id prints one
+`acknowledged` line. This command does not start another reader. A successful
 `acknowledged` receipt proves acceptance was recorded, not that a command was
 executed. Keep execution disposition separately; do not repeat a completed
 action when its envelope is replayed.

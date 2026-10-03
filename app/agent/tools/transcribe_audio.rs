@@ -429,6 +429,10 @@ mod tests {
     #[test]
     #[serial]
     fn transcribes_allowed_audio_path_with_mock_engine() {
+        let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         let assets_dir = AgentAssetStore::assets_dir();
         std::fs::create_dir_all(&assets_dir).expect("create assets dir");
         let audio_path = assets_dir.join(format!(
@@ -451,7 +455,6 @@ mod tests {
         assert_eq!(parsed.language_source, "detected");
         assert!(parsed.duration_seconds > 0.0);
         assert!(parsed.speech_duration_seconds > 0.0);
-        std::fs::remove_file(audio_path).ok();
     }
 
     /// Paths outside `~/.codescribe` / assets roots are rejected before decode.

@@ -4,7 +4,12 @@ import OSLog
 /// Lab extras baked only by keyed `make install-app`.
 enum DeveloperSurface {
   /// Corner caption only while Voice Lab is enabled on a developer build.
-  static let powerModeCaption = "You use dev power mode"
+  static var powerModeCaption: String {
+    String(
+      localized: "You use dev power mode",
+      comment: "Corner mark on a developer build while Voice Lab power mode is on"
+    )
+  }
 
   static func parse(_ raw: Any?) -> Bool {
     if let flag = raw as? Bool { return flag }

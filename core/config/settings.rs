@@ -17,7 +17,10 @@
 //! | Digest | [`SettingsSnapshotDigest`] | integrity fingerprint for bus/session evidence |
 //! | Validation | [`SettingsSnapshotValidation`] | admit/refuse contract before snapshot seal |
 
-use super::types::{Config, ModeBinding, ShortcutBinding, WorkMode, default_mode_bindings};
+use super::types::{
+    Config, ModeBinding, PasteMode, ShortcutBinding, WorkMode, default_mode_bindings,
+};
+#[cfg(not(any(test, feature = "test-isolation")))]
 use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -210,11 +213,17 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub whisper_context_window_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub whisper_adaptive_buffer: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub light_plus_sentence_pause_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_formatting_enabled: Option<bool>,
+    /// `CODESCRIBE_FORMAT_ON_DEVICE`: format on the Apple system model first.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_paste_enabled: Option<bool>,
+    pub format_on_device: Option<bool>,
+    /// Automatic paste policy (`PASTE_MODE`): safe / comfort / off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paste_mode: Option<PasteMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript_tagging_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1374,10 +1383,10 @@ struct InteractionV2 {
     agent_enter_sends: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_auto_send: Option<bool>,
-    /// User-owned automatic delivery policy shared by Hold and hands-free
+    /// User-owned automatic paste policy shared by Hold and hands-free
     /// dictation. Assistive and safety vetoes are enforced by the controller.
     #[serde(skip_serializing_if = "Option::is_none")]
-    auto_paste_enabled: Option<bool>,
+    paste_mode: Option<PasteMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     deferred_insert_shortcut: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1459,6 +1468,8 @@ struct SpeechEngineV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     whisper_context_window_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    whisper_adaptive_buffer: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     light_plus_sentence_pause_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     initial_prompt_enabled: Option<bool>,
@@ -1477,6 +1488,8 @@ struct SpeechEngineV2 {
 struct FormattingV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    on_device: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     transcript_tagging_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1634,6 +1647,8 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "DOUBLE_TAP_INTERVAL_MS",
     "TOGGLE_SILENCE_SEC",
     "WHISPER_CONTEXT_WINDOW_SEC",
+    "WHISPER_ADAPTIVE_BUFFER",
+    "CODESCRIBE_FORMAT_ON_DEVICE",
     "LIGHT_PLUS_SENTENCE_PAUSE_SEC",
     "HOLD_EXCLUSIVE",
     "HOLD_ARM_MODIFIER",
@@ -1642,7 +1657,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "MIDDLE_MOUSE_ACTS_AS_FN",
     // AI / Formatting
     "AI_FORMATTING_ENABLED",
-    "AUTO_PASTE_ENABLED",
+    "PASTE_MODE",
     "TRANSCRIPT_TAGGING_ENABLED",
     "TRANSCRIPT_TAG_TEMPLATE",
     "FORMATTING_LEVEL",
@@ -1741,7 +1756,6 @@ macro_rules! typed_setting_writes {
 typed_setting_writes! {
     store_bool: bool, |value: &str| Some(matches!(value, "1" | "true" | "yes" | "on")) => {
         "AI_FORMATTING_ENABLED" => ai_formatting_enabled,
-        "AUTO_PASTE_ENABLED" => auto_paste_enabled,
         "TRANSCRIPT_TAGGING_ENABLED" => transcript_tagging_enabled,
         "BEEP_ON_START" => beep_on_start,
         "SHOW_DOCK_ICON" => show_dock_icon,
@@ -1753,6 +1767,8 @@ typed_setting_writes! {
         "FN_TAP_TOGGLES_DICTATION" => fn_tap_toggles_dictation,
         "MIDDLE_MOUSE_ACTS_AS_FN" => middle_mouse_acts_as_fn,
         "USE_LOCAL_STT" => use_local_stt,
+        "WHISPER_ADAPTIVE_BUFFER" => whisper_adaptive_buffer,
+        "CODESCRIBE_FORMAT_ON_DEVICE" => format_on_device,
         SILERO_FUSION_ENV => seal_lane_armed,
         "HISTORY_ENABLED" => history_enabled,
         "QUICK_NOTES_ENABLED" => quick_notes_enabled,
@@ -1808,7 +1824,7 @@ impl UserSettings {
                 send_mode: self.transcript_send_mode.clone(),
                 agent_enter_sends: self.agent_enter_sends,
                 agent_auto_send: Some(self.agent_auto_send.unwrap_or(false)),
-                auto_paste_enabled: self.auto_paste_enabled,
+                paste_mode: self.paste_mode,
                 deferred_insert_shortcut: self.deferred_insert_shortcut.clone(),
                 restore_clipboard: self.restore_clipboard,
                 restore_clipboard_delay_ms: self.restore_clipboard_delay_ms,
@@ -1825,6 +1841,7 @@ impl UserSettings {
                     cloud_refine_endpoint: Some(self.cloud_refine_endpoint_or_default()),
                     cloud_max_upload_mb: self.backend_max_upload_mb,
                     whisper_model: self.whisper_model.clone(),
+                    whisper_adaptive_buffer: self.whisper_adaptive_buffer,
                     whisper_context_window_sec: Some(
                         self.whisper_context_window_sec
                             .unwrap_or_else(super::default_whisper_context_window_sec),
@@ -1839,6 +1856,7 @@ impl UserSettings {
                 }),
                 formatting: Some(FormattingV2 {
                     enabled: self.ai_formatting_enabled,
+                    on_device: self.format_on_device,
                     transcript_tagging_enabled: self.transcript_tagging_enabled,
                     transcript_tag_template: self.transcript_tag_template.clone(),
                     level: self
@@ -1957,7 +1975,8 @@ impl UserSettings {
             double_tap_interval_ms: copy!(v2.interaction, trigger, double_tap_interval_ms),
             toggle_silence_sec: copy!(v2.interaction, trigger, toggle_silence_timeout_sec),
             ai_formatting_enabled: copy!(v2.speech, formatting, enabled),
-            auto_paste_enabled: copy!(v2.interaction, auto_paste_enabled),
+            format_on_device: copy!(v2.speech, formatting, on_device),
+            paste_mode: copy!(v2.interaction, paste_mode),
             transcript_tagging_enabled: copy!(v2.speech, formatting, transcript_tagging_enabled),
             transcript_tag_template: cloned!(v2.speech, formatting, transcript_tag_template),
             beep_on_start: copy!(v2.audio, feedback, beep_on_start),
@@ -2038,6 +2057,7 @@ impl UserSettings {
             buffered_interim_sec: copy!(v2.speech, emission, interim_cadence_sec),
             whisper_model: cloned!(v2.speech, engine, whisper_model),
             whisper_context_window_sec: copy!(v2.speech, engine, whisper_context_window_sec),
+            whisper_adaptive_buffer: copy!(v2.speech, engine, whisper_adaptive_buffer),
             light_plus_sentence_pause_sec: copy!(v2.speech, engine, light_plus_sentence_pause_sec),
             backend_max_upload_mb: copy!(v2.speech, engine, cloud_max_upload_mb),
             stt_initial_prompt_enabled: copy!(v2.speech, engine, initial_prompt_enabled),
@@ -2129,17 +2149,29 @@ impl UserSettings {
     /// Returns the settings directory.
     ///
     /// Respects `CODESCRIBE_DATA_DIR` for test isolation; otherwise uses
-    /// `~/Library/Application Support/Codescribe/`.
+    /// `~/Library/Application Support/Codescribe/`. Test builds default to a
+    /// per-process temporary root instead, so tests never observe the account's
+    /// real `settings.json`.
     pub fn settings_dir() -> PathBuf {
+        if let Some(host) = super::runtime_host::selected() {
+            return host.data_directory.clone();
+        }
         if let Ok(test_dir) = std::env::var("CODESCRIBE_DATA_DIR") {
             PathBuf::from(test_dir)
         } else {
-            BaseDirs::new()
-                .map(|b| b.data_dir().join("Codescribe"))
-                .unwrap_or_else(|| {
-                    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                    PathBuf::from(home).join("Library/Application Support/Codescribe")
-                })
+            #[cfg(any(test, feature = "test-isolation"))]
+            {
+                crate::test_isolation::test_process_data_root()
+            }
+            #[cfg(not(any(test, feature = "test-isolation")))]
+            {
+                BaseDirs::new()
+                    .map(|b| b.data_dir().join("Codescribe"))
+                    .unwrap_or_else(|| {
+                        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+                        PathBuf::from(home).join("Library/Application Support/Codescribe")
+                    })
+            }
         }
     }
 
@@ -2166,6 +2198,7 @@ impl UserSettings {
     /// Load while the settings transaction lock and app-data admission are held.
     fn load_unlocked() -> Self {
         let path = Self::settings_path();
+        crate::test_isolation::assert_test_read_allowed(&path);
         super::repair::record(super::repair::repair_settings(
             &path,
             super::repair::operator_pack().as_deref(),
@@ -2173,6 +2206,7 @@ impl UserSettings {
         match fs::read_to_string(&path) {
             Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
                 Ok(value) => {
+                    let retired_paste_mode = Self::retired_auto_paste(&value);
                     let value_for_legacy = value.clone();
                     if value.get("schema_version").is_some() {
                         match serde_json::from_value::<SettingsV2>(value) {
@@ -2183,6 +2217,20 @@ impl UserSettings {
                                 }
                                 debug!("Loaded settings V2 from {}", path.display());
                                 let mut settings = Self::from_v2(v2);
+                                if let Some(mode) = retired_paste_mode {
+                                    // One-shot: the saved V2 shape carries only
+                                    // `paste_mode`, so the next load finds nothing.
+                                    settings.paste_mode.get_or_insert(mode);
+                                    match settings.save_unlocked() {
+                                        Ok(()) => info!(
+                                            paste_mode = ?settings.paste_mode,
+                                            "Migrated auto_paste_enabled to paste_mode"
+                                        ),
+                                        Err(error) => {
+                                            warn!("Failed to persist migrated paste_mode: {error}")
+                                        }
+                                    }
+                                }
                                 Self::migrate_legacy_llm_lanes_once(
                                     &value_for_legacy,
                                     &mut settings,
@@ -2206,6 +2254,9 @@ impl UserSettings {
                                     );
                                 }
                                 let mut settings = Self::from_v2(v1.to_v2());
+                                if let Some(mode) = retired_paste_mode {
+                                    settings.paste_mode.get_or_insert(mode);
+                                }
                                 // Keep the legacy endpoint mapping until its durable key
                                 // relocation intent is part of the first V2 write.
                                 Self::migrate_legacy_llm_lanes_once(
@@ -2246,6 +2297,18 @@ impl UserSettings {
                 settings
             }
         }
+    }
+
+    /// The one reader of the retired boolean `auto_paste_enabled` (V1 flat or
+    /// V2 `interaction.`): the mode it implies, or `None` when the key is gone.
+    /// Callers fill `paste_mode` only when the document has no tri-state
+    /// choice yet; `to_v2` never writes the old key, so the first save
+    /// retires it.
+    fn retired_auto_paste(raw: &serde_json::Value) -> Option<PasteMode> {
+        raw.pointer("/interaction/auto_paste_enabled")
+            .or_else(|| raw.get("auto_paste_enabled"))
+            .and_then(serde_json::Value::as_bool)
+            .map(PasteMode::from_retired_auto_paste)
     }
 
     /// Run the one-shot legacy LLM lane migration when the raw document still
@@ -2451,13 +2514,17 @@ impl UserSettings {
             Err(error) => return Err(error.into()),
         };
         let value: serde_json::Value = serde_json::from_str(&raw)?;
-        let settings = if value.get("schema_version").is_some() {
+        let retired_paste_mode = Self::retired_auto_paste(&value);
+        let mut settings: Self = if value.get("schema_version").is_some() {
             let v2: SettingsV2 = serde_json::from_value(value)?;
             Self::validate_v2(&v2)?;
             Self::from_v2(v2)
         } else {
             serde_json::from_value(value)?
         };
+        if let Some(mode) = retired_paste_mode {
+            settings.paste_mode.get_or_insert(mode);
+        }
         Ok(Some(settings))
     }
 
@@ -2795,6 +2862,12 @@ impl UserSettings {
                     return reject(format!("Rejected formatting policy write: {error}"), true);
                 }
             },
+            "PASTE_MODE" => match value.parse::<PasteMode>() {
+                Ok(mode) => self.paste_mode = Some(mode),
+                Err(error) => {
+                    return reject(format!("Rejected paste mode write: {error}"), true);
+                }
+            },
             "CODESCRIBE_DEFERRED_INSERT_SHORTCUT" => {
                 match value.parse::<crate::config::DeferredInsertShortcut>() {
                     Ok(shortcut) => {
@@ -2980,7 +3053,7 @@ mod tests {
     use super::{
         DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, SILERO_FUSION_ENV, UserSettings, is_promoted_key,
     };
-    use crate::config::{ShortcutBinding, WorkMode};
+    use crate::config::{PasteMode, ShortcutBinding, WorkMode};
     use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
@@ -3221,7 +3294,7 @@ mod tests {
             "schema_version": 3,
             "interaction": {
                 "agent_enter_sends": true,
-                "auto_paste_enabled": false,
+                "paste_mode": "off",
                 "future_interaction": "keep"
             },
             "speech": {
@@ -3278,7 +3351,7 @@ mod tests {
             );
         }
         for pointer in [
-            "/interaction/auto_paste_enabled",
+            "/interaction/paste_mode",
             "/interaction/future_interaction",
             "/speech/language",
             "/speech/formatting",
@@ -3480,14 +3553,14 @@ mod tests {
         let _tmp = setup_isolated_data_dir();
         let path = UserSettings::settings_path();
         let original = UserSettings {
-            auto_paste_enabled: Some(false),
+            paste_mode: Some(PasteMode::Off),
             ..Default::default()
         };
         original.save().expect("seed committed settings");
         let before = fs::read(&path).expect("read committed settings");
 
         let replacement = UserSettings {
-            auto_paste_enabled: Some(true),
+            paste_mode: Some(PasteMode::Comfort),
             ..original
         };
         let json = serde_json::to_string_pretty(&replacement.to_v2())
@@ -3529,49 +3602,79 @@ mod tests {
         assert_eq!(loaded.show_dock_icon, Some(false));
     }
 
-    /// Auto-paste round-trips through both schemas *and* its declared contract
-    /// in `ENV_REGISTRY.toml` still matches (bool, hot-reloadable, default on).
-    /// Reading the registry keeps code and documented contract from drifting.
+    /// The retired boolean folds into `paste_mode` on V1 and V2 loads
+    /// (true → safe, false → off), the first save retires the old key, and the
+    /// declared `PASTE_MODE` contract in `ENV_REGISTRY.toml` still matches.
     #[test]
     #[serial]
-    fn auto_paste_v1_v2_roundtrips_and_registry_contract_is_promoted_hot() {
+    fn paste_mode_retires_auto_paste_bool_and_registry_contract_is_promoted_hot() {
         let v1_dir = setup_isolated_data_dir();
         let v1_path = UserSettings::settings_path();
         fs::write(&v1_path, r#"{"auto_paste_enabled":false}"#).expect("write V1");
-        let v1 = UserSettings::load();
-        assert_eq!(v1.auto_paste_enabled, Some(false));
+        assert_eq!(UserSettings::load().paste_mode, Some(PasteMode::Off));
         let migrated: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&v1_path).expect("read migrated V1"))
                 .expect("parse migrated V1");
         assert_eq!(
+            migrated.pointer("/interaction/paste_mode"),
+            Some(&serde_json::json!("off"))
+        );
+        assert!(
             migrated
                 .pointer("/interaction/auto_paste_enabled")
-                .and_then(serde_json::Value::as_bool),
-            Some(false)
+                .is_none()
         );
         drop(v1_dir);
 
-        let _v2_dir = setup_isolated_data_dir();
+        let v2_dir = setup_isolated_data_dir();
         let v2_path = UserSettings::settings_path();
         fs::write(
             &v2_path,
             r#"{"schema_version":3,"interaction":{"auto_paste_enabled":true}}"#,
         )
         .expect("write V2");
-        let v2 = UserSettings::load();
-        assert_eq!(v2.auto_paste_enabled, Some(true));
-        v2.save().expect("round-trip V2");
-        assert!(is_promoted_key("AUTO_PASTE_ENABLED"));
+        assert_eq!(UserSettings::load().paste_mode, Some(PasteMode::Safe));
+        let retired: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&v2_path).expect("read migrated V2"))
+                .expect("parse migrated V2");
+        assert_eq!(
+            retired.pointer("/interaction/paste_mode"),
+            Some(&serde_json::json!("safe"))
+        );
+        assert!(retired.pointer("/interaction/auto_paste_enabled").is_none());
+        drop(v2_dir);
+
+        // An explicit tri-state choice outranks a stale boolean beside it.
+        let _both_dir = setup_isolated_data_dir();
+        fs::write(
+            UserSettings::settings_path(),
+            r#"{"schema_version":3,"interaction":{"paste_mode":"comfort","auto_paste_enabled":false}}"#,
+        )
+        .expect("write both keys");
+        assert_eq!(UserSettings::load().paste_mode, Some(PasteMode::Comfort));
+        assert!(is_promoted_key("PASTE_MODE"));
+        assert!(!is_promoted_key("AUTO_PASTE_ENABLED"));
+
+        let mut settings = UserSettings::default();
+        settings.set_string("PASTE_MODE", "comfort");
+        assert_eq!(settings.paste_mode, Some(PasteMode::Comfort));
+        settings.set_string("PASTE_MODE", "always");
+        assert_eq!(
+            settings.paste_mode,
+            Some(PasteMode::Comfort),
+            "an unknown mode must not change the stored choice"
+        );
 
         let registry = include_str!("../../docs/ENV_REGISTRY.toml");
         let section = registry
-            .split("[vars.AUTO_PASTE_ENABLED]")
+            .split("[vars.PASTE_MODE]")
             .nth(1)
             .and_then(|tail| tail.split("\n[vars.").next())
-            .expect("AUTO_PASTE_ENABLED registry section");
-        assert!(section.contains("default = \"1\""));
-        assert!(section.contains("type = \"bool\""));
+            .expect("PASTE_MODE registry section");
+        assert!(section.contains("default = \"safe\""));
+        assert!(section.contains("type = \"string\""));
         assert!(section.contains("reload = \"hot\""));
+        assert!(!registry.contains("[vars.AUTO_PASTE_ENABLED]"));
     }
 
     /// The ghosting regression itself: these keys were settable and promoted,

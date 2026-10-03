@@ -40,7 +40,7 @@ use tracing::{debug, info, warn};
 ///
 /// It deliberately does **not** describe destination, engine, or acoustic
 /// evidence. Silero segmentation, ledger qualification, and Layer 1 tail repair
-/// are unaffected by either variant — only the UI-visible epoch lifecycle and
+/// remain active for every variant — only the UI-visible epoch lifecycle and
 /// the *live* paid formatter lane read this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CaptureTurnIntent {
@@ -57,6 +57,8 @@ pub enum CaptureTurnIntent {
     /// paid formatting is launched per silence-delimited fragment. The turn is
     /// formatted once at terminal processing instead.
     SingleTurn,
+    /// A channel delivers shaped Raw after acoustic refinement, without LLM formatting.
+    AgentChannel,
 }
 
 impl CaptureTurnIntent {
@@ -68,7 +70,7 @@ impl CaptureTurnIntent {
     /// rests, not the VAD — Silero keeps running for identity and tail repair.
     pub fn utterance_silence_sec(self, configured_sec: f32) -> Option<f32> {
         match self {
-            Self::HandsFree => Some(configured_sec),
+            Self::HandsFree | Self::AgentChannel => Some(configured_sec),
             Self::SingleTurn => None,
         }
     }
@@ -85,9 +87,8 @@ impl CaptureTurnIntent {
 
     /// Whether the take may be formatted once when it terminates.
     ///
-    /// Exactly the complement of [`Self::schedules_live_formatting`]: a
-    /// hands-free take has already paid per occurrence and must not be charged
-    /// a second time at stop.
+    /// A hands-free take has already paid per occurrence; a channel never
+    /// formats with an LLM. Only a composer take formats at stop.
     pub const fn formats_once_at_terminal(self) -> bool {
         matches!(self, Self::SingleTurn)
     }
@@ -938,7 +939,7 @@ impl StreamingRecorder {
                     language,
                     stream_log_path: None,
                     utterance_silence_sec,
-                    capture_turn: CaptureTurnIntent::HandsFree,
+                    capture_turn: CaptureTurnIntent::AgentChannel,
                     layer1,
                     lifecycle_events: Some(lifecycle_events),
                     terminal_audio: None,
@@ -1545,7 +1546,12 @@ mod tests {
     /// Capture lifetime is refcounted over subscribers, never take-identical:
     /// the capture closes only when the last subscriber releases, and a take
     /// after the close binds a fresh ledger and epoch like any first take.
+    ///
+    /// `#[serial]`: the runtime-snapshot load resolves the process-global
+    /// `CODESCRIBE_DATA_DIR`; off the serial lane it can consume or rewrite a
+    /// serial settings test's private fixture (X-hermetic-test-config).
     #[tokio::test]
+    #[serial]
     async fn capture_lifecycle_is_refcounted_over_subscribers() {
         let mut recorder = StreamingRecorder::new().expect("Failed to create recorder");
         let (channel_tx, mut channel_rx) = mpsc::channel::<Vec<f32>>(8);
@@ -1660,7 +1666,12 @@ mod tests {
 
     /// One dictation take at a time: a second `start_event_session` is refused
     /// before any device work while a take subscription is live.
+    ///
+    /// `#[serial]`: the runtime-snapshot load resolves the process-global
+    /// `CODESCRIBE_DATA_DIR`; off the serial lane it can consume or rewrite a
+    /// serial settings test's private fixture (X-hermetic-test-config).
     #[tokio::test]
+    #[serial]
     async fn start_event_session_refuses_a_second_take_subscriber() {
         let mut recorder = StreamingRecorder::new().expect("Failed to create recorder");
         recorder.set_event_sink(Some(Arc::new(
@@ -1867,8 +1878,14 @@ mod tests {
         let input_sr = 48000u32;
         let callback_size = 1024usize;
         let num_callbacks = 210usize;
+        // Pin the interim cadence: the env-driven default
+        // (`CODESCRIBE_BUFFERED_INTERIM_SEC`) is process-global, and any
+        // `Config::load()` test reading a real settings.json reseeds it for
+        // the whole test process — a cadence above the fed sample count would
+        // silently produce zero interim events (the 2026-09-30 flake).
+        let interim_sec = 1.2f32;
 
-        let mut session = SpeechSession::new_utterance_with_silence(input_sr, 10.0);
+        let mut session = SpeechSession::new_utterance_pinned_for_test(input_sr, interim_sec, 10.0);
         assert_eq!(
             session.gate_mode(),
             VadGateMode::Supervisor,
@@ -1905,9 +1922,16 @@ mod tests {
             }
         }
 
+        let total_raw = num_callbacks * callback_size;
         assert!(
             interim_events > 0,
-            "busy callback run should emit at least one interim utterance before flush"
+            "busy callback run should emit at least one interim utterance before flush \
+             (interim_events={interim_events}, fed_raw={total_raw}, \
+             raw_cursor={}, interim_limit_raw={:?}, vad_current_sample={:?}, \
+             accounted_speech_vad_samples={accounted_speech_vad_samples})",
+            session.raw_cursor(),
+            session.interim_limit_raw_for_test(),
+            session.vad_current_sample(),
         );
 
         let flush = session.flush();
@@ -2157,6 +2181,7 @@ mod terminal_seal_refusal_tests {
 
     fn refusal(audio_path: Option<std::path::PathBuf>) -> TerminalSealRefused {
         let receipt = SealCoverageReceipt {
+            sample_rate_hz: None,
             session_id: "e4060d87-fe0f-49fd-bbd5-eaea7e89ca17".to_string(),
             capture_epoch: 0,
             speech_samples: 2_696_704,
@@ -2459,6 +2484,7 @@ mod capture_stop_failure_tests {
         let mut recorder = recorder();
         let mut ledger = AcousticLedger::new();
         let receipt = SealCoverageReceipt {
+            sample_rate_hz: None,
             session_id: "capture-owner".into(),
             capture_epoch: 7,
             speech_samples: 4,
@@ -2527,6 +2553,7 @@ mod capture_stop_failure_tests {
         assert_eq!(stopped, (String::new(), None));
         let mut ledger = AcousticLedger::new();
         assert!(ledger.record_seal_coverage(SealCoverageReceipt {
+            sample_rate_hz: None,
             session_id: "capture-owner".into(),
             capture_epoch: 7,
             speech_samples: 100,
@@ -2755,6 +2782,7 @@ mod capture_stop_failure_tests {
         *recorder.transcript_buffer.lock().await = "słowa które przetrwały".to_string();
         let mut ledger = AcousticLedger::new();
         let receipt = SealCoverageReceipt {
+            sample_rate_hz: None,
             session_id: "capture-owner".into(),
             capture_epoch: 7,
             speech_samples: 0,

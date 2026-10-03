@@ -37,6 +37,38 @@ fn token_is_current(token: u64, generation: u64) -> bool {
     token == generation
 }
 
+/// Text-input shape of the focused UI element, as the delivery throne's paste
+/// gate needs it (`focused_input_field`). An observation, never a destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusedInputField {
+    /// An editable text role (field, area, combo box, text view, web area).
+    Text,
+    /// A password field, or secure event input is on system-wide (a password
+    /// prompt owns the keyboard, e.g. a terminal `sudo` prompt).
+    Secure,
+    /// Something focused that is not a text-input role (a list, a canvas, …).
+    NotText,
+    /// Accessibility could not read the focused element.
+    Unobserved,
+}
+
+/// Classify an AX role/subrole pair. Password fields report `AXTextField` with
+/// the `AXSecureTextField` subrole, a few hosts report it as the role itself.
+#[cfg(any(target_os = "macos", test))]
+fn classify_input_role(role: &str, subrole: Option<&str>) -> FocusedInputField {
+    if role == "AXSecureTextField" || subrole == Some("AXSecureTextField") {
+        return FocusedInputField::Secure;
+    }
+    if matches!(
+        role,
+        "AXTextArea" | "AXTextField" | "AXComboBox" | "AXTextView" | "AXWebArea"
+    ) {
+        FocusedInputField::Text
+    } else {
+        FocusedInputField::NotText
+    }
+}
+
 /// Badge display mode for different recording/processing states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BadgeMode {
@@ -129,7 +161,39 @@ impl HoldBadgeConfig {
 /// Mode visual contracts and size-change-without-mutate visible config.
 #[cfg(test)]
 mod tests {
-    use super::{BadgeMode, HoldBadgeConfig};
+    use super::{BadgeMode, FocusedInputField, HoldBadgeConfig, classify_input_role};
+
+    #[test]
+    fn password_subrole_is_secure_and_text_roles_are_text() {
+        assert_eq!(
+            classify_input_role("AXTextField", Some("AXSecureTextField")),
+            FocusedInputField::Secure
+        );
+        assert_eq!(
+            classify_input_role("AXSecureTextField", None),
+            FocusedInputField::Secure
+        );
+        for role in [
+            "AXTextArea",
+            "AXTextField",
+            "AXComboBox",
+            "AXTextView",
+            "AXWebArea",
+        ] {
+            assert_eq!(
+                classify_input_role(role, None),
+                FocusedInputField::Text,
+                "{role}"
+            );
+        }
+        for role in ["AXList", "AXOutline", "AXButton", "AXGroup"] {
+            assert_eq!(
+                classify_input_role(role, None),
+                FocusedInputField::NotText,
+                "{role}"
+            );
+        }
+    }
 
     #[test]
     fn ax_caret_coordinates_preserve_negative_and_stacked_displays() {
@@ -226,9 +290,9 @@ mod tests {
 /// keeps a queued show from resurrecting a badge the user already dismissed.
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::HoldBadgeConfig;
+    use super::{FocusedInputField, HoldBadgeConfig};
 
-    use core_foundation::base::TCFType;
+    use core_foundation::base::{CFType, CFTypeRef, TCFType};
     use core_foundation::string::CFString;
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
     use dispatch::Queue;
@@ -269,8 +333,18 @@ mod imp {
         /// Unwrap an `AXValueRef` into a caller-provided struct matching
         /// `type_` (one of the `AX_VALUE_*` constants). `false` on mismatch.
         fn AXValueGetValue(value: AXId, type_: i32, value_ptr: *mut std::ffi::c_void) -> bool;
+        /// Bound every later AX request on `element` (never on the
+        /// system-wide element: that would set the process-global timeout).
+        fn AXUIElementSetMessagingTimeout(element: AXId, seconds: f32) -> i32;
         /// Release a `+1` CoreFoundation handle.
         fn CFRelease(cf: *const std::ffi::c_void);
+    }
+
+    #[link(name = "Carbon", kind = "framework")]
+    unsafe extern "C" {
+        /// True while any process holds secure event input — a focused
+        /// password field, or a terminal password prompt with secure entry.
+        fn IsSecureEventInputEnabled() -> u8;
     }
 
     // CGColor functions
@@ -297,8 +371,10 @@ mod imp {
     /// Attribute naming the element that currently has keyboard focus.
     const AX_FOCUSED_UIELEMENT_ATTRIBUTE: &str = "AXFocusedUIElement";
     /// Attribute naming an element's role, matched against the text-input roles
-    /// in `focused_element_accepts_text`.
+    /// in `classify_input_role`.
     const AX_ROLE_ATTRIBUTE: &str = "AXRole";
+    /// Attribute naming an element's subrole (`AXSecureTextField` for passwords).
+    const AX_SUBROLE_ATTRIBUTE: &str = "AXSubrole";
     /// Attribute holding the current selection/caret range.
     const AX_SELECTED_TEXT_RANGE_ATTRIBUTE: &str = "AXSelectedTextRange";
 
@@ -452,53 +528,66 @@ mod imp {
         }
     }
 
-    /// Check if the currently focused element accepts text input
-    pub fn focused_element_accepts_text() -> bool {
+    /// Copy one string attribute off `element`; `None` when it is absent,
+    /// unreadable, or not a string.
+    ///
+    /// # Safety
+    /// `element` must be a live AX element handle owned by the caller.
+    unsafe fn copy_string_attribute(element: AXId, name: &str) -> Option<String> {
         unsafe {
+            let mut value: AXId = ptr::null_mut();
+            let attribute = CFString::new(name);
+            let result = AXUIElementCopyAttributeValue(
+                element,
+                attribute.as_concrete_TypeRef() as AXId,
+                &mut value,
+            );
+            if result != AX_ERROR_SUCCESS || value.is_null() {
+                return None;
+            }
+            // Create rule: the wrapper owns the +1 and releases it on drop.
+            CFType::wrap_under_create_rule(value as CFTypeRef)
+                .downcast::<CFString>()
+                .map(|text| text.to_string())
+        }
+    }
+
+    /// Text-input shape of the element holding keyboard focus right now.
+    ///
+    /// Secure event input wins first: while any password prompt owns the
+    /// keyboard, nothing is classified as an ordinary text field.
+    pub fn focused_input_field() -> FocusedInputField {
+        // SAFETY: every AX Create/Copy result is released exactly once (the
+        // string reads own theirs); output pointers are valid locals.
+        unsafe {
+            if IsSecureEventInputEnabled() != 0 {
+                return FocusedInputField::Secure;
+            }
             let system_wide = AXUIElementCreateSystemWide();
             if system_wide.is_null() {
-                return false;
+                return FocusedInputField::Unobserved;
             }
-
-            let mut focused_element: AXId = ptr::null_mut();
-            let attr_name = CFString::new(AX_FOCUSED_UIELEMENT_ATTRIBUTE);
+            let mut focused: AXId = ptr::null_mut();
+            let attribute = CFString::new(AX_FOCUSED_UIELEMENT_ATTRIBUTE);
             let result = AXUIElementCopyAttributeValue(
                 system_wide,
-                attr_name.as_concrete_TypeRef() as AXId,
-                &mut focused_element,
+                attribute.as_concrete_TypeRef() as AXId,
+                &mut focused,
             );
-
             CFRelease(system_wide);
-
-            if result != AX_ERROR_SUCCESS || focused_element.is_null() {
-                return false;
+            if result != AX_ERROR_SUCCESS || focused.is_null() {
+                return FocusedInputField::Unobserved;
             }
-
-            // Get role attribute
-            let mut role_value: AXId = ptr::null_mut();
-            let role_attr = CFString::new(AX_ROLE_ATTRIBUTE);
-            let role_result = AXUIElementCopyAttributeValue(
-                focused_element,
-                role_attr.as_concrete_TypeRef() as AXId,
-                &mut role_value,
-            );
-
-            CFRelease(focused_element);
-
-            if role_result != AX_ERROR_SUCCESS || role_value.is_null() {
-                return false;
+            // A stalled host must not hold the stop path for the default AX
+            // timeout while the role and subrole are read.
+            AXUIElementSetMessagingTimeout(focused, 0.1);
+            let role = copy_string_attribute(focused, AX_ROLE_ATTRIBUTE);
+            let subrole = copy_string_attribute(focused, AX_SUBROLE_ATTRIBUTE);
+            CFRelease(focused);
+            match role {
+                Some(role) => super::classify_input_role(&role, subrole.as_deref()),
+                None => FocusedInputField::Unobserved,
             }
-
-            // Convert role to string
-            let role_str = CFString::wrap_under_get_rule(role_value as *const _);
-            let role = role_str.to_string();
-            CFRelease(role_value);
-
-            // Check if role indicates text input
-            matches!(
-                role.as_str(),
-                "AXTextArea" | "AXTextField" | "AXComboBox" | "AXTextView" | "AXWebArea"
-            )
         }
     }
 
@@ -999,8 +1088,8 @@ mod imp {
 
 #[cfg(target_os = "macos")]
 pub use imp::{
-    focused_element_accepts_text, get_caret_position, get_cursor_position, hide_hold_badge,
-    show_hold_badge, show_hold_badge_with_config, take_token, update_transcript,
+    focused_input_field, get_caret_position, get_cursor_position, hide_hold_badge, show_hold_badge,
+    show_hold_badge_with_config, take_token, update_transcript,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -1014,7 +1103,7 @@ pub use imp::{
 /// up, so every entry point is inert.
 #[cfg(not(target_os = "macos"))]
 mod stubs {
-    use super::{BadgeMode, HoldBadgeConfig};
+    use super::{BadgeMode, FocusedInputField, HoldBadgeConfig};
 
     /// Inert take token outside macOS.
     pub fn take_token() -> u64 {
@@ -1023,9 +1112,9 @@ mod stubs {
     /// Inert cursor projection outside macOS.
     pub fn update_transcript(_token: u64, _text: &str, _degraded: bool) {}
 
-    /// No-op: focused-element text detection is macOS-only.
-    pub fn focused_element_accepts_text() -> bool {
-        false
+    /// Focused-element text detection is macOS-only.
+    pub fn focused_input_field() -> FocusedInputField {
+        FocusedInputField::Unobserved
     }
 
     /// No-op: caret tracking is macOS-only.
@@ -1052,6 +1141,6 @@ mod stubs {
 
 #[cfg(not(target_os = "macos"))]
 pub use stubs::{
-    focused_element_accepts_text, get_caret_position, get_cursor_position, hide_hold_badge,
-    show_hold_badge, show_hold_badge_with_config, take_token, update_transcript,
+    focused_input_field, get_caret_position, get_cursor_position, hide_hold_badge, show_hold_badge,
+    show_hold_badge_with_config, take_token, update_transcript,
 };

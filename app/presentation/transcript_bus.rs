@@ -18,7 +18,7 @@ use codescribe_core::pipeline::acoustic_ledger::{
 use codescribe_core::pipeline::contracts::TranscriptSegment;
 use serde::{Deserialize, Serialize};
 
-use super::emitter::{ReducerAction, TranscriptRevision};
+use super::emitter::{DerivedTranscriptProjection, ReducerAction, TranscriptRevision};
 use crate::controller::{
     TranscriptProjectionAvailability, resolve_transcript_projection_availability,
 };
@@ -228,6 +228,9 @@ pub struct ProjectedSealCoverageRange {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectedSealCoverageReceipt {
     pub status: String,
+    /// Capture clock carried by the ledger receipt, never inferred by the Bus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate_hz: Option<u32>,
     /// Typed reason the measurement was missing. Present only when
     /// `status == "unavailable"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -255,6 +258,7 @@ impl From<&SealCoverageReceipt> for ProjectedSealCoverageReceipt {
     fn from(receipt: &SealCoverageReceipt) -> Self {
         Self {
             status: receipt.status.as_str().to_string(),
+            sample_rate_hz: receipt.sample_rate_hz,
             unavailable_reason: receipt
                 .status
                 .unavailable_reason()
@@ -326,8 +330,8 @@ pub struct TranscriptBusEvidenceEvent {
     pub document_index: u64,
     pub label: String,
     pub rendered_text: String,
-    /// Optional sink-ready bytes. This is populated only on the lifecycle
-    /// terminal for a composer delivery; `rendered_text` remains reducer truth.
+    /// Optional sink-ready bytes, including a selected derived presentation.
+    /// `rendered_text` and `reducer_revision` always remain source Raw truth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_text: Option<String>,
     #[serde(default)]
@@ -370,6 +374,13 @@ pub struct TranscriptBusEvidenceEvent {
     pub comparison: Option<ProjectedTranscriptComparisonReceipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub consultation_presentations: Vec<ProjectedConsultationPresentation>,
+    /// A6 uncertain-word spans over `rendered_text`, reducer-computed from
+    /// ledger-pinned per-word confidence. Carried in memory to the bridge
+    /// projection only: deliberately NOT journaled into the Bus JSONL (d9 —
+    /// the Bus stays span-free until thresholds are calibrated), so
+    /// `EvidenceRow` consumers never see them.
+    #[serde(skip)]
+    pub uncertain_spans: Vec<codescribe_core::pipeline::word_confidence::UncertainSpan>,
 }
 
 /// One previously published document revision, read from the Bus journal.
@@ -459,6 +470,35 @@ pub(crate) fn document_history_at(
     document_history_at_counted(path, session_id, &mut bytes_read)
 }
 
+/// Bytes of backward scan one `document_history_at` call will read while
+/// looking for this session's `session_started` row. A session that began
+/// while persistence was disabled (`TranscriptBus::open_at` refuses to
+/// append after a bus whose last byte is not `\n`) never writes that row, so
+/// an unbounded scan would walk the whole shared bus — tens of GB on the
+/// Founder's machine — for every take. Capped at the same 64 MiB the Swift
+/// `OverlayChannelDeliveryReader` tail window and the Rust
+/// `agent_ack::FOLD_PASS_BUDGET` / `agent_channel::ORPHAN_SCAN_WINDOW_BYTES`
+/// already use, so history degrades to "whatever is in the tail" instead of
+/// reading every row ever written.
+const DOCUMENT_HISTORY_SCAN_BUDGET_BYTES: u64 = 64 << 20;
+
+/// True if `needle` occurs anywhere in `haystack`. Used as a cheap reject
+/// before `serde_json` parsing: a line whose bytes never contain this
+/// session's id as a substring cannot have it as the `session_id` field
+/// value, so most rows from other interleaved sessions are skipped without
+/// building a JSON tree.
+fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
 fn document_history_at_counted(
     path: &Path,
     session_id: &str,
@@ -473,10 +513,12 @@ fn document_history_at_counted(
     // Recent takes live at the tail. Read blocks backwards and stop at this
     // session's started row; other sessions may be interleaved, so merely
     // seeing another session is not a safe stopping condition.
+    let session_bytes = session_id.as_bytes();
     let mut position = file.metadata()?.len();
     let mut prefix = Vec::new();
     let mut rows = Vec::new();
     let mut found_start = false;
+    let mut budget_exhausted = false;
     while position > 0 && !found_start {
         let width = position.min(64 * 1024) as usize;
         position -= width as u64;
@@ -492,6 +534,9 @@ fn document_history_at_counted(
             }
             let line = &block[index + 1..end];
             end = index;
+            if !contains_subslice(line, session_bytes) {
+                continue;
+            }
             let Ok(row) = serde_json::from_slice::<serde_json::Value>(line) else {
                 continue;
             };
@@ -505,9 +550,20 @@ fn document_history_at_counted(
             rows.push(line.to_vec());
         }
         prefix = block[..end].to_vec();
+        if !found_start && *bytes_read >= DOCUMENT_HISTORY_SCAN_BUDGET_BYTES {
+            budget_exhausted = true;
+            break;
+        }
     }
     if !found_start && !prefix.is_empty() {
         rows.push(prefix);
+    }
+    if budget_exhausted {
+        tracing::warn!(
+            session_id = %session_id,
+            bytes_read = *bytes_read,
+            "document_history_at exhausted its scan budget before finding session_started; returning partial tail history"
+        );
     }
     rows.reverse();
     let mut revisions = std::collections::BTreeMap::new();
@@ -527,6 +583,26 @@ fn document_history_at_counted(
                 });
             continue;
         }
+        if let Ok(row) = serde_json::from_slice::<serde_json::Value>(&line)
+            && row["schema"] == "codescribe.derived-transcript.v1"
+            && row["session_id"] == session_id
+            && let (Some(revision), Some(text), Some(mode), Some(time)) = (
+                row["revision"].as_u64(),
+                row["rendered_text"].as_str(),
+                row["requested_mode"].as_str(),
+                row["emitted_at"].as_str(),
+            )
+        {
+            revisions
+                .entry((session_id.to_string(), revision))
+                .or_insert(DocumentHistoryEntry {
+                    revision,
+                    rendered_text: text.into(),
+                    provenance: format!("formatter-{mode}"),
+                    emitted_at: time.into(),
+                });
+            continue;
+        }
         let Ok(event) = serde_json::from_slice::<TranscriptBusEvidenceEvent>(&line) else {
             continue;
         };
@@ -539,7 +615,13 @@ fn document_history_at_counted(
                 .or_insert(entry);
         }
     }
-    Ok(revisions.into_values().collect())
+    let mut history = revisions.into_values().collect::<Vec<_>>();
+    history.sort_by(|left, right| {
+        left.emitted_at
+            .cmp(&right.emitted_at)
+            .then(left.revision.cmp(&right.revision))
+    });
+    Ok(history)
 }
 
 /// Group-level provenance, deliberately separate from per-word acoustic rows.
@@ -695,12 +777,36 @@ pub struct CleanTranscriptEvent {
     pub source: Option<String>,
 }
 
+/// Persistence failure reported to the bus's diagnostic sink before it is
+/// logged. Text-free by construction: the committed document has no field
+/// here, so no observer can ever receive it.
+pub(crate) struct PersistenceDiagnostic<'a> {
+    pub session_id: &'a str,
+    pub file: &'a str,
+    pub error: &'a io::Error,
+}
+
+/// Injectable observer for persistence failures. Production installs a no-op;
+/// tests install a recording sink so assertions never depend on tracing's
+/// process-global callsite state.
+pub(crate) type PersistenceDiagnosticSink = Arc<dyn Fn(&PersistenceDiagnostic<'_>) + Send + Sync>;
+
 /// Synchronous low-frequency observer. Each lifecycle or authenticated ledger
 /// projection attempts a flush; persistence loss cannot suppress live text.
 pub struct TranscriptBus {
     session: TranscriptSession,
     path: PathBuf,
     writer: Mutex<TranscriptBusWriter>,
+    persistence_diagnostic_sink: PersistenceDiagnosticSink,
+}
+
+impl std::fmt::Debug for TranscriptBus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TranscriptBus")
+            .field("session", &self.session)
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One lock orders live lifecycle and projections. Sequence is in-process
@@ -759,6 +865,38 @@ pub(crate) fn open_bus_append_file(path: &Path) -> io::Result<File> {
 }
 
 struct SharedBusWriter(Arc<Mutex<File>>);
+
+/// One session publishes the same encoded row to every destination. An
+/// uncertain append retires only that destination, without retrying its prefix.
+struct BusFanout {
+    session_id: String,
+    destinations: Vec<BusDestination>,
+}
+
+struct BusDestination {
+    path: PathBuf,
+    file: Option<Box<dyn Write + Send>>,
+}
+
+impl Write for BusFanout {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        for destination in &mut self.destinations {
+            let Some(file) = destination.file.as_mut() else {
+                continue;
+            };
+            if let Err(error) = file.write_all(bytes).and_then(|()| file.flush()) {
+                destination.file = None;
+                tracing::warn!(%error, bus = %destination.path.display(), session_id = %self.session_id, persistence = "disabled_for_session", "transcript bus destination disabled; other destinations continue");
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        // Each destination was flushed as part of the complete-row write.
+        Ok(())
+    }
+}
 
 impl Write for SharedBusWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -1024,6 +1162,7 @@ impl TranscriptBus {
                     .iter()
                     .map(ProjectedConsultationPresentation::from)
                     .collect(),
+                uncertain_spans: revision.uncertain_spans.clone(),
             };
             let starts_document = channel_quiet
                 && !writer
@@ -1074,6 +1213,54 @@ impl TranscriptBus {
         }
     }
 
+    /// Open one lifecycle/sequence with a primary path and additional buses.
+    /// Every descriptor comes from the shared registry used by compaction.
+    pub(crate) fn open_with_paths(
+        session: TranscriptSession,
+        path: PathBuf,
+        additional_paths: Vec<PathBuf>,
+    ) -> Self {
+        let bus = Self::open_with_path(session, path.clone());
+        if additional_paths.is_empty() {
+            return bus;
+        }
+        let mut writer = bus.writer.lock().unwrap_or_else(|error| error.into_inner());
+        let mut destinations = vec![BusDestination {
+            path,
+            file: writer.file.take(),
+        }];
+        for path in additional_paths {
+            if destinations.iter().any(|known| known.path == path) {
+                continue;
+            }
+            let file = match Self::open_persistence_file(&path) {
+                Ok(file) => Some(file),
+                Err(error) => {
+                    tracing::warn!(%error, bus = %path.display(), session_id = %bus.session.session_id, persistence = "disabled_for_session", "transcript bus destination could not open; other destinations continue");
+                    None
+                }
+            };
+            destinations.push(BusDestination { path, file });
+        }
+        writer.file = Some(Box::new(BusFanout {
+            session_id: bus.session.session_id.clone(),
+            destinations,
+        }));
+        drop(writer);
+        bus
+    }
+
+    /// Channel boundaries share the session's destinations and failure state.
+    pub(crate) fn record_channel_receipt(&self, receipt: &serde_json::Value) {
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Err(error) = Self::append_projection_locked(&mut writer, receipt) {
+            self.log_write_error(error);
+        }
+    }
+
     fn with_writer(
         session: TranscriptSession,
         path: PathBuf,
@@ -1091,7 +1278,15 @@ impl TranscriptBus {
                 last_projection: None,
                 announced_documents: HashSet::new(),
             }),
+            persistence_diagnostic_sink: Arc::new(|_| {}),
         }
+    }
+
+    /// Test seam: observe persistence failures directly, without a tracing
+    /// subscriber. Production logging in `log_write_error` is unchanged.
+    #[cfg(test)]
+    fn set_persistence_diagnostic_sink(&mut self, sink: PersistenceDiagnosticSink) {
+        self.persistence_diagnostic_sink = sink;
     }
 
     /// Open an explicit path. Kept public for deterministic pipeline tests and
@@ -1101,11 +1296,16 @@ impl TranscriptBus {
         path: PathBuf,
         _sample_rate_override: Option<u32>,
     ) -> io::Result<Self> {
+        let file = Self::open_persistence_file(&path)?;
+        Ok(Self::with_writer(session, path, Some(file)))
+    }
+
+    fn open_persistence_file(path: &Path) -> io::Result<Box<dyn Write + Send>> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        let shared = shared_bus_file(&path)?;
+        let shared = shared_bus_file(path)?;
         let mut file = shared.lock().unwrap_or_else(|error| error.into_inner());
 
         // A prior partial write is not an append boundary. Do not join a new
@@ -1122,11 +1322,7 @@ impl TranscriptBus {
             }
         }
         drop(file);
-        Ok(Self::with_writer(
-            session,
-            path,
-            Some(Box::new(SharedBusWriter(shared))),
-        ))
+        Ok(Box::new(SharedBusWriter(shared)))
     }
 
     /// Announce the recording start exactly once, even if persistence fails.
@@ -1142,6 +1338,120 @@ impl TranscriptBus {
             }
             Ok(false) => {}
             Err(error) => self.log_write_error(error),
+        }
+    }
+
+    /// Journal a reducer-minted derived version without advancing the Raw
+    /// projection, seal, lifecycle, or delivery disposition. Readers select
+    /// this schema explicitly; acoustic document readers continue to see Raw.
+    pub(crate) fn record_derived_projection(&self, projection: &DerivedTranscriptProjection) {
+        if projection.session_id != self.session.session_id
+            || !projection.authenticates_publication()
+        {
+            return;
+        }
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Err(error) = Self::append_projection_locked(&mut writer, projection) {
+            self.log_write_error(error);
+        }
+    }
+
+    /// UI-only projection of a reducer-authenticated version. It consumes a
+    /// sequence but never changes the Bus's retained Raw document or emits a
+    /// clean transcript event to an agent observer.
+    pub(crate) fn derived_presentation_event(
+        &self,
+        projection: &DerivedTranscriptProjection,
+    ) -> Option<TranscriptBusEvidenceEvent> {
+        if !projection.authenticates_publication()
+            || projection.session_id != self.session.session_id
+        {
+            return None;
+        }
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut event = writer.last_projection.clone()?;
+        if event.reducer_revision != projection.source_raw_revision
+            || event.rendered_text != projection.source_raw_text
+        {
+            return None;
+        }
+        writer.sequence = writer.sequence.saturating_add(1);
+        event.sequence = writer.sequence;
+        event.emitted_at.clone_from(&projection.emitted_at);
+        event.reducer_action = "derived_projection".into();
+        event.label.clone_from(&projection.receipt_id);
+        event.delivery_text = Some(projection.rendered_text.clone());
+        event.lifecycle_terminal = false;
+        event.delivery = TranscriptDelivery::Unattempted;
+        event.uncertain_spans.clear();
+        Some(event)
+    }
+
+    pub(crate) fn light_plus_deadline_event(
+        &self,
+        elapsed_ms: u128,
+    ) -> Option<TranscriptBusEvidenceEvent> {
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut event = writer.last_projection.clone()?;
+        let receipt = serde_json::json!({
+            "schema": "codescribe.light-plus-tick.v1",
+            "session_id": self.session.session_id,
+            "source_raw_revision": event.reducer_revision,
+            "status": "deadline_exceeded",
+            "budget_ms": 2000,
+            "elapsed_ms": elapsed_ms,
+            "delivered": "unchanged_raw",
+        });
+        if let Err(error) = Self::append_projection_locked(&mut writer, &receipt) {
+            self.log_write_error(error);
+        }
+        writer.sequence = writer.sequence.saturating_add(1);
+        event.sequence = writer.sequence;
+        event.reducer_action = "light_plus_tick_deadline".into();
+        event.label = "Light+ skipped — delivered Raw".into();
+        event.lifecycle_terminal = false;
+        event.delivery = TranscriptDelivery::Unattempted;
+        Some(event)
+    }
+
+    pub(crate) fn record_projection_delivery(
+        &self,
+        projection: &DerivedTranscriptProjection,
+        payload: &str,
+        disposition: TranscriptDelivery,
+    ) {
+        if projection.session_id != self.session.session_id
+            || !projection.authenticates_publication()
+        {
+            return;
+        }
+        let receipt = serde_json::json!({
+            "schema": "codescribe.projection-delivery.v1",
+            "session_id": projection.session_id,
+            "source_raw_revision": projection.source_raw_revision,
+            "source_state": projection.source_state,
+            "source_raw_text": projection.source_raw_text,
+            "projection_receipt": projection.receipt_id,
+            "requested_mode": projection.requested_mode,
+            "selected_mode": projection.delivered_mode,
+            "payload_utf8": payload,
+            "disposition": disposition,
+        });
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Err(error) = Self::append_projection_locked(&mut writer, &receipt) {
+            self.log_write_error(error);
         }
     }
 
@@ -1271,6 +1581,7 @@ impl TranscriptBus {
                     consultation_presentations: Vec::new(),
                     seal_coverage: None,
                     comparison: None,
+                    uncertain_spans: Vec::new(),
                 });
         terminal.sequence = writer.sequence;
         terminal.emitted_at = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
@@ -1392,7 +1703,13 @@ impl TranscriptBus {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("transcript-events.jsonl");
-        tracing::warn!(%error, file, session_id = %self.session.session_id, persistence = "disabled_for_session", "clean transcript persistence unavailable; live projection continues without append proof");
+        let diagnostic = PersistenceDiagnostic {
+            session_id: &self.session.session_id,
+            file,
+            error: &error,
+        };
+        (self.persistence_diagnostic_sink)(&diagnostic);
+        tracing::warn!(error = %diagnostic.error, file = diagnostic.file, session_id = %diagnostic.session_id, persistence = "disabled_for_session", "clean transcript persistence unavailable; live projection continues without append proof");
     }
 }
 
@@ -1447,6 +1764,23 @@ mod tests {
         ObservationProducer, OccurrenceIdentity,
     };
     use std::sync::Arc;
+
+    /// Serializes tests that emit the persistence-failure `warn!` callsite.
+    /// tracing caches each callsite's `Interest` process-globally and
+    /// `DefaultCallsite::set_interest` is a plain last-writer-wins store: a
+    /// sibling test's first hit of the callsite with no subscriber computes
+    /// `Interest::never` from an empty dispatcher registry and can store it
+    /// *after* the capturing test rebuilt the cache for its scoped
+    /// subscriber, silently disabling the callsite on the capturing thread as
+    /// well. Holding this lock for the whole body of every test that can emit
+    /// the callsite removes that cross-thread dependency.
+    static PERSISTENCE_LOG_SERIAL: Mutex<()> = Mutex::new(());
+
+    fn persistence_log_serial() -> std::sync::MutexGuard<'static, ()> {
+        PERSISTENCE_LOG_SERIAL
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
 
     #[test]
     fn history_lists_three_revisions_of_one_take_with_provenance() {
@@ -1511,6 +1845,126 @@ mod tests {
             bytes_read <= recent_bytes + 64 * 1024,
             "read {bytes_read} bytes for {recent_bytes} bytes of recent-session rows"
         );
+    }
+
+    /// Regression guard: a bus that still carries this session's
+    /// `session_started` row must stop at that row and return exactly the
+    /// history it returns today, unaffected by the new scan budget or the
+    /// substring prefilter.
+    #[test]
+    fn history_with_session_started_is_unchanged_by_the_scan_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("history-unchanged.jsonl");
+        let bus = TranscriptBus::open_at(session("budget-unaffected"), path.clone(), None).unwrap();
+        bus.publish_started();
+        let (ledger, _, base) = committed_fixture("budget-unaffected");
+        let published = bus.publish_revision(&base, &ledger);
+        assert!(!published.is_empty());
+        let mut edit = published[0].clone();
+        edit.reducer_revision += 1;
+        edit.reducer_action = "apply_manual_edit".to_string();
+        edit.rendered_text = "Edited words".to_string();
+        edit.acoustic_receipts[0].manual_edit_receipt =
+            Some("formatter-budget-unaffected-2-3-0".to_string());
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", serde_json::to_string(&edit).unwrap()).unwrap();
+        drop(file);
+        let mut bytes_read = 0;
+        let history =
+            document_history_at_counted(&path, "budget-unaffected", &mut bytes_read).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].revision, base.revision);
+        assert_eq!(history[1].provenance, "formatter");
+        assert_eq!(history[1].rendered_text, "Edited words");
+        assert!(
+            bytes_read < DOCUMENT_HISTORY_SCAN_BUDGET_BYTES,
+            "a bus carrying session_started must stop well short of the budget"
+        );
+    }
+
+    /// When a take began while persistence was disabled
+    /// (`TranscriptBus::open_at` refuses to append after a bus whose last
+    /// byte is not `\n`), `session_started` is never written for it. Before
+    /// this cut the backward scan then walked the whole bus; now it must
+    /// stop at `DOCUMENT_HISTORY_SCAN_BUDGET_BYTES` and still surface the
+    /// tail revision that was actually asked for.
+    #[test]
+    fn history_without_session_started_stops_at_the_scan_budget_and_keeps_the_tail() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("unbounded.jsonl");
+        let filler = format!(
+            "{{\"schema\":\"codescribe.transcript.v1\",\"session_id\":\"other-take\",\"padding\":\"{}\"}}\n",
+            "x".repeat(4096)
+        );
+        let mut out = std::fs::File::create(&path).unwrap();
+        while out.metadata().unwrap().len() < DOCUMENT_HISTORY_SCAN_BUDGET_BYTES + 8 * 1024 * 1024 {
+            out.write_all(filler.as_bytes()).unwrap();
+        }
+        let padded_len = out.metadata().unwrap().len();
+
+        // Build a real revision event without ever writing `session_started`
+        // for it: generate it on a scratch bus, then append the raw line
+        // directly, the way an actually-disabled-persistence take would.
+        let scratch_path = temp.path().join("scratch.jsonl");
+        let scratch_bus =
+            TranscriptBus::open_at(session("unbounded-take"), scratch_path, None).unwrap();
+        let (ledger, _, base) = committed_fixture("unbounded-take");
+        let published = scratch_bus.publish_revision(&base, &ledger);
+        assert!(!published.is_empty());
+        for event in &published {
+            writeln!(out, "{}", serde_json::to_string(event).unwrap()).unwrap();
+        }
+        drop(out);
+        let total_len = std::fs::metadata(&path).unwrap().len();
+        assert!(total_len > padded_len);
+
+        let mut bytes_read = 0;
+        let history =
+            document_history_at_counted(&path, "unbounded-take", &mut bytes_read).unwrap();
+
+        assert!(!history.is_empty(), "tail revision must still surface");
+        assert_eq!(history[0].revision, base.revision);
+        assert!(
+            bytes_read < total_len,
+            "scan read {bytes_read} of {total_len} bytes; the budget should stop it short of the whole file"
+        );
+        assert!(
+            bytes_read >= DOCUMENT_HISTORY_SCAN_BUDGET_BYTES,
+            "scan stopped at {bytes_read} bytes, short of the {DOCUMENT_HISTORY_SCAN_BUDGET_BYTES} byte budget"
+        );
+    }
+
+    /// Not run by default: writes and scans a ~1 GiB fixture to measure
+    /// `document_history_at`'s wall time with the scan budget and substring
+    /// prefilter in place, for a session that never appears in the bus (the
+    /// worst case: every row is read but none ever reaches `serde_json`).
+    /// Run explicitly with:
+    ///   cargo test -p codescribe --lib \
+    ///     transcript_bus::tests::document_history_scan_budget_bounds_a_one_gib_bus \
+    ///     -- --ignored --nocapture
+    #[test]
+    #[ignore = "writes and scans a ~1 GiB fixture; run explicitly, see doc comment"]
+    fn document_history_scan_budget_bounds_a_one_gib_bus() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("one-gib.jsonl");
+        let filler = format!(
+            "{{\"schema\":\"codescribe.transcript.v1\",\"session_id\":\"other-take\",\"padding\":\"{}\"}}\n",
+            "x".repeat(4096)
+        );
+        let mut out = std::fs::File::create(&path).unwrap();
+        while out.metadata().unwrap().len() < 1024 * 1024 * 1024 {
+            out.write_all(filler.as_bytes()).unwrap();
+        }
+        drop(out);
+
+        let started = std::time::Instant::now();
+        let mut bytes_read = 0;
+        let history = document_history_at_counted(&path, "absent-take", &mut bytes_read).unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(history.is_empty());
+        assert!(bytes_read <= DOCUMENT_HISTORY_SCAN_BUDGET_BYTES + 64 * 1024);
+        eprintln!("document_history_at scanned {bytes_read} bytes of a 1 GiB bus in {elapsed:?}");
     }
 
     #[test]
@@ -1692,6 +2146,70 @@ mod tests {
                 .iter()
                 .all(|event| event.audience.as_deref() == Some("*"))
         );
+    }
+
+    /// Integrator (2026-10-01, take agent-channel-0-b351ea82): Fn+0 rows
+    /// reached only the shared bus while every follower read its channel bus.
+    #[test]
+    fn integrator_broadcast_bus_writes_every_row_to_every_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("transcript-events.jsonl");
+        let one = dir.path().join("buses/channel-1.jsonl");
+        let three = dir.path().join("buses/channel-3.jsonl");
+        let mut broadcast = session("agent-channel-0-fanout");
+        broadcast.audience = Some("*".to_string());
+        broadcast.badge_only = true;
+        let bus = TranscriptBus::open_with_paths(
+            broadcast,
+            shared.clone(),
+            vec![one.clone(), three.clone(), one.clone(), shared.clone()],
+        );
+        bus.publish_started();
+        let (ledger, _, revision) = committed_fixture("agent-channel-0-fanout");
+        bus.publish_revision(&revision, &ledger);
+        bus.record_channel_receipt(&serde_json::json!({
+            "schema": "codescribe.channel-session.v1",
+            "kind": "channel_session",
+            "state": "sealed",
+            "channel": "0",
+            "session_id": "agent-channel-0-fanout",
+        }));
+        let read = |path: &Path| std::fs::read_to_string(path).unwrap_or_default();
+        let shared_rows = read(&shared);
+        assert!(shared_rows.lines().count() >= 2, "{shared_rows}");
+        assert_eq!(read(&one), shared_rows, "channel 1 gets the same rows once");
+        assert_eq!(
+            read(&three),
+            shared_rows,
+            "channel 3 gets the same rows once"
+        );
+        assert!(shared_rows.contains("\"audience\":\"*\""), "{shared_rows}");
+        assert!(shared_rows.contains("codescribe.channel-session.v1"));
+    }
+
+    #[test]
+    fn integrator_broken_broadcast_destination_leaves_the_others_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("transcript-events.jsonl");
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, b"file").unwrap();
+        let broken = blocker.join("channel-2.jsonl");
+        let good = dir.path().join("buses/channel-1.jsonl");
+        let mut broadcast = session("agent-channel-0-broken");
+        broadcast.audience = Some("*".to_string());
+        broadcast.badge_only = true;
+        let bus = TranscriptBus::open_with_paths(
+            broadcast,
+            shared.clone(),
+            vec![broken.clone(), good.clone()],
+        );
+        bus.publish_started();
+        let (ledger, _, revision) = committed_fixture("agent-channel-0-broken");
+        bus.publish_revision(&revision, &ledger);
+        let shared_rows = std::fs::read_to_string(&shared).unwrap();
+        assert!(!shared_rows.is_empty());
+        assert_eq!(std::fs::read_to_string(&good).unwrap(), shared_rows);
+        assert!(!broken.exists());
     }
 
     /// Quiet delivery contract (Founder seal cc6c8248): between one start row
@@ -1903,6 +2421,48 @@ mod tests {
     /// The projection carries the typed availability reason, an explicitly
     /// absent ratio, and survives a JSON round-trip byte-for-byte — including
     /// the exact-receipt equality the recovery guard depends on.
+    /// Integrator (2026-10-01): the overlay places speech without words only
+    /// with the take's own clock; receipts written before the field read as no
+    /// clock, never as a guessed rate.
+    #[test]
+    fn integrator_coverage_projection_carries_the_capture_clock_and_reads_old_rows() {
+        use codescribe_core::pipeline::acoustic_ledger::{SealCoverageReceipt, SealCoverageStatus};
+
+        let receipt = SealCoverageReceipt {
+            sample_rate_hz: Some(48_000),
+            session_id: "clock".into(),
+            capture_epoch: 1,
+            speech_samples: 96_000,
+            covered_samples: 33_600,
+            uncovered_speech_ranges: Vec::new(),
+            max_uncovered_samples: 62_400,
+            incomplete_threshold_samples: 4_000,
+            status: SealCoverageStatus::Incomplete,
+            speech_producer: "capture_energy".into(),
+            availability: "observed".into(),
+            observed_samples: Some(96_000),
+        };
+        let projected = ProjectedSealCoverageReceipt::from(&receipt);
+        assert_eq!(projected.sample_rate_hz, Some(48_000));
+        let json = serde_json::to_string(&projected).unwrap();
+        assert!(json.contains("\"sample_rate_hz\":48000"), "{json}");
+        assert_eq!(
+            serde_json::from_str::<ProjectedSealCoverageReceipt>(&json).unwrap(),
+            projected
+        );
+
+        let mut old = projected.clone();
+        old.sample_rate_hz = None;
+        let old_row = serde_json::to_string(&old).unwrap();
+        assert!(!old_row.contains("sample_rate_hz"), "{old_row}");
+        assert_eq!(
+            serde_json::from_str::<ProjectedSealCoverageReceipt>(&old_row)
+                .unwrap()
+                .sample_rate_hz,
+            None
+        );
+    }
+
     #[test]
     fn coverage_projection_round_trips_missing_ratio_and_exact_receipt_equality() {
         use codescribe_core::pipeline::acoustic_ledger::{
@@ -1910,6 +2470,7 @@ mod tests {
         };
 
         let unavailable = SealCoverageReceipt {
+            sample_rate_hz: None,
             session_id: "round-trip".into(),
             capture_epoch: 7,
             speech_samples: 0,
@@ -2040,6 +2601,7 @@ mod tests {
             bus.publish_started();
             if measured {
                 let coverage = SealCoverageReceipt {
+                    sample_rate_hz: None,
                     session_id: id.into(),
                     capture_epoch: 7,
                     speech_samples: 32_000,
@@ -2182,6 +2744,7 @@ mod tests {
 
     #[test]
     fn open_failure_keeps_the_production_bus_and_exact_terminal_text() {
+        let _serial = persistence_log_serial();
         let temp = tempfile::tempdir().unwrap();
         // Opening a directory as a file fails without touching user permissions.
         let bus = TranscriptBus::open_with_path(session("open-fault"), temp.path().to_path_buf());
@@ -2198,6 +2761,11 @@ mod tests {
 
     #[test]
     fn persistence_failure_is_logged_without_logging_the_committed_document() {
+        // End-to-end proof that the production `warn!` still fires with the
+        // exact contract content. The serial guard keeps sibling tests from
+        // hitting the same callsite while this scoped subscriber's interest
+        // is cached (see `PERSISTENCE_LOG_SERIAL`).
+        let _serial = persistence_log_serial();
         let temp = tempfile::tempdir().unwrap();
         let log_path = temp.path().join("diagnostics.log");
         let log_file = std::fs::File::create(&log_path).unwrap();
@@ -2208,6 +2776,10 @@ mod tests {
             .with_writer(move || log_file.try_clone().unwrap())
             .finish();
         tracing::subscriber::with_default(subscriber, || {
+            // This test is the only one running that can hit the warn
+            // callsite, so recomputing interest with this dispatcher
+            // registered settles the cache deterministically.
+            tracing::callsite::rebuild_interest_cache();
             let bus = TranscriptBus::open_with_path(
                 session("diagnostic-fault"),
                 temp.path().to_path_buf(),
@@ -2225,7 +2797,46 @@ mod tests {
     }
 
     #[test]
+    fn persistence_failure_reaches_the_diagnostic_sink_without_the_document() {
+        // The deterministic twin of the tracing capture above: the production
+        // failure report is observed through the injected sink, so the
+        // assertion cannot depend on tracing's process-global callsite state.
+        let _serial = persistence_log_serial();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("events.jsonl");
+        let mut bus = TranscriptBus::open_at(session("sink-fault"), path.clone(), None).unwrap();
+        let diagnostics = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&diagnostics);
+        bus.set_persistence_diagnostic_sink(Arc::new(move |diagnostic| {
+            observed.lock().unwrap().push((
+                diagnostic.session_id.to_string(),
+                diagnostic.file.to_string(),
+                diagnostic.error.to_string(),
+            ));
+        }));
+        let fault = inject_fault(&bus);
+        fault.lock().unwrap().remaining = Some(0);
+        bus.publish_started();
+        let (ledger, _, revision) = committed_fixture("sink-fault");
+        let events = bus.publish_revision(&revision, &ledger);
+        assert_committed(&events, &revision, "sink-fault");
+        end_once(&bus, &revision.rendered_text);
+        // The first failed append disables persistence for the session, so
+        // exactly one diagnostic is reported.
+        let diagnostics = diagnostics.lock().unwrap();
+        assert_eq!(diagnostics.len(), 1, "diagnostics: {diagnostics:?}");
+        let (session_id, file, error) = &diagnostics[0];
+        assert_eq!(session_id, "sink-fault");
+        assert_eq!(file, "events.jsonl");
+        assert!(error.contains("controlled append failure"));
+        for payload in [session_id, file, error] {
+            assert!(!payload.contains("Zażółć"));
+        }
+    }
+
+    #[test]
     fn failed_start_and_revision_writes_do_not_suppress_committed_entries() {
+        let _serial = persistence_log_serial();
         for fail_start in [true, false] {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("events.jsonl");
@@ -2253,6 +2864,7 @@ mod tests {
 
     #[test]
     fn terminal_write_and_flush_failures_keep_one_delivery_obligation() {
+        let _serial = persistence_log_serial();
         for flush in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("events.jsonl");
@@ -2280,6 +2892,7 @@ mod tests {
 
     #[test]
     fn prefix_failure_is_not_retried_and_new_sessions_do_not_append_to_it() {
+        let _serial = persistence_log_serial();
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("events.jsonl");
         let bus = TranscriptBus::open_at(session("prefix"), path.clone(), None).unwrap();
@@ -2338,6 +2951,7 @@ mod tests {
 
     #[test]
     fn uncertain_flush_is_not_replayed_when_sink_recovers() {
+        let _serial = persistence_log_serial();
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("events.jsonl");
         let bus = TranscriptBus::open_at(session("flush"), path.clone(), None).unwrap();
@@ -2377,6 +2991,7 @@ mod tests {
 
     #[test]
     fn terminal_user_revision_survives_failure_without_reopening_delivery() {
+        let _serial = persistence_log_serial();
         for failing in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("events.jsonl");

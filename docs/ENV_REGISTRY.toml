@@ -246,12 +246,12 @@ reload = "hot"
 category = "ui"
 description = "Enable live non-assistive transcription overlay; when disabled the next capture uses a buffered no-overlay profile"
 
-[vars.AUTO_PASTE_ENABLED]
-default = "1"
-type = "bool"
+[vars.PASTE_MODE]
+default = "safe"
+type = "string"
 reload = "hot"
 category = "clipboard"
-description = "Automatically paste completed non-assistive dictation; no-speech, empty output, Notes save-only, assistive, and safety failures remain hard vetoes"
+description = "Automatic paste of completed non-assistive dictation: safe (only into a focused editable non-password field; terminals only when the executable-content guard passes; otherwise held on the clipboard with a notification), comfort (wherever the caret is, terminals included; password fields and the terminal guard still hold), off (never paste; nothing touches the pasteboard). No-speech, empty output, Notes save-only and assistive remain hard vetoes. Replaces the retired AUTO_PASTE_ENABLED bool (settings.json true -> safe, false -> off)"
 
 [vars.TRAY_START_ASSISTIVE]
 default = "0"
@@ -456,6 +456,13 @@ reload = "hot"
 category = "stt"
 description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture."
 
+[vars.WHISPER_ADAPTIVE_BUFFER]
+default = "false"
+type = "bool"
+reload = "hot"
+category = "stt"
+description = "Developer-build experiment, next take only: preserve sealed phrase boundaries in a bounded 8 s coalescer, retain 1 s overlap and 1.2 s oldest-member wait. Production ignores this setting. Both modes share decode/admit PCM geometry and ledger admission."
+
 [vars.WHISPER_CONTEXT_WINDOW_SEC]
 default = "8.0"
 type = "f32"
@@ -484,12 +491,26 @@ reload = "hot"
 category = "stt"
 description = "Opt-in gate for Candle Whisper runtime-lexicon initial_prompt. Default OFF after W2-F measured a 100% WER regression with the active prompt."
 
-[vars.CODESCRIBE_OVERLAY_HIGHLIGHTS]
-default = "0"
-type = "bool"
-reload = "hot"
+[vars.CODESCRIBE_WORD_CONFIDENCE_WHISPER_LOGPROB]
+default = "-1.0"
+type = "f32"
+reload = "restart"
 category = "stt"
-description = "W13-6B span-based overlay highlight layer (lexicon-corrected words + Silero speech-gap pustki) and one-click send-span-to-Teach. Default OFF. No new permission prompts; consumes ReplaceRange/on_final/VAD data already crossing the bridge after W13-3A."
+description = "A6 per-word uncertainty threshold for Whisper slots: a word paints uncertain when the min of its own subtoken logprobs (d1) falls below this. NOT CALIBRATED — conservative placeholder pending a corpus run (audit section f); treat painted words as candidates, not verdicts."
+
+[vars.CODESCRIBE_WORD_CONFIDENCE_VENDOR_PROBABILITY]
+default = "0.5"
+type = "f32"
+reload = "restart"
+category = "stt"
+description = "A6 per-word uncertainty threshold for vendor cloud / remote-tail slots: a word paints uncertain when its words[].probability falls below this. NOT CALIBRATED — conservative placeholder pending a corpus run; scale is incomparable with Whisper logprob (d2: thresholds stay per-source)."
+
+[vars.CODESCRIBE_WORD_CONFIDENCE_APPLE_CONFIDENCE]
+default = ""
+type = "f32"
+reload = "restart"
+category = "stt"
+description = "A6 per-word uncertainty threshold for Apple segment confidence (0..1, isFinal only; 0.0 on partials means no metric). Unset by default: no Apple threshold exists until the attribute's real pl-PL distribution is measured (d4), so Apple words are never painted from an invented cutoff."
 
 [vars.CODESCRIBE_SILERO_FUSION]
 default = "1"
@@ -895,6 +916,13 @@ type = "string"
 reload = "hot"
 category = "llm"
 description = "Normalized formatting policy: off, correction, smart, or max; legacy aliases raw, medium, and creative migrate to off, correction, and max"
+
+[vars.CODESCRIBE_FORMAT_ON_DEVICE]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "llm"
+description = "Opt-in: 1/true/yes/on routes the non-assistive formatting lane to the host-registered Apple on-device model first; any on-device failure, or no registered host formatter, falls back to the configured cloud provider inside the same attempt. Two writers fold into one runtime-snapshot value: the developer-build Lab toggle (settings speech.formatting.on_device, applies to the next formatting pass) and this process/.env power knob, which outranks the toggle and is recorded in the snapshot env overlay; a .env change takes effect on restart. Off by default because Polish is contractually unsupported by the system model."
 
 [vars.LLM_FORMATTING_AUTH_MODE]
 default = "api-key"
@@ -1760,3 +1788,10 @@ type = "bool"
 reload = "restart"
 category = "transcript"
 description = "Opt-in switch for the transcript delivery tagging lane; unset/empty keeps tagging off."
+
+[vars.CODESCRIBE_DEVELOPER_SURFACE]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "build"
+description = "Build-time developer surface bit shared by Rust and Swift. The supported app build verifies private Voice Lab access and its public-key pack before accepting 1. Distribution release forces 0. Runtime environment cannot enable a production binary."

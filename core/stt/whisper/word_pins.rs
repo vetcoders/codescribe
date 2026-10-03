@@ -24,6 +24,12 @@ pub struct MeasuredWord {
     pub text: String,
     pub start_secs: f32,
     pub end_secs: f32,
+    /// First text token of this word in the decode's filtered token stream
+    /// (EOT/timestamp rows removed). Lets the caller re-aggregate per-token
+    /// evidence — A6 per-word confidence — after punctuation merges.
+    pub token_start: usize,
+    /// Number of text tokens the word spans.
+    pub token_len: usize,
 }
 
 /// Align text tokens to encoder frames.
@@ -146,6 +152,8 @@ pub fn align_measured_words(
             text: text.to_string(),
             start_secs: start,
             end_secs: end,
+            token_start: boundaries[index],
+            token_len: end_index - boundaries[index],
         });
     }
     Some(words)
@@ -193,6 +201,9 @@ pub fn merge_word_punctuation(words: &mut Vec<MeasuredWord>) {
             let taken = words[previous].clone();
             words[index].text = format!("{}{}", taken.text.trim(), words[index].text.trim());
             words[index].start_secs = taken.start_secs;
+            let token_end = words[index].token_start + words[index].token_len;
+            words[index].token_start = taken.token_start;
+            words[index].token_len = token_end - taken.token_start;
             words[previous].text.clear();
         }
         index -= 1;
@@ -205,6 +216,8 @@ pub fn merge_word_punctuation(words: &mut Vec<MeasuredWord>) {
             let end = words[index + 1].end_secs;
             words[index].text = format!("{}{following}", words[index].text.trim());
             words[index].end_secs = end;
+            words[index].token_len = (words[index + 1].token_start + words[index + 1].token_len)
+                - words[index].token_start;
             words[index + 1].text.clear();
         }
         index += 1;
@@ -410,16 +423,22 @@ mod tests {
                 text: "raz".into(),
                 start_secs: 0.0,
                 end_secs: 0.2,
+                token_start: 0,
+                token_len: 1,
             },
             MeasuredWord {
                 text: "dwa".into(),
                 start_secs: 0.2,
                 end_secs: 0.4,
+                token_start: 1,
+                token_len: 1,
             },
             MeasuredWord {
                 text: ",".into(),
                 start_secs: 0.4,
                 end_secs: 0.46,
+                token_start: 2,
+                token_len: 1,
             },
         ];
         merge_word_punctuation(&mut words);
@@ -427,6 +446,9 @@ mod tests {
         assert_eq!(words[1].text, "dwa,");
         assert_eq!(words[1].start_secs, 0.2);
         assert_eq!(words[1].end_secs, 0.46);
+        // The punctuation token joins the word's span so per-token evidence
+        // (A6 confidence aggregation) covers the merged surface.
+        assert_eq!((words[1].token_start, words[1].token_len), (1, 2));
     }
 
     #[test]

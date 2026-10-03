@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
+#[cfg(not(any(test, feature = "test-isolation")))]
 use directories::BaseDirs;
 use rand::distr::Alphanumeric;
 use rand::{RngExt, rng};
@@ -691,18 +692,29 @@ fn is_assistive_wire_label(line: &str) -> bool {
 /// Root directory for all app-owned data. `CODESCRIBE_DATA_DIR` (tilde
 /// expanded) overrides it — the hook tests and isolated runs rely on — and the
 /// hardcoded Application Support path is the last resort when the platform
-/// directories cannot be resolved.
+/// directories cannot be resolved. Test builds default to a per-process
+/// temporary root instead, so tests never observe the account's real store.
 pub(crate) fn app_data_dir() -> PathBuf {
+    if let Some(host) = crate::config::runtime_host::selected() {
+        return host.data_directory.clone();
+    }
     if let Ok(custom) = std::env::var("CODESCRIBE_DATA_DIR") {
         return PathBuf::from(shellexpand::tilde(&custom).into_owned());
     }
 
-    BaseDirs::new()
-        .map(|dirs| dirs.data_dir().join("Codescribe"))
-        .unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            PathBuf::from(home).join("Library/Application Support/Codescribe")
-        })
+    #[cfg(any(test, feature = "test-isolation"))]
+    {
+        crate::test_isolation::test_process_data_root()
+    }
+    #[cfg(not(any(test, feature = "test-isolation")))]
+    {
+        BaseDirs::new()
+            .map(|dirs| dirs.data_dir().join("Codescribe"))
+            .unwrap_or_else(|| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                PathBuf::from(home).join("Library/Application Support/Codescribe")
+            })
+    }
 }
 
 /// Reduce a caller-supplied attachment name to a safe leaf file name: drop any
@@ -1650,6 +1662,7 @@ mod tests {
     #[serial]
     fn inline_image_roundtrips_through_disk_backed_asset() -> Result<()> {
         let tmp = TempDir::new()?;
+        let _data_dir = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
         let store = ThreadStore::new_in(tmp.path().join("threads"))?;
         let image_bytes = format!("w5a-inline-roundtrip-bytes-{}", std::process::id()).into_bytes();
 
@@ -1688,8 +1701,6 @@ mod tests {
         let raw = fs::read_to_string(store.thread_file_path(&thread.id)?)?;
         assert!(raw.contains("image_asset"));
         assert!(!raw.contains("data_omitted"));
-
-        fs::remove_file(&asset.path).ok();
         Ok(())
     }
 
@@ -1697,6 +1708,8 @@ mod tests {
     #[test]
     #[serial]
     fn inline_image_asset_is_written_once_across_saves() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let _data_dir = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
         let block = ContentBlock::Image {
             data: b"w5a-dedup-bytes".to_vec(),
             media_type: "image/png".to_string(),
@@ -1724,8 +1737,6 @@ mod tests {
             b"sentinel",
             "existing asset must be referenced, not rewritten"
         );
-
-        fs::remove_file(&path).ok();
         Ok(())
     }
 

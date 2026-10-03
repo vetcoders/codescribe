@@ -36,12 +36,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   var onDefer: (() -> Void)?
   var pasteTargetAppNameValue: String?
   var onPasteTargetRead: (() -> Void)?
-  var persistedPolicy = OverlayPolicySnapshot(
-    autoPasteEnabled: true,
-    autoFormatLevel: .correction
-  )
-  var persistAutoPasteWrites = true
-  var autoPasteWrites: [Bool] = []
+  var persistedPolicy = OverlayPolicySnapshot(autoFormatLevel: .correction)
   var pinEnabled = false
   var pinWrites: [Bool] = []
   func overlayKeepVisibleBetweenTakes() -> Bool { pinEnabled }
@@ -65,9 +60,57 @@ private final class OverlayStateTestEngine: DictationEngine {
   var onHistoryRead: (() -> Void)?
   var onRestore: (() -> Void)?
   var restoredSelections: [UInt64] = []
+  var rosterSnapshot: [CsChannelRosterState] = []
+  var toggledDigits: [UInt8] = []
+  var toggleFailure: Error?
+  struct WordClipRequest: Equatable {
+    let sessionId: String
+    let captureEpoch: UInt64
+    let sampleStart: UInt64
+    let sampleEnd: UInt64
+    let padMs: UInt32
+  }
+  struct TeachRequest: Equatable {
+    let variant: String
+    let canonical: String
+    let kind: String
+  }
+  var wordClipRequests: [WordClipRequest] = []
+  var wordClipPath: String?
+  var teachRequests: [TeachRequest] = []
+  var teachAcknowledgement = "Saved as evidence — 1/3 manual confirmations"
+
+  func wordAudioClip(
+    sessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64,
+    padMs: UInt32
+  ) throws -> String {
+    wordClipRequests.append(
+      WordClipRequest(
+        sessionId: sessionId, captureEpoch: captureEpoch, sampleStart: sampleStart,
+        sampleEnd: sampleEnd, padMs: padMs))
+    guard let wordClipPath else {
+      throw NSError(domain: "OverlayStateTestWordClip", code: 1)
+    }
+    return wordClipPath
+  }
+  func teachSpan(variant: String, canonical: String, kind: String) throws
+    -> CsQualityCommitResult
+  {
+    teachRequests.append(TeachRequest(variant: variant, canonical: canonical, kind: kind))
+    return CsQualityCommitResult(
+      pairsLearned: 0, evidenceOnly: true, acknowledgement: teachAcknowledgement,
+      teachSeen: 1, teachRequired: 3)
+  }
+
+  func channelRosterSnapshot() async -> [CsChannelRosterState] { rosterSnapshot }
+  func toggleAgentChannel(digit: UInt8) async throws {
+    toggledDigits.append(digit)
+    if let toggleFailure { throw toggleFailure }
+  }
 
   func setListener(_ listener: CsTranscriptionListener) {}
-  func startRecording(language: CsLanguage?) async throws {}
+  func startsInAssistiveMode() -> Bool { false }
+  func startRecording(assistive: Bool, language: CsLanguage?) async throws {}
   func stopRecording() async throws -> String {
     onStopRecording?()
     return ""
@@ -137,14 +180,6 @@ private final class OverlayStateTestEngine: DictationEngine {
     policyReadCount += 1
     return persistedPolicy
   }
-  func setAutoPasteEnabled(_ enabled: Bool) {
-    autoPasteWrites.append(enabled)
-    guard persistAutoPasteWrites else { return }
-    persistedPolicy = OverlayPolicySnapshot(
-      autoPasteEnabled: enabled,
-      autoFormatLevel: persistedPolicy.autoFormatLevel
-    )
-  }
   func pasteText(text: String) async throws -> CsPasteResult {
     pastedText = text
     pasteCallCount += 1
@@ -202,6 +237,75 @@ private final class OverlayStateTestClock {
 
 @MainActor
 final class OverlayStateTests: XCTestCase {
+  func testRosterToggleUsesEngineOnceAndRefreshesItsOpenState() async {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    state.applyChannelDelivery([
+      .init(channel: "2", agent: "miron", deliveryID: nil, stage: nil, isOpen: false)
+    ])
+    engine.rosterSnapshot = [
+      .init(
+        channel: "2", audience: "miron", open: true, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true)
+    ]
+
+    await state.toggleAgentChannel(2)
+
+    XCTAssertEqual(engine.toggledDigits, [2])
+    XCTAssertTrue(state.channelHudStates["2"]?.open == true)
+    XCTAssertTrue(state.hasOpenChannel)
+    XCTAssertNil(state.channelToggleError)
+  }
+
+  func testFailedRosterToggleRetainsStateAndReportsError() async {
+    let engine = OverlayStateTestEngine()
+    engine.toggleFailure = NSError(
+      domain: "Channel test", code: 1,
+      userInfo: [NSLocalizedDescriptionKey: "Controller unavailable"])
+    let state = OverlayState()
+    state.engine = engine
+    state.applyChannelDelivery([
+      .init(channel: "3", agent: "roman", deliveryID: nil, stage: nil, isOpen: false)
+    ])
+
+    await state.toggleAgentChannel(3)
+
+    XCTAssertEqual(engine.toggledDigits, [3])
+    XCTAssertFalse(state.hasOpenChannel, "a failed click cannot optimistically open a channel")
+    XCTAssertTrue(state.channelHudStates.isEmpty)
+    XCTAssertEqual(state.channelToggleError, "Controller unavailable")
+  }
+
+  func testRosterSnapshotProjectsDeadAndUnknownFollowersWithoutGuessing() {
+    let state = OverlayState()
+    state.applyChannelRoster([
+      .init(
+        channel: "1", audience: "klaudiusz", open: false, loud: false,
+        autosealDeadlineUnixMs: 1_700_000_000_000, followerAlive: false),
+      .init(
+        channel: "2", audience: "miron", open: false, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: nil),
+    ])
+
+    XCTAssertEqual(state.channelHudStates["1"]?.followerAlive, false)
+    XCTAssertNil(state.channelHudStates["2"]?.followerAlive)
+    XCTAssertEqual(
+      state.channelHudStates["1"]?.autosealDeadline,
+      Date(timeIntervalSince1970: 1_700_000_000))
+    XCTAssertNil(state.channelHudStates["2"]?.autosealDeadline)
+    XCTAssertTrue(state.channelDelivery.isEmpty, "there is no lease-backed mailbox row")
+    XCTAssertEqual(state.visibleChannelRows.map(\.channel), ["1", "2"])
+    XCTAssertEqual(state.visibleChannelRows.first?.agent, "klaudiusz")
+    XCTAssertNil(
+      state.visibleChannelRows.first?.stage, "the roster must not invent delivery evidence")
+    let view = OverlayChannelStatusView(
+      channels: state.visibleChannelRows, unavailable: false, palette: .dark, animates: false,
+      hudStates: state.channelHudStates)
+    XCTAssertTrue(view.hasDeadFollower(state.visibleChannelRows[0]))
+    XCTAssertFalse(view.hasDeadFollower(state.visibleChannelRows[1]))
+  }
+
   func testCompactPaintCannotAdmitCaptureOrMutateDocument() {
     let state = OverlayState()
     let initial = CsCompactProjection(
@@ -338,6 +442,8 @@ final class OverlayStateTests: XCTestCase {
     reducerRevision: UInt64? = nil,
     reducerAction: String? = nil,
     manualEditReceipt: String? = nil,
+    label: String? = nil,
+    deliveryText: String? = nil,
     sealCoverage: CsProjectedSealCoverageReceipt? = nil,
     consultationPresentations: [CsProjectedConsultationPresentation] = []
   ) {
@@ -375,6 +481,8 @@ final class OverlayStateTests: XCTestCase {
         reducerRevision: reducerRevision,
         sampleStart: sampleStart,
         sampleEnd: sampleEnd,
+        label: label,
+        deliveryText: deliveryText,
         canPaste: canPaste,
         canInsert: canInsert,
         canCopy: canCopy,
@@ -392,6 +500,201 @@ final class OverlayStateTests: XCTestCase {
 
   // W2 contracts: synthetic projections enter the production boundary; unrun
   // until the integrator restores Swift gates and regenerates the bindings.
+  // A6: a projection carrying one uncertain span surfaces it on OverlayState
+  // verbatim — the overlay classifies nothing itself (renderer is cut 3).
+  func testUncertainSpanFromProjectionReachesOverlayState() {
+    let state = OverlayState()
+    let span = CsUncertainSpan(
+      occurrenceSessionId: "a6-session",
+      occurrenceCaptureEpoch: 1,
+      slotSampleStart: 32_000,
+      slotSampleEnd: 48_000,
+      utf16Start: 8,
+      utf16End: 11,
+      source: "whisper_token_logprob",
+      value: -1.9,
+      surfaceRewritten: false,
+      producer: "whisper"
+    )
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: 1,
+        emittedAt: "2026-09-30T00:00:00Z",
+        sessionId: "a6-session",
+        renderedText: "Iwo Iwo Iwo Iwo Iwo",
+        phase: "listening",
+        terminal: false,
+        reducerAction: "record_ledger_projection",
+        uncertainSpans: [span]
+      )
+    )
+
+    XCTAssertEqual(state.uncertainSpans.count, 1)
+    XCTAssertEqual(state.uncertainSpans.first, span)
+    XCTAssertEqual(state.formattedText, "Iwo Iwo Iwo Iwo Iwo")
+
+    // A later revision without spans replaces, never accumulates.
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: 2,
+        emittedAt: "2026-09-30T00:00:01Z",
+        sessionId: "a6-session",
+        renderedText: "Iwo Iwo Iwo Iwo Iwo",
+        phase: "listening",
+        terminal: false,
+        reducerAction: "record_ledger_projection"
+      )
+    )
+    XCTAssertTrue(state.uncertainSpans.isEmpty)
+  }
+
+  // A6-3: canvas projection of the spans — the renderer's input contract.
+  private func a6Span(utf16Start: UInt32, utf16End: UInt32, rewritten: Bool = false)
+    -> CsUncertainSpan
+  {
+    CsUncertainSpan(
+      occurrenceSessionId: "a6-session",
+      occurrenceCaptureEpoch: 1,
+      slotSampleStart: 32_000,
+      slotSampleEnd: 48_000,
+      utf16Start: utf16Start,
+      utf16End: utf16End,
+      source: "whisper_token_logprob",
+      value: -1.9,
+      surfaceRewritten: rewritten,
+      producer: "whisper"
+    )
+  }
+
+  func testCanvasUncertainWordsPaintExactlyTheThirdIwo() {
+    let state = OverlayState()
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: 1,
+        emittedAt: "2026-09-30T00:00:00Z",
+        sessionId: "a6-session",
+        renderedText: "Iwo Iwo Iwo Iwo Iwo",
+        phase: "listening",
+        terminal: false,
+        reducerAction: "record_ledger_projection",
+        uncertainSpans: [a6Span(utf16Start: 8, utf16End: 11)]
+      )
+    )
+
+    let words = state.canvasUncertainWords
+    XCTAssertEqual(words.count, 1)
+    XCTAssertEqual(words.first?.range, NSRange(location: 8, length: 3))
+    XCTAssertEqual(words.first?.word, "Iwo")
+    XCTAssertEqual(words.first?.occurrenceSessionId, "a6-session")
+    XCTAssertEqual(words.first?.slotSampleStart, 32_000)
+  }
+
+  func testDirtyRevisionDraftDropsAllUncertainPaint() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: 1,
+        emittedAt: "2026-09-30T00:00:00Z",
+        sessionId: "a6-session",
+        renderedText: "Iwo Iwo Iwo",
+        phase: "formatted",
+        terminal: true,
+        reducerAction: "apply_ledger_decision",
+        uncertainSpans: [a6Span(utf16Start: 0, utf16End: 3)]
+      )
+    )
+    XCTAssertEqual(state.canvasUncertainWords.count, 1)
+
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("Iwo Iwo changed")
+
+    XCTAssertTrue(state.isRevisionDraftDirty)
+    XCTAssertTrue(
+      state.canvasUncertainWords.isEmpty,
+      "a dirty draft invalidates every span — never paint the wrong bytes")
+  }
+
+  func testCoverageRefusedWithoutSpansHasNoUncertainPaint() {
+    let state = OverlayState()
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: 1,
+        emittedAt: "2026-09-30T00:00:00Z",
+        sessionId: "a6-session",
+        renderedText: "Tekst zachowany",
+        phase: "coverage_refused",
+        terminal: true,
+        reducerAction: "record_coverage_refusal"
+      )
+    )
+    XCTAssertTrue(
+      state.canvasUncertainWords.isEmpty,
+      "coverage_refused is the completeness axis; it never creates word paint")
+  }
+
+  func testPlayUncertainWordRequestsThePinnedClipWithPadding() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    let word = OverlayUncertainWord(
+      range: NSRange(location: 8, length: 3),
+      word: "Iwo",
+      source: "whisper_token_logprob",
+      value: -1.9,
+      surfaceRewritten: false,
+      producer: "whisper",
+      occurrenceSessionId: "a6-session",
+      occurrenceCaptureEpoch: 1,
+      slotSampleStart: 32_000,
+      slotSampleEnd: 48_000
+    )
+
+    state.playUncertainWord(word)
+
+    XCTAssertEqual(
+      engine.wordClipRequests,
+      [
+        OverlayStateTestEngine.WordClipRequest(
+          sessionId: "a6-session", captureEpoch: 1, sampleStart: 32_000,
+          sampleEnd: 48_000, padMs: 150)
+      ])
+    XCTAssertEqual(state.toast, "Word audio unavailable", "a missing clip is an honest notice")
+  }
+
+  func testTeachUncertainWordUsesTheExistingQualityPath() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    let word = OverlayUncertainWord(
+      range: NSRange(location: 8, length: 3),
+      word: "iwo",
+      source: "whisper_token_logprob",
+      value: -1.9,
+      surfaceRewritten: false,
+      producer: "whisper",
+      occurrenceSessionId: "a6-session",
+      occurrenceCaptureEpoch: 1,
+      slotSampleStart: 32_000,
+      slotSampleEnd: 48_000
+    )
+
+    state.teachUncertainWord(word, canonical: "Iwo")
+
+    XCTAssertEqual(
+      engine.teachRequests,
+      [
+        OverlayStateTestEngine.TeachRequest(
+          variant: "iwo", canonical: "Iwo", kind: "lexicon_corrected")
+      ]
+    )
+    XCTAssertEqual(state.toast, "Saved as evidence — 1/3 manual confirmations")
+
+    state.teachUncertainWord(word, canonical: "   ")
+    XCTAssertEqual(engine.teachRequests.count, 1, "an empty correction teaches nothing")
+  }
+
   func testLiveConsultationProjectionPreservesGroupEvidenceWithoutEndingCapture() {
     let state = OverlayState()
     var ended: [String] = []
@@ -938,60 +1241,18 @@ final class OverlayStateTests: XCTestCase {
   func testOverlayPolicyRefreshesAtSessionEntryFromPersistedTruth() {
     let state = OverlayState()
     let engine = OverlayStateTestEngine()
-    engine.persistedPolicy = OverlayPolicySnapshot(
-      autoPasteEnabled: false,
-      autoFormatLevel: .off
-    )
+    engine.persistedPolicy = OverlayPolicySnapshot(autoFormatLevel: .off)
     state.engine = engine
 
     state.handleRecordingPreparing()
-    XCTAssertFalse(state.autoPasteEnabled)
     XCTAssertEqual(state.autoFormatLevel, .off)
     XCTAssertEqual(engine.policyReadCount, 1)
 
-    engine.persistedPolicy = OverlayPolicySnapshot(
-      autoPasteEnabled: true,
-      autoFormatLevel: .max
-    )
+    engine.persistedPolicy = OverlayPolicySnapshot(autoFormatLevel: .max)
     state.handleRecordingStarted()
-    XCTAssertTrue(state.autoPasteEnabled)
     XCTAssertEqual(state.autoFormatLevel, .max)
     XCTAssertEqual(engine.policyReadCount, 2)
-  }
-
-  func testAutoPasteWriteReconcilesSuccessAndFailureWithoutDelivery() {
-    for persists in [true, false] {
-      let state = OverlayState()
-      let engine = OverlayStateTestEngine()
-      engine.persistedPolicy = OverlayPolicySnapshot(
-        autoPasteEnabled: false,
-        autoFormatLevel: .off
-      )
-      engine.persistAutoPasteWrites = persists
-      state.engine = engine
-      state.handleRecordingPreparing()
-
-      state.setAutoPasteEnabled(true)
-
-      XCTAssertEqual(engine.autoPasteWrites, [true])
-      XCTAssertEqual(state.autoPasteEnabled, persists)
-      XCTAssertEqual(state.autoFormatLevel, .off)
-      XCTAssertEqual(engine.policyReadCount, 2)
-      XCTAssertEqual(engine.pasteCallCount, 0)
-    }
-  }
-
-  func testAssistiveFenceMakesAutoPasteControlUnavailableAndNonWriting() {
-    let state = OverlayState()
-    let engine = OverlayStateTestEngine()
-    state.engine = engine
-    state.setAutoPasteControlAvailable(false)
-
-    state.setAutoPasteEnabled(false)
-
-    XCTAssertFalse(state.autoPasteControlAvailable)
-    XCTAssertTrue(engine.autoPasteWrites.isEmpty)
-    XCTAssertEqual(engine.pasteCallCount, 0)
+    XCTAssertEqual(engine.pasteCallCount, 0, "a policy read never delivers")
   }
 
   func testQuietInputAdvisoryPreservesTranscriptAndDelivery() {
@@ -1035,9 +1296,10 @@ final class OverlayStateTests: XCTestCase {
         mode: .formatted, hasPresentationStatus: false, isCollapsed: false,
         hasLowInputSignal: true
       ).showsCoverageWarning)
-    XCTAssertEqual(
-      OverlayCoverageStatus.message,
-      "Recording quality low. Run mic calibration and check surroundings.")
+    // Only the measured quiet input is a microphone fact; it alone may send
+    // the user to mic calibration.
+    XCTAssertEqual(OverlayWarningCopy.quietInput.owner, .microphone)
+    XCTAssertTrue(OverlayWarningCopy.quietInput.sentence.contains("mic calibration"))
   }
 
   func testQuietInputAdvisoryRequiresSpeechAndRecoversWithoutFlicker() {
@@ -1265,6 +1527,7 @@ final class OverlayStateTests: XCTestCase {
     state.setKeepVisibleBetweenTakes(true)
     var closes = 0
     state.onClose = { closes += 1 }
+    state.onCloseIntent = { closes += 1 }
 
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
@@ -1835,8 +2098,7 @@ final class OverlayStateTests: XCTestCase {
     for level in FormattingPolicyOption.allCases {
       let state = OverlayState()
       let engine = OverlayStateTestEngine()
-      engine.persistedPolicy = OverlayPolicySnapshot(
-        autoPasteEnabled: true, autoFormatLevel: .smart)
+      engine.persistedPolicy = OverlayPolicySnapshot(autoFormatLevel: .smart)
       state.engine = engine
       state.handleRecordingPreparing()
       projectText(
@@ -1887,18 +2149,22 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(OverlayIntentRail.projectedIntents(for: state).isEmpty)
 
     projectText(
-      engine.formatterRenderedText,
+      "tekst bazowy do formatowania",
       to: state,
       canCopy: true,
       canFormat: true,
       terminal: true,
+      lifecycleTerminal: false,
       sessionId: "formatter-session",
-      reducerRevision: 12,
-      reducerAction: "apply_manual_edit",
-      manualEditReceipt: "formatter-formatter-session-11-12-0"
+      reducerRevision: 11,
+      reducerAction: "derived_projection",
+      label: "formatter-derived-formatter-session-11-9223372036854775809",
+      deliveryText: engine.formatterRenderedText
     )
 
     XCTAssertEqual(state.formattedText, engine.formatterRenderedText)
+    XCTAssertEqual(state.latestTranscriptProjection?.renderedText, "tekst bazowy do formatowania")
+    XCTAssertEqual(state.revision, 11)
     XCTAssertFalse(state.formatterCommitPending)
     XCTAssertNil(state.formatterError)
     XCTAssertNil(state.userRevisionProvenance, "formatter is not a human correction")
@@ -1915,6 +2181,36 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(state.formatterError?.contains("gateway unavailable") == true)
   }
 
+  func testDerivedOverlayDisplaysSmartButSendsRawToAgent() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    let raw = " Iwo yyy [laugh] plan.\n"
+    projectText(raw, to: state, terminal: true, reducerRevision: 11)
+    projectText(
+      raw, to: state, terminal: true, lifecycleTerminal: false,
+      reducerRevision: 11, reducerAction: "derived_projection",
+      label: "formatter-derived-test", deliveryText: "Smart version")
+    XCTAssertEqual(state.formattedText, "Smart version")
+    XCTAssertEqual(state.latestTranscriptProjection?.renderedText, raw)
+    let delivered = expectation(description: "Raw delivered to agent")
+    engine.onAssistiveSend = { delivered.fulfill() }
+    state.sendToAgent()
+    await fulfillment(of: [delivered], timeout: 1)
+    XCTAssertEqual(engine.sentAssistiveTexts, [raw])
+  }
+
+  func testLightPlusDeadlineReceiptKeepsRawAndShowsNotice() {
+    let state = OverlayState()
+    projectText("Iwo yyy [laugh] plan", to: state, terminal: true, reducerRevision: 11)
+    projectText(
+      "Iwo yyy [laugh] plan", to: state, terminal: true, lifecycleTerminal: false,
+      reducerRevision: 11, reducerAction: "light_plus_tick_deadline",
+      label: "Light+ skipped — delivered Raw")
+    XCTAssertEqual(state.formattedText, "Iwo yyy [laugh] plan")
+    XCTAssertEqual(state.toast, "Light+ skipped — delivered Raw")
+  }
+
   func testCloseIsImmediateAndAgentButtonUsesControllerDelivery() async {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()
@@ -1928,6 +2224,7 @@ final class OverlayStateTests: XCTestCase {
     var closeCount = 0
     var sentText: String?
     state.onClose = { closeCount += 1 }
+    state.onCloseIntent = { closeCount += 1 }
     state.onSendToAgent = { sentText = $0 }
     let delivered = expectation(description: "agent button delivered")
     engine.onAssistiveSend = { delivered.fulfill() }
@@ -2290,7 +2587,7 @@ final class OverlayStateTests: XCTestCase {
     controller.showForRecording()
     XCTAssertEqual(factoryCount, 0)
     XCTAssertEqual(frontCount, 0)
-    XCTAssertTrue(controller.state.autoPasteControlAvailable)
+    XCTAssertNotEqual(controller.state.indicatorMode, .assistive)
   }
 
   func testAgentModesNeverConstructOrOrderOverlayFront() {
@@ -2308,7 +2605,7 @@ final class OverlayStateTests: XCTestCase {
 
       controller.showForRecording()
       XCTAssertEqual(frontCount, 0, "\(mode) is owned by the Agent composer")
-      XCTAssertFalse(controller.state.autoPasteControlAvailable)
+      XCTAssertEqual(controller.state.indicatorMode, .assistive)
     }
   }
 
@@ -2332,7 +2629,6 @@ final class OverlayStateTests: XCTestCase {
     controller.handleIndicatorModeChange(.assistive)
     XCTAssertEqual(outCount, 1)
     XCTAssertEqual(controller.state.indicatorMode, .assistive)
-    XCTAssertFalse(controller.state.autoPasteControlAvailable)
   }
 
   func testFormattedReviewBlocksAssistiveHideWithoutFormatInFlight() {
@@ -2354,7 +2650,6 @@ final class OverlayStateTests: XCTestCase {
     controller.handleIndicatorModeChange(.assistive)
     XCTAssertEqual(outCount, 0)
     XCTAssertNotEqual(state.indicatorMode, .assistive)
-    XCTAssertTrue(state.autoPasteControlAvailable)
   }
 
   func testOverlayPanelUsesNonActivatingStyle() {
@@ -2713,7 +3008,9 @@ final class OverlayStateTests: XCTestCase {
           else { continue }
           if color.redComponent > 0.7 && color.greenComponent > 0.7
             && color.blueComponent > 0.7 && color.alphaComponent > 0.5
-          { count += 1 }
+          {
+            count += 1
+          }
         }
       }
       return count
@@ -2721,12 +3018,14 @@ final class OverlayStateTests: XCTestCase {
     // Bitmap rows start at the top. Prove text rendered before checking its
     // exclusion from the bottom strip; a collapsed/empty canvas cannot pass.
     XCTAssertGreaterThan(
-      brightPixels(x: Int(40 * scaleX)..<Int(520 * scaleX),
-                   y: Int(60 * scaleY)..<Int(170 * scaleY)),
+      brightPixels(
+        x: Int(40 * scaleX)..<Int(520 * scaleX),
+        y: Int(60 * scaleY)..<Int(170 * scaleY)),
       Int(100 * scaleX * scaleY), "transcript body did not render")
     XCTAssertLessThan(
-      brightPixels(x: Int(390 * scaleX)..<Int(520 * scaleX),
-                   y: Int((size.height - 28) * scaleY)..<Int((size.height - 6) * scaleY)),
+      brightPixels(
+        x: Int(390 * scaleX)..<Int(520 * scaleX),
+        y: Int((size.height - 28) * scaleY)..<Int((size.height - 6) * scaleY)),
       Int(20 * scaleX * scaleY), "formatted transcript painted into the footer band")
   }
 
@@ -2789,7 +3088,9 @@ final class OverlayStateTests: XCTestCase {
     let splitPath = overlayDir.appendingPathComponent("OverlaySplitPrimaryAction.swift").path
 
     XCTAssertFalse(FileManager.default.fileExists(atPath: splitPath))
-    XCTAssertTrue(overlaySource.contains("overlay-auto-paste"))
+    XCTAssertFalse(
+      overlaySource.contains("overlay-auto-paste"),
+      "paste mode lives in Settings and the tray, not in the overlay header")
     XCTAssertTrue(overlaySource.contains("OverlayPlacementMenu"))
     XCTAssertFalse(overlaySource.contains("private var placementMenu"))
     XCTAssertFalse(overlaySource.contains("performPrimaryAction"))
@@ -3615,7 +3916,7 @@ final class OverlayStateTests: XCTestCase {
     // as AppModel does with the real engine; pin only after that attach.
     state.engine = engine
     state.setKeepVisibleBetweenTakes(true)
-    state.onClose = { controller.hide() }
+    // Close reaches the panel through the controller's own intent wiring.
 
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
@@ -3630,6 +3931,195 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(engine.pinWrites, [true])
     panel.orderOut(nil)
     withExtendedLifetime(controller) {}
+  }
+
+  // MARK: The "Transcription Overlay" preference closes what is on screen
+
+  /// A controller whose preference can change mid-test, as the tray toggle and
+  /// the Settings preview preset change it in production.
+  private func makePreferenceController(
+    state: OverlayState,
+    overlayEnabled: @escaping () -> Bool,
+    panel: NSPanel,
+    frontCount: @escaping () -> Void,
+    outCount: @escaping () -> Void
+  ) -> OverlayController {
+    OverlayController(
+      state: state,
+      engine: nil,
+      overlayEnabledProvider: overlayEnabled,
+      assistiveStatusProvider: { false },
+      panelFactory: { _, _ in panel },
+      orderPanelFront: { _ in frontCount() },
+      orderPanelOut: { _ in outCount() }
+    )
+  }
+
+  func testTurningThePreferenceOffClosesTheOverlayAlreadyOnScreen() {
+    var overlayEnabled = true
+    var fronts = 0
+    var outs = 0
+    let controller = makePreferenceController(
+      state: OverlayState(), overlayEnabled: { overlayEnabled }, panel: NSPanel(),
+      frontCount: { fronts += 1 }, outCount: { outs += 1 })
+
+    controller.showForRecording()
+    XCTAssertEqual(fronts, 1)
+
+    controller.overlayPreferenceChanged()
+    XCTAssertEqual(outs, 0, "a write that left the preference on closes nothing")
+
+    overlayEnabled = false
+    controller.overlayPreferenceChanged()
+    XCTAssertEqual(outs, 1, "off takes effect now, not at the next take")
+    XCTAssertEqual(fronts, 1)
+  }
+
+  func testTurningThePreferenceOffBeforeAnyOverlayExistsBuildsNoPanel() {
+    var factoryCount = 0
+    var outs = 0
+    let controller = OverlayController(
+      state: OverlayState(),
+      engine: nil,
+      overlayEnabledProvider: { false },
+      assistiveStatusProvider: { false },
+      panelFactory: { _, _ in
+        factoryCount += 1
+        return NSPanel()
+      },
+      orderPanelFront: { _ in },
+      orderPanelOut: { _ in outs += 1 }
+    )
+
+    controller.overlayPreferenceChanged()
+    XCTAssertEqual(factoryCount, 0)
+    XCTAssertEqual(outs, 0)
+  }
+
+  func testTurningThePreferenceOffYieldsToAnOpenChannel() {
+    var overlayEnabled = true
+    var outs = 0
+    let state = OverlayState()
+    let controller = makePreferenceController(
+      state: state, overlayEnabled: { overlayEnabled }, panel: NSPanel(),
+      frontCount: {}, outCount: { outs += 1 })
+    controller.showForRecording()
+    state.applyChannelDelivery([
+      OverlayChannelDelivery(
+        channel: "1", agent: "james", deliveryID: nil, stage: nil, isOpen: true)
+    ])
+
+    overlayEnabled = false
+    controller.overlayPreferenceChanged()
+    XCTAssertEqual(outs, 0, "a channel's live microphone stays on screen")
+
+    state.applyChannelDelivery([])
+    controller.overlayPreferenceChanged()
+    XCTAssertEqual(outs, 1)
+  }
+
+  func testStatusCardShownWithThePreferenceOffLeavesOnTheCountdownDespiteThePin() throws {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    var fronts = 0
+    var outs = 0
+    var preferenceReads = 0
+    let controller = makePreferenceController(
+      state: state,
+      overlayEnabled: {
+        preferenceReads += 1
+        return false
+      }, panel: NSPanel(),
+      frontCount: { fronts += 1 }, outCount: { outs += 1 })
+    // Pin only after the controller's own attach, as in the pinned-close test.
+    state.engine = engine
+    state.setKeepVisibleBetweenTakes(true)
+    XCTAssertEqual(preferenceReads, 0, "building the controller reads no settings")
+
+    state.applyPresentationStatus(refusalStatus())
+    XCTAssertEqual(fronts, 1, "the card is product feedback even with the preference off")
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), clock.now + OverlayState.autoHideDelaySeconds,
+      "the pin keeps the transcript overlay, and there is none with the preference off")
+
+    state.setPointerHovering(true)
+    state.setPointerHovering(false)
+    clock.now += OverlayState.autoHideDelaySeconds + 1
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(outs, 1)
+    XCTAssertTrue(state.keepVisibleBetweenTakes, "the pin itself is not rewritten")
+    XCTAssertEqual(
+      preferenceReads, 1,
+      "one read when the card appears; hover-out and the countdown reuse that value")
+    withExtendedLifetime(controller) {}
+  }
+
+  func testTurningThePreferenceOffKeepsATakeUnderReviewUntilTheDraftIsResolved() throws {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    var overlayEnabled = true
+    var outs = 0
+    let controller = makePreferenceController(
+      state: state, overlayEnabled: { overlayEnabled }, panel: NSPanel(),
+      frontCount: {}, outCount: { outs += 1 })
+    state.engine = engine
+    state.setKeepVisibleBetweenTakes(true)
+    controller.showForRecording()
+    projectText("Ledger text", to: state, terminal: true, reducerRevision: 3)
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("Draft the user has not committed")
+    state.endTranscriptEdit()
+    XCTAssertTrue(state.isRevisionDraftDirty)
+
+    overlayEnabled = false
+    controller.overlayPreferenceChanged()
+    XCTAssertEqual(outs, 0, "an uncommitted draft is not closed out from under the user")
+
+    state.discardRevisionDraft()
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), clock.now + OverlayState.autoHideDelaySeconds,
+      "with the preference off the pin no longer holds the resolved take")
+    clock.now += OverlayState.autoHideDelaySeconds + 1
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(outs, 1)
+  }
+
+  func testPinningWithThePreferenceOffKeepsTheStatusCardCountdown() throws {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    state.engine = engine
+    state.transcriptOverlayEnabled = false
+    var closes = 0
+    state.onClose = { closes += 1 }
+
+    state.applyPresentationStatus(refusalStatus())
+    state.setKeepVisibleBetweenTakes(true)
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), clock.now + OverlayState.autoHideDelaySeconds)
+
+    clock.now += OverlayState.autoHideDelaySeconds + 1
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 1)
+  }
+
+  func testPinStillHoldsAStatusCardWhileThePreferenceIsOn() {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    state.engine = engine
+    state.transcriptOverlayEnabled = true
+    state.setKeepVisibleBetweenTakes(true)
+    var closes = 0
+    state.onClose = { closes += 1 }
+
+    state.applyPresentationStatus(refusalStatus())
+    XCTAssertNil(state.autoHideDeadline)
+    clock.now += OverlayState.autoHideDelaySeconds + 1
+    state.fireAutoHideNowForTests(armedDeadline: 0)
+    XCTAssertEqual(closes, 0)
   }
 
   func testEnabledDictationStaysVisibleThroughCaptureAndSilence() {
@@ -3661,7 +4151,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.vadActive)
     XCTAssertTrue(state.hasMeasuredAudioLevel, "the mic is alive and reporting")
     XCTAssertEqual(state.levelMeter.gain, 0, "what it reports is silence")
-    XCTAssertTrue(state.autoPasteControlAvailable)
+    XCTAssertNotEqual(state.indicatorMode, .assistive)
     withExtendedLifetime(controller) {}
   }
 
@@ -3686,7 +4176,7 @@ final class OverlayStateTests: XCTestCase {
     agentState.handleRecordingPreparing()
     agentState.handleRecordingStarted()
     XCTAssertEqual(agentFronts, 0, "a genuine Agent/Assistive route is owned by the composer")
-    XCTAssertFalse(agentState.autoPasteControlAvailable)
+    XCTAssertEqual(agentState.indicatorMode, .assistive)
 
     // The visible Dictation route never takes key or main away from the user.
     var visibleFronts = 0
@@ -3787,6 +4277,7 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState(nowProvider: { clock.now })
     var closes = 0
     state.onClose = { closes += 1 }
+    state.onCloseIntent = { closes += 1 }
     state.onComposerTranscript = { text, _ in .retained(text) }
     projectText(
       "recover these words", to: state, phase: "coverage_refused", canCopy: true,
@@ -3876,7 +4367,9 @@ final class OverlayStateTests: XCTestCase {
 
     projectText("usable words", to: state, phase: "coverage_refused", canCopy: true, terminal: true)
 
-    XCTAssertEqual(state.coverageRefusalNotice, OverlayState.defaultCoverageRefusalNotice)
+    XCTAssertEqual(state.coverageRefusalNotice, OverlayWarningCopy.sealRefused(nil).sentence)
+    XCTAssertEqual(
+      state.footerWarning?.owner, .coverage, "a refused seal reports an observation, not a culprit")
     XCTAssertEqual(
       state.coverageRefusalDetail,
       "No seal was recorded for this take, so nothing here is certified complete.")
@@ -4006,7 +4499,7 @@ final class OverlayStateTests: XCTestCase {
     reason: CsCoverageUnavailableReason? = nil
   ) -> CsProjectedSealCoverageReceipt {
     CsProjectedSealCoverageReceipt(
-      status: status, unavailableReason: reason, speechSamples: status == .incomplete ? 32_000 : 0,
+      status: status, sampleRateHz: nil, unavailableReason: reason, speechSamples: status == .incomplete ? 32_000 : 0,
       coveredSamples: status == .incomplete ? 16_000 : 0, uncoveredSpeechRanges: [],
       maxUncoveredSamples: status == .incomplete ? 16_000 : 0, incompleteThresholdSamples: 4_000,
       speechProducer: "capture_energy",
@@ -4023,7 +4516,7 @@ final class OverlayStateTests: XCTestCase {
       state.onSuccessfulDictation = { successes += 1 }
       state.onSendToAgent = { _ in sends += 1 }
       let receipt = CsProjectedSealCoverageReceipt(
-        status: .complete, unavailableReason: nil, speechSamples: 32_000,
+        status: .complete, sampleRateHz: nil, unavailableReason: nil, speechSamples: 32_000,
         coveredSamples: 32_000, uncoveredSpeechRanges: [], maxUncoveredSamples: 0,
         incompleteThresholdSamples: 4_000, speechProducer: "capture_energy",
         availability: "observed", observedSamples: 64_000, coverageRatio: 1.0)
@@ -4036,7 +4529,8 @@ final class OverlayStateTests: XCTestCase {
       XCTAssertEqual(state.statusText, "unsealed transcript")
       XCTAssertEqual(
         state.coverageRefusalNotice,
-        "These words were kept, but the transcript was not sealed")
+        "Speech coverage was measured as complete, but this take has no terminal seal."
+      )
       XCTAssertEqual(
         state.coverageRefusalDetail,
         "Acoustic coverage was measured as complete, but this transcript has no current terminal seal."
@@ -4056,10 +4550,10 @@ final class OverlayStateTests: XCTestCase {
 
   func testTypedCoverageExplainsIncompleteAndEveryUnavailableReasonWithoutChangingBytes() {
     let cases: [(CsProjectedSealCoverageReceipt, String, String)] = [
-      (coverage(.incomplete), "incomplete coverage", "Incomplete coverage"),
+      (coverage(.incomplete), "incomplete coverage", "no recognizer turned into words"),
       (
         coverage(.unavailable, reason: .notObserved), "measurement unavailable",
-        "No acoustic measurement"
+        "no acoustic measurement was taken"
       ),
       (
         coverage(.unavailable, reason: .identityMismatch), "measurement unavailable",
@@ -4077,7 +4571,7 @@ final class OverlayStateTests: XCTestCase {
         coverage(.unavailable, reason: .unknown), "measurement unavailable",
         "measurement was unavailable"
       ),
-      (coverage(.unknown), "unverified coverage", "could not be verified"),
+      (coverage(.unknown), "unverified coverage", "No coverage measurement"),
     ]
     for (receipt, status, explanation) in cases {
       let state = OverlayState()

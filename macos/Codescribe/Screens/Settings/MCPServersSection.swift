@@ -13,7 +13,7 @@ struct MCPServersSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel("Manage MCP servers")
+      SettingsSectionLabel(String(localized: "Manage MCP servers"))
 
       Text("Edited on disk in mcp.json. Hand edits (env, custom fields) are preserved.")
         .font(CSFont.mono(11, .medium))
@@ -64,8 +64,8 @@ struct MCPServersSection: View {
       }
     } message: {
       Text(
-        "Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, "
-          + "threads, preferences, and API keys stay untouched.")
+        "Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, threads, preferences, and API keys stay untouched."
+      )
     }
   }
 
@@ -75,9 +75,7 @@ struct MCPServersSection: View {
         .font(CSFont.ui(12.5, .semibold))
         .foregroundStyle(Color.primary)
       Text(
-        "MCP servers extend the agent with extra tools like code search, "
-          + "PR review, or web search. Add your first server below, or skip it "
-          + "and wire one any time."
+        "MCP servers extend the agent with extra tools like code search, PR review, or web search. Add your first server below, or skip it and wire one any time."
       )
       .font(CSFont.mono(11, .medium))
       .foregroundStyle(Color.secondary)
@@ -142,7 +140,7 @@ private struct MCPServerRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
 
       if !server.envKeys.isEmpty {
-        Text("env: \(server.envKeys.joined(separator: ", "))")
+        Text(verbatim: "env: \(server.envKeys.joined(separator: ", "))")
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(Color.secondary)
           .lineLimit(1)
@@ -172,11 +170,11 @@ private struct MCPServerRow: View {
       }
 
       if pending {
-        resultLine(text: "connecting…", color: CSColor.amber)
+        resultLine(text: String(localized: "connecting…"), color: CSColor.amber)
       } else if let result {
         if result.ok {
           resultLine(
-            text: "connected — \(result.toolCount) tool(s)",
+            text: String(localized: "connected — \(Int(result.toolCount)) tools"),
             color: CSColor.oliveLight
           )
           if let identity = Self.handshakeIdentity(result) {
@@ -188,13 +186,17 @@ private struct MCPServerRow: View {
           }
         } else {
           resultLine(
-            text: "degraded — \(result.error)",
+            text: String(
+              localized: "degraded — \(result.error)",
+              comment: "The placeholder is an error message from the MCP handshake"),
             color: CSColor.terracotta
           )
         }
       } else {
         resultLine(
-          text: server.enabled ? "disconnected — not tested" : "disconnected — disabled",
+          text: server.enabled
+            ? String(localized: "disconnected — not tested")
+            : String(localized: "disconnected — disabled"),
           color: Color.secondary
         )
       }
@@ -251,7 +253,7 @@ private struct MCPServerRow: View {
 
   private var testButton: some View {
     Button(action: onTest) {
-      Text("Test")
+      Text("Test", comment: "Button label: run a connection test")
         .font(CSFont.mono(10, .semibold))
         .foregroundStyle(pending ? Color.secondary : Color.primary)
         .padding(.horizontal, 10)
@@ -316,7 +318,8 @@ private struct MCPAddServerForm: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 9) {
-      Text("ADD SERVER")
+      Text("Add server", comment: "MCP servers: header of the form that adds a server")
+        .textCase(.uppercase)
         .font(CSFont.mono(10, .semibold))
         .tracking(0.5)
         .foregroundStyle(Color.secondary)
@@ -356,7 +359,7 @@ private struct MCPAddServerForm: View {
   }
 
   private func field(
-    placeholder: String, text: Binding<String>, focus: Field
+    placeholder: LocalizedStringKey, text: Binding<String>, focus: Field
   ) -> some View {
     TextField(placeholder, text: text)
       .focused($focusedField, equals: focus)

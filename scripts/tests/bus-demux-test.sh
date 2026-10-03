@@ -582,7 +582,250 @@ finally:
     lumen.close()
 PY
 
-# Per-take wav identity: demux assigns ~/.codescribe/sessions/<session_id>.wav
+# Coverage-refused safety net: a channel session whose ledger never issued a
+# terminal seal (incomplete acoustic coverage / pending recovery) must still
+# deliver its words when the channel moves on — as a seal envelope with
+# coverage="refused" and state_change_allowed=false. A session that DID seal
+# terminally must not be re-delivered by the net.
+: >"$BUS"
+python3 - "$BUS" <<'PY'
+import json, sys
+rows = [
+    # Lost session: drafts only, ledger refused the terminal seal.
+    {
+        "schema": "codescribe.transcript-evidence.v1",
+        "sequence": 1,
+        "session_id": "agent-channel-2-lost",
+        "audience": "james",
+        "mode": "dictation",
+        "reducer_action": "apply_ledger_decision",
+        "reducer_revision": 1,
+        "document_index": 0,
+        "rendered_text": "James, ta wypowiedź nie dostała terminal seala.",
+        "emitted_at": "2026-09-29T15:55:30Z",
+    },
+    {
+        "schema": "codescribe.transcript-evidence.v1",
+        "sequence": 2,
+        "session_id": "agent-channel-2-lost",
+        "audience": "james",
+        "mode": "dictation",
+        "reducer_action": "seal_coverage",
+        "reducer_revision": 2,
+        "document_index": 0,
+        "rendered_text": "James, ta wypowiedź nie dostała terminal seala. Cała.",
+        "emitted_at": "2026-09-29T15:55:52Z",
+    },
+    # The reducer re-projects the same full snapshot under a second document
+    # index; identical words must flush as one delivery, not two.
+    {
+        "schema": "codescribe.transcript-evidence.v1",
+        "sequence": 3,
+        "session_id": "agent-channel-2-lost",
+        "audience": "james",
+        "mode": "dictation",
+        "reducer_action": "seal_coverage",
+        "reducer_revision": 2,
+        "document_index": 1,
+        "rendered_text": "James, ta wypowiedź nie dostała terminal seala. Cała.",
+        "emitted_at": "2026-09-29T15:55:52Z",
+    },
+    # Healthy session: draft then a real terminal seal.
+    {
+        "schema": "codescribe.transcript-evidence.v1",
+        "sequence": 4,
+        "session_id": "agent-channel-2-good",
+        "audience": "james",
+        "mode": "dictation",
+        "reducer_action": "apply_ledger_decision",
+        "reducer_revision": 1,
+        "document_index": 0,
+        "rendered_text": "James, jesteś tam?",
+        "emitted_at": "2026-09-29T15:56:50Z",
+    },
+    {
+        "schema": "codescribe.transcript-evidence.v1",
+        "sequence": 5,
+        "session_id": "agent-channel-2-good",
+        "audience": "james",
+        "mode": "dictation",
+        "reducer_action": "record_ledger_terminal_seal",
+        "reducer_revision": 2,
+        "document_index": 0,
+        "rendered_text": "James, jesteś tam?",
+        "emitted_at": "2026-09-29T15:56:55Z",
+    },
+    # The channel reopens: the flush boundary for both earlier sessions.
+    {
+        "schema": "codescribe.channel-session.v1",
+        "kind": "channel_session",
+        "state": "open",
+        "reason": "opened",
+        "channel": "2",
+        "agent": "james",
+        "session_id": "agent-channel-2-next",
+        "emitted_at": "2026-09-29T15:57:28Z",
+    },
+]
+with open(sys.argv[1], "a", encoding="utf-8") as handle:
+    for row in rows:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+PY
+refused="$WORKDIR/coverage-refused.jsonl"
+python3 "$DEMUX" \
+  --bus "$BUS" --bridge-home "$BRIDGE_HOME" \
+  --provider codex --session codex-session-refused --name james \
+  --drafts --from-start >"$refused"
+python3 - "$refused" "$DEMUX" <<'PY'
+import importlib.util, json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+kinds = [row["kind"] for row in rows]
+# attach, four live drafts (incl. the duplicate-doc re-projection), the
+# healthy terminal seal, then exactly ONE refused flush for the lost session.
+assert kinds == ["attach", "revised", "revised", "revised", "revised", "seal", "seal"], kinds
+healthy = rows[5]
+assert healthy["session_id"] == "agent-channel-2-good", healthy
+assert healthy.get("coverage") is None, healthy
+assert healthy["state_change_allowed"] is True, healthy
+flushed = rows[6]
+assert flushed["session_id"] == "agent-channel-2-lost", flushed
+assert flushed["status"] == "transcript_sealed", flushed
+assert flushed["coverage"] == "refused", flushed
+assert flushed["state_change_allowed"] is False, flushed
+assert flushed["text"].endswith("Cała."), flushed
+# The healthy session must not be re-delivered by the net: exactly one
+# envelope carries coverage=refused and it names the lost session only.
+assert [row["session_id"] for row in rows if row.get("coverage") == "refused"] == [
+    "agent-channel-2-lost"
+], rows
+
+# Restart parity: the refused phase keys one delivery identity across a bus
+# replay, exactly like a terminal seal phase.
+spec = importlib.util.spec_from_file_location("bus_demux_refused", sys.argv[2])
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+identity = module._identity(("coverage-refused-seal", "agent-channel-2-lost", 0))
+assert flushed["source_event_id"] == identity, flushed
+PY
+
+# Hang-up net: a channel closed by a second digit / Fn press is never
+# reopened, so no later channel-session row releases its refused take. The
+# session's own `session_ended` lifecycle row is the flush boundary. Late rows
+# after the hang-up and later channel receipts must not deliver it twice.
+: >"$BUS"
+python3 - "$BUS" <<'PY'
+import json, sys
+coverage = {
+    "status": "incomplete",
+    "speech_samples": 463872,
+    "covered_samples": 454656,
+    "coverage_ratio": 0.98,
+}
+def evidence(sequence, action, revision, doc, text, **extra):
+    row = {
+        "schema": "codescribe.transcript-evidence.v1",
+        "sequence": sequence,
+        "session_id": "agent-channel-4-hangup",
+        "audience": "james",
+        "mode": "dictation",
+        "reducer_action": action,
+        "reducer_revision": revision,
+        "document_index": doc,
+        "rendered_text": text,
+        "phase": "listening",
+        "terminal": False,
+        "lifecycle_terminal": False,
+        "emitted_at": f"2026-09-29T16:34:{sequence:02d}Z",
+    }
+    row.update(extra)
+    return row
+full = "James, rozłączam się przed silence sealem. Całość."
+rows = [
+    evidence(1, "apply_ledger_decision", 1, 0, "James, rozłączam się"),
+    evidence(2, "apply_ledger_decision", 3, 1, "przed silence sealem."),
+    evidence(3, "seal_coverage", 20, 0, full, seal_coverage=coverage),
+    evidence(4, "seal_coverage", 20, 1, full, seal_coverage=coverage),
+    {
+        "schema": "codescribe.transcript.v1",
+        "sequence": 5,
+        "session_id": "agent-channel-4-hangup",
+        "mode": "dictation",
+        "utterance_id": None,
+        "status": "session_ended",
+        "terminal": True,
+        "end_reason": "coverage_refused",
+        "emitted_at": "2026-09-29T16:35:00Z",
+    },
+    # A late re-projection after the hang-up must not re-arm the net.
+    evidence(6, "seal_coverage", 21, 0, full, seal_coverage=coverage),
+    # Neither a closing receipt for the same session nor a fresh open of the
+    # channel may deliver the refused take a second time.
+    {
+        "schema": "codescribe.channel-session.v1",
+        "kind": "channel_session",
+        "state": "sealed",
+        "reason": "silence",
+        "channel": "4",
+        "agent": "james",
+        "session_id": "agent-channel-4-hangup",
+        "emitted_at": "2026-09-29T16:35:02Z",
+    },
+    {
+        "schema": "codescribe.channel-session.v1",
+        "kind": "channel_session",
+        "state": "open",
+        "reason": "opened",
+        "channel": "4",
+        "agent": "james",
+        "session_id": "agent-channel-4-next",
+        "emitted_at": "2026-09-29T16:40:00Z",
+    },
+]
+with open(sys.argv[1], "a", encoding="utf-8") as handle:
+    for row in rows:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+PY
+hangup="$WORKDIR/coverage-refused-hangup.jsonl"
+python3 "$DEMUX" \
+  --bus "$BUS" --bridge-home "$BRIDGE_HOME" \
+  --provider codex --session codex-session-hangup --name james \
+  --drafts --from-start >"$hangup"
+python3 - "$hangup" "$DEMUX" "$BUS" <<'PY'
+import importlib.util, json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+refused = [row for row in rows if row.get("coverage") == "refused"]
+assert len(refused) == 1, [row["kind"] for row in rows]
+flushed = refused[0]
+assert flushed["kind"] == "seal", flushed
+assert flushed["session_id"] == "agent-channel-4-hangup", flushed
+assert flushed["state_change_allowed"] is False, flushed
+assert flushed["text"].endswith("Całość."), flushed
+# The hang-up row itself released the take, not a later channel receipt.
+assert flushed["emitted_at"] == "2026-09-29T16:35:00Z", flushed
+assert not [row for row in rows if row.get("state_change_allowed") is True], rows
+
+spec = importlib.util.spec_from_file_location("bus_demux_hangup", sys.argv[2])
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+# The lease mailbox would mask a second flush behind the same delivery id, so
+# prove single delivery at the normalizer itself, as a lease-less reader sees it.
+normalizer = module.EvidenceNormalizer()
+flushed_at = []
+for line in open(sys.argv[3], encoding="utf-8"):
+    normalizer.normalize(module.parse_line(line))
+    flushed_at.extend(row["emitted_at"] for row in normalizer.pop_flushes())
+assert flushed_at == ["2026-09-29T16:35:00Z"], flushed_at
+# A dictation take's session_ended passes through untouched and flushes
+# nothing: the net only holds addressed channel sessions.
+normalizer = module.EvidenceNormalizer()
+ended = {"schema": module.CLEAN_SCHEMA, "session_id": "dictation-take", "status": "session_ended"}
+assert normalizer.normalize(ended) is ended
+assert normalizer.pop_flushes() == []
+PY
+
+# A take's audio is its own ~/.codescribe/sessions/<session_id>.wav
 # (or $CODESCRIBE_DATA_DIR/sessions/...). last_session.wav is never the id.
 WAV_HOME="$WORKDIR/codescribe-home"
 mkdir -p "$WAV_HOME/sessions"
@@ -1249,6 +1492,358 @@ assert profile["speed"] == 1.1, profile
 fallback = module.voice_profile(Path(sys.argv[2]), "nieznany")
 assert fallback["voice"] == "leo", fallback
 assert fallback["speed"] == module.DEFAULT_SPEECH_SPEED, fallback
+PY
+
+# --ack takes several delivery ids, all or nothing: one unknown id refuses the
+# whole call and writes no marker; repeats and already-acknowledged ids are
+# harmless; a single id keeps its old one-line receipt.
+MULTI_HOME="$WORKDIR/multi-ack"
+: >"$BUS"
+seal "James, pierwsza." transcript_sealed 201
+seal "James, druga." transcript_sealed 202
+seal "James, trzecia." transcript_sealed 203
+python3 "$DEMUX" --bus "$BUS" --bridge-home "$MULTI_HOME" \
+  --provider codex --session codex-multi-ack --name james --from-start >/dev/null
+python3 - "$DEMUX" "$BUS" "$MULTI_HOME" <<'PY'
+import json, subprocess, sys
+from pathlib import Path
+demux, bus, home = sys.argv[1:]
+state = json.loads(next((Path(home) / "leases").glob("*.json")).read_text())
+ids = [item["delivery_id"] for item in state["pending"]]
+assert len(ids) == 3, state["pending"]
+markers = Path(home) / "acknowledgments" / state["lease_id"]
+base = ["python3", demux, "--bus", bus, "--bridge-home", home,
+        "--provider", "codex", "--session", "codex-multi-ack", "--ack"]
+unknown = "f" * 24
+for refused_ids in ([ids[0], unknown], [ids[0], "not-hex"]):
+    result = subprocess.run(base + refused_ids, capture_output=True, text=True)
+    assert result.returncode == 3, result
+    assert "nothing acknowledged" in result.stderr, result.stderr
+    assert not result.stdout, result.stdout
+    assert not markers.exists() or not list(markers.iterdir()), list(markers.iterdir())
+result = subprocess.run(base + [ids[0], ids[1], ids[0]], capture_output=True, text=True, check=True)
+receipts = [json.loads(line) for line in result.stdout.splitlines()]
+assert [row["delivery_id"] for row in receipts] == [ids[0], ids[1]], receipts
+assert all(row["kind"] == "acknowledged" for row in receipts), receipts
+assert {path.stem for path in markers.iterdir()} == {ids[0], ids[1]}
+single = subprocess.run(base + [ids[2]], capture_output=True, text=True, check=True)
+assert json.loads(single.stdout)["delivery_id"] == ids[2], single.stdout
+again = subprocess.run(base + ids, capture_output=True, text=True, check=True)
+assert len(again.stdout.splitlines()) == 3, again.stdout
+status = json.loads(subprocess.run(
+    ["python3", demux, "--bus", bus, "--bridge-home", home,
+     "--provider", "codex", "--session", "codex-multi-ack", "--status"],
+    capture_output=True, text=True, check=True).stdout)
+assert status["backlog"] == 0, status
+PY
+
+# --attach --voice/--speed/--tts-vendor persist the name's profile into
+# voices.json by a locked merge that keeps every other profile and key. The
+# receipt names where the voice came from and whether the store exists.
+VOICE_HOME="$WORKDIR/voice-attach"
+mkdir -p "$VOICE_HOME"
+python3 - "$VOICE_HOME" <<'PY'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1], "voices.json").write_text(json.dumps({
+    "profiles": {"filip": {"voice": "rex", "speed": 1.25}},
+    "note": "kept",
+}))
+PY
+python3 - "$DEMUX" "$BUS" "$VOICE_HOME" "$WORKDIR/voice-fresh" <<'PY'
+import json, os, signal, subprocess, sys
+from pathlib import Path
+demux, bus, home, fresh = sys.argv[1:]
+
+def attach(root, channel, name, session, *extra):
+    result = subprocess.run(
+        ["python3", demux, "--bus", bus, "--bridge-home", root, "--attach",
+         "--channel", channel, "--name", name, "--provider", "codex",
+         "--session", session, *extra],
+        capture_output=True, text=True)
+    return result
+
+followers = []
+try:
+    flagged = attach(home, "5", "James", "voice-session", "--voice", "sal",
+                     "--speed", "1.3", "--tts-vendor", "openai")
+    assert flagged.returncode == 0, flagged.stderr
+    receipt = json.loads(flagged.stdout)
+    followers.append(receipt["follower_pid"])
+    assert receipt["voice_source"] == "flag", receipt
+    assert receipt["voices_file"] == "present", receipt
+    assert receipt["voice"]["voice"] == "sal" and receipt["voice"]["speed"] == 1.3, receipt
+    store = json.loads(Path(home, "voices.json").read_text())
+    assert store["note"] == "kept", store
+    assert store["profiles"]["filip"] == {"voice": "rex", "speed": 1.25}, store
+    assert store["profiles"]["james"] == {"voice": "sal", "speed": 1.3, "provider": "openai"}, store
+
+    reused = attach(home, "5", "james", "voice-session")
+    assert reused.returncode == 0, reused.stderr
+    receipt = json.loads(reused.stdout)
+    assert receipt["follower_spawned"] is False, receipt
+    assert receipt["voice_source"] == "profile", receipt
+    assert receipt["voice"]["voice"] == "sal", receipt
+
+    unprofiled = attach(fresh, "6", "nowy", "fresh-session")
+    assert unprofiled.returncode == 0, unprofiled.stderr
+    receipt = json.loads(unprofiled.stdout)
+    followers.append(receipt["follower_pid"])
+    assert receipt["voice_source"] == "default", receipt
+    assert receipt["voices_file"] == "missing", receipt
+    assert receipt["voice"]["voice"] == "leo", receipt
+finally:
+    for pid in followers:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+# An unreadable profile store refuses before the channel is claimed.
+broken = Path(fresh, "broken")
+broken.mkdir()
+(broken / "voices.json").write_text("{broken")
+refused = attach(str(broken), "7", "zly", "broken-session", "--voice", "ara")
+assert refused.returncode == 3, refused
+assert "voice profiles are unreadable" in refused.stderr, refused.stderr
+assert (broken / "voices.json").read_text() == "{broken"
+assert not (broken / "vc.agent-audience-binding.v1.json").exists()
+assert not (broken / "runtime").exists()
+PY
+
+# Concurrent profile writes never drop each other's names.
+python3 - "$DEMUX" "$WORKDIR/voice-race" <<'PY'
+import importlib.util, json, multiprocessing, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("voice_race", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+root = Path(sys.argv[2])
+ctx = multiprocessing.get_context("fork")
+barrier = ctx.Barrier(8)
+def write(index):
+    barrier.wait(timeout=10)
+    module.write_voice_profile(root, f"agent{index}", voice="rex", speed=None, vendor=None)
+workers = [ctx.Process(target=write, args=(i,)) for i in range(8)]
+for worker in workers:
+    worker.start()
+for worker in workers:
+    worker.join(timeout=15)
+    assert worker.exitcode == 0, worker.exitcode
+profiles = json.loads((root / "voices.json").read_text())["profiles"]
+assert sorted(profiles) == [f"agent{i}" for i in range(8)], profiles
+PY
+
+# --watch: one compact line per notable envelope from the session's follower
+# events. Drafts, attach receipts and stderr noise stay out; a replayed delivery
+# prints once; another lease's envelope is not this session's; text is capped.
+WATCH_HOME="$WORKDIR/watch-bridge"
+python3 - "$DEMUX" "$WATCH_HOME" <<'PY'
+import importlib.util, json, subprocess, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("watch_test", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+home = Path(sys.argv[2])
+lease = module.lease_identifier("codex", "watch-session")
+other = module.lease_identifier("codex", "someone-else")
+
+def envelope(delivery, **fields):
+    row = {"schema": module.EVENT_SCHEMA, "lease_id": lease, "delivery_id": delivery,
+           "kind": "revised", "status": "utterance_revised",
+           "state_change_allowed": False, "routing_match": "audience", "text": "draft"}
+    row.update(fields)
+    return json.dumps(row, ensure_ascii=False)
+
+long_text = "James, " + "a" * 800
+lines = [
+    "bus-demux: bus=/tmp/x name=james follow=1 lease=" + lease,
+    json.dumps({"schema": module.ATTACH_SCHEMA, "kind": "attach", "lease_id": lease}),
+    envelope("a" * 24),
+    envelope("b" * 24, kind="seal", status="transcript_sealed",
+             state_change_allowed=True, text=long_text),
+    envelope("c" * 24, kind="seal", status="transcript_sealed", coverage="refused",
+             text="James, pokrycie odrzucone."),
+    envelope("d" * 24, kind="routing_ambiguity", status="transcript_sealed",
+             routing_candidates=["ramon", "roman"], text="Raman, sprawdź."),
+    envelope("b" * 24, kind="seal", status="transcript_sealed",
+             state_change_allowed=True, text=long_text),
+    envelope("e" * 24, lease_id=other, kind="seal", status="transcript_sealed",
+             state_change_allowed=True, text="James, cudzy."),
+]
+log = home / "runtime" / "followers" / f"{lease}.log"
+log.parent.mkdir(parents=True)
+log.write_text("\n".join(lines) + "\n{partial", encoding="utf-8")
+base = ["python3", sys.argv[1], "--bridge-home", str(home), "--watch", "--once"]
+out = subprocess.run(base + ["--provider", "codex", "--session", "watch-session"],
+                     capture_output=True, text=True, check=True)
+rows = [json.loads(line) for line in out.stdout.splitlines()]
+assert [row["delivery_id"] for row in rows] == ["b" * 24, "c" * 24, "d" * 24], rows
+assert set(rows[0]) == {"kind", "status", "coverage", "sca", "delivery_id", "text"}, rows[0]
+assert rows[0]["sca"] is True and len(rows[0]["text"]) == 500, rows[0]
+assert rows[1]["coverage"] == "refused" and rows[1]["sca"] is False, rows[1]
+assert rows[2]["kind"] == "routing_ambiguity" and rows[2]["sca"] is False, rows[2]
+unscoped = subprocess.run(base + ["--from-file", str(log)],
+                          capture_output=True, text=True, check=True)
+assert len(unscoped.stdout.splitlines()) == 4, unscoped.stdout
+missing = subprocess.run(base + ["--provider", "codex", "--session", "nobody"],
+                         capture_output=True, text=True)
+assert missing.returncode == 1 and "watch source missing" in missing.stderr, missing
+PY
+
+# Following --watch is line-buffered: a seal appended to the log reaches the
+# monitor at once, a draft appended next to it does not.
+python3 - "$DEMUX" "$WORKDIR/watch-follow.log" <<'PY'
+import json, select, subprocess, sys, time
+demux, log = sys.argv[1:]
+open(log, "w").close()
+watcher = subprocess.Popen(
+    ["python3", demux, "--watch", "--from-file", log],
+    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+try:
+    time.sleep(0.4)
+    with open(log, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"schema": "codescribe.agent-bridge.event.v1",
+                                 "kind": "revised", "status": "utterance_revised",
+                                 "delivery_id": "1" * 24, "text": "draft"}) + "\n")
+        handle.write(json.dumps({"schema": "codescribe.agent-bridge.event.v1",
+                                 "kind": "seal", "status": "transcript_sealed",
+                                 "state_change_allowed": True,
+                                 "delivery_id": "2" * 24, "text": "James, już."}) + "\n")
+    ready, _, _ = select.select([watcher.stdout], [], [], 5)
+    assert ready, "watch did not flush a live line"
+    line = json.loads(watcher.stdout.readline())
+    assert line["delivery_id"] == "2" * 24 and line["sca"] is True, line
+finally:
+    watcher.terminate()
+    watcher.communicate(timeout=5)
+PY
+
+# --provider claude-code without --session reads the provider's own
+# CLAUDE_CODE_SESSION_ID; an explicit --session wins; codex is never guessed.
+python3 - "$DEMUX" "$WORKDIR/env-session" <<'PY'
+import importlib.util, json, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("env_session", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+base = ["python3", sys.argv[1], "--bridge-home", sys.argv[2], "--status"]
+env = dict(os.environ, CLAUDE_CODE_SESSION_ID="env-session-id")
+status = json.loads(subprocess.run(base + ["--provider", "claude-code"], env=env,
+                                   capture_output=True, text=True, check=True).stdout)
+assert status["lease_id"] == module.lease_identifier("claude-code", "env-session-id"), status
+explicit = json.loads(subprocess.run(
+    base + ["--provider", "claude-code", "--session", "explicit-id"], env=env,
+    capture_output=True, text=True, check=True).stdout)
+assert explicit["lease_id"] == module.lease_identifier("claude-code", "explicit-id"), explicit
+codex = subprocess.run(base + ["--provider", "codex"], env=env, capture_output=True, text=True)
+assert codex.returncode == 2 and "CLAUDE_CODE_SESSION_ID" in codex.stderr, codex
+bare = {key: value for key, value in env.items() if key != "CLAUDE_CODE_SESSION_ID"}
+unset = subprocess.run(base + ["--provider", "claude-code"], env=bare,
+                       capture_output=True, text=True)
+assert unset.returncode == 2, unset
+PY
+
+# Spawned follower output is readable while full envelopes remain available
+# for --watch and recovery. The fixture uses isolated bridge roots only.
+python3 - "$DEMUX" "$WORKDIR/follower-human" <<'PY'
+import importlib.util, json, os, re, signal, stat, subprocess, sys, time
+from pathlib import Path
+
+demux, base = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("follower_human_test", demux)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+for drafts in (False, True):
+    root = Path(base, "drafts" if drafts else "seals")
+    root.mkdir(parents=True)
+    bus = root / "bus.jsonl"
+    rows = []
+    for sequence, status, words in (
+        (1, "utterance_revised", "James, projekt jeszcze trwa."),
+        (2, "utterance_revised", "James, projekt prawie gotowy."),
+        (3, "transcript_sealed", "James, tekst końcowy."),
+    ):
+        rows.append({"schema": module.CLEAN_SCHEMA, "sequence": sequence,
+                     "session_id": "test-session", "utterance_id": f"utterance-{sequence}",
+                     "emitted_at": "2026-09-30T15:42:39Z", "status": status,
+                     "audience": "james", "text": words, "source": "test_fixture"})
+    bus.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
+    lease = module.lease_identifier("codex", "human-session")
+    log, events = module.follower_paths(root, lease)
+    log.parent.mkdir(parents=True)
+    command = ["python3", demux, "--bus", str(bus), "--bridge-home", str(root),
+               "--provider", "codex", "--session", "human-session", "--name", "james",
+               "--from-start", "--coalesce", "--follower-events", str(events),
+               "--follower-channel", "2"]
+    if drafts:
+        command.append("--drafts")
+    with log.open("w", encoding="utf-8") as output:
+        subprocess.run(command, stdout=output, stderr=subprocess.PIPE, text=True, check=True)
+    lines = log.read_text().splitlines()
+    assert len(lines) == 2 + int(drafts), lines  # attach + seal + optional draft
+    assert sum(" seal " in line for line in lines) == 1, lines
+    assert sum(" draft " in line for line in lines) == int(drafts), lines
+    assert all("delivery_owner" not in line and "capture_epoch" not in line for line in lines)
+    assert any(re.search(r"seal\s+2·james id=[0-9a-f]{24}.*tekst końcowy", line) for line in lines)
+    envelopes = [json.loads(line) for line in events.read_text().splitlines()]
+    assert len(envelopes) == 2 + 2 * int(drafts), envelopes
+    assert envelopes[-1]["delivery_owner"]["rail"] == "native_bus_demux"
+    assert stat.S_IMODE(events.stat().st_mode) == 0o600
+    status = json.loads(subprocess.run(command[:2] + ["--bridge-home", str(root),
+        "--provider", "codex", "--session", "human-session", "--status"],
+        capture_output=True, text=True, check=True).stdout)
+    assert status["follower_log"] == str(log) and status["follower_events"] == str(events)
+    watch = ["python3", demux, "--bridge-home", str(root), "--provider", "codex",
+             "--session", "human-session", "--watch", "--once"]
+    compact = subprocess.run(watch, capture_output=True, text=True, check=True)
+    compact_rows = [json.loads(line) for line in compact.stdout.splitlines()]
+    assert len(compact_rows) == 1 and compact_rows[0]["text"] == "James, tekst końcowy."
+    human = subprocess.run(watch + ["--human"], capture_output=True, text=True, check=True)
+    assert len(human.stdout.splitlines()) == len(lines), human.stdout
+    assert "tekst końcowy" in human.stdout
+    assert ("projekt prawie gotowy" in human.stdout) == drafts
+    assert "projekt jeszcze trwa" not in human.stdout
+    # An old JSON follower log remains a valid explicit watch source.
+    old = subprocess.run(watch + ["--from-file", str(events)], capture_output=True, text=True, check=True)
+    assert old.stdout == compact.stdout
+
+line = module.human_line({"kind": "seal", "audience": "james", "text": "a" * 300,
+                          "delivery_id": "f" * 24, "emitted_at": "2026-09-30T15:42:39Z"}, "2")
+assert len(json.loads(line.split(" id=", 1)[1].split(" ", 1)[1])) == 200, line
+assert "\n" not in line and "2·james" in line
+
+# Exercise the public attach path, including startup handoff to --watch.
+root = Path(base, "attached")
+root.mkdir()
+bus = root / "bus.jsonl"
+bus.write_text("")
+attached = subprocess.run(["python3", demux, "--bus", str(bus), "--bridge-home", str(root),
+                           "--attach", "--channel", "2", "--name", "james",
+                           "--provider", "codex", "--session", "attached-session"],
+                          capture_output=True, text=True, check=True)
+receipt = json.loads(attached.stdout)
+pid = receipt["follower_pid"]
+try:
+    log = Path(receipt["follower_log"])
+    events = Path(receipt["follower_events"])
+    assert log.exists() and events.exists(), receipt
+    assert " attach 2·james " in log.read_text(), log.read_text()
+    with bus.open("a") as output:
+        output.write(json.dumps({"schema": module.CLEAN_SCHEMA, "sequence": 1,
+            "session_id": "test-session", "utterance_id": "attached-seal",
+            "emitted_at": "2026-09-30T15:46:01Z", "status": "transcript_sealed",
+            "audience": "james", "text": "James, słyszę cię."}, ensure_ascii=False) + "\n")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and "słyszę cię" not in log.read_text():
+        time.sleep(0.05)
+    assert " seal " in log.read_text() and "słyszę cię" in log.read_text()
+    assert any(json.loads(row).get("text") == "James, słyszę cię." for row in events.read_text().splitlines())
+    watch = subprocess.run(["python3", demux, "--bridge-home", str(root), "--watch",
+                            "--once", "--provider", "codex", "--session", "attached-session"],
+                           capture_output=True, text=True, check=True)
+    assert json.loads(watch.stdout)["text"] == "James, słyszę cię."
+finally:
+    os.kill(pid, signal.SIGTERM)
 PY
 
 echo "bus-demux: ok"

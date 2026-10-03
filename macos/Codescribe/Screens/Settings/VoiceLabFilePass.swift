@@ -28,14 +28,19 @@ enum HelperFilePass {
     return .success((pass, "\(pass.rawValue):\(archived.path)"))
   }
 
-  static func compare(daily: String, helper: String, pass: FileRetranscribePass) -> String {
+  static func compare(
+    daily: String, helper: String, pass: FileRetranscribePass, locale: Locale = .current
+  ) -> String {
     let left = daily.trimmingCharacters(in: .whitespacesAndNewlines)
     let right = helper.trimmingCharacters(in: .whitespacesAndNewlines)
     if left == right {
-      return "Helper \(pass.visibleName) matches daily."
+      return String(localized: "Helper \(pass.visibleName) matches daily.", locale: locale)
     }
-    return
-      "DAILY\n\(left)\n\nHELPER \(pass.visibleName.uppercased())\n\(right)\n\nDaily is unchanged until you save a correction."
+    return String(
+      localized:
+        "DAILY\n\(left)\n\nHELPER \(pass.visibleName.uppercased(with: locale))\n\(right)\n\nDaily is unchanged until you save a correction.",
+      locale: locale
+    )
   }
 }
 
@@ -47,15 +52,15 @@ enum FileRetranscribePass: String, CaseIterable, Identifiable {
 
   var visibleName: String {
     switch self {
-    case .fullHq: "Full HQ file pass"
-    case .cloud: "Cloud pass"
+    case .fullHq: String(localized: "Full HQ file pass")
+    case .cloud: String(localized: "Cloud pass")
     }
   }
 
   var help: String {
     switch self {
-    case .fullHq: "Full local Whisper pass over the selected audio file"
-    case .cloud: "Cloud STT pass over the selected audio file"
+    case .fullHq: String(localized: "Full local Whisper pass over the selected audio file")
+    case .cloud: String(localized: "Cloud STT pass over the selected audio file")
     }
   }
 }

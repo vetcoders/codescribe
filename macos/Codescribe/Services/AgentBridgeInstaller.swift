@@ -40,7 +40,7 @@ struct AgentBridgeInstallationStatus: Equatable {
     bundleVersion: nil,
     installedClients: [],
     installedPaths: [],
-    detail: "The signed app does not contain the agent bridge payload."
+    detail: String(localized: "The signed app does not contain the agent bridge payload.")
   )
 }
 
@@ -65,15 +65,29 @@ enum AgentBridgeInstallationError: LocalizedError {
   var errorDescription: String? {
     switch self {
     case .selectionRequired:
-      return "Select Codex, Claude Code, or both before installing."
+      return String(
+        localized: "Select Codex, Claude Code, or both before installing.",
+        comment: "Codex and Claude Code are product names — do not translate"
+      )
     case .payloadUnavailable:
-      return "The app bundle does not contain the Codescribe agent bridge payload."
+      return String(
+        localized: "The app bundle does not contain the Codescribe agent bridge payload."
+      )
     case .invalidManifest(let reason):
-      return "The bundled agent bridge failed checksum verification: \(reason)"
+      return String(
+        localized: "The bundled agent bridge failed checksum verification: \(reason)",
+        comment: "The placeholder is a technical diagnostic produced by the installer"
+      )
     case .conflict(let path, let reason):
-      return "Codescribe will not overwrite \(path): \(reason)"
+      return String(
+        localized: "Codescribe will not overwrite \(path): \(reason)",
+        comment: "First placeholder is a file path, second a technical diagnostic"
+      )
     case .transaction(let reason):
-      return "Agent bridge installation could not be completed atomically: \(reason)"
+      return String(
+        localized: "Agent bridge installation could not be completed atomically: \(reason)",
+        comment: "The placeholder is a technical diagnostic produced by the installer"
+      )
     }
   }
 }
@@ -101,7 +115,7 @@ private struct AgentBridgeBundleManifest: Codable {
   }
 }
 
-private struct AgentBridgeReceipt: Codable {
+private struct AgentBridgeReceipt: Codable, Equatable {
   let schema: String
   let bundleVersion: String
   let managedID: String
@@ -111,6 +125,7 @@ private struct AgentBridgeReceipt: Codable {
   let payloadFiles: [AgentBridgeManifestFile]
   let installedAt: String
   let preservedManualBackups: [String]?
+  let preservedEntries: [String]?
 
   enum CodingKeys: String, CodingKey {
     case schema
@@ -122,6 +137,7 @@ private struct AgentBridgeReceipt: Codable {
     case payloadFiles = "payload_files"
     case installedAt = "installed_at"
     case preservedManualBackups = "preserved_manual_backups"
+    case preservedEntries = "preserved_entries"
   }
 }
 
@@ -143,8 +159,10 @@ private struct AgentBridgeManagedMarker: Codable {
 
 /// Installs the signed bundle payload into a stable runtime root and copies the
 /// skill tree into explicitly selected clients. All preflight conflicts are
-/// detected before mutation. Directory renames form one rollback-capable
-/// transaction; receipt replacement is the final commit point.
+/// detected before mutation. Payload units swap in place — the runtime
+/// directory itself is never renamed, so follower logs and ack cursors keep
+/// their inodes — and every rename forms one rollback-capable transaction;
+/// receipt replacement is the final commit point.
 final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   static let bundleSchema = "codescribe.agent-bridge.bundle.v1"
   static let receiptSchema = "codescribe.agent-bridge.receipt.v1"
@@ -219,17 +237,28 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
           if recorded, receipt.managedID == marker.managedID,
             receipt.installedPaths[client.rawValue] == destination.standardizedFileURL.path
           {
-            evidence = "receipt and managed folder found."
+            evidence = String(
+              localized: "receipt and managed folder found.",
+              comment: "Installer evidence, follows \"<client name>: \" on one line"
+            )
           } else {
-            evidence = "managed folder found, receipt differs — Update will re-adopt it."
+            evidence = String(
+              localized: "managed folder found, receipt differs — Update will re-adopt it.",
+              comment: "Update is the button label on the Agent settings panel"
+            )
           }
         } else {
-          evidence =
-            "managed folder found, receipt missing or unreadable — Update will re-adopt it."
+          evidence = String(
+            localized:
+              "managed folder found, receipt missing or unreadable — Update will re-adopt it.",
+            comment: "Update is the button label on the Agent settings panel"
+          )
         }
       } else {
-        evidence =
-          "receipt found, managed folder missing or invalid — existing unowned folders will not be overwritten."
+        evidence = String(
+          localized:
+            "receipt found, managed folder missing or invalid — existing unowned folders will not be overwritten."
+        )
       }
       details.append("\(client.displayName): \(evidence)")
     }
@@ -239,13 +268,131 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       installedClients: clients,
       installedPaths: paths,
       detail: details.isEmpty
-        ? "Ready to install after you select an agent client."
+        ? String(localized: "Ready to install after you select an agent client.")
         : details.joined(separator: "\n")
     )
   }
 
   func install(selectedClients: Set<AgentBridgeClient>) throws -> AgentBridgeInstallationStatus {
     try install(selectedClients: selectedClients, adopting: nil).status
+  }
+
+  /// Startup updates only an installation whose receipt still owns every
+  /// selected folder. First installation and manual adoption remain explicit.
+  /// The caller runs this disk work outside the main actor.
+  func synchronizeManagedPayload() -> String {
+    let detail: String
+    do {
+      guard let receipt = validReceipt() else {
+        return logSynchronization("Agent bridge synchronization skipped: no valid managed receipt.")
+      }
+      try requireSynchronizationOwnership(receipt)
+      let manifest = try verifiedManifest()
+      if payloadMatches(receipt: receipt, manifest: manifest) {
+        detail = "Agent bridge synchronization unchanged: bundled payload matches the managed receipt."
+      } else {
+        _ = try install(
+          selectedClients: Set(receipt.selectedClients), adopting: nil,
+          synchronizing: receipt
+        )
+        detail = "Agent bridge synchronized from this app for "
+          + receipt.selectedClients.map(\.displayName).joined(separator: ", ") + "."
+      }
+    } catch {
+      detail = "Agent bridge synchronization skipped: " + error.localizedDescription
+    }
+    return logSynchronization(detail)
+  }
+
+  private func logSynchronization(_ detail: String) -> String {
+    Self.logger.info("\(detail, privacy: .public)")
+    return detail
+  }
+
+  /// File order and the app version do not identify a payload generation.
+  private func payloadMatches(
+    receipt: AgentBridgeReceipt, manifest: AgentBridgeBundleManifest
+  ) -> Bool {
+    receipt.payloadFiles.sorted { $0.path < $1.path }
+      == manifest.files.sorted { $0.path < $1.path }
+  }
+
+  private func requireSynchronizationOwnership(_ receipt: AgentBridgeReceipt) throws {
+    let selected = Set(receipt.selectedClients)
+    guard !receipt.managedID.isEmpty, !receipt.bundleVersion.isEmpty,
+      !selected.isEmpty, selected.count == receipt.selectedClients.count,
+      Set(receipt.installedPaths.keys) == Set(selected.map(\.rawValue)),
+      receipt.runtimePath == runtimeDirectory.standardizedFileURL.path,
+      ISO8601DateFormatter().date(from: receipt.installedAt) != nil,
+      !receipt.payloadFiles.isEmpty,
+      Set(receipt.payloadFiles.map(\.path)).count == receipt.payloadFiles.count,
+      receipt.payloadFiles.allSatisfy({ entry in
+        isSafeRelativePath(entry.path)
+          && entry.sha256.count == 64
+          && entry.sha256.allSatisfy({ $0.isHexDigit })
+          && UInt16(entry.mode, radix: 8).map({ $0 <= 0o777 }) == true
+      })
+    else {
+      throw AgentBridgeInstallationError.conflict(
+        path: receiptURL.path, reason: "the receipt does not identify this managed installation")
+    }
+    let homePrefix = homeDirectory.standardizedFileURL.path + "/"
+    let expectedRoot: URL
+    if bridgeRoot.standardizedFileURL.path.hasPrefix(homePrefix) {
+      let relative = String(bridgeRoot.standardizedFileURL.path.dropFirst(homePrefix.count))
+      expectedRoot = homeDirectory.resolvingSymlinksInPath().appendingPathComponent(relative)
+    } else {
+      expectedRoot = bridgeRoot.deletingLastPathComponent().resolvingSymlinksInPath()
+        .appendingPathComponent(bridgeRoot.lastPathComponent)
+    }
+    for (directory, expected) in [
+      (bridgeRoot, expectedRoot),
+      (runtimeDirectory, expectedRoot.appendingPathComponent("runtime")),
+    ] {
+      let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+      guard values.isDirectory == true, values.isSymbolicLink != true,
+        directory.resolvingSymlinksInPath().standardizedFileURL == expected.standardizedFileURL
+      else {
+        throw AgentBridgeInstallationError.conflict(
+          path: directory.path, reason: "the managed runtime directory is redirected or missing")
+      }
+    }
+    let receiptValues = try receiptURL.resourceValues(forKeys: [
+      .isRegularFileKey, .isSymbolicLinkKey,
+    ])
+    guard receiptValues.isRegularFile == true, receiptValues.isSymbolicLink != true else {
+      throw AgentBridgeInstallationError.conflict(
+        path: receiptURL.path, reason: "the receipt is not an ordinary managed file")
+    }
+    for entry in receipt.payloadFiles {
+      let file = runtimeDirectory.appendingPathComponent(entry.path)
+      let expected = expectedRoot.appendingPathComponent("runtime").appendingPathComponent(entry.path)
+      let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+      guard values.isRegularFile == true, values.isSymbolicLink != true,
+        file.resolvingSymlinksInPath().standardizedFileURL == expected.standardizedFileURL
+      else {
+        throw AgentBridgeInstallationError.conflict(
+          path: file.path, reason: "the recorded payload file is redirected or missing")
+      }
+      let data = try Data(contentsOf: file)
+      guard UInt64(data.count) == entry.bytes, Self.sha256(data) == entry.sha256.lowercased() else {
+        throw AgentBridgeInstallationError.conflict(
+          path: file.path, reason: "the runtime payload differs from its managed receipt")
+      }
+    }
+    for client in selected {
+      let destination = client.skillDirectory(home: homeDirectory)
+      let expected = client.skillDirectory(home: homeDirectory.resolvingSymlinksInPath())
+        .standardizedFileURL
+      guard receipt.installedPaths[client.rawValue] == destination.standardizedFileURL.path,
+        destination.resolvingSymlinksInPath().standardizedFileURL == expected,
+        let marker = managedMarker(destination: destination, client: client),
+        marker.managedID == receipt.managedID
+      else {
+        throw AgentBridgeInstallationError.conflict(
+          path: destination.path, reason: "the selected folder is not owned by this receipt")
+      }
+    }
   }
 
   /// Only an explicit user-confirmed action may replace a manual skill folder.
@@ -256,7 +403,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   }
 
   private func install(
-    selectedClients: Set<AgentBridgeClient>, adopting: AgentBridgeClient?
+    selectedClients: Set<AgentBridgeClient>, adopting: AgentBridgeClient?,
+    synchronizing expectedReceipt: AgentBridgeReceipt? = nil
   ) throws -> AgentBridgeAdoptionResult {
     guard !selectedClients.isEmpty else {
       throw AgentBridgeInstallationError.selectionRequired
@@ -266,12 +414,14 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       throw AgentBridgeInstallationError.payloadUnavailable
     }
 
-    try fileManager.createDirectory(
-      at: bridgeRoot,
-      withIntermediateDirectories: true,
-      attributes: [.posixPermissions: 0o700]
-    )
-    try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: bridgeRoot.path)
+    if expectedReceipt == nil {
+      try fileManager.createDirectory(
+        at: bridgeRoot,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+      )
+      try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: bridgeRoot.path)
+    }
     let lease = try acquireInstallationLease()
     defer {
       _ = flock(lease, LOCK_UN)
@@ -279,6 +429,15 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     }
 
     let previousReceipt = validReceipt()
+    if let expectedReceipt {
+      // UI installation may have changed the selection while startup verified
+      // the bundle. Never overwrite that newer choice with a stale snapshot.
+      guard previousReceipt == expectedReceipt else {
+        throw AgentBridgeInstallationError.conflict(
+          path: receiptURL.path, reason: "the managed receipt changed during synchronization")
+      }
+      try requireSynchronizationOwnership(expectedReceipt)
+    }
     let managedID = previousReceipt?.managedID ?? UUID().uuidString.lowercased()
     let previouslySelected = Set(previousReceipt?.selectedClients ?? [])
     // Adoption is additive, including clients committed before we got the lease.
@@ -318,6 +477,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     var clientStages: [AgentBridgeClient: URL] = [:]
     var records: [ReplacementRecord] = []
     var preservedBackups: [String] = []
+    let runtimePreexisted = fileManager.fileExists(atPath: runtimeDirectory.path)
+    var oldHelperFollowers: [FollowerProcess] = []
 
     do {
       try fileManager.copyItem(at: resourceRoot, to: runtimeStage)
@@ -348,12 +509,52 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         clientStages[client] = stage
       }
 
+      // Payload units swap in place, never the runtime directory itself:
+      // renaming `runtime/` away strands every open follower log and ack
+      // cursor on a deleted inode (2026-09-30 incident), and copying state
+      // back after a swap would still hand followers a new inode. Anything
+      // outside the manifest keeps its path and inode; state never enters
+      // `records`, so rollback cannot touch it either.
+      try fileManager.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
+      // Files an earlier receipt committed but this manifest no longer ships
+      // are stale payload, not state: they move into the rollback record and
+      // are deleted only after the receipt commit succeeds.
+      let stalePayload = stalePayloadFiles(previousReceipt: previousReceipt, manifest: manifest)
+      let preservedEntries = collectPreservedEntries(
+        manifest: manifest, excludingStalePayload: Set(stalePayload))
+      let installedHelper = runtimeDirectory.appendingPathComponent(manifest.helper)
+      if let oldHelper = try? Data(contentsOf: installedHelper),
+        let bundledHelper = manifest.files.first(where: { $0.path == manifest.helper }),
+        Self.sha256(oldHelper) != bundledHelper.sha256.lowercased()
+      {
+        oldHelperFollowers = liveFollowerProcesses()
+      }
+      for unit in payloadUnits(manifest: manifest) {
+        try replace(
+          destination: runtimeDirectory.appendingPathComponent(unit, isDirectory: true),
+          with: runtimeStage.appendingPathComponent(unit, isDirectory: true),
+          transactionID: transactionID,
+          records: &records
+        )
+      }
+      // manifest.json is bundle metadata describing the payload, not state.
       try replace(
-        destination: runtimeDirectory,
-        with: runtimeStage,
+        destination: runtimeDirectory.appendingPathComponent("manifest.json"),
+        with: runtimeStage.appendingPathComponent("manifest.json"),
         transactionID: transactionID,
         records: &records
       )
+      for stale in stalePayload {
+        let destination = runtimeDirectory.appendingPathComponent(stale)
+        guard fileManager.fileExists(atPath: destination.path) else { continue }
+        try replace(
+          destination: destination,
+          with: nil,
+          transactionID: transactionID,
+          records: &records
+        )
+      }
+      try? fileManager.removeItem(at: runtimeStage)
       for client in selected {
         guard let stage = clientStages[client] else { continue }
         if client == adopting { try requireManualSkill(client: client) }
@@ -394,12 +595,28 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         runtimePath: runtimeDirectory.standardizedFileURL.path,
         payloadFiles: manifest.files,
         installedAt: ISO8601DateFormatter().string(from: Date()),
-        preservedManualBackups: (previousReceipt?.preservedManualBackups ?? []) + preservedBackups
+        preservedManualBackups: (previousReceipt?.preservedManualBackups ?? []) + preservedBackups,
+        preservedEntries: preservedEntries
       )
       try writeJSON(receipt, to: receiptURL)
+      for follower in oldHelperFollowers where follower.isAlive {
+        Self.logger.warning(
+          "Agent bridge helper replaced; follower \(follower.leaseID, privacy: .public) pid=\(follower.pid, privacy: .public) is still running the previous helper. It was not stopped."
+        )
+      }
       for record in records where record.backup != nil {
         if !preservedBackups.contains(record.backup!.path) {
           try? fileManager.removeItem(at: record.backup!)
+        }
+      }
+      // Prune payload directories left empty by stale-file removal.
+      for stale in stalePayload {
+        var directory = runtimeDirectory.appendingPathComponent(stale).deletingLastPathComponent()
+        while directory.standardizedFileURL != runtimeDirectory.standardizedFileURL {
+          if (try? fileManager.contentsOfDirectory(atPath: directory.path))?.isEmpty == true {
+            try? fileManager.removeItem(at: directory)
+          }
+          directory = directory.deletingLastPathComponent()
         }
       }
     } catch {
@@ -408,10 +625,24 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       for stage in clientStages.values {
         try? fileManager.removeItem(at: stage)
       }
+      // A runtime directory this transaction created holds no state; once
+      // rollback empties it, remove it so a failed first install leaves no trace.
+      if !runtimePreexisted {
+        pruneEmptyDirectories(under: runtimeDirectory)
+        if (try? fileManager.contentsOfDirectory(atPath: runtimeDirectory.path))?.isEmpty == true {
+          try? fileManager.removeItem(at: runtimeDirectory)
+        }
+      }
       if !recoveryFailures.isEmpty {
+        let failure = error.localizedDescription
+        let preserve = recoveryFailures.joined(separator: "\n")
         throw AgentBridgeInstallationError.transaction(
-          error.localizedDescription + "\nRollback incomplete. Preserve these paths for recovery:\n"
-            + recoveryFailures.joined(separator: "\n")
+          String(
+            localized:
+              "\(failure)\nRollback incomplete. Preserve these paths for recovery:\n\(preserve)",
+            comment:
+              "First placeholder is the underlying failure, second a newline-separated path list"
+          )
         )
       }
       if let typed = error as? AgentBridgeInstallationError {
@@ -423,13 +654,47 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     return AgentBridgeAdoptionResult(status: status(), backupPaths: preservedBackups)
   }
 
+  private struct FollowerProcess: Decodable {
+    let leaseID: String
+    let pid: Int32
+
+    enum CodingKeys: String, CodingKey {
+      case leaseID = "lease_id"
+      case pid
+    }
+
+    var isAlive: Bool {
+      guard pid > 0 else { return false }
+      return Darwin.kill(pid, 0) == 0 || errno == EPERM
+    }
+  }
+
+  private func liveFollowerProcesses() -> [FollowerProcess] {
+    let directory = runtimeDirectory.appendingPathComponent("followers", isDirectory: true)
+    guard let files = try? fileManager.contentsOfDirectory(
+      at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+    ) else { return [] }
+    return files.sorted { $0.lastPathComponent < $1.lastPathComponent }.compactMap { file in
+      guard file.pathExtension == "pid",
+        let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+        values.isRegularFile == true, values.isSymbolicLink != true,
+        let follower = try? decode(FollowerProcess.self, from: file), follower.isAlive
+      else { return nil }
+      return follower
+    }
+  }
+
   /// One kernel-owned writer across app processes. Keep the lock file: unlinking
   /// it would allow two writers to lock different inodes at the same path.
   private func acquireInstallationLease() throws -> Int32 {
     let path = bridgeRoot.appendingPathComponent("installation.lock").path
     let descriptor = Darwin.open(path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
     guard descriptor >= 0 else {
-      throw AgentBridgeInstallationError.transaction("cannot open the installation lock")
+      throw AgentBridgeInstallationError.transaction(
+        String(
+          localized: "cannot open the installation lock",
+          comment: "Reason clause appended to the atomic-installation failure sentence"
+        ))
     }
     var metadata = stat()
     guard Darwin.fstat(descriptor, &metadata) == 0,
@@ -438,7 +703,11 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     else {
       _ = Darwin.close(descriptor)
       throw AgentBridgeInstallationError.transaction(
-        "another installation is active or its lock is unavailable; try again after it finishes")
+        String(
+          localized:
+            "another installation is active or its lock is unavailable; try again after it finishes",
+          comment: "Reason clause appended to the atomic-installation failure sentence"
+        ))
     }
     return descriptor
   }
@@ -459,8 +728,11 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     else {
       throw AgentBridgeInstallationError.conflict(
         path: destination.path,
-        reason:
-          "manual adoption requires an ordinary skill folder with SKILL.md and no managed marker"
+        reason: String(
+          localized:
+            "manual adoption requires an ordinary skill folder with SKILL.md and no managed marker",
+          comment: "SKILL.md is a file name — keep it verbatim"
+        )
       )
     }
   }
@@ -519,6 +791,97 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       throw AgentBridgeInstallationError.invalidManifest("helper or skill entrypoint is missing")
     }
     return manifest
+  }
+
+  /// Payload units swapped as a whole: every top-level manifest entry (e.g.
+  /// `bin/`) plus each `skills/<name>/` skill tree. State such as `followers/`
+  /// or the ack cursors is never a unit, so it is never renamed or removed.
+  private func payloadUnits(manifest: AgentBridgeBundleManifest) -> [String] {
+    var units = Set<String>()
+    for entry in manifest.files {
+      let components = entry.path.split(separator: "/")
+      guard let first = components.first else { continue }
+      if first == "skills", components.count > 1 {
+        units.insert("skills/\(components[1])")
+      } else {
+        units.insert(String(first))
+      }
+    }
+    return units.sorted()
+  }
+
+  /// Files an earlier receipt committed that this manifest no longer ships.
+  /// They are payload, not state, and their removal stays rollback-capable.
+  private func stalePayloadFiles(
+    previousReceipt: AgentBridgeReceipt?,
+    manifest: AgentBridgeBundleManifest
+  ) -> [String] {
+    guard let previousReceipt else { return [] }
+    let current = Set(manifest.files.map(\.path))
+    return previousReceipt.payloadFiles.map(\.path).filter { !current.contains($0) }.sorted()
+  }
+
+  /// Relative paths inside `runtime/` that neither this manifest nor the
+  /// stale-payload removal owns. They survive installation byte-for-byte and
+  /// are echoed into the receipt.
+  private func collectPreservedEntries(
+    manifest: AgentBridgeBundleManifest,
+    excludingStalePayload stale: Set<String>
+  ) -> [String] {
+    let units = Set(payloadUnits(manifest: manifest))
+    guard
+      let enumerator = fileManager.enumerator(
+        at: runtimeDirectory,
+        includingPropertiesForKeys: nil,
+        options: []
+      )
+    else { return [] }
+    let prefix = runtimeDirectory.standardizedFileURL.path + "/"
+    var preserved: [String] = []
+    for case let item as URL in enumerator {
+      let absolute = item.standardizedFileURL.path
+      guard absolute.hasPrefix(prefix) else { continue }
+      let relative = String(absolute.dropFirst(prefix.count))
+      guard !isPayloadPath(relative, units: units) else { continue }
+      // Stale payload (and directories pruned with it) is removed, not preserved.
+      guard !stale.contains(relative),
+        !stale.contains(where: { $0.hasPrefix(relative + "/") })
+      else { continue }
+      preserved.append(relative)
+    }
+    return preserved.sorted()
+  }
+
+  private func isPayloadPath(_ relative: String, units: Set<String>) -> Bool {
+    if relative == "manifest.json" { return true }
+    let components = relative.split(separator: "/")
+    guard let first = components.first else { return false }
+    if first == "skills" {
+      return components.count == 1 || units.contains("skills/\(components[1])")
+    }
+    return units.contains(String(first))
+  }
+
+  /// Removes empty directories below `root`, deepest first. `root` itself stays.
+  private func pruneEmptyDirectories(under root: URL) {
+    guard
+      let enumerator = fileManager.enumerator(
+        at: root,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: []
+      )
+    else { return }
+    var directories: [URL] = []
+    for case let item as URL in enumerator {
+      if (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+        directories.append(item)
+      }
+    }
+    for directory in directories.sorted(by: { $0.path.count > $1.path.count }) {
+      if (try? fileManager.contentsOfDirectory(atPath: directory.path))?.isEmpty == true {
+        try? fileManager.removeItem(at: directory)
+      }
+    }
   }
 
   private func payloadFiles(root: URL) throws -> Set<String> {
@@ -580,8 +943,10 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     guard managedMarker(destination: destination, client: client) != nil else {
       throw AgentBridgeInstallationError.conflict(
         path: destination.path,
-        reason:
-          "the Codescribe-managed marker is missing or does not match this client and bridge root"
+        reason: String(
+          localized:
+            "the Codescribe-managed marker is missing or does not match this client and bridge root"
+        )
       )
     }
   }

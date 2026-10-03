@@ -2,11 +2,13 @@
 
 #![cfg(target_os = "macos")]
 
+use codescribe::config::PasteMode;
 use codescribe::controller::{
-    DeliveryIntent, DeliveryRoute, delivery_intent_from_session, format_delivery_route_line,
-    overlay_insert_facts, resolve_delivery_route,
+    DeliveryIntent, DeliveryRoute, PasteTarget, delivery_intent_from_session,
+    format_delivery_route_line, looks_executable, overlay_insert_facts, resolve_delivery_route,
 };
 use codescribe::os::clipboard::{ClipboardSnapshot, get_clipboard, set_clipboard};
+use codescribe::os::hold_badge::FocusedInputField;
 use serial_test::serial;
 
 struct ClipboardRestore(Option<ClipboardSnapshot>);
@@ -85,29 +87,43 @@ fn foreign_insert_selects_one_route_and_borrows_clipboard_losslessly() {
     assert_eq!(restored, "clipboard-owner-sentinel");
 }
 
-/// Stop-path contract: a plain hold / toggle session freezes `OrientDictation`,
-/// Auto Paste on selects the clipboard route, Auto Paste off archives only,
-/// and an assistive session never reaches the paste gun.
+/// Stop-path contract: a plain hold / toggle session freezes `OrientDictation`;
+/// the paste mode decides the gun (Safe pastes into a terminal only past the
+/// executable guard, Off archives only), and an assistive session never
+/// reaches it.
 #[test]
-fn stop_path_intent_follows_the_auto_paste_setting() {
+fn stop_path_intent_follows_the_paste_mode() {
     let dictation = delivery_intent_from_session(false, false, false);
     assert_eq!(dictation, DeliveryIntent::OrientDictation);
 
     let mut facts = overlay_insert_facts(true, false);
-    facts.auto_paste_enabled = true;
-    let on = resolve_delivery_route(dictation, facts);
-    assert_eq!(on.route, DeliveryRoute::ClipboardPaste);
+    facts.paste_mode = PasteMode::Safe;
+    facts.paste_target = PasteTarget {
+        terminal: true,
+        field: FocusedInputField::Unobserved,
+    };
+    facts.executable_payload = looks_executable("zrób podsumowanie dnia");
+    let prose = resolve_delivery_route(dictation, facts);
+    assert_eq!(prose.route, DeliveryRoute::ClipboardPaste);
     assert_eq!(
-        format_delivery_route_line(dictation, on, Some("Ghostty")),
-        "delivery_route: intent=orient_dictation route=clipboard_paste reason=auto_paste target=Ghostty"
+        format_delivery_route_line(dictation, prose, Some("Ghostty")),
+        "delivery_route: intent=orient_dictation route=clipboard_paste reason=paste_safe target=Ghostty"
     );
 
-    facts.auto_paste_enabled = false;
+    facts.executable_payload = looks_executable("git push --force");
+    let command = resolve_delivery_route(dictation, facts);
+    assert_eq!(command.route, DeliveryRoute::ClipboardHold);
+    assert_eq!(
+        format_delivery_route_line(dictation, command, Some("Ghostty")),
+        "delivery_route: intent=orient_dictation route=clipboard_hold reason=hold_executable target=Ghostty"
+    );
+
+    facts.paste_mode = PasteMode::Off;
     let off = resolve_delivery_route(dictation, facts);
     assert_eq!(off.route, DeliveryRoute::ArchiveOnly);
-    assert_eq!(off.reason, "auto_paste_disabled");
+    assert_eq!(off.reason, "paste_mode_off");
 
-    facts.auto_paste_enabled = true;
+    facts.paste_mode = PasteMode::Comfort;
     let assistive = delivery_intent_from_session(true, false, false);
     let agent = resolve_delivery_route(assistive, facts);
     assert_eq!(agent.route, DeliveryRoute::AgentComposer);

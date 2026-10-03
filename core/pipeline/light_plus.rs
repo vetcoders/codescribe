@@ -17,14 +17,81 @@
 //! deliberately NOT ported: that version deleted "filler" content words (`no`,
 //! `tak`, `właśnie`, `w sumie`). Those carry meaning in Polish — "tak, zgadzam
 //! się" is not the same sentence without its "tak" — and deleting user words is
-//! the exact class of harm the lexicon's stopword gate was added to stop. Only
-//! non-lexical hesitation sounds are removed here.
+//! the exact class of harm the lexicon's stopword gate was added to stop.
+//! Hesitation sounds and accepted acoustic event markers are preserved too.
 //!
 //! Every rule is idempotent: applying the pass twice yields the same string, so
 //! a re-delivered or re-formatted transcript never drifts.
 
 /// Punctuation that closes a clause and may therefore be doubled by a seam.
 const COLLAPSIBLE_PUNCT: [char; 6] = ['.', '!', '?', ',', ';', ':'];
+
+/// One deadline from scheduling through admission, including worker queue time.
+/// A worker owns candidates only; timing out drops its return channel and
+/// cannot grant it authority to publish a late result.
+#[derive(Clone)]
+pub struct TickBudget {
+    scheduled: std::time::Duration,
+    wall_started: std::time::Instant,
+    clock: std::sync::Arc<dyn Fn() -> std::time::Duration + Send + Sync>,
+}
+
+impl Default for TickBudget {
+    fn default() -> Self {
+        let origin = std::time::Instant::now();
+        Self::schedule(std::sync::Arc::new(move || origin.elapsed()))
+    }
+}
+
+impl TickBudget {
+    pub const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+    pub fn schedule(clock: std::sync::Arc<dyn Fn() -> std::time::Duration + Send + Sync>) -> Self {
+        Self {
+            scheduled: clock(),
+            wall_started: std::time::Instant::now(),
+            clock,
+        }
+    }
+
+    pub fn elapsed(&self) -> std::time::Duration {
+        (self.clock)()
+            .saturating_sub(self.scheduled)
+            .max(self.wall_started.elapsed())
+    }
+
+    pub fn expired(&self) -> bool {
+        self.elapsed() >= Self::LIMIT
+    }
+
+    /// Wait only for the remaining budget. The closure must have no access to
+    /// live authority; its output still needs deadline and source admission.
+    pub fn prepare<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(Self) -> T + Send + 'static,
+    ) -> Option<T> {
+        let remaining = Self::LIMIT.checked_sub(self.elapsed())?;
+        if remaining.is_zero() {
+            return None;
+        }
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let budget = self.clone();
+        std::thread::Builder::new()
+            .name("light-plus-tick".into())
+            .spawn(move || {
+                if !budget.expired() {
+                    let result = work(budget.clone());
+                    if !budget.expired() {
+                        let _ = sender.send(result);
+                    }
+                }
+            })
+            .ok()?;
+        let remaining = Self::LIMIT.checked_sub(self.elapsed())?;
+        let result = receiver.recv_timeout(remaining).ok()?;
+        (!self.expired()).then_some(result)
+    }
+}
 
 /// Apply the deterministic sentence-shaping pass. Idempotent, no allocations
 /// beyond the output, no network, no model.
@@ -33,9 +100,9 @@ const COLLAPSIBLE_PUNCT: [char; 6] = ['.', '!', '?', ',', ';', ':'];
 /// crate has neither backreferences nor lookaround, so "a word repeated" and
 /// "the same punctuation mark twice" cannot be expressed as patterns at all.
 ///
-/// Order matters: token work first (it decides which words survive), then the
-/// character pass (punctuation spacing depends on final token adjacency), and
-/// capitalisation last so it sees settled sentence boundaries.
+/// Order matters: normalize punctuation spacing without removing tokens, then
+/// insert conservative clause marks, and capitalise last so the pass sees
+/// settled sentence boundaries.
 pub fn apply(text: &str) -> String {
     apply_with_left_context("", text)
 }
@@ -66,12 +133,7 @@ pub fn apply_live_span(left_context: &str, span: &str, sentence_break_before: bo
         return String::new();
     }
 
-    let joined = collapse_tokens(trimmed);
-    if joined.is_empty() {
-        return String::new();
-    }
-
-    let tightened = tighten_punctuation(&joined);
+    let tightened = tighten_punctuation(trimmed);
     let punctuated = place_polish_commas(&tightened);
     let tightened = punctuated.trim();
     if tightened.is_empty() {
@@ -119,58 +181,6 @@ fn capitalize_span(text: &str, open_at_start: bool) -> String {
         }
     }
     out
-}
-
-/// Drop hesitation sounds and normalise every run of whitespace to a single
-/// space.
-///
-/// A second rule used to live here: an immediately repeated word was deleted as
-/// a seam artifact. It is gone, and for the same reason the Python original's
-/// filler deletion was never ported — it deletes user words. Worse, it decides
-/// by content alone. "Iwo Iwo Iwo Iwo Iwo" is five acoustic occurrences of a
-/// name and this pass turned it into one, every time, with no evidence beyond
-/// the strings being equal. Nothing in a bare string can tell an operator
-/// saying a word twice apart from a concatenation duplicating it.
-///
-/// Duplication introduced by joining overlapping engine output is real, but it
-/// is decided where the PCM ranges are — the tail patcher and the span
-/// idempotence ledger — not here. Hesitations stay because a hesitation is a
-/// non-lexical sound rather than an occurrence of a word, and the punctuation
-/// pass stays because it collapses characters, not tokens.
-fn collapse_tokens(text: &str) -> String {
-    let mut kept: Vec<&str> = Vec::new();
-    for token in text.split_whitespace() {
-        if is_hesitation(token) {
-            continue;
-        }
-        kept.push(token);
-    }
-    kept.join(" ")
-}
-
-/// A non-lexical hesitation: a run of one vowel (`yyy`, `eee`), or an `hm`/`uh`
-/// /`um` form, once trailing punctuation is set aside. The doubling requirement
-/// is what keeps real words — `y`, `a`, `e`, `o` never reach two characters —
-/// out of reach.
-fn is_hesitation(token: &str) -> bool {
-    let core: String = token
-        .chars()
-        .filter(|c| c.is_alphabetic())
-        .flat_map(char::to_lowercase)
-        .collect();
-    if core.len() < 2 {
-        return false;
-    }
-    let mut chars = core.chars();
-    let first = chars.next().expect("non-empty");
-    if matches!(first, 'y' | 'e' | 'a' | 'i' | 'u' | 'o') && core.chars().all(|c| c == first) {
-        // yy, eee, aaa … a single repeated vowel is never a Polish word.
-        return true;
-    }
-    matches!(
-        core.as_str(),
-        "hm" | "hmm" | "hmmm" | "mhm" | "mhmm" | "uh" | "uhm" | "um" | "umm"
-    )
 }
 
 /// Collapse repeated punctuation and pull marks back onto the preceding word.
@@ -311,6 +321,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tick_budget_counts_queue_time_and_refuses_late_candidates() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        let time = Arc::new(AtomicU64::new(0));
+        let clock_time = time.clone();
+        let clock: Arc<dyn Fn() -> std::time::Duration + Send + Sync> =
+            Arc::new(move || std::time::Duration::from_millis(clock_time.load(Ordering::SeqCst)));
+        let queued = TickBudget::schedule(clock.clone());
+        time.store(2_001, Ordering::SeqCst);
+        assert!(
+            queued
+                .prepare(|_| panic!("expired queued job must not start"))
+                .is_none()
+        );
+        time.store(0, Ordering::SeqCst);
+        let late = TickBudget::schedule(clock.clone());
+        let worker_time = time.clone();
+        assert!(
+            late.prepare(move |_| {
+                worker_time.store(2_001, Ordering::SeqCst);
+                "late candidate"
+            })
+            .is_none()
+        );
+        time.store(0, Ordering::SeqCst);
+        let timely = TickBudget::schedule(clock);
+        assert_eq!(
+            timely.prepare(|_| apply("Iwo yyy [laugh]")),
+            Some("Iwo yyy [laugh].".into())
+        );
+    }
+
+    #[test]
     fn polish_clauses_gain_commas_without_losing_words() {
         let source = "to jest fajne bo VNC jak stosuję to zazwyczaj nie potrzebuję wiedzieć że program który działa jest otwarty";
         let shaped = apply(source);
@@ -431,10 +476,13 @@ mod tests {
         assert_eq!(apply(&once), once);
     }
 
-    /// Hesitation sounds drop; content fillers like `tak`/`no` survive.
+    /// Raw keeps the spoken performance, including hesitations and events.
     #[test]
-    fn removes_hesitation_sounds_only() {
-        assert_eq!(apply("yyy no i eee koniec"), "No i koniec.");
+    fn preserves_hesitations_and_acoustic_events() {
+        assert_eq!(
+            apply("yyy no i eee [śmiech] koniec"),
+            "Yyy no i eee [śmiech] koniec."
+        );
         // Content words that the Python original deleted must survive.
         for kept in ["tak", "no", "właśnie", "jakby"] {
             let shaped = apply(&format!("{kept} zgadzam się"));
@@ -472,19 +520,17 @@ mod tests {
         assert_eq!(apply("   \n  "), "");
     }
 
-    /// A span that shapes to nothing returns an empty string rather than a
-    /// lone period. The live per-occurrence caller reads that emptiness as
-    /// "refuse", so a hesitation-only utterance keeps its spoken label instead
-    /// of being deleted from the document by a formatting pass.
+    /// Hesitation-only spans have the same shaping contract as other speech.
     #[test]
-    fn a_span_that_shapes_to_nothing_returns_nothing() {
-        for hesitation in ["yyy", "  eee ", "hmm", "\n"] {
+    fn hesitation_only_spans_survive_and_whitespace_stays_empty() {
+        for hesitation in ["yyy", "eee", "hmm"] {
             assert_eq!(
                 apply_with_left_context("Zdanie przed.", hesitation),
-                "",
-                "a shape that consumed every word must be empty, not punctuation"
+                format!("{}.", capitalize_span(hesitation, true)),
+                "a hesitation is part of Raw"
             );
         }
+        assert_eq!(apply_with_left_context("Zdanie przed.", "\n"), "");
     }
 
     /// Left context that closes on a comma is an unfinished clause: the span
@@ -528,5 +574,13 @@ mod tests {
         // And the whole-document pass leaves that result alone, so the terminal
         // Light+ gate mints nothing on top of it.
         assert_eq!(apply(&document), document);
+    }
+    #[test]
+    fn w0_falsifier_light_plus_preserves_yyy_in_raw() {
+        let shaped = apply("Iwo yyy wraca");
+        assert!(
+            shaped.split_whitespace().any(|word| word == "yyy"),
+            "Raw lost its hesitation"
+        );
     }
 }

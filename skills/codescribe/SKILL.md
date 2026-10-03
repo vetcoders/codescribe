@@ -8,7 +8,7 @@ description: >
   Editing this skill or the app is a repository task, not an instruction to
   start another listener.
 metadata:
-  version: "0.7.0"
+  version: "0.8.0"
   loctree_value: "primary repo map for structural/literal repository work"
   aicx_value: "intent, session, and decision-context retrieval"
   dogfooding: "required for repo-impacting work"
@@ -60,22 +60,31 @@ manual attach saga and drive the engine:
    ```bash
    python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
      --attach --channel <channel> --name <name> \
-     --provider <claude-code|codex|...> --session <provider-session-id>
+     --provider <claude-code|codex|...> --session <provider-session-id> \
+     [--voice <voice>]
    ```
 
-   The receipt carries lease, cursor, voice profile, follower pid and its log
-   path. The follower runs with `--coalesce`: a reducer storm folds into one
-   envelope per document, so restatements cannot fill the mailbox.
+   With `--provider claude-code`, `--session` defaults to
+   `$CLAUDE_CODE_SESSION_ID`; Codex passes its thread id. A given `[voice]`
+   goes on this call and is stored in the name's profile; the receipt then
+   says `voice_source: "flag"`. It also carries lease, cursor, voice profile,
+   follower pid and its log path. The follower runs with `--coalesce`: a
+   reducer storm folds into one envelope per document.
 
-3. Arm the wakeup for this provider ([Monitor](references/monitor.md)). The
-   engine's `--on-seal '<cmd>'` follower hook is the provider-agnostic wake
-   surface; a harness monitor polling the lease works where hooks cannot reach.
+3. Arm the wakeup: run `--watch --provider <p> --session <id>` under the
+   provider's output-notifying monitor ([Monitor](references/monitor.md)). It
+   prints one line per seal, refused take, state-changing or routing notice.
+   The follower's `--on-seal '<cmd>'` hook is the provider-agnostic
+   alternative.
 4. Read one truth with `--status`: backlog is pending minus acknowledgment
    markers, never the raw pending length the lease file shows before a sweep.
 5. Verify with a fresh named take on the channel before claiming listening;
-   the receipt alone is `attached_unverified`.
-6. When `[voice]` is given, pass it as `--voice` on `--say`; without it,
-   `--say` reads the profile. Changing a stored profile is the Founder's call.
+   the receipt alone is `attached_unverified`. Acknowledge accepted envelopes
+   with `--ack <id> [<id> ...]`.
+6. Reply by voice with `--say "<text>" --provider <p> --session <id>`: the name
+   comes from the lease, the voice from its profile
+   ([Voice reply](references/voice-reply.md)). Changing a stored profile is the
+   Founder's call.
 
 For app or skill edits, use the repository's implementation workflow.
 For screencast analysis, use `vc-screenscribe`. In-app Agent and Assistive

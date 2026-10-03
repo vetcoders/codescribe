@@ -35,6 +35,7 @@ struct Sidecar {
 /// This registry routes IO by capture identity; it owns no transcript state.
 pub(crate) struct SlotReceiptSink {
     key: CaptureKey,
+    _trail: Option<super::trail::TrailSink>,
 }
 
 impl SlotReceiptSink {
@@ -80,7 +81,14 @@ impl SlotReceiptSink {
                 file: Mutex::new(Some(file)),
             }),
         );
-        Ok(Self { key })
+        let trail = match super::trail::TrailSink::open_in(root, session, epoch, 64) {
+            Ok(sink) => Some(sink),
+            Err(error) => {
+                tracing::warn!(kind = ?error.kind(), "decision trail unavailable");
+                None
+            }
+        };
+        Ok(Self { key, _trail: trail })
     }
 }
 
@@ -392,6 +400,8 @@ mod tests {
         text: &str,
     ) -> WordSlot {
         WordSlot {
+            confidence: None,
+            surface_rewritten: false,
             sample_start: start,
             sample_end: end,
             text: text.into(),
@@ -423,13 +433,20 @@ mod tests {
     fn mixed_ledger(owner: &OccurrenceIdentity) -> AcousticLedger {
         let mut ledger = qualified(owner);
         let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone());
-        ledger.admit_word_slots(&apple, &[(12_000, 21_600, "providers".into())]);
+        ledger.admit_word_slots(
+            &apple,
+            &[crate::pipeline::acoustic_ledger::WordPin::new(
+                12_000,
+                21_600,
+                "providers",
+            )],
+        );
         let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, owner.clone());
         ledger.admit_word_slots(
             &whisper,
             &[
-                (4_800, 14_400, "Provider".into()),
-                (24_000, 33_600, "works".into()),
+                crate::pipeline::acoustic_ledger::WordPin::new(4_800, 14_400, "Provider"),
+                crate::pipeline::acoustic_ledger::WordPin::new(24_000, 33_600, "works"),
             ],
         );
         ledger.note_frontier_return(owner, ObservationProducer::Whisper);
@@ -599,8 +616,18 @@ mod tests {
         // An automatic observation after finality and another seal never append.
         let late = ObservationIdentity::new(ObservationProducer::Whisper, 9, 9, owner.clone());
         assert_eq!(
-            disabled.admit_word_slots(&late, &[(1_000, 2_000, "late".into())]),
-            enabled.admit_word_slots(&late, &[(1_000, 2_000, "late".into())])
+            disabled.admit_word_slots(
+                &late,
+                &[crate::pipeline::acoustic_ledger::WordPin::new(
+                    1_000, 2_000, "late"
+                )]
+            ),
+            enabled.admit_word_slots(
+                &late,
+                &[crate::pipeline::acoustic_ledger::WordPin::new(
+                    1_000, 2_000, "late"
+                )]
+            )
         );
         disabled.seal(&owner).unwrap();
         enabled.seal(&owner).unwrap();
@@ -689,7 +716,11 @@ mod tests {
                 ObservationIdentity::new(ObservationProducer::Apple, index, 0, owner.clone());
             ledger.admit_word_slots(
                 &apple,
-                &[(owner.sample_start, owner.sample_end, "Iwo".into())],
+                &[crate::pipeline::acoustic_ledger::WordPin::new(
+                    owner.sample_start,
+                    owner.sample_end,
+                    "Iwo",
+                )],
             );
             ledger.seal(&owner).unwrap();
             ledger.seal(&owner).unwrap();

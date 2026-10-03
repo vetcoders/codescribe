@@ -45,7 +45,7 @@ struct TrayRow: View {
 
   private var fillColor: Color {
     switch style {
-    case .primary: return CSColor.chromeAccent.opacity(0.13)
+    case .primary: return CSColor.accentWash.opacity(0.13)
     case .raised: return CSColor.surfaceRaised(0.04)
     case .plain: return hovering ? CSColor.surfaceRaised(0.05) : .clear
     }
@@ -90,8 +90,16 @@ struct TrayRow: View {
     .buttonStyle(.plain)
     .csFocusOutline(cornerRadius: CSRadius.input)
     .accessibilityLabel(title)
-    .accessibilityValue(disclosureExpanded.map { $0 ? "Expanded" : "Collapsed" } ?? shortcut ?? "")
+    .accessibilityValue(accessibilityValue)
     .onHover { hovering = $0 }
+  }
+
+  /// Disclosure state when the row heads a group, otherwise the keycap.
+  private var accessibilityValue: String {
+    guard let expanded = disclosureExpanded else { return shortcut ?? "" }
+    return expanded
+      ? String(localized: "Expanded", comment: "Accessibility value: a disclosure row is open")
+      : String(localized: "Collapsed", comment: "Accessibility value: a disclosure row is closed")
   }
 }
 

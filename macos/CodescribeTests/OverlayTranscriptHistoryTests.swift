@@ -17,6 +17,67 @@ final class OverlayTranscriptHistoryTests: XCTestCase {
     XCTAssertNil(model.text)
   }
 
+  func testHistoryCountUsesFullUnicodeTextRatherThanPreviewOrBytes() async throws {
+    let item = entry("polish-emoji.txt", timestamp: 1, preview: "Zażółć…")
+    let fullText = "Zażółć gęślą jaźń 👩‍⚕️🇵🇱"
+    let model = OverlayTranscriptHistoryModel(
+      reader: HistoryReader(entries: [item], texts: [item.path: fullText]))
+    await model.load()
+    let record = try XCTUnwrap(model.entries.first)
+    XCTAssertEqual(record.characterCount, fullText.count)
+    XCTAssertNotEqual(record.characterCount, item.preview.count)
+    XCTAssertNotEqual(record.characterCount, fullText.utf8.count)
+  }
+
+  func testCharacterCountUsesLocaleGroupingWithoutAbbreviation() {
+    XCTAssertEqual(
+      OverlayTranscriptHistoryModel.formattedCharacterCount(
+        1_284, locale: Locale(identifier: "pl_PL")),
+      "1\u{00A0}284 chars")
+    XCTAssertEqual(
+      OverlayTranscriptHistoryModel.formattedCharacterCount(
+        1_284, locale: Locale(identifier: "en_US")),
+      "1,284 chars")
+    XCTAssertEqual(
+      OverlayTranscriptHistoryModel.formattedCharacterCount(
+        12_345, locale: Locale(identifier: "en_US")),
+      "12,345 chars")
+  }
+
+  func testCharacterCountSelectsSingularAndPluralForms() {
+    for identifier in ["en_US", "pl_PL"] {
+      let locale = Locale(identifier: identifier)
+      for (count, expected) in [(0, "0 chars"), (1, "1 char"), (2, "2 chars")] {
+        XCTAssertEqual(
+          OverlayTranscriptHistoryModel.formattedCharacterCount(count, locale: locale), expected)
+      }
+      XCTAssertEqual(
+        OverlayTranscriptHistoryModel.formattedCharacterCount(nil, locale: locale),
+        "Length unavailable")
+    }
+  }
+
+  func testCharacterCountPreservesGroupingAcrossTheFourDigitBoundary() {
+    let cases: [(Int, String, String)] = [
+      (999, "999 chars", "999 chars"),
+      (1_000, "1,000 chars", "1\u{00A0}000 chars"),
+      (9_999, "9,999 chars", "9\u{00A0}999 chars"),
+      (10_000, "10,000 chars", "10\u{00A0}000 chars"),
+      (12_345, "12,345 chars", "12\u{00A0}345 chars"),
+      (1_000_000, "1,000,000 chars", "1\u{00A0}000\u{00A0}000 chars"),
+    ]
+    for (count, english, polish) in cases {
+      XCTAssertEqual(
+        OverlayTranscriptHistoryModel.formattedCharacterCount(
+          count, locale: Locale(identifier: "en_US")),
+        english)
+      XCTAssertEqual(
+        OverlayTranscriptHistoryModel.formattedCharacterCount(
+          count, locale: Locale(identifier: "pl_PL")),
+        polish)
+    }
+  }
+
   func testSelectingAnArchiveLoadsItsFullTextNotItsPreview() async {
     let item = entry("take.txt", timestamp: 1, preview: "First words")
     let reader = HistoryReader(entries: [item], texts: [item.path: "First words\nWhole recording."])

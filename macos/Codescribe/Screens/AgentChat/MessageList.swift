@@ -21,9 +21,9 @@ enum ChatWidthMode: String, CaseIterable, Identifiable {
 
   var label: String {
     switch self {
-    case .comfortable: return "Comfortable"
-    case .wide: return "Wide"
-    case .full: return "Full"
+    case .comfortable: return String(localized: "Comfortable", comment: "Chat width")
+    case .wide: return String(localized: "Wide", comment: "Chat width")
+    case .full: return String(localized: "Full", comment: "Chat width: the whole window")
     }
   }
 
@@ -193,7 +193,7 @@ struct MessageList: View {
   let messages: [ChatMessage]
   /// Flips a bubble between raw mono and rich markdown. State lives in the
   /// store (per-message `renderMode`), never in this view.
-  var speechUnavailableReason: String? = "Speech engine is unavailable."
+  var speechUnavailableReason: String? = String(localized: "Speech engine is unavailable.")
   var speakingMessageID: UUID?
   var onSpeak: (ChatMessage) -> Void = { _ in }
   var onStopSpeaking: () -> Void = {}
@@ -404,9 +404,10 @@ struct MessageList: View {
   }
 }
 
-private let agentEmptyThreadTitle = "New thread"
-private let agentEmptyThreadDetail =
-  "Write in the composer, or dictate. The reply stays in this thread."
+private let agentEmptyThreadTitle = String(
+  localized: "New thread", comment: "Headline of a conversation with no turns yet")
+private let agentEmptyThreadDetail = String(
+  localized: "Write in the composer, or dictate. The reply stays in this thread.")
 
 /// Quiet first screen for a thread that has no turns yet.
 private struct AgentEmptyThread: View {
@@ -441,7 +442,7 @@ private struct ShowEarlierButton: View {
         CSIconView(
           icon: .chevronRight, size: 8, weight: .semibold,
           color: CSColor.textTertiary)
-        Text("Show earlier · \(hiddenCount) turn\(hiddenCount == 1 ? "" : "s")")
+        Text("Show earlier · \(hiddenCount) turns")
           .font(CSFont.mono(10.5, .medium))
           .foregroundStyle(hovering ? Color.primary : CSColor.textTertiary)
       }
@@ -834,7 +835,8 @@ private struct AttachmentChip: View {
     .csFocusRing(cornerRadius: CSRadius.pill)
     .help(
       attachment.url == nil
-        ? "Preview attachment (original file may be missing)" : "Preview attachment"
+        ? String(localized: "Preview attachment (original file may be missing)")
+        : String(localized: "Preview attachment")
     )
     .onAppear {
       if thumbnail == nil, let url = attachment.url {
@@ -858,7 +860,8 @@ struct AttachmentPreviewSheet: View {
   @State private var zoom: CGFloat = 1.0
 
   private var pathText: String {
-    attachment.url?.path ?? "(no source path — restored turn keeps name only)"
+    attachment.url?.path
+      ?? String(localized: "(no source path — restored turn keeps name only)")
   }
 
   private var fileExists: Bool {
@@ -911,20 +914,24 @@ struct AttachmentPreviewSheet: View {
           }
         } else if attachment.url == nil {
           missingBanner(
-            title: "Original file not available",
-            detail:
-              "This turn was restored from history. Codescribe kept the filename but not the bytes or path on disk."
+            title: String(localized: "Original file not available"),
+            detail: String(
+              localized:
+                "This turn was restored from history. Codescribe kept the filename but not the bytes or path on disk."
+            )
           )
         } else if !fileExists {
           missingBanner(
-            title: "File missing on disk",
+            title: String(localized: "File missing on disk"),
             detail: pathText
           )
         } else {
           missingBanner(
-            title: "No inline preview",
-            detail:
-              "This type is not rendered in-app. Use Open to hand it to the system default app."
+            title: String(localized: "No inline preview"),
+            detail: String(
+              localized:
+                "This type is not rendered in-app. Use Open to hand it to the system default app."
+            )
           )
         }
       }
@@ -1067,6 +1074,15 @@ private struct ToolLineRow: View {
 
   private var isRunning: Bool { line.state == .running }
   private var isQuiet: Bool { line.state == .unknown || line.state == .cancelled }
+  /// The run shown next to the verb: one string, so the running marker is not
+  /// a localized suffix glued onto a localized prefix.
+  private var detailRun: String {
+    isRunning
+      ? String(
+        localized: "\(line.detail) running...",
+        comment: "Tool activity row: the tool name while its call runs")
+      : line.detail
+  }
   private var canInspect: Bool { line.hasInspectPayload }
   private var rowColor: Color {
     switch line.state {
@@ -1090,8 +1106,8 @@ private struct ToolLineRow: View {
           if isRunning {
             PulseDot()
           }
-          (Text(line.verb).foregroundStyle(rowColor)
-            + Text(" \(line.detail)\(isRunning ? " running..." : "")").foregroundStyle(
+          (Text(verbatim: line.verbLabel).foregroundStyle(rowColor)
+            + Text(verbatim: " " + detailRun).foregroundStyle(
               isQuiet ? CSColor.textTertiary : ChatPalette.toolBody))
             .font(CSFont.mono(11.5, .medium))
             .lineSpacing(4)
@@ -1132,19 +1148,27 @@ private struct ToolInspectPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
-      inspectRow(label: "status", value: ToolInspectPresentation.statusLabel(for: line.state))
+      inspectRow(
+        label: String(localized: "status", comment: "Tool inspect field"),
+        value: ToolInspectPresentation.statusDisplayLabel(for: line.state))
       if let duration = ToolInspectPresentation.durationLabel(ms: line.durationMs) {
-        inspectRow(label: "duration", value: duration)
+        inspectRow(
+          label: String(localized: "duration", comment: "Tool inspect field"), value: duration)
       }
       if let callID = line.callID, !callID.isEmpty {
-        inspectRow(label: "call id", value: callID)
+        inspectRow(
+          label: String(localized: "call id", comment: "Tool inspect field"), value: callID)
       }
       if let reason = line.reason, !reason.isEmpty {
         VStack(alignment: .leading, spacing: 2) {
-          Text(line.state == .failed ? "error" : "result")
-            .font(CSFont.mono(9.5, .semibold))
-            .foregroundStyle(CSColor.textTertiary)
-            .textCase(.uppercase)
+          Text(
+            line.state == .failed
+              ? String(localized: "error", comment: "Tool inspect section")
+              : String(localized: "result", comment: "Tool inspect section")
+          )
+          .font(CSFont.mono(9.5, .semibold))
+          .foregroundStyle(CSColor.textTertiary)
+          .textCase(.uppercase)
           Text(reason)
             .font(CSFont.mono(10.5, .medium))
             .foregroundStyle(line.state == .failed ? CSColor.terracotta : Color.primary)
@@ -1301,10 +1325,12 @@ private struct AssistantTurn: View {
 
   private var speechReason: String? {
     speechUnavailableReason
-      ?? (message.isThinking || message.isStreaming ? "Wait for this response to finish." : nil)
-      ?? (message.text.isEmpty ? "This response has no text to speak." : nil)
+      ?? (message.isThinking || message.isStreaming
+        ? String(localized: "Wait for this response to finish.") : nil)
+      ?? (message.text.isEmpty
+        ? String(localized: "This response has no text to speak.") : nil)
       ?? (speakingMessageID != nil && speakingMessageID != message.id
-        ? "Another response is being spoken." : nil)
+        ? String(localized: "Another response is being spoken.") : nil)
   }
 
   private var speechButton: some View {
@@ -1463,9 +1489,13 @@ private struct ReasoningDisclosure: View {
           weight: .semibold,
           color: ChatPalette.thinking.opacity(0.75)
         )
-        Text(isLive ? "thinking..." : "reasoning summary")
-          .font(CSFont.mono(10.5, .semibold))
-          .foregroundStyle(ChatPalette.thinking)
+        Text(
+          isLive
+            ? String(localized: "thinking...", comment: "The model is still reasoning")
+            : String(localized: "reasoning summary")
+        )
+        .font(CSFont.mono(10.5, .semibold))
+        .foregroundStyle(ChatPalette.thinking)
         Spacer(minLength: 0)
       }
       .padding(.horizontal, 11)
@@ -1536,14 +1566,20 @@ private struct RenderModeButton: View {
     Button(action: action) {
       HStack(spacing: 4) {
         CSIconView(icon: .setupWizard, size: 9)
-        Text(mode == .raw ? "rich" : "raw")
-          .font(CSFont.mono(10, .medium))
+        Text(
+          mode == .raw
+            ? String(localized: "rich", comment: "Button: render the message as markdown")
+            : String(localized: "raw", comment: "Button: show the message as plain text")
+        )
+        .font(CSFont.mono(10, .medium))
       }
       .foregroundStyle(hovering ? Color.secondary : CSColor.textTertiary)
     }
     .csFocusRing()
     .onHover { hovering = $0 }
-    .help(mode == .raw ? "Render as markdown" : "Show raw text")
+    .help(
+      mode == .raw
+        ? String(localized: "Render as markdown") : String(localized: "Show raw text"))
   }
 }
 
@@ -1579,8 +1615,12 @@ private struct CopyMessageButton: View {
     } label: {
       HStack(spacing: 4) {
         CSIconView(icon: copied ? .check : .copy, size: 9)
-        Text(copied ? "copied" : "copy")
-          .font(CSFont.mono(10, .medium))
+        Text(
+          copied
+            ? String(localized: "copied", comment: "Button state after copying")
+            : String(localized: "copy", comment: "Button: copy this message")
+        )
+        .font(CSFont.mono(10, .medium))
       }
       .foregroundStyle(labelColor)
     }
@@ -1634,11 +1674,14 @@ struct AssistantSpeechButton: View {
   let action: () -> Void
 
   var isDisabled: Bool { !isSpeaking && unavailableReason != nil }
-  var help: String { unavailableReason ?? "Speak this response. AI-generated voice." }
+  var help: String {
+    unavailableReason ?? String(localized: "Speak this response. AI-generated voice.")
+  }
 
   var body: some View {
     Button(
-      isSpeaking ? "Stop speaking" : "Speak",
+      isSpeaking
+        ? String(localized: "Stop speaking") : String(localized: "Speak", comment: "Read aloud"),
       systemImage: isSpeaking ? "stop.fill" : "speaker.wave.2", action: action
     )
     .buttonStyle(.plain)

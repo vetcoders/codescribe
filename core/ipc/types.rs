@@ -335,6 +335,7 @@ mod tests {
             start_ts: 1.0,
             end_ts: 2.5,
             segments: vec![TranscriptSegment {
+                confidence: None,
                 text: "hello world".to_string(),
                 start_ts: 1.0,
                 end_ts: 2.5,

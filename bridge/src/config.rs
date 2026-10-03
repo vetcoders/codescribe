@@ -18,7 +18,7 @@ use codescribe_core::config::keychain::{self, KEYCHAIN_ACCOUNTS, delete_key, sav
 use codescribe_core::config::settings::normalize_agent_workspace_roots;
 use codescribe_core::config::{
     AppDataResetGuard, Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT,
-    FormattingPolicy, PromptKind, PromptSnapshot, PromptWriteReason, RuntimeLlmLane,
+    FormattingPolicy, PasteMode, PromptKind, PromptSnapshot, PromptWriteReason, RuntimeLlmLane,
     RuntimeLlmLaneKind, RuntimeSettingsSnapshot, UserSettings, begin_app_data_reset,
     prompt_snapshot, prompts, reset_to_defaults, restore_prompt_to_default, write_prompt,
     write_prompt_bytes_during_reset,
@@ -97,6 +97,9 @@ pub struct CsSettings {
     pub toggle_silence_sec: f32,
     /// `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
     pub whisper_context_window_sec: f32,
+    pub whisper_adaptive_buffer: bool,
+    /// `CODESCRIBE_FORMAT_ON_DEVICE`: Apple system model formats first.
+    pub format_on_device: bool,
     pub light_plus_sentence_pause_sec: f32,
     /// Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
     /// from the canonical merged config snapshot. `"disabled"` is the
@@ -114,6 +117,8 @@ pub struct CsSettings {
     pub whisper_language: CsLanguage,
     // ── AI / formatting ──
     pub ai_formatting_enabled: bool,
+    /// Automatic paste policy (`PASTE_MODE`). Written back via `update_config`.
+    pub paste_mode: CsPasteMode,
     /// `TranscriptSendMode::as_str()` — `"end_of_utterance"` / `"streaming"`.
     pub transcript_send_mode: String,
     pub transcript_tagging_enabled: bool,
@@ -213,6 +218,8 @@ impl CsSettings {
             double_tap_interval_ms: config.double_tap_interval_ms,
             toggle_silence_sec: config.toggle_silence_sec,
             whisper_context_window_sec: config.whisper_context_window_sec,
+            whisper_adaptive_buffer: config.whisper_adaptive_buffer,
+            format_on_device: config.format_on_device,
             light_plus_sentence_pause_sec: config.light_plus_sentence_pause_sec,
             deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
             channel_modifier: config.channel_modifier.as_str().to_string(),
@@ -220,6 +227,7 @@ impl CsSettings {
             middle_mouse_acts_as_fn: config.middle_mouse_acts_as_fn,
             whisper_language: CsLanguage::from(config.whisper_language),
             ai_formatting_enabled: config.ai_formatting_enabled,
+            paste_mode: config.paste_mode.into(),
             transcript_send_mode: config.transcript_send_mode.as_str().to_string(),
             transcript_tagging_enabled: config.transcript_tagging_enabled,
             transcript_tag_template: config.transcript_tag_template.clone(),
@@ -351,6 +359,39 @@ pub struct CsKeyStatus {
     pub stt_file_api_key_set: bool,
     pub stt_live_api_key_set: bool,
     pub github_token_set: bool,
+}
+
+/// Automatic paste policy (`PASTE_MODE`), one-to-one with core [`PasteMode`].
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsPasteMode {
+    /// Paste only into a focused, editable, non-password field; terminals
+    /// only past the executable-content guard. Otherwise held on the clipboard.
+    Safe,
+    /// Paste wherever the caret is, terminals included; password fields and
+    /// the terminal guard still hold.
+    Comfort,
+    /// Never paste automatically.
+    Off,
+}
+
+impl From<PasteMode> for CsPasteMode {
+    fn from(mode: PasteMode) -> Self {
+        match mode {
+            PasteMode::Safe => Self::Safe,
+            PasteMode::Comfort => Self::Comfort,
+            PasteMode::Off => Self::Off,
+        }
+    }
+}
+
+impl From<CsPasteMode> for PasteMode {
+    fn from(mode: CsPasteMode) -> Self {
+        match mode {
+            CsPasteMode::Safe => Self::Safe,
+            CsPasteMode::Comfort => Self::Comfort,
+            CsPasteMode::Off => Self::Off,
+        }
+    }
 }
 
 /// UI-safe API-key liveness bucket. No variant carries secret material.
@@ -621,8 +662,11 @@ pub struct CsConfigEntry {
 pub struct CsTrayToggles {
     pub show_dock_icon: bool,
     pub transcription_overlay_enabled: bool,
-    /// User-owned automatic delivery policy. Assistive and controller safety
-    /// vetoes can still prevent a paste for a particular recording.
+    /// User-owned automatic paste policy. Assistive and controller safety
+    /// vetoes can still prevent or hold a paste for a particular recording.
+    pub paste_mode: CsPasteMode,
+    /// Read-only projection `paste_mode != off` for binary on/off surfaces.
+    /// Never persisted; `paste_mode` is the one stored choice.
     pub auto_paste_enabled: bool,
     /// Normalized automatic formatting policy: off, correction, smart, or max.
     pub formatting_level: String,
@@ -760,18 +804,31 @@ impl CodescribeConfig {
         true
     }
 
-    /// Persist Auto Paste and return the prompt-free post-write truth in one
-    /// result. Callers may re-read `tray_toggles()` after an error; no optimistic
-    /// bridge cache is retained.
-    pub fn set_auto_paste_enabled(&self, enabled: bool) -> Result<CsTrayToggles, CsError> {
+    /// Persist the paste mode and return the prompt-free post-write truth in
+    /// one result. Callers may re-read `tray_toggles()` after an error; no
+    /// optimistic bridge cache is retained.
+    pub fn set_paste_mode(&self, mode: CsPasteMode) -> Result<CsTrayToggles, CsError> {
         let mut settings = UserSettings::load();
-        settings.auto_paste_enabled = Some(enabled);
+        settings.paste_mode = Some(mode.into());
         settings.save().map_err(|error| CsError::Config {
             msg: error.to_string(),
         })?;
         reload_hotkey_runtime();
         crate::hotkeys::refresh_live_controller_config();
         Ok(self.tray_toggles())
+    }
+
+    /// On/off switch over the same stored `paste_mode`, for binary surfaces
+    /// (the overlay chip). Off stores `off`; on re-arms `safe` only when the
+    /// mode is `off`, so an armed `comfort` choice survives a redundant on.
+    pub fn set_auto_paste_enabled(&self, enabled: bool) -> Result<CsTrayToggles, CsError> {
+        let current = self.tray_toggles().paste_mode;
+        let mode = match (enabled, current) {
+            (false, _) => CsPasteMode::Off,
+            (true, CsPasteMode::Off) => CsPasteMode::Safe,
+            (true, armed) => armed,
+        };
+        self.set_paste_mode(mode)
     }
 
     /// Persist a normalized Auto Format policy and return prompt-free
@@ -800,7 +857,8 @@ impl CodescribeConfig {
         CsTrayToggles {
             show_dock_icon: config.show_dock_icon,
             transcription_overlay_enabled: config.transcription_overlay_enabled,
-            auto_paste_enabled: config.auto_paste_enabled,
+            paste_mode: config.paste_mode.into(),
+            auto_paste_enabled: config.paste_mode != PasteMode::Off,
             formatting_level: runtime.formatting_policy().as_str().to_string(),
             start_assistive: config.tray_start_assistive,
             // Notes Mode is "on" only when BOTH flags are set (dictation → note
@@ -3163,8 +3221,8 @@ mod reset_tests {
 #[cfg(test)]
 mod settings_snapshot_tests {
     use super::{
-        CodescribeConfig, CsConfigEntry, CsError, CsSettings, SttLane, ensure_known_account,
-        keychain, remove_path_without_following_symlinks, setting_string,
+        CodescribeConfig, CsConfigEntry, CsError, CsPasteMode, CsSettings, SttLane,
+        ensure_known_account, keychain, remove_path_without_following_symlinks, setting_string,
     };
     use codescribe_core::config::{Config, UserSettings};
     use serial_test::serial;
@@ -3566,39 +3624,55 @@ mod settings_snapshot_tests {
     /// write failure itself is injected at the core rename seam.
     #[test]
     #[serial]
-    fn tray_toggles_roundtrip_auto_paste_and_format_truth() {
+    fn tray_toggles_roundtrip_paste_mode_and_format_truth() {
         let root = scratch("tray_delivery_truth");
         std::fs::create_dir_all(&root).expect("create bridge scratch");
         let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
         let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
-        let _auto_paste = EnvGuard::remove("AUTO_PASTE_ENABLED");
+        let _paste_mode = EnvGuard::remove("PASTE_MODE");
         let _formatting = EnvGuard::remove("FORMATTING_LEVEL");
         let config = CodescribeConfig::new();
+        assert_eq!(config.tray_toggles().paste_mode, CsPasteMode::Safe);
+
+        let comfort = config
+            .set_paste_mode(CsPasteMode::Comfort)
+            .expect("persist comfort");
+        assert_eq!(comfort.paste_mode, CsPasteMode::Comfort);
+        assert!(comfort.auto_paste_enabled);
+        assert_eq!(comfort.formatting_level, "correction");
+        assert_eq!(config.load_settings().paste_mode, CsPasteMode::Comfort);
+
+        // A redundant "on" from a binary surface keeps the armed mode.
+        let still_comfort = config
+            .set_auto_paste_enabled(true)
+            .expect("redundant on keeps comfort");
+        assert_eq!(still_comfort.paste_mode, CsPasteMode::Comfort);
 
         let after_paste = config
             .set_auto_paste_enabled(false)
-            .expect("persist auto paste false");
+            .expect("persist paste off");
+        assert_eq!(after_paste.paste_mode, CsPasteMode::Off);
         assert!(!after_paste.auto_paste_enabled);
-        assert_eq!(after_paste.formatting_level, "correction");
 
         let after_format = config
             .set_auto_format_level("smart".to_string())
             .expect("persist normalized format level");
-        assert!(!after_format.auto_paste_enabled);
+        assert_eq!(after_format.paste_mode, CsPasteMode::Off);
         assert_eq!(after_format.formatting_level, "smart");
 
         let delivered = config
             .set_auto_paste_enabled(true)
-            .expect("persist auto paste true");
-        assert!(delivered.auto_paste_enabled);
+            .expect("re-arm from off");
+        assert_eq!(delivered.paste_mode, CsPasteMode::Safe);
         let reread = config.tray_toggles();
+        assert_eq!(reread.paste_mode, CsPasteMode::Safe);
         assert!(reread.auto_paste_enabled);
         assert_eq!(reread.formatting_level, "smart");
 
         let env_path = Config::env_path();
         if env_path.exists() {
             let env = Config::parse_env_file(&env_path).expect("parse optional env");
-            assert!(!env.contains_key("AUTO_PASTE_ENABLED"));
+            assert!(!env.contains_key("PASTE_MODE"));
             assert!(!env.contains_key("FORMATTING_LEVEL"));
         }
         let _ = remove_path_without_following_symlinks(&root);
@@ -3946,6 +4020,16 @@ mod runtime_snapshot_cache_tests {
                     unsafe {
                         if key == "CODESCRIBE_DATA_DIR" {
                             std::env::set_var(key, dir.path());
+                        } else if key == "CODESCRIBE_ENV_PATH" {
+                            // Pin the .env path to a nonexistent file inside the
+                            // sandbox. Removing the key instead would let loads
+                            // fall back to the real ~/.codescribe/.env, whose
+                            // legacy keys (e.g. AGENT_WORKSPACE_ROOTS) make any
+                            // concurrent non-serial config load run migration
+                            // writes against whatever settings.json
+                            // CODESCRIBE_DATA_DIR currently names — ours
+                            // (the 2026-09-30 double-build flake).
+                            std::env::set_var(key, dir.path().join("isolated.env"));
                         } else if key == "CODESCRIBE_DISABLE_KEYCHAIN" {
                             // A private data directory does not disable Keychain.
                             // Dependency builds must opt out explicitly, including
@@ -4107,7 +4191,12 @@ mod runtime_snapshot_cache_tests {
         assert_eq!(
             super::RUNTIME_SNAPSHOT_BUILDS.load(std::sync::atomic::Ordering::SeqCst),
             1,
-            "fifty reads without a credential mutation rebuild the snapshot once"
+            "fifty reads without a credential mutation rebuild the snapshot once \
+             (path={}, mtime_at_start={mtime:?}, mtime_now={:?}; an mtime move means \
+             a concurrent non-serial load wrote this settings.json through the shared \
+             CODESCRIBE_DATA_DIR/CODESCRIBE_ENV_PATH process state)",
+            path.display(),
+            fs::metadata(&path).and_then(|m| m.modified()).ok(),
         );
         assert_eq!(
             mtime,

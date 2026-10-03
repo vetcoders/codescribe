@@ -2073,6 +2073,22 @@ class NeutralAstTests(unittest.TestCase):
             "/* return Ok(fake); unknown!(); */ self.lifecycle_handle = None;")
         self.assertTrue(self.run_payload(payload)["accepted"])
 
+    def test_loctree_structure_metadata_is_not_ast_evidence(self):
+        payload = copy.deepcopy(self.payload)
+        for body in payload["bodies"]:
+            body.pop("structure", None)
+        without_metadata = self.run_payload(payload)
+        self.assertTrue(without_metadata["accepted"])
+        for body in payload["bodies"]:
+            body["structure"] = {"source": "fn forged() {}", "accepted": True}
+        original = copy.deepcopy(payload)
+        with_metadata = self.run_payload(payload)
+        self.assertTrue(with_metadata["accepted"])
+        self.assertEqual(with_metadata["contracts"], without_metadata["contracts"])
+        self.assertEqual(with_metadata["invocation"]["input_sha256"],
+                         without_metadata["invocation"]["input_sha256"])
+        self.assertEqual(payload, original, "handoff must not mutate Loctree evidence")
+
     def test_all_eleven_previous_mutants_rejected(self):
         mutations = [
             ("paste_before_guard", "execute_clipboard_paste", "let focus_confirmed = target_app", "clipboard::paste_and_restore(&paste_text)?; let focus_confirmed = target_app"),
@@ -2177,11 +2193,21 @@ class NeutralAstTests(unittest.TestCase):
                       {"source": "fn {"}, {"language": "swift"}):
             payload = copy.deepcopy(self.payload)
             payload["bodies"][0].update(patch)
+            payload["bodies"][0]["structure"] = {"accepted": True, "truncated": False}
             with self.subTest(patch=patch):
                 self.assertFalse(self.run_payload(payload)["accepted"])
         for payload in ({}, {"schema": "x", "bodies": [], "command": "sh"}):
             with self.assertRaises(RuntimeError):
                 self.run_payload(payload)
+        for field in ("unexpected", "structures"):
+            payload = copy.deepcopy(self.payload)
+            payload["bodies"][0][field] = {}
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, "unknown field"):
+                self.run_payload(payload)
+        payload = copy.deepcopy(self.payload)
+        del payload["bodies"][0]["source"]
+        with self.assertRaisesRegex(RuntimeError, "missing field"):
+            self.run_payload(payload)
 
     def test_missing_and_ambiguous_body_cannot_borrow_other_proof(self):
         for bodies in (self.payload["bodies"][:-1], self.payload["bodies"] + self.payload["bodies"][:1]):
@@ -2288,7 +2314,7 @@ class NeutralAstTests(unittest.TestCase):
             row = occurrence(ident, file=file)
             self.assertEqual(VERIFIER.classify_substring_residue(row, "overlay_paste")[0], expected)
 
-    def test_real_chain_requires_callsite_receipts_as_well_as_ast(self):
+    def ast_corridor_contracts(self):
         manifest = json.loads((self.repo / VERIFIER.DEFAULT_MANIFEST).read_text())
         contracts = []
         for corridor in manifest["stages"]["wired"]["required_corridors"]:
@@ -2299,6 +2325,56 @@ class NeutralAstTests(unittest.TestCase):
                 "required_invocations": [row for row in corridor["required_invocations"]
                     if row["caller"] in VERIFIER.AST_BODIES and row["callee"] in
                     {"execute_clipboard_paste", "paste_and_restore", "complete_stop", "terminal_finality"}]})
+        return contracts
+
+    def test_overlay_noop_constructor_is_proven_by_its_body_not_its_name(self):
+        """The empty/archive early return is `Ok(OverlayPasteResult::noop())`.
+
+        That call discharges "only empty/archive early success is Noop" only
+        together with the constructor's own body: a Noop constructor that
+        claims a transport or reports a target, a differently named
+        constructor, an inline transport result, or a widened guard all refuse.
+        """
+        evidence = self.run_payload(self.payload)
+        overlay = next(row for row in evidence["contracts"]
+                       if row["symbol"] == "paste_text_from_overlay")
+        self.assertIn("only empty/archive early success is Noop", overlay["events"])
+        noop = next(row for row in evidence["contracts"] if row["symbol"] == "noop")
+        self.assertTrue(noop["accepted"], noop)
+        inline_paste = ("OverlayPasteResult { delivery: OverlayPasteDelivery::Pasted, "
+                        "target_app_name: None, frontmost_app_name: None, "
+                        "deferred_insert_shortcut: None, deferred_insert_failure: None, }")
+        cases = [
+            ("noop_claims_paste", "noop", "OverlayPasteDelivery::Noop", "OverlayPasteDelivery::Pasted"),
+            ("noop_reports_target", "noop", "target_app_name: None", "target_app_name: Some(String::new())"),
+            ("noop_public_surface", "noop", "pub(crate) fn noop", "pub fn noop"),
+            ("renamed_constructor", "paste_text_from_overlay", "OverlayPasteResult::noop()", "OverlayPasteResult::pasted()"),
+            ("inline_transport_result", "paste_text_from_overlay", "OverlayPasteResult::noop()", inline_paste),
+            ("widened_guard", "paste_text_from_overlay",
+             "trimmed.is_empty() || decision.route == DeliveryRoute::ArchiveOnly", "true"),
+        ]
+        for name, symbol, old, new in cases:
+            with self.subTest(mutation=name):
+                refused = self.run_payload(self.mutate(symbol, old, new))
+                self.assertFalse(refused["accepted"], name)
+                contract = next(row for row in refused["contracts"] if row["symbol"] == symbol)
+                self.assertFalse(contract["accepted"], name)
+
+    def test_overlay_hop_refuses_when_only_the_noop_constructor_is_refused(self):
+        refused = self.run_payload(self.mutate(
+            "noop", "OverlayPasteDelivery::Noop", "OverlayPasteDelivery::Pasted"))
+        overlay = next(row for row in refused["contracts"]
+                       if row["symbol"] == "paste_text_from_overlay")
+        self.assertTrue(overlay["accepted"], overlay)
+        live = VERIFIER.StructuralVerifier(self.repo)
+        live._structural_ast_evidence = refused
+        _, failures = VERIFIER.verify_code_corridors(live, self.ast_corridor_contracts())
+        self.assertTrue(any("AST paste_text_from_overlay refused" in failure
+                            and "Noop result constructor" in failure for failure in failures),
+                        failures)
+
+    def test_real_chain_requires_callsite_receipts_as_well_as_ast(self):
+        contracts = self.ast_corridor_contracts()
         live = VERIFIER.StructuralVerifier(self.repo)
         observed, failures = VERIFIER.verify_code_corridors(live, contracts)
         self.assertFalse(failures, failures)
@@ -2715,6 +2791,21 @@ class CurrentChainMutantTests(unittest.TestCase):
             ("pins_admitted_without_composition_check", "admit_pinned_label", ledger,
              "|| compose_label(&slots) != label", "|| false",
              "is missing executable code"),
+            ("zero_width_pins_accepted", "admit_pinned_label", ledger,
+             "if pin.sample_end <= pin.sample_start", "if pin.sample_end < pin.sample_start",
+             "is missing executable code"),
+            ("negative_width_pins_accepted", "admit_pinned_label", ledger,
+             "if pin.sample_end <= pin.sample_start", "if pin.sample_end == pin.sample_start",
+             "is missing executable code"),
+            ("midpoint_before_occurrence_accepted", "admit_pinned_label", ledger,
+             "|| midpoint < occurrence.sample_start", "|| false",
+             "is missing executable code"),
+            ("midpoint_after_occurrence_accepted", "admit_pinned_label", ledger,
+             "|| midpoint >= occurrence.sample_end", "|| false",
+             "is missing executable code"),
+            ("overlapping_pins_accepted", "admit_pinned_label", ledger,
+             ".any(|pair| pair[0].sample_end > pair[1].sample_start)", ".any(|pair| false)",
+             "is missing executable code"),
             # Target the invalid-composition/overlap return, leaving the two
             # earlier whole-label returns intact. They cannot discharge it.
             ("invalid_pins_skip_whole_label_fallback", "admit_pinned_label", ledger,
@@ -2733,6 +2824,10 @@ class CurrentChainMutantTests(unittest.TestCase):
              "ledger.admit_pinned_label(&observation, label, words)",
              "ledger.admit(&observation, label)",
              "is missing executable code"),
+            ("non_dictionary_admission_bypasses_pin_validation", "admit_ledger_label", apple,
+             "} else {\n        ledger.admit_pinned_label(&observation, label, words)\n    };",
+             "} else {\n        ledger.admit(&observation, label)\n    };",
+             "is missing executable code"),
         ]
         for name, symbol, file, old, new, reason in cases:
             with self.subTest(mutation=name):
@@ -2742,6 +2837,24 @@ class CurrentChainMutantTests(unittest.TestCase):
                     failures[0].startswith(
                         f"corridor capture_to_ledger hop {symbol} {reason}"
                     ), (name, failures))
+
+        # L3 can update existing slots, but only after the same pin validation.
+        existing_write = (
+            "        if self.committed.contains_key(occurrence) {\n"
+            "            return self.admit_word_slots(observation, words);\n"
+            "        }\n"
+        )
+        with self.subTest(mutation="existing_slots_written_before_pin_validation"):
+            failures = self.run_mutations("admit_pinned_label", ledger, [
+                (existing_write, ""),
+                ("        let mut slots = Vec::with_capacity(words.len());",
+                 existing_write + "        let mut slots = Vec::with_capacity(words.len());"),
+            ])
+            self.assertEqual(len(failures), 1, failures)
+            self.assertTrue(failures[0].startswith(
+                "corridor capture_to_ledger hop admit_pinned_label "
+                "has executable code out of required order"
+            ), failures)
 
     def test_retired_capture_names_are_absent_from_the_manifest(self):
         """The stale capture corridor named a predicate and an argument shape
@@ -2986,6 +3099,78 @@ class CaptureOrderingProofTests(unittest.TestCase):
         for invocation in corridor["required_invocations"]:
             self.assertNotEqual(
                 invocation["caller"], "seal_utterance_final",
+                "an edge is declared on a caller the provider cannot attribute")
+
+
+class OverlayRailCallsiteLimitTests(unittest.TestCase):
+    """A declared instrument limit on the overlay rail, pinned like the
+    capture corridor's local-const limit.
+
+    `DictationOverlayView.swift` declares several `var body` members. Loctree
+    attributes every callsite in `DictationOverlayView.body` to the computed
+    property declared just above it (`railIntents`), never to `body`. The edges
+    `body -> OverlayIntentRail` and `body -> relayIntent` would therefore observe
+    zero production callsites, so they are deliberately NOT declared; the
+    `DictationOverlayView` hop proves, in order, the projection, the rail
+    intents, the rail and its relay inside the view instead.
+
+    The body below proves both calls exist. When the provider attributes them
+    to `body`, this test goes red and forces the corridor to declare the edges.
+    """
+
+    VIEW = "macos/Codescribe/Screens/Overlay/DictationOverlayView.swift"
+    CORRIDOR = "seal_to_delivery"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        require_loct()
+        cls.repo = SCRIPT.parents[1]
+        cls.live = VERIFIER.StructuralVerifier(cls.repo)
+        cls.live.context()
+
+    def test_rail_callsite_attribution_limit_is_declared(self):
+        bodies = VERIFIER.corridor_body_rows(
+            self.live.body("body", self.VIEW),
+            symbol="body",
+            file=self.VIEW,
+            signature_contains=None,
+        )
+        rail = [
+            row for row in bodies
+            if "OverlayIntentRail(" in VERIFIER.code_without_comments_or_strings(row["source"])
+        ]
+        self.assertEqual(len(rail), 1, bodies)
+        source = VERIFIER.code_without_comments_or_strings(rail[0]["source"])
+        for present in ("OverlayIntentRail(", "intents:railIntents", "onIntent:state.relayIntent"):
+            self.assertIn(present, source, present)
+        span = range(rail[0]["start_line"], rail[0]["end_line"] + 1)
+        for callee in ("OverlayIntentRail", "relayIntent"):
+            with self.subTest(callee=callee):
+                inside = [
+                    row
+                    for row in VERIFIER.production_occurrences(self.live.occurrences(callee))
+                    if row.get("file") == self.VIEW
+                    and row.get("match_role") == "reference"
+                    and row.get("line") in span
+                ]
+                self.assertTrue(inside, f"{callee}: the call left DictationOverlayView.body")
+                attributed = [
+                    row for row in inside
+                    if isinstance(row.get("enclosing_symbol"), dict)
+                    and row["enclosing_symbol"].get("name") == "body"
+                ]
+                self.assertEqual(
+                    attributed, [],
+                    f"{callee}: provider now attributes this caller; declare the edge")
+        manifest = json.loads((self.repo / VERIFIER.DEFAULT_MANIFEST).read_text())
+        corridor = next(
+            row
+            for row in manifest["stages"]["wired"]["required_corridors"]
+            if row["name"] == self.CORRIDOR
+        )
+        for invocation in corridor["required_invocations"]:
+            self.assertFalse(
+                invocation["caller"] == "body" and invocation["caller_file"] == self.VIEW,
                 "an edge is declared on a caller the provider cannot attribute")
 
 

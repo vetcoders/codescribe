@@ -57,6 +57,52 @@ pub fn is_assistive_session() -> bool {
     IS_ASSISTIVE_SESSION.load(Ordering::SeqCst)
 }
 
+/// Observe the caret an armed Orient paste would land in (read-only AX and
+/// NSWorkspace probe). The result can only hold that paste in
+/// `delivery_route::paste_gate`; it never selects a destination.
+///
+/// When Codescribe itself is frontmost (the overlay still has key), its own
+/// field says nothing about the target: the latched app name classifies the
+/// terminal and the field stays unobserved, so Safe holds.
+#[cfg(not(test))]
+pub(super) fn observe_paste_target(latched_target: Option<&str>) -> super::PasteTarget {
+    use crate::os::selection::{current_frontmost_app_name, is_codescribe_app};
+    let frontmost = current_frontmost_app_name();
+    match frontmost.as_deref().map(str::trim) {
+        Some(name) if !name.is_empty() && !is_codescribe_app(name) => super::PasteTarget {
+            terminal: super::is_terminal_app(name),
+            field: crate::os::hold_badge::focused_input_field(),
+        },
+        _ => super::PasteTarget {
+            terminal: latched_target.is_some_and(super::is_terminal_app),
+            field: crate::os::hold_badge::FocusedInputField::Unobserved,
+        },
+    }
+}
+
+/// Unit tests never read the host's focused element: the latched app name
+/// still classifies a terminal, and the caret is an editable field.
+#[cfg(test)]
+pub(super) fn observe_paste_target(latched_target: Option<&str>) -> super::PasteTarget {
+    super::PasteTarget {
+        terminal: latched_target.is_some_and(super::is_terminal_app),
+        field: crate::os::hold_badge::FocusedInputField::Text,
+    }
+}
+
+/// Tell the user why an armed paste was held and how to finish it (⌘V).
+#[cfg(not(test))]
+pub(super) fn announce_paste_hold(notice: &str) {
+    info!(notice, "paste held on clipboard");
+    crate::os::notifications::notify("Codescribe held the paste", notice);
+}
+
+/// Unit tests post no user notification; the log line is the witness.
+#[cfg(test)]
+pub(super) fn announce_paste_hold(notice: &str) {
+    info!(notice, "paste held on clipboard");
+}
+
 /// Route transcription delta to the active overlay.
 ///
 /// Contract:

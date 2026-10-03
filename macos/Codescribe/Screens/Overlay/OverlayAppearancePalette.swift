@@ -14,8 +14,15 @@ struct OverlayAppearancePalette: Equatable, Sendable {
   let listeningStatus: OverlayColorToken
   let processingStatus: OverlayColorToken
   let successStatus: OverlayColorToken
-  let neutralStatus: OverlayColorToken
   let errorStatus: OverlayColorToken
+  /// A6 uncertain-word text. Distinct from `processingStatus` (engine
+  /// completeness warnings) and from the app-wide `modeProcessing` orange:
+  /// this role means "the engine was unsure of THIS word", nothing else.
+  let uncertainWord: OverlayColorToken
+  /// Lexicon marker for `surface_rewritten` words (d5): the dictionary owns
+  /// this surface, so it gets its own steel-blue style, never the
+  /// uncertainty orange.
+  let lexiconMarker: OverlayColorToken
   let shadowOpacity: Double
 
   static let light = OverlayAppearancePalette(
@@ -28,8 +35,9 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     listeningStatus: OverlayColorToken(0x9B4528),
     processingStatus: OverlayColorToken(0x8A5B00),
     successStatus: OverlayColorToken(0x4D5E2D),
-    neutralStatus: OverlayColorToken(0x5F5A52),
     errorStatus: OverlayColorToken(0xA2302B),
+    uncertainWord: OverlayColorToken(0x96450A),
+    lexiconMarker: OverlayColorToken(0x31587A),
     shadowOpacity: 0.16
   )
 
@@ -43,8 +51,9 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     listeningStatus: OverlayColorToken(0xE08A64),
     processingStatus: OverlayColorToken(0xE2BE5B),
     successStatus: OverlayColorToken(0xB5C98D),
-    neutralStatus: OverlayColorToken(0xA9A39B),
     errorStatus: OverlayColorToken(0xFFAAA5),
+    uncertainWord: OverlayColorToken(0xF09A4E),
+    lexiconMarker: OverlayColorToken(0x9FC2E8),
     shadowOpacity: 0.20
   )
 
@@ -54,18 +63,5 @@ struct OverlayAppearancePalette: Equatable, Sendable {
 
   static func resolve(_ appearance: OverlayAppearance) -> OverlayAppearancePalette {
     appearance == .dark ? .dark : .light
-  }
-
-  /// Refused coverage uses caution amber, never the green success token.
-  /// Palette tests verify opaque contrast; glass needs live compositor checks.
-  func statusToken(for mode: OverlayMode) -> OverlayColorToken {
-    switch mode {
-    case .listening: listeningStatus
-    case .finalizing: processingStatus
-    case .coverageRefused: processingStatus
-    case .formatted: successStatus
-    case .noSpeech: neutralStatus
-    case .error: errorStatus
-    }
   }
 }

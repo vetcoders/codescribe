@@ -138,6 +138,101 @@ streams its normalized events into `PresentationEmitter`. A public HTTPS
 socket. A complete audio-file multipart request is allowed for Settings → Test
 and for an explicit file action (Dictionary or Teacher).
 
+**Recognition vocabulary (2026-09-30, builder only).**
+`core/stt/recognizer_vocabulary.rs` builds one source-prioritized list: active
+agent names, user dictionary canonical forms, then `ProtectedTerms` (built-ins
+plus `<config_dir>/protected_terms.txt`). Each source is sorted deterministically;
+Unicode casefold deduplication preserves the highest-priority spelling. The
+Apple view holds at most 100 terms and omits empty context. A build receipt logs
+retained counts per source at info and the list only at debug.
+
+**T2 Apple A/B (2026-09-30): blocked, Apple live context still OFF.** The
+integrator authorized Apple independently of the Whisper evidence: enable only
+after 30 valid audio pairs show zero files with word-count loss above 5%, at
+most one inserted vocabulary occurrence, and more canonical term hits. The
+worktree-built bridge attempted both arms on 30 archived WAVs spanning 18 days;
+all 60 requests aborted before returning JSON (`SIGABRT`). A separate probe
+reported Speech authorization `not_determined`; TCC is the likely blocker,
+not a proven cause of the aborts. Recognition
+metrics are unavailable; failed requests do not count as zero insertions or
+proof of non-regression. The three Apple live request paths retain `None`.
+
+`scripts/stt-vocabulary-ab.py` is an opt-in replay tool, outside default gates.
+It selects even quantiles of `(mtime_ns, filename)` among 10–120 second PCM
+WAVs, freezes hashes, alternates arm order, and uses bridge `transcribe_live`
+with downloads disabled. It records only names, hashes, vocabulary terms,
+counts, timings, and safe process status. Dictation text, bridge diagnostics,
+and segments never enter artifacts or stdout. Exact sample replay uses
+`--manifest <previous-metrics.json>` and rejects changed audio. Only complete,
+nonempty SFSpeech pairs can authorize the flip; incomplete runs exit 2.
+
+The developer app also exposes the **Lab-gated** in-app replay (cut Z):
+
+```bash
+open "codescribe://lab/vocabulary-ab?sample=30"
+```
+
+Enable the existing Lab mode on a developer/power bundle first. Production
+bundles refuse the route. Only `sample` (2–100, default 30) is accepted;
+unknown parameters are ignored and duplicate/invalid sample values are refused.
+One job runs at a time off the UI thread, using the exact T2 runner embedded in
+Rust. The bundled Apple bridge runs as an app descendant under the app's Speech
+grant. The runner requires local on-device recognition and disables downloads.
+The Lab command `transcribe_vocabulary_lab` requires an existing Speech grant
+and forces the SFSpeech buffer engine in both arms, including on locales where
+SpeechTranscriber is installed (that engine ignores contextual strings).
+It opens no microphone, changes no settings or dictionary, and writes only
+`~/.codescribe/lab/vocabulary-ab/<UTC timestamp>.json`. Symlinked output
+components are refused. Python 3 at `/usr/bin/python3` and the bundled Apple
+bridge are required; unavailable prerequisites refuse the run.
+
+Results retain the T2 schema, sample manifest, bridge/vocabulary SHA256,
+canonical terms, counts, safe status, and timings; no transcript, reference
+text, segments, or child diagnostics are persisted. Completion emits one
+numeric `Vocabulary A/B finished` info event. Inspect `summary.measurement_status`
+and all 30 valid pairs before interpreting the metrics. The integrator's
+recommendation for the Founder remains: zero files with omission above 5%,
+insertion at most 1/30, and more canonical hits. This is a recommendation,
+never an automatic configuration change; the Founder decides whether to enable
+Apple context. Insertion without paired references remains a proxy.
+
+References pair by exact basename (`.txt` / `.jsonl` with `edited_text`) or an
+explicit session/audio ID in corrections. Timestamp proximity is insufficient.
+All 207 current correction rows lacked such an ID; none of the selected files
+had a matching reference. A new term absent from the baseline and available
+reference is conservatively counted as an insertion occurrence; without a
+reference this is a proxy, not an acoustic verdict or a WER measurement. Same
+basename `.txt` references are explicitly marked as unverified human text.
+
+Repeat from the checkout with an independently authorized built bridge:
+
+```bash
+make target/release/codescribe-stt-bridge
+mkdir -p target/vocabulary-ab/config
+for name in lexicon.custom.jsonl protected_terms.txt; do
+  if [ -f "$HOME/.codescribe/$name" ]; then
+    cp "$HOME/.codescribe/$name" "target/vocabulary-ab/config/$name"
+  fi
+done
+CODESCRIBE_DATA_DIR="$PWD/target/vocabulary-ab/config" \
+  cargo run -q -p codescribe-core --example export_recognizer_vocabulary \
+  > target/vocabulary-ab/vocabulary.json
+python3 scripts/stt-vocabulary-ab.py \
+  --vocabulary target/vocabulary-ab/vocabulary.json \
+  --output target/vocabulary-ab/metrics.json
+python3 -m unittest discover -s scripts/tests -p test_stt_vocabulary_ab.py
+```
+
+The exporter uses the production builder and active-name reader, but requires
+copied config outside `~/.codescribe`: the production dictionary loader cleans
+temporary files. The runner neither requests authorization nor opens a mic.
+
+**Whisper context remains OFF:** commit `a06370a7` records a live A/B where a
+full-file vocabulary prompt deleted roughly half the content.
+`stt_initial_prompt_enabled` remains OFF by default, and full-file decoding
+stays prompt-free even with window opt-in. A future Whisper window prompt needs
+the shared builder with a tokenizer-measured budget and its own WER/insertion A/B.
+
 **Domain token (client-owned, 2026-08-18).** Codescribe names the take
 `vocabulary=programming` on loopback and Libraxis file/live requests
 (multipart field `vocabulary`; JSON alias `request_vocabulary`; live
@@ -320,14 +415,14 @@ consequences and `docs/TRANSCRIPT_BUS.md` for the projected wire contract.
 
 ### 3.3 Dictation overlay / tray
 
-| Front                         | UniFFI                                             | Handler                                                         |
-| ----------------------------- | -------------------------------------------------- | --------------------------------------------------------------- |
-| Committed transcript truth    | `CsTranscriptProjectionEvent`                      | ledger receipt → reducer → Transcript Bus → listener projection |
-| Ephemeral/raw observations    | `EngineEventWire` IPC diagnostics                  | never cross `CsTranscriptionListener`; never delivery writers   |
-| PCM sideband evidence         | `EngineEventWire::SidebandEvidence`                | Silero ingress → IPC → bridge diagnostic; reducer no-op         |
-| Recording service object      | `CodescribeHotkeys`                                | shared controller recording API                                 |
-| Tray status glyphs            | `CodescribeTrayStatus` + listener                  | controller tray payload                                         |
-| Auto-paste / auto-format tray | `set_auto_paste_enabled` / `set_auto_format_level` | `UserSettings` + live toggles                                   |
+| Front                         | UniFFI                                     | Handler                                                         |
+| ----------------------------- | ------------------------------------------ | --------------------------------------------------------------- |
+| Committed transcript truth    | `CsTranscriptProjectionEvent`              | ledger receipt → reducer → Transcript Bus → listener projection |
+| Ephemeral/raw observations    | `EngineEventWire` IPC diagnostics          | never cross `CsTranscriptionListener`; never delivery writers   |
+| PCM sideband evidence         | `EngineEventWire::SidebandEvidence`        | Silero ingress → IPC → bridge diagnostic; reducer no-op         |
+| Recording service object      | `CodescribeHotkeys`                        | shared controller recording API                                 |
+| Tray status glyphs            | `CodescribeTrayStatus` + listener          | controller tray payload                                         |
+| Paste mode / auto-format tray | `set_paste_mode` / `set_auto_format_level` | `UserSettings` + live toggles                                   |
 
 ### 3.4 STT engine dispatch (the nit)
 
@@ -632,3 +727,82 @@ whenever the caller hands the archive a `TakeTruth`. The sidecar is an
 OBSERVER projection of the `TranscriptionVerdict`; no delivery path reads it
 back. `codescribe transcribe --inspect` prints the same truth to stderr under
 one time axis: the segment block, the 32 ms Silero row, and the energy row.
+
+CLI file comparison can explicitly select `--apple` or `--whisper` (mutually
+exclusive). The default remains the product's Whisper file final-pass. Apple
+is an explicit comparison lane using the existing file bridge, without a
+Whisper fallback; it requires installed locale assets and existing permissions.
+This does not change the app's live Relay. With Apple, `--stream` observes the
+completed bridge segments once, rather than incremental decoder windows.
+
+`--inspect` (also `--sparkline` / `--power`) adds a PCM RMS sparkline and an
+absolute -90..0 dBFS chart over the original file duration. Its RMS/peak summary
+uses PCM amplitude relative to digital full scale, independently of the relative
+log-mel `energy:` row. Apple inspection runs Silero as an observer only: its
+input is neither trimmed nor gated. All diagnostics stay on stderr. For an
+isolated comparison, use:
+
+```sh
+codescribe transcribe --apple --inspect --raw --no-bus --no-truth recording.wav
+codescribe transcribe --whisper --inspect --raw --no-bus --no-truth recording.wav
+```
+
+## Word confidence (A6, 2026-09-30)
+
+Every word pin may carry **raw per-word acoustic confidence** from the engine
+that emitted it: `WordConfidence { source, value, token_count }`
+(`core/pipeline/word_confidence.rs`). It is evidence pinned to PCM through
+`WordSlot` / `WordEvidenceReceipt`, never a property of the word's text, and
+never inferred from absence: `None` means the producer supplied no metric and
+is reported as `source_unavailable`, not as a confident word.
+
+Two axes stay separate by construction:
+
+- **Uncertainty** (this section): per-word, from engine metrics only, painted
+  as `uncertain_spans` on the reducer projection. Nothing else creates spans.
+- **Completeness** (pre-existing): take-level `seal_coverage`, `degraded`,
+  `coverage_refused`. A missing seal never creates a span, and spans never
+  raise a take-level alarm.
+
+Producers and scales (thresholds are per-source, d2 — the scales are
+incomparable):
+
+| Source                     | Metric                                                    | Where produced                                                                                                         |
+| -------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `whisper_token_logprob`    | min of the word's own subtoken logprobs (d1)              | `core/stt/whisper/engine.rs` decode loop → `align_captured_words`; `None` when the checkpoint has no `alignment_heads` |
+| `apple_segment_confidence` | `SFTranscriptionSegment.confidence` (0…1), `isFinal` only | `core/stt/apple_stt/live_stream.rs`; `0.0` on partials/frozen partials is Apple's "no metric" sentinel → `None`        |
+| `vendor_word_probability`  | `words[].probability` (0…1)                               | remote tail `core/stt/tail_provider.rs`, cloud live `core/asr_session/cloud.rs`                                        |
+
+Classification lives in exactly one function
+(`WordConfidence::is_uncertain`); Swift never thresholds. Env overrides
+(reload: restart, `docs/ENV_REGISTRY.toml`):
+`CODESCRIBE_WORD_CONFIDENCE_WHISPER_LOGPROB` (default −1.0),
+`CODESCRIBE_WORD_CONFIDENCE_VENDOR_PROBABILITY` (default 0.5),
+`CODESCRIBE_WORD_CONFIDENCE_APPLE_CONFIDENCE` (unset by default). **These
+defaults are NOT CALIBRATED** — conservative placeholders pending a corpus
+run; treat painted words as candidates, not verdicts.
+
+Decisions d1–d11 as taken by this cut (accepted by the cut, not by the
+Founder — the audit's recommendation column was adopted unless noted):
+
+| #   | Decision                                         | Taken                                                                                                                                                                                                                                           |
+| --- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| d1  | Whisper token aggregation                        | min(subtoken logprobs); one unsure subtoken makes the word unsure                                                                                                                                                                               |
+| d2  | Thresholds                                       | per `WordConfidenceSource`, never mixed; defaults marked UNCALIBRATED                                                                                                                                                                           |
+| d3  | Span joining                                     | each word its own span; neighbours stay unpainted                                                                                                                                                                                               |
+| d4  | Apple without a metric                           | nothing is painted; `0.0`-on-partial and missing attribute both → `None`; Apple threshold unset until measured                                                                                                                                  |
+| d5  | Lexicon-rewritten word                           | confidence kept with `surface_rewritten=true`; renderer marks lexicon, not uncertainty                                                                                                                                                          |
+| d6  | Shaped (Light+) / consultation / manual revision | no spans — honest absence, range never widened to the whole occurrence                                                                                                                                                                          |
+| d7  | Live painting                                    | only Whisper / CloudLive slots paint; Apple confidence travels into the ledger but does not paint live                                                                                                                                          |
+| d8  | Style                                            | cut 3 (renderer), not this cut                                                                                                                                                                                                                  |
+| d9  | Bus                                              | spans ride the in-memory projection to the bridge only; the Bus JSONL journal stays span-free until thresholds are calibrated (`#[serde(skip)]`)                                                                                                |
+| d10 | Delivery                                         | clean bytes, no markers                                                                                                                                                                                                                         |
+| d11 | Dead branches                                    | `CsTokenConfidence` removed (text-keyed contract), `highlight.rs` + `CsOverlayHighlight*` + `overlay_highlights_enabled` removed (never wired to Swift; the projection owns spans now), `SkipReasonCode::LowConfidence` removed (never emitted) |
+
+End-to-end path: engine → `TranscriptSegment.confidence` →
+`TimedTailSegment.confidence` → `WordPin` → `WordSlot.confidence` →
+`WordEvidenceReceipt.confidence` → `TranscriptRevision.uncertain_spans`
+(UTF-16 ranges into `rendered_text`, computed by the reducer in the same pass
+that renders the document) → `TranscriptBusEvidenceEvent.uncertain_spans`
+(in-memory only) → `CsTranscriptProjectionEvent.uncertain_spans` →
+`OverlayState.uncertainSpans`. Orange painting is cut 3.

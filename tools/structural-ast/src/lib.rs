@@ -208,6 +208,9 @@ fn check(body: &Body) -> Contract {
                     "has_no_capture_facts" => parse_quote!(
                         pub fn has_no_capture_facts(&self) -> bool {}
                     ),
+                    "noop" => parse_quote!(
+                        pub(crate) fn noop() -> Self {}
+                    ),
                     "matches_refused_document" => parse_quote!(
                         pub(crate) fn matches_refused_document(
                             &self,
@@ -250,6 +253,7 @@ fn check(body: &Body) -> Contract {
                 );
                 match body.symbol.as_str() {
                     "paste_text_from_overlay" => productions::overlay(&mut g, &function.block),
+                    "noop" => productions::noop(&mut g, &function.block),
                     "execute_clipboard_paste" => {
                         productions::paste(&mut g, &function.block);
                         let mut sites = PasteSites::default();
@@ -286,6 +290,7 @@ fn check(body: &Body) -> Contract {
 pub fn analyze(request: Request) -> Evidence {
     let expected = [
         ("paste_text_from_overlay", "app/controller/mod.rs"),
+        ("noop", "app/controller/delivery_route.rs"),
         ("execute_clipboard_paste", "app/controller/mod.rs"),
         ("stop", "core/audio/streaming_recorder.rs"),
         ("complete_stop", "core/audio/streaming_recorder.rs"),

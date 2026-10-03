@@ -122,7 +122,10 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
   private func configure(_ window: NSWindow?) {
     window?.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
     let name = model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    window?.title = name.isEmpty ? "Agent" : "Agent — \(name)"
+    window?.title =
+      name.isEmpty
+      ? String(localized: "Agent", comment: "Agent window title")
+      : String(localized: "Agent — \(name)", comment: "The placeholder is a model name")
   }
 }
 
@@ -260,9 +263,16 @@ private struct ThreadDetail: View {
       .csFocusRing()
       .foregroundStyle(isSidebarExpanded ? CSColor.chromeAccent : CSColor.textTertiary)
       .keyboardShortcut("s", modifiers: [.command, .control])
-      .help(isSidebarExpanded ? "Collapse sidebar (⌃⌘S)" : "Expand sidebar (⌃⌘S)")
+      .help(
+        isSidebarExpanded
+          ? String(localized: "Collapse sidebar (⌃⌘S)")
+          : String(localized: "Expand sidebar (⌃⌘S)")
+      )
       .accessibilityLabel("Toggle Sidebar")
-      .accessibilityValue(isSidebarExpanded ? "Expanded" : "Compact")
+      .accessibilityValue(
+        isSidebarExpanded
+          ? String(localized: "Expanded", comment: "Sidebar state")
+          : String(localized: "Compact", comment: "Sidebar state"))
 
       Text(store.currentThread?.title ?? "—")
         .font(CSFont.ui(13, .semibold))
@@ -272,7 +282,7 @@ private struct ThreadDetail: View {
         .layoutPriority(1)
 
       if turnCount > 0 {
-        Text("· \(turnCount)")
+        Text(verbatim: "· \(turnCount)")
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textTertiary)
           .fixedSize()
@@ -294,13 +304,22 @@ private struct ThreadDetail: View {
             .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.textTertiary)
         }
         .csFocusRing()
-        .help(isPinned ? "Disable Always on Top" : "Enable Always on Top")
-        .accessibilityLabel(
-          isPinned ? "Agent pinned, disable Always on Top" : "Agent unpinned, enable Always on Top"
+        .help(
+          isPinned
+            ? String(localized: "Disable Always on Top")
+            : String(localized: "Enable Always on Top")
         )
-        .accessibilityValue(isPinned ? "Pinned" : "Unpinned")
+        .accessibilityLabel(
+          isPinned
+            ? String(localized: "Agent pinned, disable Always on Top")
+            : String(localized: "Agent unpinned, enable Always on Top")
+        )
+        .accessibilityValue(
+          isPinned
+            ? String(localized: "Pinned", comment: "Always-on-top state")
+            : String(localized: "Unpinned", comment: "Always-on-top state"))
 
-        Button(action: { openWindow(id: SettingsView.windowID) }) {
+        Button(action: { openWindow.presentSettings() }) {
           CSIconView(icon: .settings, size: 14)
         }
         .csFocusRing()
@@ -354,7 +373,10 @@ private struct ThreadDetail: View {
     Menu {
       if let thread = store.currentThread {
         Button("Rename") { beginRename(thread) }
-        Button(thread.isFavorite ? "Unfavorite" : "Favorite") {
+        Button(
+          thread.isFavorite
+            ? String(localized: "Unfavorite") : String(localized: "Favorite")
+        ) {
           store.toggleFavorite(thread)
         }
         if thread.backendId != nil {
@@ -390,11 +412,17 @@ private struct ThreadDetail: View {
   @ViewBuilder
   private var liveStatusPill: some View {
     if store.isCancelling {
-      StaticStatusPill(text: "Stopping", color: CSColor.textTertiary)
+      StaticStatusPill(
+        text: String(localized: "Stopping", comment: "Turn status"),
+        color: CSColor.textTertiary)
     } else if store.isStreaming {
-      StatusPill(text: "Streaming", color: CSColor.terracotta, rippling: true)
+      StatusPill(
+        text: String(localized: "Streaming", comment: "Turn status"),
+        color: CSColor.terracotta, rippling: true)
     } else if store.isThinking {
-      StatusPill(text: "Thinking", color: CSColor.amber, rippling: true)
+      StatusPill(
+        text: String(localized: "Thinking", comment: "Turn status"),
+        color: CSColor.amber, rippling: true)
     }
   }
 
@@ -427,13 +455,16 @@ private struct QueuedTurnRow: View {
           .onSubmit { commitEdit() }
           .onExitCommand { isEditing = false }
       } else {
-        Text(turn.text.isEmpty ? "\(turn.attachments.count) attachment(s)" : turn.text)
-          .font(CSFont.ui(12, .regular))
-          .foregroundStyle(Color.primary)
-          .lineLimit(2)
-          .truncationMode(.tail)
-          .textSelection(.enabled)
-          .onTapGesture(count: 2) { beginEdit() }
+        Text(
+          turn.text.isEmpty
+            ? String(localized: "\(turn.attachments.count) attachments") : turn.text
+        )
+        .font(CSFont.ui(12, .regular))
+        .foregroundStyle(Color.primary)
+        .lineLimit(2)
+        .truncationMode(.tail)
+        .textSelection(.enabled)
+        .onTapGesture(count: 2) { beginEdit() }
       }
       Spacer()
       if isEditing {
@@ -504,7 +535,7 @@ struct ToolApprovalCard: View {
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textTertiary)
       }
-      Text("\(request.server) · \(request.tool)")
+      Text(verbatim: "\(request.server) · \(request.tool)")
         .font(CSFont.mono(11.5, .semibold))
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
@@ -514,13 +545,13 @@ struct ToolApprovalCard: View {
           .foregroundStyle(Color.primary)
       }
       if let command = request.command {
-        Text("$ \(command)")
+        Text(verbatim: "$ \(command)")
           .font(CSFont.mono(11, .medium))
           .foregroundStyle(CSColor.terracotta)
           .textSelection(.enabled)
       }
       if let cwd = request.cwd {
-        Text("cwd: \(cwd)")
+        Text(verbatim: "cwd: \(cwd)")
           .font(CSFont.mono(10.5, .medium))
           .foregroundStyle(CSColor.textTertiary)
           .textSelection(.enabled)

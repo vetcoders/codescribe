@@ -7,32 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-- Collapse Dictation engine controls to one ASR mode, retire inert settings, and let Cloud reach its own admission checks.
+- Add the localization foundation for the macOS app: String Catalogs with English as the source language, catalog sync and lint tooling, and interface copy prepared for further languages (`docs/LOCALIZATION.md`). No translation ships yet. Tray status wording is now authored in the app; the Rust tray payload carries state only.
+- Turning the transcription overlay off closes an overlay already on screen (a take being corrected stays until its draft is committed or discarded), and a status card shown with the overlay off no longer stays up when "Keep visible between takes" is pinned.
+- A second click on the menu bar icon closes the menu; it no longer closes and reopens it within the same click.
 
 ## Release reality
 
-| Version  | Repository milestone | Public distribution status                                                       |
-| -------- | -------------------- | -------------------------------------------------------------------------------- |
-| `0.13.3` | 2026-08-13           | **Latest published GitHub Release** (`v0.13.3`), signed, notarized, and stapled. |
-| `0.14.0` | 2026-08-17           | Source/daily-build milestone only; no Git tag or GitHub Release was published.   |
-| `0.14.1` | 2026-08-18 onward    | Earlier source/release-candidate milestone.                                      |
-| `0.15.1` | 2026-09-13           | Earlier source/daily-build milestone.                                            |
-| `0.15.2` | 2026-09-28           | Release branch prepared for PR; not a published distribution.                    |
+| Version  | Repository milestone | Public distribution status                                                            |
+| -------- | -------------------- | ------------------------------------------------------------------------------------- |
+| `0.13.3` | 2026-08-13           | **Latest published GitHub Release** (`v0.13.3`), signed, notarized, and stapled.      |
+| `0.14.0` | 2026-08-17           | Source/daily-build milestone only; no Git tag or GitHub Release was published.        |
+| `0.14.1` | 2026-08-18 onward    | Earlier source/release-candidate milestone.                                           |
+| `0.15.1` | 2026-09-13           | Earlier source/daily-build milestone.                                                 |
+| `0.15.2` | 2026-09-30           | Release candidate `0784c554` (build 1531) under review; not a published distribution. |
 
 The sections below distinguish code milestones from public releases. A version
 number in `Cargo.toml` is not evidence that a DMG, tag, appcast, or GitHub
 Release exists.
 
-## [0.15.2] - 2026-09-28 (release preparation)
+## [0.15.2] - 2026-09-30 (release candidate)
+
+Candidate `0784c554` (build 1531) on `release/0.15.2-dragon`. Installed
+locally through `make install-if-idle`; not a published DMG, tag or appcast.
+
+### Added
+
+- Paste mode `safe` / `comfort` / `off` replaces the Auto Paste switch.
+  `safe` pastes only into an AX-editable field and holds command-shaped text
+  for terminals on the clipboard with a ⌘V notice; `off` holds every
+  delivery. `PASTE_MODE` joins the env registry (`AUTO_PASTE_ENABLED`
+  removed). Settings › Shortcuts and the tray own the value.
+- Overlay recording light with labelled states: Recording, Recording
+  hands-free, Silence, Transcribing, Recording for the agent; tooltip and
+  VoiceOver label per state; silence derived from the audio level.
+- Agent channels auto-seal after `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` of
+  silence (default 120, `0` disables) and duck channel capture while speech
+  plays; one `agent_ack` bus row per proven seal receipt.
+- `bus-demux` product surface: `--attach --voice/--speed/--tts-vendor`,
+  `--say` resolving the bound name, `--ack` for many delivery ids, `--watch`.
+- Overlay roster popover in the overlay palette with follower state; per-digit
+  channel toggles are wired but stay disabled until the bridge action lands.
+- Embedded agent hosts get isolated config, thread, lease and credential
+  paths plus live document tools; desktop tools stay out of embedded sessions.
 
 ### Changed
 
-- Prepare `release/0.15.2` from the installed overlay line (`b58d0d625`), retaining
-  the newer Transcript Bus `--say` change from `bc971ceca`.
-- Bump the CLI, core, and Swift bridge source version to `0.15.2`.
+- Overlay: chevron preview toggle, Auto Paste chip removed from the header,
+  one-glyph agent slot, compact Stop control, transcript scrolls beneath the
+  glass chrome, tooltips above action buttons, command palette fits its rows.
+- Dictation engine controls collapse to one ASR mode; inert settings retired;
+  Cloud reaches its own admission checks.
+- Private-rig docs and mic-relay scripts removed; local-environment leaks
+  scrubbed from docs and site prose.
+- Source version bumped to `0.15.2` in the CLI, core and Swift bridge.
 
-This version bump prepares the PR branch; it does not publish a release or
-certify the outstanding overlay hover/layout correction.
+### Fixed
+
+- Coverage-refused agent-channel takes are delivered as `coverage="refused"`
+  seal envelopes instead of vanishing.
+- Hang-up writes the channel-session `sealed` row, so refused takes still
+  deliver; a session gets at most one `sealed` row.
+- Orphaned `open` channel sessions are sealed on startup, which also lets the
+  brand dot dismiss the overlay again.
+- Explicit Settings open activates the app from the tray, ⌘,, the Agent
+  window gear and the licence button; a Dock click no longer resurrects a
+  closed Settings window.
+- Settings save no longer mints a backup on every write (the single-endpoint
+  seed re-seeding loop).
+- Channel badge honours the Pointer Indicator size.
+- Readiness check reports a not-ready verdict instead of panicking when the
+  settings snapshot fails to load.
+- `make verify` and `make test-swift` green at the source: acoustic-throne
+  structural contract repinned to the refcount shape, the last
+  `too_many_arguments` silencers removed, foreign Semgrep waivers moved to the
+  gate.
 
 ## [0.15.1] - 2026-09-13 (source milestone)
 

@@ -832,6 +832,7 @@ mod session_tests {
             identity: identity.clone(),
             text: "ala ma kota".to_string(),
             segments: vec![TimedTailSegment {
+                confidence: None,
                 grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "kota".to_string(),
                 range: TailSampleRange {
@@ -1096,6 +1097,7 @@ mod local_execution_tests {
                     identity: request.identity.clone(),
                     text: "Iwo".into(),
                     segments: vec![TimedTailSegment {
+                        confidence: None,
                         grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                         text: "Iwo".into(),
                         range: request.identity.range.clone(),

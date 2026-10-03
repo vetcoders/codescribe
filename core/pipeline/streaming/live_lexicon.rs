@@ -221,6 +221,14 @@ fn rewrite_once(text: &str, custom: &[Rule], bundled: &Bundled) -> String {
             if text[found.range()] == rule.canonical {
                 continue;
             }
+            // This string API cannot name several source PCM slots or prove
+            // child boundaries. Shape changes need an explicit ledger merge
+            // or split; ordinary rewrites conserve token count and order.
+            if text[found.range()].split_whitespace().count()
+                != rule.canonical.split_whitespace().count()
+            {
+                continue;
+            }
             if protected_spans.iter().any(|(start, end, canonical)| {
                 found.start() < *end && *start < found.end() && canonical.as_str() != rule.canonical
             }) {
@@ -361,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn longest_custom_variant_wins_and_is_stable() {
+    fn string_rewrite_does_not_perform_an_implicit_merge() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lexicon.custom.jsonl");
         fs::write(
@@ -370,7 +378,7 @@ mod tests {
         )
         .unwrap();
         let (label, _) = rewrite("The lux tree works", &path);
-        assert_eq!(label, "The Long works");
+        assert_eq!(label, "The Short tree works");
         assert_eq!(rewrite(&label, &path).0, label);
     }
 
