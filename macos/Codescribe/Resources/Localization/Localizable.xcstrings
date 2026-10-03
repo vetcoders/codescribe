@@ -1172,6 +1172,9 @@
     "Codescribe could not confirm that this transcription is complete." : {
 
     },
+    "Codescribe couldn't write the Markdown file for “%@”. Check the Transcripts folder shown under Settings › User › Local data, then try again." : {
+      "comment" : "The placeholder is the thread title"
+    },
     "Codescribe detected speech that no recognizer turned into words; its timing is unavailable for this take." : {
 
     },
@@ -1742,8 +1745,17 @@
     "Export assistant replies only" : {
 
     },
+    "Export failed" : {
+      "comment" : "Alert title when a thread export wrote nothing"
+    },
     "Export to Markdown" : {
 
+    },
+    "Exported to Markdown" : {
+      "comment" : "Alert title after a successful thread export"
+    },
+    "Exports save to the Transcripts folder" : {
+      "comment" : "Menu section header above the Markdown export actions"
     },
     "External MCP servers the agent can call, and their transports." : {
 
@@ -2594,6 +2606,9 @@
     "OpenAI API key" : {
       "comment" : "OpenAI is a company name"
     },
+    "Opens this thread" : {
+      "comment" : "Accessibility hint on a history row"
+    },
     "Operating lane" : {
       "comment" : "Setup step eyebrow"
     },
@@ -3214,6 +3229,28 @@
     },
     "Saved in settings.json; runtime falls back safely if it disappears" : {
 
+    },
+    "Saved the assistant replies as %@ in %@." : {
+      "comment" : "Placeholders: file name, then folder path",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Saved the assistant replies as %1$@ in %2$@."
+          }
+        }
+      }
+    },
+    "Saved the whole thread as %@ in %@." : {
+      "comment" : "Placeholders: file name, then folder path",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Saved the whole thread as %1$@ in %2$@."
+          }
+        }
+      }
     },
     "Saved to daily note" : {
       "comment" : "Tray banner: the text was appended to today's note"
@@ -3914,8 +3951,8 @@
     "This provider does not require an API key. Choose a model in Settings › Agent › LLM lanes." : {
 
     },
-    "This removes the persisted conversation from the thread store." : {
-
+    "This removes “%@” and its saved conversation. There is no undo." : {
+      "comment" : "The placeholder is the thread title"
     },
     "This response has no text to speak." : {
 
