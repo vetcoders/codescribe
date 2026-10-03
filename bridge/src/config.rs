@@ -997,7 +997,8 @@ impl CodescribeConfig {
         let mut providers = Vec::new();
         let mut account_errors = std::collections::HashMap::new();
         for provider in registry.all() {
-            let account_unavailable = provider.oauth_vendor
+            let account_unavailable = provider
+                .oauth_vendor
                 .is_some_and(|vendor| account_auth::account_status_snapshot(vendor).is_err());
             let option = provider_option(provider);
             if account_unavailable {

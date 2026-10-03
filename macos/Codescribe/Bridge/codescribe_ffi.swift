@@ -11461,14 +11461,16 @@ public func FfiConverterTypeCsPromptSnapshot_lower(_ value: CsPromptSnapshot) ->
  */
 public struct CsProviderAccessSnapshot: Equatable, Hashable {
     public var providers: [CsProviderOption]
+    public var accountErrors: [String: String]
     public var keyStatus: CsKeyStatus
     public var sttLanes: [CsSttLane]
     public var revision: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(providers: [CsProviderOption], keyStatus: CsKeyStatus, sttLanes: [CsSttLane], revision: UInt64) {
+    public init(providers: [CsProviderOption], accountErrors: [String: String], keyStatus: CsKeyStatus, sttLanes: [CsSttLane], revision: UInt64) {
         self.providers = providers
+        self.accountErrors = accountErrors
         self.keyStatus = keyStatus
         self.sttLanes = sttLanes
         self.revision = revision
@@ -11489,6 +11491,7 @@ public struct FfiConverterTypeCsProviderAccessSnapshot: FfiConverterRustBuffer {
         return
             try CsProviderAccessSnapshot(
                 providers: FfiConverterSequenceTypeCsProviderOption.read(from: &buf),
+                accountErrors: FfiConverterDictionaryStringString.read(from: &buf),
                 keyStatus: FfiConverterTypeCsKeyStatus.read(from: &buf),
                 sttLanes: FfiConverterSequenceTypeCsSttLane.read(from: &buf),
                 revision: FfiConverterUInt64.read(from: &buf)
@@ -11497,6 +11500,7 @@ public struct FfiConverterTypeCsProviderAccessSnapshot: FfiConverterRustBuffer {
 
     public static func write(_ value: CsProviderAccessSnapshot, into buf: inout [UInt8]) {
         FfiConverterSequenceTypeCsProviderOption.write(value.providers, into: &buf)
+        FfiConverterDictionaryStringString.write(value.accountErrors, into: &buf)
         FfiConverterTypeCsKeyStatus.write(value.keyStatus, into: &buf)
         FfiConverterSequenceTypeCsSttLane.write(value.sttLanes, into: &buf)
         FfiConverterUInt64.write(value.revision, into: &buf)
@@ -17589,6 +17593,32 @@ fileprivate struct FfiConverterSequenceTypeCsLlmLane: FfiConverterRustBuffer {
             seq.append(try FfiConverterTypeCsLlmLane.read(from: &buf))
         }
         return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterDictionaryStringString: FfiConverterRustBuffer {
+    public static func write(_ value: [String: String], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for (key, value) in value {
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterString.write(value, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String: String] {
+        let len: Int32 = try readInt(&buf)
+        var dict = [String: String]()
+        dict.reserveCapacity(Int(len))
+        for _ in 0..<len {
+            let key = try FfiConverterString.read(from: &buf)
+            let value = try FfiConverterString.read(from: &buf)
+            dict[key] = value
+        }
+        return dict
     }
 }
 private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0

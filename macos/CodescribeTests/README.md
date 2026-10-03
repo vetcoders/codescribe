@@ -203,3 +203,10 @@ Open, and named rather than fixed:
   that every gate this plan built is host-local and operator-run.
 
 _𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI_
+
+The provider snapshot ordering witnesses hold a controlled acquisition open
+while Settings persists a newer STT endpoint. An older completion must request
+one follow-up and keep the committed endpoint visible. Per-account errors keep
+the registry, independent API keys and STT controls available; a successful
+read clears the account error. The existing preview engine exposes one optional
+async snapshot loader for these deterministic tests.

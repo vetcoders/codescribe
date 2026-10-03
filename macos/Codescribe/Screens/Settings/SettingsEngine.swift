@@ -406,6 +406,8 @@ struct MockSettingsEngine: SettingsEngine {
   var ruleCandidates: [CsRuleCandidate] = []
   var ruleCandidatesLoader: (() throws -> [CsRuleCandidate])?
   var teachSpanObserver: ((String, String, String) throws -> CsQualityCommitResult)?
+  /// Controlled acquisition for previews and integrator ordering witnesses.
+  var providerAccessSnapshotLoader: (() async throws -> CsProviderAccessSnapshot)?
   // Keep the long-standing config observer last so existing trailing-closure
   // call sites continue to bind to config writes, not Voice Lab edits.
   var updateConfigObserver: ((String, String) throws -> Void)?
@@ -512,6 +514,12 @@ struct MockSettingsEngine: SettingsEngine {
     )
   }
 
+  func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
+    if let providerAccessSnapshotLoader { return try await providerAccessSnapshotLoader() }
+    return CsProviderAccessSnapshot(
+      providers: availableProviders(), accountErrors: [:], keyStatus: keyStatus(),
+      sttLanes: sttLanes(), revision: 0)
+  }
   func keyStatus() -> CsKeyStatus { status }
   func serviceKeyAccounts() -> [String] { ["GITHUB_TOKEN"] }
   /// Two sample lanes whose endpoint and key presence follow the mock's

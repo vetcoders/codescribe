@@ -403,7 +403,9 @@ fn load_bundle() -> Option<KeychainBundle> {
     note_credential_acquisition("read bundle");
     // Runtime consumers keep using the last completed bundle during another I/O.
     // Explicit refresh still owns acquisition and reports its storage failures.
-    if let Some(bundle) = read_bundle_cache() { return Some(bundle); }
+    if let Some(bundle) = read_bundle_cache() {
+        return Some(bundle);
+    }
     let _io = bundle_io();
     match read_bundle_locked(false) {
         Ok(bundle) => bundle,

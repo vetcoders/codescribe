@@ -2248,7 +2248,9 @@ impl UserSettings {
                                                 "Migrated auto_paste_enabled to paste_mode"
                                             ),
                                             Err(error) => {
-                                                warn!("Failed to persist migrated paste_mode: {error}")
+                                                warn!(
+                                                    "Failed to persist migrated paste_mode: {error}"
+                                                )
                                             }
                                         }
                                     }

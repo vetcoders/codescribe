@@ -417,7 +417,8 @@ pub fn cached_account_status(provider: ProviderKind) -> AccountAuthStatus {
             provider,
             signed_in: false,
             client_id_configured: client_id_for_provider(provider).is_ok(),
-            message: "Account access unavailable. Remove the stored account and sign in again.".into(),
+            message: "Account access unavailable. Remove the stored account and sign in again."
+                .into(),
         },
     }
 }

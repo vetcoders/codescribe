@@ -33,11 +33,11 @@ private final class ControlledProviderEngine: OnboardingEngine {
     writes += 1
     try await withCheckedThrowingContinuation { write = $0 }
   }
-  func resolveRead(revision: UInt64? = nil) {
+  func resolveRead(revision: UInt64? = nil, accountErrors: [String: String] = [:]) {
     let continuation = read
     read = nil
     continuation?.resume(returning: CsProviderAccessSnapshot(
-      providers: [provider], keyStatus: .sampleAllSet, sttLanes: [],
+      providers: [provider], accountErrors: accountErrors, keyStatus: .sampleAllSet, sttLanes: [],
       revision: revision ?? self.revision))
   }
   func resolveWrite(success: Bool) {
@@ -178,6 +178,46 @@ final class ProviderAccessOrderingTests: XCTestCase {
     await awaitCondition { !model.providerAccessPending }
     XCTAssertEqual(model.apiKeyDraft, "newer draft")
     XCTAssertEqual(model.step, .apiKey, "Continue must not skip the new unsaved draft")
+  }
+
+  func testUnavailableAccountKeepsResolvedRegistryAndDoesNotClaimReadiness() async {
+    let engine = ControlledProviderEngine()
+    engine.progress = 11
+    engine.provider.apiKeySet = false
+    engine.provider.accountSignedIn = false
+    let model = makeModel(engine)
+    model.refreshProviderAccess()
+    await awaitCondition { engine.read != nil }
+    engine.resolveRead(accountErrors: [engine.provider.id: "Account access unavailable"])
+    await awaitCondition { !model.providerAccessPending }
+    XCTAssertTrue(model.providerAccessResolved)
+    XCTAssertNil(model.providerAccessError, "one account must not fail the whole snapshot")
+    XCTAssertEqual(model.providers.map(\.id), [engine.provider.id])
+    XCTAssertNotNil(model.selectedProviderAccountError)
+    XCTAssertFalse(model.selectedProviderAccountConnected)
+    XCTAssertFalse(model.selectedProviderKeySet)
+    XCTAssertNil(model.readiness, "unknown account access cannot claim a ready agent")
+  }
+
+  func testUnavailableAccountPreservesIndependentApiKeyAndRecoversOnNextRead() async {
+    let engine = ControlledProviderEngine()
+    engine.progress = 11
+    engine.provider.apiKeySet = true
+    engine.provider.accountSignedIn = false
+    let model = makeModel(engine)
+    model.refreshProviderAccess()
+    await awaitCondition { engine.read != nil }
+    engine.resolveRead(accountErrors: [engine.provider.id: "Account access unavailable"])
+    await awaitCondition { !model.providerAccessPending }
+    XCTAssertTrue(model.selectedProviderKeySet)
+    XCTAssertNotNil(model.selectedProviderAccountError)
+    XCTAssertNotNil(model.readiness, "an independent API key remains usable")
+    model.refreshProviderAccess()
+    await awaitCondition { engine.read != nil }
+    engine.resolveRead()
+    await awaitCondition { !model.providerAccessPending }
+    XCTAssertNil(model.selectedProviderAccountError)
+    XCTAssertTrue(model.selectedProviderKeySet)
   }
 
 }

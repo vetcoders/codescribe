@@ -825,7 +825,9 @@ impl Config {
         // One-time import from legacy .env-only installs into settings.json.
         let deferred_settings = if populate_keychain {
             super::migrate::migrate_if_needed(file_env_vars.as_ref(), true)
-        } else { None };
+        } else {
+            None
+        };
         if populate_keychain && deferred_settings.is_none() {
             super::migrate::migrate_agent_workspace_roots_if_needed(file_env_vars.as_ref());
         }
@@ -839,8 +841,11 @@ impl Config {
         // inside `load`; its Keychain key moves are applied here, the only
         // place allowed to touch the bundle during a load.
         let mut user_settings = deferred_settings.unwrap_or_else(|| {
-            if populate_keychain { UserSettings::load() }
-            else { UserSettings::load_projection() }
+            if populate_keychain {
+                UserSettings::load()
+            } else {
+                UserSettings::load_projection()
+            }
         });
         if populate_keychain && !user_settings.pending_key_moves.is_empty() {
             match super::settings::UserSettings::settle_pending_key_moves() {
