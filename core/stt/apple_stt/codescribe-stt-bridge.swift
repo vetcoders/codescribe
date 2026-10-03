@@ -289,14 +289,18 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
         guard let deadlinePolicy = request.deadlinePolicy else {
             throw BridgeError.runtime("transcribe requires deadline_policy")
         }
-        let transcription = try await transcribe(
+        var transcription = try await transcribe(
             audioPath: audioPath, locale: locale, deadlinePolicy: deadlinePolicy)
         if transcription.fileError == nil && deadlinePolicy == .wholeFile {
-            let file = try AVAudioFile(forReading: URL(fileURLWithPath: audioPath))
-            let seconds = Double(file.length) / max(file.processingFormat.sampleRate, 1.0)
-            try validateAppleFileResult(
-                transcription, audioSeconds: seconds,
-                processedSeconds: transcription.processedAudioSeconds)
+            do {
+                let file = try AVAudioFile(forReading: URL(fileURLWithPath: audioPath))
+                let seconds = Double(file.length) / max(file.processingFormat.sampleRate, 1.0)
+                try validateAppleFileResult(
+                    transcription, audioSeconds: seconds,
+                    processedSeconds: transcription.processedAudioSeconds)
+            } catch {
+                transcription.fileError = String(describing: error)
+            }
         }
         let accepted = transcription.fileError == nil
         return BridgeResponse(
@@ -1892,7 +1896,9 @@ final class SfSpeechFileRecognitionDelegate: NSObject, SFSpeechRecognitionTaskDe
                 continuation.resume(returning: snapshot.payload)
             } catch {
                 fputs("ERROR apple_file: \(error)\n", stderr)
-                continuation.resume(throwing: error)
+                var payload = snapshot.payload
+                payload.fileError = String(describing: error)
+                continuation.resume(returning: payload)
             }
         } else {
             var payload = snapshot.payload
