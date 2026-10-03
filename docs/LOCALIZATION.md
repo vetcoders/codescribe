@@ -67,6 +67,14 @@ compiles `#if DEBUG` code), so every string that ships has a row.
 `l10n-sync` refuses to run when any Swift source is newer than its last compile,
 because the extraction data describes the last build, not the working tree.
 
+`build-app.sh` generates UniFFI bindings in a temporary directory, normalizes
+Swift/C output there, and installs each generated file (including the modulemap)
+only when its bytes differ from the current file. Identical output keeps its
+source mtime, so Xcode can reuse objects and extraction data without a false
+freshness refusal. New or changed output receives a new mtime and still requires
+compilation before `l10n-sync` accepts it. A generator or normalization failure
+publishes no staged files; the temporary directory is cleaned on exit.
+
 After changing interface copy: build, `make l10n-sync`, commit the catalog with
 the code. A key that disappears from code is dropped from the catalog when it
 has no translations, and marked `stale` when it has — `verify-l10n-catalog`
