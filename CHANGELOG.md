@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- Agent history rows are accessible buttons with a selected state, keyboard focus and Return / Space / arrow-key navigation. Deleting a thread from the toolbar menu asks for the same confirmation as the history rail. Markdown export names its Transcripts-folder destination in the menu and reports the saved file (with Reveal in Finder / Open) or a visible failure instead of opening Finder on its own.
 - Restored conversation tool cards retain saved call IDs and explicit success or failure for the existing inspector. Missing outcomes remain unknown; summaries and timing that were never saved stay absent.
 - Settings and Setup distinguish provider account sign-in from API keys, explain model discovery requirements, and scope readiness to speech, Assistive and enabled Formatting. Audio observes the shared recorder and offers Stop during an active take.
 - Overlay errors retain confirmed recording-start history after Stop, preserve projected text, and separate readable failure feedback from expandable diagnostics. Recovery actions distinguish the current take's audio from previous text and saved history.

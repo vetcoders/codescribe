@@ -271,10 +271,37 @@ The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `
 | `MessageList.swift`                 | 1535 | Message rendering, streaming assistant bubbles  |
 | `ChatComponents.swift`              | 1008 | Shared bubble / attachment / tool components    |
 | `Composer.swift`                    | 823  | Input composer (dictation, attachments, send)   |
-| `ThreadRail.swift`                  | 498  | Thread list rail                                |
-| `AgentChatView.swift`               | 473  | Screen composition                              |
+| `ThreadRail.swift`                  | 659  | Thread list rail                                |
+| `AgentChatView.swift`               | 679  | Screen composition                              |
 | `ComposerTextView.swift`            | 370  | NSTextView bridge for the composer              |
 | `AssistivePromptPresentation.swift` | 346  | Assistive-lane prompt presentation              |
+
+### Thread history interactions
+
+The rail (`ThreadRail.swift`) and the detail toolbar menu (`AgentChatView.swift`)
+share three contracts:
+
+- **Selection is one action with three entry points.** A pointer click, the
+  row's Accessibility activation and the keyboard all call the same `select`
+  path in `ThreadRail`. To Accessibility a row is a single button labelled
+  with the thread title, with the `selected` trait on the open thread and
+  Rename / Favorite / Delete as named actions; while a title is being renamed
+  the row exposes its children so the text field stays reachable. Rows are
+  keyboard focus targets: Return or Space opens the focused row, Up / Down
+  opens the neighbouring row in visible order (`ThreadRailNavigation`,
+  no wrap-around). Rows join the Tab order under macOS keyboard navigation,
+  like the app's other custom buttons.
+- **Deletion always confirms.** Both the rail's context menu and the toolbar
+  menu present the same `ThreadDeleteConfirmation`; the dialog names the
+  thread and Cancel keeps it. There is no undo path, and the copy says so.
+- **Markdown export reports its outcome.** The toolbar menu names the fixed
+  destination (the Transcripts folder from Settings › User › Local data) in a
+  section header; there is no file chooser. After the write, an alert shows
+  the file name and folder with "Reveal in Finder" and "Open" buttons, or an
+  "Export failed" alert naming the thread and the folder to check. Finder is
+  never opened as a side effect of the menu action. `ThreadExportOutcome`
+  carries the result; `RealThreadsEngine` still collapses the bridge error
+  into `nil`, so the failure alert cannot quote the underlying reason.
 
 ### Restored tool inspector metadata
 

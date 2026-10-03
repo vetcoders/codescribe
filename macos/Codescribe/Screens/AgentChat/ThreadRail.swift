@@ -9,6 +9,10 @@ struct ThreadRail: View {
   @State private var deleteCandidate: ChatThread?
   @State private var editingThreadID: UUID?
   @State private var renameDraft: String = ""
+  /// Keyboard focus on one row (keyboard navigation / Full Keyboard Access).
+  /// Nil while focus sits in the search field, the rename field, a row's
+  /// favorite button or outside the rail.
+  @FocusState private var focusedThreadID: UUID?
 
   var body: some View {
     expandedRail
@@ -21,26 +25,7 @@ struct ThreadRail: View {
           search = newValue
         }
       }
-      .confirmationDialog(
-        "Delete this thread?",
-        isPresented: Binding(
-          get: { deleteCandidate != nil },
-          set: { if !$0 { deleteCandidate = nil } }
-        ),
-        titleVisibility: .visible
-      ) {
-        Button("Delete Thread", role: .destructive) {
-          if let deleteCandidate {
-            store.delete(deleteCandidate)
-            self.deleteCandidate = nil
-          }
-        }
-        Button("Cancel", role: .cancel) {
-          deleteCandidate = nil
-        }
-      } message: {
-        Text("This removes the persisted conversation from the thread store.")
-      }
+      .threadDeleteConfirmation(candidate: $deleteCandidate) { store.delete($0) }
   }
 
   private var expandedRail: some View {
@@ -97,41 +82,51 @@ struct ThreadRail: View {
       .padding(.bottom, 2)
 
       // Thread list — search-filtered first, then grouped by recency
-      ScrollView {
-        LazyVStack(spacing: 4) {
-          ForEach(sectionedThreads, id: \.section) { group in
-            HStack {
-              Text(group.section.title)
-                .font(CSFont.mono(9, .semibold))
-                .tracking(0.8)
-                .foregroundStyle(CSColor.textTertiary)
-              Spacer()
-            }
-            .padding(.horizontal, 2)
-            .padding(.top, 8)
-            .padding(.bottom, 2)
-            ForEach(group.threads) { thread in
-              ThreadRow(
-                thread: thread,
-                isActive: thread.id == store.selectedThreadID,
-                isEditing: editingThreadID == thread.id,
-                renameDraft: $renameDraft,
-                onToggleFavorite: { store.toggleFavorite(thread) },
-                onRequestDelete: { deleteCandidate = thread },
-                onBeginRename: { beginRename(thread) },
-                onCommitRename: { commitRename(thread) },
-                onCancelRename: { cancelRename(thread) }
-              )
-              .contentShape(Rectangle())
-              .onTapGesture {
-                if editingThreadID != thread.id { store.select(thread.id) }
+      ScrollViewReader { proxy in
+        ScrollView {
+          LazyVStack(spacing: 4) {
+            ForEach(sectionedThreads, id: \.section) { group in
+              HStack {
+                Text(group.section.title)
+                  .font(CSFont.mono(9, .semibold))
+                  .tracking(0.8)
+                  .foregroundStyle(CSColor.textTertiary)
+                Spacer()
+              }
+              .padding(.horizontal, 2)
+              .padding(.top, 8)
+              .padding(.bottom, 2)
+              .accessibilityAddTraits(.isHeader)
+              ForEach(group.threads) { thread in
+                ThreadRow(
+                  thread: thread,
+                  isActive: thread.id == store.selectedThreadID,
+                  isEditing: editingThreadID == thread.id,
+                  renameDraft: $renameDraft,
+                  focus: $focusedThreadID,
+                  onSelect: { select(thread) },
+                  onToggleFavorite: { store.toggleFavorite(thread) },
+                  onRequestDelete: { deleteCandidate = thread },
+                  onBeginRename: { beginRename(thread) },
+                  onCommitRename: { commitRename(thread) },
+                  onCancelRename: { cancelRename(thread) }
+                )
+                .id(thread.id)
+                .contentShape(Rectangle())
+                .onTapGesture { select(thread) }
+                // Keys act only while the row itself is focused: the rename
+                // field and the favorite button keep their own key handling.
+                .onKeyPress(.return) { activateFocused(thread) }
+                .onKeyPress(.space) { activateFocused(thread) }
+                .onKeyPress(.upArrow) { moveFocus(from: thread, step: -1, proxy: proxy) }
+                .onKeyPress(.downArrow) { moveFocus(from: thread, step: 1, proxy: proxy) }
               }
             }
           }
+          .padding(.horizontal, 10)
         }
-        .padding(.horizontal, 10)
+        .scrollContentBackground(.hidden)
       }
-      .scrollContentBackground(.hidden)
 
       VStack {
         Button(action: { store.newThread() }) {
@@ -159,6 +154,40 @@ struct ThreadRail: View {
   /// Agent recency sections precede the separate Max consultation section.
   private var sectionedThreads: [(section: ThreadSection, threads: [ChatThread])] {
     ThreadSection.railGroups(filteredThreads)
+  }
+
+  // MARK: Selection (pointer, keyboard, Accessibility)
+
+  /// One selection path for a pointer click, the row's Accessibility
+  /// activation and the keyboard. A row being renamed is not re-selected so
+  /// the click that commits the rename cannot also switch threads.
+  private func select(_ thread: ChatThread) {
+    guard editingThreadID != thread.id else { return }
+    store.select(thread.id)
+  }
+
+  private func activateFocused(_ thread: ChatThread) -> KeyPress.Result {
+    guard focusedThreadID == thread.id else { return .ignored }
+    select(thread)
+    return .handled
+  }
+
+  /// Arrow keys walk the visible rail order and open the neighbouring thread,
+  /// like a native source list; focus follows so the next arrow continues.
+  private func moveFocus(
+    from thread: ChatThread, step: Int, proxy: ScrollViewProxy
+  ) -> KeyPress.Result {
+    guard focusedThreadID == thread.id else { return .ignored }
+    let ordered = sectionedThreads.flatMap(\.threads)
+    guard
+      let next = ThreadRailNavigation.adjacentThread(
+        from: thread.id, in: ordered, step: step)
+    else { return .handled }
+    select(next)
+    proxy.scrollTo(next.id)
+    // A lazily built row has to exist before focus can land on it.
+    DispatchQueue.main.async { focusedThreadID = next.id }
+    return .handled
   }
 
   // MARK: Rename (inline edit)
@@ -215,11 +244,19 @@ private struct ThreadRailWidthPreference: PreferenceKey {
   }
 }
 
+/// One history row. To Accessibility it is a single button labelled with the
+/// thread title, carrying the selected state and an activation that opens the
+/// thread; Rename, Favorite and Delete are its named actions. The row is also
+/// a keyboard focus target (ThreadRail owns the key handling). While the title
+/// is being renamed the row exposes its children instead, so the text field
+/// stays reachable.
 private struct ThreadRow: View {
   let thread: ChatThread
   let isActive: Bool
   let isEditing: Bool
   @Binding var renameDraft: String
+  let focus: FocusState<UUID?>.Binding
+  let onSelect: () -> Void
   let onToggleFavorite: () -> Void
   let onRequestDelete: () -> Void
   let onBeginRename: () -> Void
@@ -227,6 +264,9 @@ private struct ThreadRow: View {
   let onCancelRename: () -> Void
 
   @FocusState private var renameFieldFocused: Bool
+
+  private var isRowFocused: Bool { focus.wrappedValue == thread.id }
+  private var title: String { ThreadRowTitle.displayTitle(for: thread) }
 
   var body: some View {
     rowContent(measuring: false)
@@ -258,17 +298,18 @@ private struct ThreadRow: View {
           .strokeBorder(isActive ? CSColor.chromeAccent.opacity(0.28) : .clear, lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .focusable()
+      .focused(focus, equals: thread.id)
+      .focusEffectDisabled()
       .overlay {
-        CSFocusOutline(isFocused: isEditing && renameFieldFocused, cornerRadius: 10)
+        CSFocusOutline(
+          isFocused: isRowFocused || (isEditing && renameFieldFocused), cornerRadius: 10)
       }
       .contextMenu {
         Button("Rename") {
           onBeginRename()
         }
-        Button(
-          thread.isFavorite
-            ? String(localized: "Unfavorite") : String(localized: "Favorite")
-        ) {
+        Button(favoriteActionTitle) {
           onToggleFavorite()
         }
         Divider()
@@ -276,6 +317,27 @@ private struct ThreadRow: View {
           onRequestDelete()
         }
       }
+      .accessibilityElement(children: isEditing ? .contain : .combine)
+      .accessibilityLabel(title)
+      .accessibilityValue(thread.meta)
+      .accessibilityAddTraits(.isButton)
+      .accessibilityAddTraits(isActive ? .isSelected : [])
+      .accessibilityHint(
+        String(localized: "Opens this thread", comment: "Accessibility hint on a history row"))
+      .accessibilityAction { onSelect() }
+      .accessibilityAction(named: Text("Rename")) { onBeginRename() }
+      .accessibilityAction(named: Text(favoriteActionTitle)) { onToggleFavorite() }
+      .accessibilityAction(named: Text("Delete Thread")) { onRequestDelete() }
+  }
+
+  private var favoriteActionTitle: String {
+    thread.isFavorite ? String(localized: "Unfavorite") : String(localized: "Favorite")
+  }
+
+  private var favoriteHelp: String {
+    thread.isFavorite
+      ? String(localized: "Unfavorite thread")
+      : String(localized: "Favorite thread")
   }
 
   private func rowContent(measuring: Bool) -> some View {
@@ -318,10 +380,8 @@ private struct ThreadRow: View {
           Button(action: onToggleFavorite) { favoriteLabel }
             .csFocusRing()
             .opacity(thread.isFavorite || isActive ? 1 : 0.38)
-            .help(
-              thread.isFavorite
-                ? String(localized: "Unfavorite thread")
-                : String(localized: "Favorite thread"))
+            .help(favoriteHelp)
+            .accessibilityLabel(favoriteHelp)
         }
       }
       HStack(spacing: 6) {
@@ -364,6 +424,65 @@ private struct ThreadRow: View {
     .contentShape(Rectangle())
   }
 
+}
+
+// MARK: - Keyboard navigation (pure, unit-testable)
+
+enum ThreadRailNavigation {
+  /// The thread `step` rows away from `id` in the rail's visible order
+  /// (`+1` down, `-1` up). The ends do not wrap; an unknown `id` or an
+  /// out-of-range step yields `nil`.
+  static func adjacentThread(
+    from id: UUID, in ordered: [ChatThread], step: Int
+  ) -> ChatThread? {
+    guard let index = ordered.firstIndex(where: { $0.id == id }) else { return nil }
+    let target = index + step
+    guard ordered.indices.contains(target) else { return nil }
+    return ordered[target]
+  }
+}
+
+// MARK: - Delete confirmation (one contract for every entry point)
+
+/// Every way to delete a thread — the rail's context menu, the Accessibility
+/// action and the detail toolbar menu — presents this same confirmation.
+/// Cancel keeps the thread; only the destructive button deletes.
+struct ThreadDeleteConfirmation: ViewModifier {
+  @Binding var candidate: ChatThread?
+  let onConfirm: (ChatThread) -> Void
+
+  func body(content: Content) -> some View {
+    content.confirmationDialog(
+      "Delete this thread?",
+      isPresented: Binding(
+        get: { candidate != nil },
+        set: { if !$0 { candidate = nil } }
+      ),
+      titleVisibility: .visible,
+      presenting: candidate
+    ) { thread in
+      Button("Delete Thread", role: .destructive) {
+        onConfirm(thread)
+        candidate = nil
+      }
+      Button("Cancel", role: .cancel) {
+        candidate = nil
+      }
+    } message: { thread in
+      Text(
+        "This removes “\(ThreadRowTitle.displayTitle(for: thread))” and its saved conversation. There is no undo.",
+        comment: "The placeholder is the thread title")
+    }
+  }
+}
+
+extension View {
+  /// Attach the shared thread-deletion confirmation; `candidate` non-nil shows it.
+  func threadDeleteConfirmation(
+    candidate: Binding<ChatThread?>, onConfirm: @escaping (ChatThread) -> Void
+  ) -> some View {
+    modifier(ThreadDeleteConfirmation(candidate: candidate, onConfirm: onConfirm))
+  }
 }
 
 /// Short model chip on a thread row. Path prefixes are stripped; the three
