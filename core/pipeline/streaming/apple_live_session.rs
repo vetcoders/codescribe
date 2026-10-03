@@ -24373,8 +24373,25 @@ mod relay_l1_overlap_admission_tests {
     }
 
     fn adjacent_batches_each_with_one_word_keep_one_copy(mode: BufferMode) {
+        forensic_adjacent_batches_physical_identity(mode, false);
+    }
+
+    #[test]
+    fn forensic_disjoint_equal_labels_remain_two_windows() {
+        forensic_adjacent_batches_physical_identity(BufferMode::Windows, true);
+    }
+
+    #[test]
+    fn forensic_disjoint_equal_labels_remain_two_adaptive() {
+        forensic_adjacent_batches_physical_identity(BufferMode::Adaptive, true);
+    }
+
+    fn forensic_adjacent_batches_physical_identity(mode: BufferMode, distinct: bool) {
         let session = &mode.session("integrator-dosc");
-        let (mut lane, owner, requests) = forensic_lane_in(mode, session, &[]);
+        let (mut lane, owner, requests, pcm) =
+            forensic_boundary_capture(mode, session, 0, 200_000, 0, &[(0, 200_000)]);
+        assert_eq!(pcm.len(), 200_000);
+        assert!(requests.len() >= 2);
         let (base, _) = shared_window_region(&requests);
         lane.state.complete_whisper_window(
             &lane.tx,
@@ -24393,7 +24410,12 @@ mod relay_l1_overlap_admission_tests {
                 &requests[1],
                 vec![
                     word_pin(session, "to", base + 2_200, base + 8_000),
-                    word_pin(session, "dość", base + 10_000, base + 21_000),
+                    word_pin(
+                        session,
+                        "dość",
+                        base + if distinct { 10_000 } else { 8_000 },
+                        base + if distinct { 21_000 } else { 10_000 },
+                    ),
                     word_pin(session, "niesympatyczne", base + 21_000, base + 40_000),
                 ],
             ),
@@ -24404,11 +24426,33 @@ mod relay_l1_overlap_admission_tests {
             text.split_whitespace()
                 .filter(|word| *word == "dość")
                 .count(),
-            1,
+            if distinct { 2 } else { 1 },
             "{text}"
         );
-        assert!(text.contains("to dość niesympatyczne"), "{text}");
+        assert!(
+            text.contains(if distinct {
+                "to dość dość niesympatyczne"
+            } else {
+                "to dość niesympatyczne"
+            }),
+            "{text}"
+        );
         let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        let actual_pins = ledger
+            .slots_of(&owner)
+            .expect("physical word slots")
+            .iter()
+            .filter(|slot| slot.text == "dość")
+            .map(|slot| (slot.sample_start, slot.sample_end))
+            .collect::<Vec<_>>();
+        let mut expected_pins = vec![(base + 8_000, base + 10_000)];
+        if distinct {
+            expected_pins.push((base + 10_000, base + 21_000));
+        }
+        assert_eq!(
+            actual_pins, expected_pins,
+            "count follows physical source pins, not matching labels"
+        );
         assert!(ledger.word_deletions().is_empty());
         assert_eq!(ledger.conservation().residue(), 0);
     }
