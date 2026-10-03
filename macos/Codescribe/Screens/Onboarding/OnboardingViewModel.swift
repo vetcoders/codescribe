@@ -365,7 +365,9 @@ final class OnboardingViewModel: ObservableObject {
   /// end is treated as finishing so we never index past the flow.
   func advance() {
     guard !providerMutationPending else { return }
-    if step == .apiKey, !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    if step == .apiKey, apiKeySaveAvailable,
+      !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
       saveApiKey(advanceOnSuccess: true)
       return
     }
@@ -551,6 +553,11 @@ final class OnboardingViewModel: ObservableObject {
     selectedProvider?.apiKeySet == true
   }
 
+  var apiKeySaveAvailable: Bool {
+    providerAccessResolved && providerAccessError == nil
+      && selectedProvider?.apiKeyAccount.isEmpty == false
+  }
+
   var selectedProviderAccountError: String? { providerAccountErrors[selectedProviderId] }
 
   var selectedProviderAccountConnected: Bool {
@@ -619,7 +626,7 @@ final class OnboardingViewModel: ObservableObject {
     let submitted = apiKeyDraft
     let providerId = selectedProviderId
     let trimmed = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty, let account = selectedProvider?.apiKeyAccount,
+    guard apiKeySaveAvailable, !trimmed.isEmpty, let account = selectedProvider?.apiKeyAccount,
       !providerMutationPending
     else { return }
     providerMutationPending = true

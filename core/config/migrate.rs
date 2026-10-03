@@ -112,8 +112,8 @@ pub(super) fn prepare_env_import(
         }
     }
     if let Some(v) = migrated_value(file_env, "STT_ENDPOINT") {
-        super::stt_migration::migrate_legacy_stt_lanes(
-            &super::stt_migration::SttV2Legacy::from_endpoint(&v),
+        super::stt_migration::migrate_stt_lanes(
+            &super::stt_migration::SttImportFields::from_endpoint(&v),
             &mut settings,
         );
     }

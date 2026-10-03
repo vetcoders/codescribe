@@ -70,6 +70,7 @@ struct ProvidersPanel: View {
 
         SpeechToTextSection(model: model)
           .padding(.top, CSSpace.section)
+          .disabled(model.providerMutationPending)
 
         ServiceKeysSection(model: model)
           .padding(.top, CSSpace.section)

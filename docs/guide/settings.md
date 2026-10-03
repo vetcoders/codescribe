@@ -102,7 +102,16 @@ pasted key to save before Continue leaves that step. Its provider picker stays
 locked during the save. You can edit the key draft while waiting; if the draft
 changes, the earlier save does not clear the new text or advance to the next
 step. Save or Continue again to submit the current draft. Basic dictation remains
-available while credential access is unresolved.
+available while credential access is unresolved. If provider access is pending
+or has failed and the current provider cannot be used for saving, Continue
+advances without submitting or clearing a pasted draft. The draft stays in this
+Setup session so you can go Back and save it once access is available. The UI
+identifies it as unsaved; this is not a saved-credential claim. With a resolved
+provider, Continue still waits for the successful save described above.
+
+During a provider credential mutation, Settings also disables its STT section.
+Endpoint edits cannot enter the synchronous settings transaction while that
+mutation holds the shared persistence lease.
 
 If one stored account cannot be decoded, its card shows **Account access
 unavailable** with **Sign out** to remove that account before signing in again.

@@ -2325,7 +2325,7 @@ impl UserSettings {
                                         }
                                     }
                                 }
-                                Self::migrate_legacy_llm_lanes_once(
+                                Self::migrate_retired_llm_lanes_once(
                                     &value_for_legacy,
                                     &mut settings,
                                     persist_migrations,
@@ -2356,7 +2356,7 @@ impl UserSettings {
                                 }
                                 // Keep the legacy endpoint mapping until its durable key
                                 // relocation intent is part of the first V2 write.
-                                Self::migrate_legacy_llm_lanes_once(
+                                Self::migrate_retired_llm_lanes_once(
                                     &value_for_legacy,
                                     &mut settings,
                                     persist_migrations,
@@ -2393,7 +2393,7 @@ impl UserSettings {
                 let mut settings = Self::default();
                 if e.kind() == std::io::ErrorKind::NotFound {
                     if persist_migrations {
-                        super::stt_migration::migrate_legacy_stt_lanes_once(&mut settings);
+                        super::stt_migration::migrate_stt_lanes_once(&mut settings);
                     } else {
                         // Project the same first-import values without admitting a writer.
                         // Pending rows in this value remain uncommitted until a writer load.
@@ -2425,7 +2425,7 @@ impl UserSettings {
     /// carries endpoint fields and persist the new shape with pending key moves
     /// for the loader's Keychain step. Idempotent: the saved file has no legacy
     /// fields, so the next load finds nothing to migrate.
-    fn migrate_legacy_llm_lanes_once(
+    fn migrate_retired_llm_lanes_once(
         raw: &serde_json::Value,
         settings: &mut Self,
         persist_migrations: bool,
@@ -2439,10 +2439,10 @@ impl UserSettings {
             Vec::new()
         };
         if persist_migrations {
-            super::stt_migration::migrate_legacy_stt_lanes_once(settings);
+            super::stt_migration::migrate_stt_lanes_once(settings);
         } else {
-            let stt = super::stt_migration::SttV2Legacy::from_json(raw);
-            let (steps, _) = super::stt_migration::migrate_legacy_stt_lanes(&stt, settings);
+            let stt = super::stt_migration::SttImportFields::from_json(raw);
+            let (steps, _) = super::stt_migration::migrate_stt_lanes(&stt, settings);
             if !steps.is_empty() {
                 *settings = Self::from_v2(settings.to_v2());
             }

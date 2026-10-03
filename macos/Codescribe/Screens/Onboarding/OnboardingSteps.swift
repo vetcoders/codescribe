@@ -656,8 +656,16 @@ struct ApiKeyStepView: View {
         .settingsInputChrome(isFocused: keyFocused)
         .onSubmit { model.saveApiKey() }
         Button("Save key") { model.saveApiKey() }.csAction(prominent: true)
-          .disabled(model.providerMutationPending || !model.providerAccessResolved)
+          .disabled(model.providerMutationPending || !model.apiKeySaveAvailable)
         if model.providerMutationPending { ProgressView().controlSize(.small) }
+      }
+      if !model.apiKeySaveAvailable,
+        !model.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      {
+        Text("This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available.")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
       }
     }
     .padding(.vertical, 13)
