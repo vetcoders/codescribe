@@ -1484,6 +1484,314 @@ impl AcousticLedger {
 mod slot_ops_tests {
     use super::*;
 
+    // Root-owned independent controls: actual capture measurements, not a word floor.
+    fn forensic_neighbour_capture(
+        session: &str,
+        capture_epoch: u64,
+        quiet_neighbour: bool,
+    ) -> (
+        AcousticLedger,
+        OccurrenceIdentity,
+        OccurrenceIdentity,
+        Vec<f32>,
+    ) {
+        use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+        let owner = OccurrenceIdentity::new(session, capture_epoch, 0, 16_000);
+        let neighbour = OccurrenceIdentity::new(session, capture_epoch, 16_000, 32_000);
+        let mut pcm = vec![0.0_f32; 32_000];
+        pcm[2_000..8_000].fill(0.2);
+        pcm[14_000..if quiet_neighbour { 16_000 } else { 20_000 }].fill(0.2);
+        let energy = CaptureEnergyOwner::bind(session, capture_epoch);
+        let mut writer = CaptureLevelAccumulator::bound_to(&energy);
+        for chunk in pcm.chunks(1_000) {
+            writer.push_samples(chunk);
+        }
+        let speech = energy.session_active_speech_ranges(session, capture_epoch, 16_000);
+        assert_eq!(speech.availability().observed_samples(), Some(32_000));
+        assert_eq!(
+            speech
+                .ranges()
+                .iter()
+                .map(|range| (range.sample_start, range.sample_end))
+                .collect::<Vec<_>>(),
+            [
+                (2_000, 8_000),
+                (14_000, if quiet_neighbour { 16_000 } else { 20_000 })
+            ]
+        );
+        let calibration = EnergyCalibration::new("forensic-neighbour-pcm", 1.0, 1);
+        let mut ledger = AcousticLedger::new();
+        ledger.bind_capture_rate(16_000);
+        for occurrence in [&owner, &neighbour] {
+            let samples = &pcm[occurrence.sample_start as usize..occurrence.sample_end as usize];
+            let integral = samples
+                .iter()
+                .map(|sample| f64::from(*sample).powi(2))
+                .sum::<f64>();
+            if integral == 0.0 {
+                continue;
+            }
+            let peak = samples
+                .iter()
+                .map(|sample| f64::from(sample.abs()))
+                .fold(0.0_f64, f64::max);
+            assert!(
+                ledger
+                    .qualify(
+                        &AcousticEvidence {
+                            occurrence: occurrence.clone(),
+                            duration_ms: samples.len() as f64 / 16.0,
+                            energy_integral: integral,
+                            mean_rms_dbfs: 20.0 * (integral / samples.len() as f64).sqrt().log10(),
+                            peak_dbfs: 20.0 * peak.log10(),
+                            vad_open_sample: Some(occurrence.sample_start),
+                            vad_close_sample: Some(occurrence.sample_end),
+                            evidence_calibration_version: calibration.version.clone(),
+                        },
+                        &calibration
+                    )
+                    .is_qualified()
+            );
+        }
+        ledger.record_speech_evidence(&speech);
+        let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone());
+        assert!(
+            ledger
+                .admit(&apple, "czy plan weryfikowałeś")
+                .grants_mutation()
+        );
+        (ledger, owner, neighbour, pcm)
+    }
+
+    fn forensic_neighbour_words(observation: &ObservationIdentity) -> Vec<WordSlot> {
+        [(2_000, 5_000, "czy"), (5_000, 8_000, "weryfikowałeś")]
+            .into_iter()
+            .map(|(sample_start, sample_end, text)| WordSlot {
+                sample_start,
+                sample_end,
+                text: text.into(),
+                producer: observation.producer,
+                observation: observation.clone(),
+                witness: SlotWitness::Unwitnessed,
+                confidence: None,
+                surface_rewritten: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn forensic_neighbour_only_exact_held_word_lends_pcm_and_settles_source() {
+        for state in ["word", "label", "qualified", "human", "sealed"] {
+            for variant in 0..5 {
+                let (mut ledger, owner, neighbour, _pcm) =
+                    forensic_neighbour_capture(&format!("neighbour-{state}-{variant}"), 23, false);
+                let original = ledger.slots_of(&owner).unwrap()[0].clone();
+                let producer = if state == "human" {
+                    ObservationProducer::ManualHuman
+                } else {
+                    ObservationProducer::Apple
+                };
+                let neighbour_observation =
+                    ObservationIdentity::new(producer, 2, 0, neighbour.clone());
+                if state == "label" {
+                    assert!(
+                        ledger
+                            .admit(&neighbour_observation, "sąsiad")
+                            .grants_mutation()
+                    );
+                } else if state != "qualified" {
+                    assert!(
+                        ledger
+                            .admit_word_slots(
+                                &neighbour_observation,
+                                &[WordPin::new(14_000, 20_000, "sąsiad")
+                                    .with_decode_window(0, 32_000)]
+                            )
+                            .grants_mutation()
+                    );
+                    if state == "sealed" {
+                        ledger.schedule_frontier(neighbour.clone(), [producer]);
+                        ledger.note_frontier_return(&neighbour, producer);
+                        ledger.seal(&neighbour).unwrap();
+                    }
+                }
+                let neighbour_before = ledger.slots_of(&neighbour).map(<[WordSlot]>::to_vec);
+                let next =
+                    ObservationIdentity::new(ObservationProducer::Whisper, 3, 1, owner.clone());
+                let original_pin = OccurrenceIdentity::new(&owner.session, 23, 14_000, 20_000);
+                let mut assignment = next.clone();
+                match variant {
+                    1 => assignment.request += 1,
+                    2 => assignment.generation += 1,
+                    3 => assignment.producer = ObservationProducer::CloudLive,
+                    4 => assignment.occurrence.capture_epoch += 1,
+                    _ => (),
+                }
+                ledger.record_assigned_word_pins(
+                    &assignment,
+                    &[(neighbour.clone(), original_pin.clone())],
+                );
+                let expected = state == "word" && variant == 0;
+                let coverage = ledger.group_speech_coverage(
+                    &next,
+                    &original,
+                    &forensic_neighbour_words(&next),
+                );
+                assert_eq!(coverage.is_some(), expected, "{state}/{variant}");
+                if let Some((_, parts)) = coverage {
+                    let borrowed = parts.last().unwrap();
+                    assert_eq!(borrowed.pin_owner, neighbour);
+                    assert_eq!(borrowed.pin_range, original_pin);
+                    assert_eq!(
+                        (
+                            borrowed.speech_range.sample_start,
+                            borrowed.speech_range.sample_end
+                        ),
+                        (14_000, 16_000)
+                    );
+                }
+                ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+                let pins = [
+                    WordPin::new(2_000, 5_000, "czy").with_decode_window(0, 12_000),
+                    WordPin::new(5_000, 8_000, "weryfikowałeś").with_decode_window(0, 12_000),
+                ];
+                assert!(
+                    ledger.admit_word_slots(&next, &pins).grants_mutation(),
+                    "{state}/{variant}"
+                );
+                assert_eq!(ledger.text_of(&owner), Some("czy weryfikowałeś"));
+                assert_eq!(ledger.slots_of(&neighbour), neighbour_before.as_deref());
+                assert_eq!(
+                    !ledger.group_speech_coverages().is_empty(),
+                    expected,
+                    "{state}/{variant}"
+                );
+                assert!(
+                    ledger
+                        .slot_operations()
+                        .iter()
+                        .any(|operation| operation.sources.contains(&original))
+                );
+                ledger.note_frontier_return(&owner, ObservationProducer::Whisper);
+                assert_eq!(
+                    ledger.text_recovery_pending(&owner),
+                    !expected,
+                    "{state}/{variant}"
+                );
+                if expected {
+                    ledger.seal(&owner).unwrap();
+                } else {
+                    assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+                }
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn forensic_neighbour_silence_deletion_retains_uncovered_source_debt() {
+        use super::word_verdict::{WordVerdict, adjudicate_word_pcm};
+        use crate::audio::capture_receipt::CaptureEvidenceIdentity;
+        use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+        for crossing_word in [true, false] {
+            let (mut ledger, owner, neighbour, pcm) =
+                forensic_neighbour_capture(&format!("neighbour-deleted-{crossing_word}"), 23, true);
+            let original = ledger.slots_of(&owner).unwrap()[0].clone();
+            let neighbour_observation =
+                ObservationIdentity::new(ObservationProducer::Apple, 2, 0, neighbour.clone());
+            // A crossing word has voiced source PCM before the owner fence.
+            // A wholly quiet source starts at the fence and can be deleted.
+            let start = if crossing_word { 14_000 } else { 16_000 };
+            assert!(
+                ledger
+                    .admit_word_slots(
+                        &neighbour_observation,
+                        &[WordPin::new(start, 20_000, "sąsiad").with_decode_window(0, 32_000)]
+                    )
+                    .grants_mutation()
+            );
+            let held = ledger.slots_of(&neighbour).unwrap()[0].clone();
+            let next = ObservationIdentity::new(ObservationProducer::Whisper, 3, 1, owner.clone());
+            let assign = [(
+                neighbour.clone(),
+                OccurrenceIdentity::new(&owner.session, 23, 14_000, 20_000),
+            )];
+            ledger.record_assigned_word_pins(&next, &assign);
+            assert_eq!(
+                ledger
+                    .group_speech_coverage(&next, &original, &forensic_neighbour_words(&next))
+                    .is_some(),
+                crossing_word
+            );
+            let quiet = OccurrenceIdentity::new(&owner.session, 23, 16_000, 20_000);
+            // Typed Silero fixture matches this PCM's measured voiced ranges.
+            let ranges = [(2_000, 8_000), (14_000, 16_000)]
+                .into_iter()
+                .map(
+                    |(sample_start, sample_end)| crate::stt::tail_provider::TailSampleRange {
+                        session: owner.session.clone(),
+                        capture_epoch: owner.capture_epoch,
+                        sample_start,
+                        sample_end,
+                    },
+                )
+                .collect();
+            let silero = AcousticSpeechEvidence::measured(
+                CaptureEvidenceIdentity::new(&owner.session, 23),
+                SILERO_BOUNDARIES_PRODUCER,
+                AcousticAvailability::Observed {
+                    observed_samples: 32_000,
+                },
+                ranges,
+            );
+            let verdict = adjudicate_word_pcm(&quiet, &quiet, &pcm[16_000..20_000], &silero);
+            assert_eq!(verdict.verdict(), WordVerdict::ConfirmedNoSpeech);
+            let deletion = ledger.remove_word_with_verdict(
+                &ObservationIdentity::new(ObservationProducer::Whisper, 4, 0, neighbour.clone()),
+                &SlotTarget::from(&held),
+                &verdict,
+            );
+            if crossing_word {
+                assert_eq!(deletion, Err(SlotOperationRefusal::InvalidEvidence));
+                assert_eq!(
+                    ledger.slots_of(&neighbour).unwrap(),
+                    std::slice::from_ref(&held)
+                );
+            } else {
+                assert_eq!(deletion.unwrap().operation.sources, [held]);
+                assert!(ledger.slots_of(&neighbour).unwrap().is_empty());
+            }
+            ledger.record_assigned_word_pins(&next, &assign);
+            assert_eq!(
+                ledger
+                    .group_speech_coverage(&next, &original, &forensic_neighbour_words(&next))
+                    .is_some(),
+                crossing_word
+            );
+            ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+            let pins = [
+                WordPin::new(2_000, 5_000, "czy").with_decode_window(0, 12_000),
+                WordPin::new(5_000, 8_000, "weryfikowałeś").with_decode_window(0, 12_000),
+            ];
+            assert!(ledger.admit_word_slots(&next, &pins).grants_mutation());
+            assert_eq!(ledger.text_of(&owner), Some("czy weryfikowałeś"));
+            assert_eq!(!ledger.group_speech_coverages().is_empty(), crossing_word);
+            assert_eq!(ledger.word_deletions().len(), usize::from(!crossing_word));
+            ledger.note_frontier_return(&owner, ObservationProducer::Whisper);
+            assert_eq!(ledger.text_recovery_pending(&owner), !crossing_word);
+            if crossing_word {
+                ledger.seal(&owner).unwrap();
+            } else {
+                assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+                assert_eq!(
+                    ledger.seal_terminal(&owner.session, owner.capture_epoch),
+                    Err(SealRefusal::TextRecoveryPending)
+                );
+            }
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
     fn owner() -> OccurrenceIdentity {
         OccurrenceIdentity::new("slot-test", 1, 0, 16_000)
     }
@@ -1848,28 +2156,17 @@ mod slot_ops_tests {
         let next = observation(ObservationProducer::Whisper, 1);
         let neighbouring_pin = OccurrenceIdentity::new(owner().session, 1, 14_000, 20_000);
         let pins = [
-            WordPin::new(0, 4_000, "czy"),
-            WordPin::new(6_000, 10_000, "weryfikowałeś"),
+            WordPin::new(2_000, 5_000, "czy"),
+            WordPin::new(5_000, 8_000, "weryfikowałeś"),
         ];
-        let mut speech = group_speech(&[(0, 4_000), (6_000, 10_000), (14_000, 16_000)]);
-        // The original neighbouring pin is authenticated through its end.
-        speech = AcousticSpeechEvidence::measured(
-            speech.identity().clone(),
-            speech.producer(),
-            AcousticAvailability::Observed {
-                observed_samples: 32_000,
-            },
-            speech.ranges().to_vec(),
-        );
-        for labelled_neighbour in [false, true] {
+        for neighbour_kind in ["qualified", "label", "word"] {
             for variant in 0..4 {
                 let matching_request = variant == 0;
-                let mut ledger = AcousticLedger::new();
-                ledger.admit(
-                    &observation(ObservationProducer::Apple, 0),
-                    "czy plan weryfikowałeś",
-                );
-                if labelled_neighbour {
+                let (mut ledger, measured_owner, measured_neighbour, _pcm) =
+                    forensic_neighbour_capture("slot-test", 1, false);
+                assert_eq!(measured_owner, owner());
+                assert_eq!(measured_neighbour, neighbour);
+                if neighbour_kind == "label" {
                     ledger.admit(
                         &ObservationIdentity::new(
                             ObservationProducer::Apple,
@@ -1879,28 +2176,18 @@ mod slot_ops_tests {
                         ),
                         "sąsiad",
                     );
-                } else {
-                    let calibration = EnergyCalibration {
-                        version: "a2-neighbour".into(),
-                        min_energy_integral: 1.0,
-                        min_valley_samples: 1,
-                    };
-                    ledger.qualify(
-                        &AcousticEvidence {
-                            occurrence: neighbour.clone(),
-                            duration_ms: 1_000.0,
-                            energy_integral: 10.0,
-                            mean_rms_dbfs: -12.0,
-                            peak_dbfs: -3.0,
-                            vad_open_sample: Some(16_000),
-                            vad_close_sample: Some(32_000),
-                            evidence_calibration_version: calibration.version.clone(),
-                        },
-                        &calibration,
+                } else if neighbour_kind == "word" {
+                    ledger.admit_word_slots(
+                        &ObservationIdentity::new(
+                            ObservationProducer::Apple,
+                            0,
+                            0,
+                            neighbour.clone(),
+                        ),
+                        &[WordPin::new(14_000, 20_000, "sąsiad").with_decode_window(0, 32_000)],
                     );
-                    assert!(ledger.is_qualified(&neighbour));
                 }
-                ledger.record_speech_evidence(&speech);
+                assert!(ledger.is_qualified(&neighbour));
                 let mut assignment_observation = next.clone();
                 match variant {
                     1 => assignment_observation.request += 1,
@@ -1912,9 +2199,13 @@ mod slot_ops_tests {
                     &assignment_observation,
                     &[(neighbour.clone(), neighbouring_pin.clone())],
                 );
+                ledger.schedule_frontier(owner(), [ObservationProducer::Whisper]);
                 ledger.admit_word_slots(&next, &pins);
-                if matching_request {
-                    assert_eq!(ledger.text_of(&owner()), Some("czy weryfikowałeś"));
+                // Accepted words may refine the coarse Apple hypothesis.
+                // Only an actual matching neighbouring word settles the rest.
+                assert_eq!(ledger.text_of(&owner()), Some("czy weryfikowałeś"));
+                let covered = matching_request && neighbour_kind == "word";
+                if covered {
                     let coverage = ledger.group_speech_coverages().last().unwrap();
                     assert_eq!(coverage.coverage.last().unwrap().pin_owner, neighbour);
                     assert_eq!(
@@ -1923,13 +2214,14 @@ mod slot_ops_tests {
                     );
                     assert_eq!(coverage.operation.outputs.len(), 2);
                 } else {
-                    assert_eq!(ledger.text_of(&owner()), Some("czy plan weryfikowałeś"));
                     assert!(ledger.group_speech_coverages().is_empty());
                 }
                 assert_eq!(
                     ledger.text_of(&neighbour),
-                    labelled_neighbour.then_some("sąsiad")
+                    (neighbour_kind != "qualified").then_some("sąsiad")
                 );
+                ledger.note_frontier_return(&owner(), ObservationProducer::Whisper);
+                assert_eq!(ledger.text_recovery_pending(&owner()), !covered);
                 assert_eq!(ledger.conservation().residue(), 0);
             }
         }
@@ -1943,11 +2235,10 @@ mod slot_ops_tests {
 
         let neighbour = OccurrenceIdentity::new(owner().session, 1, 16_000, 32_000);
         let quiet_pin = OccurrenceIdentity::new(owner().session, 1, 16_000, 20_000);
-        let mut ledger = AcousticLedger::new();
-        ledger.admit(
-            &observation(ObservationProducer::Apple, 0),
-            "czy plan weryfikowałeś",
-        );
+        let (mut ledger, measured_owner, measured_neighbour, pcm) =
+            forensic_neighbour_capture("slot-test", 1, true);
+        assert_eq!(measured_owner, owner());
+        assert_eq!(measured_neighbour, neighbour);
         ledger.admit_word_slots(
             &ObservationIdentity::new(ObservationProducer::Apple, 0, 0, neighbour.clone()),
             &[WordPin::new(16_000, 20_000, "sąsiad")],
@@ -1959,9 +2250,17 @@ mod slot_ops_tests {
             AcousticAvailability::Observed {
                 observed_samples: 32_000,
             },
-            Vec::new(),
+            [(2_000, 8_000), (14_000, 16_000)]
+                .into_iter()
+                .map(|(sample_start, sample_end)| TailSampleRange {
+                    session: owner().session,
+                    capture_epoch: owner().capture_epoch,
+                    sample_start,
+                    sample_end,
+                })
+                .collect(),
         );
-        let verdict = adjudicate_word_pcm(&quiet_pin, &quiet_pin, &[0.0; 4_000], &silero);
+        let verdict = adjudicate_word_pcm(&quiet_pin, &quiet_pin, &pcm[16_000..20_000], &silero);
         ledger
             .remove_word_with_verdict(
                 &ObservationIdentity::new(ObservationProducer::Whisper, 0, 0, neighbour.clone()),
@@ -1969,16 +2268,6 @@ mod slot_ops_tests {
                 &verdict,
             )
             .unwrap();
-        let speech = group_speech(&[(0, 4_000), (6_000, 10_000), (14_000, 16_000)]);
-        let speech = AcousticSpeechEvidence::measured(
-            speech.identity().clone(),
-            speech.producer(),
-            AcousticAvailability::Observed {
-                observed_samples: 32_000,
-            },
-            speech.ranges().to_vec(),
-        );
-        ledger.record_speech_evidence(&speech);
         let next = observation(ObservationProducer::Whisper, 1);
         ledger.record_assigned_word_pins(
             &next,
@@ -1987,14 +2276,18 @@ mod slot_ops_tests {
                 OccurrenceIdentity::new(owner().session, 1, 14_000, 20_000),
             )],
         );
+        ledger.schedule_frontier(owner(), [ObservationProducer::Whisper]);
         ledger.admit_word_slots(
             &next,
             &[
-                WordPin::new(0, 4_000, "czy"),
-                WordPin::new(6_000, 10_000, "weryfikowałeś"),
+                WordPin::new(2_000, 5_000, "czy"),
+                WordPin::new(5_000, 8_000, "weryfikowałeś"),
             ],
         );
-        assert_eq!(ledger.text_of(&owner()), Some("czy plan weryfikowałeś"));
+        assert_eq!(ledger.text_of(&owner()), Some("czy weryfikowałeś"));
+        ledger.note_frontier_return(&owner(), ObservationProducer::Whisper);
+        assert!(ledger.text_recovery_pending(&owner()));
+        assert_eq!(ledger.seal(&owner()), Err(SealRefusal::TextRecoveryPending));
         assert!(ledger.group_speech_coverages().is_empty());
         assert!(!ledger.slot_alternatives().is_empty());
         assert_eq!(ledger.word_deletions().len(), 1);
