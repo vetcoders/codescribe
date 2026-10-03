@@ -6084,6 +6084,146 @@ mod tests {
             .collect()
     }
 
+    // Independent terminal-observer controls: fixture PCM is measured through
+    // CaptureEnergy, then valid fields are changed one at a time. These are
+    // ledger boundary probes, not a claim that live observers mint bad ranges.
+    fn forensic_coverage_observer_settled()
+    -> (AcousticLedger, OccurrenceIdentity, AcousticSpeechEvidence) {
+        let (mut ledger, owner, speech) = forensic_recovery_measured_ledger();
+        let observation = ledger.next_word_observation(ObservationProducer::Whisper, 91, &owner);
+        let receipt = ledger.admit_word_slots(
+            &observation,
+            &forensic_recovery_word_pins("Iwo", Some((0, 16_000))),
+        );
+        assert!(receipt.grants_mutation() || matches!(receipt, MutationReceipt::Preserve { .. }));
+        assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+        ledger.seal(&owner).expect("actual measured scope returned");
+        (ledger, owner, speech)
+    }
+
+    #[test]
+    fn forensic_coverage_observer_actual_pcm_positive_and_pending_controls() {
+        use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+        use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+        let (unheard, _, speech) = forensic_recovery_measured_ledger();
+        let pending = unheard.assess_seal_coverage("s1", 1, &speech, 0);
+        assert_eq!(pending.status, SealCoverageStatus::Incomplete);
+        assert_eq!(pending.speech_samples, 6_000);
+        assert_eq!(pending.covered_samples, 0);
+        let (mut settled, owner, speech) = forensic_coverage_observer_settled();
+        let original_slots = settled.slots_of(&owner).unwrap().to_vec();
+        for evidence in [
+            speech.clone(),
+            AcousticSpeechEvidence::measured(
+                speech.identity().clone(),
+                SILERO_BOUNDARIES_PRODUCER,
+                speech.availability(),
+                speech.ranges().to_vec(),
+            ),
+        ] {
+            let coverage = settled.assess_seal_coverage("s1", 1, &evidence, 0);
+            assert_eq!(coverage.status, SealCoverageStatus::Complete);
+            assert_eq!(
+                (coverage.speech_samples, coverage.covered_samples),
+                (6_000, 6_000)
+            );
+            assert_eq!(coverage.observed_samples, Some(16_000));
+            assert!(settled.record_seal_coverage(coverage));
+            settled
+                .seal_terminal("s1", 1)
+                .expect("valid acoustic observer");
+            assert_eq!(settled.slots_of(&owner).unwrap(), original_slots);
+        }
+        let energy = CaptureEnergyOwner::bind("quiet-control", 1);
+        let mut writer = CaptureLevelAccumulator::bound_to(&energy);
+        writer.push_samples(&vec![0.0; 16_000]);
+        let quiet = energy.session_active_speech_ranges("quiet-control", 1, 16_000);
+        assert!(quiet.is_observed() && quiet.ranges().is_empty());
+        let coverage = AcousticLedger::new().assess_seal_coverage("quiet-control", 1, &quiet, 0);
+        assert_eq!(coverage.status, SealCoverageStatus::Complete);
+        assert_eq!(coverage.observed_samples, Some(16_000));
+    }
+
+    #[test]
+    fn forensic_coverage_observer_malformed_ranges_cannot_certify_terminal() {
+        let variants = [
+            ("reversed", 8_000, 2_000),
+            ("zero_length", 2_000, 2_000),
+            ("reversed_past_extent", 20_000, 18_000),
+        ];
+        let mut results = Vec::new();
+        for (name, start, end) in variants {
+            let (mut ledger, owner, speech) = forensic_coverage_observer_settled();
+            let held = ledger.slots_of(&owner).unwrap().to_vec();
+            let mut ranges = speech.ranges().to_vec();
+            ranges[0].sample_start = start;
+            ranges[0].sample_end = end;
+            let altered = AcousticSpeechEvidence::measured(
+                speech.identity().clone(),
+                speech.producer(),
+                speech.availability(),
+                ranges,
+            );
+            let verdict = ledger.assess_seal_coverage("s1", 1, &altered, 0);
+            println!(
+                "{name}: {:?}, ratio={:?}, speech_samples={}",
+                verdict.status,
+                verdict.coverage_ratio(),
+                verdict.speech_samples
+            );
+            assert!(ledger.record_seal_coverage(verdict.clone()));
+            let terminal = ledger.seal_terminal("s1", 1);
+            println!("{name}: terminal_minted={}", terminal.is_ok());
+            results.push((name, verdict, terminal));
+            assert_eq!(ledger.slots_of(&owner).unwrap(), held);
+        }
+        for (name, receipt, terminal) in results {
+            assert_eq!(terminal, Err(SealRefusal::CoverageIncomplete), "{name}");
+            assert_eq!(
+                receipt.status,
+                SealCoverageStatus::Unavailable(AcousticEvidenceGap::InvalidMeasurement),
+                "{name}"
+            );
+            assert_eq!(receipt.coverage_ratio(), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn forensic_coverage_observer_non_acoustic_producer_cannot_certify_terminal() {
+        let mut results = Vec::new();
+        for producer in ["responses_formatter", "whisper", "text_producer"] {
+            let (mut ledger, owner, speech) = forensic_coverage_observer_settled();
+            let held = ledger.slots_of(&owner).unwrap().to_vec();
+            let altered = AcousticSpeechEvidence::measured(
+                speech.identity().clone(),
+                producer,
+                speech.availability(),
+                speech.ranges().to_vec(),
+            );
+            let verdict = ledger.assess_seal_coverage("s1", 1, &altered, 0);
+            println!(
+                "{producer}: {:?}, ratio={:?}, speech_samples={}",
+                verdict.status,
+                verdict.coverage_ratio(),
+                verdict.speech_samples
+            );
+            assert!(ledger.record_seal_coverage(verdict.clone()));
+            let terminal = ledger.seal_terminal("s1", 1);
+            println!("{producer}: terminal_minted={}", terminal.is_ok());
+            results.push((producer, verdict, terminal));
+            assert_eq!(ledger.slots_of(&owner).unwrap(), held);
+        }
+        for (producer, receipt, terminal) in results {
+            assert_eq!(terminal, Err(SealRefusal::CoverageIncomplete), "{producer}");
+            assert_eq!(
+                receipt.status,
+                SealCoverageStatus::Unavailable(AcousticEvidenceGap::InvalidMeasurement),
+                "{producer}"
+            );
+            assert_eq!(receipt.coverage_ratio(), None, "{producer}");
+        }
+    }
+
     #[test]
     fn forensic_recovery_word_scope_distinguishes_missing_partial_and_full_decode() {
         for window in [None, Some((0, 9_000)), Some((0, 16_000))] {
