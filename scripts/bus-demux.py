@@ -5,7 +5,7 @@ The helper never opens audio. It reads ``codescribe.transcript.v1`` NDJSON and
 emits small agent-bridge envelopes. Product installs run it from the stable
 path below, not from a source checkout::
 
-  python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+  cs-bus \
     --provider codex --session <provider-session-id> --name james --drafts --follow
 
 ``--provider`` plus ``--session`` enables a collision-safe lease, heartbeat,
@@ -3393,7 +3393,10 @@ def watch_command(args: argparse.Namespace) -> int:
                 flush(key)
                 print(human_line(payload, channel), flush=True)
             else:
-                emit({"delivery_id": identity, "kind": line.get("kind"), "notice": "Codescribe mailbox has a new delivery"} if getattr(args, "bell", False) else line)
+                emit(line if getattr(args, "full", False) else {
+                    "delivery_id": identity, "kind": line.get("kind"),
+                    "notice": "Codescribe mailbox has a new delivery",
+                })
         if args.human:
             flush()
 
@@ -3423,7 +3426,20 @@ def watch_command(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="cs-bus", usage="%(prog)s <operation> [options]",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Codescribe messages, live notifications and voice replies for your agent.\n\n"
+               "Quick start:\n"
+               "  cs-bus --attach --channel 2 --name lena --provider codex --session THREAD\n"
+               "  cs-bus --watch --provider codex --session THREAD\n"
+               "  cs-bus --read-delivery ID --provider codex --session THREAD\n"
+               "  cs-bus --ack ID --provider codex --session THREAD\n"
+               "  cs-say 'Gotowe.' --provider codex --session THREAD\n"
+               "  cs-say auth --help\n\n"
+               "Every attachment needs an output-notifying watch. Its default is a short bell;\n"
+               "read the full envelope before ACK. Codex native queue also wakes the next turn.",
+    )
     parser.add_argument("--version", action="store_true", help="installed helper version and source commit slug")
     parser.add_argument("--entrypoint", choices=("cs-bus", "cs-say"), default="cs-bus", help=argparse.SUPPRESS)
     parser.add_argument("--bus", type=Path, default=None, help="override bus path")
@@ -3509,12 +3525,13 @@ def main() -> int:
     parser.add_argument(
         "--watch",
         action="store_true",
-        help="print one compact JSON line per seal, refused take, state-changing "
-        "or routing-ambiguity envelope from this session's follower events "
-        "(line-buffered; --once reads the events and exits)",
+        help="live notifications for this mailbox; short bell by default "
+        "(--once reads existing events and exits)",
     )
-    parser.add_argument("--human", action="store_true", help="--watch as readable one-line envelopes")
-    parser.add_argument("--bell", action="store_true", help="--watch emits only a delivery id notice; full text stays in the mailbox/native queue")
+    watch_format = parser.add_mutually_exclusive_group()
+    watch_format.add_argument("--human", action="store_true", help="diagnostic --watch as readable one-line envelopes")
+    watch_format.add_argument("--bell", action="store_true", help="explicit default --watch format: delivery id and notice only")
+    watch_format.add_argument("--full", action="store_true", help="diagnostic --watch with transcript text and receipt fields")
     parser.add_argument(
         "--from-file",
         dest="from_file",
@@ -3648,6 +3665,8 @@ def main() -> int:
         parser.error("--voice needs a voice id")
     if args.human and not args.watch:
         parser.error("--human travels with --watch")
+    if args.full and not args.watch:
+        parser.error("--full requires --watch")
     if args.bell and (not args.watch or args.human):
         parser.error("--bell requires --watch and no --human")
     if args.watch or args.from_file is not None:

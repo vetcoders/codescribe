@@ -188,17 +188,28 @@ class NativeQueueTests(unittest.TestCase):
         events = self.root / "notifications.jsonl"
         events.write_text(json.dumps(event) + "\n")
         bell = subprocess.check_output([
-            sys.executable, SPEC.origin, "--watch", "--bell", "--once", "--from-file", str(events),
+            sys.executable, SPEC.origin, "--watch", "--once", "--from-file", str(events),
         ], text=True)
         self.assertEqual(json.loads(bell)["delivery_id"], event["delivery_id"])
         self.assertNotIn(event["text"], bell)
         self.assertLess(len(bell), 200)
+        full = subprocess.check_output([
+            sys.executable, SPEC.origin, "--watch", "--full", "--once", "--from-file", str(events),
+        ], text=True)
+        self.assertEqual(json.loads(full)["text"], event["text"])
         received = subprocess.check_output([
             sys.executable, SPEC.origin, "--read-delivery", event["delivery_id"],
             "--provider", "codex", "--session", self.session, "--bridge-home", str(self.root),
         ], text=True)
         self.assertEqual(json.loads(received), self.pending[0])
         self.assertFalse(DEMUX.delivery_acknowledged(self.root, self.lease_id, event["delivery_id"]))
+
+    def test_public_help_names_installed_command_and_default_bell(self):
+        help_text = subprocess.check_output([sys.executable, SPEC.origin, "--help"], text=True)
+        self.assertTrue(help_text.startswith("usage: cs-bus"), help_text)
+        self.assertNotIn("bus-demux.py", help_text)
+        self.assertIn("default", help_text)
+        self.assertIn("--full", help_text)
 
 
 if __name__ == "__main__":

@@ -1674,7 +1674,7 @@ lines = [
 log = home / "runtime" / "followers" / f"{lease}.log"
 log.parent.mkdir(parents=True)
 log.write_text("\n".join(lines) + "\n{partial", encoding="utf-8")
-base = ["python3", sys.argv[1], "--bridge-home", str(home), "--watch", "--once"]
+base = ["python3", sys.argv[1], "--bridge-home", str(home), "--watch", "--full", "--once"]
 out = subprocess.run(base + ["--provider", "codex", "--session", "watch-session"],
                      capture_output=True, text=True, check=True)
 rows = [json.loads(line) for line in out.stdout.splitlines()]
@@ -1713,7 +1713,7 @@ try:
     ready, _, _ = select.select([watcher.stdout], [], [], 5)
     assert ready, "watch did not flush a live line"
     line = json.loads(watcher.stdout.readline())
-    assert line["delivery_id"] == "2" * 24 and line["sca"] is True, line
+    assert line["delivery_id"] == "2" * 24 and "text" not in line and "notice" in line, line
 finally:
     watcher.terminate()
     watcher.communicate(timeout=5)
@@ -1795,7 +1795,7 @@ for drafts in (False, True):
     assert status["follower_log"] == str(log) and status["follower_events"] == str(events)
     watch = ["python3", demux, "--bridge-home", str(root), "--provider", "codex",
              "--session", "human-session", "--watch", "--once"]
-    compact = subprocess.run(watch, capture_output=True, text=True, check=True)
+    compact = subprocess.run(watch + ["--full"], capture_output=True, text=True, check=True)
     compact_rows = [json.loads(line) for line in compact.stdout.splitlines()]
     assert len(compact_rows) == 1 and compact_rows[0]["text"] == "James, tekst końcowy."
     human = subprocess.run(watch + ["--human"], capture_output=True, text=True, check=True)
@@ -1804,7 +1804,7 @@ for drafts in (False, True):
     assert ("projekt prawie gotowy" in human.stdout) == drafts
     assert "projekt jeszcze trwa" not in human.stdout
     # An old JSON follower log remains a valid explicit watch source.
-    old = subprocess.run(watch + ["--from-file", str(events)], capture_output=True, text=True, check=True)
+    old = subprocess.run(watch + ["--full", "--from-file", str(events)], capture_output=True, text=True, check=True)
     assert old.stdout == compact.stdout
 
 line = module.human_line({"kind": "seal", "audience": "james", "text": "a" * 300,
@@ -1838,7 +1838,7 @@ try:
         time.sleep(0.05)
     assert " seal " in log.read_text() and "słyszę cię" in log.read_text()
     assert any(json.loads(row).get("text") == "James, słyszę cię." for row in events.read_text().splitlines())
-    watch = subprocess.run(["python3", demux, "--bridge-home", str(root), "--watch",
+    watch = subprocess.run(["python3", demux, "--bridge-home", str(root), "--watch", "--full",
                             "--once", "--provider", "codex", "--session", "attached-session"],
                            capture_output=True, text=True, check=True)
     assert json.loads(watch.stdout)["text"] == "James, słyszę cię."

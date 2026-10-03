@@ -5,10 +5,11 @@ Foundation skill; execute in this conversation.
 ```mermaid
 flowchart TD
     A[Attach requested] --> B[Resolve app, bus, helper, provider session]
-    B --> C{Native queue or wake-capable monitor available?}
+    B --> C{Output-notifying bell monitor available?}
     C -->|yes| D[Bind name and one follower lease]
     C -->|no| E[Report limitation; active polling while turn stays open]
-    D --> F[Fresh named take]
+    D --> M[Start mandatory watch bell; Codex also arms native queue]
+    M --> F[Fresh named take]
     F --> G{Agent receives notification and replies without typed nudge?}
     G -->|yes| H[listening_verified]
     G -->|no| I[Report failing hop; attached_unverified]

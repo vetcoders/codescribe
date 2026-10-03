@@ -25,13 +25,16 @@ owned follower, preserving its cursor and unread mailbox. `--wakeup off`
 selects monitor-only operation; `--on-seal` selects a custom hook instead of
 native queue. Neither touches microphone or app lifecycle.
 
-During a long active task, keep the provider's output-notifying monitor on
-`cs-bus --watch --bell --provider codex --session <thread-id>` as a short bell.
+Every attachment must start the provider's output-notifying monitor on
+`cs-bus --watch --provider codex --session <thread-id>`. Its default is a short bell;
+`--bell` spells that default explicitly. It is mandatory for active tasks, even
+with native queue. Renew bounded notification windows throughout the task.
 It carries only the delivery id and notice, while native queue retains the
 complete message for the next provider turn. On a bell, use
 `cs-bus --read-delivery <id> --provider codex --session <thread-id>` to read the
 complete original envelope now and ACK after reading. This is one delivery,
-not a second command. A later queued copy must not repeat the completed task.
+not a second command. A later queued copy must not repeat the completed task
+or speak a second answer for a delivery already acknowledged by this conversation.
 
 ## Select the execution mechanism for other providers
 
@@ -62,8 +65,9 @@ cs-bus \
 ```
 
 It reads the follower's private, append-only
-`agent-bridge/runtime/followers/<lease_id>.events.jsonl` and prints one JSON line per
-envelope that needs the agent: `kind`, `status`, `coverage`, `sca`
+`agent-bridge/runtime/followers/<lease_id>.events.jsonl` and prints one short bell per
+envelope that needs the agent: `kind`, `delivery_id` and a notice.
+For diagnostics only, `--watch --full` prints `kind`, `status`, `coverage`, `sca`
 (`state_change_allowed`), `delivery_id` and `text` (first 500 characters).
 Seals, coverage-refused takes, state-changing envelopes and routing-ambiguity
 notices pass; drafts stay in the mailbox. Each delivery prints once per watch

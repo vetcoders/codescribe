@@ -73,10 +73,12 @@ manual attach saga and drive the engine:
 
 3. Codex attachment arms `codex queue` automatically for this exact thread.
    It continues after a final answer; no private hook or polling is needed.
-   During a long active task, also keep `--watch --bell` under the provider's
-   output-notifying monitor. Read a bell's full `--read-delivery <id>` envelope
-   before ACK; a later native queued copy must not repeat the task.
-   Other providers use their output-notifying monitor with `--watch`
+   Every attachment must also start `--watch` under the provider's
+   output-notifying monitor, including Codex. The default is a short bell.
+   Keep and renew notification windows throughout active tasks. Read a bell's
+   full `--read-delivery <id>` envelope before ACK; a later native queued copy
+   must not repeat the task or its spoken answer.
+   Other providers use the same mandatory output-notifying `--watch`
    ([Monitor](references/monitor.md)). An explicit `--on-seal` hook selects
    its own wakeup path instead of running a second native wakeup.
 4. Read one truth with `--status`: backlog is pending minus acknowledgment
@@ -154,8 +156,10 @@ include successful delivery, unavailable wakeup, and seal refusal.
 
 1. Read attach, monitor and live-vs-seal references. Verify the running app,
    resolved bus, helper support for recent schemas, and stable provider session.
-2. Use native queue wakeup for Codex; use an output-notifying monitor for
-   other providers. A process handle or diagnostic tail is insufficient.
+2. Every provider requires an output-notifying `--watch`, with its default
+   short bell, for active tasks. Codex also uses native queue for subsequent
+   turns. A process handle or diagnostic tail is insufficient; renew completed
+   notification windows and retain the monitor through the entire task.
 3. Reuse the session's name, or ask once if none is established. If the Founder
    asks the agent to choose, choose a pronounceable name and bind it directly.
 4. Attach one follower with drafts enabled — prefer the one-command
