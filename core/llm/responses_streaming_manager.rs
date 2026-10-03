@@ -1341,8 +1341,9 @@ fn parse_tool_call_args_delta(
 ///
 /// Uses the arguments carried by the closing chunk when present, else the
 /// buffer accumulated from deltas, else `{}`. Invalid JSON becomes an `Error`
-/// event naming the tool rather than a silent drop. The call's buffer is
-/// released either way.
+/// event naming the tool rather than a silent drop. Valid arguments remain
+/// correlated until the stream ends: a later terminal item can correct the
+/// tool's name without replacing its already received arguments with `{}`.
 fn parse_tool_call_ready(chunk: &StreamChunk, tracker: &mut ToolCallTracker) -> Option<AgentEvent> {
     let (call_id, name) = resolve_call_id_and_name(chunk, tracker)?;
 
@@ -1367,11 +1368,16 @@ fn parse_tool_call_ready(chunk: &StreamChunk, tracker: &mut ToolCallTracker) -> 
         .insert(call_id.clone(), name.clone());
 
     match serde_json::from_str::<serde_json::Value>(&raw_arguments) {
-        Ok(arguments) => Some(AgentEvent::ToolCallReady {
-            id: call_id,
-            name,
-            arguments,
-        }),
+        Ok(arguments) => {
+            tracker
+                .arguments_by_call_id
+                .insert(call_id.clone(), raw_arguments);
+            Some(AgentEvent::ToolCallReady {
+                id: call_id,
+                name,
+                arguments,
+            })
+        }
         Err(error) => Some(AgentEvent::Error(format!(
             "Failed to parse arguments for tool '{}': {}",
             name, error
