@@ -622,6 +622,21 @@ impl AcousticLedger {
                         && self
                             .slots_of(owner)
                             .is_some_and(|pins| pins.contains(source))
+                        // The exact held Word supplies lexical authority; a
+                        // refused stub supplies only its decoder window and
+                        // scheduled producer's return. Accepted decode coverage
+                        // must still account for that producer's owner scope.
+                        // Other refusals still own their retained-source debt.
+                        && !(alternative.reason == "decode_window_clipped"
+                            && self.complete_word_slot(source)
+                            && self.returned_word_scope_accounted(&source.observation)
+                            && self
+                                .decoded_word_windows
+                                .contains_key(&alternative.observation)
+                            && self.frontiers.get(owner).is_some_and(|frontier| {
+                                frontier.returned.contains(&alternative.observation.producer)
+                            })
+                            && self.decoded_source_scope_accounted(&alternative.observation, owner))
                 })
         })
     }
@@ -4568,5 +4583,77 @@ mod slot_ops_tests {
         );
         assert_eq!(ledger.text_of(&owner()), Some("human"));
         assert_eq!(ledger.conservation().residue(), 0);
+    }
+    // Root-only debt controls from the authentic archived PCM boundary lead.
+    #[test]
+    fn forensic_edge_debt_complete_word_survives_late_decode_cut_without_false_debt() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            let (mut ledger, owner, pcm) = forensic_split_empty_capture("full-edge-source");
+            ledger.schedule_frontier(owner.clone(), [producer]);
+            let first = ledger.next_word_observation(producer, 995, &owner);
+            let receipt = ledger.admit_word_slots(
+                &first,
+                &[
+                    WordPin::new(owner.sample_start, owner.sample_end + 400, "Iwo")
+                        .with_decode_window(0, pcm.len() as u64),
+                ],
+            );
+            assert!(receipt.grants_mutation(), "{receipt:?}");
+            let source = ledger.slots_of(&owner).unwrap().to_vec();
+            assert!(ledger.complete_word_slot(&source[0]));
+            assert!(ledger.returned_word_scope_accounted(&first));
+            assert!(ledger.require_text_recovery(&owner));
+            let late = ledger.next_word_observation(producer, 996, &owner);
+            let receipt = ledger.admit_word_slots(
+                &late,
+                &[WordPin::new(owner.sample_start, owner.sample_end, "I")
+                    .with_decode_window(0, owner.sample_end)],
+            );
+            assert!(
+                !receipt.grants_mutation(),
+                "an edge stub cannot overwrite the complete word"
+            );
+            assert_eq!(ledger.slots_of(&owner).unwrap(), source);
+            assert!(
+                ledger
+                    .slot_alternatives()
+                    .iter()
+                    .any(|alternative| alternative.reason == "decode_window_clipped"
+                        && alternative.sources == source)
+            );
+            assert!(ledger.returned_word_scope_accounted(&first));
+            assert!(ledger.note_frontier_return(&owner, producer));
+            assert!(
+                !ledger.text_recovery_pending(&owner),
+                "a refused edge stub does not invalidate the retained complete decoded source"
+            );
+            assert!(ledger.seal(&owner).is_ok());
+            assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
+    #[test]
+    fn forensic_edge_debt_incomplete_word_and_frontier_return_cannot_claim_settlement() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            let (mut ledger, owner, _) = forensic_split_empty_capture("incomplete-edge-source");
+            ledger.schedule_frontier(owner.clone(), [producer]);
+            let first = ledger.next_word_observation(producer, 997, &owner);
+            let receipt = ledger.admit_word_slots(
+                &first,
+                &[WordPin::new(owner.sample_start, owner.sample_end, "I")
+                    .with_decode_window(0, owner.sample_end)],
+            );
+            assert!(receipt.grants_mutation(), "{receipt:?}");
+            let source = ledger.slots_of(&owner).unwrap().to_vec();
+            assert!(!ledger.complete_word_slot(&source[0]));
+            assert!(!ledger.returned_word_scope_accounted(&first));
+            assert!(ledger.require_text_recovery(&owner));
+            assert!(ledger.note_frontier_return(&owner, producer));
+            assert!(ledger.text_recovery_pending(&owner));
+            assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+            assert_eq!(ledger.slots_of(&owner).unwrap(), source);
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
     }
 }

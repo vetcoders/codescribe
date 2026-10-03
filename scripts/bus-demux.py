@@ -33,6 +33,7 @@ import select
 import sys
 import time
 from pathlib import Path
+from stat import S_ISREG
 from typing import Any, Iterator
 
 BUS_FILENAME = "transcript-events.jsonl"
@@ -172,6 +173,7 @@ def installation_idle(
     sealed_is_idle: bool = True,
     cursor: dict[str, Any] | None = None,
     bridge_root: Path | None = None,
+    deadline: float | None = None,
 ) -> bool:
     """True when no current take is in flight.
 
@@ -196,16 +198,44 @@ def installation_idle(
     Silence alone does not release it. An open channel with no receipt for
     six hours uses the CLI abandonment threshold; unknown timestamps keep
     blocking. Evidence rows refresh the session's last known activity.
+    A supplied monotonic deadline limits each scan to one polling slice.
+    Budget expiry retains the processed prefix and refuses idle; the caller
+    can resume that cursor without skipping any unread lifecycle rows.
     """
+    scan_started = time.monotonic()
+    scan_deadline = (
+        min(deadline, scan_started + PLAYBACK_POLL_SECONDS)
+        if deadline is not None
+        else scan_started + TAKE_WAIT_SECONDS
+    )
     root = bridge_root if bridge_root is not None else bridge_home()
     cursors = cursor if cursor is not None else {}
     channel_cursors = cursors.setdefault("channel_buses", {})
     try:
+        path = path.expanduser().resolve(strict=False)
+        root = root.expanduser().resolve(strict=False)
         paths = {path, *channel_cursors}
-        paths.update((root / "buses").glob("channel-*.jsonl"))
+        discovered = set()
+        for channel_bus in (root / "buses").glob("channel-*.jsonl"):
+            if time.monotonic() >= scan_deadline:
+                return False
+            discovered.add(channel_bus)
+        paths.update(discovered)
         binding_path = root / AUDIENCE_BINDING_FILENAME
+        binding_identity = None
         try:
-            binding = json.loads(binding_path.read_text(encoding="utf-8"))
+            descriptor = os.open(binding_path, os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as handle:
+                metadata = os.fstat(handle.fileno())
+                if not S_ISREG(metadata.st_mode) or metadata.st_size > 1024 * 1024:
+                    return False
+                binding_identity = (
+                    metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns,
+                )
+                raw_binding = handle.read(1024 * 1024 + 1)
+                if len(raw_binding) > 1024 * 1024:
+                    return False
+                binding = json.loads(raw_binding)
         except FileNotFoundError:
             binding = {"schema": AUDIENCE_BINDING_SCHEMA, "bindings": {}}
         if (
@@ -215,133 +245,194 @@ def installation_idle(
         ):
             return False
         for entry in binding["bindings"].values():
+            if time.monotonic() >= scan_deadline:
+                return False
             if not isinstance(entry, dict):
                 return False
             raw_bus = entry.get("bus")
             if raw_bus is not None:
                 if not isinstance(raw_bus, str) or not raw_bus.strip():
                     return False
-                paths.add(Path(os.path.expanduser(raw_bus.strip())))
+                paths.add(Path(os.path.expanduser(raw_bus.strip())).resolve(strict=False))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
     idle = True
+    observed_sources = set()
     for source in sorted(paths):
+        if time.monotonic() >= scan_deadline:
+            return False
         state = cursors if source == path else channel_cursors.setdefault(source, {})
         if not source.exists():
             # A disappearing known bus is no terminal receipt. Preserve its
-            # open channels until their timestamp proves abandonment.
-            if any(
-                not _cli_session_abandoned(activity, time.time())
-                for _, activity in state.get("open_channels", {}).values()
+            # CLI/channel starts until their timestamp proves abandonment.
+            if (
+                state.get("live_app") is not None
+                or any(
+                    not _cli_session_abandoned(activity, time.time())
+                    for activity in state.get("open_cli", {}).values()
+                )
+                or any(
+                    not _cli_session_abandoned(activity, time.time())
+                    for _, activity in state.get("open_channels", {}).values()
+                )
             ):
                 idle = False
             continue
         if not source.is_file():
             return False
+        observed_sources.add(source)
         open_cli: dict[str, str | None] = {}
         open_channels: dict[str, tuple[str, str | None]] = {}
         live_app: str | None = None
         try:
-            with source.open(encoding="utf-8", errors="strict") as handle:
+            descriptor = os.open(source, os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as handle:
                 stat = os.fstat(handle.fileno())
-                identity = (stat.st_dev, stat.st_ino, sealed_is_idle)
+                if not S_ISREG(stat.st_mode):
+                    return False
+                identity = (
+                    stat.st_dev,
+                    stat.st_ino,
+                    sealed_is_idle,
+                    getattr(stat, "st_birthtime", None),
+                )
+
+                def fingerprint(position: int) -> tuple[str, str]:
+                    handle.seek(0)
+                    head = hashlib.sha256(handle.read(min(position, 256))).hexdigest()
+                    handle.seek(max(0, position - 256))
+                    edge = hashlib.sha256(handle.read(min(position, 256))).hexdigest()
+                    return head, edge
+
+                initial_head, _ = fingerprint(stat.st_size)
+                # Appends may change mtime; a same-size rewrite, shrink,
+                # replacement or changed processed boundary requires replay.
+                # Retain unresolved starts across that replay: rotation is no
+                # terminal receipt for a previously observed live take.
+                if state.get("identity", (None, None, None))[2] == sealed_is_idle:
+                    open_cli = dict(state.get("open_cli", {}))
+                    live_app = state.get("live_app")
+                    open_channels = dict(state.get("open_channels", {}))
                 if (
                     state
                     and state.get("identity") == identity
-                    and state["offset"] <= stat.st_size
+                    and 0 <= state["offset"] <= state["size"] <= stat.st_size
+                    and (
+                        state["size"] < stat.st_size
+                        or state["mtime_ns"] == stat.st_mtime_ns
+                    )
+                    and fingerprint(state["offset"]) == (state["head"], state["edge"])
                 ):
                     handle.seek(state["offset"])
-                    open_cli = dict(state["open_cli"])
-                    live_app = state["live_app"]
-                    open_channels = dict(state["open_channels"])
-                # readline keeps tell() usable: playback can consume only the new
-                # tail after its initial scan, instead of rescanning a large bus.
-                while True:
-                    offset = handle.tell()
-                    raw = handle.readline()
-                    if not raw:
-                        break
-                    if not raw.endswith("\n"):
-                        raise ValueError("incomplete bus row")
-                    raw = raw.strip()
-                    if not raw:
-                        continue
-                    event = json.loads(raw)
-                    if not isinstance(event, dict):
-                        raise ValueError("bus row is not an object")
-                    session_id = event.get("session_id")
-                    if event.get("schema") == CHANNEL_SESSION_SCHEMA:
-                        channel = str(event.get("channel") or "")
+                else:
+                    handle.seek(0)
+                caught_up = False
+                offset = handle.tell()
+                try:
+                    # Byte and time bounds keep one malformed row or a cold
+                    # history from monopolizing a synchronous playback probe.
+                    while True:
+                        offset = handle.tell()
+                        if time.monotonic() >= scan_deadline:
+                            return False
+                        raw = handle.readline(1024 * 1024 + 1)
+                        if not raw:
+                            caught_up = True
+                            break
+                        if len(raw) > 1024 * 1024 or not raw.endswith(b"\n"):
+                            raise ValueError("incomplete or oversized bus row")
+                        raw = raw.decode("utf-8", errors="strict").strip()
+                        if not raw:
+                            continue
+                        event = json.loads(raw)
+                        if not isinstance(event, dict):
+                            raise ValueError("bus row is not an object")
+                        session_id = event.get("session_id")
+                        if event.get("schema") == CHANNEL_SESSION_SCHEMA:
+                            channel = str(event.get("channel") or "")
+                            if (
+                                not channel
+                                or not isinstance(session_id, str)
+                                or not session_id
+                            ):
+                                raise ValueError("channel row has no identity")
+                            # A newer session on this channel supersedes its old open
+                            # receipt, matching _consume_channel_row and orphan seals.
+                            open_channels = {
+                                sid: value
+                                for sid, value in open_channels.items()
+                                if value[0] != channel
+                            }
+                            if str(event.get("state") or "") == "open":
+                                emitted = event.get("emitted_at") or event.get("opened_at")
+                                open_channels[session_id] = (
+                                    channel, emitted if isinstance(emitted, str) else None
+                                )
+                            continue
                         if (
-                            not channel
-                            or not isinstance(session_id, str)
-                            or not session_id
+                            event.get("schema") == EVIDENCE_SCHEMA
+                            and isinstance(session_id, str)
+                            and session_id in open_channels
                         ):
-                            raise ValueError("channel row has no identity")
-                        # A newer session on this channel supersedes its old open
-                        # receipt, matching _consume_channel_row and orphan seals.
-                        open_channels = {
-                            sid: value
-                            for sid, value in open_channels.items()
-                            if value[0] != channel
-                        }
-                        if str(event.get("state") or "") == "open":
-                            emitted = event.get("emitted_at") or event.get("opened_at")
-                            open_channels[session_id] = (
-                                channel, emitted if isinstance(emitted, str) else None
-                            )
-                        continue
-                    if (
-                        event.get("schema") == EVIDENCE_SCHEMA
-                        and isinstance(session_id, str)
-                        and session_id in open_channels
-                    ):
-                        channel, _ = open_channels[session_id]
-                        emitted = event.get("emitted_at")
-                        # Missing or invalid activity never proves abandonment.
-                        if isinstance(emitted, str):
-                            open_channels[session_id] = (channel, emitted)
-                    status = event.get("status")
-                    # Speech must wait for session_ended: a channel can seal an
-                    # utterance while the microphone keeps capturing the room.
-                    if status == SEALED and not sealed_is_idle:
-                        continue
-                    if status not in ("session_started", "session_ended", SEALED):
-                        continue
-                    if not isinstance(session_id, str) or not session_id:
-                        raise ValueError("lifecycle row has no session")
-                    is_cli = event.get("source") == CLI_FILE_VERDICT_SOURCE
-                    if status == "session_started":
-                        if is_cli:
+                            channel, _ = open_channels[session_id]
                             emitted = event.get("emitted_at")
-                            open_cli[session_id] = (
-                                emitted if isinstance(emitted, str) else None
-                            )
-                        else:
-                            live_app = session_id
-                    elif is_cli:
-                        open_cli.pop(session_id, None)
-                    elif session_id == live_app:
-                        live_app = None
-                state.update(
-                    identity=identity,
-                    offset=handle.tell(),
-                    open_cli=open_cli,
-                    live_app=live_app,
-                    open_channels=open_channels,
-                )
-        except ValueError:
-            # Retry the offending row, without replaying the valid prefix of
-            # a multi-gigabyte bus while its writer finishes a partial tail.
-            state.update(
-                identity=identity,
-                offset=offset,
-                open_cli=open_cli,
-                live_app=live_app,
-                open_channels=open_channels,
-            )
+                            # Missing or invalid activity never proves abandonment.
+                            if isinstance(emitted, str):
+                                open_channels[session_id] = (channel, emitted)
+                        status = event.get("status")
+                        # Speech must wait for session_ended: a channel can seal an
+                        # utterance while the microphone keeps capturing the room.
+                        if status == SEALED and not sealed_is_idle:
+                            continue
+                        if status not in ("session_started", "session_ended", SEALED):
+                            continue
+                        if not isinstance(session_id, str) or not session_id:
+                            raise ValueError("lifecycle row has no session")
+                        is_cli = event.get("source") == CLI_FILE_VERDICT_SOURCE
+                        if status == "session_started":
+                            if is_cli:
+                                emitted = event.get("emitted_at")
+                                open_cli[session_id] = (
+                                    emitted if isinstance(emitted, str) else None
+                                )
+                            else:
+                                live_app = session_id
+                        elif is_cli:
+                            open_cli.pop(session_id, None)
+                        elif session_id == live_app:
+                            live_app = None
+                finally:
+                    # Only complete, successfully handled rows advance offset.
+                    # Save progress on budget expiry and retry malformed tails.
+                    snapshot = os.fstat(handle.fileno())
+                    current_head, _ = fingerprint(stat.st_size)
+                    if (
+                        snapshot.st_size < stat.st_size
+                        or initial_head != current_head
+                        or (
+                            snapshot.st_size == stat.st_size
+                            and snapshot.st_mtime_ns != stat.st_mtime_ns
+                        )
+                    ):
+                        offset = 0
+                        caught_up = False
+                    head, edge = fingerprint(offset)
+                    caught_up = caught_up and offset == snapshot.st_size
+                    state.update(
+                        identity=identity,
+                        offset=offset,
+                        size=snapshot.st_size,
+                        mtime_ns=snapshot.st_mtime_ns,
+                        head=head,
+                        edge=edge,
+                        open_cli=open_cli,
+                        live_app=live_app,
+                        open_channels=open_channels,
+                        caught_up=caught_up,
+                    )
+        except (OSError, ValueError, KeyError, TypeError, IndexError):
             return False
-        except (OSError, UnicodeDecodeError):
+        if not state.get("caught_up") or time.monotonic() >= scan_deadline:
             return False
         now = time.time()
         live_cli = [
@@ -355,7 +446,49 @@ def installation_idle(
         )
         if live_app is not None or live_cli or live_channels:
             idle = False
-    return idle
+    if not idle:
+        return False
+    try:
+        # Another bus or binding may change while a cold sibling is read.
+        # Such changes require another pass, never an idle certificate.
+        current_discovered = set()
+        for channel_bus in (root / "buses").glob("channel-*.jsonl"):
+            if time.monotonic() >= scan_deadline:
+                return False
+            current_discovered.add(channel_bus)
+        if current_discovered != discovered:
+            return False
+        try:
+            metadata = binding_path.stat()
+            current_binding = (
+                metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns,
+            )
+        except FileNotFoundError:
+            current_binding = None
+        if current_binding != binding_identity:
+            return False
+        for source in paths:
+            if time.monotonic() >= scan_deadline:
+                return False
+            state = cursors if source == path else channel_cursors[source]
+            try:
+                metadata = source.stat()
+            except FileNotFoundError:
+                if source in observed_sources:
+                    return False
+                continue
+            if (
+                state.get("identity") != (
+                    metadata.st_dev, metadata.st_ino, sealed_is_idle,
+                    getattr(metadata, "st_birthtime", None),
+                )
+                or state.get("offset") != metadata.st_size
+                or state.get("mtime_ns") != metadata.st_mtime_ns
+            ):
+                return False
+    except OSError:
+        return False
+    return time.monotonic() < scan_deadline
 
 
 # A CLI file transcription is bounded by its audio; six hours is generous.
@@ -2029,18 +2162,166 @@ def _acquire_playback_lock(descriptor: int) -> bool:
             time.sleep(min(0.05, remaining))
 
 
+def _lifecycle_checkpoint(bus: Path, root: Path) -> Path:
+    # Playback's existing flock serializes cursor writers. This stores only
+    # derived parser progress; every admission still reads the canonical buses.
+    key = str(bus.expanduser().resolve(strict=False)).encode("utf-8")
+    return root / "runtime" / f"lifecycle-{hashlib.sha256(key).hexdigest()}.json"
+
+
+def _load_lifecycle_cursor(bus: Path, root: Path, deadline: float) -> dict[str, Any]:
+    import stat
+
+    path = _lifecycle_checkpoint(bus, root)
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as handle:
+            metadata = os.fstat(handle.fileno())
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.getuid()
+                or metadata.st_mode & 0o077
+                or metadata.st_size > 1024 * 1024
+                or time.monotonic() >= deadline
+            ):
+                return {}
+            payload = json.loads(handle.read(1024 * 1024 + 1))
+        canonical = str(bus.expanduser().resolve(strict=False))
+        if (
+            time.monotonic() >= deadline
+            or not isinstance(payload, dict)
+            or payload.get("schema") != "codescribe.lifecycle-cursor.v1"
+            or payload.get("bus") != canonical
+            or payload.get("sealed_is_idle") is not False
+            or not isinstance(payload.get("sources"), dict)
+        ):
+            return {}
+        cursor: dict[str, Any] = {"channel_buses": {}}
+        for source, saved in payload["sources"].items():
+            if time.monotonic() >= deadline:
+                return {}
+            if not isinstance(source, str) or not Path(source).is_absolute():
+                return {}
+            if not isinstance(saved, dict) or set(saved) != {
+                "identity", "offset", "size", "mtime_ns", "head", "edge",
+                "caught_up", "open_cli", "live_app", "open_channels",
+            }:
+                return {}
+            identity = saved.get("identity")
+            if (
+                not isinstance(identity, list)
+                or len(identity) != 4
+                or any(type(value) is not int or value < 0 for value in identity[:2])
+                or identity[2] is not False
+                or (
+                    identity[3] is not None
+                    and (
+                        type(identity[3]) not in (int, float)
+                        or not 0 <= identity[3] < float("inf")
+                    )
+                )
+                or any(
+                    type(saved.get(key)) is not int or saved[key] < 0
+                    for key in ("offset", "size", "mtime_ns")
+                )
+                or saved["offset"] > saved["size"]
+                or any(
+                    not isinstance(saved.get(key), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", saved[key]) is None
+                    for key in ("head", "edge")
+                )
+                or type(saved.get("caught_up")) is not bool
+                or not isinstance(saved.get("open_cli"), dict)
+                or not isinstance(saved.get("open_channels"), dict)
+            ):
+                return {}
+            live_app = saved.get("live_app")
+            if live_app is not None and (not isinstance(live_app, str) or not live_app):
+                return {}
+            if any(
+                not isinstance(sid, str) or not sid
+                or (activity is not None and not isinstance(activity, str))
+                for sid, activity in saved["open_cli"].items()
+            ):
+                return {}
+            channels = saved["open_channels"]
+            if any(
+                not isinstance(sid, str) or not sid
+                or not isinstance(value, list) or len(value) != 2
+                or not isinstance(value[0], str) or not value[0]
+                or (value[1] is not None and not isinstance(value[1], str))
+                for sid, value in channels.items()
+            ):
+                return {}
+            state = dict(saved)
+            state["identity"] = tuple(identity)
+            state["open_channels"] = {sid: tuple(value) for sid, value in channels.items()}
+            if source == canonical:
+                cursor.update(state)
+            else:
+                cursor["channel_buses"][Path(source)] = state
+        return cursor
+    except (OSError, ValueError, TypeError):
+        # Invalid storage grants nothing: rebuild from the canonical history.
+        return {}
+
+
+def _save_lifecycle_cursor(bus: Path, root: Path, cursor: dict[str, Any]) -> None:
+    canonical = str(bus.expanduser().resolve(strict=False))
+    sources = {
+        str(source): state
+        for source, state in cursor.get("channel_buses", {}).items()
+        if state.get("identity") is not None
+    }
+    if cursor.get("identity") is not None:
+        sources[canonical] = {
+            key: value for key, value in cursor.items() if key != "channel_buses"
+        }
+    try:
+        atomic_json(_lifecycle_checkpoint(bus, root), {
+            "schema": "codescribe.lifecycle-cursor.v1",
+            "bus": canonical,
+            "sealed_is_idle": False,
+            "sources": sources,
+        })
+    except OSError:
+        # The current parser verdict is independent of checkpoint availability.
+        # A later process must replay when progress could not be persisted.
+        pass
+
+
 def _wait_for_take_end(
     bus: Path, cursor: dict[str, Any], *, bridge_root: Path | None = None
 ) -> bool:
     deadline = time.monotonic() + TAKE_WAIT_SECONDS
-    while not installation_idle(
-        bus, sealed_is_idle=False, cursor=cursor, bridge_root=bridge_root
-    ):
+    root = bridge_root if bridge_root is not None else bridge_home()
+    if not cursor:
+        cursor.update(_load_lifecycle_cursor(bus, root, deadline))
+    while time.monotonic() < deadline:
+        previous = (cursor.get("offset"), {
+            source: state.get("offset")
+            for source, state in cursor.get("channel_buses", {}).items()
+        })
+        idle = installation_idle(
+            bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
+            deadline=deadline,
+        )
+        _save_lifecycle_cursor(bus, root, cursor)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
+        if idle:
+            return True
+        current = (cursor.get("offset"), {
+            source: state.get("offset")
+            for source, state in cursor.get("channel_buses", {}).items()
+        })
+        # Continue a cold scan without adding a poll delay to each slice.
+        # A live take or a stalled malformed row uses the normal poll cadence.
+        if current != previous:
+            continue
         time.sleep(min(PLAYBACK_POLL_SECONDS, remaining))
-    return True
+    return False
 
 
 def _stop_playback(player: Any) -> None:
@@ -2095,9 +2376,12 @@ def _play_pcm_24k(
             ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         while True:
-            if not installation_idle(
-                speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root
-            ):
+            idle = installation_idle(
+                speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
+                deadline=time.monotonic() + PLAYBACK_POLL_SECONDS,
+            )
+            _save_lifecycle_cursor(speech_bus, root, cursor)
+            if not idle:
                 _stop_playback(player)
                 return False, "take started during playback", "take_started"
             result = player.poll()
