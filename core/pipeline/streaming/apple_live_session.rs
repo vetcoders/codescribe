@@ -21909,7 +21909,41 @@ mod relay_l1_overlap_admission_tests {
     #[test]
     fn new_pad_word_is_admitted_to_earlier_owner() {
         let mut lane = open("relay-word-straddle");
-        let (occurrence, requests) = launch_long(&mut lane, "krawedz");
+        // Capture precedes planning; default left context contains the returned seam pin.
+        let pcm = vec![0.2_f32; 160_000];
+        lane.state.audio.push(&pcm);
+        record_energy(
+            &lane,
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 160_000);
+        stage(&mut lane, 1, occurrence.clone(), "krawedz");
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "krawedz"))
+        );
+        close_lexicon(&mut lane, 1, &occurrence, "krawedz");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3);
+        let decoder = [(0, 64_000), (0, 112_000), (32_000, 160_000)];
+        let owned = [(0, 48_000), (48_000, 96_000), (96_000, 160_000)];
+        for (index, request) in requests.iter().enumerate() {
+            let frame = &request.provider_request.identity.range;
+            assert_eq!((frame.sample_start, frame.sample_end), decoder[index]);
+            assert_eq!(
+                (request.admit_sample_start, request.admit_sample_end),
+                owned[index]
+            );
+            assert_eq!(
+                request.audio,
+                pcm[frame.sample_start as usize..frame.sample_end as usize]
+            );
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .unwrap();
+        }
         let session = "relay-word-straddle";
         let windows = [
             vec![word_pin(session, "raz", 8_000, 40_000)],
@@ -21921,6 +21955,14 @@ mod relay_l1_overlap_admission_tests {
         ];
         let mut events = Vec::new();
         for (request, segments) in requests.iter().zip(windows) {
+            let frame = &request.provider_request.identity.range;
+            assert!(
+                segments
+                    .iter()
+                    .all(|segment| segment.range.sample_start >= frame.sample_start
+                        && segment.range.sample_end <= frame.sample_end),
+                "a returned word must lie inside its actual decode request"
+            );
             lane.state
                 .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
             events.extend(drain(&mut lane.rx));
@@ -25468,7 +25510,34 @@ mod relay_l1_overlap_admission_tests {
     fn stop_keeps_already_admitted_word_slots() {
         let session = "seam-stop-slots";
         let mut lane = open(session);
-        let (owner, requests) = launch_long_span(&mut lane, None);
+        // Only the represented word is voiced; the capture proves the rest silent.
+        let mut pcm = vec![0.0_f32; LONG_SAMPLES as usize];
+        pcm[44_000..51_000].fill(0.2);
+        lane.state.audio.push(&pcm);
+        record_energy(
+            &lane,
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
+        record_silero(&mut lane, LONG_SAMPLES, Some((44_000, 51_000)));
+        let owner = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
+        qualify_unlabelled(&mut lane, &owner);
+        let mut captured_piece = piece(1, &owner, "");
+        captured_piece.audio = pcm.clone();
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, captured_piece));
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3);
+        for request in &requests {
+            let frame = &request.provider_request.identity.range;
+            assert_eq!(
+                request.audio,
+                pcm[frame.sample_start as usize..frame.sample_end as usize]
+            );
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .unwrap();
+        }
         lane.state.complete_whisper_window(
             &lane.tx,
             completion(
@@ -25477,6 +25546,135 @@ mod relay_l1_overlap_admission_tests {
             ),
             9.5,
         );
+        assert_eq!(
+            lane.state.acoustic_ledger.lock().unwrap().text_of(&owner),
+            Some("szew"),
+            "the word must be committed before stop can preserve it"
+        );
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("szew"));
+        assert!(
+            !ledger.is_sealed(&owner),
+            "unfinished decoder jobs do not certify the whole take"
+        );
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn private_stop_retains_words_without_certifying_uncovered_speech() {
+        let session = "seam-stop-slots";
+        let mut lane = open(session);
+        // The entire capture is voiced; one returned word cannot certify its missing speech.
+        let pcm = vec![0.2_f32; LONG_SAMPLES as usize];
+        lane.state.audio.push(&pcm);
+        record_energy(
+            &lane,
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
+        record_silero(&mut lane, LONG_SAMPLES, Some((0, LONG_SAMPLES)));
+        let owner = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
+        qualify_unlabelled(&mut lane, &owner);
+        let mut captured_piece = piece(1, &owner, "");
+        captured_piece.audio = pcm.clone();
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, captured_piece));
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3);
+        for request in &requests {
+            let frame = &request.provider_request.identity.range;
+            assert_eq!(
+                request.audio,
+                pcm[frame.sample_start as usize..frame.sample_end as usize]
+            );
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .unwrap();
+        }
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "szew", 44_000, 51_000)],
+            ),
+            9.5,
+        );
+        assert_eq!(
+            lane.state.acoustic_ledger.lock().unwrap().text_of(&owner),
+            Some("szew"),
+            "the word must be committed before stop can preserve it"
+        );
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("szew"));
+        assert!(
+            !ledger.is_sealed(&owner),
+            "returning unfinished work must not certify uncovered speech"
+        );
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn private_complete_window_set_keeps_admitted_word_and_seals_quiet_rest() {
+        let session = "seam-stop-slots";
+        let mut lane = open(session);
+        // Only the represented word is voiced; the capture proves the rest silent.
+        let mut pcm = vec![0.0_f32; LONG_SAMPLES as usize];
+        pcm[44_000..51_000].fill(0.2);
+        lane.state.audio.push(&pcm);
+        record_energy(
+            &lane,
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
+        record_silero(&mut lane, LONG_SAMPLES, Some((44_000, 51_000)));
+        let owner = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
+        qualify_unlabelled(&mut lane, &owner);
+        let mut captured_piece = piece(1, &owner, "");
+        captured_piece.audio = pcm.clone();
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, captured_piece));
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3);
+        for request in &requests {
+            let frame = &request.provider_request.identity.range;
+            assert_eq!(
+                request.audio,
+                pcm[frame.sample_start as usize..frame.sample_end as usize]
+            );
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .unwrap();
+        }
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "szew", 44_000, 51_000)],
+            ),
+            9.5,
+        );
+        assert_eq!(
+            lane.state.acoustic_ledger.lock().unwrap().text_of(&owner),
+            Some("szew"),
+            "the word must be committed before stop can preserve it"
+        );
+        // Repeated pins describe the same physical word heard in left context.
+        // These are actual successful completions, not cancellation receipts.
+        for request in requests.iter().skip(1) {
+            let frame = &request.provider_request.identity.range;
+            assert!(frame.sample_start <= 44_000 && frame.sample_end >= 51_000);
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(request, vec![word_pin(session, "szew", 44_000, 51_000)]),
+                9.5,
+            );
+        }
         lane.state
             .return_outstanding_whisper_without_label(&lane.tx);
         let ledger = lane.state.acoustic_ledger.lock().unwrap();
@@ -25490,9 +25688,15 @@ mod relay_l1_overlap_admission_tests {
     fn replay_overlap_is_clipped_to_owner_before_comparison() {
         let session = "seam-clipped-slots";
         let mut lane = open(session);
+        let pcm = vec![0.2_f32; 96_000];
+        lane.state.audio.push(&pcm);
+        record_energy(
+            &lane,
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
         let owner = OccurrenceIdentity::new(session, 1, 0, 52_000);
         stage(&mut lane, 1, owner.clone(), "apple");
-        lane.state.admit_routed_words_with_decode_window(
+        let admitted = lane.state.admit_routed_words_with_decode_window(
             &lane.tx,
             1,
             &owner,
@@ -25507,6 +25711,14 @@ mod relay_l1_overlap_admission_tests {
                 neighbours: &[],
             },
             LedgerObservationProducer::Whisper,
+        );
+        assert!(
+            admitted,
+            "the prior Whisper pin must actually enter the ledger before replay comparison"
+        );
+        assert_eq!(
+            lane.state.acoustic_ledger.lock().unwrap().text_of(&owner),
+            Some("szew")
         );
         let routes = lane.state.route_overlap_pins(
             &lane.tx,
