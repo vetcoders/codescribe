@@ -28046,3 +28046,294 @@ mod word_no_speech_tests {
         }
     }
 }
+
+// Controlled provider responses over measured synthetic capture PCM.
+// This exercises scheduling and admission, not recognizer accuracy.
+#[cfg(feature = "test-isolation")]
+mod forensic_word_conservation_fixture {
+    use super::*;
+    use crate::pipeline::acoustic_ledger::{EnergyCalibration, OccurrenceIdentity};
+    use crate::stt::tail_provider::{
+        TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailProviderId,
+        TailProviderPayload, TailTimingQuality,
+    };
+    use tokio::sync::mpsc;
+    const RATE: u32 = 16_000;
+    struct Lane {
+        state: AppleSealState,
+        tx: mpsc::UnboundedSender<EngineEvent>,
+        rx: mpsc::UnboundedReceiver<EngineEvent>,
+        tail_rx: mpsc::Receiver<TailPatchRequest>,
+    }
+    fn open(session: &str) -> Lane {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (tail_tx, tail_rx) = mpsc::channel(8);
+        let mut state = AppleSealState::new_for_session(RATE, session.to_string(), 1);
+        state.tail_patch = Some(tail_tx);
+        Lane {
+            state,
+            tx,
+            rx,
+            tail_rx,
+        }
+    }
+
+    fn piece(utterance_id: u64, occurrence: &OccurrenceIdentity, text: &str) -> CoalescedPiece {
+        let start_ts = occurrence.sample_start as f32 / RATE as f32;
+        let end_ts = occurrence.sample_end as f32 / RATE as f32;
+        CoalescedPiece {
+            utterance_id,
+            occurrence: occurrence.clone(),
+            committed_text: text.to_string(),
+            audio: vec![0.2; occurrence.sample_len() as usize],
+            sample_start: occurrence.sample_start,
+            sample_end: occurrence.sample_end,
+            start_ts,
+            covered_through_secs: end_ts,
+            segment_count: 1,
+        }
+    }
+
+    fn segment(session: &str, text: &str, start: u64, end: u64) -> TimedTailSegment {
+        TimedTailSegment {
+            confidence: None,
+            grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+            text: text.to_string(),
+            range: crate::stt::tail_provider::TailSampleRange {
+                session: session.to_string(),
+                capture_epoch: 1,
+                sample_start: start,
+                sample_end: end,
+            },
+        }
+    }
+
+    fn word_pin(session: &str, text: &str, start: u64, end: u64) -> TimedTailSegment {
+        let mut pin = segment(session, text, start, end);
+        pin.grain = crate::stt::tail_provider::TailSegmentGrain::Word;
+        pin
+    }
+
+    fn completion(
+        request: &TailPatchRequest,
+        segments: Vec<TimedTailSegment>,
+    ) -> TailPatchCompletion {
+        let text = segments
+            .iter()
+            .map(|segment| segment.text.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let segment_grain = if !segments.is_empty()
+            && segments
+                .iter()
+                .all(|segment| segment.grain == crate::stt::tail_provider::TailSegmentGrain::Word)
+        {
+            crate::stt::tail_provider::TailSegmentGrain::Word
+        } else {
+            crate::stt::tail_provider::TailSegmentGrain::Phrase
+        };
+        TailPatchCompletion {
+            submission_sequence: request.submission_sequence,
+            utterance_id: request.utterance_id,
+            request_identity: Some(request.provider_request.identity.clone()),
+            payload: Some(TailProviderPayload {
+                identity: request.provider_request.identity.clone(),
+                text,
+                segments,
+                avg_logprob: Some(-0.2),
+                compression_ratio: Some(1.1),
+                provider_id: TailProviderId::Fake,
+                elapsed_ms: 1,
+                evidence: TailProviderEvidence {
+                    segment_grain,
+                    source: TailEvidenceSource::Whisper,
+                    revision: Some("forensic-word-grain".into()),
+                    stability: TailEvidenceStability::Final,
+                    timing_quality: TailTimingQuality::ExactSampleRange,
+                    avg_logprob: Some(-0.2),
+                },
+            }),
+            member_occurrences: request.member_occurrences.clone(),
+        }
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<EngineEvent>) -> Vec<EngineEvent> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn take_requests(rx: &mut mpsc::Receiver<TailPatchRequest>) -> Vec<TailPatchRequest> {
+        let mut requests = Vec::new();
+        while let Ok(request) = rx.try_recv() {
+            requests.push(request);
+        }
+        requests
+    }
+
+    fn record_energy(lane: &Lane, blocks: &[Vec<f32>]) {
+        let mut writer = CaptureLevelAccumulator::bound_to(&lane.state.capture_energy);
+        for block in blocks {
+            writer.push_samples(block);
+        }
+    }
+
+    pub fn capture_trace(
+        adaptive: bool,
+        contracted: bool,
+    ) -> Vec<(
+        crate::pipeline::acoustic_ledger::AcousticLedger,
+        Vec<EngineEvent>,
+    )> {
+        let session = match (adaptive, contracted) {
+            (false, false) => "B45-coarse-windows",
+            (true, false) => "B45-coarse-adaptive",
+            (false, true) => "B45-pinned-windows",
+            (true, true) => "B45-pinned-adaptive",
+        };
+        let mut lane = open(session);
+        if adaptive {
+            lane.state.layer1_coalesce = Layer1Coalesce::adaptive();
+        }
+        let pcm = vec![0.2_f32; 200_000];
+        lane.state.audio.push(&pcm);
+        record_energy(
+            &lane,
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
+        let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
+        lane.state.energy_calibration = Some(EnergyCalibration {
+            version: "B45-measured-capture".into(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        });
+        assert!(qualify_owned_occurrence(&lane.state, &owner));
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("recovery obligation")
+                .require_text_recovery(&owner)
+        );
+        lane.state.pending_events.insert(
+            1,
+            PendingAppleSeal {
+                occurrence: owner.clone(),
+                raw_text: String::new(),
+                layer1_baseline: String::new(),
+                start_ts: 0.0,
+                end_ts: 12.5,
+                segments: Vec::new(),
+            },
+        );
+        let mut input = piece(1, &owner, "");
+        input.audio = pcm.clone();
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(
+            requests.len(),
+            if adaptive { 2 } else { 4 },
+            "actual request set determines whether any work is cancelled"
+        );
+
+        for request in &requests {
+            let frame = &request.provider_request.identity.range;
+            assert_eq!(
+                request.audio,
+                pcm[frame.sample_start as usize..frame.sample_end as usize]
+            );
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .expect("actual capture payload");
+        }
+        let frame = &requests[0].provider_request.identity.range;
+        assert!(frame.sample_start <= 4_000 && frame.sample_end >= 60_000);
+        let mut snapshots = vec![(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("actual ledger")
+                .clone(),
+            drain(&mut lane.rx),
+        )];
+        let first_frame = &requests[0].provider_request.identity.range;
+        let second_frame = &requests[1].provider_request.identity.range;
+        let base = first_frame.sample_start.max(second_frame.sample_start);
+        let shared_end = first_frame.sample_end.min(second_frame.sample_end);
+        assert!(
+            shared_end >= base + 29_000,
+            "both actual decoder windows must contain all five physical Words"
+        );
+        let first = vec![
+            word_pin(session, "Iwo", base + 4_000, base + 8_000),
+            word_pin(session, "Iwo", base + 10_000, base + 14_000),
+            word_pin(session, "Iwo", base + 16_000, base + 20_000),
+            word_pin(session, "Iwo", base + 22_000, base + 25_000),
+            word_pin(session, "Iwo", base + 26_000, base + 29_000),
+        ];
+        lane.state
+            .complete_whisper_window(&lane.tx, completion(&requests[0], first.clone()), 12.5);
+        assert_eq!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("first window")
+                .text_of(&owner),
+            Some("Iwo Iwo Iwo Iwo Iwo")
+        );
+        snapshots.push((
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("first ledger")
+                .clone(),
+            drain(&mut lane.rx),
+        ));
+        let second = if contracted {
+            vec![
+                word_pin(session, "Iwo", base + 4_000, base + 14_000),
+                word_pin(session, "Iwo", base + 14_000, base + 29_000),
+            ]
+        } else {
+            first
+        };
+        let frame = &requests[1].provider_request.identity.range;
+        assert!(
+            second
+                .iter()
+                .all(|pin| pin.range.sample_start >= frame.sample_start
+                    && pin.range.sample_end <= frame.sample_end)
+        );
+        lane.state
+            .complete_whisper_window(&lane.tx, completion(&requests[1], second), 12.5);
+        snapshots.push((
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("second ledger")
+                .clone(),
+            drain(&mut lane.rx),
+        ));
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        snapshots.push((
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("actual ledger")
+                .clone(),
+            drain(&mut lane.rx),
+        ));
+        snapshots
+    }
+}
+#[cfg(feature = "test-isolation")]
+pub fn forensic_word_conservation_trace(
+    adaptive: bool,
+    contracted: bool,
+) -> Vec<(
+    crate::pipeline::acoustic_ledger::AcousticLedger,
+    Vec<EngineEvent>,
+)> {
+    forensic_word_conservation_fixture::capture_trace(adaptive, contracted)
+}

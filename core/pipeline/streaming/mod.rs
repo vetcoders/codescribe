@@ -34,3 +34,7 @@ pub use silero_fusion::{SILERO_FUSION_ENV, SealLaneProbe, seal_lane_probe};
 
 pub(crate) use session::transcription_session;
 pub(crate) use stream_log::stream_log_path;
+
+#[cfg(feature = "test-isolation")]
+#[doc(hidden)]
+pub use apple_live_session::forensic_word_conservation_trace;

@@ -10259,6 +10259,111 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn forensic_merge_five_decoded_iwo_survive_through_delivery() {
+        let mut lost = Vec::new();
+        for (adaptive, contracted) in [(false, false), (true, false), (false, true), (true, true)] {
+            let session = match (adaptive, contracted) {
+                (false, false) => "B45-coarse-windows",
+                (true, false) => "B45-coarse-adaptive",
+                (false, true) => "B45-pinned-windows",
+                (true, true) => "B45-pinned-adaptive",
+            };
+            let trace = codescribe_core::pipeline::streaming::forensic_word_conservation_trace(
+                adaptive, contracted,
+            );
+            assert_eq!(trace.len(), 4);
+            let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
+            let source_ranges = trace[1]
+                .0
+                .slots_of(&owner)
+                .expect("first actual Word-grain completion")
+                .iter()
+                .map(|word| (word.sample_start, word.sample_end))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                source_ranges.len(),
+                5,
+                "five independently admitted PCM pins"
+            );
+            let paints = Arc::new(StdMutex::new(Vec::<super::CompactProjection>::new()));
+            let observed = Arc::clone(&paints);
+            let fixture = BusFixture::new(session, true, "real-iwo-evidence.jsonl", "");
+            let mut emitter =
+                fixture
+                    .emitter(None, None)
+                    .with_cursor_observer(Arc::new(move |projection| {
+                        observed
+                            .lock()
+                            .expect("actual paints")
+                            .push(projection.clone());
+                    }));
+            emitter.on_capture_opened(session, 1);
+            fixture.bus.publish_started();
+            for (snapshot, events) in trace {
+                assert_eq!(snapshot.conservation().residue(), 0);
+                *fixture.ledger.lock().expect("authoritative snapshot") = snapshot;
+                for event in events {
+                    emitter.on_event(&event);
+                }
+            }
+            emitter.finish().await;
+            let last = paints
+                .lock()
+                .expect("captured paints")
+                .last()
+                .cloned()
+                .expect("actual compact projection");
+            let (raw, sealed) = {
+                let ledger = fixture.ledger.lock().expect("actual ledger");
+                let final_ranges = ledger
+                    .slots_of(&owner)
+                    .expect("committed physical sources")
+                    .iter()
+                    .map(|word| (word.sample_start, word.sample_end))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    final_ranges, source_ranges,
+                    "{session}: each established PCM pin survives, not just a matching word count"
+                );
+                (
+                    ledger.text_of(&owner).expect("committed Words").to_owned(),
+                    ledger.is_sealed(&owner),
+                )
+            };
+            if !contracted {
+                assert_eq!(
+                    sealed, adaptive,
+                    "accepted replay: both Adaptive jobs returned; two Windows jobs cancelled"
+                );
+            }
+
+            let delivered = fixture.delivery.lock().await.clone();
+
+            assert_eq!(
+                delivered, last.text,
+                "actual emitter delivery must match recorded compact text"
+            );
+
+            let count = raw.split_whitespace().filter(|word| *word == "Iwo").count();
+            if count != 5 {
+                lost.push((adaptive, contracted, count));
+            }
+            assert_eq!(
+                last.text, "Iwo Iwo Iwo Iwo Iwo",
+                "{session}: actual projection"
+            );
+            assert_eq!(
+                delivered, "Iwo Iwo Iwo Iwo Iwo",
+                "{session}: actual delivery"
+            );
+        }
+        assert!(
+            lost.is_empty(),
+            "a completed broad-word window dropped established physical Words: {lost:?}"
+        );
+    }
+
     fn late_apple_into(
         emitter: &PresentationEmitter,
         ledger: &Arc<StdMutex<AcousticLedger>>,
