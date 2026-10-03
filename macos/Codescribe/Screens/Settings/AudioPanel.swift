@@ -147,7 +147,8 @@ func audioReadinessSteps(
       id: .recording,
       tone: .fallback,
       title: String(localized: "Finishing recording…"),
-      detail: String(localized: "The shared recorder is processing this take. Wait before starting another.")
+      detail: String(
+        localized: "The shared recorder is processing this take. Wait before starting another.")
     )
   } else if preparing {
     recording = AudioReadinessStep(
@@ -161,7 +162,8 @@ func audioReadinessSteps(
       id: .recording,
       tone: .healthy,
       title: String(localized: "Recording in progress"),
-      detail: String(localized: "Choose Stop recording or use your recording shortcut to finish this take.")
+      detail: String(
+        localized: "Choose Stop recording or use your recording shortcut to finish this take.")
     )
   } else if isRecording == nil {
     recording = AudioReadinessStep(

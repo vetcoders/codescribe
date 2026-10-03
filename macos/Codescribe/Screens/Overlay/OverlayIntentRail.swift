@@ -160,8 +160,10 @@ struct OverlayIntentRail: View {
           Image(systemName: OverlayControlSymbols.previousTake).frame(width: 24, height: 24)
         } detail: { close in
           VStack(alignment: .leading, spacing: 8) {
-            Text("This is retained text from an earlier take, including any unsaved edit. It is separate from the current take's audio.")
-              .fixedSize(horizontal: false, vertical: true)
+            Text(
+              "This is retained text from an earlier take, including any unsaved edit. It is separate from the current take's audio."
+            )
+            .fixedSize(horizontal: false, vertical: true)
             if intents.contains(.recoverSuperseded) {
               Button(OverlayIntent.recoverSuperseded.accessibilityLabel) {
                 close()

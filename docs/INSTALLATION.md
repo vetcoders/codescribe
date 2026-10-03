@@ -322,14 +322,14 @@ later from the existing **Setup Wizard…** tray action.
 
 ### Info.plist Keys
 
-| Key                          | Value                    | Purpose                      |
-| ---------------------------- | ------------------------ | ---------------------------- |
-| CFBundleIdentifier           | com.vetcoders.codescribe | Unique app identifier        |
-| CFBundleIconFile             | AppIcon                  | Points to AppIcon.icns       |
-| CFBundleExecutable           | Codescribe               | Main binary name             |
-| LSMinimumSystemVersion       | 14.0                     | Requires macOS Sonoma+       |
-| NSMicrophoneUsageDescription | ...                      | Microphone permission prompt |
-| NSSpeechRecognitionUsageDescription | ...                | Speech Recognition permission prompt |
+| Key                                 | Value                    | Purpose                              |
+| ----------------------------------- | ------------------------ | ------------------------------------ |
+| CFBundleIdentifier                  | com.vetcoders.codescribe | Unique app identifier                |
+| CFBundleIconFile                    | AppIcon                  | Points to AppIcon.icns               |
+| CFBundleExecutable                  | Codescribe               | Main binary name                     |
+| LSMinimumSystemVersion              | 14.0                     | Requires macOS Sonoma+               |
+| NSMicrophoneUsageDescription        | ...                      | Microphone permission prompt         |
+| NSSpeechRecognitionUsageDescription | ...                      | Speech Recognition permission prompt |
 
 ## Icons
 
@@ -372,12 +372,12 @@ flowchart LR
 
 Grant in **System Settings > Privacy & Security**:
 
-| Permission       | Purpose                | When Prompted           |
-| ---------------- | ---------------------- | ----------------------- |
-| Microphone       | Audio recording        | First recording attempt |
+| Permission         | Purpose                 | When Prompted                         |
+| ------------------ | ----------------------- | ------------------------------------- |
+| Microphone         | Audio recording         | First recording attempt               |
 | Speech Recognition | SFSpeechRecognizer path | Setup / app launch while undetermined |
-| Accessibility    | Global hotkeys, paste  | First hotkey press      |
-| Input Monitoring | Keyboard event capture | First hotkey press      |
+| Accessibility      | Global hotkeys, paste   | First hotkey press                    |
+| Input Monitoring   | Keyboard event capture  | First hotkey press                    |
 
 ## Troubleshooting
 

@@ -1021,13 +1021,15 @@ final class OverlayState {
     if currentTakeAudioAvailable {
       if terminal && canRetranscribe && !isRevisionDraftDirty {
         return String(
-          localized: "Audio for this take is available. Use Transcribe this take again in More actions.")
+          localized:
+            "Audio for this take is available. Use Transcribe this take again in More actions.")
       }
       return String(
         localized: "Audio for this take is available, but retranscription is not available here.")
     }
     return String(
-      localized: "Audio availability for this take could not be confirmed here. You can start a new take.")
+      localized:
+        "Audio availability for this take could not be confirmed here. You can start a new take.")
   }
 
   var audioLevelAccessibilityValue: String {
@@ -1387,7 +1389,8 @@ final class OverlayState {
           notice: String(localized: "Retranscription failed"))
         self.errorDiagnosticDetail = described
         self.errorFooterSummary = String(localized: "Retranscription failed")
-        self.errorLifecycleDetail = self.activeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        self.errorLifecycleDetail =
+          self.activeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
           ? String(localized: "No new transcript was produced for this take.")
           : String(localized: "The existing transcript is still here.")
         self.refreshRetranscriptionAvailability()
@@ -1531,9 +1534,10 @@ final class OverlayState {
 
   func refreshRetranscriptionAvailability() {
     cloudRetranscribeConfigured = engine?.cloudRetranscribeConfigured() ?? false
-    currentTakeAudioAvailable = latestTranscriptProjection.map {
-      engine?.sessionAudioPath(sessionId: $0.sessionId) != nil
-    } ?? false
+    currentTakeAudioAvailable =
+      latestTranscriptProjection.map {
+        engine?.sessionAudioPath(sessionId: $0.sessionId) != nil
+      } ?? false
   }
 
   private func refreshOverlayPolicyTruth() {
@@ -2214,15 +2218,18 @@ final class OverlayState {
 
   private func presentTerminalError(message: String, toast: String) {
     let speechNotice = OverlayState.speechAuthNotice(from: message)
-    let headline = speechNotice ?? (captureDidStart
-      ? String(localized: "Couldn't finish transcription") : toast)
+    let headline =
+      speechNotice
+      ?? (captureDidStart
+        ? String(localized: "Couldn't finish transcription") : toast)
     abortRecordingSession()
     pendingNoSpeechMessage = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
     isFinalPass = false
     errorMessage = headline
     errorDiagnosticDetail = message
-    errorFooterSummary = captureDidStart
+    errorFooterSummary =
+      captureDidStart
       ? String(localized: "Transcription failed") : String(localized: "Recording failed")
     errorLifecycleDetail =
       captureDidStart

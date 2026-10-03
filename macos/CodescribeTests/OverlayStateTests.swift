@@ -221,13 +221,17 @@ private final class OverlayStateTestEngine: DictationEngine {
   var requestedAudioSessionIds: [String] = []
   var audioPathsBySession: [String: String] = [:]
   var transcriptionText = ""
+  var transcribedPaths: [String] = []
+  var transcriptionHandler: ((String) async throws -> CsTranscription)?
   func lastSessionAudioPath() -> String? { lastSessionAudioPathValue }
   func sessionAudioPath(sessionId: String) -> String? {
     requestedAudioSessionIds.append(sessionId)
     return audioPathsBySession[sessionId] ?? lastSessionAudioPathValue
   }
-  func transcribeFile(path _: String) async throws -> CsTranscription {
-    CsTranscription(text: transcriptionText, language: "pl")
+  func transcribeFile(path: String) async throws -> CsTranscription {
+    transcribedPaths.append(path)
+    if let transcriptionHandler { return try await transcriptionHandler(path) }
+    return CsTranscription(text: transcriptionText, language: "pl")
   }
 }
 
@@ -2784,7 +2788,8 @@ final class OverlayStateTests: XCTestCase {
     state.handleError(message: "transcription_failed: controlled failure")
 
     XCTAssertFalse(state.recording)
-    XCTAssertEqual(state.errorLifecycleDetail, "Recording started, but transcription did not finish.")
+    XCTAssertEqual(
+      state.errorLifecycleDetail, "Recording started, but transcription did not finish.")
     XCTAssertEqual(state.errorMessage, "Couldn't finish transcription")
     XCTAssertEqual(state.errorDiagnosticDetail, "transcription_failed: controlled failure")
   }
@@ -2810,7 +2815,8 @@ final class OverlayStateTests: XCTestCase {
     state.handleError(message: "transcription_failed: controlled failure")
 
     XCTAssertTrue(state.captureDidStart)
-    XCTAssertEqual(state.errorLifecycleDetail, "Recording started, but transcription did not finish.")
+    XCTAssertEqual(
+      state.errorLifecycleDetail, "Recording started, but transcription did not finish.")
   }
 
   func testHandleErrorSurfacesFriendlySpeechAuthToast() {
@@ -2906,6 +2912,41 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.canUndoRetranscribe, "the slot is consumed by a landed restore")
   }
 
+  func testLateRetranscriptionCannotCommitOverANewCapture() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    engine.audioPathsBySession["old-take"] = "/tmp/old-take.wav"
+    state.engine = engine
+    projectText(
+      "old words", to: state, canRetranscribe: true, terminal: true,
+      sessionId: "old-take", reducerRevision: 4)
+    var completion: CheckedContinuation<CsTranscription, Error>?
+    let entered = expectation(description: "old inference entered")
+    let finished = expectation(description: "old inference returned")
+    engine.transcriptionHandler = { _ in
+      let result = try await withCheckedThrowingContinuation {
+        (continuation: CheckedContinuation<CsTranscription, Error>) in
+        completion = continuation
+        entered.fulfill()
+      }
+      finished.fulfill()
+      return result
+    }
+    state.retranscribe(pass: .fullHq)
+    await fulfillment(of: [entered], timeout: 2)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText("new words", to: state, sessionId: "new-take", reducerRevision: 1)
+    completion?.resume(returning: CsTranscription(text: "late old result", language: "pl"))
+    await fulfillment(of: [finished], timeout: 2)
+    await Task.yield()
+
+    XCTAssertTrue(engine.revisionRequests.isEmpty, "superseded inference must not issue a revision")
+    XCTAssertEqual(state.activeText, "new words")
+    XCTAssertTrue(state.recording)
+    XCTAssertNil(state.errorDiagnosticDetail)
+  }
+
   func testRetranscribeUsesVisibleTakeAfterLaterQuietTake() async {
     let state = OverlayState()
     let engine = OverlayStateTestEngine()
@@ -2920,7 +2961,8 @@ final class OverlayStateTests: XCTestCase {
     engine.onRevision = { committed.fulfill() }
     state.retranscribe(pass: .cloud)
     await fulfillment(of: [committed], timeout: 2)
-    XCTAssertEqual(engine.requestedAudioSessionIds, ["spoken-a"])
+    XCTAssertEqual(Set(engine.requestedAudioSessionIds), ["spoken-a"])
+    XCTAssertEqual(engine.transcribedPaths, ["cloud:/tmp/spoken-a.wav"])
     XCTAssertEqual(engine.revisionRequests.first?.sessionId, "spoken-a")
     XCTAssertEqual(state.engineChip, "cloud")
   }
@@ -4411,7 +4453,7 @@ final class OverlayStateTests: XCTestCase {
       state.footerWarning?.owner, .coverage, "a refused seal reports an observation, not a culprit")
     XCTAssertEqual(
       state.coverageRefusalDetail,
-      "No seal was recorded for this take, so nothing here is certified complete.")
+      "Codescribe could not confirm that this transcription is complete.")
     XCTAssertEqual(successes, 0, "a refused seal fired the success callback")
     XCTAssertNil(state.errorMessage, "refusal is not an error message")
     XCTAssertTrue(state.isTranscriptEditable, "review is possible even when a seal was refused")
@@ -4538,7 +4580,8 @@ final class OverlayStateTests: XCTestCase {
     reason: CsCoverageUnavailableReason? = nil
   ) -> CsProjectedSealCoverageReceipt {
     CsProjectedSealCoverageReceipt(
-      status: status, sampleRateHz: nil, unavailableReason: reason, speechSamples: status == .incomplete ? 32_000 : 0,
+      status: status, sampleRateHz: nil, unavailableReason: reason,
+      speechSamples: status == .incomplete ? 32_000 : 0,
       coveredSamples: status == .incomplete ? 16_000 : 0, uncoveredSpeechRanges: [],
       maxUncoveredSamples: status == .incomplete ? 16_000 : 0, incompleteThresholdSamples: 4_000,
       speechProducer: "capture_energy",
@@ -4565,14 +4608,14 @@ final class OverlayStateTests: XCTestCase {
         terminal: true, sealCoverage: receipt)
 
       XCTAssertEqual(state.mode, .coverageRefused)
-      XCTAssertEqual(state.statusText, "unsealed transcript")
+      XCTAssertEqual(state.statusText, "Completion unconfirmed")
       XCTAssertEqual(
         state.coverageRefusalNotice,
-        "Speech coverage was measured as complete, but this take has no terminal seal."
+        "All measured speech has words, but Codescribe could not confirm that this transcription finished."
       )
       XCTAssertEqual(
         state.coverageRefusalDetail,
-        "Acoustic coverage was measured as complete, but this transcript has no current terminal seal."
+        "All measured speech has words, but Codescribe could not confirm that this transcription finished."
       )
       XCTAssertEqual(Array(state.activeText.utf8), Array(words.utf8))
       XCTAssertEqual(state.canCopy, copyAllowed, "measurement must not grant copy permission")

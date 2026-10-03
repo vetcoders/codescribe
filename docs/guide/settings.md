@@ -89,12 +89,12 @@ for **Assistive** (Agent and voice-assistant requests) and **Formatting**
 
 Setup, its completion summary and the provider cards distinguish these states:
 
-| Configuration | Account | API key | Enabled access |
-| --- | --- | --- | --- |
-| Account only | Connected | Not configured | Supported Assistive requests; no provider model discovery or cloud Formatting credential |
-| API key only | Not connected | Configured | Supported API requests, including Formatting and model discovery |
-| Both | Connected | Configured | Account access for supported Assistive requests plus the provider API-key paths |
-| Key-optional host | Not required | Optional | Requests supported by that host, after selecting a model |
+| Configuration     | Account       | API key        | Enabled access                                                                           |
+| ----------------- | ------------- | -------------- | ---------------------------------------------------------------------------------------- |
+| Account only      | Connected     | Not configured | Supported Assistive requests; no provider model discovery or cloud Formatting credential |
+| API key only      | Not connected | Configured     | Supported API requests, including Formatting and model discovery                         |
+| Both              | Connected     | Configured     | Account access for supported Assistive requests plus the provider API-key paths          |
+| Key-optional host | Not required  | Optional       | Requests supported by that host, after selecting a model                                 |
 
 A connected ChatGPT account is not an OpenAI API key. It does not authorize the
 Formatting lane. Setup can continue with account-only access; use **Manage

@@ -76,20 +76,17 @@ impl RepairReceipt {
         let notes = self.actions.len() - changes;
         let mut summary = if notes > 0 {
             // Environment diagnostics carry key names only, never their values.
-            let keys = self
-                .actions
-                .iter()
-                .filter_map(|action| match action {
-                    RepairAction::UnknownEnvKey { key } | RepairAction::PrecedenceNote { key } => {
-                        Some(key.as_str())
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(
-                "Config: {changes} repairs at launch; {notes} env key(s) need review: {keys}"
-            )
+            let keys =
+                self.actions
+                    .iter()
+                    .filter_map(|action| match action {
+                        RepairAction::UnknownEnvKey { key }
+                        | RepairAction::PrecedenceNote { key } => Some(key.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+            format!("Config: {changes} repairs at launch; {notes} env key(s) need review: {keys}")
         } else {
             format!("Config repaired at launch: {changes} changes")
         };
@@ -428,8 +425,12 @@ mod tests {
     fn repair_summary_names_env_keys_without_an_empty_backup_claim() {
         let receipt = RepairReceipt {
             actions: vec![
-                RepairAction::UnknownEnvKey { key: "UNKNOWN_AUDIO_KEY".into() },
-                RepairAction::PrecedenceNote { key: "FORMATTING_LEVEL".into() },
+                RepairAction::UnknownEnvKey {
+                    key: "UNKNOWN_AUDIO_KEY".into(),
+                },
+                RepairAction::PrecedenceNote {
+                    key: "FORMATTING_LEVEL".into(),
+                },
             ],
             ..RepairReceipt::default()
         };
@@ -450,29 +451,42 @@ mod tests {
                     from: serde_json::json!("secret-before-marker"),
                     to: serde_json::json!("secret-after-marker"),
                 },
-                RepairAction::UnknownEnvKey { key: "UNKNOWN_AUDIO_KEY".into() },
+                RepairAction::UnknownEnvKey {
+                    key: "UNKNOWN_AUDIO_KEY".into(),
+                },
             ],
-            backups: vec![PathBuf::from("/private/tmp/settings.bak-first"), PathBuf::from("/private/tmp/settings.bak-second")],
+            backups: vec![
+                PathBuf::from("/private/tmp/settings.bak-first"),
+                PathBuf::from("/private/tmp/settings.bak-second"),
+            ],
             ..RepairReceipt::default()
         };
         let summary = receipt.summary().unwrap();
         assert!(summary.contains("1 repairs"), "{summary}");
         assert!(summary.contains("1 env key(s)"), "{summary}");
         assert!(summary.contains("UNKNOWN_AUDIO_KEY"), "{summary}");
-        assert!(summary.contains("settings.bak-first, /private/tmp/settings.bak-second"), "{summary}");
+        assert!(
+            summary.contains("settings.bak-first, /private/tmp/settings.bak-second"),
+            "{summary}"
+        );
         assert!(!summary.contains("secret-"), "{summary}");
     }
 
     #[test]
     fn repair_summary_handles_repairs_without_backups_and_prioritizes_refusal() {
         let mut receipt = RepairReceipt {
-            actions: vec![RepairAction::SeededFromPack { field: "speech.engine".into() }],
+            actions: vec![RepairAction::SeededFromPack {
+                field: "speech.engine".into(),
+            }],
             ..RepairReceipt::default()
         };
         let summary = receipt.summary().unwrap();
         assert!(summary.contains("1 changes"), "{summary}");
         assert!(!summary.contains("backup"), "{summary}");
-        receipt.unrepairable.push(ConfigUnrepairable { path: PathBuf::from("/private/tmp/settings.json"), reason: "unsupported schema".into() });
+        receipt.unrepairable.push(ConfigUnrepairable {
+            path: PathBuf::from("/private/tmp/settings.json"),
+            reason: "unsupported schema".into(),
+        });
         let summary = receipt.summary().unwrap();
         assert!(summary.contains("unsupported schema"), "{summary}");
         assert!(!summary.contains("repaired"), "{summary}");

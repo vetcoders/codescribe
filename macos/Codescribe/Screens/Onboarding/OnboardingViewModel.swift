@@ -515,21 +515,39 @@ final class OnboardingViewModel: ObservableObject {
   /// Account sign-in does not promise a Formatting credential or a model catalog.
   var providerAccessDescription: String {
     if selectedProviderAccountConnected && selectedProviderKeySet {
-      return String(localized: "Account connected and API key configured. Supported Assistive requests can use the account; Formatting and model discovery use the provider API key.")
+      return String(
+        localized:
+          "Account connected and API key configured. Supported Assistive requests can use the account; Formatting and model discovery use the provider API key."
+      )
     }
     if selectedProviderAccountConnected {
-      return String(localized: "Account connected for supported Assistive requests. No API key is configured. You can continue without adding one; cloud Formatting and model discovery require a provider API key.")
+      return String(
+        localized:
+          "Account connected for supported Assistive requests. No API key is configured. You can continue without adding one; cloud Formatting and model discovery require a provider API key."
+      )
     }
     if selectedProviderKeySet {
-      return String(localized: "API key configured. Supported Assistive requests, cloud Formatting and model discovery can use this provider's key. No account is connected.")
+      return String(
+        localized:
+          "API key configured. Supported Assistive requests, cloud Formatting and model discovery can use this provider's key. No account is connected."
+      )
     }
     if selectedProvider?.keyRequired == false {
-      return String(localized: "This provider does not require an API key. Choose a model in Settings › Agent › LLM lanes.")
+      return String(
+        localized:
+          "This provider does not require an API key. Choose a model in Settings › Agent › LLM lanes."
+      )
     }
     if selectedProviderHasAccountAccess {
-      return String(localized: "No account or API key is configured for this provider. Connect a supported account for Assistive, or add an API key in Settings › Providers. You can skip this step for dictation.")
+      return String(
+        localized:
+          "No account or API key is configured for this provider. Connect a supported account for Assistive, or add an API key in Settings › Providers. You can skip this step for dictation."
+      )
     }
-    return String(localized: "No API key is configured for this provider. Add one in Settings › Providers, choose another provider, or skip this step for dictation.")
+    return String(
+      localized:
+        "No API key is configured for this provider. Add one in Settings › Providers, choose another provider, or skip this step for dictation."
+    )
   }
 
   func saveApiKey() {

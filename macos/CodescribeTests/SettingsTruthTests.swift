@@ -1059,7 +1059,9 @@ final class SettingsTruthTests: XCTestCase {
   func testHealthStateMatrix() {
     XCTAssertEqual(
       healthState(stt: true, recording: true, keys: .available, agent: true, formatting: true),
-      SettingsHealthState(level: .healthy, message: "speech, assistive and formatting setup ready", targetSection: nil)
+      SettingsHealthState(
+        level: .healthy, message: "speech, assistive and formatting setup ready", targetSection: nil
+      )
     )
     XCTAssertEqual(
       healthState(stt: true, recording: true, keys: .missing, agent: false, formatting: true),
@@ -1111,10 +1113,10 @@ final class SettingsTruthTests: XCTestCase {
     )
   }
 
-
   func testReadinessRequiresEnabledFormattingButDoesNotRequireDisabledLane() {
     XCTAssertEqual(
-      healthState(stt: true, recording: true, keys: .available, agent: true, formatting: false).level,
+      healthState(stt: true, recording: true, keys: .available, agent: true, formatting: false)
+        .level,
       .degraded)
     XCTAssertEqual(
       healthState(stt: true, recording: true, keys: .available, agent: true, formatting: nil).level,
@@ -1123,9 +1125,11 @@ final class SettingsTruthTests: XCTestCase {
       stt: true, recording: true, keys: .available, agent: true,
       formatting: false, formattingRequired: false)
     XCTAssertEqual(disabled.level, .healthy)
-    XCTAssertEqual(disabled.message, "speech and assistive setup ready · cloud formatting not required")
     XCTAssertEqual(
-      healthState(stt: false, recording: true, keys: .available, agent: true, formatting: false).level,
+      disabled.message, "speech and assistive setup ready · cloud formatting not required")
+    XCTAssertEqual(
+      healthState(stt: false, recording: true, keys: .available, agent: true, formatting: false)
+        .level,
       .offline, "the known speech failure must remain visible")
   }
 

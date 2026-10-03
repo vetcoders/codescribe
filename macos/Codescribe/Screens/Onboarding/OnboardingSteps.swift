@@ -294,9 +294,11 @@ struct AgenticReadinessStepView: View {
           }
           if let readiness = model.readiness {
             readinessPill(ready: readiness.ready)
-            Text("Agent readiness covers Assistive access and native tools. Cloud Formatting is configured separately in Settings › Agent › LLM lanes.")
-              .font(.callout)
-              .foregroundStyle(.secondary)
+            Text(
+              "Agent readiness covers Assistive access and native tools. Cloud Formatting is configured separately in Settings › Agent › LLM lanes."
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
             Text(model.providerAccessDescription)
               .font(.callout)
               .foregroundStyle(.secondary)
@@ -383,21 +385,23 @@ struct AgenticReadinessStepView: View {
     let accent = ready ? CSColor.olive : CSColor.terracotta
     let accentLight = ready ? CSColor.oliveLight : CSColor.terracottaLight
     return Text(
-      ready ? String(localized: "Agent capabilities ready") : String(localized: "Agent capabilities not ready")
+      ready
+        ? String(localized: "Agent capabilities ready")
+        : String(localized: "Agent capabilities not ready")
     )
-      .textCase(.uppercase)
-      .font(CSFont.mono(9, .semibold))
-      .tracking(0.4)
-      .foregroundStyle(accentLight)
-      .padding(.horizontal, 8)
-      .padding(.vertical, 2)
-      .background(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(accent.opacity(0.12))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .strokeBorder(accent.opacity(0.24), lineWidth: 1))
+    .textCase(.uppercase)
+    .font(CSFont.mono(9, .semibold))
+    .tracking(0.4)
+    .foregroundStyle(accentLight)
+    .padding(.horizontal, 8)
+    .padding(.vertical, 2)
+    .background(
+      RoundedRectangle(cornerRadius: 6, style: .continuous)
+        .fill(accent.opacity(0.12))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 6, style: .continuous)
+        .strokeBorder(accent.opacity(0.24), lineWidth: 1))
   }
 
   @ViewBuilder
@@ -599,9 +603,12 @@ struct ApiKeyStepView: View {
   private var keyField: some View {
     let account = model.selectedProvider?.apiKeyAccount ?? "LLM_OPENAI_API_KEY"
     let isSet = model.selectedProviderKeySet
-    let isOptional = model.selectedProviderAccountConnected
+    let isOptional =
+      model.selectedProviderAccountConnected
       || model.selectedProvider?.keyRequired == false
-    let statusColor = isSet ? CSColor.oliveLight
+    let statusColor =
+      isSet
+      ? CSColor.oliveLight
       : (isOptional ? CSColor.textFaint : CSColor.terracottaLight)
     return VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 10) {
@@ -624,9 +631,9 @@ struct ApiKeyStepView: View {
           isSet ? String(localized: "Replace key…") : String(localized: "Paste key…"),
           text: $model.apiKeyDraft
         )
-          .focused($keyFocused)
-          .settingsInputChrome(isFocused: keyFocused)
-          .onSubmit { model.saveApiKey() }
+        .focused($keyFocused)
+        .settingsInputChrome(isFocused: keyFocused)
+        .onSubmit { model.saveApiKey() }
         Button("Save key") { model.saveApiKey() }.csAction(prominent: true)
       }
     }

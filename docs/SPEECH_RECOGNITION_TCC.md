@@ -8,11 +8,11 @@ Apple live dictation uses `SFSpeechRecognizer` inside the bundled
 Speech Recognition authorization belongs to the **responsible process's TCC
 identity**, not to the data directory or the shell command's executable path.
 
-| Context | TCC identity |
-| ------- | ------------ |
-| Release app bundle via LaunchServices | `com.vetcoders.codescribe` |
-| Debug app bundle via LaunchServices | `com.vetcoders.codescribe.dev` |
-| CLI / terminal probes | Normally the terminal/host; not proof of an app grant |
+| Context                                                     | TCC identity                                                                        |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Release app bundle via LaunchServices                       | `com.vetcoders.codescribe`                                                          |
+| Debug app bundle via LaunchServices                         | `com.vetcoders.codescribe.dev`                                                      |
+| CLI / terminal probes                                       | Normally the terminal/host; not proof of an app grant                               |
 | Direct `Codescribe.app/Contents/MacOS/Codescribe` execution | Unsupported native app startup; may retain the terminal/agent host's responsibility |
 
 Granting Speech for the terminal does **not** authorize the app. That is why

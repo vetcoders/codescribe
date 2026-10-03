@@ -29,7 +29,8 @@ struct OnboardingView: View {
       .csFocusPolicy()
       .controlSize(.regular)
       .onAppear { model.refreshForCurrentStep() }
-      .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+      .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) {
+        _ in
         model.refreshProviderAccess()
       }
   }

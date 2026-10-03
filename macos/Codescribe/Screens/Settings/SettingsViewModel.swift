@@ -622,8 +622,12 @@ func healthState(
   return SettingsHealthState(
     level: .healthy,
     message: formattingRequired
-      ? String(localized: "speech, assistive and formatting setup ready", comment: "Settings health footer")
-      : String(localized: "speech and assistive setup ready · cloud formatting not required", comment: "Settings health footer"),
+      ? String(
+        localized: "speech, assistive and formatting setup ready", comment: "Settings health footer"
+      )
+      : String(
+        localized: "speech and assistive setup ready · cloud formatting not required",
+        comment: "Settings health footer"),
     targetSection: nil
   )
 }
@@ -848,21 +852,34 @@ struct LLMLaneModel {
       return String(localized: "using cached models", comment: "Model discovery status")
     case "no_key":
       if runtime.accountAuth {
-        return String(localized: "Account sign-in supports Assistive requests, but model discovery requires a provider API key. Keep the current model or enter a Model ID in Settings › Agent › LLM lanes.")
+        return String(
+          localized:
+            "Account sign-in supports Assistive requests, but model discovery requires a provider API key. Keep the current model or enter a Model ID in Settings › Agent › LLM lanes."
+        )
       }
       if lane == .formatting, provider?.accountSignedIn == true {
-        return String(localized: "Formatting requires this provider's API key; an Assistive account does not authorize it. Add the key in Settings › Providers.")
+        return String(
+          localized:
+            "Formatting requires this provider's API key; an Assistive account does not authorize it. Add the key in Settings › Providers."
+        )
       }
-      return String(localized: "Add this provider's API key in Settings › Providers to discover models, or enter a Model ID in Settings › Agent › LLM lanes.")
+      return String(
+        localized:
+          "Add this provider's API key in Settings › Providers to discover models, or enter a Model ID in Settings › Agent › LLM lanes."
+      )
     case "loading": return String(localized: "discovering models…", comment: "In-progress status")
     default:
       if let message = discovery.message, !message.isEmpty {
         return String(
-          localized: "Model discovery failed: \(message). Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.",
+          localized:
+            "Model discovery failed: \(message). Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.",
           comment: "The placeholder is a status message from the core"
         )
       }
-      return String(localized: "Model discovery failed. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.")
+      return String(
+        localized:
+          "Model discovery failed. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes."
+      )
     }
   }
 }
@@ -1914,7 +1931,8 @@ final class SettingsViewModel: ObservableObject {
     }
     if settings.formatOnDevice {
       return String(
-        localized: "Apple on-device formatting is selected. Cloud requests still require this lane's credentials. \(llmLane(lane).availabilityDescription)",
+        localized:
+          "Apple on-device formatting is selected. Cloud requests still require this lane's credentials. \(llmLane(lane).availabilityDescription)",
         comment: "The placeholder is the resolved cloud lane availability")
     }
     return llmLane(lane).availabilityDescription
@@ -2725,7 +2743,8 @@ final class SettingsViewModel: ObservableObject {
   var serviceKeyAccounts: [String] { engine?.serviceKeyAccounts() ?? [] }
 
   /// Lane-picker dot: credential present or key-optional host → green; else red.
-  static func availabilityTint(for provider: CsProviderOption, lane: LLMLane = .assistive) -> Color {
+  static func availabilityTint(for provider: CsProviderOption, lane: LLMLane = .assistive) -> Color
+  {
     provider.apiKeySet
       || (lane == .assistive && provider.wire == "responses" && provider.accountSignedIn)
       || !provider.keyRequired
