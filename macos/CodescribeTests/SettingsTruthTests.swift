@@ -85,8 +85,7 @@ final class SettingsTruthTests: XCTestCase {
           return []
         }
         return [request]
-      })
-    )
+      }), permissionProbe: MockPermissionProbe())
     await model.refreshMaxToolApprovals()
     XCTAssertEqual(reads, 2)
     XCTAssertEqual(model.maxToolApprovals, [request])
@@ -112,8 +111,7 @@ final class SettingsTruthTests: XCTestCase {
           pending = []
           return true
         }
-      )
-    )
+      ), permissionProbe: MockPermissionProbe())
     await model.refreshMaxToolApprovals()
     XCTAssertEqual(model.maxToolApprovals, [request])
     await model.resolveMaxToolApproval(request, approved: true)
@@ -145,8 +143,7 @@ final class SettingsTruthTests: XCTestCase {
           resolutions += 1
           return false
         }
-      )
-    )
+      ), permissionProbe: MockPermissionProbe())
     await model.refreshMaxToolApprovals()
     failRead = true
     await model.refreshMaxToolApprovals()
@@ -178,7 +175,7 @@ final class SettingsTruthTests: XCTestCase {
         return "new-consultation-id"
       }
     )
-    model = SettingsViewModel(engine: engine)
+    model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     model.refresh()
 
     await model.beginNewMaxConsultation()
@@ -205,8 +202,7 @@ final class SettingsTruthTests: XCTestCase {
             userInfo: [NSLocalizedDescriptionKey: "A turn is still active."]
           )
         }
-      )
-    )
+      ), permissionProbe: MockPermissionProbe())
     model.refresh()
     await model.beginNewMaxConsultation()
 
@@ -230,8 +226,7 @@ final class SettingsTruthTests: XCTestCase {
             calls += 1
             return "unexpected"
           }
-        )
-      )
+        ), permissionProbe: MockPermissionProbe())
       model.refresh()
       XCTAssertFalse(model.maxConsultationEnabled)
       await model.beginNewMaxConsultation()
@@ -292,7 +287,8 @@ final class SettingsTruthTests: XCTestCase {
   /// real section, selecting a section lands on its first tab, and a section
   /// without tabs keeps rendering whole.
   func testTabbedSectionsRouteToTabsWithoutLosingSubsystems() {
-    let model = SettingsViewModel(engine: MockSettingsEngine())
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())
 
     XCTAssertEqual(
       SettingsTab.tabs(in: .agent),
@@ -407,7 +403,8 @@ final class SettingsTruthTests: XCTestCase {
         name: "search", identity: "loctree-mcp:search", origin: "mcp", server: "loctree-mcp",
         risk: "read_only", effective: "allow", requiresApprovalFlag: false)
     ])
-    let model = SettingsViewModel(engine: MockSettingsEngine(), mcpAdmin: admin)
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
     model.reloadToolPermissions()
     for _ in 0..<100 where model.toolCapabilities.isEmpty { await Task.yield() }
 
@@ -497,7 +494,8 @@ final class SettingsTruthTests: XCTestCase {
       XCTAssertFalse(row.op.isEmpty)
       XCTAssertFalse(row.reason.isEmpty)
     }
-    let model = SettingsViewModel(agentStatus: MockAgentStatusEngine())
+    let model = SettingsViewModel(
+      permissionProbe: MockPermissionProbe(), agentStatus: MockAgentStatusEngine())
     model.refreshAgentStatus()
     XCTAssertEqual(model.capabilityMatrix.count, CsCapabilityRow.sampleMatrix.count)
     XCTAssertEqual(model.capabilityMatrix.first?.op, "fs.list")
@@ -588,7 +586,8 @@ final class SettingsTruthTests: XCTestCase {
   }
 
   func testCreatorQuickStartCardsRouteOrStartDictation() {
-    let model = SettingsViewModel(engine: MockSettingsEngine())
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())
     var dictationStarts = 0
     model.onQuickStartDictation = { dictationStarts += 1 }
 
@@ -616,7 +615,8 @@ final class SettingsTruthTests: XCTestCase {
 
   func testSectionAndAgentDeepLinksResolveToDedicatedPanels() throws {
     let links = SettingsDeepLink()
-    let model = SettingsViewModel(engine: MockSettingsEngine())
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())
 
     links.pendingSection = .keys
     XCTAssertEqual(links.consume()?.section.destination, .providers)
@@ -682,7 +682,7 @@ final class SettingsTruthTests: XCTestCase {
     let engine = MockSettingsEngine(
       updateConfigObserver: { configWrites.append(($0, $1)) }
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     // Provider accounts carry their own presence; service keys read CsKeyStatus.
     let presence: (SettingsViewModel) -> [String] = { model in
       model.providers.map { "\($0.apiKeyAccount):\($0.apiKeySet)" }
@@ -726,7 +726,7 @@ final class SettingsTruthTests: XCTestCase {
         if key == "HOLD_INDICATOR" { persisted.holdIndicator = value == "1" }
       }
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     model.refresh()
 
     model.setHoldBadgeOption(.off)
@@ -751,7 +751,7 @@ final class SettingsTruthTests: XCTestCase {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(updateConfigObserver: { key, value in
         writes.append((key, value))
-      }))
+      }), permissionProbe: MockPermissionProbe())
 
     model.setToggleSilenceSeconds(3.5)
     model.setWhisperContextWindowSeconds(4.5)
@@ -786,7 +786,7 @@ final class SettingsTruthTests: XCTestCase {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(updateConfigObserver: { key, value in
         writes.append((key, value))
-      }))
+      }), permissionProbe: MockPermissionProbe())
 
     model.setWhisperAdaptiveBuffer(true)
     model.setFormatOnDevice(true)
@@ -936,7 +936,7 @@ final class SettingsTruthTests: XCTestCase {
     let engine = MockSettingsEngine(updateConfigManyObserver: { entries in
       batches.append(entries)
     })
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     var overlayPreferenceNotices = 0
     model.onOverlayPreferenceChanged = { overlayPreferenceNotices += 1 }
 
@@ -975,7 +975,7 @@ final class SettingsTruthTests: XCTestCase {
       engine: MockSettingsEngine(
         providerStore: store,
         updateConfigObserver: { key, value in writes.append((key, value)) }
-      ),
+      ), permissionProbe: MockPermissionProbe(),
       runtimeLlmLaneProvider: { store.runtimeLane($0) }
     )
 
@@ -1162,7 +1162,7 @@ final class SettingsTruthTests: XCTestCase {
     let engine = MockSettingsEngine(updateConfigObserver: { key, value in
       writes.append((key, value))
     })
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
 
     model.setLanguage(.auto)
     model.setLanguage(.polish)
@@ -1190,7 +1190,7 @@ final class SettingsTruthTests: XCTestCase {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(updateConfigObserver: { key, value in
         writes.append((key, value))
-      }))
+      }), permissionProbe: MockPermissionProbe())
     for value in ["raw", "medium", "smart", "creative"] {
       model.setFormattingLevel(value)
     }
@@ -1204,7 +1204,8 @@ final class SettingsTruthTests: XCTestCase {
   func testCreatorPanelRendersAtCompactAndLargeWidths() throws {
     for (name, width) in [("compact", 620.0), ("large", 900.0)] {
       let size = CGSize(width: width, height: 900)
-      let model = SettingsViewModel(engine: MockSettingsEngine())
+      let model = SettingsViewModel(
+        engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())
       let hostingView = NSHostingView(
         rootView: CreatorPanel(model: model).frame(
           width: size.width,
@@ -1235,7 +1236,8 @@ final class SettingsTruthTests: XCTestCase {
 
   func testPromptPanelRendersAllFormattingOwners() throws {
     let size = CGSize(width: 900, height: 1_900)
-    let model = SettingsViewModel(engine: MockSettingsEngine())
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())
     let hostingView = NSHostingView(
       rootView: PromptPanel(model: model).frame(
         width: size.width,
@@ -1268,7 +1270,7 @@ final class SettingsTruthTests: XCTestCase {
     let engine = MockSettingsEngine(updateConfigObserver: { key, value in
       writes.append((key, value))
     })
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
 
     model.setTranscriptTaggingEnabled(true)
     model.setTranscriptTaggingEnabled(false)
@@ -1286,7 +1288,7 @@ final class SettingsTruthTests: XCTestCase {
     let engine = MockSettingsEngine(updateConfigObserver: { key, value in
       writes.append((key, value))
     })
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
 
     model.setTranscriptTagTemplate(
       "<codescribe warn=\"may contain misspelling\">{text}</codescribe>")
@@ -1299,7 +1301,7 @@ final class SettingsTruthTests: XCTestCase {
   }
 
   func testTranscriptTagTemplatePreviewWarnsAndAppendsWhenTextPlaceholderMissing() {
-    let model = SettingsViewModel()
+    let model = SettingsViewModel(permissionProbe: MockPermissionProbe())
 
     model.setTranscriptTagTemplate("<codescribe conf=\"{conf}\" flags=\"{flags}\">")
 
@@ -1318,7 +1320,7 @@ final class SettingsTruthTests: XCTestCase {
     let engine = MockSettingsEngine(updateConfigObserver: { key, value in
       writes.append((key, value))
     })
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
 
     model.restoreDefaultTranscriptTagTemplate()
 
@@ -1334,7 +1336,7 @@ final class SettingsTruthTests: XCTestCase {
       totalBytes: 536_870_912
     )
     let model = SettingsViewModel(
-      engine: MockSettingsEngine(resetPreviewValue: preview)
+      engine: MockSettingsEngine(resetPreviewValue: preview), permissionProbe: MockPermissionProbe()
     )
 
     model.refreshResetPreview()
@@ -1362,7 +1364,7 @@ final class SettingsTruthTests: XCTestCase {
     let engine = MockSettingsEngine(
       promptRestoreObserver: { restored.append($0) }
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
 
     XCTAssertNotNil(model.restoreFormattingPromptToDefault(.correction))
     XCTAssertNotNil(model.restoreFormattingPromptToDefault(.smart))
@@ -1372,7 +1374,8 @@ final class SettingsTruthTests: XCTestCase {
   }
 
   func testFormattingPromptSnapshotsExposeDistinctPathsAndProvenance() throws {
-    let model = SettingsViewModel(engine: MockSettingsEngine())
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())
     let snapshots = try FormattingPolicyOption.editablePrompts.map { level in
       try XCTUnwrap(model.formattingPromptSnapshot(level: level))
     }
@@ -1393,7 +1396,7 @@ final class SettingsTruthTests: XCTestCase {
         throw NSError(domain: "PromptWrite", code: 1)
       }
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
 
     XCTAssertNil(model.saveAssistivePrompt("replacement"))
     XCTAssertNotNil(model.lastError)
@@ -1405,7 +1408,7 @@ final class SettingsTruthTests: XCTestCase {
     let engine = MockSettingsEngine(
       resetAppDataObserver: { calls.append(($0, $1)) }
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
 
     // Exercise the bridge contract directly: SettingsViewModel relaunches
     // after success, which is intentionally not invoked in XCTest.
@@ -1432,7 +1435,7 @@ final class SettingsTruthTests: XCTestCase {
       agentResetPreviewValue: preview,
       resetAgentDataObserver: { calls += 1 }
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
 
     model.refreshAgentResetPreview()
     XCTAssertEqual(model.agentResetPreview.threads, 2)
@@ -1489,8 +1492,7 @@ final class SettingsTruthTests: XCTestCase {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(
         clearMcpConfigurationObserver: { calls += 1 }
-      )
-    )
+      ), permissionProbe: MockPermissionProbe())
 
     model.clearMcpConfiguration()
 
@@ -1505,8 +1507,8 @@ final class SettingsTruthTests: XCTestCase {
     var writes: [(String, String)] = []
     let model = SettingsViewModel(
       engine: MockSettingsEngine(
-        updateConfigObserver: { key, value in writes.append((key, value)) })
-    )
+        updateConfigObserver: { key, value in writes.append((key, value)) }),
+      permissionProbe: MockPermissionProbe())
     _ = ShortcutsPanel(model: model)
 
     let cases: [(DeferredInsertShortcutOption, String)] = [
@@ -1534,7 +1536,7 @@ final class SettingsTruthTests: XCTestCase {
       updateConfigObserver: { writes.append(($0, $1)) }
     )
 
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     XCTAssertEqual(model.deferredInsertShortcut, .commandShiftV)
     XCTAssertTrue(writes.isEmpty, "construction must only read persisted truth")
 
@@ -1553,8 +1555,7 @@ final class SettingsTruthTests: XCTestCase {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(
         settingsLoader: { persisted },
-        updateConfigObserver: { writes.append(($0, $1)) })
-    )
+        updateConfigObserver: { writes.append(($0, $1)) }), permissionProbe: MockPermissionProbe())
     _ = ShortcutsPanel(model: model)
     XCTAssertEqual(model.pasteMode, .comfort)
     model.refresh()
@@ -1575,7 +1576,8 @@ final class SettingsTruthTests: XCTestCase {
   /// Active STT consumes last serving verdict; Apple→Whisper fallback must not
   /// display configured Apple preference.
   func testActiveSTTUsesServingVerdictNotConfiguredEngine() {
-    let model = SettingsViewModel(engine: MockSettingsEngine())
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())
     // No runtime verdict yet — never project configured engine as Active STT.
     model.lastServingVerdict = nil
     XCTAssertEqual(model.activeSTT, "Not yet served")
@@ -1616,7 +1618,7 @@ final class SettingsTruthTests: XCTestCase {
   func testActiveSTTRefreshesFromServingProviderOnDemand() {
     var snapshot: LastServingVerdict? = nil
     let model = SettingsViewModel(
-      engine: MockSettingsEngine(),
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(),
       servingStatusProvider: { snapshot }
     )
     XCTAssertEqual(model.activeSTT, "Not yet served")
@@ -1655,7 +1657,7 @@ final class SettingsTruthTests: XCTestCase {
       },
       updateConfigObserver: applyWrite
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     _ = EnginePanel(model: model)
 
     XCTAssertEqual(model.asrModeId, "apple_only")
@@ -1702,8 +1704,7 @@ final class SettingsTruthTests: XCTestCase {
           writes.append(key)
           if key == "CODESCRIBE_ASR_MODE" { persisted.asrMode = value }
         }
-      )
-    )
+      ), permissionProbe: MockPermissionProbe())
     model.refresh()
     model.setAsrMode("local_power")
 

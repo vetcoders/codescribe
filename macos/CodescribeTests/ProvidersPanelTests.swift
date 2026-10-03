@@ -25,7 +25,9 @@ final class ProvidersPanelTests: XCTestCase {
       providerStore: store,
       updateConfigObserver: { configWrites?(($0, $1)) }
     )
-    return SettingsViewModel(engine: engine, runtimeLlmLaneProvider: { store.runtimeLane($0) })
+    return SettingsViewModel(
+      engine: engine, permissionProbe: MockPermissionProbe(),
+      runtimeLlmLaneProvider: { store.runtimeLane($0) })
   }
 
   func testAddCustomProviderAppearsInLanePicker() throws {
@@ -201,7 +203,7 @@ final class ProvidersPanelTests: XCTestCase {
     var formattingHits = 0
     let store = MockProviderStore()
     let model = SettingsViewModel(
-      engine: MockSettingsEngine(providerStore: store),
+      engine: MockSettingsEngine(providerStore: store), permissionProbe: MockPermissionProbe(),
       runtimeLlmLaneProvider: { lane in
         if lane == .assistive {
           assistiveHits += 1
