@@ -73,6 +73,9 @@ manual attach saga and drive the engine:
 
 3. Codex attachment arms `codex queue` automatically for this exact thread.
    It continues after a final answer; no private hook or polling is needed.
+   During a long active task, also keep `--watch --bell` under the provider's
+   output-notifying monitor. Read a bell's full `--read-delivery <id>` envelope
+   before ACK; a later native queued copy must not repeat the task.
    Other providers use their output-notifying monitor with `--watch`
    ([Monitor](references/monitor.md)). An explicit `--on-seal` hook selects
    its own wakeup path instead of running a second native wakeup.
@@ -120,6 +123,19 @@ updates them with its bundled runtime. `make install-app` uses the same
 installer. If that directory is not on this shell's PATH, use
 `~/.local/bin/cs-bus`; no checkout is needed. Client skills remain selected in
 Settings. `cs-say "<text>" --provider <p> --session <id>` uses the attached voice.
+
+When helper installation is requested, `make install-bus` installs only helpers
+and already selected skills without replacing or restarting the app. Reattach
+the same session afterward to adopt updated follower code. Check both
+`cs-bus --version` and `cs-say --version`: they include the installed commit slug.
+
+Voice authentication is independent of the app. If requested or needed for a
+missing credential, use `cs-say auth --help`, then
+`cs-say auth --provider <xai|openai|deepinfra|custom> --login-type <oauth|key|device-code>`.
+xAI OAuth/device-code uses the Grok CLI; all four providers have a hidden
+Keychain key prompt. Speech currently supports xAI/OpenAI; storing another
+provider's key does not create its speech lane. Unsupported combinations fail
+explicitly. See [Voice reply](references/voice-reply.md); never pass or print keys.
 
 Read only the reference needed by the current operation:
 
