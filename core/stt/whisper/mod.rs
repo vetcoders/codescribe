@@ -45,6 +45,7 @@ mod word_pins;
 pub use engine::LocalWhisperEngine; // Kept for advanced usage if needed
 pub use params::DecodingParams; // Kept for params config if needed
 pub use timing::{FinalPassTiming, take_final_pass_timing};
+pub(crate) use engine::silence_spans_from_vad_probabilities;
 
 // Re-export singleton functions at module level (main API).
 //

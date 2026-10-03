@@ -218,6 +218,9 @@ struct BridgeResponse {
     /// SFSpeechRecognizer TCC: `not_determined` | `denied` | `restricted` | `authorized`.
     #[serde(default)]
     speech_auth: Option<String>,
+    /// Producer progress for offline SFSpeech, independent of recognized text.
+    #[serde(default)]
+    processed_audio_seconds: Option<f64>,
 }
 
 impl BridgeResponse {
@@ -460,6 +463,10 @@ fn transcribe_file_with_backend(
     #[cfg(unix)]
     let path = leased_path.as_path();
     init()?;
+    // The read lease stays in this frame for every window read below.
+    if policy == AppleDeadlinePolicy::WholeFile {
+        return transcribe_apple_file_windows(path, language);
+    }
     let locale = resolved_locale(language);
     let audio_path = path.display().to_string();
     let request = BridgeRequest {
@@ -471,23 +478,306 @@ fn transcribe_file_with_backend(
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
         deadline_policy: Some(policy),
     };
-    let timeout = match policy {
-        AppleDeadlinePolicy::LiveFinal => BRIDGE_TRANSCRIBE_TIMEOUT,
-        AppleDeadlinePolicy::WholeFile => {
-            let (samples, rate) = crate::audio::load_audio_file(path)
-                .context("read whole-file Apple recognition duration")?;
-            let audio_seconds = samples.len() as f64 / f64::from(rate.max(1));
-            // Same recognition budget as Swift, plus process/setup margin.
-            Duration::from_secs_f64((audio_seconds + 25.0).max(20.0) + 30.0)
-        }
-    };
-    let response = run_bridge_with_timeout(&request, Some(timeout))
+    let response = run_bridge_with_timeout(&request, Some(BRIDGE_TRANSCRIBE_TIMEOUT))
         .context("Apple STT bridge transcribe failed")?;
     let backend = response
         .backend
         .as_deref()
         .and_then(AppleSttBackend::from_bridge);
     Ok((raw_transcript_from_bridge_response(response), backend))
+}
+
+/// One Silero bucket is 500 ms: every measurable pause closes a file window.
+const APPLE_FILE_PAUSE_SECS: f32 = 0.5;
+/// Pauses already close windows; retain sentence context for continuous speech.
+/// Search the last five seconds for the lowest measured Silero bucket.
+const APPLE_FILE_MAX_WINDOW_SECS: f32 = 20.0;
+const APPLE_FILE_CUT_SEARCH_SECS: f32 = 5.0;
+const APPLE_FILE_PROCESSING_TOLERANCE_SECS: f64 = 0.5;
+
+/// Same recognition budget as the Swift whole-file deadline
+/// `max(20, audio + 25)`, plus the host process margin.
+fn whole_file_host_timeout(audio_seconds: f64) -> Duration {
+    Duration::from_secs_f64((audio_seconds + 25.0).max(20.0) + 30.0)
+}
+
+/// Partition original PCM, excluding only intervals certified silent by Silero.
+fn plan_apple_file_windows(
+    sample_count: usize,
+    sample_rate: u32,
+    silences: &[(f32, f32)],
+    probabilities: &[f32],
+) -> Vec<(usize, usize)> {
+    let mut windows = Vec::new();
+    let maximum = ((APPLE_FILE_MAX_WINDOW_SECS * sample_rate as f32) as usize).max(1);
+    let next_cut = |cursor: usize, end: usize| {
+        let limit = cursor.saturating_add(maximum).min(end);
+        if limit == end {
+            return end;
+        }
+        let hi = limit as f32 / sample_rate as f32;
+        let lo = hi - APPLE_FILE_CUT_SEARCH_SECS;
+        let hop = crate::vad::DISCRIMINATOR_WINDOW_MS as f32 / 1000.0;
+        // Same minimum-bin and nearest-target tie break as Whisper's
+        // least_speech_point; that function is private to its engine module.
+        let point = probabilities
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &p)| {
+                let begin = (index as f32 * hop).max(lo);
+                let end = ((index + 1) as f32 * hop).min(hi);
+                (p.is_finite() && end > begin).then_some(((begin + end) / 2.0, p))
+            })
+            .min_by(|(a, ap), (b, bp)| {
+                ap.total_cmp(bp)
+                    .then_with(|| (a - hi).abs().total_cmp(&(b - hi).abs()))
+            })
+            .map(|(point, _)| point)
+            .expect("validated Silero timeline covers the cut");
+        ((point * sample_rate as f32).round() as usize).clamp(cursor + 1, limit)
+    };
+    let mut cursor = 0;
+    for &(start, end) in silences {
+        // The final measured bucket can be shorter than 500 ms. It is
+        // still certified silence; floating-point rounding must not retain it.
+        let terminal = end * sample_rate as f32 >= sample_count as f32;
+        if end - start + f32::EPSILON < APPLE_FILE_PAUSE_SECS && !terminal {
+            continue;
+        }
+        let start = ((start * sample_rate as f32).round() as usize).min(sample_count);
+        let end = ((end * sample_rate as f32).round() as usize).min(sample_count);
+        while cursor < start {
+            let next = next_cut(cursor, start);
+            windows.push((cursor, next));
+            cursor = next;
+        }
+        cursor = cursor.max(end);
+    }
+    while cursor < sample_count {
+        let next = next_cut(cursor, sample_count);
+        windows.push((cursor, next));
+        cursor = next;
+    }
+    windows
+}
+
+/// The silence arbiter admits each speech window independently; Apple only
+/// describes it. Collect every description before reporting any missing window.
+fn transcribe_apple_file_windows(
+    path: &Path,
+    language: Option<&str>,
+) -> Result<(RawTranscript, Option<AppleSttBackend>)> {
+    let (samples, rate) =
+        crate::audio::load_audio_file(path).context("read Apple file PCM for Silero")?;
+    if rate == 0 {
+        bail!("recognition_incomplete: invalid Apple file sample rate");
+    }
+    if samples.is_empty() {
+        return Ok((RawTranscript::default(), None));
+    }
+    // extract_speech skips a final fragment shorter than half a 500 ms
+    // bucket. Measure that physical tail too, padding only the VAD input with
+    // zeros; the planner and Apple always use the original sample count/PCM.
+    let bucket = (rate as usize / 2).max(1);
+    let padding = (bucket - samples.len() % bucket) % bucket;
+    let padded = if padding == 0 {
+        Vec::new()
+    } else {
+        let mut input = samples.clone();
+        input.resize(samples.len() + padding, 0.0);
+        input
+    };
+    let vad_input = if padding == 0 { &samples } else { &padded };
+    let (_, stats) = crate::vad::extract_speech(vad_input, rate);
+    if stats.probabilities.len() < samples.len().div_ceil(bucket)
+        || stats.probabilities.iter().any(|p| !p.is_finite())
+    {
+        let uncovered = samples.len() as f64 / f64::from(rate);
+        bail!(
+            "recognition_incomplete: Silero evidence unavailable ({:?}) \
+             uncovered_ranges_seconds=[0..{uncovered}]",
+            stats.no_speech_reason
+        );
+    }
+    let silences = crate::stt::whisper::silence_spans_from_vad_probabilities(
+        &stats.probabilities,
+        crate::vad::VadConfig::default().threshold,
+        samples.len() as f32 / rate as f32,
+    );
+    let windows = plan_apple_file_windows(samples.len(), rate, &silences, &stats.probabilities);
+    eprintln!(
+        "INFO apple_file: windows={} pause_seconds={} maximum_window_seconds={}",
+        windows.len(),
+        APPLE_FILE_PAUSE_SECS,
+        APPLE_FILE_MAX_WINDOW_SECS
+    );
+    let directory = tempfile::Builder::new()
+        .prefix("codescribe-apple-file-")
+        .tempdir()
+        .context("create private Apple file window directory")?;
+    let locale = resolved_locale(language);
+    let mut raw = RawTranscript::default();
+    let mut backend = None;
+    let mut gaps = Vec::new();
+    for &(start, end) in &windows {
+        let offset = start as f32 / rate as f32;
+        let through = end as f32 / rate as f32;
+        let window_path = directory.path().join("window.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut writer = hound::WavWriter::create(&window_path, spec)
+            .context("create Apple speech window WAV")?;
+        for &sample in &samples[start..end] {
+            writer
+                .write_sample(sample)
+                .context("write Apple speech window PCM")?;
+        }
+        writer.finalize().context("finish Apple speech window WAV")?;
+        let audio_path = window_path
+            .to_str()
+            .context("Apple window path is not UTF-8")?;
+        let request = BridgeRequest {
+            protocol_version: 1,
+            command: "transcribe",
+            locale: &locale,
+            audio_path: Some(audio_path),
+            contextual_strings: None,
+            allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+            deadline_policy: Some(AppleDeadlinePolicy::WholeFile),
+        };
+        let window_seconds = (end - start) as f64 / f64::from(rate);
+        let mut response = match run_bridge_exchange(
+            &request,
+            Some(whole_file_host_timeout(window_seconds)),
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                let detail = format!("{error:#}");
+                let timed_out =
+                    detail.contains("timed out") || detail.contains("recognition_timeout");
+                let reason = if timed_out { "timeout" } else { "bridge_error" };
+                gaps.push(serde_json::json!({
+                    "start_seconds": offset,
+                    "end_seconds": through,
+                    "reason": reason,
+                    "detail": detail
+                }));
+                continue;
+            }
+        };
+        if !response.is_ok() {
+            let detail = response
+                .error
+                .as_deref()
+                .unwrap_or("bridge returned error without message");
+            let reason = if detail.contains("recognition_timeout") {
+                "timeout"
+            } else {
+                "bridge_error"
+            };
+            gaps.push(serde_json::json!({
+                "start_seconds": offset,
+                "end_seconds": through,
+                "reason": reason,
+                "detail": detail
+            }));
+        }
+        if response.text.trim().is_empty() {
+            gaps.push(serde_json::json!({
+                "start_seconds": offset,
+                "end_seconds": through,
+                "reason": "empty_speech_window"
+            }));
+        }
+        let selected = response
+            .backend
+            .as_deref()
+            .and_then(AppleSttBackend::from_bridge);
+        if backend.is_some() && backend != selected {
+            gaps.push(serde_json::json!({
+                "start_seconds": offset,
+                "end_seconds": through,
+                "reason": "bridge_error",
+                "detail": "Apple backend changed within file"
+            }));
+        } else {
+            backend = selected;
+        }
+        if selected == Some(AppleSttBackend::SfSpeechRecognizer)
+            && !response.processed_audio_seconds.is_some_and(|processed| {
+                processed.is_finite()
+                    && processed >= 0.0
+                    && processed + APPLE_FILE_PROCESSING_TOLERANCE_SECS
+                        >= f64::from(through - offset)
+            })
+        {
+            gaps.push(serde_json::json!({
+                "start_seconds": offset,
+                "end_seconds": through,
+                "reason": "processing_incomplete",
+                "processed_audio_seconds": response.processed_audio_seconds
+            }));
+        }
+        for segment in &mut response.segments {
+            segment.start_ts += offset;
+            segment.end_ts += offset;
+        }
+        let mut next = RawTranscript {
+            text: response.text.trim().to_string(),
+            // File segments remain phrases or windows, never synthetic word pins.
+            segments: response
+                .segments
+                .into_iter()
+                .filter_map(bridge_segment_to_transcript_segment)
+                .collect(),
+            ..Default::default()
+        };
+        if next
+            .segments
+            .iter()
+            .any(|segment| segment.start_ts < offset || segment.end_ts > through + 0.05)
+        {
+            gaps.push(serde_json::json!({
+                "start_seconds": offset,
+                "end_seconds": through,
+                "reason": "bridge_error",
+                "detail": "invalid segment range"
+            }));
+            next.segments.clear();
+        }
+        if next.segments.is_empty() && !next.text.is_empty() {
+            // A physical window is known even when Apple supplies no time pins.
+            next.segments.push(TranscriptSegment {
+                text: next.text.clone(),
+                start_ts: offset,
+                end_ts: through,
+                confidence: None,
+            });
+        }
+        if !next.text.is_empty() && !raw.text.is_empty() {
+            raw.text.push(' ');
+        }
+        raw.text.push_str(&next.text);
+        raw.segments.extend(next.segments);
+    }
+    if !gaps.is_empty() {
+        // The existing Result error receipt makes CLI exit unsuccessfully and
+        // prevents its success seal. Preserve all collected text on this lane.
+        bail!(
+            "recognition_incomplete: {}",
+            serde_json::json!({
+                "complete": false,
+                "raw": raw,
+                "gaps": gaps,
+                "timing_precision": "phrase_or_window"
+            })
+        );
+    }
+    Ok((raw, backend))
 }
 
 /// In-memory Apple bridge A/B entry point.
@@ -757,6 +1047,23 @@ fn run_bridge_with_timeout(
     request: &BridgeRequest<'_>,
     timeout: Option<std::time::Duration>,
 ) -> Result<BridgeResponse> {
+    let response = run_bridge_exchange(request, timeout)?;
+    if !response.is_ok() {
+        let message = response
+            .error
+            .unwrap_or_else(|| "bridge returned error without message".to_string());
+        bail!("{message}");
+    }
+    Ok(response)
+}
+
+/// Same child exchange as `run_bridge_with_timeout`, including a zero exit
+/// that carries `ok: false`. File windows keep recognized text beside an
+/// explicit gap. Process timeout, a nonzero exit, and empty stdout stay `Err`.
+fn run_bridge_exchange(
+    request: &BridgeRequest<'_>,
+    timeout: Option<std::time::Duration>,
+) -> Result<BridgeResponse> {
     // Hold the lock for the whole spawn→wait so two AVAudioEngine sessions
     // never race on the same machine (empty/timeout/auth flakes).
     let _guard = bridge_global_lock()
@@ -830,12 +1137,6 @@ fn run_bridge_with_timeout(
 
     let response: BridgeResponse =
         serde_json::from_str(trimmed).context("parse Apple STT bridge JSON response")?;
-    if !response.is_ok() {
-        let message = response
-            .error
-            .unwrap_or_else(|| "bridge returned error without message".to_string());
-        bail!("{message}");
-    }
     Ok(response)
 }
 
