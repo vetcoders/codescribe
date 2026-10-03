@@ -2036,6 +2036,332 @@ mod slot_ops_tests {
         }
     }
 
+    // Root-owned Relay controls: five physical sources, not a lexical word floor.
+    fn forensic_relay_five_capture(
+        session: &str,
+    ) -> (AcousticLedger, Vec<OccurrenceIdentity>, Vec<f32>) {
+        use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+        let owners = (0..5)
+            .map(|index| {
+                OccurrenceIdentity::new(session, 31, index * 24_000 + 3_200, index * 24_000 + 9_600)
+            })
+            .collect::<Vec<_>>();
+        let mut pcm = vec![0.0_f32; 120_000];
+        for owner in &owners {
+            pcm[owner.sample_start as usize..owner.sample_end as usize].fill(0.2);
+        }
+        let energy = CaptureEnergyOwner::bind(session, 31);
+        let mut writer = CaptureLevelAccumulator::bound_to(&energy);
+        for chunk in pcm.chunks(320) {
+            writer.push_samples(chunk);
+        }
+        let speech = energy.session_active_speech_ranges(session, 31, 16_000);
+        assert_eq!(
+            speech.availability().observed_samples(),
+            Some(pcm.len() as u64)
+        );
+        assert_eq!(
+            speech
+                .ranges()
+                .iter()
+                .map(|range| (range.sample_start, range.sample_end))
+                .collect::<Vec<_>>(),
+            owners
+                .iter()
+                .map(|owner| (owner.sample_start, owner.sample_end))
+                .collect::<Vec<_>>()
+        );
+        let calibration = EnergyCalibration::new("forensic-relay-five-pcm", 1.0, 1);
+        let mut ledger = AcousticLedger::new();
+        ledger.bind_capture_rate(16_000);
+        for owner in &owners {
+            let samples = &pcm[owner.sample_start as usize..owner.sample_end as usize];
+            let integral = samples
+                .iter()
+                .map(|sample| f64::from(*sample).powi(2))
+                .sum::<f64>();
+            let peak = samples
+                .iter()
+                .map(|sample| f64::from(sample.abs()))
+                .fold(0.0_f64, f64::max);
+            assert!(
+                ledger
+                    .qualify(
+                        &AcousticEvidence {
+                            occurrence: owner.clone(),
+                            duration_ms: samples.len() as f64 / 16.0,
+                            energy_integral: integral,
+                            mean_rms_dbfs: 20.0 * (integral / samples.len() as f64).sqrt().log10(),
+                            peak_dbfs: 20.0 * peak.log10(),
+                            vad_open_sample: Some(owner.sample_start),
+                            vad_close_sample: Some(owner.sample_end),
+                            evidence_calibration_version: calibration.version.clone()
+                        },
+                        &calibration
+                    )
+                    .is_qualified()
+            );
+        }
+        ledger.record_speech_evidence(&speech);
+        (ledger, owners, pcm)
+    }
+
+    fn forensic_relay_word(owner: &OccurrenceIdentity, text: &str) -> WordPin {
+        WordPin::new(owner.sample_start + 320, owner.sample_end - 320, text)
+            .with_decode_window(owner.sample_start, owner.sample_end)
+    }
+
+    #[test]
+    fn forensic_relay_five_coarse_hypotheses_allow_heard_word_without_losing_source() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            for outer_pin in [false, true] {
+                for held in [
+                    "czy plan weryfikowałeś",
+                    "Iwo Iwo Iwo Iwo Iwo",
+                    "czy yyy [śmiech głośny] plan",
+                ] {
+                    let (mut ledger, owners, pcm) =
+                        forensic_relay_five_capture("relay-coarse-five");
+                    for owner in &owners {
+                        let apple = ObservationIdentity::new(
+                            ObservationProducer::Apple,
+                            101,
+                            0,
+                            owner.clone(),
+                        );
+                        let receipt = if outer_pin {
+                            ledger.admit_word_slots(
+                                &apple,
+                                &[WordPin::new(owner.sample_start, owner.sample_end, held)],
+                            )
+                        } else {
+                            ledger.admit(&apple, held)
+                        };
+                        assert!(receipt.grants_mutation());
+                        let source = ledger.slots_of(owner).unwrap().to_vec();
+                        assert_eq!(source.len(), 1);
+                        assert_eq!(source[0].text, held);
+                        ledger.schedule_frontier(owner.clone(), [producer]);
+                        assert!(ledger.require_text_recovery(owner));
+                        let next = ledger.next_word_observation(producer, 102, owner);
+                        let pin = forensic_relay_word(owner, "Iwo");
+                        assert!(
+                            pcm[owner.sample_start as usize..owner.sample_end as usize]
+                                .iter()
+                                .all(|sample| *sample == 0.2)
+                        );
+                        let decision = ledger.admit_word_slots(&next, std::slice::from_ref(&pin));
+                        assert!(
+                            decision.grants_mutation(),
+                            "{producer:?} outer={outer_pin} held={held}: {decision:?}"
+                        );
+                        let output = ledger.slots_of(owner).unwrap();
+                        assert_eq!(output.len(), 1);
+                        assert_eq!(
+                            (output[0].sample_start, output[0].sample_end),
+                            (pin.sample_start, pin.sample_end)
+                        );
+                        assert_eq!(output[0].text, "Iwo");
+                        assert_eq!(output[0].observation, next);
+                        let operations = ledger
+                            .slot_operations()
+                            .iter()
+                            .filter(|operation| {
+                                operation.observation == next && operation.sources == source
+                            })
+                            .collect::<Vec<_>>();
+                        assert_eq!(operations.len(), 1);
+                        assert_eq!(operations[0].outputs, output);
+                        assert!(operations[0].source_ranges.contains(owner));
+                        assert!(ledger.slot_descends_from(&output[0], &source[0]));
+                        assert_eq!(
+                            ledger.slot_source_ranges(&output[0]),
+                            vec![OccurrenceIdentity::new(
+                                &owner.session,
+                                owner.capture_epoch,
+                                pin.sample_start,
+                                pin.sample_end
+                            )]
+                        );
+                        assert!(
+                            ledger.group_speech_coverages().is_empty(),
+                            "complete work is not dense word timestamps"
+                        );
+                        assert!(!ledger.text_recovery_pending(owner));
+                        assert!(ledger.note_frontier_return(owner, producer));
+                        ledger.seal(owner).unwrap();
+                        ledger.assert_slot_labels();
+                        assert_eq!(ledger.conservation().residue(), 0);
+                    }
+                    assert_eq!(ledger.len(), 5);
+                    assert!(owners.iter().all(
+                        |owner| ledger.text_of(owner) == Some("Iwo") && ledger.is_sealed(owner)
+                    ));
+                    let speech = ledger.speech_evidence.clone().unwrap();
+                    let coverage = ledger.assess_seal_coverage("relay-coarse-five", 31, &speech, 0);
+                    assert_eq!(coverage.status, SealCoverageStatus::Complete);
+                    assert!(ledger.record_seal_coverage(coverage));
+                    ledger.seal_terminal("relay-coarse-five", 31).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn forensic_relay_five_word_sources_survive_empty_and_decode_cut_until_recovery() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            for cut in [false, true] {
+                let (mut ledger, owners, _) = forensic_relay_five_capture("relay-word-five");
+                for (index, owner) in owners.iter().enumerate() {
+                    let apple =
+                        ObservationIdentity::new(ObservationProducer::Apple, 201, 0, owner.clone());
+                    assert!(
+                        ledger
+                            .admit_word_slots(&apple, &[forensic_relay_word(owner, "Iwo")])
+                            .grants_mutation()
+                    );
+                    let source = ledger.slots_of(owner).unwrap().to_vec();
+                    assert!(ledger.complete_word_slot(&source[0]));
+                    ledger.schedule_frontier(owner.clone(), [producer]);
+                    assert!(ledger.require_text_recovery(owner));
+                    let next = ledger.next_word_observation(producer, 202, owner);
+                    if index == 4 {
+                        let pins = if cut {
+                            vec![
+                                WordPin::new(
+                                    owner.sample_start + 480,
+                                    owner.sample_end - 320,
+                                    "urwany",
+                                )
+                                .with_decode_window(owner.sample_start + 480, owner.sample_end),
+                            ]
+                        } else {
+                            Vec::new()
+                        };
+                        ledger.admit_word_slots(&next, &pins);
+                        assert_eq!(ledger.slots_of(owner).unwrap(), source);
+                        assert_eq!(ledger.text_of(owner), Some("Iwo"));
+                        assert!(ledger.text_recovery_pending(owner));
+                        assert!(ledger.note_frontier_return(owner, producer));
+                        assert_eq!(ledger.seal(owner), Err(SealRefusal::TextRecoveryPending));
+                    } else {
+                        let decision =
+                            ledger.admit_word_slots(&next, &[forensic_relay_word(owner, "Iwo")]);
+                        assert!(
+                            decision.grants_mutation()
+                                || matches!(decision, MutationReceipt::Preserve { .. })
+                        );
+                        assert!(!ledger.text_recovery_pending(owner));
+                        assert!(ledger.note_frontier_return(owner, producer));
+                        ledger.seal(owner).unwrap();
+                    }
+                }
+                assert_eq!(ledger.len(), 5);
+                assert!(
+                    owners
+                        .iter()
+                        .all(|owner| ledger.text_of(owner) == Some("Iwo"))
+                );
+                let speech = ledger.speech_evidence.clone().unwrap();
+                let coverage = ledger.assess_seal_coverage("relay-word-five", 31, &speech, 0);
+                assert_eq!(coverage.status, SealCoverageStatus::Incomplete);
+                assert!(ledger.record_seal_coverage(coverage));
+                assert_eq!(
+                    ledger.seal_terminal("relay-word-five", 31),
+                    Err(SealRefusal::TextRecoveryPending)
+                );
+                let last = owners.last().unwrap();
+                let original = ledger.slots_of(last).unwrap().to_vec();
+                let recovery = ledger.next_word_observation(producer, 203, last);
+                ledger.admit_word_slots(&recovery, &[forensic_relay_word(last, "Iwo")]);
+                assert!(!ledger.text_recovery_pending(last));
+                assert!(
+                    ledger
+                        .slot_source_ranges(&ledger.slots_of(last).unwrap()[0])
+                        .contains(&OccurrenceIdentity::new(
+                            "relay-word-five",
+                            31,
+                            original[0].sample_start,
+                            original[0].sample_end
+                        ))
+                );
+                ledger.seal(last).unwrap();
+                let coverage = ledger.assess_seal_coverage("relay-word-five", 31, &speech, 0);
+                assert_eq!(coverage.status, SealCoverageStatus::Complete);
+                assert!(ledger.record_seal_coverage(coverage));
+                ledger.seal_terminal("relay-word-five", 31).unwrap();
+                ledger.assert_slot_labels();
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn forensic_relay_human_and_passed_layers_cannot_be_rewritten_by_acoustic_labels() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            for state in ["human", "sealed", "lower"] {
+                let (mut ledger, owners, _) = forensic_relay_five_capture("relay-protected-five");
+                for owner in &owners {
+                    let first =
+                        ObservationIdentity::new(ObservationProducer::Apple, 301, 0, owner.clone());
+                    ledger.admit_word_slots(&first, &[forensic_relay_word(owner, "Iwo")]);
+                    if state == "human" {
+                        let human = ledger.next_word_observation(
+                            ObservationProducer::ManualHuman,
+                            302,
+                            owner,
+                        );
+                        assert!(
+                            ledger
+                                .admit_word_slots(&human, &[forensic_relay_word(owner, "ręcznie")])
+                                .grants_mutation()
+                        );
+                    } else if state == "lower" {
+                        let next = ledger.next_word_observation(producer, 302, owner);
+                        assert!(
+                            ledger
+                                .admit_word_slots(
+                                    &next,
+                                    &[forensic_relay_word(owner, "poprawione")]
+                                )
+                                .grants_mutation()
+                        );
+                    } else {
+                        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Apple]);
+                        assert!(ledger.note_frontier_return(owner, ObservationProducer::Apple));
+                        ledger.seal(owner).unwrap();
+                    }
+                    let source = ledger.slots_of(owner).unwrap().to_vec();
+                    let lineage = ledger.slot_source_ranges(&source[0]);
+                    let offered = if state == "lower" {
+                        ObservationProducer::Apple
+                    } else {
+                        producer
+                    };
+                    let next = ledger.next_word_observation(offered, 303, owner);
+                    let decision = ledger.admit_word_slots(
+                        &next,
+                        &[WordPin::new(
+                            owner.sample_start,
+                            owner.sample_end,
+                            "czy zmieniam wszystko",
+                        )],
+                    );
+                    assert!(
+                        !decision.grants_mutation(),
+                        "{producer:?}/{state}: {decision:?}"
+                    );
+                    assert_eq!(ledger.slots_of(owner).unwrap(), source);
+                    assert_eq!(ledger.slot_source_ranges(&source[0]), lineage);
+                    assert!(ledger.word_deletions().is_empty());
+                    ledger.assert_slot_labels();
+                    assert_eq!(ledger.conservation().residue(), 0);
+                }
+                assert_eq!(ledger.len(), 5);
+            }
+        }
+    }
+
     fn owner() -> OccurrenceIdentity {
         OccurrenceIdentity::new("slot-test", 1, 0, 16_000)
     }
@@ -3003,11 +3329,57 @@ mod slot_ops_tests {
         );
         assert_eq!(ledger.text_of(&owner()), Some("dwa słowa"));
         assert!(!ledger.slot_alternatives().is_empty());
+        // The earlier proposal returned no complete decoded source scope.
+        // The final batch now supplies the same measured capture and bounds.
+        use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+        let mut pcm = vec![0.0_f32; 16_000];
+        pcm[320..1_000].fill(0.2);
+        pcm[2_000..3_000].fill(0.2);
+        let energy = CaptureEnergyOwner::bind("slot-test", 1);
+        let mut writer = CaptureLevelAccumulator::bound_to(&energy);
+        for chunk in pcm.chunks(320) {
+            writer.push_samples(chunk);
+        }
+        let speech = energy.session_active_speech_ranges("slot-test", 1, 16_000);
+        assert_eq!(
+            speech.availability().observed_samples(),
+            Some(pcm.len() as u64)
+        );
+        let integral = pcm
+            .iter()
+            .map(|sample| f64::from(*sample).powi(2))
+            .sum::<f64>();
+        let peak = pcm
+            .iter()
+            .map(|sample| f64::from(sample.abs()))
+            .fold(0.0_f64, f64::max);
+        let calibration = EnergyCalibration::new("forensic-coarse-actual-pcm", 1.0, 1);
+        assert!(
+            ledger
+                .qualify(
+                    &AcousticEvidence {
+                        occurrence: owner(),
+                        duration_ms: pcm.len() as f64 / 16.0,
+                        energy_integral: integral,
+                        mean_rms_dbfs: 20.0 * (integral / pcm.len() as f64).sqrt().log10(),
+                        peak_dbfs: 20.0 * peak.log10(),
+                        vad_open_sample: Some(0),
+                        vad_close_sample: Some(16_000),
+                        evidence_calibration_version: calibration.version.clone()
+                    },
+                    &calibration
+                )
+                .is_qualified()
+        );
+        ledger.record_speech_evidence(&speech);
+        ledger.schedule_frontier(owner(), [ObservationProducer::Whisper]);
+        assert!(ledger.require_text_recovery(&owner()));
+        let original = ledger.slots_of(&owner()).unwrap().to_vec();
         ledger.admit_word_slots(
             &observation(ObservationProducer::Whisper, 3),
             &[
-                WordPin::new(0, 1_000, "dwa"),
-                WordPin::new(2_000, 3_000, "wyrazy"),
+                WordPin::new(320, 1_000, "dwa").with_decode_window(0, pcm.len() as u64),
+                WordPin::new(2_000, 3_000, "wyrazy").with_decode_window(0, pcm.len() as u64),
             ],
         );
         assert_eq!(ledger.text_of(&owner()), Some("dwa wyrazy"));
@@ -3018,6 +3390,32 @@ mod slot_ops_tests {
             ledger.slot_source_ranges(&operation.outputs[0])[0].sample_end,
             1_000
         );
+        assert_eq!(operation.sources, original);
+        assert!(operation.source_ranges.contains(&owner()));
+        assert_eq!(operation.outputs.len(), 2);
+        assert_eq!(
+            (
+                operation.outputs[0].sample_start,
+                operation.outputs[0].sample_end
+            ),
+            (320, 1_000)
+        );
+        assert_eq!(
+            (
+                operation.outputs[1].sample_start,
+                operation.outputs[1].sample_end
+            ),
+            (2_000, 3_000)
+        );
+        assert!(!ledger.text_recovery_pending(&owner()));
+        assert!(ledger.note_frontier_return(&owner(), ObservationProducer::Whisper));
+        ledger.seal(&owner()).unwrap();
+        let coverage = ledger.assess_seal_coverage("slot-test", 1, &speech, 0);
+        assert_eq!(coverage.status, SealCoverageStatus::Complete);
+        assert!(ledger.record_seal_coverage(coverage));
+        ledger.seal_terminal("slot-test", 1).unwrap();
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
     }
 
     #[test]
