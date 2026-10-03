@@ -66,6 +66,8 @@ struct BridgeResponse: Codable {
     let error: String?
     /// SFSpeechRecognizer authorization: not_determined | denied | restricted | authorized
     let speechAuth: String?
+    /// Producer progress for offline SFSpeech, independent of recognized text.
+    var processedAudioSeconds: Double? = nil
 }
 
 enum BridgeError: Error, CustomStringConvertible {
@@ -289,21 +291,25 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
         }
         let transcription = try await transcribe(
             audioPath: audioPath, locale: locale, deadlinePolicy: deadlinePolicy)
-        if deadlinePolicy == .wholeFile {
+        if transcription.fileError == nil && deadlinePolicy == .wholeFile {
             let file = try AVAudioFile(forReading: URL(fileURLWithPath: audioPath))
             let seconds = Double(file.length) / max(file.processingFormat.sampleRate, 1.0)
-            try validateAppleFileResult(transcription, audioSeconds: seconds)
+            try validateAppleFileResult(
+                transcription, audioSeconds: seconds,
+                processedSeconds: transcription.processedAudioSeconds)
         }
+        let accepted = transcription.fileError == nil
         return BridgeResponse(
-            ok: true,
-            status: "ok",
+            ok: accepted,
+            status: accepted ? "ok" : "error",
             text: transcription.text,
             segments: transcription.segments,
             localeSupported: true,
             localeInstalled: true,
             backend: transcription.backend.rawValue,
-            error: nil,
-            speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
+            error: transcription.fileError,
+            speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus()),
+            processedAudioSeconds: transcription.processedAudioSeconds
         )
     case "stream":
         // Streaming v2: ONE long-lived SFSpeechAudioBufferRecognitionRequest
@@ -668,6 +674,8 @@ private struct TranscriptionPayload {
     let text: String
     let segments: [BridgeSegment]
     let backend: AppleSttBackend
+    var processedAudioSeconds: Double? = nil
+    var fileError: String? = nil
 }
 
 private func makeTranscriber(locale: Locale) -> SpeechTranscriber {
@@ -1782,7 +1790,7 @@ private func transcribeWithSfSpeech(audioPath: String, locale: Locale, deadlineP
 }
 
 /// Whole-file URL recognition shares the buffer accumulator's frozen + final snapshot.
-/// A timeout or unsuccessful task never promotes its accumulated text to success.
+/// Terminal failures retain accumulated text with an explicit producer error.
 final class SfSpeechFileRecognitionDelegate: NSObject, SFSpeechRecognitionTaskDelegate, @unchecked Sendable {
     private let gate: SfSpeechSettleGate
     private let timeout: SfSpeechTimeoutCancel
@@ -1861,8 +1869,9 @@ final class SfSpeechFileRecognitionDelegate: NSObject, SFSpeechRecognitionTaskDe
         defer { progressLock.unlock() }
         // One assembly function for URL, buffer and stream; copy its payload
         // and telemetry under the same lock before any terminal error is built.
-        let payload = accumulator.snapshotPayload()
+        var payload = accumulator.snapshotPayload()
             ?? TranscriptionPayload(text: "", segments: [], backend: .sfSpeechRecognizer)
+        payload.processedAudioSeconds = processedSeconds
         let counts = "phrase_restarts=\(frozenPhraseCount), recognition_finals=\(finalResultCount)"
         let diagnostic = appleFileCoverageDiagnostic(
             payload, audioSeconds: audioSeconds, processedSeconds: processedSeconds,
@@ -1886,9 +1895,10 @@ final class SfSpeechFileRecognitionDelegate: NSObject, SFSpeechRecognitionTaskDe
                 continuation.resume(throwing: error)
             }
         } else {
-            continuation.resume(throwing: BridgeError.runtime(
-                "sf_speech: \(task.error?.localizedDescription ?? "recognition task failed") "
-                    + snapshot.diagnostic))
+            var payload = snapshot.payload
+            let taskError = task.error?.localizedDescription ?? "recognition task failed"
+            payload.fileError = "sf_speech: \(taskError) " + snapshot.diagnostic
+            continuation.resume(returning: payload)
         }
     }
 
@@ -1896,17 +1906,19 @@ final class SfSpeechFileRecognitionDelegate: NSObject, SFSpeechRecognitionTaskDe
         guard gate.trySettle() else { return }
         timeout.cancel()
         let snapshot = snapshotForTerminal(outcome: "cancelled")
-        continuation.resume(throwing: BridgeError.runtime("sf_speech: recognition task cancelled "
-            + snapshot.diagnostic))
+        var payload = snapshot.payload
+        payload.fileError = "sf_speech: recognition task cancelled " + snapshot.diagnostic
+        continuation.resume(returning: payload)
     }
 
     func recognitionTimedOut() {
         guard gate.trySettle() else { return }
         timeout.cancel()
         let snapshot = snapshotForTerminal(outcome: "timeout")
-        continuation.resume(throwing: BridgeError.runtime(
-            "sf_speech: recognition_timeout after \(deadlineSeconds)s "
-                + snapshot.diagnostic))
+        var payload = snapshot.payload
+        payload.fileError = "sf_speech: recognition_timeout after \(deadlineSeconds)s "
+            + snapshot.diagnostic
+        continuation.resume(returning: payload)
         // Claim the terminal verdict before cancel: cancellation may deliver callbacks.
         gate.cancelTask()
     }
