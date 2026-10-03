@@ -5,7 +5,7 @@
 With a known name and channel, one call replaces the manual saga below:
 
 ```bash
-python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+cs-bus \
   --attach --channel <1-9> --name <name> \
   --provider <claude-code|codex|...> --session <provider-session-id> \
   [--voice <voice-id>] [--speed <factor>] [--tts-vendor xai|openai]
@@ -45,7 +45,7 @@ Unreadable bindings refuse writes; they are never treated as an empty map.
 Read the channel's one truthful state at any time:
 
 ```bash
-python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+cs-bus \
   --status --provider <provider> --session <provider-session-id>
 ```
 
@@ -71,9 +71,9 @@ Confirm the app is running and inspect the installed helper:
 
 ```bash
 pgrep -x Codescribe
-python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py --help
-python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py --print-bus-path
-python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py --active-names
+cs-bus --help
+cs-bus --print-bus-path
+cs-bus --active-names
 ```
 
 Use the printed bus path. Resolution is explicit override, then
@@ -104,7 +104,7 @@ session context. Do not invent an id or reuse another conversation's lease.
 With a known name, attach directly:
 
 ```bash
-python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+cs-bus \
   --provider codex --session <provider-session-id> \
   --name roman --drafts --follow
 ```
@@ -118,7 +118,7 @@ instead of `--name`. Before binding the name, stop that follower and wait for
 its handle to close. Reattach with the same provider session and receipt:
 
 ```bash
-python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+cs-bus \
   --provider codex --session <provider-session-id> --lease <lease-id> \
   --name roman --drafts --follow
 ```

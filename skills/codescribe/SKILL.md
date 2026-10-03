@@ -8,7 +8,7 @@ description: >
   Editing this skill or the app is a repository task, not an instruction to
   start another listener.
 metadata:
-  version: "0.8.0"
+  version: "0.9.0"
   loctree_value: "primary repo map for structural/literal repository work"
   aicx_value: "intent, session, and decision-context retrieval"
   dogfooding: "required for repo-impacting work"
@@ -58,7 +58,7 @@ manual attach saga and drive the engine:
    follower for this provider session, and prints an attach receipt:
 
    ```bash
-   python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+   cs-bus \
      --attach --channel <channel> --name <name> \
      --provider <claude-code|codex|...> --session <provider-session-id> \
      [--voice <voice>]
@@ -71,11 +71,11 @@ manual attach saga and drive the engine:
    follower pid and its log path. The follower runs with `--coalesce`: a
    reducer storm folds into one envelope per document.
 
-3. Arm the wakeup: run `--watch --provider <p> --session <id>` under the
-   provider's output-notifying monitor ([Monitor](references/monitor.md)). It
-   prints one line per seal, refused take, state-changing or routing notice.
-   The follower's `--on-seal '<cmd>'` hook is the provider-agnostic
-   alternative.
+3. Codex attachment arms `codex queue` automatically for this exact thread.
+   It continues after a final answer; no private hook or polling is needed.
+   Other providers use their output-notifying monitor with `--watch`
+   ([Monitor](references/monitor.md)). An explicit `--on-seal` hook selects
+   its own wakeup path instead of running a second native wakeup.
 4. Read one truth with `--status`: backlog is pending minus acknowledgment
    markers, never the raw pending length the lease file shows before a sweep.
 5. Verify with a fresh named take on the channel before claiming listening;
@@ -115,8 +115,11 @@ Pure attach and CLI consumption have no repo-orientation prerequisite.
 
 ## Dependencies and Reading Path
 
-Use the installed helper:
-`~/.codescribe/agent-bridge/runtime/bin/bus-demux.py`.
+The app installs `cs-bus` and `cs-say` in `~/.local/bin` at first launch and
+updates them with its bundled runtime. `make install-app` uses the same
+installer. If that directory is not on this shell's PATH, use
+`~/.local/bin/cs-bus`; no checkout is needed. Client skills remain selected in
+Settings. `cs-say "<text>" --provider <p> --session <id>` uses the attached voice.
 
 Read only the reference needed by the current operation:
 
@@ -135,8 +138,8 @@ include successful delivery, unavailable wakeup, and seal refusal.
 
 1. Read attach, monitor and live-vs-seal references. Verify the running app,
    resolved bus, helper support for recent schemas, and stable provider session.
-2. Select a supported monitor that wakes this agent on follower output. A
-   terminal process handle or diagnostic tail does not satisfy this step.
+2. Use native queue wakeup for Codex; use an output-notifying monitor for
+   other providers. A process handle or diagnostic tail is insufficient.
 3. Reuse the session's name, or ask once if none is established. If the Founder
    asks the agent to choose, choose a pronounceable name and bind it directly.
 4. Attach one follower with drafts enabled — prefer the one-command
@@ -144,7 +147,7 @@ include successful delivery, unavailable wakeup, and seal refusal.
    provider/session, lease, cursor, helper path, follower handle, and
    monitor handle.
 5. Verify a fresh named take reaches this conversation without a typed nudge.
-   Distinguish live receipt from terminal permission; respond accordingly.
+   Preserve transcription diagnostics and normal conversation permissions.
    After accepting each complete envelope, acknowledge its delivery ID as
    described in [Monitor](references/monitor.md#acknowledge-conversation-receipt).
 6. On recovery, restore both follower continuity and notification delivery.
@@ -157,11 +160,13 @@ after a final answer. Do not add extra followers to compensate.
 
 ## Authority and Safety
 
-Drafts may support conversational replies or read-only investigation.
-A voice-requested state change requires a genuine `transcript_sealed` event
-with `state_change_allowed: true`, plus the normal task authorization.
-Fn release, silence, clipboard paste and `session_ended` are not substitutes.
-A seal does not authorize unrelated actions or replay of a completed command.
+The Founder's spoken requests use the same task permissions as typed requests.
+Full Access and no approval do not acquire a second approval gate here.
+`state_change_allowed` and `coverage` remain unchanged transcription diagnostics;
+a refused measurement does not cancel an otherwise clear request. Ask only
+when the actual request is unclear or normal task permissions require it.
+Draft revisions are one evolving request, never repeated commands. A seal or
+queue receipt does not authorize unrelated actions or replay completed work.
 
 Do not open a microphone, start Voice Lab, edit provider configuration, or
 install the app merely to attach. Use the product installer only when that
@@ -198,7 +203,7 @@ Do not claim "I hear you" from an attach receipt alone.
 - Treating buffered stdout, `tail -F`, or three diagnostic readers as agent wakeup.
 - Ending the turn while promising listening that requires active polling.
 - Starting a second follower for the same lease or replaying old commands.
-- Treating terminal refusal or session completion as permission to act.
+- Using coverage diagnostics as an extra approval gate, or replaying a command.
 - Inventing a worker launcher or running a repo workflow for a simple attach.
 
 ## Verify before the handoff

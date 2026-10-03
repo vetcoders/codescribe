@@ -38,6 +38,7 @@ expected = {
     if path.is_file() and path.name not in EXCLUDED_NAMES
 }
 expected.add("bin/bus-demux.py")
+expected.update({"bin/cs-bus", "bin/cs-say"})
 listed = {entry["path"] for entry in manifest["files"]}
 actual = {
     path.relative_to(payload).as_posix()
@@ -71,6 +72,7 @@ FAKE_ROOT="$WORKDIR/unsafe-repo"
 mkdir -p "$FAKE_ROOT/scripts" "$FAKE_ROOT/skills/codescribe"
 cp "$ROOT/scripts/build-app.sh" "$FAKE_ROOT/scripts/build-app.sh"
 cp "$ROOT/scripts/bus-demux.py" "$FAKE_ROOT/scripts/bus-demux.py"
+cp "$ROOT/scripts/cs-bus" "$ROOT/scripts/cs-say" "$FAKE_ROOT/scripts/"
 cp "$ROOT/skills/codescribe/SKILL.md" "$FAKE_ROOT/skills/codescribe/SKILL.md"
 if "$FAKE_ROOT/scripts/build-app.sh" --stage-agent-bridge "$FAKE_ROOT" 9.8.7 \
   >"$WORKDIR/unsafe-root.out" 2>"$WORKDIR/unsafe-root.err"; then
@@ -103,7 +105,11 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
         "text": "James, payload działa.",
     }, ensure_ascii=False) + "\n")
 PY
-OUTPUT="$(cd "$WORKDIR" && python3 "$PAYLOAD/bin/bus-demux.py" --bus "$BUS" --name james --once)"
+mkdir -p "$WORKDIR/local-bin"
+ln -s "$PAYLOAD/bin/cs-bus" "$WORKDIR/local-bin/cs-bus"
+ln -s "$PAYLOAD/bin/cs-say" "$WORKDIR/local-bin/cs-say"
+OUTPUT="$(cd "$WORKDIR" && "$WORKDIR/local-bin/cs-bus" --bus "$BUS" --name james --once)"
+"$WORKDIR/local-bin/cs-say" --help | grep -q -- '--provider'
 python3 - "$OUTPUT" <<'PY'
 import json, sys
 value = json.loads(sys.argv[1])

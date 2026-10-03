@@ -1,6 +1,31 @@
 # Monitor and agent wakeup
 
-## Select the execution mechanism
+## Codex native queue
+
+`cs-bus --attach --provider codex --session <thread-id> --name <name> --channel <n>`
+automatically selects `codex-queue`. The follower submits full seal text in
+occurrence order to `codex queue --thread <thread-id> --message <compact-message>`.
+Coverage-refused takes also arrive. No private hook, full JSON prompt or new
+model session is needed. The installed Codex CLI must support `queue`.
+
+Receipts under `agent-bridge/wakeups/<lease-id>/<delivery-id>.json` distinguish
+`requesting`, `provider_accepted`, `rejected`, `unavailable` and `uncertain`.
+`cs-bus --status` reports pending wakeup dispositions. Provider acceptance is
+not conversation receipt: only the receiving conversation calls `--ack` after
+reading. Restart never resubmits accepted or ambiguous deliveries. Inspect a
+failed submission before retrying:
+
+```bash
+cs-bus --retry-wakeup <delivery-id> --provider codex --session <thread-id>
+```
+
+An uncertain attempt might already be queued: verify before retrying it.
+Reattachment with changed wakeup configuration restarts only the verified
+owned follower, preserving its cursor and unread mailbox. `--wakeup off`
+selects monitor-only operation; `--on-seal` selects a custom hook instead of
+native queue. Neither touches microphone or app lifecycle.
+
+## Select the execution mechanism for other providers
 
 Inspect tools available in this provider session before launching a listener.
 Use its documented event-driven background monitor or notification facility
@@ -16,7 +41,7 @@ does not prove any notification behavior.
 
 Retain both the follower handle and the monitor handle with the same provider
 session and lease. Notifications must use the existing named follower's
-envelopes, preserving delivery identity and draft/seal permission.
+envelopes, preserving delivery identity and draft/seal diagnostics.
 
 ## Watch stream
 
@@ -24,7 +49,7 @@ envelopes, preserving delivery identity and draft/seal permission.
 `tail -F <log> | python` filter:
 
 ```bash
-python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+cs-bus \
   --watch --provider <provider> --session <provider-session-id>
 ```
 
@@ -50,8 +75,8 @@ event file already holds and exits; `--from-start` replays it before following;
 moves the lease cursor.
 
 A line with `coverage: "refused"` carries words the ledger would not certify
-(incomplete acoustic coverage). `sca` is `false`: reply to it, do not execute
-it as a command.
+(incomplete acoustic coverage). `sca` remains `false`; preserve that diagnostic
+and follow the actual request using normal conversation permissions.
 
 ## Verify independently
 
@@ -102,7 +127,7 @@ After this conversation has received and accepted the complete envelope,
 retain its delivery ID and disposition in the conversation record, then run:
 
 ```bash
-python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+cs-bus \
   --provider codex --session SESSION_ID --ack DELIVERY_ID [DELIVERY_ID ...]
 ```
 
@@ -114,8 +139,8 @@ refuses the call and no marker is written. Each accepted id prints one
 executed. Keep execution disposition separately; do not repeat a completed
 action when its envelope is replayed.
 
-Acknowledge accepted drafts and routing-ambiguity notices too, without
-promoting them to permission for state changes. Report ambiguous recipients
+Acknowledge accepted drafts and routing-ambiguity notices too; transcription
+diagnostics do not change task permissions. Report ambiguous recipients
 and ask for a clear address instead of choosing one. Never acknowledge from
 the stdout pump before the conversation receives the message, from a delivery
 ID alone, or after a truncated/incomplete tool result. Unaccepted envelopes

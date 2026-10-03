@@ -236,6 +236,7 @@ install-app: install-voice-lab
 	@codesign --verify --deep --strict /Applications/$(CODESCRIBE_APP_NAME).app
 	@echo "Seal: codesign --verify --deep --strict ok; LSMultipleInstancesProhibited=$$(/usr/libexec/PlistBuddy -c 'Print :LSMultipleInstancesProhibited' /Applications/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist)"
 	@echo "Installed: /Applications/$(CODESCRIBE_APP_NAME).app"
+	@"/Applications/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/Codescribe" --install-agent-bridge
 
 # ============================================================================
 # Run
@@ -1110,6 +1111,7 @@ verify:
 	python3 -m unittest scripts/tests/test_data_asset_references.py; \
 	python3 -m unittest scripts/tests/test_sessions_dedupe.py; \
 	python3 -m unittest scripts/tests/test_bus_demux_speech.py; \
+	python3 -m unittest scripts/tests/test_bus_native_queue.py; \
 	bash scripts/validate-envs.sh; \
 	echo "=== Verify (String Catalog lint instrument) ==="; \
 	python3 -m unittest scripts/tests/test_l10n_lint.py; \

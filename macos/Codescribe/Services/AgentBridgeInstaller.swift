@@ -277,31 +277,42 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     try install(selectedClients: selectedClients, adopting: nil).status
   }
 
-  /// Startup updates only an installation whose receipt still owns every
-  /// selected folder. First installation and manual adoption remain explicit.
+  /// Startup installs the common runtime and updates owned client skills.
+  /// Selecting clients and adopting a manual skill remain explicit.
   /// The caller runs this disk work outside the main actor.
   func synchronizeManagedPayload() -> String {
-    let detail: String
     do {
-      guard let receipt = validReceipt() else {
-        return logSynchronization("Agent bridge synchronization skipped: no valid managed receipt.")
-      }
-      try requireSynchronizationOwnership(receipt)
-      let manifest = try verifiedManifest()
-      if payloadMatches(receipt: receipt, manifest: manifest) {
-        detail = "Agent bridge synchronization unchanged: bundled payload matches the managed receipt."
-      } else {
-        _ = try install(
-          selectedClients: Set(receipt.selectedClients), adopting: nil,
-          synchronizing: receipt
-        )
-        detail = "Agent bridge synchronized from this app for "
-          + receipt.selectedClients.map(\.displayName).joined(separator: ", ") + "."
-      }
+      return logSynchronization(try installBundledRuntime())
     } catch {
-      detail = "Agent bridge synchronization skipped: " + error.localizedDescription
+      return logSynchronization(
+        "Agent bridge synchronization skipped: " + error.localizedDescription)
     }
-    return logSynchronization(detail)
+  }
+
+  func installBundledRuntime() throws -> String {
+    guard let receipt = validReceipt() else {
+      guard !fileManager.fileExists(atPath: runtimeDirectory.path),
+        (try? runtimeDirectory.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true
+      else {
+        throw AgentBridgeInstallationError.conflict(
+          path: runtimeDirectory.path, reason: "unowned runtime retained")
+      }
+      _ = try install(selectedClients: [], adopting: nil, runtimeOnly: true)
+      return "Agent bridge runtime installed; client skills remain unselected."
+    }
+    try requireSynchronizationOwnership(receipt)
+    let manifest = try verifiedManifest()
+    if payloadMatches(receipt: receipt, manifest: manifest) {
+      try publishCommands(manifest: manifest)
+      return "Agent bridge synchronization unchanged: bundled payload matches the managed receipt."
+    } else {
+      _ = try install(
+        selectedClients: Set(receipt.selectedClients), adopting: nil,
+        synchronizing: receipt, runtimeOnly: receipt.selectedClients.isEmpty
+      )
+      return "Agent bridge synchronized from this app for "
+        + receipt.selectedClients.map(\.displayName).joined(separator: ", ") + "."
+    }
   }
 
   private func logSynchronization(_ detail: String) -> String {
@@ -320,7 +331,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   private func requireSynchronizationOwnership(_ receipt: AgentBridgeReceipt) throws {
     let selected = Set(receipt.selectedClients)
     guard !receipt.managedID.isEmpty, !receipt.bundleVersion.isEmpty,
-      !selected.isEmpty, selected.count == receipt.selectedClients.count,
+      selected.count == receipt.selectedClients.count,
       Set(receipt.installedPaths.keys) == Set(selected.map(\.rawValue)),
       receipt.runtimePath == runtimeDirectory.standardizedFileURL.path,
       ISO8601DateFormatter().date(from: receipt.installedAt) != nil,
@@ -366,7 +377,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     }
     for entry in receipt.payloadFiles {
       let file = runtimeDirectory.appendingPathComponent(entry.path)
-      let expected = expectedRoot.appendingPathComponent("runtime").appendingPathComponent(entry.path)
+      let expected = expectedRoot.appendingPathComponent("runtime").appendingPathComponent(
+        entry.path)
       let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
       guard values.isRegularFile == true, values.isSymbolicLink != true,
         file.resolvingSymlinksInPath().standardizedFileURL == expected.standardizedFileURL
@@ -404,9 +416,10 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
 
   private func install(
     selectedClients: Set<AgentBridgeClient>, adopting: AgentBridgeClient?,
-    synchronizing expectedReceipt: AgentBridgeReceipt? = nil
+    synchronizing expectedReceipt: AgentBridgeReceipt? = nil,
+    runtimeOnly: Bool = false
   ) throws -> AgentBridgeAdoptionResult {
-    guard !selectedClients.isEmpty else {
+    guard runtimeOnly || !selectedClients.isEmpty else {
       throw AgentBridgeInstallationError.selectionRequired
     }
     let manifest = try verifiedManifest()
@@ -429,6 +442,13 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     }
 
     let previousReceipt = validReceipt()
+    if runtimeOnly, expectedReceipt == nil,
+      previousReceipt != nil || fileManager.fileExists(atPath: runtimeDirectory.path)
+        || fileManager.fileExists(atPath: receiptURL.path)
+    {
+      throw AgentBridgeInstallationError.conflict(
+        path: receiptURL.path, reason: "the installation changed before runtime initialization")
+    }
     if let expectedReceipt {
       // UI installation may have changed the selection while startup verified
       // the bundle. Never overwrite that newer choice with a stale snapshot.
@@ -447,6 +467,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     let deselected = previouslySelected.subtracting(effectiveSelection)
 
     // Conflict discovery is deliberately complete before the first rename.
+    try requireCommandOwnership(manifest: manifest)
     if let adopting {
       try requireManualSkill(client: adopting)
     }
@@ -598,6 +619,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         preservedManualBackups: (previousReceipt?.preservedManualBackups ?? []) + preservedBackups,
         preservedEntries: preservedEntries
       )
+      try stageCommands(manifest: manifest, transactionID: transactionID, records: &records)
       try writeJSON(receipt, to: receiptURL)
       for follower in oldHelperFollowers where follower.isAlive {
         Self.logger.warning(
@@ -671,9 +693,11 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
 
   private func liveFollowerProcesses() -> [FollowerProcess] {
     let directory = runtimeDirectory.appendingPathComponent("followers", isDirectory: true)
-    guard let files = try? fileManager.contentsOfDirectory(
-      at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]
-    ) else { return [] }
+    guard
+      let files = try? fileManager.contentsOfDirectory(
+        at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+      )
+    else { return [] }
     return files.sorted { $0.lastPathComponent < $1.lastPathComponent }.compactMap { file in
       guard file.pathExtension == "pid",
         let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
@@ -978,6 +1002,82 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     let destination: URL
     let backup: URL?
     let installedReplacement: Bool
+  }
+
+  private func commandNames(manifest: AgentBridgeBundleManifest) -> [String] {
+    ["cs-bus", "cs-say"].filter { name in
+      manifest.files.contains { $0.path == "bin/" + name }
+    }
+  }
+
+  private func commandURL(_ name: String) -> URL {
+    homeDirectory.appendingPathComponent(".local/bin/" + name)
+  }
+
+  private func requireCommandOwnership(manifest: AgentBridgeBundleManifest) throws {
+    let directory = homeDirectory.appendingPathComponent(".local/bin")
+    let expected = homeDirectory.resolvingSymlinksInPath().appendingPathComponent(".local/bin")
+    guard directory.resolvingSymlinksInPath().standardizedFileURL == expected.standardizedFileURL
+    else {
+      throw AgentBridgeInstallationError.conflict(
+        path: directory.path, reason: "the command directory is redirected")
+    }
+    for name in commandNames(manifest: manifest) {
+      let destination = commandURL(name)
+      let link = try? fileManager.destinationOfSymbolicLink(atPath: destination.path)
+      if fileManager.fileExists(atPath: destination.path) || link != nil {
+        guard link == runtimeDirectory.appendingPathComponent("bin/" + name).path else {
+          throw AgentBridgeInstallationError.conflict(
+            path: destination.path, reason: "the command belongs to another installation")
+        }
+      }
+    }
+  }
+
+  private func stageCommands(
+    manifest: AgentBridgeBundleManifest, transactionID: String,
+    records: inout [ReplacementRecord]
+  ) throws {
+    try requireCommandOwnership(manifest: manifest)
+    for name in commandNames(manifest: manifest) {
+      let destination = commandURL(name)
+      let target = runtimeDirectory.appendingPathComponent("bin/" + name).path
+      if (try? fileManager.destinationOfSymbolicLink(atPath: destination.path)) == target {
+        continue
+      }
+      try fileManager.createDirectory(
+        at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+      let stage = destination.deletingLastPathComponent()
+        .appendingPathComponent(".\(name).stage-\(transactionID)")
+      defer { try? fileManager.removeItem(at: stage) }
+      try fileManager.createSymbolicLink(atPath: stage.path, withDestinationPath: target)
+      try replace(
+        destination: destination, with: stage, transactionID: transactionID, records: &records)
+    }
+  }
+
+  private func publishCommands(manifest: AgentBridgeBundleManifest) throws {
+    let lease = try acquireInstallationLease()
+    defer {
+      _ = flock(lease, LOCK_UN)
+      _ = Darwin.close(lease)
+    }
+    var records: [ReplacementRecord] = []
+    do {
+      guard let receipt = validReceipt(), payloadMatches(receipt: receipt, manifest: manifest)
+      else {
+        throw AgentBridgeInstallationError.conflict(
+          path: receiptURL.path, reason: "the runtime generation changed while publishing commands")
+      }
+      try requireSynchronizationOwnership(receipt)
+      try stageCommands(manifest: manifest, transactionID: UUID().uuidString, records: &records)
+    } catch {
+      let failures = rollback(records: records)
+      if !failures.isEmpty {
+        throw AgentBridgeInstallationError.transaction(failures.joined(separator: "\n"))
+      }
+      throw error
+    }
   }
 
   private func replace(

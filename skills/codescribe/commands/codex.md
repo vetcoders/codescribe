@@ -27,8 +27,8 @@ explain the skill or print commands for the user to run.
    shell quoting. On an occupied slot, report its owner and available slots.
    Never overwrite, detach another agent, silently choose another slot, or
    retry with a different identity.
-5. Retain the attach receipt and arm a supported wake mechanism for its one
-   follower. Verify the mechanism actually delivers into this conversation.
+5. Retain the attach receipt: `wakeup: "codex-queue"` arms native delivery
+   for its one follower automatically. No separate hook or polling is needed. Verify the mechanism actually delivers into this conversation.
    If only active-turn polling is available, keep the listening turn open
    and report `active_polling`; never promise replies after the turn ends.
 6. Read `--status` for the same provider/session. A supplied voice is stored

@@ -1564,6 +1564,7 @@ class SessionLease:
         self._acquire_lock()
         try:
             previous = read_json(self.path)
+            self.wakeup_configuration = previous.get("wakeup_configuration") if previous else None
             if previous is None and self.path.exists():
                 raise ValueError(
                     f"lease {self.lease_id} has unreadable recovery state; "
@@ -1689,6 +1690,7 @@ class SessionLease:
                 "pid": os.getpid(),
                 "heartbeat_unix": time.time(),
                 "updated_at": utc_now(),
+                **({"wakeup_configuration": self.wakeup_configuration} if self.wakeup_configuration else {}),
             },
         )
 
@@ -1871,6 +1873,126 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
     return 0
 
 
+def effective_wakeup(args: argparse.Namespace) -> str:
+    requested = getattr(args, "wakeup", "auto")
+    if requested != "auto":
+        return requested
+    managed_follower = getattr(args, "attach", False) or getattr(args, "follower_channel", None)
+    return "codex-queue" if args.provider == "codex" and managed_follower and not args.on_seal else "off"
+
+
+def wakeup_configuration(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "wakeup": effective_wakeup(args), "on_seal": args.on_seal,
+        "helper_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    }
+
+
+class NativeQueueWakeup:
+    """Ordered provider submission, independent of microphone and agent ACK.
+
+    Each delivery has a durable transport receipt. A provider timeout or an
+    interrupted submission is ambiguous: never replay it automatically.
+    Only the conversation can acknowledge reading the original envelope.
+    """
+
+    def __init__(self, root: Path, session: str, channel: str | None):
+        from concurrent.futures import ThreadPoolExecutor
+
+        self.root = root
+        self.session = session
+        self.channel = channel
+        self.lease_id = lease_identifier("codex", session)
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cs-native-queue")
+
+    def enqueue(self, payload: dict[str, Any], *, retry: bool = False) -> None:
+        if payload.get("kind") != "seal":
+            return
+        self.executor.submit(self._deliver, dict(payload), retry).add_done_callback(self._report_error)
+
+    @staticmethod
+    def _report_error(future: Any) -> None:
+        if not future.cancelled() and future.exception() is not None:
+            sys.stderr.write("cs-bus: native wakeup failed; delivery remains in its mailbox\n")
+
+    def close(self, *, wait: bool = False) -> None:
+        self.executor.shutdown(wait=wait, cancel_futures=not wait)
+
+    def _deliver(self, payload: dict[str, Any], retry: bool) -> None:
+        import shutil
+        import subprocess
+
+        identity = payload.get("delivery_id")
+        owner = payload.get("delivery_owner")
+        if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{24}", identity):
+            return
+        expected = {"lease_id": self.lease_id, "provider": "codex", "provider_session_id": self.session}
+        if not isinstance(owner, dict) or any(owner.get(k) != v or payload.get(k) != v for k, v in expected.items()):
+            return
+        directory = self.root / "wakeups" / self.lease_id
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        receipt_path = directory / f"{identity}.json"
+        with (directory / f"{identity}.lock").open("a") as lock:
+            os.chmod(lock.name, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if delivery_acknowledged(self.root, self.lease_id, identity):
+                return
+            state = read_json(self.root / "leases" / f"{self.lease_id}.json") or {}
+            if state.get("schema") != LEASE_SCHEMA or any(state.get(k) != v for k, v in expected.items()):
+                return
+            if payload not in state.get("pending", []):
+                return
+            previous = read_json(receipt_path)
+            if receipt_path.exists() and previous is None:
+                raise ValueError("unreadable wakeup receipt; preserved")
+            if previous and (previous.get("disposition") == "provider_accepted" or not retry):
+                return
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return
+            diagnostic = {"delivery_id": identity, "state_change_allowed": payload.get("state_change_allowed")}
+            if "coverage" in payload:
+                diagnostic["coverage"] = payload["coverage"]
+            label = str(self.channel or "?")
+            name = str(payload.get("audience") or "agent")
+            message = (
+                f"Codescribe channel {label} / {name}:\n{text}\n\n"
+                f"Receipt: {json.dumps(diagnostic, ensure_ascii=False)}\n"
+                "Reply using the attached voice profile. Acknowledge this delivery_id only after reading. "
+                "Coverage is a transcription diagnostic; use this conversation's normal task permissions."
+            )
+            receipt = {
+                "schema": "codescribe.native-queue.receipt.v1", **expected,
+                "delivery_id": identity, "disposition": "requesting",
+                "bus_emitted_at": payload.get("emitted_at"),
+                "queue_requested_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "attempt": (previous or {}).get("attempt", 0) + 1,
+            }
+            atomic_json(receipt_path, receipt)
+            executable = shutil.which("codex")
+            if executable is None:
+                receipt.update(disposition="unavailable", reason="codex executable not found on PATH")
+            else:
+                try:
+                    result = subprocess.run(
+                        [executable, "queue", "--thread", self.session, "--message", message],
+                        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+                    )
+                    receipt.update(
+                        disposition="provider_accepted" if result.returncode == 0 else "rejected",
+                        exit_code=result.returncode,
+                        provider_receipt=result.stdout.strip()[:2000],
+                    )
+                except subprocess.TimeoutExpired:
+                    receipt.update(disposition="uncertain", reason="provider acceptance timed out")
+                except OSError:
+                    receipt.update(disposition="unavailable", reason="provider process could not start")
+            receipt["completed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            atomic_json(receipt_path, receipt)
+            if receipt["disposition"] != "provider_accepted":
+                sys.stderr.write(f"cs-bus: native wakeup {receipt['disposition']} for {identity}; retained, see --status\n")
+
+
 def fire_seal_hook(command: str, payload: dict[str, Any]) -> None:
     """Detached wake hook, exactly once per freshly queued seal.
 
@@ -1929,12 +2051,20 @@ def run(args: argparse.Namespace) -> int:
         if lease.name:
             name = lease.name
             hear_all = False
+        if follower_channel:
+            lease.wakeup_configuration = wakeup_configuration(args)
+            lease.persist(active=True)
         emit_follower(lease.attach_receipt(), events_path, follower_channel)
 
     # One normalizer for the whole run: the evidence grain is stateful (it
     # remembers each session's document and whether its seal was reported), and
     # a fresh one per line would re-emit the entire document every time.
     normalizer = EvidenceNormalizer()
+    native = (
+        NativeQueueWakeup(args.bridge_home, args.session, follower_channel)
+        if lease and args.follow and effective_wakeup(args) == "codex-queue"
+        else None
+    )
     event_trigger: BusEventTrigger | None = None
     deferred: tuple[list[dict[str, Any]], int | None] | None = None
     recipients: set[str] | None = None
@@ -1969,6 +2099,8 @@ def run(args: argparse.Namespace) -> int:
                 payload = remaining[0]
                 if not lease or lease.queue_delivery(payload):
                     publish(payload)
+                    if native:
+                        native.enqueue(payload)
                     if args.on_seal and payload.get("kind") == "seal":
                         fire_seal_hook(args.on_seal, payload)
                 remaining.pop(0)
@@ -2031,6 +2163,8 @@ def run(args: argparse.Namespace) -> int:
             lease.collect_acknowledgments()
             for payload in lease.pending.values():
                 publish(payload)
+                if native:
+                    native.enqueue(payload)
             flush_human_drafts()
         if args.once:
             last = None
@@ -2123,6 +2257,8 @@ def run(args: argparse.Namespace) -> int:
         sys.stderr.write(f"bus-demux: {error}\n")
         return 4
     finally:
+        if native:
+            native.close()
         if event_trigger:
             event_trigger.close()
         if lease:
@@ -2922,6 +3058,33 @@ def attach_command(args: argparse.Namespace) -> int:
     resumed = lease_path.exists()
     pid = live_follower_pid(root, lease_id)
     lease_state = read_json(lease_path)
+    configuration = wakeup_configuration(args)
+    pid_record = read_json(follower_pidfile(root, lease_id)) or {}
+    installed_configuration = pid_record.get("configuration") or (lease_state or {}).get("wakeup_configuration")
+    if pid is not None and installed_configuration != configuration:
+        # Retire only this session's actual follower. Its cursor and unread
+        # deliveries stay in place; no microphone or app process is touched.
+        command_line = subprocess.run(
+            ["/bin/ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, check=False,
+        ).stdout
+        import shlex
+
+        words = shlex.split(command_line)
+        if (
+            not isinstance(lease_state, dict) or lease_state.get("pid") != pid
+            or lease_state.get("provider_session_id") != args.session
+            or "--follow" not in words
+            or not any(words[i:i + 2] == ["--session", args.session] for i in range(len(words)))
+        ):
+            raise OSError("existing follower identity could not be verified; retained")
+        os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and process_is_alive(pid):
+            time.sleep(0.1)
+        if process_is_alive(pid):
+            raise OSError("owned follower did not exit; retained")
+        pid = None
     if (
         isinstance(lease_state, dict)
         and lease_state.get("schema") == LEASE_SCHEMA
@@ -2970,6 +3133,8 @@ def attach_command(args: argparse.Namespace) -> int:
             str(events_path),
             "--follower-channel",
             str(args.channel),
+            "--wakeup",
+            configuration["wakeup"],
         ]
         if args.on_seal:
             command += ["--on-seal", args.on_seal]
@@ -2988,7 +3153,7 @@ def attach_command(args: argparse.Namespace) -> int:
             )
         atomic_json(
             follower_pidfile(root, lease_id),
-            {"lease_id": lease_id, "pid": child.pid, "started_at": utc_now()},
+            {"lease_id": lease_id, "pid": child.pid, "started_at": utc_now(), "configuration": configuration},
         )
         pid = child.pid
         spawned = True
@@ -3027,6 +3192,8 @@ def attach_command(args: argparse.Namespace) -> int:
             "follower_events": str(events_path),
             "coalesce_requested": True,
             "on_seal_hook": bool(args.on_seal),
+            "wakeup": configuration["wakeup"],
+            "wakeup_receipts": str(root / "wakeups" / lease_id),
             "voice": voice_profile(root, name),
             "voice_source": voice_source,
             "voices_file": "present"
@@ -3092,6 +3259,14 @@ def status_command(args: argparse.Namespace) -> int:
         {
             "schema": STATUS_SCHEMA,
             "kind": "status",
+            "wakeup": (state or {}).get("wakeup_configuration", {}).get("wakeup", "unrecorded"),
+            "wakeup_receipts": str(root / "wakeups" / lease_id),
+            "pending_wakeups": [
+                {"delivery_id": p["delivery_id"], "disposition": (
+                    read_json(root / "wakeups" / lease_id / f"{p['delivery_id']}.json") or {}
+                ).get("disposition", "not_submitted")}
+                for p in seals
+            ],
             "lease_id": lease_id,
             "follower_log": str(log_path),
             "follower_events": str(events_path),
@@ -3310,6 +3485,14 @@ def main() -> int:
         "(CODESCRIBE_SEAL_DELIVERY_ID/_SESSION_ID/_TEXT in its environment)",
     )
     parser.add_argument(
+        "--wakeup", choices=("auto", "codex-queue", "off"), default="auto",
+        help="native wakeup: auto uses codex queue for attached Codex sessions; off keeps monitor-only delivery",
+    )
+    parser.add_argument(
+        "--retry-wakeup", metavar="DELIVERY_ID",
+        help="explicitly retry one retained Codex seal after a failed/uncertain queue submission",
+    )
+    parser.add_argument(
         "--attach",
         action="store_true",
         help="bind --channel to this provider session, ensure one coalescing "
@@ -3419,6 +3602,24 @@ def main() -> int:
         )
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.wakeup == "codex-queue" and (args.provider != "codex" or args.on_seal):
+        parser.error("codex-queue requires --provider codex and no separate --on-seal hook")
+    if args.retry_wakeup:
+        if args.provider != "codex" or not re.fullmatch(r"[0-9a-f]{24}", args.retry_wakeup):
+            parser.error("--retry-wakeup requires --provider codex, --session and a delivery id")
+        if any((args.ack, args.attach, args.status, args.watch, args.follow, args.once, args.say is not None)):
+            parser.error("--retry-wakeup combines with no other command")
+        lease_id = lease_identifier(args.provider, args.session)
+        state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
+        payload = next((p for p in state.get("pending", []) if p.get("delivery_id") == args.retry_wakeup), None)
+        if payload is None or payload.get("kind") != "seal":
+            parser.error("delivery is not a pending seal in this mailbox")
+        native = NativeQueueWakeup(args.bridge_home, args.session, None)
+        native.enqueue(payload, retry=True)
+        native.close(wait=True)
+        receipt = read_json(args.bridge_home / "wakeups" / lease_id / f"{args.retry_wakeup}.json") or {}
+        emit(receipt)
+        return 0 if receipt.get("disposition") == "provider_accepted" else 3
     if args.speed is not None and args.speed <= 0:
         parser.error("--speed must be positive")
     if args.voice is not None and not args.voice.strip():

@@ -47,7 +47,8 @@ destination = Path(sys.argv[2]).resolve()
 bundle_version = sys.argv[3]
 skill_source = repo / "skills" / "codescribe"
 helper_source = repo / "scripts" / "bus-demux.py"
-if not (skill_source / "SKILL.md").is_file() or not helper_source.is_file():
+entrypoints = [helper_source, repo / "scripts" / "cs-bus", repo / "scripts" / "cs-say"]
+if not (skill_source / "SKILL.md").is_file() or not all(path.is_file() for path in entrypoints):
     raise SystemExit("agent bridge source is incomplete")
 if (
     destination == destination.parent
@@ -56,7 +57,7 @@ if (
     or repo.is_relative_to(destination)
 ):
     raise SystemExit(f"refusing unsafe agent bridge destination: {destination}")
-source_paths = [skill_source, helper_source, *skill_source.rglob("*")]
+source_paths = [skill_source, *entrypoints, *skill_source.rglob("*")]
 source_symlinks = [path for path in source_paths if path.is_symlink()]
 if source_symlinks:
     raise SystemExit(
@@ -80,8 +81,10 @@ shutil.copytree(
     ignore=shutil.ignore_patterns(".DS_Store"),
 )
 (stage / "bin").mkdir(mode=0o755)
-shutil.copy2(helper_source, stage / "bin" / "bus-demux.py")
-(stage / "bin" / "bus-demux.py").chmod(0o755)
+for source in entrypoints:
+    target = stage / "bin" / source.name
+    shutil.copy2(source, target)
+    target.chmod(0o755)
 
 files = []
 for path in sorted(candidate for candidate in stage.rglob("*") if candidate.is_file()):

@@ -16,3 +16,18 @@ local skill. Vibecrafted is the authoring-standard reference, not a presumed
 second owner of this package.
 
 See [FLOW.md](FLOW.md) and [examples](examples/example-prompt.md).
+
+First app launch and `make install-app` install the bundled runtime and expose
+`cs-bus` and `cs-say` in `~/.local/bin`. Existing managed client skills update
+with the app; choose new clients in Settings → Agent. An unowned skill is kept.
+If this shell does not include `~/.local/bin` on PATH, use those two stable full
+paths. No private checkout or hook script is required.
+
+```bash
+cs-bus --attach --channel 2 --name lena --provider codex --session <thread-id> --voice eve
+cs-say "Jestem na szynie." --provider codex --session <thread-id>
+cs-bus --status --provider codex --session <thread-id>
+```
+
+Codex uses native queue wakeup, including after a final answer. Claude Code uses
+its output-notifying Monitor. A queue receipt is distinct from an agent ACK.

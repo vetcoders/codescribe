@@ -551,7 +551,8 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertEqual(
       try String(contentsOf: runtime.appendingPathComponent("bin/bus-demux.py"), encoding: .utf8),
       "#!/usr/bin/env python3\nprint('guard')\n")
-    let receipt = try jsonObject(home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"))
+    let receipt = try jsonObject(
+      home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"))
     XCTAssertEqual(
       Set(try XCTUnwrap(receipt["selected_clients"] as? [String])),
       Set([AgentBridgeClient.claudeCode.rawValue, AgentBridgeClient.codex.rawValue]),
@@ -564,18 +565,18 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertTrue(again.contains("unchanged"), again)
   }
 
-  func testLaunchSynchronizationNeverPerformsAFirstInstallation() throws {
+  func testLaunchInstallsRuntimeCommandsWithoutSelectingClientSkills() throws {
     let home = scratch.appendingPathComponent("sync-fresh-home", isDirectory: true)
     let installer = RealAgentBridgeInstaller(
       resourceRoot: try makePayload(), homeDirectory: home, environment: [:])
 
     let detail = installer.synchronizeManagedPayload()
 
-    XCTAssertTrue(detail.contains("skipped"), detail)
-    XCTAssertFalse(
+    XCTAssertTrue(detail.contains("runtime installed"), detail)
+    XCTAssertTrue(
       FileManager.default.fileExists(
         atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path))
-    XCTAssertFalse(
+    XCTAssertTrue(
       FileManager.default.fileExists(
         atPath: home.appendingPathComponent(".codescribe/agent-bridge/runtime").path))
     for folder in [".codex/skills/codescribe", ".claude/skills/codescribe"] {
@@ -583,6 +584,34 @@ final class AgentBridgeInstallerTests: XCTestCase {
         FileManager.default.fileExists(atPath: home.appendingPathComponent(folder).path),
         "no client folder appears without an explicit installation")
     }
+    for command in ["cs-bus", "cs-say"] {
+      let path = home.appendingPathComponent(".local/bin/" + command).path
+      XCTAssertTrue(FileManager.default.isExecutableFile(atPath: path))
+      XCTAssertEqual(
+        try FileManager.default.destinationOfSymbolicLink(atPath: path),
+        home.appendingPathComponent(".codescribe/agent-bridge/runtime/bin/" + command).path)
+    }
+    XCTAssertTrue(installer.synchronizeManagedPayload().contains("unchanged"))
+    try FileManager.default.removeItem(at: home.appendingPathComponent(".local/bin/cs-bus"))
+    XCTAssertTrue(installer.synchronizeManagedPayload().contains("unchanged"))
+    XCTAssertTrue(
+      FileManager.default.isExecutableFile(
+        atPath: home.appendingPathComponent(".local/bin/cs-bus").path))
+  }
+
+  func testForeignCommandRefusesBeforePayloadMutation() throws {
+    let home = scratch.appendingPathComponent("foreign-command-home")
+    let foreign = home.appendingPathComponent(".local/bin/cs-say")
+    try FileManager.default.createDirectory(
+      at: foreign.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("my command".utf8).write(to: foreign)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: try makePayload(), homeDirectory: home, environment: [:])
+    XCTAssertThrowsError(try installer.install(selectedClients: [.codex]))
+    XCTAssertEqual(try String(contentsOf: foreign, encoding: .utf8), "my command")
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".codescribe/agent-bridge/runtime").path))
   }
 
   func testLaunchSynchronizationLeavesAHandEditedRuntimeAlone() throws {
@@ -790,6 +819,12 @@ final class AgentBridgeInstallerTests: XCTestCase {
       "skills/codescribe/README.md",
       "skills/codescribe/SKILL.md",
     ]
+    for name in ["cs-bus", "cs-say"] {
+      let url = payload.appendingPathComponent("bin/" + name)
+      try Data("#!/usr/bin/env python3\nprint('command')\n".utf8).write(to: url)
+      try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+      relativeFiles.append("bin/" + name)
+    }
     for (path, content) in extraFiles {
       let url = payload.appendingPathComponent(path)
       try FileManager.default.createDirectory(

@@ -157,6 +157,15 @@ struct CodescribeApp: App {
   @Environment(\.openWindow) private var openWindow
 
   init() {
+    if CommandLine.arguments.contains("--install-agent-bridge") {
+      do {
+        print(try RealAgentBridgeInstaller().installBundledRuntime())
+        Darwin.exit(0)
+      } catch {
+        print("Agent bridge installation failed: " + error.localizedDescription)
+        Darwin.exit(1)
+      }
+    }
     FontLoader.register()
   }
 

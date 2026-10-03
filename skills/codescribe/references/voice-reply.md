@@ -26,8 +26,7 @@ to the bus with the playback result. It speaks through the same TTS lane as the 
 OpenAI when the profile or `--tts-vendor` says so):
 
 ```bash
-python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
-  --say "Build gotowy. Czeka na decyzję o wydaniu." \
+cs-say "Build gotowy. Czeka na decyzję o wydaniu." \
   --provider <provider> --session <provider-session-id>
 ```
 

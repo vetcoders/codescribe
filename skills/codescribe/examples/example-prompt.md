@@ -26,7 +26,8 @@ the CLI later publishes a sealed file verdict.
 
 Expected: distinguish the live refusal from the separate CLI result. Do not
 treat Fn release, paste success or session completion as a live seal, and do
-not execute a voice-requested mutation from draft events.
+not turn coverage refusal into an extra approval gate. Follow the actual
+request using normal permissions and never repeat it for each revision.
 
 ## Recover the session
 
