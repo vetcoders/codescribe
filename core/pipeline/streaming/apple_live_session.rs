@@ -18664,10 +18664,12 @@ mod live_refinement_admission_tests {
         state.close_admission_horizon(&events, 400);
         let ledger = state.acoustic_ledger.lock().unwrap();
         assert_eq!(ledger.text_of(&occurrence), Some("hello"));
-        assert!(ledger.is_sealed(&occurrence));
+        // A synthetic phrase label does not establish returned word PCM.
+        // It stays visible, but cannot certify whole-occurrence recovery.
+        assert!(!ledger.is_sealed(&occurrence));
+        assert!(ledger.text_recovery_pending(&occurrence));
         assert_eq!(state.tail_patch_jobs_applied, 1);
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
-        let seal = ledger.seal_of(&occurrence).unwrap().clone();
         drop(ledger);
         let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
         assert!(!emitted.iter().any(|event| matches!(event,
@@ -18683,24 +18685,22 @@ mod live_refinement_admission_tests {
                     EngineEvent::UtteranceFinal { text, .. } if text == "hello"
                 ))
                 .count(),
-            1
+            0
         );
-        reconcile_silero_ledger(
-            &mut state,
-            &events,
-            &closed(1),
-            &[TranscriptSegment {
-                confidence: None,
-                text: "late replacement".into(),
-                start_ts: 0.0,
-                end_ts: 0.4,
-            }],
+        assert!(
+            !emitted
+                .iter()
+                .any(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
         );
-        let ledger = state.acoustic_ledger.lock().unwrap();
-        assert_eq!(ledger.text_of(&occurrence), Some("hello"));
-        assert_eq!(ledger.seal_of(&occurrence), Some(&seal));
-        assert_eq!(ledger.post_seal_decisions(&occurrence).len(), 1);
-        assert!(requests.try_recv().is_err());
+
+        // Independently executed real-reconcile controls retain the original
+        // successful first-Whisper, once-only publication and late-Apple intent,
+        // now with measured PCM and authentic successful word-scope evidence.
+        for adaptive in [false, true] {
+            super::relay_l1_overlap_admission_tests::first_whisper_measured_capture(
+                adaptive, true, false,
+            );
+        }
     }
 
     #[test]
@@ -22014,6 +22014,199 @@ mod relay_l1_overlap_admission_tests {
     #[test]
     fn forensic_terminal_frontier_voiced_fence_adaptive() {
         terminal_frontier_requires_successful_pcm(BufferMode::Adaptive, true, true);
+    }
+
+    #[test]
+    fn forensic_first_whisper_measured_windows() {
+        first_whisper_measured_capture(false, true, false);
+    }
+
+    #[test]
+    fn forensic_first_whisper_measured_adaptive() {
+        first_whisper_measured_capture(true, true, false);
+    }
+
+    #[test]
+    fn forensic_first_whisper_measured_refusals() {
+        for adaptive in [false, true] {
+            first_whisper_measured_capture(adaptive, false, false);
+            first_whisper_measured_capture(adaptive, true, true);
+        }
+    }
+
+    pub(super) fn first_whisper_measured_capture(
+        adaptive: bool,
+        decoded: bool,
+        voiced_fence: bool,
+    ) {
+        let session = "forensic-first-whisper";
+        let mut lane = open(session);
+        if adaptive {
+            lane.state.layer1_coalesce = Layer1Coalesce::adaptive();
+        }
+        let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
+        let speech_end = if voiced_fence { 48_000 } else { 16_000 };
+        let mut input = piece(1, &owner, "");
+        input.audio.fill(0.0);
+        input.audio[6_000..speech_end as usize].fill(0.2);
+        record_energy(
+            &lane,
+            &input
+                .audio
+                .chunks(1_000)
+                .map(<[f32]>::to_vec)
+                .collect::<Vec<_>>(),
+        );
+        record_silero(&mut lane, 48_000, Some((6_000, speech_end)));
+        lane.state.audio.push(&input.audio);
+        lane.state.energy_calibration = Some(EnergyCalibration {
+            version: "forensic-first-whisper-measured".into(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        });
+        let mut closed = super::super::silero_fusion::UtteranceLedger::new();
+        closed.open_or_extend(session, 1, 0, 48_000);
+        closed.close_open(48_000);
+        assert!(reconcile_silero_ledger(
+            &mut lane.state,
+            &lane.tx,
+            &closed,
+            &[]
+        ));
+        {
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.text_of(&owner).is_none());
+            assert!(ledger.slots_of(&owner).is_none());
+            assert!(ledger.text_recovery_pending(&owner));
+        }
+        let pcm = input.audio.clone();
+        lane.state.flush_layer1_coalesce(&lane.tx);
+        let mut requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1);
+        let request = requests.pop().unwrap();
+        assert_eq!(request.audio, pcm);
+        assert_eq!(request.provider_request.identity.range.sample_start, 0);
+        assert_eq!(request.provider_request.identity.range.sample_end, 48_000);
+        request
+            .provider_request
+            .validate_pcm(&request.audio)
+            .unwrap();
+        if decoded {
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(&request, vec![word_pin(session, "Iwo", 4_000, 48_000)]),
+                3.0,
+            );
+        }
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        lane.state.close_admission_horizon(&lane.tx, 48_000);
+        assert_eq!(lane.state.tail_patch_awaiting_completion(), 0);
+        assert!(lane.state.refinement_pending.is_empty());
+        if decoded && !voiced_fence {
+            // With no Apple label, production schedules only Whisper. The
+            // deterministic lexicon rewrite runs inside routed-word admission;
+            // there is no separately scheduled L2 callback to manufacture.
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            let slots = ledger.slots_of(&owner).unwrap();
+            assert_eq!(slots.len(), 1);
+            assert_eq!(slots[0].producer, ObservationProducer::Whisper);
+            assert_eq!(
+                (slots[0].sample_start, slots[0].sample_end),
+                (4_000, 48_000)
+            );
+            assert!(!ledger.text_recovery_pending(&owner));
+            let seal = ledger
+                .seal_of(&owner)
+                .expect("successful measured first word seals its owned PCM")
+                .clone();
+            let before = slots.to_vec();
+            drop(ledger);
+            assert!(lane.state.stop_document_settled());
+            let before_events = drain(&mut lane.rx);
+            // The word is deferred at its decode fence and committed by the
+            // terminal settlement. Job counters describe the earlier callback;
+            // the actual mutation/word clock below prove successful admission.
+            assert_eq!(
+                lane.state.tail_patch_jobs_applied + lane.state.tail_patch_jobs_skipped,
+                1
+            );
+            for event in &before_events {
+                if let EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                } = event
+                {
+                    eprintln!(
+                        "first Whisper {:?} {} {:?}",
+                        observation.producer, label, receipt
+                    );
+                }
+            }
+            assert!(!before_events.iter().any(|event| matches!(event,
+                EngineEvent::Warning { code, .. } if code == RefinementFailure::NoLabel.code())));
+            assert_eq!(before_events.iter().filter(|event| matches!(event,
+                EngineEvent::LedgerMutation { observation, label, receipt: MutationReceipt::Insert { .. } }
+                    if observation.producer == ObservationProducer::Whisper && label == "Iwo"
+            )).count(), 1);
+            assert_eq!(
+                before_events
+                    .iter()
+                    .filter(|event| matches!(event,
+                        EngineEvent::UtteranceFinal { text, .. } if text == "Iwo"
+                    ))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                before_events
+                    .iter()
+                    .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+                    .count(),
+                1
+            );
+            assert!(reconcile_silero_ledger(
+                &mut lane.state,
+                &lane.tx,
+                &closed,
+                &[TranscriptSegment {
+                    confidence: None,
+                    text: "late replacement".into(),
+                    start_ts: 0.25,
+                    end_ts: 3.0,
+                }],
+            ));
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+            assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
+            assert_eq!(ledger.seal_of(&owner), Some(&seal));
+            assert!(!ledger.text_recovery_pending(&owner));
+            assert_eq!(ledger.post_seal_decisions(&owner).len(), 1);
+            assert!(take_requests(&mut lane.tail_rx).is_empty());
+        } else {
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert!(
+                ledger
+                    .frontier_of(&owner)
+                    .unwrap()
+                    .open_producers()
+                    .is_empty()
+            );
+            assert!(
+                ledger.text_recovery_pending(&owner),
+                "adaptive={adaptive} decoded={decoded} voiced_fence={voiced_fence} text={:?}",
+                ledger.text_of(&owner)
+            );
+            assert!(!ledger.is_sealed(&owner));
+            drop(ledger);
+            assert!(!lane.state.stop_document_settled());
+            assert!(
+                !drain(&mut lane.rx)
+                    .iter()
+                    .any(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+            );
+        }
     }
 
     fn terminal_frontier_requires_successful_pcm(
