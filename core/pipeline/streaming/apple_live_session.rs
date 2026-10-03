@@ -24678,12 +24678,12 @@ mod relay_l1_overlap_admission_tests {
     fn long_word_windows(session: &str) -> [Vec<TimedTailSegment>; 3] {
         [
             vec![
-                word_pin(session, "raz", 8_000, 48_000),
+                word_pin(session, "raz", 8_000, 47_000),
                 word_pin(session, "krawedz", 47_000, 52_000),
                 word_pin(session, "echo", 52_000, 64_000),
             ],
             vec![
-                word_pin(session, "raz", 8_000, 48_000),
+                word_pin(session, "raz", 8_000, 47_000),
                 word_pin(session, "krawedz", 47_000, 52_000),
                 word_pin(session, "dwa", 52_000, 64_000),
                 word_pin(session, "trzy", 70_000, 88_000),
@@ -26147,17 +26147,54 @@ mod relay_l1_overlap_admission_tests {
     fn debt_long_occurrence_joins_exclusive_word_pins_around_a_straddle() {
         let session = "relay-debt-long";
         let mut lane = open(session);
-        record_voiced_spans(
+        let mut pcm = vec![0.0_f32; LONG_SAMPLES as usize];
+        for (start, end) in [
+            (8_000, 48_000),
+            (52_000, 64_000),
+            (70_000, 88_000),
+            (100_000, 140_000),
+        ] {
+            pcm[start..end].fill(0.2);
+        }
+        lane.state.audio.push(&pcm);
+        record_energy(
             &lane,
-            LONG_SAMPLES,
-            &[
-                (8_000, 48_000),
-                (52_000, 64_000),
-                (70_000, 88_000),
-                (100_000, 140_000),
-            ],
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
         );
-        let (occurrence, requests) = launch_long_span(&mut lane, None);
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
+        qualify_unlabelled(&mut lane, &occurrence);
+        let mut captured_piece = piece(1, &occurrence, "");
+        captured_piece.audio = pcm.clone();
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, captured_piece));
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3);
+        let decoder = [(0, 64_000), (0, 112_000), (24_000, LONG_SAMPLES)];
+        let owned = [(0, 48_000), (48_000, 96_000), (96_000, LONG_SAMPLES)];
+        for (index, request) in requests.iter().enumerate() {
+            let frame = &request.provider_request.identity.range;
+            assert_eq!((frame.sample_start, frame.sample_end), decoder[index]);
+            assert_eq!(
+                (request.admit_sample_start, request.admit_sample_end),
+                owned[index]
+            );
+            assert_eq!(
+                request.audio,
+                pcm[frame.sample_start as usize..frame.sample_end as usize]
+            );
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .unwrap();
+            let words = long_word_windows(session);
+            assert!(
+                words[index]
+                    .iter()
+                    .all(|pin| pin.range.sample_start >= frame.sample_start
+                        && pin.range.sample_end <= frame.sample_end),
+                "every word must lie inside the actual decoded PCM"
+            );
+        }
         let events = play_long_words(&mut lane, &requests, session);
         let warnings = warning_lines(&events);
         assert!(
@@ -26209,17 +26246,55 @@ mod relay_l1_overlap_admission_tests {
     fn labelled_long_occurrence_joins_exclusive_word_pins_around_a_straddle() {
         let session = "relay-labelled-long";
         let mut lane = open(session);
-        record_voiced_spans(
+        let mut pcm = vec![0.0_f32; LONG_SAMPLES as usize];
+        for (start, end) in [
+            (8_000, 48_000),
+            (52_000, 64_000),
+            (70_000, 88_000),
+            (100_000, 140_000),
+        ] {
+            pcm[start..end].fill(0.2);
+        }
+        lane.state.audio.push(&pcm);
+        record_energy(
             &lane,
-            LONG_SAMPLES,
-            &[
-                (8_000, 48_000),
-                (52_000, 64_000),
-                (70_000, 88_000),
-                (100_000, 140_000),
-            ],
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
         );
-        let (occurrence, requests) = launch_long_span(&mut lane, Some("ras echo"));
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
+        stage(&mut lane, 1, occurrence.clone(), "ras echo");
+        let mut captured_piece = piece(1, &occurrence, "ras echo");
+        captured_piece.audio = pcm.clone();
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, captured_piece));
+        close_lexicon(&mut lane, 1, &occurrence, "ras echo");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3);
+        let decoder = [(0, 64_000), (0, 112_000), (24_000, LONG_SAMPLES)];
+        let owned = [(0, 48_000), (48_000, 96_000), (96_000, LONG_SAMPLES)];
+        for (index, request) in requests.iter().enumerate() {
+            let frame = &request.provider_request.identity.range;
+            assert_eq!((frame.sample_start, frame.sample_end), decoder[index]);
+            assert_eq!(
+                (request.admit_sample_start, request.admit_sample_end),
+                owned[index]
+            );
+            assert_eq!(
+                request.audio,
+                pcm[frame.sample_start as usize..frame.sample_end as usize]
+            );
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .unwrap();
+            let words = long_word_windows(session);
+            assert!(
+                words[index]
+                    .iter()
+                    .all(|pin| pin.range.sample_start >= frame.sample_start
+                        && pin.range.sample_end <= frame.sample_end),
+                "every word must lie inside the actual decoded PCM"
+            );
+        }
         let events = play_long_words(&mut lane, &requests, session);
         let warnings = warning_lines(&events);
         assert!(
@@ -26247,6 +26322,99 @@ mod relay_l1_overlap_admission_tests {
         assert_eq!(held_count(&lane), 1);
         assert_replaced_slot_evidence(&lane, &occurrence, &["ras echo", "echo"]);
         assert_conserved(&lane, Some("replayed_range_identity"));
+    }
+
+    #[test]
+    fn overlapping_word_pins_remain_observations_without_a_false_seal() {
+        let session = "relay-labelled-long";
+        let mut lane = open(session);
+        let mut pcm = vec![0.0_f32; LONG_SAMPLES as usize];
+        for (start, end) in [
+            (8_000, 48_000),
+            (52_000, 64_000),
+            (70_000, 88_000),
+            (100_000, 140_000),
+        ] {
+            pcm[start..end].fill(0.2);
+        }
+        lane.state.audio.push(&pcm);
+        record_energy(
+            &lane,
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
+        stage(&mut lane, 1, occurrence.clone(), "ras echo");
+        let mut captured_piece = piece(1, &occurrence, "ras echo");
+        captured_piece.audio = pcm.clone();
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, captured_piece));
+        close_lexicon(&mut lane, 1, &occurrence, "ras echo");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3);
+        let decoder = [(0, 64_000), (0, 112_000), (24_000, LONG_SAMPLES)];
+        let owned = [(0, 48_000), (48_000, 96_000), (96_000, LONG_SAMPLES)];
+        for (index, request) in requests.iter().enumerate() {
+            let frame = &request.provider_request.identity.range;
+            assert_eq!((frame.sample_start, frame.sample_end), decoder[index]);
+            assert_eq!(
+                (request.admit_sample_start, request.admit_sample_end),
+                owned[index]
+            );
+            assert_eq!(
+                request.audio,
+                pcm[frame.sample_start as usize..frame.sample_end as usize]
+            );
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .unwrap();
+            let words = long_word_windows(session);
+            assert!(
+                words[index]
+                    .iter()
+                    .all(|pin| pin.range.sample_start >= frame.sample_start
+                        && pin.range.sample_end <= frame.sample_end),
+                "every word must lie inside the actual decoded PCM"
+            );
+        }
+        let mut windows = long_word_windows(session);
+        // Keep the original ambiguous observation as a negative case even
+        // when the positive fixture uses disjoint child-word ranges.
+        windows[0][0].range.sample_end = 48_000;
+        windows[1][0].range.sample_end = 48_000;
+        assert_eq!(
+            windows[0][0].range.sample_end - windows[0][1].range.sample_start,
+            1_000
+        );
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            let frame = &request.provider_request.identity.range;
+            assert!(
+                segments
+                    .iter()
+                    .all(|pin| pin.range.sample_start >= frame.sample_start
+                        && pin.range.sample_end <= frame.sample_end)
+            );
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 9.5);
+            events.extend(drain(&mut lane.rx));
+        }
+        let ledger = lane.state.acoustic_ledger.lock().expect("synthetic ledger");
+        assert!(
+            ledger
+                .slot_alternatives()
+                .iter()
+                .any(|alternative| alternative
+                    .candidate
+                    .split_whitespace()
+                    .eq(["raz", "krawedz", "dwa", "trzy"])),
+            "the ambiguous four-word cluster must remain as an observation"
+        );
+        assert!(
+            !ledger.is_sealed(&occurrence),
+            "a later tail word must not certify the unresolved overlapping cluster"
+        );
+        assert_eq!(ledger.conservation().residue(), 0);
     }
 
     fn recovery_payload(
