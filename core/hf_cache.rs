@@ -189,6 +189,61 @@ where
         .find(|path| predicate(path))
 }
 
+/// Newest cached snapshot for every whisper-family repo in the known caches.
+///
+/// Listing only, in [`cache_bases`] precedence order: no completeness filtering
+/// (callers validate), one entry per repo id (the first root that carries the
+/// repo wins, matching resolution precedence), and only snapshots that hold at
+/// least one weight file. A tokenizer-only companion repo is not a model and is
+/// never listed; a quantized repo keeps its weights file and stays visible so
+/// the caller can report the refusal reason.
+pub fn whisper_cache_snapshots() -> Vec<(String, PathBuf)> {
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+    for base in cache_bases() {
+        let Ok(entries) = fs::read_dir(&base) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(repo_slug) = name.strip_prefix("models--") else {
+                continue;
+            };
+            let repo = repo_slug.replace("--", "/");
+            if !repo.to_ascii_lowercase().contains("whisper") {
+                continue;
+            }
+            if out.iter().any(|(known, _)| known == &repo) {
+                continue;
+            }
+            let snapshots_dir = entry.path().join("snapshots");
+            let Ok(revisions) = fs::read_dir(&snapshots_dir) else {
+                continue;
+            };
+            let newest = revisions
+                .flatten()
+                .filter(|revision| revision.path().is_dir())
+                .map(|revision| {
+                    let modified = revision
+                        .metadata()
+                        .and_then(|metadata| metadata.modified())
+                        .unwrap_or(SystemTime::UNIX_EPOCH);
+                    (modified, revision.path())
+                })
+                .filter(|(_, path)| {
+                    crate::whisper_weights::SUPPORTED_NAMES
+                        .iter()
+                        .any(|weights| path.join(weights).is_file())
+                })
+                .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+            if let Some((_, path)) = newest {
+                out.push((repo, path));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

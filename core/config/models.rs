@@ -570,6 +570,221 @@ pub fn whisper_model_status() -> WhisperModelStatus {
     }
 }
 
+/// One selectable (or visibly refused) local Whisper model.
+///
+/// The canonical catalog behind Settings → Dictation → Whisper. Built from the
+/// same resolver, validator and inventory the runtime uses — never from a
+/// parallel scanner — so a row the picker offers is a row the loader accepts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhisperModelOption {
+    /// Value persisted as `LOCAL_MODEL`: a models-dir alias, an HF repo id, or
+    /// an explicit path. The runtime resolver accepts all three forms.
+    pub id: String,
+    /// Human label, e.g. `Large v3 Turbo · FP16`.
+    pub label: String,
+    /// Resolved on-disk directory this option loads from.
+    pub path: String,
+    /// `models_dir` | `hf_cache` | `configured_path` | `env_override`.
+    pub source: String,
+    /// The runtime loader accepts this bundle.
+    pub usable: bool,
+    /// Short refusal/incompleteness reason when the bundle is not selectable.
+    pub reason: Option<String>,
+    /// The runtime resolution for the current configuration lands on this row
+    /// (compared by resolved path identity, not by string equality).
+    pub active: bool,
+}
+
+/// Whether a directory that failed validation still belongs to the Whisper
+/// family (a broken or refused Whisper bundle), as opposed to another model
+/// family (embedder, Moshi, Silero) that must stay out of the Whisper picker.
+fn is_whisper_family_dir(path: &Path, name: &str) -> bool {
+    if name.to_ascii_lowercase().contains("whisper") {
+        return true;
+    }
+    fs::read_to_string(path.join("config.json"))
+        .map(|config| {
+            config.contains("\"n_mels\"") || config.to_ascii_lowercase().contains("whisper")
+        })
+        .unwrap_or(false)
+}
+
+/// Short single-line refusal reason for the picker; quantized bundles get the
+/// explicit cause instead of a generic validation error.
+fn short_validation_reason(error: &anyhow::Error) -> String {
+    if error
+        .chain()
+        .any(|cause| cause.to_string().contains("quantized"))
+    {
+        return "Quantized weights are not supported by the local engine".to_string();
+    }
+    let message = format!("{error:#}");
+    message
+        .split(':')
+        .next()
+        .unwrap_or("invalid Whisper model bundle")
+        .trim()
+        .chars()
+        .take(160)
+        .collect()
+}
+
+/// `whisper-large-v3-turbo` / `mlx-community/whisper-large-v3` → `Large v3 Turbo`.
+/// Version tokens (`v3`) and pure numbers keep their case; every other token is
+/// capitalized. Usable rows carry the `· FP16` mark — the only weight format
+/// the runtime accepts.
+fn whisper_display_label(reference: &str, usable: bool) -> String {
+    let base = reference.rsplit('/').next().unwrap_or(reference);
+    let base = base.strip_prefix("whisper-").unwrap_or(base);
+    let mut words = Vec::new();
+    for token in base.split(['-', '_']) {
+        if token.is_empty() {
+            continue;
+        }
+        let is_version = token.starts_with('v')
+            && token
+                .chars()
+                .nth(1)
+                .is_some_and(|ch| ch.is_ascii_digit());
+        if is_version || token.chars().all(|ch| ch.is_ascii_digit()) {
+            words.push(token.to_string());
+        } else {
+            let mut chars = token.chars();
+            if let Some(first) = chars.next() {
+                words.push(first.to_uppercase().collect::<String>() + chars.as_str());
+            }
+        }
+    }
+    let name = if words.is_empty() {
+        reference.to_string()
+    } else {
+        words.join(" ")
+    };
+    if usable {
+        format!("{name} · FP16")
+    } else {
+        name
+    }
+}
+
+/// Validate and record one catalog row, deduplicated by resolved path identity.
+fn push_whisper_option(
+    id: String,
+    path: PathBuf,
+    source: &str,
+    active: Option<&PathBuf>,
+    options: &mut Vec<WhisperModelOption>,
+    seen: &mut Vec<PathBuf>,
+) {
+    let canonical = canonicalize_or_self(path);
+    if seen.contains(&canonical) {
+        return;
+    }
+    seen.push(canonical.clone());
+    let usable = is_complete_whisper_model_dir(&canonical);
+    let reason = if usable {
+        None
+    } else {
+        validate_whisper_model_bundle(&canonical)
+            .err()
+            .map(|error| short_validation_reason(&error))
+    };
+    let is_active = active == Some(&canonical);
+    options.push(WhisperModelOption {
+        label: whisper_display_label(&id, usable),
+        id,
+        path: canonical.display().to_string(),
+        source: source.to_string(),
+        usable,
+        reason,
+        active: is_active,
+    });
+}
+
+/// The canonical catalog of local Whisper model options.
+///
+/// Sources, in order: every Whisper-family child of the resolved models
+/// directory (complete *and* refused/broken, so quantized or half-downloaded
+/// bundles stay visible with their reason), the newest weight-bearing snapshot
+/// of each whisper repo in the known Hugging Face caches, the configured
+/// reference when it points outside the models directory, and the explicit
+/// `CODESCRIBE_MODEL_PATH` override. Rows are deduplicated by resolved path
+/// identity. No disk-wide scan, no tensor loading: validation is the loader's
+/// own structural check.
+pub fn whisper_model_options(configured: Option<&str>) -> Vec<WhisperModelOption> {
+    let active = resolve_runtime_whisper_model_path(configured)
+        .ok()
+        .map(canonicalize_or_self);
+    let configured = configured.map(str::trim).filter(|value| !value.is_empty());
+    let mut options: Vec<WhisperModelOption> = Vec::new();
+    let mut seen: Vec<PathBuf> = Vec::new();
+
+    // 1. Whisper-family children of the resolved models directory.
+    if let Ok(manager) = ModelManager::new()
+        && let Ok(entries) = fs::read_dir(manager.models_dir())
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if !metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !is_complete_whisper_model_dir(&path) && !is_whisper_family_dir(&path, &name) {
+                continue;
+            }
+            push_whisper_option(name, path, "models_dir", active.as_ref(), &mut options, &mut seen);
+        }
+    }
+
+    // 2. Newest weight-bearing snapshot per whisper repo in the known caches.
+    for (repo, snapshot) in crate::hf_cache::whisper_cache_snapshots() {
+        push_whisper_option(repo, snapshot, "hf_cache", active.as_ref(), &mut options, &mut seen);
+    }
+
+    // 3. The configured reference when it resolves outside the rows above.
+    if let Some(reference) = configured
+        && let Ok(manager) = ModelManager::new()
+    {
+        let path = manager.resolve_model_reference(reference);
+        if path.is_dir() {
+            push_whisper_option(
+                reference.to_string(),
+                path,
+                "configured_path",
+                active.as_ref(),
+                &mut options,
+                &mut seen,
+            );
+        }
+    }
+
+    // 4. The explicit env override is always visible, never silently merged.
+    if let Ok(value) = std::env::var("CODESCRIBE_MODEL_PATH") {
+        let value = value.trim();
+        if !value.is_empty() {
+            push_whisper_option(
+                value.to_string(),
+                expand_home_path(value),
+                "env_override",
+                active.as_ref(),
+                &mut options,
+                &mut seen,
+            );
+        }
+    }
+
+    options.sort_by(|a, b| {
+        b.active
+            .cmp(&a.active)
+            .then_with(|| b.usable.cmp(&a.usable))
+            .then_with(|| a.label.cmp(&b.label))
+    });
+    options
+}
+
 /// Download the default Whisper model into `~/.codescribe/models/<DEFAULT_MODEL>/`.
 ///
 /// Files are fetched from the Hugging Face resolve endpoint (same repo as

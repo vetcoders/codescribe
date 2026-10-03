@@ -60,6 +60,75 @@ struct DictationWhisperModelTab: View {
           .foregroundStyle(Color.secondary)
       }
 
+      SettingsSectionLabel(String(localized: "Model"))
+      if let catalog = model.whisperModelCatalog {
+        if catalog.overrideKind == "embedded" {
+          Text("This build embeds Whisper — the on-disk model selection is ignored.")
+            .font(CSFont.mono(10.5, .medium))
+            .foregroundStyle(Color.secondary)
+        } else {
+          SettingsControlRow(
+            title: String(localized: "Whisper model"),
+            subtitle: selectedModelPath(catalog)
+          ) {
+            Picker(
+              selection: Binding(
+                get: { model.whisperModelSelection },
+                set: { model.selectWhisperModel($0) }
+              )
+            ) {
+              ForEach(catalog.options.filter(\.usable), id: \.id) { option in
+                Text(option.label).tag(option.id)
+              }
+            } label: {
+              EmptyView()
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .disabled(model.whisperModelSwitchPending)
+          }
+
+          SettingsControlRow(
+            title: String(localized: "In use"),
+            subtitle: catalog.resolvedPath
+              ?? String(localized: "unresolved", comment: "Whisper model row: resolution failed")
+          ) {
+            Text(inUseLabel(catalog))
+              .font(CSFont.mono(11, .medium))
+              .foregroundStyle(catalog.loaded != nil ? CSColor.oliveLight : Color.secondary)
+          }
+
+          if let overrideNote = selectionOverrideNote(catalog.overrideKind) {
+            Text(overrideNote)
+              .font(CSFont.mono(10.5, .medium))
+              .foregroundStyle(CSColor.amber)
+          }
+          if let notice = model.whisperModelNotice {
+            Text(notice)
+              .font(CSFont.mono(10.5, .medium))
+              .foregroundStyle(Color.secondary)
+          }
+          if let error = model.whisperModelError {
+            Text(error)
+              .font(CSFont.mono(10.5, .medium))
+              .foregroundStyle(CSColor.amber)
+          }
+
+          let unavailable = catalog.options.filter { !$0.usable }
+          if !unavailable.isEmpty {
+            ForEach(unavailable, id: \.id) { option in
+              SettingsControlRow(
+                title: option.label,
+                subtitle: option.reason
+                  ?? String(localized: "Unavailable", comment: "Whisper model row: no detail")
+              ) {
+                EmptyView()
+              }
+            }
+          }
+        }
+      }
+
       SettingsSectionLabel(String(localized: "Data footprint"))
       ForEach(storedModels, id: \.name) { directory in
         SettingsControlRow(
@@ -85,7 +154,48 @@ struct DictationWhisperModelTab: View {
       }
     }
     .onAppear {
+      model.refreshWhisperModelCatalog()
       refreshStoredModels()
+    }
+    .onChange(of: model.whisperModelCatalog?.configured) { _, _ in
+      // A selection change moves the removal lock between footprint rows.
+      refreshStoredModels()
+    }
+  }
+
+  /// Picker subtitle: where the saved selection loads from.
+  private func selectedModelPath(_ catalog: CsWhisperModelCatalog) -> String {
+    catalog.options.first { $0.id == catalog.configured }?.path ?? catalog.configured
+  }
+
+  /// Runtime truth for the "In use" row: the resident weights, or what the
+  /// next take will load.
+  private func inUseLabel(_ catalog: CsWhisperModelCatalog) -> String {
+    if let loaded = catalog.loaded {
+      return loaded
+    }
+    return String(
+      localized: "loads on next take",
+      comment: "Whisper model row: no weights resident; the next take loads the selected model"
+    )
+  }
+
+  /// A shadowing authority above the picker (env override), or nil. The
+  /// override is shown, never silently removed.
+  private func selectionOverrideNote(_ overrideKind: String?) -> String? {
+    switch overrideKind {
+    case "env_model_path":
+      return String(
+        localized: "CODESCRIBE_MODEL_PATH overrides the selected model.",
+        comment: "Whisper model picker: an environment variable shadows the saved selection"
+      )
+    case "env_local_model":
+      return String(
+        localized: "The LOCAL_MODEL environment variable overrides the selected model.",
+        comment: "Whisper model picker: an environment variable shadows the saved selection"
+      )
+    default:
+      return nil
     }
   }
 

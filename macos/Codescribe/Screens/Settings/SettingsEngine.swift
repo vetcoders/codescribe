@@ -44,6 +44,10 @@ protocol SettingsEngine {
   func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot
   func resetAudioInputDevice() throws
 
+  // Local Whisper model catalog + picker selection (Settings → Dictation).
+  func loadWhisperModelCatalog() -> CsWhisperModelCatalog
+  func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch
+
   // Acoustic admission: the controller's own precondition for any take
   // (measured calibration for the device + armed Silero seal lane). Reads
   // never open a stream; calibration captures ~10 s through the real recorder.
@@ -181,6 +185,12 @@ final class RealSettingsEngine: SettingsEngine {
   }
   func resetAudioInputDevice() throws {
     try config.resetAudioInputDevice()
+  }
+  func loadWhisperModelCatalog() -> CsWhisperModelCatalog {
+    whisperModelCatalog()
+  }
+  nonisolated func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch {
+    try await setLocalWhisperModel(reference: reference)
   }
   func loadAdmissionReadiness() async throws -> CsAdmissionReadiness {
     try await hotkeys.admissionReadiness()
@@ -345,6 +355,9 @@ struct MockSettingsEngine: SettingsEngine {
   var providerStore: MockProviderStore = MockProviderStore()
   var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
   var resetAudioInputDeviceObserver: (() throws -> Void)?
+  /// Preview seed for the local-Whisper picker; the observer records selections.
+  var whisperCatalog: CsWhisperModelCatalog = .sample
+  var selectLocalWhisperModelObserver: ((String) async throws -> CsWhisperModelSwitch)?
   var voiceLabEditObserver: ((String, String) throws -> CsVoiceLabSaveResult)?
   var ruleCandidates: [CsRuleCandidate] = []
   var ruleCandidatesLoader: (() throws -> [CsRuleCandidate])?
@@ -385,6 +398,13 @@ struct MockSettingsEngine: SettingsEngine {
   func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot { audioSnapshot }
   func resetAudioInputDevice() throws {
     try resetAudioInputDeviceObserver?()
+  }
+  func loadWhisperModelCatalog() -> CsWhisperModelCatalog { whisperCatalog }
+  func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch {
+    if let selectLocalWhisperModelObserver {
+      return try await selectLocalWhisperModelObserver(reference)
+    }
+    return CsWhisperModelSwitch(applied: true, pending: false)
   }
   func loadAdmissionReadiness() async throws -> CsAdmissionReadiness { admissionReadiness }
   func calibrateEnergy(seconds: UInt32) async throws -> CsEnergyCalibrationReport {
@@ -754,6 +774,46 @@ extension CsPromptSnapshot {
     path: "~/.codescribe/prompts/assistive.txt",
     source: "custom_file",
     readError: nil
+  )
+}
+
+extension CsWhisperModelCatalog {
+  /// Preview seed: one active models-dir row, one HF-cache row, one refused
+  /// quantized row — the three states the picker must render.
+  static let sample = CsWhisperModelCatalog(
+    options: [
+      CsWhisperModelOption(
+        id: "whisper-large-v3-turbo",
+        label: "Large v3 Turbo · FP16",
+        path: "~/.codescribe/models/whisper-large-v3-turbo",
+        source: "models_dir",
+        usable: true,
+        reason: nil,
+        active: true
+      ),
+      CsWhisperModelOption(
+        id: "mlx-community/whisper-large-v3",
+        label: "Large v3 · FP16",
+        path: "~/.cache/huggingface/hub/models--mlx-community--whisper-large-v3",
+        source: "hf_cache",
+        usable: true,
+        reason: nil,
+        active: false
+      ),
+      CsWhisperModelOption(
+        id: "whisper-large-v3-turbo-q8",
+        label: "Large v3 Turbo Q8",
+        path: "~/.codescribe/models/whisper-large-v3-turbo-q8",
+        source: "models_dir",
+        usable: false,
+        reason: "Quantized weights are not supported by the local engine",
+        active: false
+      ),
+    ],
+    configured: "whisper-large-v3-turbo",
+    resolvedPath: "~/.codescribe/models/whisper-large-v3-turbo",
+    loaded: "~/.codescribe/models/whisper-large-v3-turbo",
+    overrideKind: nil
   )
 }
 

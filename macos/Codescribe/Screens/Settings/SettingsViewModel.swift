@@ -1176,6 +1176,18 @@ final class SettingsViewModel: ObservableObject {
   private var whisperDownloadSink: WhisperDownloadProgressSink?
   private var whisperDownloadEventTask: Task<Void, Never>?
 
+  // MARK: - Local Whisper model picker (Settings → Dictation)
+
+  /// Canonical option catalog + saved preference + resident-engine truth.
+  /// Nil until the first live refresh; previews stay on the engine's sample.
+  @Published private(set) var whisperModelCatalog: CsWhisperModelCatalog?
+  /// Honest outcome of the last selection ("applies from the next take" …).
+  @Published private(set) var whisperModelNotice: String?
+  /// Real validation/load error of the last failed selection; the picker never
+  /// announces a new active model while this is set.
+  @Published private(set) var whisperModelError: String?
+  @Published private(set) var whisperModelSwitchPending = false
+
   // MARK: - Hotkeys (mode bindings)
 
   /// Persisted per-mode bindings as last read from disk.
@@ -1340,6 +1352,7 @@ final class SettingsViewModel: ObservableObject {
       refreshAudioInput()
     }
     refreshWhisperModelStatus()
+    refreshWhisperModelCatalog()
     refreshAgentStatus()
     reloadMcpServers()
     loadHotkeys()
@@ -1367,6 +1380,58 @@ final class SettingsViewModel: ObservableObject {
     // the static placeholder so canvas previews stay offline-safe.
     guard engine != nil else { return }
     localWhisperStatus = whisperModelStatus()
+  }
+
+  /// Re-read the canonical local-Whisper catalog (options + saved preference +
+  /// resident-engine truth). Refreshed together with the install status so the
+  /// picker, the footprint rows and the install row never disagree.
+  func refreshWhisperModelCatalog() {
+    guard let engine else { return }
+    whisperModelCatalog = engine.loadWhisperModelCatalog()
+  }
+
+  /// The saved selection, for the picker's binding. Falls back to the settings
+  /// snapshot before the first live catalog refresh.
+  var whisperModelSelection: String {
+    whisperModelCatalog?.configured ?? settings.localModel
+  }
+
+  /// Persist a picker selection through the bridge: validate → settings.json →
+  /// switch the running process (or defer to the recording-idle boundary).
+  /// On failure the real error is shown and the picker snaps back to the
+  /// persisted truth on the next catalog refresh.
+  func selectWhisperModel(_ reference: String) {
+    guard let engine else { return }
+    guard !whisperModelSwitchPending else { return }
+    whisperModelSwitchPending = true
+    whisperModelNotice = nil
+    whisperModelError = nil
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer { self.whisperModelSwitchPending = false }
+      do {
+        let outcome = try await engine.selectLocalWhisperModel(reference: reference)
+        self.whisperModelNotice =
+          outcome.applied
+          ? String(
+            localized: "Saved · applies from the next take",
+            comment: "Whisper model picker: selection persisted and the engine switches at the next take"
+          )
+          : outcome.pending
+            ? String(
+              localized: "Saved · applies when the current recording finishes",
+              comment: "Whisper model picker: selection deferred because a take owns the engine"
+            )
+            : String(
+              localized: "Saved · an override decides the active model (see note below)",
+              comment: "Whisper model picker: selection persisted but an env override shadows it"
+            )
+      } catch {
+        self.whisperModelError = String(describing: error)
+      }
+      self.refreshWhisperModelCatalog()
+      self.refreshWhisperModelStatus()
+    }
   }
 
   /// Called from UniFFI download callbacks (main-queue hopped).
@@ -1847,7 +1912,13 @@ final class SettingsViewModel: ObservableObject {
   var whisperLanguageCode: String { settings.whisperLanguage.shortCode }
 
   var sttModelDescription: String {
-    let preference = settings.whisperModel ?? settings.localModel
+    // `localModel` (LOCAL_MODEL) is the local execution path; `whisperModel`
+    // (WHISPER_MODEL) is the cloud HTTP STT model id. Show the value the
+    // active engine actually resolves so the label and the runtime path agree.
+    let localEngineInPlay = settings.useLocalStt || asrModeId == "local_power"
+    let preference = localEngineInPlay
+      ? settings.localModel
+      : (settings.whisperModel ?? settings.localModel)
     return preference.isEmpty
       ? String(localized: "unset", comment: "Model row: no model preference stored, lower case")
       : preference
