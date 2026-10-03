@@ -91,6 +91,8 @@ protocol SettingsEngine {
   func availableProviders() -> [CsProviderOption]
   func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot
   func providerAccessRevision() -> UInt64
+  /// Metadata + credential revision only; nil means freshness cannot be certified.
+  func composerModelCacheStamp() -> String?
   func setApiKeyAsync(account: String, secret: String) async throws
   func clearApiKeyAsync(account: String) async throws
   func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption
@@ -142,6 +144,7 @@ extension SettingsEngine {
     CsProviderAccessSnapshot(providers: availableProviders(), accountErrors: [:], keyStatus: keyStatus(), sttLanes: sttLanes(), revision: 0)
   }
   func providerAccessRevision() -> UInt64 { 0 }
+  func composerModelCacheStamp() -> String? { nil }
   func setApiKeyAsync(account: String, secret: String) async throws { try setApiKey(account: account, secret: secret) }
   func clearApiKeyAsync(account: String) async throws { try clearApiKey(account: account) }
   func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption { try addCustomProvider(draft: draft) }
@@ -267,6 +270,7 @@ final class RealSettingsEngine: SettingsEngine {
     try await ProviderCredentialIO.perform { try CodescribeConfig().providerAccessSnapshot() }
   }
   func providerAccessRevision() -> UInt64 { config.providerAccessRevision() }
+  func composerModelCacheStamp() -> String? { config.composerModelCacheStamp() }
   func setApiKeyAsync(account: String, secret: String) async throws {
     try await ProviderCredentialIO.perform { try CodescribeConfig().setApiKey(account: account, secret: secret) }
   }

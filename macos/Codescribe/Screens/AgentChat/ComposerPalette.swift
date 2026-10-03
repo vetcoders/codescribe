@@ -123,25 +123,16 @@ protocol ComposerPaletteSourcing {
 /// Live palette source over the settings + MCP-admin bridges.
 ///
 /// Model discovery hits the provider API with the operator's key, so its result
-/// is briefly cached for filtering, keyed by the effective lane and credential
-/// presence. Provider/model/sign-in changes cannot keep another lane's entries.
+/// is briefly cached for filtering. The stamp shares the runtime cache's
+/// settings mtime, invalidation generation and credential revision, so changes
+/// invalidate before full context reads, including settings writes outside the app.
 final class RealComposerPaletteSource: ComposerPaletteSourcing {
   private let settings: SettingsEngine
   private let mcpAdmin: MCPAdminEngine
   private let runtimeLaneProvider: () -> CsRuntimeLlmLane
   private var cachedModels: [ComposerPaletteEntry]?
-  private var cachedModelContext: ModelContext?
+  private var cachedModelStamp: String?
   private var cachedModelsAt: Date?
-
-  private struct ModelContext: Equatable {
-    let providerID: String
-    let model: String
-    let available: Bool
-    let accountAuth: Bool
-    let keyPresent: Bool
-    let providerKeySet: Bool
-    let providerAccountSignedIn: Bool
-  }
 
   init(
     settings: SettingsEngine, mcpAdmin: MCPAdminEngine,
@@ -175,20 +166,17 @@ final class RealComposerPaletteSource: ComposerPaletteSourcing {
   }
 
   private func models() -> [ComposerPaletteEntry] {
-    let snapshot = settings.loadSettings()
-    let runtime = runtimeLaneProvider()
-    let provider = settings.availableProviders().first { $0.id == runtime.providerId }
-    let context = ModelContext(
-      providerID: runtime.providerId, model: runtime.model, available: runtime.available,
-      accountAuth: runtime.accountAuth, keyPresent: runtime.keyPresent,
-      providerKeySet: provider?.apiKeySet == true,
-      providerAccountSignedIn: provider?.accountSignedIn == true
-    )
-    if let cachedModels, cachedModelContext == context, let cachedModelsAt,
+    // Capture before rebuilding: a mutation during discovery must not label
+    // entries from the earlier generation with the newer generation's stamp.
+    let stamp = settings.composerModelCacheStamp()
+    if let stamp, let cachedModels, cachedModelStamp == stamp, let cachedModelsAt,
       Date().timeIntervalSince(cachedModelsAt) < 30
     {
       return cachedModels
     }
+    let snapshot = settings.loadSettings()
+    let runtime = runtimeLaneProvider()
+    let provider = settings.availableProviders().first { $0.id == runtime.providerId }
     let discovery = settings.discoverModels(providerId: runtime.providerId)
     let lane = LLMLaneModel(
       lane: .assistive, runtime: runtime, provider: provider,
@@ -216,7 +204,7 @@ final class RealComposerPaletteSource: ComposerPaletteSourcing {
       ]
     }
     cachedModels = entries
-    cachedModelContext = context
+    cachedModelStamp = stamp
     cachedModelsAt = Date()
     return entries
   }

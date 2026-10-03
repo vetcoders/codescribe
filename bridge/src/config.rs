@@ -555,11 +555,22 @@ impl From<&RuntimeLlmLane> for CsRuntimeLlmLane {
     }
 }
 
-type CachedRuntimeSnapshot = Option<(Option<std::time::SystemTime>, RuntimeSettingsSnapshot)>;
+#[derive(Default)]
+struct CachedRuntimeSnapshot {
+    value: Option<(Option<std::time::SystemTime>, RuntimeSettingsSnapshot)>,
+    generation: u64,
+}
+
+/// Metadata-only fingerprint shared by the runtime lane cache and its UI consumers.
+fn runtime_settings_modified_at() -> Option<std::time::SystemTime> {
+    fs::metadata(UserSettings::settings_path())
+        .and_then(|metadata| metadata.modified())
+        .ok()
+}
 
 fn last_good_runtime_snapshot() -> &'static Mutex<CachedRuntimeSnapshot> {
     static LAST_GOOD: OnceLock<Mutex<CachedRuntimeSnapshot>> = OnceLock::new();
-    LAST_GOOD.get_or_init(|| Mutex::new(None))
+    LAST_GOOD.get_or_init(|| Mutex::new(CachedRuntimeSnapshot::default()))
 }
 
 #[cfg(test)]
@@ -572,24 +583,25 @@ pub(crate) fn invalidate_runtime_snapshot_cache() {
     let mut guard = last_good_runtime_snapshot()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *guard = None;
+    guard.value = None;
+    guard.generation = guard.generation.wrapping_add(1);
 }
 
 /// One loader snapshot for lane projection: reuse the last good value when the
 /// file mtime is unchanged, and never panic the UI if a transient read fails.
 fn load_runtime_snapshot_for_lane() -> RuntimeSettingsSnapshot {
-    let path = UserSettings::settings_path();
-    let mtime = fs::metadata(&path).and_then(|m| m.modified()).ok();
-    {
+    let mtime = runtime_settings_modified_at();
+    let generation = {
         let guard = last_good_runtime_snapshot()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some((cached_mtime, snapshot)) = guard.as_ref()
+        if let Some((cached_mtime, snapshot)) = guard.value.as_ref()
             && *cached_mtime == mtime
         {
             return snapshot.clone();
         }
-    }
+        guard.generation
+    };
     #[cfg(test)]
     RUNTIME_SNAPSHOT_BUILDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let snapshot = match Config::load_runtime_snapshot_without_keychain() {
@@ -597,6 +609,7 @@ fn load_runtime_snapshot_for_lane() -> RuntimeSettingsSnapshot {
         Err(_) => last_good_runtime_snapshot()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .value
             .as_ref()
             .map(|(_, snapshot)| snapshot.clone())
             .unwrap_or_else(|| Config::load_startup_runtime_snapshot(false)),
@@ -604,7 +617,11 @@ fn load_runtime_snapshot_for_lane() -> RuntimeSettingsSnapshot {
     let mut guard = last_good_runtime_snapshot()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *guard = Some((mtime, snapshot.clone()));
+    // A credential mutation may invalidate while this loader is working.
+    // Its earlier projection must not repopulate the cleared cache.
+    if guard.generation == generation {
+        guard.value = Some((mtime, snapshot.clone()));
+    }
     snapshot
 }
 
@@ -1019,6 +1036,22 @@ impl CodescribeConfig {
     /// Cache-only revision check; it never waits for credential I/O.
     pub fn provider_access_revision(&self) -> u64 {
         keychain::bundle_revision()
+    }
+
+    /// Opaque palette cache stamp over the runtime cache's canonical settings
+    /// mtime, invalidation generation and the existing credential revision.
+    /// One metadata lookup and cache-only locks, no
+    /// settings parsing, lane projection, provider registry or credential I/O.
+    /// Missing/unreadable metadata refuses cache reuse rather than certifying
+    /// that a previous projection is still current.
+    pub fn composer_model_cache_stamp(&self) -> Option<String> {
+        runtime_settings_modified_at().map(|mtime| {
+            let generation = last_good_runtime_snapshot()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .generation;
+            format!("{}:{generation}:{mtime:?}", keychain::bundle_revision())
+        })
     }
 
     pub fn available_providers(&self) -> Vec<CsProviderOption> {
