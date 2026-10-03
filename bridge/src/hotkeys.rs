@@ -258,6 +258,34 @@ fn current_controller(controller_store: &SharedController) -> Option<Arc<Recordi
         .map(Arc::clone)
 }
 
+/// True while the shared controller owns an active take or its tail (any
+/// non-idle state). Model switches consult this so an ongoing capture/decode
+/// and its tail keep their model; a missing controller reads as idle.
+pub(crate) async fn shared_recording_in_progress() -> bool {
+    match application_runtime::run(async move {
+        let Some(controller) = current_controller(&shared_controller()) else {
+            return false;
+        };
+        controller.current_state().await != State::Idle
+    })
+    .await
+    {
+        Ok(recording) => recording,
+        Err(error) => {
+            tracing::error!(%error, "recording-state runtime dispatch failed");
+            false
+        }
+    }
+}
+
+/// Apply an armed Whisper model switch at a proven capture-free boundary.
+/// No-op when no switch is armed.
+fn apply_pending_whisper_model_switch() {
+    if let Err(error) = codescribe_core::stt::whisper::singleton::apply_pending_model_switch() {
+        tracing::warn!(%error, "pending Whisper model switch failed at recording idle");
+    }
+}
+
 /// Process shutdown is irreversible here; retries settle the same closed root.
 static CAPTURE_SHUTDOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -396,6 +424,9 @@ fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
                         "hotkey event forwarder lagged; reconciling listener lifecycle"
                     );
                     release_controller_capture_owner_if_idle(state);
+                    if state == State::Idle {
+                        apply_pending_whisper_model_switch();
+                    }
                     if let Some(listener) = current_transcription_listener(&listener_store) {
                         forward_controller_state_to_listener(state, listener);
                     }
@@ -406,6 +437,7 @@ fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
                 // capture ownership or a live-recording presentation.
                 Err(RecvError::Closed) => {
                     release_controller_capture_owner_if_idle(State::Idle);
+                    apply_pending_whisper_model_switch();
                     if let Some(listener) = current_transcription_listener(&listener_store) {
                         forward_controller_state_to_listener(State::Idle, listener);
                     }
@@ -417,6 +449,7 @@ fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
                 IpcEventPayload::StateChange { to, .. } if to == "idle"
             ) {
                 release_controller_capture_owner_if_idle(State::Idle);
+                apply_pending_whisper_model_switch();
             }
             let listener = current_transcription_listener(&listener_store);
             let Some(listener) = listener else {

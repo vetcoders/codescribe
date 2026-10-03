@@ -696,7 +696,194 @@ pub struct CsModelDirectory {
     pub duplicate_tokenizer_with: Option<String>,
 }
 
+/// One row of the canonical local-Whisper catalog (selectable or visibly
+/// refused). Mirrors `codescribe_core::config::models::WhisperModelOption`.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsWhisperModelOption {
+    /// Value persisted as `LOCAL_MODEL` (alias, HF repo id, or path).
+    pub id: String,
+    /// Human label, e.g. `Large v3 Turbo · FP16`.
+    pub label: String,
+    /// Resolved on-disk directory this option loads from.
+    pub path: String,
+    /// `models_dir` | `hf_cache` | `configured_path` | `env_override`.
+    pub source: String,
+    /// The runtime loader accepts this bundle.
+    pub usable: bool,
+    /// Short refusal/incompleteness reason when not selectable.
+    pub reason: Option<String>,
+    /// The current runtime resolution lands on this row.
+    pub active: bool,
+}
+
+/// The local-Whisper selection surface for Settings: the option catalog plus
+/// the saved preference, the runtime resolution, and the resident-engine truth.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsWhisperModelCatalog {
+    pub options: Vec<CsWhisperModelOption>,
+    /// Effective configured reference (env → settings.json → env file → default).
+    pub configured: String,
+    /// What the next engine load will use; nil when resolution currently fails.
+    pub resolved_path: Option<String>,
+    /// `embedded` or the on-disk path of the resident weights; nil while
+    /// unloaded (idle reaper or a just-applied switch).
+    pub loaded: Option<String>,
+    /// `embedded` | `env_model_path` | `env_local_model` when an authority
+    /// above the picker shadows the saved selection; nil otherwise.
+    pub override_kind: Option<String>,
+}
+
+/// Outcome of one picker selection.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsWhisperModelSwitch {
+    /// Selection persisted and the running process follows it (resident engine
+    /// dropped or already matching; the next take uses the new model).
+    pub applied: bool,
+    /// A take owns the engine; the switch lands when recording returns to idle.
+    pub pending: bool,
+}
+
+/// An authority above the picker shadows the saved selection. Visibility only —
+/// the override is never silently removed.
+fn whisper_selection_override_kind() -> Option<&'static str> {
+    if codescribe_core::stt::whisper::embedded::is_embedded_available() {
+        return Some("embedded");
+    }
+    if std::env::var("CODESCRIBE_MODEL_PATH")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Some("env_model_path");
+    }
+    if std::env::var("LOCAL_MODEL")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Some("env_local_model");
+    }
+    None
+}
+
+/// Snapshot the canonical local-Whisper catalog for Settings → Dictation.
+#[uniffi::export]
+pub fn whisper_model_catalog() -> CsWhisperModelCatalog {
+    let configured = codescribe_core::stt::whisper::singleton::configured_model_reference();
+    let options = codescribe_core::config::models::whisper_model_options(Some(&configured));
+    let resolved_path =
+        codescribe_core::config::models::resolve_runtime_whisper_model_path(Some(&configured))
+            .ok()
+            .map(|path| path.display().to_string());
+    let loaded = codescribe_core::stt::whisper::singleton::loaded_model_identity()
+        .map(|identity| identity.describe());
+    CsWhisperModelCatalog {
+        options: options
+            .into_iter()
+            .map(|option| CsWhisperModelOption {
+                id: option.id,
+                label: option.label,
+                path: option.path,
+                source: option.source,
+                usable: option.usable,
+                reason: option.reason,
+                active: option.active,
+            })
+            .collect(),
+        configured,
+        resolved_path,
+        loaded,
+        override_kind: whisper_selection_override_kind().map(str::to_string),
+    }
+}
+
+/// Persist a picker selection and switch the running process to it.
+///
+/// Validation happens before persistence: an unknown or unusable reference is
+/// refused with the real validator reason and neither settings.json nor the
+/// resident engine changes. Persistence goes through the canonical config
+/// router (`LOCAL_MODEL` → settings.json). While a take owns the engine the
+/// switch is deferred to the recording-idle hook; an env/embedded override is
+/// reported via the catalog, never silently removed.
+#[uniffi::export]
+pub async fn set_local_whisper_model(reference: String) -> Result<CsWhisperModelSwitch, CsError> {
+    application_runtime::run(async move {
+        let reference = reference.trim().to_string();
+        let options = codescribe_core::config::models::whisper_model_options(Some(
+            &codescribe_core::stt::whisper::singleton::configured_model_reference(),
+        ));
+        let Some(option) = options.iter().find(|option| option.id == reference) else {
+            return Err(CsError::Config {
+                msg: format!("unknown local Whisper model: {reference}"),
+            });
+        };
+        if !option.usable {
+            let reason = option
+                .reason
+                .clone()
+                .unwrap_or_else(|| "model bundle is not usable".to_string());
+            return Err(CsError::Config {
+                msg: format!("{reference} cannot be selected: {reason}"),
+            });
+        }
+        if codescribe_core::stt::whisper::embedded::is_embedded_available() {
+            return Err(CsError::Config {
+                msg: "this build embeds Whisper; the on-disk model selection has no effect"
+                    .to_string(),
+            });
+        }
+
+        codescribe_core::config::Config::load()
+            .save_to_env("LOCAL_MODEL", &reference)
+            .map_err(|error| CsError::Config {
+                msg: error.to_string(),
+            })?;
+
+        // An env override shadows the persisted value at resolution time. The
+        // selection is still saved (it applies once the override is lifted),
+        // but nothing about the running process is promised.
+        if whisper_selection_override_kind().is_some() {
+            return Ok(CsWhisperModelSwitch {
+                applied: false,
+                pending: false,
+            });
+        }
+
+        if crate::hotkeys::shared_recording_in_progress().await {
+            codescribe_core::stt::whisper::singleton::mark_model_switch_pending();
+            return Ok(CsWhisperModelSwitch {
+                applied: false,
+                pending: true,
+            });
+        }
+
+        match codescribe_core::stt::whisper::singleton::apply_model_switch() {
+            Ok(codescribe_core::stt::whisper::singleton::ModelSwitch::Pending) => {
+                Ok(CsWhisperModelSwitch {
+                    applied: false,
+                    pending: true,
+                })
+            }
+            Ok(_) => Ok(CsWhisperModelSwitch {
+                applied: true,
+                pending: false,
+            }),
+            Err(error) => Err(CsError::Config {
+                msg: format!("{error:#}"),
+            }),
+        }
+    })
+    .await?
+}
+
 fn active_user_model() -> Option<PathBuf> {
+    // Removal-lock truth is the resident engine first: a model a live take (or
+    // its tail) still owns must not become removable just because the saved
+    // setting already points elsewhere. Before the first load, or right after
+    // a switch unloaded the weights, the persisted resolution governs.
+    if let Some(codescribe_core::stt::whisper::singleton::ModelIdentity::Path(path)) =
+        codescribe_core::stt::whisper::singleton::loaded_model_identity()
+    {
+        return Some(path);
+    }
     let snapshot =
         codescribe_core::config::Config::load_runtime_snapshot_without_keychain().ok()?;
     codescribe_core::config::models::resolve_runtime_whisper_model_path(Some(

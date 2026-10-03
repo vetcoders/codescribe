@@ -27,11 +27,23 @@
 //! Idle is not "the app looks quiet" and not "a long HQ pass has been running".
 //! Set `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0` to keep weights resident for
 //! the whole process life.
+//!
+//! ## Model switching
+//!
+//! The configured model is a living setting, so no path is frozen for the
+//! process lifetime: every cold load resolves the current configuration fresh.
+//! [`apply_model_switch`] is the single owner corridor for changing the model
+//! of a *running* process: it validates the new selection (a failure keeps the
+//! running model and the real error), drops warm weights only when the caller
+//! warrants no take owns the engine, and otherwise arms a deferred switch that
+//! the bridge recording-idle hook applies through [`apply_pending_model_switch`].
+//! An ongoing capture/decode and its tail therefore always keep their model and
+//! their full audio; the new selection applies from the next safe take.
 
 // This entire module is a public API for library consumers
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -62,11 +74,34 @@ const DEFAULT_IDLE_UNLOAD_SECS: u64 = 1800;
 /// How often the reaper wakes to check for idleness.
 const REAPER_TICK: Duration = Duration::from_secs(30);
 
+/// What the resident engine was built from. Recorded at load so the Settings
+/// surface can tell the actually-loaded model apart from the saved preference,
+/// and so a switch request can no-op when the warm engine already matches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelIdentity {
+    /// Weights came from the embedded payload of a fat build.
+    Embedded,
+    /// Weights were loaded from this on-disk directory.
+    Path(PathBuf),
+}
+
+impl ModelIdentity {
+    /// Stable provenance label: `embedded` or the model directory path.
+    pub fn describe(&self) -> String {
+        match self {
+            ModelIdentity::Embedded => "embedded".to_string(),
+            ModelIdentity::Path(path) => path.display().to_string(),
+        }
+    }
+}
+
 /// Resettable engine slot: `None` when unloaded, plus the last-use timestamp the
-/// reaper consults. A single `Mutex` serializes loads, transcriptions, and
-/// unloads — exactly as the previous `Mutex<LocalWhisperEngine>` did.
+/// reaper consults. A single `Mutex` serializes loads, transcriptions, unloads
+/// and model switches — exactly as the previous `Mutex<LocalWhisperEngine>` did.
 struct WhisperSlot {
     engine: Option<LocalWhisperEngine>,
+    /// Provenance of `engine`; `None` exactly while `engine` is `None`.
+    loaded_identity: Option<ModelIdentity>,
     last_used: Instant,
 }
 
@@ -74,8 +109,11 @@ struct WhisperSlot {
 /// guards creation of the `Mutex`, the `Mutex` guards the engine inside it.
 static SLOT: OnceLock<Mutex<WhisperSlot>> = OnceLock::new();
 
-/// Runtime model path used only when embedded provisioning is unavailable.
-static MODEL_PATH: OnceLock<PathBuf> = OnceLock::new();
+/// Armed model switch, set when a take (or an in-flight decode) owns the
+/// engine. Applied at the next safe boundary: the bridge recording-idle hook
+/// calls [`apply_pending_model_switch`], and every cold load resolves the
+/// current configuration fresh regardless.
+static PENDING_SWITCH: AtomicBool = AtomicBool::new(false);
 
 /// Guard so the idle reaper thread is spawned at most once.
 static REAPER_STARTED: OnceLock<()> = OnceLock::new();
@@ -100,6 +138,7 @@ fn slot() -> &'static Mutex<WhisperSlot> {
     SLOT.get_or_init(|| {
         Mutex::new(WhisperSlot {
             engine: None,
+            loaded_identity: None,
             last_used: Instant::now(),
         })
     })
@@ -172,22 +211,109 @@ fn non_empty(value: String) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// Get the resolved model path used by runtime Whisper fallback loading.
-pub fn get_model_path() -> Result<&'static PathBuf> {
-    if let Some(path) = MODEL_PATH.get() {
-        return Ok(path);
-    }
-
-    let path = resolve_model_path_fallback()?;
-    let _ = MODEL_PATH.set(path.clone());
-
-    MODEL_PATH
-        .get()
-        .ok_or_else(|| anyhow!("Failed to store model path"))
+/// Resolve the model path the runtime Whisper fallback would load *now*.
+///
+/// Deliberately a fresh resolution on every call: the configured model is a
+/// living setting, so nothing here may freeze the first answer for the process
+/// lifetime. Engine (re)loads call this at cold-load time, which is what makes
+/// a model switch take effect from the next safe take.
+pub fn get_model_path() -> Result<PathBuf> {
+    resolve_model_path_fallback()
 }
 
-/// Build a fresh engine, embedded-first with a runtime-path fallback.
-fn load_engine() -> Result<LocalWhisperEngine> {
+/// The configured model reference the runtime fallback resolves, with the full
+/// precedence chain (process env → settings.json → env file → default).
+pub fn configured_model_reference() -> String {
+    configured_local_model()
+}
+
+/// What the resident engine was built from; `None` while weights are unloaded
+/// (idle reaper or a just-applied switch). This is runtime truth, never the
+/// persisted preference.
+pub fn loaded_model_identity() -> Option<ModelIdentity> {
+    SLOT.get()
+        .and_then(|mutex| mutex.lock().ok())
+        .and_then(|guard| guard.loaded_identity.clone())
+}
+
+/// Outcome of one model-switch request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSwitch {
+    /// Nothing to drop: no weights are resident (the next cold load follows
+    /// the new selection), or the resident weights already match it.
+    Current,
+    /// Warm weights were dropped; the next take cold-loads the new selection.
+    Unloaded,
+    /// The engine was mid-decode; the switch is armed and lands at the next
+    /// safe boundary instead of interrupting the pass.
+    Pending,
+}
+
+/// The identity the engine should hold under the current configuration.
+/// Embedded provisioning always wins, mirroring [`load_engine`].
+fn desired_model_identity() -> Result<ModelIdentity> {
+    if super::embedded::is_embedded_available() {
+        return Ok(ModelIdentity::Embedded);
+    }
+    Ok(ModelIdentity::Path(resolve_model_path_fallback()?))
+}
+
+/// Drop the resident engine and reclaim its Metal buffers, mirroring the idle
+/// reaper's unload discipline. Caller holds the slot lock.
+fn unload_slot_engine(guard: &mut WhisperSlot) {
+    guard.engine = None;
+    guard.loaded_identity = None;
+    // Dropped weight buffers only return to the MetalDevice free-buffer pool;
+    // force candle's prune so the multi-GB does not stay resident until the
+    // next inference. Same discipline as the idle reaper.
+    if let Some(device) = super::engine::cached_process_device() {
+        crate::memory::reclaim_metal_buffer_pool(&device);
+    }
+}
+
+/// Apply the persisted model selection now.
+///
+/// The caller warrants that no take owns the engine (the bridge checks the
+/// recording controller before calling). A resolution/validation failure keeps
+/// the running model untouched and returns the real error; a mid-decode call
+/// never interrupts the pass — it arms the deferred switch instead.
+pub fn apply_model_switch() -> Result<ModelSwitch> {
+    let desired = desired_model_identity()?;
+    let mut guard = match slot().try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            PENDING_SWITCH.store(true, Ordering::Release);
+            return Ok(ModelSwitch::Pending);
+        }
+    };
+    PENDING_SWITCH.store(false, Ordering::Release);
+    if guard.engine.is_none() || guard.loaded_identity.as_ref() == Some(&desired) {
+        return Ok(ModelSwitch::Current);
+    }
+    unload_slot_engine(&mut guard);
+    drop(guard);
+    crate::memory::release_freed_heap();
+    Ok(ModelSwitch::Unloaded)
+}
+
+/// Arm the deferred switch: a take owns the engine right now, so the change
+/// lands when recording returns to idle (or at the next cold load).
+pub fn mark_model_switch_pending() {
+    PENDING_SWITCH.store(true, Ordering::Release);
+}
+
+/// Recording-idle hook: apply an armed switch. A no-op when none is armed, so
+/// the bridge can call this on every return to idle.
+pub fn apply_pending_model_switch() -> Result<ModelSwitch> {
+    if !PENDING_SWITCH.swap(false, Ordering::AcqRel) {
+        return Ok(ModelSwitch::Current);
+    }
+    apply_model_switch()
+}
+
+/// Build a fresh engine, embedded-first with a runtime-path fallback, plus the
+/// provenance of what it was built from.
+fn load_engine() -> Result<(LocalWhisperEngine, ModelIdentity)> {
     #[cfg(test)]
     TEST_LOAD_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
@@ -196,15 +322,16 @@ fn load_engine() -> Result<LocalWhisperEngine> {
         let engine = LocalWhisperEngine::from_embedded(&embedded)
             .context("Failed to initialize from embedded model")?;
         info!("Whisper engine loaded from embedded model (zero I/O)");
-        return Ok(engine);
+        return Ok((engine, ModelIdentity::Embedded));
     }
 
-    // 2. Fallback path: resolve Whisper model at runtime.
+    // 2. Fallback path: resolve Whisper model at runtime. Fresh resolution on
+    // every cold load, so a changed selection takes effect here.
     let path = get_model_path()?;
-    let engine = LocalWhisperEngine::new_with_params(path, DecodingParams::default())
+    let engine = LocalWhisperEngine::new_with_params(&path, DecodingParams::default())
         .context("Failed to initialize Whisper engine from path")?;
     info!("Whisper engine loaded from path: {}", path.display());
-    Ok(engine)
+    Ok((engine, ModelIdentity::Path(path)))
 }
 
 /// Emit the load transition without leaking transcription content.
@@ -273,6 +400,7 @@ fn reaper_loop() {
             // reuses it — no Device::new_metal churn / port leak.
             let unload_started = Instant::now();
             guard.engine = None;
+            guard.loaded_identity = None;
             let unload_drop_ms = unload_started.elapsed().as_millis() as u64;
             // Dropped weight buffers only return to the MetalDevice free-buffer
             // pool; force candle's prune or the multi-GB stays resident until
@@ -350,7 +478,12 @@ fn with_engine_controlled<R>(
     if cold_load {
         control.check()?;
         let load_started = Instant::now();
-        guard.engine = Some(load_engine()?);
+        let (engine, identity) = load_engine()?;
+        guard.engine = Some(engine);
+        guard.loaded_identity = Some(identity);
+        // A fresh load follows the current configuration; any armed switch is
+        // satisfied by construction.
+        PENDING_SWITCH.store(false, Ordering::Release);
         model_load_ms = load_started.elapsed().as_millis() as u64;
         ensure_reaper();
         record_residency_load(model_load_ms);
@@ -400,7 +533,10 @@ fn try_with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> R
     let cold_load = guard.engine.is_none();
     if cold_load {
         let load_started = Instant::now();
-        guard.engine = Some(load_engine()?);
+        let (engine, identity) = load_engine()?;
+        guard.engine = Some(engine);
+        guard.loaded_identity = Some(identity);
+        PENDING_SWITCH.store(false, Ordering::Release);
         model_load_ms = load_started.elapsed().as_millis() as u64;
         ensure_reaper();
         record_residency_load(model_load_ms);
