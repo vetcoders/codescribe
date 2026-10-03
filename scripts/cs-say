@@ -1,10 +1,89 @@
 #!/usr/bin/env python3
-"""cs-say TEXT --provider codex|claude-code --session SESSION [voice options]."""
+"""cs-say TEXT --provider codex|claude-code --session SESSION [voice options].
+cs-say auth --provider xai|openai|deepinfra|custom --login-type oauth|key|device-code
+cs-say --version — installed helper version and source commit.
+
+Authentication is independent of the app. xAI supports OAuth and device-code
+through the Grok CLI. All four providers support a hidden API-key prompt stored
+in macOS Keychain. Other OAuth/device-code combinations are not supported.
+DeepInfra/custom credentials are stored only; speech currently uses xAI/OpenAI.
+Run cs-say auth --help for examples. Never put a token on the command line.
+"""
+
 import os
 from pathlib import Path
 import sys
+import shutil
+import argparse
 
+if sys.argv[1:2] == ["auth"]:
+    parser = argparse.ArgumentParser(
+        prog="cs-say auth",
+        description="Authenticate independently of the Codescribe app.",
+        epilog="Examples: cs-say auth --provider xai --login-type oauth; "
+        "cs-say auth --provider xai --login-type device-code; "
+        "cs-say auth --provider openai --login-type key. "
+        "xAI OAuth/device-code requires the Grok CLI. Key login uses a hidden "
+        "macOS Keychain prompt for every provider. DeepInfra/custom are credential "
+        "storage only; speech currently supports xAI/OpenAI.",
+    )
+    parser.add_argument(
+        "--provider", choices=("xai", "openai", "deepinfra", "custom"), required=True
+    )
+    parser.add_argument(
+        "--login-type", choices=("oauth", "key", "device-code"), required=True
+    )
+    auth = parser.parse_args(sys.argv[2:])
+    if auth.login_type == "key":
+        executable = "/usr/bin/security"
+        if not Path(executable).is_file():
+            parser.error("key login requires macOS Keychain")
+        # -w LAST prompts privately; the credential never appears in argv.
+        os.execv(
+            executable,
+            [
+                executable,
+                "add-generic-password",
+                "-U",
+                "-s",
+                "com.vetcoders.codescribe",
+                "-a",
+                f"LLM_{auth.provider.upper()}_API_KEY",
+                "-w",
+            ],
+        )
+    if auth.provider != "xai":
+        parser.error(
+            f"{auth.provider} supports --login-type key; OAuth/device-code is available only for xAI"
+        )
+    executable = shutil.which("grok")
+    if executable is None:
+        print(
+            "cs-say auth requires the Grok CLI for xAI authentication.", file=sys.stderr
+        )
+        sys.exit(3)
+    options = {"oauth": ["--oauth"], "device-code": ["--oauth", "--device-auth"]}
+    os.execv(executable, [executable, "login", *options[auth.login_type]])
+if sys.argv[1:] == ["--version"]:
+    os.execv(
+        sys.executable,
+        [
+            sys.executable,
+            str(Path(__file__).resolve().with_name("bus-demux.py")),
+            "--version",
+            "--entrypoint",
+            "cs-say",
+        ],
+    )
 if len(sys.argv) < 2 or sys.argv[1] in ("--help", "-h"):
     print(__doc__)
     sys.exit(0 if len(sys.argv) > 1 else 2)
-os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve().with_name("bus-demux.py")), "--say", *sys.argv[1:]])
+os.execv(
+    sys.executable,
+    [
+        sys.executable,
+        str(Path(__file__).resolve().with_name("bus-demux.py")),
+        "--say",
+        *sys.argv[1:],
+    ],
+)

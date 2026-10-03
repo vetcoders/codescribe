@@ -277,6 +277,16 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     try install(selectedClients: selectedClients, adopting: nil).status
   }
 
+  /// Explicit source/app install replaces managed payload, including a helper
+  /// edited during a live experiment. Startup synchronization stays conservative.
+  func installRuntime() throws -> String {
+    let selected = Set(status().installedClients)
+    _ = try install(
+      selectedClients: selected, adopting: nil, runtimeOnly: true,
+      initializing: validReceipt() == nil && selected.isEmpty)
+    return "Agent bridge runtime and selected client skills installed."
+  }
+
   /// Startup installs the common runtime and updates owned client skills.
   /// Selecting clients and adopting a manual skill remain explicit.
   /// The caller runs this disk work outside the main actor.
@@ -297,7 +307,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         throw AgentBridgeInstallationError.conflict(
           path: runtimeDirectory.path, reason: "unowned runtime retained")
       }
-      _ = try install(selectedClients: [], adopting: nil, runtimeOnly: true)
+      _ = try install(selectedClients: [], adopting: nil, runtimeOnly: true, initializing: true)
       return "Agent bridge runtime installed; client skills remain unselected."
     }
     try requireSynchronizationOwnership(receipt)
@@ -417,7 +427,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   private func install(
     selectedClients: Set<AgentBridgeClient>, adopting: AgentBridgeClient?,
     synchronizing expectedReceipt: AgentBridgeReceipt? = nil,
-    runtimeOnly: Bool = false
+    runtimeOnly: Bool = false,
+    initializing: Bool = false
   ) throws -> AgentBridgeAdoptionResult {
     guard runtimeOnly || !selectedClients.isEmpty else {
       throw AgentBridgeInstallationError.selectionRequired
@@ -442,7 +453,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     }
 
     let previousReceipt = validReceipt()
-    if runtimeOnly, expectedReceipt == nil,
+    if initializing, expectedReceipt == nil,
       previousReceipt != nil || fileManager.fileExists(atPath: runtimeDirectory.path)
         || fileManager.fileExists(atPath: receiptURL.path)
     {

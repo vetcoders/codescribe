@@ -2266,13 +2266,23 @@ def run(args: argparse.Namespace) -> int:
 
 
 def _xai_speech_key() -> str | None:
-    """OAuth from the grok CLI's OIDC session first, Keychain API key as fallback."""
+    """Explicit Keychain key first, then the Grok CLI's xAI OIDC session."""
     import subprocess
 
+    probe = subprocess.run(
+        ["/usr/bin/security", "find-generic-password", "-s",
+         "com.vetcoders.codescribe", "-a", "LLM_XAI_API_KEY", "-w"],
+        capture_output=True, text=True,
+    )
+    key = probe.stdout.strip() if probe.returncode == 0 else ""
+    if key:
+        return key
     try:
         data = json.loads((Path.home() / ".grok" / "auth.json").read_text())
-        for value in data.values():
+        for endpoint, value in data.items():
             if (
+                str(endpoint).split("::", 1)[0].rstrip("/") == "https://auth.x.ai"
+                and
                 isinstance(value, dict)
                 and value.get("auth_mode") == "oidc"
                 and value.get("key")
@@ -2280,21 +2290,7 @@ def _xai_speech_key() -> str | None:
                 return str(value["key"])
     except (OSError, ValueError):
         pass
-    probe = subprocess.run(
-        [
-            "security",
-            "find-generic-password",
-            "-s",
-            "com.vetcoders.codescribe",
-            "-a",
-            "LLM_XAI_API_KEY",
-            "-w",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    key = probe.stdout.strip()
-    return key or None
+    return None
 
 
 def _openai_speech_key() -> str | None:
@@ -3397,7 +3393,7 @@ def watch_command(args: argparse.Namespace) -> int:
                 flush(key)
                 print(human_line(payload, channel), flush=True)
             else:
-                emit(line)
+                emit({"delivery_id": identity, "kind": line.get("kind"), "notice": "Codescribe mailbox has a new delivery"} if getattr(args, "bell", False) else line)
         if args.human:
             flush()
 
@@ -3428,6 +3424,8 @@ def watch_command(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version", action="store_true", help="installed helper version and source commit slug")
+    parser.add_argument("--entrypoint", choices=("cs-bus", "cs-say"), default="cs-bus", help=argparse.SUPPRESS)
     parser.add_argument("--bus", type=Path, default=None, help="override bus path")
     authority = parser.add_mutually_exclusive_group()
     authority.add_argument(
@@ -3492,6 +3490,7 @@ def main() -> int:
         "--retry-wakeup", metavar="DELIVERY_ID",
         help="explicitly retry one retained Codex seal after a failed/uncertain queue submission",
     )
+    parser.add_argument("--read-delivery", metavar="DELIVERY_ID", help="read one complete pending envelope without acknowledging or resubmitting it")
     parser.add_argument(
         "--attach",
         action="store_true",
@@ -3515,6 +3514,7 @@ def main() -> int:
         "(line-buffered; --once reads the events and exits)",
     )
     parser.add_argument("--human", action="store_true", help="--watch as readable one-line envelopes")
+    parser.add_argument("--bell", action="store_true", help="--watch emits only a delivery id notice; full text stays in the mailbox/native queue")
     parser.add_argument(
         "--from-file",
         dest="from_file",
@@ -3577,6 +3577,14 @@ def main() -> int:
         f"then {DEFAULT_SPEECH_SPEED}; with --attach it is stored in the profile",
     )
     args = parser.parse_args()
+    if args.version:
+        manifest = read_json(Path(__file__).resolve().parent.parent / "manifest.json") or {}
+        version = manifest.get("helper_version") or manifest.get("bundle_version") or "source"
+        commit = manifest.get("source_commit")
+        slug = f"+g{commit[:8]}" if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40,64}", commit) else ""
+        dirty = ".dirty" if manifest.get("source_dirty") is True else ""
+        print(f"{args.entrypoint} {version}{slug}{dirty}")
+        return 0
     args.bus_overridden = args.bus is not None
     if args.bus is None:
         args.bus = bus_path()
@@ -3602,6 +3610,20 @@ def main() -> int:
         )
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.read_delivery:
+        if not args.provider or not re.fullmatch(r"[0-9a-f]{24}", args.read_delivery):
+            parser.error("--read-delivery requires --provider/--session and a delivery id")
+        if any((args.ack, args.attach, args.status, args.watch, args.follow, args.once, args.retry_wakeup, args.say is not None)):
+            parser.error("--read-delivery combines with no other command")
+        lease_id = lease_identifier(args.provider, args.session)
+        state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
+        if state.get("lease_id") != lease_id or state.get("provider") != args.provider or state.get("provider_session_id") != args.session:
+            parser.error("mailbox does not belong to this provider session")
+        payload = next((p for p in state.get("pending", []) if p.get("delivery_id") == args.read_delivery), None)
+        if payload is None:
+            parser.error("delivery is not pending in this mailbox")
+        emit(payload)
+        return 0
     if args.wakeup == "codex-queue" and (args.provider != "codex" or args.on_seal):
         parser.error("codex-queue requires --provider codex and no separate --on-seal hook")
     if args.retry_wakeup:
@@ -3626,6 +3648,8 @@ def main() -> int:
         parser.error("--voice needs a voice id")
     if args.human and not args.watch:
         parser.error("--human travels with --watch")
+    if args.bell and (not args.watch or args.human):
+        parser.error("--bell requires --watch and no --human")
     if args.watch or args.from_file is not None:
         if not args.watch:
             parser.error("--from-file travels with --watch")

@@ -21,6 +21,16 @@ had said it.
 
 ## Speak with `--say`
 
+`cs-say auth --provider xai --login-type oauth` opens xAI OAuth through
+`grok login --oauth`, independently of Codescribe. `device-code` selects the
+provider's device flow. These two modes require the Grok CLI. `--login-type key`
+prompts privately into macOS Keychain for `--provider xai|openai|deepinfra|custom`.
+The xAI speaker prefers that explicit key, otherwise it reads Grok's xAI OAuth
+session. OpenAI uses its API key; DeepInfra/custom credentials are stored but
+their speech lanes are not implemented. Unsupported OAuth/device-code providers
+fail explicitly. Tokens are never arguments or diagnostic output.
+`cs-say --help` and `cs-say auth --help` describe the modes and examples.
+
 `--say` is the only voice path. It appends one `codescribe.agent-reply.v1` row
 to the bus with the playback result. It speaks through the same TTS lane as the app (xAI by default;
 OpenAI when the profile or `--tts-vendor` says so):

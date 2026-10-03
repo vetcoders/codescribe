@@ -39,6 +39,8 @@ import json
 import os
 import shutil
 import stat
+import subprocess
+import re
 import sys
 from pathlib import Path, PurePosixPath
 
@@ -107,6 +109,19 @@ manifest = {
     "skill": "skills/codescribe",
     "files": files,
 }
+skill_header = (skill_source / "SKILL.md").read_text(encoding="utf-8")
+helper_version = re.search(r'^\s+version:\s*"([^"\n]+)"', skill_header, re.MULTILINE)
+manifest["helper_version"] = helper_version.group(1) if helper_version else bundle_version
+try:
+    manifest["source_commit"] = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, text=True
+    ).strip()
+    manifest["source_dirty"] = bool(subprocess.check_output(
+        ["git", "-C", str(repo), "status", "--porcelain"], stderr=subprocess.DEVNULL, text=True
+    ).strip())
+except (OSError, subprocess.CalledProcessError):
+    manifest["source_commit"] = None
+    manifest["source_dirty"] = None
 (stage / "manifest.json").write_text(
     json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
     encoding="utf-8",

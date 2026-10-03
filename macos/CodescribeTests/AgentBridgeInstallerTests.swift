@@ -614,6 +614,19 @@ final class AgentBridgeInstallerTests: XCTestCase {
         atPath: home.appendingPathComponent(".codescribe/agent-bridge/runtime").path))
   }
 
+  func testExplicitRuntimeInstallUpdatesHandEditedManagedHelperWithoutChangingSelection() throws {
+    let home = scratch.appendingPathComponent("explicit-runtime-home")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: try makePayload(), homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex, .claudeCode])
+    let helper = home.appendingPathComponent(".codescribe/agent-bridge/runtime/bin/bus-demux.py")
+    try Data("experiment".utf8).write(to: helper)
+    XCTAssertTrue(installer.synchronizeManagedPayload().contains("skipped"))
+    _ = try installer.installRuntime()
+    XCTAssertEqual(Set(installer.status().installedClients), [.codex, .claudeCode])
+    XCTAssertTrue(try String(contentsOf: helper, encoding: .utf8).contains("print('bridge')"))
+  }
+
   func testLaunchSynchronizationLeavesAHandEditedRuntimeAlone() throws {
     let home = scratch.appendingPathComponent("sync-edited-home", isDirectory: true)
     _ = try RealAgentBridgeInstaller(

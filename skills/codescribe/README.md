@@ -23,6 +23,16 @@ with the app; choose new clients in Settings → Agent. An unowned skill is kept
 If this shell does not include `~/.local/bin` on PATH, use those two stable full
 paths. No private checkout or hook script is required.
 
+To install only helpers and update already selected skills from source, run
+`make install-bus`. It uses the same Swift installer without building,
+restarting or replacing the app. Reattach the current session afterward; an
+existing follower retains its loaded code until reattachment.
+
+`cs-bus --version` and `cs-say --version` report the helper version plus the
+installed source commit slug, for example `0.9.0+g1ae953e1`. `.dirty` marks a
+payload staged from uncommitted source. The signed manifest retains the full
+commit; it is not inferred from the running app's version.
+
 ```bash
 cs-bus --attach --channel 2 --name lena --provider codex --session <thread-id> --voice eve
 cs-say "Jestem na szynie." --provider codex --session <thread-id>

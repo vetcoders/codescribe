@@ -159,7 +159,7 @@ struct CodescribeApp: App {
   init() {
     if CommandLine.arguments.contains("--install-agent-bridge") {
       do {
-        print(try RealAgentBridgeInstaller().installBundledRuntime())
+        print(try RealAgentBridgeInstaller().installRuntime())
         Darwin.exit(0)
       } catch {
         print("Agent bridge installation failed: " + error.localizedDescription)

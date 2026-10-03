@@ -183,6 +183,23 @@ class NativeQueueTests(unittest.TestCase):
             except ProcessLookupError:
                 pass
 
+    def test_busy_turn_bell_is_short_and_read_returns_full_original_without_ack(self):
+        event = dict(self.pending[0], schema=DEMUX.EVENT_SCHEMA, status="transcript_sealed")
+        events = self.root / "notifications.jsonl"
+        events.write_text(json.dumps(event) + "\n")
+        bell = subprocess.check_output([
+            sys.executable, SPEC.origin, "--watch", "--bell", "--once", "--from-file", str(events),
+        ], text=True)
+        self.assertEqual(json.loads(bell)["delivery_id"], event["delivery_id"])
+        self.assertNotIn(event["text"], bell)
+        self.assertLess(len(bell), 200)
+        received = subprocess.check_output([
+            sys.executable, SPEC.origin, "--read-delivery", event["delivery_id"],
+            "--provider", "codex", "--session", self.session, "--bridge-home", str(self.root),
+        ], text=True)
+        self.assertEqual(json.loads(received), self.pending[0])
+        self.assertFalse(DEMUX.delivery_acknowledged(self.root, self.lease_id, event["delivery_id"]))
+
 
 if __name__ == "__main__":
     unittest.main()

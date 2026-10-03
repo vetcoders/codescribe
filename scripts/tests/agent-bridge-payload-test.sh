@@ -25,6 +25,9 @@ assert manifest["schema"] == "codescribe.agent-bridge.bundle.v1", manifest
 assert manifest["bundle_version"] == "9.8.7", manifest
 assert manifest["helper"] == "bin/bus-demux.py", manifest
 assert manifest["skill"] == "skills/codescribe", manifest
+import subprocess
+assert manifest["helper_version"] == "0.9.0", manifest
+assert manifest["source_commit"] == subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
 
 source_skill = root / "skills" / "codescribe"
 # Staging deliberately drops these. Naming them here, rather than mirroring the
@@ -110,6 +113,8 @@ ln -s "$PAYLOAD/bin/cs-bus" "$WORKDIR/local-bin/cs-bus"
 ln -s "$PAYLOAD/bin/cs-say" "$WORKDIR/local-bin/cs-say"
 OUTPUT="$(cd "$WORKDIR" && "$WORKDIR/local-bin/cs-bus" --bus "$BUS" --name james --once)"
 "$WORKDIR/local-bin/cs-say" --help | grep -q -- '--provider'
+"$WORKDIR/local-bin/cs-bus" --version | grep -q '^cs-bus 0.9.0+g'
+"$WORKDIR/local-bin/cs-say" --version | grep -q '^cs-say 0.9.0+g'
 python3 - "$OUTPUT" <<'PY'
 import json, sys
 value = json.loads(sys.argv[1])

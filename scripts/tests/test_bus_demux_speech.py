@@ -26,6 +26,26 @@ sys.modules[SPEC.name] = DEMUX
 SPEC.loader.exec_module(DEMUX)
 
 
+class SpeechCredentialTests(unittest.TestCase):
+    def test_xai_explicit_key_wins_over_oidc_without_reading_other_credentials(self):
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="test-key\n")), patch.object(Path, "read_text", side_effect=AssertionError("must not read OAuth store")):
+            self.assertEqual(DEMUX._xai_speech_key(), "test-key")
+
+    def test_only_xai_oidc_session_is_used_when_no_key_is_stored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".grok").mkdir()
+            auth = home / ".grok/auth.json"
+            auth.write_text(json.dumps({
+                "https://other.example::account": {"auth_mode": "oidc", "key": "foreign-test-token"},
+                "https://auth.x.ai::account": {"auth_mode": "oidc", "key": "xai-test-token"},
+            }))
+            with patch.object(Path, "home", return_value=home), patch("subprocess.run", return_value=MagicMock(returncode=44, stdout="")):
+                self.assertEqual(DEMUX._xai_speech_key(), "xai-test-token")
+                auth.write_text(json.dumps({"https://other.example": {"auth_mode": "oidc", "key": "foreign-test-token"}}))
+                self.assertIsNone(DEMUX._xai_speech_key())
+
+
 class SpeechTransportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

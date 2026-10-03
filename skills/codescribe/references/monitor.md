@@ -25,6 +25,14 @@ owned follower, preserving its cursor and unread mailbox. `--wakeup off`
 selects monitor-only operation; `--on-seal` selects a custom hook instead of
 native queue. Neither touches microphone or app lifecycle.
 
+During a long active task, keep the provider's output-notifying monitor on
+`cs-bus --watch --bell --provider codex --session <thread-id>` as a short bell.
+It carries only the delivery id and notice, while native queue retains the
+complete message for the next provider turn. On a bell, use
+`cs-bus --read-delivery <id> --provider codex --session <thread-id>` to read the
+complete original envelope now and ACK after reading. This is one delivery,
+not a second command. A later queued copy must not repeat the completed task.
+
 ## Select the execution mechanism for other providers
 
 Inspect tools available in this provider session before launching a listener.
