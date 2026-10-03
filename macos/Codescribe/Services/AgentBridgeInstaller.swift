@@ -102,6 +102,8 @@ private struct AgentBridgeManifestFile: Codable, Equatable {
 private struct AgentBridgeBundleManifest: Codable {
   let schema: String
   let bundleVersion: String
+  let helperVersion: String?
+  let sourceCommit: String?
   let helper: String
   let skill: String
   let files: [AgentBridgeManifestFile]
@@ -109,6 +111,8 @@ private struct AgentBridgeBundleManifest: Codable {
   enum CodingKeys: String, CodingKey {
     case schema
     case bundleVersion = "bundle_version"
+    case helperVersion = "helper_version"
+    case sourceCommit = "source_commit"
     case helper
     case skill
     case files
@@ -118,6 +122,8 @@ private struct AgentBridgeBundleManifest: Codable {
 private struct AgentBridgeReceipt: Codable, Equatable {
   let schema: String
   let bundleVersion: String
+  let helperVersion: String?
+  let sourceCommit: String?
   let managedID: String
   let selectedClients: [AgentBridgeClient]
   let installedPaths: [String: String]
@@ -130,6 +136,8 @@ private struct AgentBridgeReceipt: Codable, Equatable {
   enum CodingKeys: String, CodingKey {
     case schema
     case bundleVersion = "bundle_version"
+    case helperVersion = "helper_version"
+    case sourceCommit = "source_commit"
     case managedID = "managed_id"
     case selectedClients = "selected_clients"
     case installedPaths = "installed_paths"
@@ -315,6 +323,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     if payloadMatches(receipt: receipt, manifest: manifest) {
       try publishCommands(manifest: manifest)
       return "Agent bridge synchronization unchanged: bundled payload matches the managed receipt."
+    } else if let reason = automaticReplacementRefusal(receipt: receipt, manifest: manifest) {
+      return "Agent bridge synchronization retained the installed runtime: " + reason
+        + ". Use an explicit runtime installation to replace it."
     } else {
       _ = try install(
         selectedClients: Set(receipt.selectedClients), adopting: nil,
@@ -336,6 +347,35 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   ) -> Bool {
     receipt.payloadFiles.sorted { $0.path < $1.path }
       == manifest.files.sorted { $0.path < $1.path }
+  }
+
+  /// Startup may upgrade a known generation, but cannot remove published
+  /// commands or order different source revisions by the app's version.
+  /// Explicit installations remain the user's replacement authority.
+  private func automaticReplacementRefusal(
+    receipt: AgentBridgeReceipt, manifest: AgentBridgeBundleManifest
+  ) -> String? {
+    let commands = Set(["bin/cs-bus", "bin/cs-say"])
+    let installedCommands = Set(receipt.payloadFiles.map(\.path)).intersection(commands)
+    let bundledCommands = Set(manifest.files.map(\.path)).intersection(commands)
+    guard installedCommands.isSubset(of: bundledCommands) else {
+      return "the bundled payload would remove installed commands"
+    }
+    guard let installedVersion = receipt.helperVersion else { return nil }
+    guard let bundledVersion = manifest.helperVersion else {
+      return "the bundled helper has no generation version"
+    }
+    switch bundledVersion.compare(installedVersion, options: .numeric) {
+    case .orderedAscending:
+      return "the bundled helper version is older than the installed helper"
+    case .orderedSame:
+      if let installedCommit = receipt.sourceCommit, manifest.sourceCommit != installedCommit {
+        return "different source revisions share the same helper version"
+      }
+      return nil
+    case .orderedDescending:
+      return nil
+    }
   }
 
   private func requireSynchronizationOwnership(_ receipt: AgentBridgeReceipt) throws {
@@ -621,6 +661,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       let receipt = AgentBridgeReceipt(
         schema: Self.receiptSchema,
         bundleVersion: manifest.bundleVersion,
+        helperVersion: manifest.helperVersion,
+        sourceCommit: manifest.sourceCommit,
         managedID: managedID,
         selectedClients: selected,
         installedPaths: installedPaths,
