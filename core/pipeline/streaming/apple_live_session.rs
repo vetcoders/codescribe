@@ -25980,12 +25980,19 @@ mod relay_l1_overlap_admission_tests {
                 .require_text_recovery(&occurrence),
             "debt is recorded before lexicon closes the frontier"
         );
-        let payload = recovery_payload(
+        let mut payload = recovery_payload(
             &occurrence,
             vec![
                 word_pin(&occurrence.session, "nowy", 4_000, 12_000),
                 word_pin(&occurrence.session, "ucieka", 30_000, 32_008),
             ],
+        );
+        // This synthetic recovery decodes 0..48_000, including right context;
+        // the occurrence owns 0..32_000. Every returned pin must be in the decode.
+        payload.identity.range.sample_end = 48_000;
+        assert!(
+            payload.validate().is_ok(),
+            "fixture has an authenticated decode clock"
         );
         let cleared =
             admit_debt_occurrence_recovery(&mut lane.state, &lane.tx, &occurrence, &payload);
