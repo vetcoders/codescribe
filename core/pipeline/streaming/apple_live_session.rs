@@ -2657,11 +2657,14 @@ impl AppleSealState {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .layer_trail()
                     .len();
-                let admitted = self.admit_routed_words(
+                let admitted = self.admit_routed_words_with_decode_window(
                     ev_tx,
                     *member_id,
                     occurrence,
-                    commit.sample_start,
+                    (
+                        commit.sample_start,
+                        Some((commit.sample_start, commit.sample_end)),
+                    ),
                     RoutedWords {
                         pins: &route.exclusive,
                         neighbours: &neighbour_pin_assignments(&owners, &routes, segments, index),
@@ -2752,9 +2755,20 @@ impl AppleSealState {
         }) {
             return;
         }
+        let scheduled = schedule_formatter_after_terminal_label(
+            &mut ledger,
+            self.formatter.as_ref(),
+            occurrence,
+            LedgerObservationProducer::CloudLive,
+        );
         let closed = ledger.note_frontier_return(occurrence, LedgerObservationProducer::CloudLive);
         if closed && let Ok(receipt) = ledger.seal(occurrence).cloned() {
             let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
+        }
+        drop(ledger);
+        if scheduled && self.formatter_in_flight.insert(occurrence.clone()) {
+            self.formatter_awaiting_completion =
+                self.formatter_awaiting_completion.saturating_add(1);
         }
     }
 
@@ -4026,25 +4040,6 @@ impl AppleSealState {
                 });
             }
         }
-    }
-
-    fn admit_routed_words(
-        &mut self,
-        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-        id: u64,
-        owner: &OccurrenceIdentity,
-        request: u64,
-        batch: RoutedWords<'_>,
-        producer: LedgerObservationProducer,
-    ) -> bool {
-        self.admit_routed_words_with_decode_window(
-            ev_tx,
-            id,
-            owner,
-            (request, None),
-            batch,
-            producer,
-        )
     }
 
     fn admit_routed_words_with_decode_window(
@@ -13562,6 +13557,385 @@ mod rc_w2_test_rehab {
                 .is_qualified()
         );
         occurrence
+    }
+
+    // Root-owned Cloud controls: actual measured PCM, ingress and source work.
+    fn forensic_cloud_capture(
+        session: &str,
+        next: bool,
+        tx: &mpsc::UnboundedSender<EngineEvent>,
+    ) -> (
+        AppleSealState,
+        Vec<OccurrenceIdentity>,
+        Vec<f32>,
+        mpsc::Receiver<u64>,
+    ) {
+        let mut state = state(session, 0.0);
+        let mut pcm = vec![0.0; sample(if next { 4.0 } else { 2.0 }) as usize];
+        pcm[sample(0.2) as usize..sample(0.6) as usize].fill(0.25);
+        if next {
+            pcm[sample(1.8) as usize..sample(2.1) as usize].fill(0.25);
+        }
+        state.audio.push(&pcm);
+        let mut writer = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+        for chunk in pcm.chunks(320) {
+            writer.push_samples(chunk);
+        }
+        let speech = coverage_speech_evidence(&state);
+        assert_eq!(
+            speech.producer(),
+            crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER
+        );
+        assert_eq!(
+            speech.availability().observed_samples(),
+            Some(pcm.len() as u64)
+        );
+        assert_eq!(speech.ranges().len(), if next { 2 } else { 1 });
+        let (commit_tx, commit_rx) = mpsc::channel(4);
+        state.cloud_commit_tx = Some(commit_tx);
+        let mut owners = Vec::new();
+        for (id, start, end) in if next {
+            vec![(1, 0.0, 1.0), (2, 1.7, 2.2)]
+        } else {
+            vec![(1, 0.0, 1.0)]
+        } {
+            let owner =
+                OccurrenceIdentity::new(session, state.capture_epoch, sample(start), sample(end));
+            assert!(qualify_owned_occurrence(&state, &owner));
+            {
+                let mut ledger = state.acoustic_ledger.lock().unwrap();
+                ledger.schedule_frontier(
+                    owner.clone(),
+                    [
+                        LedgerObservationProducer::Apple,
+                        LedgerObservationProducer::Lexicon,
+                    ],
+                );
+                assert!(ledger.require_text_recovery(&owner));
+            }
+            for producer in [
+                LedgerObservationProducer::Apple,
+                LedgerObservationProducer::Lexicon,
+            ] {
+                assert!(
+                    admit_ledger_label(
+                        &mut state,
+                        tx,
+                        LabelAdmission {
+                            observation: LedgerObservationIdentity::new(
+                                producer,
+                                id,
+                                0,
+                                owner.clone()
+                            ),
+                            label: "zostaje",
+                            energy: EnergyAdmission::RequireExistingQualification,
+                        }
+                    )
+                    .is_some()
+                );
+            }
+            assert!(cloud_open(&state, &owner));
+            assert!(
+                state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap()
+                    .text_recovery_pending(&owner)
+            );
+            if id == 1 {
+                state.commit_cloud_close(tx, silence_close(1.5));
+                assert_eq!(state.cloud_inflight.len(), 1);
+            }
+            owners.push(owner);
+        }
+        (state, owners, pcm, commit_rx)
+    }
+
+    fn forensic_cloud_final(
+        session: &str,
+        phrase: bool,
+    ) -> crate::asr_session::events::TranscriptEvent {
+        let words = [("cloud", sample(0.2), sample(0.6))];
+        let mut event =
+            cloud_notice_final("cloud", if phrase { &[] } else { &words }, 0, sample(1.5));
+        event.session_id = crate::asr_session::events::SessionId::new(session).unwrap();
+        event
+    }
+
+    #[test]
+    fn forensic_cloud_ingress_refuses_foreign_duplicate_and_stale_finals() {
+        use crate::asr_session::{
+            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode,
+        };
+        let input = Layer1SessionInput {
+            session_id: Layer1SessionId::new("cloud-ingress-owned").unwrap(),
+            locale: None,
+            sample_rate: RATE,
+        };
+        let valid = forensic_cloud_final("cloud-ingress-owned", false);
+        let foreign = forensic_cloud_final("cloud-ingress-foreign", false);
+        let mut stale = valid.clone();
+        stale.utterance_id = 2;
+        stale.text = "stale".into();
+        let script = vec![
+            AsrSessionEvent::Final(foreign),
+            AsrSessionEvent::Final(valid.clone()),
+            AsrSessionEvent::Final(valid.clone()),
+            AsrSessionEvent::Final(stale),
+        ];
+        let fake = FakeAsrSessionProvider::with_script(RefinerMode::CloudSession, script);
+        let mut lane = RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(fake)), &input);
+        let frame = vec![0.25; 320];
+        for index in 0..4 {
+            let _ = lane.offer_pcm(&frame);
+            let _ = lane.flush_holdback();
+            lane.poll();
+            let finals = lane.take_unforwarded_finals();
+            if index == 1 {
+                assert_eq!(finals, vec![valid.clone()]);
+            } else {
+                assert!(finals.is_empty());
+            }
+        }
+        assert_eq!(lane.pushed_samples(), 1_280);
+        assert_eq!(lane.telemetry().events_rejected, 2);
+        assert_eq!(lane.telemetry().finals_accepted, 1);
+        assert_eq!(lane.finals(), &[valid]);
+    }
+
+    fn forensic_cloud_assert_complete_final_source(next: bool) {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (mut state, owners, pcm, _commit_rx) =
+            forensic_cloud_capture("cloud-complete-source", next, &tx);
+        let source = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .slots_of(&owners[0])
+            .unwrap()[0]
+            .clone();
+        assert_eq!(
+            state
+                .window_by_samples(0, pcm.len() as u64)
+                .unwrap()
+                .samples,
+            pcm
+        );
+        drain(&mut rx);
+        let final_event = forensic_cloud_final(&state.session_id, false);
+        if next {
+            state.close_admission_horizon(&tx, sample(1.7));
+            state.release_cloud_live_behind(&tx, sample(2.7));
+            assert!(cloud_open(&state, &owners[0]));
+            state.handle_cloud_notice(&tx, CloudWorkerNotice::Final(Box::new(final_event)));
+        } else {
+            let (notice_tx, notice_rx) = std_mpsc::channel();
+            notice_tx
+                .send(CloudWorkerNotice::Final(Box::new(final_event)))
+                .unwrap();
+            notice_tx.send(CloudWorkerNotice::EndSettled).unwrap();
+            assert!(drain_cloud_stop_finals(&mut state, &tx, &notice_rx));
+        }
+        assert_eq!(state.cloud_live_admitted, 1);
+        assert!(!cloud_open(&state, &owners[0]));
+        assert!(state.cloud_inflight.is_empty());
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owners[0]), Some("cloud"));
+        assert!(
+            !ledger.text_recovery_pending(&owners[0]),
+            "complete Cloud decode scope must account the source, next={next}"
+        );
+        assert!(ledger.is_sealed(&owners[0]));
+        let pins = ledger.slots_of(&owners[0]).unwrap();
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].producer, LedgerObservationProducer::CloudLive);
+        assert_eq!(
+            (pins[0].sample_start, pins[0].sample_end),
+            (sample(0.2), sample(0.6))
+        );
+        assert_eq!(
+            ledger
+                .slot_operations()
+                .iter()
+                .filter(
+                    |op| op.observation.producer == LedgerObservationProducer::CloudLive
+                        && op.sources.contains(&source)
+                        && op.outputs.contains(&pins[0])
+                )
+                .count(),
+            1
+        );
+        assert_eq!(ledger.conservation().residue(), 0);
+        if next {
+            assert!(ledger.text_recovery_pending(&owners[1]));
+            drop(ledger);
+            assert!(cloud_open(&state, &owners[1]));
+        } else {
+            drop(ledger);
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            let coverage = ledger.assess_seal_coverage(
+                &state.session_id,
+                state.capture_epoch,
+                &coverage_speech_evidence(&state),
+                0,
+            );
+            assert!(coverage.status.is_complete());
+            assert!(ledger.record_seal_coverage(coverage));
+            assert!(
+                ledger
+                    .seal_terminal(&state.session_id, state.capture_epoch)
+                    .is_ok()
+            );
+        }
+        assert_eq!(state.session_conservation().residue(), 0);
+        let events = drain(&mut rx);
+        assert_eq!(events.iter().filter(|event| matches!(event, EngineEvent::LedgerSeal { receipt } if receipt.coverage == owners[0])).count(), 1);
+    }
+
+    #[test]
+    fn forensic_cloud_complete_final_accounts_source_before_end() {
+        forensic_cloud_assert_complete_final_source(false);
+    }
+
+    #[test]
+    fn forensic_cloud_complete_final_accounts_source_inside_grace() {
+        forensic_cloud_assert_complete_final_source(true);
+    }
+
+    #[test]
+    fn forensic_cloud_phrase_transport_return_preserves_source_debt() {
+        for stop in [false, true] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let (mut state, owners, _, _commit_rx) =
+                forensic_cloud_capture("cloud-phrase-source", false, &tx);
+            drain(&mut rx);
+            let event = forensic_cloud_final(&state.session_id, true);
+            if stop {
+                let (notice_tx, notice_rx) = std_mpsc::channel();
+                notice_tx
+                    .send(CloudWorkerNotice::Final(Box::new(event)))
+                    .unwrap();
+                notice_tx.send(CloudWorkerNotice::EndSettled).unwrap();
+                assert!(drain_cloud_stop_finals(&mut state, &tx, &notice_rx));
+            } else {
+                state.handle_cloud_notice(&tx, CloudWorkerNotice::Final(Box::new(event)));
+            }
+            assert!(!cloud_open(&state, &owners[0]));
+            assert!(state.cloud_inflight.is_empty());
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&owners[0]), Some("zostaje"));
+            assert_eq!(state.cloud_live_admitted, 0);
+            assert!(ledger.text_recovery_pending(&owners[0]));
+            assert!(!ledger.is_sealed(&owners[0]));
+            assert_eq!(ledger.conservation().residue(), 0);
+            drop(ledger);
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            let coverage = ledger.assess_seal_coverage(
+                &state.session_id,
+                state.capture_epoch,
+                &coverage_speech_evidence(&state),
+                0,
+            );
+            assert!(!coverage.status.is_complete());
+            assert!(ledger.record_seal_coverage(coverage));
+            assert!(
+                ledger
+                    .seal_terminal(&state.session_id, state.capture_epoch)
+                    .is_err()
+            );
+            drop(ledger);
+            assert_eq!(state.session_conservation().residue(), 0);
+            let events = drain(&mut rx);
+            assert!(events.iter().any(|event| matches!(event, EngineEvent::LedgerMutation { observation, label, receipt } if observation.producer == LedgerObservationProducer::CloudLive && label == "cloud" && !receipt.grants_mutation())));
+            assert!(events.iter().all(|event| !matches!(
+                event,
+                EngineEvent::LedgerSeal { .. } | EngineEvent::UtteranceFinal { .. }
+            )));
+        }
+    }
+
+    #[test]
+    fn forensic_cloud_last_observer_schedules_formatter_before_sealing() {
+        let session = "cloud-last-formatter";
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = state(session, 0.0);
+        let mut pcm = vec![0.25; sample(1.0) as usize];
+        pcm.extend(vec![0.0; sample(0.5) as usize]);
+        state.audio.push(&pcm);
+        let mut writer = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+        for chunk in pcm.chunks(320) {
+            writer.push_samples(chunk);
+        }
+        let speech = coverage_speech_evidence(&state);
+        assert_eq!(speech.ranges().len(), 1);
+        assert_eq!(
+            speech.availability().observed_samples(),
+            Some(pcm.len() as u64)
+        );
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        state.cloud_commit_tx = Some(commit_tx);
+        let (formatter_tx, mut formatter_rx) = mpsc::channel(4);
+        state.formatter = Some(formatter_tx);
+        let owner = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        assert!(cloud_open(&state, &owner));
+        assert!(
+            formatter_rx.try_recv().is_err(),
+            "Cloud still owes this span"
+        );
+        assert!(
+            !state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .text_recovery_pending(&owner)
+        );
+        drain(&mut rx);
+        let mut event = cloud_notice_final("cloud", &[("cloud", 0, sample(1.0))], 0, sample(1.5));
+        event.session_id = crate::asr_session::events::SessionId::new(session).unwrap();
+        state.handle_cloud_notice(&tx, CloudWorkerNotice::Final(Box::new(event)));
+        assert_eq!(state.cloud_live_admitted, 1);
+        assert!(!cloud_open(&state, &owner));
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&owner),
+            Some("cloud")
+        );
+        assert!(
+            !state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .text_recovery_pending(&owner)
+        );
+        let request = formatter_rx
+            .try_recv()
+            .expect("last Cloud observer must schedule the selected formatter");
+        assert_eq!(request.occurrence, owner);
+        assert_eq!(request.existing_label, "cloud");
+        assert_eq!(
+            request.source_observation.unwrap().producer,
+            LedgerObservationProducer::CloudLive
+        );
+        assert_eq!(state.formatter_awaiting_completion, 1);
+        assert!(state.formatter_in_flight.contains(&owner));
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(
+            ledger
+                .frontier_of(&owner)
+                .unwrap()
+                .open_producers()
+                .contains(&LedgerObservationProducer::Formatter)
+        );
+        assert!(!ledger.is_sealed(&owner));
+        assert_eq!(ledger.conservation().residue(), 0);
+        drop(ledger);
+        assert_eq!(state.session_conservation().residue(), 0);
+        assert!(
+            drain(&mut rx)
+                .iter()
+                .all(|event| !matches!(event, EngineEvent::LedgerSeal { .. }))
+        );
     }
 
     fn physical_state(session: &str, secs: f32, ranges: &[(f32, f32)]) -> AppleSealState {
@@ -23948,11 +24322,11 @@ mod relay_l1_overlap_admission_tests {
         let mut lane = open(session);
         let owner = OccurrenceIdentity::new(session, 1, 0, 52_000);
         stage(&mut lane, 1, owner.clone(), "apple");
-        lane.state.admit_routed_words(
+        lane.state.admit_routed_words_with_decode_window(
             &lane.tx,
             1,
             &owner,
-            1,
+            (1, None),
             RoutedWords {
                 pins: &[RoutedPin {
                     confidence: None,
