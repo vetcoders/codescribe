@@ -629,7 +629,8 @@ struct AudioPanel: View {
       } else {
         Button("Start recording") {
           guard canStartRecording else { return }
-          recordingState?.start()
+          // The tray admits the next capture before starting the shared controller.
+          AppModel.shared.tray.toggleDictation()
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.small)
@@ -645,11 +646,13 @@ struct AudioPanel: View {
     model.permissions.microphone == .granted && model.admission?.ready == true
       && model.admissionReadError == nil && !model.calibrationPending
       && recordingState?.recording == false && recordingState?.warmingUp == false
+      && !AppModel.shared.tray.isRecording && !AppModel.shared.tray.isStartingDictation
       && !recordingProcessing
   }
 
   private var recordingProcessing: Bool {
     recordingState?.transcribing == true
+      || recordingState?.isFinalPass == true
       || (recordingState?.mode == .finalizing && recordingState?.terminal == false)
   }
 
