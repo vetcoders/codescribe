@@ -80,7 +80,11 @@ Passive Settings, Setup, account metadata and retranscription availability read
 `UserSettings::load_projection`: the same document parser and normalization used
 by the settings writer, over the atomically committed file. This read neither
 acquires the settings credential transaction lease nor persists repairs or
-schema/import migrations. It observes a coherent committed document while an
+schema/import migrations. If the document is absent, it projects the initial
+`.env` values through the same import builder and normalization as the first
+writer. Any projected pending rows are in-memory intent, not a persistence
+receipt; only the writer commits them. An unreadable existing document does not
+become permission to reimport `.env`. It observes a coherent committed document while an
 explicit credential edit is waiting for Security, including durable import
 cancellation published before that edit. It does not use a substitute cache or
 interpret a busy lease as missing settings.
@@ -104,7 +108,11 @@ bootstrap mutex; only env publication and cache-based config capture hold that
 mutex. Completed bundle values can be mirrored during the one bootstrap window
 without starting Security I/O under the mutex. Warm runtime bundle reads return
 from the positive cache before the physical I/O mutex; strict explicit refresh
-continues to acquire that mutex and report failures.
+continues to acquire that mutex and report failures. Runtime resolution still
+reads the completed cache with explicit env taking priority; it does not need
+another env seed after the first production bootstrap closes. A no-reseeding
+witness must exercise that production bootstrap lifetime rather than the unit
+harness's per-case env bootstrap permission.
 
 `CsProviderAccessSnapshot.account_errors` isolates an unavailable OAuth account
 record by provider ID. Decoder details and token JSON do not enter public error
@@ -120,3 +128,8 @@ Capability matrix uses `effective_agent_workspace_roots_projection`, which
 feeds committed settings into the same root resolver as writer-capable callers.
 Root precedence, normalization and the default workspace are unchanged. This
 passive connector-health read does not acquire the settings transaction lease.
+
+Passive projections do not execute settings repair. Launch repair receipts must
+be obtained from an admitted writer-capable settings/acquiring loader, then
+observed through the runtime snapshot. Requesting a passive snapshot alone does
+not authorize document recreation, backup or pack seeding.

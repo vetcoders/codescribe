@@ -2387,12 +2387,22 @@ impl UserSettings {
             },
             Err(e) => {
                 debug!(
-                    "No settings file at {} ({e}), using defaults",
+                    "Settings document unavailable at {} ({e})",
                     path.display()
                 );
                 let mut settings = Self::default();
-                if persist_migrations && e.kind() == std::io::ErrorKind::NotFound {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    if persist_migrations {
                     super::stt_migration::migrate_legacy_stt_lanes_once(&mut settings);
+                    } else {
+                        // Project the same first-import values without admitting a writer.
+                        // Pending rows in this value remain uncommitted until a writer load.
+                        match Self::first_env_import_candidate() {
+                            Ok(Some(candidate)) => return Self::from_v2(candidate.to_v2()),
+                            Ok(None) => {}
+                            Err(error) => warn!(%error, "Initial settings projection unavailable"),
+                        }
+                    }
                 }
                 settings
             }

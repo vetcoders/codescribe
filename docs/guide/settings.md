@@ -206,7 +206,9 @@ That opens or creates `~/.codescribe/.env`.
 When migrating an installation that only has this file, the first Settings
 write preserves its promoted choices and records pending credential imports
 before saving your edit. Credential access completes those imports later;
-opening Settings alone does not acquire credentials or prepare the import.
+opening Settings alone projects the imported choices without acquiring
+credentials or creating `settings.json`. The pending import becomes durable
+when the first writer prepares it, not when the preview appears.
 
 Common overrides:
 

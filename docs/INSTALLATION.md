@@ -127,6 +127,12 @@ Include capability matrix connector health while a credential write is paused.
 For an installation with only `.env`, save an ordinary setting before provider
 access, then acquire credentials: imported settings, the user's edit and pending
 imports must survive. Repeat with concurrent initial acquisition and first write.
+Before the first write, the passive snapshot must show imported promoted choices
+without creating the settings document. After the first production bootstrap,
+new credentials must resolve from cache without another process-env seed.
+Exercise this ordering with the core using its production bootstrap lifetime;
+the unit harness intentionally keeps its per-case env permission open. Repair fixtures
+must call an admitted startup writer before requiring repair actions or backups.
 
 Filesystem configuration is also shared by ordinary app launches; the test
 runner supplies an isolated data directory. A distinct bundle ID does not
