@@ -1870,6 +1870,9 @@ impl AcousticLedger {
         speech: &AcousticSpeechEvidence,
         incomplete_threshold_samples: u64,
     ) -> SealCoverageReceipt {
+        use crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER;
+        use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+
         fn merged_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
             ranges.retain(|(start, end)| end > start);
             ranges.sort_unstable();
@@ -1930,6 +1933,19 @@ impl AcousticLedger {
             .any(|range| range.session != session || range.capture_epoch != capture_epoch)
         {
             return refuse(AcousticEvidenceGap::IdentityMismatch);
+        }
+
+        // Only acoustic observers can certify speech or silence. Invalid
+        // ranges invalidate the measurement before union can discard them.
+        if !matches!(
+            speech.producer(),
+            CAPTURE_ENERGY_PRODUCER | SILERO_BOUNDARIES_PRODUCER
+        ) || speech
+            .ranges()
+            .iter()
+            .any(|range| range.sample_end <= range.sample_start)
+        {
+            return refuse(AcousticEvidenceGap::InvalidMeasurement);
         }
 
         let producer = speech.producer();
