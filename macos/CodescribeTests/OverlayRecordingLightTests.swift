@@ -144,8 +144,8 @@ final class OverlayRecordingLightTests: XCTestCase {
         "Speech coverage was not measured because no acoustic measurement was taken."
       ),
       (
-        coverage(.complete, speech: 32_000, covered: 32_000), "Take not sealed yet",
-        "Speech coverage was measured as complete, but this take has no terminal seal."
+        coverage(.complete, speech: 32_000, covered: 32_000), "Completion unconfirmed",
+        "All measured speech has words, but Codescribe could not confirm that this transcription finished."
       ),
       (
         coverage(.unknown), "No coverage measurement for this take",
@@ -284,8 +284,10 @@ final class OverlayRecordingLightTests: XCTestCase {
       XCTAssertEqual(control.recordingSymbol, "stop.fill", "\(light)")
       XCTAssertEqual(control.recordingStatusValue, light.name)
       XCTAssertEqual(control.recordingDisabled, light == .processing)
-      XCTAssertEqual(control.recordingTint,
-        light == .holdToTalk || light == .handsFree ? OverlayAppearancePalette.dark.errorStatus.color : light.color)
+      XCTAssertEqual(
+        control.recordingTint,
+        light == .holdToTalk || light == .handsFree
+          ? OverlayAppearancePalette.dark.errorStatus.color : light.color)
       control.activateRecordingControl()
       XCTAssertEqual(intents, light == .processing ? [] : [.finish])
       XCTAssertEqual(OverlayRecordingControls.controlDiameter, 22)
