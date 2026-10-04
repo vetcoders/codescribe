@@ -1471,7 +1471,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Krótkie naciśnięcie Fn rozpoczyna dyktowanie, a kolejne je kończy. Jeśli przytrzymasz Fn dłużej, działa jak „naciśnij i mów”.\n\nAby uniknąć konfliktów, ustaw działanie klawisza Fn w macOS na „Nic nie rób”. Codescribe reaguje już na pojedyncze naciśnięcie, a macOS może przejąć podwójne naciśnięcie Fn dla własnego dyktowania."
+            "value" : "Naciśnij Fn, aby rozpocząć dyktowanie, i ponownie, aby je zakończyć. Przytrzymanie Fn działa jak „naciśnij i mów”.\n\nAby uniknąć konfliktu z dyktowaniem macOS, ustaw działanie klawisza Fn na „Nic nie rób”."
           }
         }
       }
@@ -1543,7 +1543,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Klucz API jest skonfigurowany. Obsługiwane żądania trybu Assistive, Formatowanie w chmurze i pobieranie listy modeli mogą korzystać z klucza tego dostawcy. Żadne konto nie jest połączone."
+            "value" : "Klucz API jest skonfigurowany. Obsługiwane żądania Agenta, Formatowanie w chmurze i pobieranie listy modeli mogą korzystać z klucza tego dostawcy. Żadne konto nie jest połączone."
           }
         }
       }
@@ -1625,7 +1625,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Konto jest połączone, a klucz API skonfigurowany. Obsługiwane żądania trybu Assistive mogą korzystać z konta; Formatowanie i pobieranie listy modeli korzystają z klucza API dostawcy."
+            "value" : "Konto jest połączone, a klucz API skonfigurowany. Obsługiwane żądania Agenta mogą korzystać z konta; Formatowanie i pobieranie listy modeli korzystają z klucza API dostawcy."
           }
         }
       }
@@ -1635,7 +1635,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Konto jest połączone dla obsługiwanych żądań trybu Assistive. Nie skonfigurowano klucza API. Możesz kontynuować bez niego; Formatowanie w chmurze i pobieranie listy modeli wymagają klucza API dostawcy."
+            "value" : "Konto jest połączone dla obsługiwanych żądań Agenta. Nie skonfigurowano klucza API. Możesz kontynuować bez niego; Formatowanie w chmurze i pobieranie listy modeli wymagają klucza API dostawcy."
           }
         }
       }
@@ -1645,7 +1645,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Logowanie na konto i klucze API to dwa osobne sposoby połączenia. Logowanie na konto obsługuje tryb Assistive; Formatowanie w chmurze i pobieranie listy modeli korzystają z klucza API. Klucze są przechowywane w pęku kluczy macOS i nigdy nie są ponownie wyświetlane. Możesz pominąć ten krok i skonfigurować dostęp później w Ustawieniach › Dostawcy."
+            "value" : "Logowanie na konto i klucze API to dwa osobne sposoby połączenia. Logowanie na konto obsługuje Agenta; Formatowanie w chmurze i pobieranie listy modeli korzystają z klucza API. Klucze są przechowywane w pęku kluczy macOS i nigdy nie są ponownie wyświetlane. Możesz pominąć ten krok i skonfigurować dostęp później w Ustawieniach › Dostawcy."
           }
         }
       }
@@ -1655,7 +1655,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Logowanie na konto obsługuje żądania trybu Assistive, ale pobieranie listy modeli wymaga klucza API dostawcy. Zachowaj bieżący model albo wpisz ID modelu w Ustawieniach › Agent › Ścieżki modeli AI."
+            "value" : "Logowanie na konto obsługuje żądania Agenta, ale pobieranie listy modeli wymaga klucza API dostawcy. Zachowaj bieżący model albo wpisz ID modelu w Ustawieniach › Agent › Ścieżki modeli AI."
           }
         }
       }
@@ -1861,7 +1861,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Kanał agenta"
+            "value" : "Przełączanie kanałów Agenta"
           }
         }
       }
@@ -1962,7 +1962,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Gotowość agenta obejmuje dostęp w trybie Assistive i narzędzia natywne. Formatowanie w chmurze konfigurujesz osobno w Ustawieniach › Agent › Ścieżki modeli AI."
+            "value" : "Gotowość agenta obejmuje dostęp Agenta i narzędzia natywne. Formatowanie w chmurze konfigurujesz osobno w Ustawieniach › Agent › Ścieżki modeli AI."
           }
         }
       }
@@ -2349,7 +2349,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Aktywuj przez"
+            "value" : "Klawisz"
           }
         }
       }
@@ -2670,7 +2670,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Skróty są zapisywane w pliku settings.json i stosowane od razu."
+            "value" : "Skróty zapisują się automatycznie i działają od razu."
           }
         }
       }
@@ -3578,7 +3578,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wygodny"
+            "value" : "Wygodne"
           }
         }
       }
@@ -4391,7 +4391,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ctrl z cyfrą przełącza kanał agenta. Wybierz Fn, jeśli wolisz używać klawisza z globusem. Command nie jest dostępny, ponieważ koliduje ze skrótami do przełączania kart."
+            "value" : "Wybierz Ctrl lub Fn jako klawisz do przełączania kanałów Agenta."
           }
         }
       }
@@ -4775,7 +4775,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "słownik"
+            "value" : "Słownik"
           }
         }
       }
@@ -5548,7 +5548,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Formatowanie wymaga klucza API tego dostawcy; konto trybu Assistive go nie autoryzuje. Dodaj klucz w Ustawieniach › Dostawcy."
+            "value" : "Formatowanie wymaga klucza API tego dostawcy; konto Agenta go nie autoryzuje. Dodaj klucz w Ustawieniach › Dostawcy."
           }
         }
       }
@@ -6357,7 +6357,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "licencja"
+            "value" : "Licencja"
           }
         }
       }
@@ -6937,7 +6937,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Środkowy przycisk myszy działa jak Fn"
+            "value" : "Środkowy przycisk myszy jako Fn"
           }
         }
       }
@@ -7299,7 +7299,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nigdy nie wkleja automatycznie. Transkrypcja pozostaje w overlayu."
+            "value" : "Nie wkleja automatycznie. Tekst pozostaje w overlayu."
           }
         }
       }
@@ -7411,7 +7411,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dla tego dostawcy nie skonfigurowano konta ani klucza API. Połącz obsługiwane konto dla trybu Assistive albo dodaj klucz API w Ustawieniach › Dostawcy. Jeśli chcesz tylko dyktować, możesz pominąć ten krok."
+            "value" : "Dla tego dostawcy nie skonfigurowano konta ani klucza API. Połącz obsługiwane konto dla Agenta albo dodaj klucz API w Ustawieniach › Dostawcy. Jeśli chcesz tylko dyktować, możesz pominąć ten krok."
           }
         }
       }
@@ -8228,7 +8228,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wkleja tylko do pól tekstowych. Do terminala wkleja tekst wyłącznie wtedy, gdy nie wygląda on jak polecenie."
+            "value" : "Wkleja tylko do pól tekstowych. W terminalu pomija tekst wyglądający jak polecenie."
           }
         }
       }
@@ -8238,7 +8238,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wkleja w miejscu kursora tekstowego, także w terminalach. Nie wkleja automatycznie poleceń ani tekstu do pól haseł."
+            "value" : "Wkleja przy kursorze, także w terminalu. Pomija polecenia i pola haseł."
           }
         }
       }
@@ -8351,7 +8351,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wybierz sposób uruchamiania. Na tej podstawie ustawimy skróty dla Dyktowania, Formatowania i trybu Assistive."
+            "value" : "Wybierz sposób uruchamiania. Na tej podstawie ustawimy skróty dla Dyktowania, Formatowania i Agenta."
           }
         }
       }
@@ -8869,7 +8869,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Fioletowy — głos trafia do agenta"
+            "value" : "Fioletowy — głos trafia do Agenta"
           }
         }
       }
@@ -10129,7 +10129,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Bezpieczny"
+            "value" : "Ostrożne"
           }
         }
       }
@@ -10801,7 +10801,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Jeśli podczas trzymania Fn naciśniesz Shift lub Command, Codescribe doda zaznaczony tekst jako kontekst {selection_N}.\n\nNie uruchomi to Agenta, nie ukryje overlaya ani nie przerwie nagrywania.\n\nFn+Shift użyte przed rozpoczęciem nagrywania uruchamia dyktowanie, a nie tryb Agenta."
+            "value" : "Naciśnij wybrany klawisz, przytrzymując Fn. Zaznaczony tekst zostanie dołączony jako kontekst.\n\nNie zmienia to trybu ani nie przerywa nagrywania.\n\nFn+Shift przed rozpoczęciem nagrywania uruchamia zwykłe dyktowanie."
           }
         }
       }
@@ -11988,7 +11988,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Naciśnij krótko Fn, aby dyktować"
+            "value" : "Dyktowanie jednym naciśnięciem Fn"
           }
         }
       }
@@ -12255,7 +12255,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Model Assistive jest teraz niedostępny — otwórz ustawienia → silnik, aby skonfigurować tryb agentowy"
+            "value" : "Model Agenta jest teraz niedostępny — otwórz Ustawienia › Silnik, aby skonfigurować Agenta"
           }
         }
       }
@@ -12366,7 +12366,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Środkowy przycisk myszy działa tak samo jak Fn: można go krótko nacisnąć lub przytrzymać. Kliknięcie jest również przekazywane do aktywnej aplikacji."
+            "value" : "Naciśnij lub przytrzymaj środkowy przycisk myszy — działa tak jak Fn."
           }
         }
       }
@@ -13284,7 +13284,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "użytkownik"
+            "value" : "Użytkownik"
           }
         }
       }
@@ -13728,7 +13728,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Określa, gdzie trafia transkrypcja po zwolnieniu klawisza w trybie przytrzymania albo zatrzymaniu nagrania przełącznikiem."
+            "value" : "Wybierz, czy Codescribe ma automatycznie wklejać treść transkrypcji."
           }
         }
       }
@@ -14141,7 +14141,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "ścieżka assistive: brak danych dostępowych"
+            "value" : "Agent: brak danych dostępowych"
           }
         }
       }
@@ -14751,6 +14751,276 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "przyznano %@ · wybierz, aby cofnąć"
+          }
+        }
+      }
+    },
+    "hotkeys.binding.disabled" : {
+      "comment" : "Gesture option: the mode has no shortcut",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Disabled"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wyłączony"
+          }
+        }
+      }
+    },
+    "hotkeys.binding.doubleCtrl" : {
+      "comment" : "Gesture option",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Double-tap Ctrl"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dwukrotnie Ctrl"
+          }
+        }
+      }
+    },
+    "hotkeys.binding.doubleLeftOption" : {
+      "comment" : "Gesture option",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Double-tap Left Option"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dwukrotnie lewy Option"
+          }
+        }
+      }
+    },
+    "hotkeys.binding.doubleRightOption" : {
+      "comment" : "Gesture option",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Double-tap Right Option"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dwukrotnie prawy Option"
+          }
+        }
+      }
+    },
+    "hotkeys.binding.holdCtrl" : {
+      "comment" : "Gesture option",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Hold Ctrl"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przytrzymaj Ctrl"
+          }
+        }
+      }
+    },
+    "hotkeys.binding.holdCtrlCommand" : {
+      "comment" : "Gesture option",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Hold Ctrl+Command"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przytrzymaj Ctrl+Command"
+          }
+        }
+      }
+    },
+    "hotkeys.binding.holdCtrlOption" : {
+      "comment" : "Gesture option",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Hold Ctrl+Option"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przytrzymaj Ctrl+Option"
+          }
+        }
+      }
+    },
+    "hotkeys.binding.holdCtrlShift" : {
+      "comment" : "Gesture option",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Hold Ctrl+Shift"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przytrzymaj Ctrl+Shift"
+          }
+        }
+      }
+    },
+    "hotkeys.binding.holdFn" : {
+      "comment" : "Gesture option",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Hold Fn/Globe"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przytrzymaj Fn/Globe"
+          }
+        }
+      }
+    },
+    "hotkeys.mode.agent" : {
+      "comment" : "Work mode name on the Shortcuts screen: voice goes to the agent",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Agent"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent"
+          }
+        }
+      }
+    },
+    "hotkeys.mode.agent.blurb" : {
+      "comment" : "Work mode description on the Shortcuts screen",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Sends your voice to the Agent instead of pasting."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wysyła Twój głos do Agenta zamiast wklejać tekst."
+          }
+        }
+      }
+    },
+    "hotkeys.mode.dictation" : {
+      "comment" : "Work mode name on the Shortcuts screen",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Dictation"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dyktowanie"
+          }
+        }
+      }
+    },
+    "hotkeys.mode.dictation.blurb" : {
+      "comment" : "Work mode description on the Shortcuts screen",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Transcribes your voice and pastes the text."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zamienia Twój głos na tekst i wkleja go."
+          }
+        }
+      }
+    },
+    "hotkeys.mode.formatting" : {
+      "comment" : "Work mode name on the Shortcuts screen",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Formatting"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie"
+          }
+        }
+      }
+    },
+    "hotkeys.mode.formatting.blurb" : {
+      "comment" : "Work mode description on the Shortcuts screen",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Records dictation, then formats it before pasting."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nagrywa dyktowanie i formatuje je przed wklejeniem."
           }
         }
       }
@@ -16009,7 +16279,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "mowa i tryb assistive gotowe · formatowanie w chmurze niewymagane"
+            "value" : "Głos i Agent · Formatowanie w chmurze niewymagane"
           }
         }
       }
@@ -16031,7 +16301,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "mowa, tryb assistive i formatowanie gotowe"
+            "value" : "Głos, Agent i Formatowanie"
           }
         }
       }

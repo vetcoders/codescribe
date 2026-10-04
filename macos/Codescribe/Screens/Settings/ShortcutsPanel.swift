@@ -55,7 +55,7 @@ struct ShortcutsPanel: View {
 
   private var bindingRows: some View {
     VStack(spacing: 0) {
-      ForEach(Array(model.draftBindings.enumerated()), id: \.element.modeLabel) { index, row in
+      ForEach(Array(model.draftBindings.enumerated()), id: \.element.mode) { index, row in
         if index > 0 { divider }
         bindingRow(row)
       }
@@ -71,10 +71,10 @@ struct ShortcutsPanel: View {
     VStack(alignment: .leading, spacing: 11) {
       HStack(spacing: 12) {
         VStack(alignment: .leading, spacing: 3) {
-          Text(row.modeLabel)
+          Text(row.mode.visibleName)
             .font(CSFont.ui(13.5, .semibold))
             .foregroundStyle(Color.primary)
-          Text(row.modeDescription)
+          Text(row.mode.blurb)
             .font(CSFont.ui(11.5, .medium))
             .foregroundStyle(Color.secondary)
         }
@@ -94,20 +94,20 @@ struct ShortcutsPanel: View {
 
   private func bindingPicker(_ row: CsModeBinding) -> some View {
     Menu {
-      ForEach(model.bindingOptions, id: \.label) { option in
+      ForEach(model.bindingOptions, id: \.binding) { option in
         Button {
           model.editDraftBinding(mode: row.mode, binding: option.binding)
         } label: {
           if option.binding == row.binding {
-            Label(option.label, systemImage: "checkmark")
+            Label(option.binding.visibleName, systemImage: "checkmark")
           } else {
-            Text(option.label)
+            Text(option.binding.visibleName)
           }
         }
       }
     } label: {
       HStack(spacing: 8) {
-        Text(row.bindingLabel)
+        Text(row.binding.visibleName)
           .font(CSFont.mono(12, .semibold))
           .foregroundStyle(CSColor.terracotta)
         CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: Color.secondary)
@@ -360,16 +360,16 @@ struct ShortcutsPanel: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(width: 260)
+        .fixedSize()
         .accessibilityIdentifier("settings.pasteMode")
       }
-      VStack(alignment: .leading, spacing: 3) {
+      Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 6, verticalSpacing: 3) {
         ForEach(CsPasteMode.allModes, id: \.self) { mode in
-          HStack(alignment: .firstTextBaseline, spacing: 6) {
+          GridRow {
             Text(mode.visibleName)
               .font(CSFont.ui(10.5, .semibold))
               .foregroundStyle(mode == model.pasteMode ? Color.primary : Color.secondary)
-              .frame(width: 58, alignment: .leading)
+              .fixedSize()
             Text(mode.blurb)
               .font(CSFont.ui(10.5, .medium))
               .foregroundStyle(Color.secondary)
@@ -429,7 +429,7 @@ struct ShortcutsPanel: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(width: 260)
+        .fixedSize()
       }
     }
     .padding(.horizontal, 14)
@@ -484,7 +484,7 @@ struct ShortcutsPanel: View {
         .foregroundStyle(accentLight)
         .frame(width: 14)
       VStack(alignment: .leading, spacing: 2) {
-        Text(conflict.gestureLabel)
+        Text(conflict.visibleGesture(options: model.bindingOptions))
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(accentLight)
         Text(conflict.message)
