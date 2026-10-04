@@ -19,14 +19,14 @@ Codescribe is designed with privacy as a core principle. Your audio is processed
 
 ### Always Local (Cannot Be Changed)
 
-| Component       | Location                                    | Notes                                  |
-| --------------- | ------------------------------------------- | -------------------------------------- |
-| Whisper model   | Runtime-resolved local path/cache           | Local STT still runs on-device         |
-| Audio recording | RAM only                                    | Deleted after transcription            |
-| Transcripts     | ~/.codescribe/transcriptions/               | You control retention                  |
-| Configuration   | settings.json + optional ~/.codescribe/.env | GUI defaults plus power-user overrides |
-| API keys        | macOS Keychain                              | Secrets stay out of plaintext config   |
-| Prompts         | ~/.codescribe/prompts/                      | Your custom prompts                    |
+| Component       | Location                                         | Notes                                  |
+| --------------- | ------------------------------------------------ | -------------------------------------- |
+| Whisper model   | Runtime-resolved local path/cache                | Local STT still runs on-device         |
+| Audio recording | ~/.codescribe/takes/ + sessions/ + daily archive | Complete local audio; default Forever  |
+| Transcripts     | ~/.codescribe/transcriptions/                    | You control retention                  |
+| Configuration   | settings.json + optional ~/.codescribe/.env      | GUI defaults plus power-user overrides |
+| API keys        | macOS Keychain                                   | Secrets stay out of plaintext config   |
+| Prompts         | ~/.codescribe/prompts/                           | Your custom prompts                    |
 
 ### No Network Required For
 
@@ -187,13 +187,24 @@ rm -rf ~/.codescribe/transcriptions/*
 
 ### Audio Files
 
-Audio is NOT saved by default. To enable (for debugging):
+Complete captured audio is saved locally by default, including takes whose
+recognition, formatting, seal or delivery failed. Settings > Audio > Audio
+retention offers **Forever / 30 days / 7 days / 24h / Off**. Missing or unknown
+settings preserve audio (Forever). This is a settings choice, with no automatic
+environment opt-out.
 
-```bash
-DUMP_AUDIO_LOGS=1
-```
+Full WAVs live under `~/.codescribe/takes/`, session WAVs under
+`~/.codescribe/sessions/`, and daily audio under
+`~/.codescribe/transcriptions/YYYY-MM-DD/`. Finite retention expires eligible
+completed owned audio across those locations. Active captures, processing/read
+leases and protected retry evidence are preserved. A take keeps the choice it
+started with; Off applies to new takes after processing settles and does not
+purge existing recordings. Unknown completion times and failed deletions stay
+preserved and are reported. Audio expiration never deletes transcript text.
 
-Audio files go to `~/.codescribe/audio/`.
+Older captures without a trustworthy completion/ownership receipt remain
+preserved; the application does not guess completion from filenames. See
+[Take audio retention](../TAKE_AUDIO_RETENTION.md) for the storage contract.
 
 ---
 

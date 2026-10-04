@@ -29,17 +29,12 @@ use codescribe_core::agent::{
     AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
     ToolDefinition,
 };
+use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane, keychain};
 use codescribe_core::llm::account_auth;
-use codescribe_core::llm::lane_truth::AssistiveLaneSnapshot;
 use codescribe_core::llm::provider::ProviderKind;
 use codescribe_core::llm::responses_streaming_manager::{
     AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
 };
-
-/// How long to wait for the first byte of the response before giving up.
-const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
-/// How long a started stream may stall between chunks before giving up.
-const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
 
 /// Agent provider speaking the Responses API over SSE.
 #[derive(Clone)]
@@ -48,8 +43,12 @@ pub struct OpenAiProvider {
     client: Client,
     /// Full Responses endpoint URL for the resolved lane.
     endpoint: String,
-    /// Bearer/API key; empty means an intentionally unauthenticated endpoint.
+    /// Fixed credential supplied by an embedding host for this turn. Lane-built
+    /// providers leave it empty and resolve `api_key_account` for every send.
     api_key: String,
+    /// Keychain/env account resolved at the request boundary. This prevents a
+    /// long-lived provider from freezing the construction-time secret.
+    api_key_account: Option<String>,
     /// Model used when the caller leaves `StreamOptions::model` blank.
     default_model: String,
     /// Whether server-side chaining is enabled at all
@@ -59,23 +58,8 @@ pub struct OpenAiProvider {
     /// Single source of truth for the AGENT path's response chain
     /// (`previous_response_id`).
     ///
-    /// P2.12 (source-of-truth contract): the assistive feature has TWO distinct
-    /// execution paths, each owning its own chain — they are intentionally
-    /// separate, not redundant:
-    ///   1. Agent 2.0 path (this provider): owns the chain HERE, in this
-    ///      per-provider `Arc<Mutex>`. Advanced/reset by
-    ///      `forward_events_and_track_chain` and `apply_chain_reset`.
-    ///   2. Legacy formatter fallback path (`run_legacy_send_path` ->
-    ///      `ai_formatting`): owns its chain in the global
-    ///      `core::state::conversation` store under `AiMode::Assistive`
-    ///      (`assistive_response_id`).
-    ///
-    /// A given turn runs through exactly one path, so the two chains never both
-    /// drive the same request. Do NOT cross-wire them: the agent path must never
-    /// read/write `conversation::*_response_id`, and the legacy path must never
-    /// touch this field. If the legacy fallback is ever retired, the
-    /// `AiMode::Assistive` branch in `core::state::conversation` becomes dead and
-    /// should be removed (owner: GROUP state).
+    /// Single source of truth for the Agent path's server-side response chain.
+    /// Advanced/reset only by this provider's terminal handling.
     previous_response_id: Arc<Mutex<Option<String>>>,
     /// Deadline for the first byte of a response.
     initial_response_timeout: Duration,
@@ -92,59 +76,96 @@ pub struct OpenAiProvider {
     provider: ProviderKind,
 }
 
-impl OpenAiProvider {
-    /// Build from the resolved assistive lane (fresh settings → env →
-    /// Keychain) instead of the frozen bootstrap process env. `api_key: None`
-    /// becomes an empty key, which the streaming manager translates into a
-    /// clean unauthenticated request — key-optional local endpoints are a
-    /// first-class configuration, not an error.
-    pub fn from_lane(lane: AssistiveLaneSnapshot) -> Result<Self> {
-        let AssistiveLaneSnapshot {
-            endpoint,
-            model: default_model,
-            api_key,
-            account_auth: use_account_auth,
-            provider,
-        } = lane;
-        let api_key = api_key.unwrap_or_default();
+/// The ChatGPT account's own Responses backend (codex-rs
+/// `model_provider_info.rs`: `https://chatgpt.com/backend-api/codex` under
+/// `AuthMode::Chatgpt`). Account tokens are refused by `api.openai.com`, so a
+/// signed-in lane streams here. Env override for tests / proxies.
+const CODEX_BACKEND_RESPONSES_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
+const CODEX_BACKEND_ENDPOINT_ENV: &str = "CODESCRIBE_CODEX_BACKEND_ENDPOINT";
+/// `originator` header the Codex backend expects from every client.
+const CODEX_ORIGINATOR: &str = "codescribe";
 
-        let use_previous_response_id =
+fn codex_backend_endpoint() -> String {
+    env::var(CODEX_BACKEND_ENDPOINT_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| CODEX_BACKEND_RESPONSES_ENDPOINT.to_string())
+}
+
+/// Which credential a request goes out on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthRoute {
+    /// Keychain/env API key: `Authorization: Bearer` plus `x-api-key`.
+    ApiKey,
+    /// Signed-in vendor account token: bearer only, refreshed per request.
+    Account,
+}
+
+/// Credential precedence for one request. Founder's order (2026-09-09 16:41,
+/// "kolejność MUSI być OAuth przed OPENAI_API_KEY"): a signed-in account is
+/// used whenever the lane sealed it; the stored key serves a lane with no
+/// account. The account token only works against the vendor's own backend
+/// (the Codex route), never the public Responses endpoint.
+fn auth_route(account_auth_sealed: bool, _stored_key: Option<&str>) -> AuthRoute {
+    if account_auth_sealed {
+        AuthRoute::Account
+    } else {
+        AuthRoute::ApiKey
+    }
+}
+
+impl OpenAiProvider {
+    /// Build from the resolved assistive lane topology while retaining only
+    /// its credential account. The secret itself is fetched by [`Self::stream`]
+    /// for every outgoing request.
+    pub fn from_lane(
+        lane: &RuntimeLlmLane,
+        request_timing: &RuntimeAiRequestTiming,
+    ) -> Result<Self> {
+        let mut result = Self::from_configuration(
+            lane.endpoint().to_string(),
+            lane.model().to_string(),
+            String::new(),
+            request_timing,
+        )?;
+        result.api_key_account = Some(lane.credential().key_account().to_string());
+        result.use_account_auth = lane.credential().account_auth();
+        result.provider = lane.vendor().unwrap_or_default();
+        result.use_previous_response_id =
             parse_env_bool("CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID", true);
-        let initial_response_timeout = Duration::from_millis(parse_env_u64(
-            "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS",
-            DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS,
-        ));
-        let inter_chunk_timeout = Duration::from_millis(parse_env_u64(
-            "CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS",
-            DEFAULT_INTER_CHUNK_TIMEOUT_MS,
-        ));
+        Ok(result)
+    }
+
+    /// Per-turn configuration supplied by an embedding application. Credentials
+    /// belong to that caller; this provider never reads a different app's keys.
+    pub fn from_configuration(
+        endpoint: String,
+        default_model: String,
+        api_key: String,
+        request_timing: &RuntimeAiRequestTiming,
+    ) -> Result<Self> {
+        let use_previous_response_id = true;
+        let initial_response_timeout = request_timing.attempt_timeout();
+        let inter_chunk_timeout = request_timing.inter_chunk_timeout();
 
         let client = Client::builder()
             .timeout(Duration::from_secs(3600))
             .build()
             .context("Failed to create OpenAI agent HTTP client")?;
 
-        info!(
-            "OpenAI agent provider configured (model={}, account_auth={}, has_api_key={}, initial_timeout={}s, inter_chunk_timeout={}s, previous_response_id={})",
-            default_model,
-            use_account_auth,
-            !api_key.is_empty(),
-            initial_response_timeout.as_secs(),
-            inter_chunk_timeout.as_secs(),
-            use_previous_response_id
-        );
-
         Ok(Self {
             client,
             endpoint,
             api_key,
+            api_key_account: None,
             default_model,
             use_previous_response_id,
             previous_response_id: Arc::new(Mutex::new(None)),
             initial_response_timeout,
             inter_chunk_timeout,
-            use_account_auth,
-            provider,
+            use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
         })
     }
 }
@@ -168,7 +189,25 @@ impl AgentProvider for OpenAiProvider {
         // chain. Caller (session retry path) signals via `options.reset_chain`.
         self.apply_chain_reset(options).await;
 
-        let previous_response_id = if self.use_previous_response_id {
+        // Founder's order: account before key (see `auth_route`).
+        let request_api_key = self
+            .api_key_account
+            .as_deref()
+            .and_then(keychain::runtime_key);
+        let stored_key = request_api_key
+            .as_deref()
+            .or(Some(self.api_key.as_str()))
+            .map(str::trim)
+            .filter(|key| !key.is_empty());
+        let route = auth_route(self.use_account_auth, stored_key);
+        // A signed-in OpenAI lane is served by the Codex backend, which keeps
+        // no server-side response chain: `store: false`, no
+        // `previous_response_id`, the full message list every turn.
+        let codex_route =
+            route == AuthRoute::Account && self.provider == ProviderKind::OpenAiResponses;
+        let chain_enabled = self.use_previous_response_id && !codex_route;
+
+        let previous_response_id = if chain_enabled {
             self.previous_response_id.lock().await.clone()
         } else {
             None
@@ -185,11 +224,16 @@ impl AgentProvider for OpenAiProvider {
         };
 
         info!(
-            "Agent provider request (model={}, messages={}, tools={}, previous_response_id={}, timeout={}s, inter_chunk_timeout={}s)",
+            "Agent provider request (model={}, messages={}, tools={}, previous_response_id={}, route={}, timeout={}s, inter_chunk_timeout={}s)",
             model,
             messages.len(),
             tools.len(),
             previous_response_state,
+            match (route, codex_route) {
+                (AuthRoute::Account, true) => "account/codex-backend",
+                (AuthRoute::Account, false) => "account",
+                (AuthRoute::ApiKey, _) => "api-key",
+            },
             self.initial_response_timeout.as_secs(),
             self.inter_chunk_timeout.as_secs()
         );
@@ -209,16 +253,33 @@ impl AgentProvider for OpenAiProvider {
                 previous_response_id.as_deref(),
             ),
             previous_response_id,
-            max_output_tokens: options.max_tokens,
-            temperature: options.temperature,
+            // codex-rs sends neither an output ceiling nor a temperature to
+            // its backend; mirror its body shape on that route.
+            max_output_tokens: if codex_route {
+                None
+            } else {
+                options.max_tokens
+            },
+            temperature: if codex_route {
+                None
+            } else {
+                options.temperature
+            },
             tools: build_tool_payload(tools),
+            // A response referenced by the next turn must be stored. Codex
+            // deliberately uses full replay with storage disabled instead.
+            store: if chain_enabled {
+                Some(true)
+            } else {
+                codex_route.then_some(false)
+            },
             stream: true,
         };
 
-        // Account-auth lanes fetch a fresh access token per request (60s-skew
+        // Account-auth requests fetch a fresh access token per request (60s-skew
         // auto-refresh) — never a token frozen at provider construction. The
         // manager formats the `Bearer` header itself, so this is the raw token.
-        let account_token = if self.use_account_auth {
+        let account_token = if route == AuthRoute::Account {
             Some(
                 account_auth::access_token(self.provider)
                     .await
@@ -232,16 +293,27 @@ impl AgentProvider for OpenAiProvider {
         } else {
             None
         };
-        let auth_secret = account_token.as_deref().unwrap_or(&self.api_key);
+        let auth_secret = account_token.as_deref().or(stored_key).unwrap_or("");
 
-        let auth_header_mode = if self.use_account_auth {
-            AuthHeaderMode::BearerOnly
+        let auth_header_mode = match route {
+            AuthRoute::Account => AuthHeaderMode::BearerOnly,
+            AuthRoute::ApiKey => AuthHeaderMode::BearerAndApiKey,
+        };
+        let (endpoint, extra_headers) = if codex_route {
+            let mut headers = vec![("originator".to_string(), CODEX_ORIGINATOR.to_string())];
+            match account_auth::account_id(self.provider) {
+                Some(account_id) => headers.push(("ChatGPT-Account-ID".to_string(), account_id)),
+                None => warn!(
+                    "Codex backend route without a ChatGPT-Account-ID: the stored tokens carry no workspace claim"
+                ),
+            }
+            (codex_backend_endpoint(), headers)
         } else {
-            AuthHeaderMode::BearerAndApiKey
+            (self.endpoint.clone(), Vec::new())
         };
         let manager = ResponsesStreamingManager::new(
             &self.client,
-            &self.endpoint,
+            &endpoint,
             auth_secret,
             StreamCallbacks {
                 assistant: None,
@@ -250,49 +322,40 @@ impl AgentProvider for OpenAiProvider {
             self.initial_response_timeout,
             self.inter_chunk_timeout,
         )
-        .with_auth_header_mode(auth_header_mode);
+        .with_auth_header_mode(auth_header_mode)
+        .with_extra_headers(extra_headers);
 
         let provider_rx = manager.stream_agent(&request).await?;
 
-        if !self.use_previous_response_id {
+        let account_model = (route == AuthRoute::Account).then(|| request.model.clone());
+        if !chain_enabled && account_model.is_none() {
             return Ok(provider_rx);
         }
 
         let (tx, rx) = mpsc::channel(256);
-        let previous_response_id = Arc::clone(&self.previous_response_id);
+        let previous_response_id = chain_enabled.then(|| Arc::clone(&self.previous_response_id));
 
         tokio::spawn(forward_events_and_track_chain(
             provider_rx,
             tx,
             previous_response_id,
+            account_model,
         ));
 
         Ok(rx)
     }
 
-    /// Wrap tool output as a user `ToolResult` message for the next model turn.
     fn build_tool_result(
         &self,
         call_id: &str,
         content: Vec<ContentBlock>,
         is_error: bool,
     ) -> Message {
-        Message::new(
-            Role::User,
-            vec![ContentBlock::ToolResult {
-                tool_use_id: call_id.to_string(),
-                content,
-                is_error,
-            }],
-        )
+        super::user_tool_result(call_id, content, is_error)
     }
 
-    /// Build an inline image content block from raw bytes and media type.
     fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
-        ContentBlock::Image {
-            data: data.to_vec(),
-            media_type: media_type.to_string(),
-        }
+        super::image_block(data, media_type)
     }
 
     /// Initial-response and inter-chunk timeouts for the streaming manager.
@@ -382,9 +445,13 @@ enum ChainEffect {
 async fn forward_events_and_track_chain(
     mut provider_rx: mpsc::Receiver<AgentEvent>,
     tx: mpsc::Sender<AgentEvent>,
-    previous_response_id: Arc<Mutex<Option<String>>>,
+    previous_response_id: Option<Arc<Mutex<Option<String>>>>,
+    account_model: Option<String>,
 ) {
-    while let Some(event) = provider_rx.recv().await {
+    while let Some(mut event) = provider_rx.recv().await {
+        if let (Some(model), AgentEvent::Error(message)) = (&account_model, &mut event) {
+            *message = account_model_error(model, message);
+        }
         let chain_effect = match &event {
             AgentEvent::ResponseDone {
                 response_id: Some(response_id),
@@ -398,6 +465,9 @@ async fn forward_events_and_track_chain(
             break;
         }
 
+        let Some(previous_response_id) = &previous_response_id else {
+            continue;
+        };
         match chain_effect {
             ChainEffect::Advance(response_id) => {
                 let mut lock = previous_response_id.lock().await;
@@ -414,6 +484,23 @@ async fn forward_events_and_track_chain(
             }
             ChainEffect::None => {}
         }
+    }
+}
+
+/// Explain a model rejection using the route selected for this request. The
+/// transport currently exposes HTTP status and provider detail as text; this
+/// recognition affects presentation only, never terminal ownership or routing.
+pub(crate) fn account_model_error(model: &str, message: &str) -> String {
+    let lower = message.to_ascii_lowercase();
+    let missing_model = lower.contains("model_not_found")
+        || (lower.contains("model")
+            && (lower.contains("does not exist") || lower.contains("do not have access")));
+    if message.starts_with("Agent SSE HTTP 404 ") && missing_model {
+        format!(
+            "Model {model} is not available on the signed-in account route (HTTP 404). {message}"
+        )
+    } else {
+        message.to_string()
     }
 }
 
@@ -448,6 +535,10 @@ struct OpenAiResponsesRequest {
     /// Callable tool definitions; omitted entirely when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OpenAiToolDefinition>,
+    /// `Some(false)` on the Codex backend route, which stores nothing
+    /// server-side; absent on the public endpoint (its default is `true`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    store: Option<bool>,
     /// Always `true` — this provider only ever streams.
     stream: bool,
 }
@@ -488,14 +579,41 @@ struct OpenAiToolDefinition {
 }
 
 /// Project the registry's tool definitions onto the Responses wire shape.
+///
+/// MCP-origin schemas are adapted for the OpenAI JSON Schema subset here, on
+/// the provider copy only. The registry `ToolDefinition.input_schema` is left
+/// intact so upstream MCP `validateToolInput` still sees the original.
 fn build_tool_payload(tools: &[ToolDefinition]) -> Vec<OpenAiToolDefinition> {
     tools
         .iter()
-        .map(|tool| OpenAiToolDefinition {
-            tool_type: "function",
-            name: tool.name.clone(),
-            description: tool.description.clone(),
-            parameters: tool.input_schema.clone(),
+        .map(|tool| {
+            let adapted = super::openai_schema::adapt_json_schema_for_openai(&tool.input_schema);
+            if !adapted.changes.is_empty() {
+                let pointers: Vec<&str> = adapted
+                    .changes
+                    .iter()
+                    .map(|change| change.pointer.as_str())
+                    .collect();
+                let actions: Vec<&str> = adapted
+                    .changes
+                    .iter()
+                    .map(|change| change.action.as_str())
+                    .collect();
+                info!(
+                    tool = %tool.name,
+                    change_count = adapted.changes.len(),
+                    pointers = ?pointers,
+                    actions = ?actions,
+                    kind = super::openai_schema::SchemaChangeKind::RegexLookaround.as_str(),
+                    "adapted tool JSON Schema for OpenAI: dropped unsupported regex lookaround; original registry schema unchanged"
+                );
+            }
+            OpenAiToolDefinition {
+                tool_type: "function",
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                parameters: adapted.schema,
+            }
         })
         .collect()
 }
@@ -813,14 +931,6 @@ fn to_data_uri(data: &[u8], media_type: &str) -> String {
     format!("data:{media_type};base64,{}", BASE64.encode(data))
 }
 
-/// Read a `u64` env override, falling back on absent or unparseable values.
-fn parse_env_u64(key: &str, default: u64) -> u64 {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(default)
-}
-
 /// Read a boolean env override, accepting `1/true/yes/on` and their negatives.
 ///
 /// An unrecognized value keeps the default rather than reading as `false`, so a
@@ -840,19 +950,69 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        OpenAiProvider, ProviderKind, build_request_input, build_request_input_items,
-        chained_instructions, format_tool_output, forward_events_and_track_chain,
-        reasoning_summary_request, request_messages, to_data_uri,
+        AuthRoute, OpenAiProvider, ProviderKind, account_auth, auth_route, build_request_input,
+        build_request_input_items, build_tool_payload, chained_instructions, format_tool_output,
+        forward_events_and_track_chain, reasoning_summary_request, request_messages, to_data_uri,
     };
     use std::sync::Arc;
     use std::time::Duration;
 
     use codescribe_core::agent::{
         AgentAssetStore, AgentEvent, AgentProvider, ContentBlock, Message, Role, StreamOptions,
+        ToolDefinition,
     };
     use reqwest::Client;
     use serde_json::json;
     use tokio::sync::{Mutex, mpsc};
+
+    /// Offline Responses client bound to a stored chain. No socket is opened.
+    fn chained_test_provider(stored_chain: Arc<Mutex<Option<String>>>) -> OpenAiProvider {
+        OpenAiProvider {
+            client: Client::new(),
+            endpoint: "http://unused.invalid/v1/responses".to_string(),
+            api_key: "test-key".to_string(),
+            api_key_account: None,
+            default_model: "gpt-5.5".to_string(),
+            use_previous_response_id: true,
+            previous_response_id: stored_chain,
+            initial_response_timeout: Duration::from_secs(1),
+            inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
+        }
+    }
+
+    use codescribe_core::test_isolation::ScopedEnv;
+
+    #[tokio::test]
+    async fn public_responses_chain_requests_storage_before_resuming() {
+        let mut server = mockito::Server::new_async().await;
+        let chain = Arc::new(Mutex::new(Some("resp_previous".to_string())));
+        let mut provider = chained_test_provider(Arc::clone(&chain));
+        provider.endpoint = format!("{}/v1/responses", server.url());
+        let endpoint = server.mock("POST", "/v1/responses")
+            .match_body(mockito::Matcher::PartialJson(json!({"store":true,"previous_response_id":"resp_previous"})))
+            .expect(1).with_status(200).with_header("content-type", "text/event-stream")
+            .with_body("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_current\",\"status\":\"completed\"}}\n\ndata: [DONE]\n\n")
+            .create_async().await;
+        let messages = [Message::new(
+            Role::User,
+            vec![ContentBlock::Text("continue".into())],
+        )];
+        let mut events = provider
+            .stream(&messages, &[], &StreamOptions::default())
+            .await
+            .unwrap();
+        let mut completed = false;
+        while let Some(event) = events.recv().await {
+            if matches!(event, AgentEvent::ResponseDone { clean: true, .. }) {
+                completed = true;
+            }
+        }
+        endpoint.assert_async().await;
+        assert!(completed);
+        assert_eq!(chain.lock().await.as_deref(), Some("resp_current"));
+    }
 
     /// Reasoning summary requests apply only to reasoning-capable model families.
     #[test]
@@ -1066,8 +1226,12 @@ mod tests {
 
     /// Restored thread images still serialize as native input_image data URIs.
     #[test]
+    #[serial_test::serial]
     fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         // Turn 2 on a restored thread: an inline composer image persisted via
         // the thread store must come back as a disk-backed asset and still
         // reach the request payload instead of being skipped as byteless.
@@ -1090,20 +1254,19 @@ mod tests {
             .as_str()
             .expect("image_url should be a string");
         assert_eq!(image_url, to_data_uri(&image_bytes, "image/png"));
-
-        if let ContentBlock::ImageAsset(asset) = &restored.content[0] {
-            std::fs::remove_file(&asset.path).ok();
-        }
     }
 
     /// Disk-backed tool image assets add a native input_image item beside output.
     #[test]
+    #[serial_test::serial]
     fn tool_result_image_asset_adds_native_input_image_item() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         let asset = AgentAssetStore::save_image(b"png bytes", "image/png")
             .expect("image asset should save");
         let asset_id = asset.asset_id.clone();
-        let asset_path = asset.path.clone();
         let messages = vec![Message::new(
             Role::User,
             vec![ContentBlock::ToolResult {
@@ -1132,7 +1295,6 @@ mod tests {
                 .expect("image_url should be a string")
                 .starts_with("data:image/png;base64,")
         );
-        std::fs::remove_file(asset_path).ok();
     }
 
     /// Empty restored tool images are dropped, never empty data URIs.
@@ -1198,6 +1360,395 @@ mod tests {
         );
     }
 
+    #[test]
+    fn signed_in_account_outranks_stored_key() {
+        // Founder 2026-09-09 16:41: OAuth before OPENAI_API_KEY.
+        assert_eq!(auth_route(true, Some("sk-live")), AuthRoute::Account);
+        assert_eq!(auth_route(true, None), AuthRoute::Account);
+        assert_eq!(auth_route(false, Some("sk-live")), AuthRoute::ApiKey);
+        assert_eq!(auth_route(false, None), AuthRoute::ApiKey);
+    }
+
+    /// `build_tool_payload` is the Responses wire mapper. Porkbun nested email
+    /// lookaround is dropped on the provider copy; the registry schema and a
+    /// supported sibling pattern stay intact.
+    #[test]
+    fn build_tool_payload_adapts_nested_porkbun_schema_and_preserves_registry_copy() {
+        let porkbun = crate::agent::openai_schema::porkbun_update_contacts_input_schema();
+        let ordinary = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "pattern": r"^[a-z]+$" }
+            },
+            "required": ["name"]
+        });
+        let porkbun_tool = ToolDefinition {
+            name: "mcp__porkbun__update_contacts".to_string(),
+            description: "Edit a domain's contacts".to_string(),
+            input_schema: porkbun.clone(),
+        };
+        let ordinary_tool = ToolDefinition {
+            name: "native_echo".to_string(),
+            description: "echo".to_string(),
+            input_schema: ordinary.clone(),
+        };
+
+        let payload = build_tool_payload(&[porkbun_tool.clone(), ordinary_tool.clone()]);
+        assert_eq!(payload.len(), 2);
+        assert_eq!(payload[0].name, "mcp__porkbun__update_contacts");
+        assert_eq!(payload[1].name, "native_echo");
+        assert_eq!(porkbun_tool.input_schema, porkbun);
+        assert_eq!(ordinary_tool.input_schema, ordinary);
+        assert_eq!(
+            porkbun
+                .pointer("/properties/contact/properties/email/pattern")
+                .and_then(serde_json::Value::as_str),
+            Some(crate::agent::openai_schema::ZOD_EMAIL_LOOKAROUND_PATTERN)
+        );
+
+        let wire = serde_json::to_value(&payload).expect("serialize tool payload");
+        assert_eq!(wire[0]["type"], "function");
+        assert_eq!(wire.as_array().map(Vec::len), Some(2));
+        assert!(
+            wire[0]["parameters"]
+                .pointer("/properties/contact/properties/email/pattern")
+                .is_none()
+        );
+        assert_eq!(
+            wire[0]["parameters"]
+                .pointer("/properties/contact/properties/email/format")
+                .and_then(serde_json::Value::as_str),
+            Some("email")
+        );
+        for role in ["registrant", "admin", "tech", "billing"] {
+            let pointer =
+                format!("/properties/contacts/properties/{role}/properties/email/pattern");
+            assert!(
+                wire[0]["parameters"].pointer(&pointer).is_none(),
+                "adapted payload must drop lookaround at {pointer}"
+            );
+        }
+        assert_eq!(
+            wire[1]["parameters"]
+                .pointer("/properties/name/pattern")
+                .and_then(serde_json::Value::as_str),
+            Some(r"^[a-z]+$")
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn agent_provider_fetches_the_key_after_construction_before_sending() {
+        const TEST_KEY_ACCOUNT: &str = "CODESCRIBE_TEST_OPENAI_REQUEST_KEY";
+        let mut server = mockito::Server::new_async().await;
+        let endpoint = format!("{}/v1/responses", server.url());
+        let mut env = ScopedEnv::new();
+        env.remove(TEST_KEY_ACCOUNT);
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint,
+            api_key: String::new(),
+            api_key_account: Some(TEST_KEY_ACCOUNT.to_string()),
+            default_model: "gpt-test-assistive".to_string(),
+            use_previous_response_id: false,
+            previous_response_id: Arc::new(Mutex::new(None)),
+            initial_response_timeout: Duration::from_secs(2),
+            inter_chunk_timeout: Duration::from_secs(2),
+            use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
+        };
+
+        env.set(TEST_KEY_ACCOUNT, "synthetic-agent-key");
+        let body = [
+            r#"data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_live_key"}}"#,
+            "",
+            r#"data: {"type":"response.failed","sequence_number":1,"response":{"id":"resp_live_key","status":"failed","error":{"code":"synthetic_end","message":"done"}}}"#,
+            "",
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n");
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .match_header("authorization", "Bearer synthetic-agent-key")
+            .match_header("x-api-key", "synthetic-agent-key")
+            .expect(1)
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("request-time key".to_string())],
+        )];
+        let mut rx = provider
+            .stream(&messages, &[], &StreamOptions::default())
+            .await
+            .expect("agent request should start");
+        while rx.recv().await.is_some() {}
+        mock.assert_async().await;
+    }
+
+    /// Founder 2026-09-09 16:41: OAuth before OPENAI_API_KEY. The account
+    /// token is an identity for the vendor's own backend (live 16:15: the
+    /// public endpoint answered `401 … Missing scopes: api.responses.write`),
+    /// so a signed-in lane streams through the Codex backend: bearer only,
+    /// `ChatGPT-Account-ID` from the id_token claim, `originator`,
+    /// `store: false`, and no server-side chain — with a key stored and
+    /// chaining switched on, and the public endpoint never touched.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn signed_in_lane_streams_through_the_codex_backend() {
+        use base64::Engine;
+        const TEST_KEY_ACCOUNT: &str = "CODESCRIBE_TEST_OPENAI_CODEX_ROUTE_KEY";
+        let mut server = mockito::Server::new_async().await;
+        let mut env = ScopedEnv::new();
+        env.set(TEST_KEY_ACCOUNT, "synthetic-key-must-not-be-sent");
+        let id_token = format!(
+            "h.{}.s",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+                r#"{"email":"u@example.com","https://api.openai.com/auth":{"chatgpt_account_id":"acct_test_123"}}"#
+            )
+        );
+        let tokens = account_auth::AccountTokens::new(
+            ProviderKind::OpenAiResponses,
+            "account-access".to_string(),
+            Some("account-refresh".to_string()),
+            Some(id_token),
+            None,
+            None,
+        );
+        env.set(
+            account_auth::OPENAI_ACCOUNT_TOKENS_ACCOUNT,
+            serde_json::to_string(&tokens).expect("tokens json"),
+        );
+        env.set(
+            super::CODEX_BACKEND_ENDPOINT_ENV,
+            format!("{}/backend-api/codex/responses", server.url()),
+        );
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint: format!("{}/v1/responses", server.url()),
+            api_key: String::new(),
+            api_key_account: Some(TEST_KEY_ACCOUNT.to_string()),
+            default_model: "gpt-test-assistive".to_string(),
+            use_previous_response_id: true,
+            previous_response_id: Arc::new(Mutex::new(Some("resp_old_chain".to_string()))),
+            initial_response_timeout: Duration::from_secs(2),
+            inter_chunk_timeout: Duration::from_secs(2),
+            use_account_auth: true,
+            provider: ProviderKind::OpenAiResponses,
+        };
+        let body = [
+            r#"data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_codex"}}"#,
+            "",
+            r#"data: {"type":"response.failed","sequence_number":1,"response":{"id":"resp_codex","status":"failed","error":{"code":"synthetic_end","message":"done"}}}"#,
+            "",
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n");
+        let captured = Arc::new(std::sync::Mutex::new(String::new()));
+        let capture = Arc::clone(&captured);
+        let codex = server
+            .mock("POST", "/backend-api/codex/responses")
+            .match_header("authorization", "Bearer account-access")
+            .match_header("chatgpt-account-id", "acct_test_123")
+            .match_header("originator", "codescribe")
+            .match_header("x-api-key", mockito::Matcher::Missing)
+            .expect(1)
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body_from_request(move |request| {
+                let raw = request.body().cloned().unwrap_or_default();
+                *capture.lock().unwrap() = String::from_utf8_lossy(&raw).into_owned();
+                body.clone().into_bytes()
+            })
+            .create_async()
+            .await;
+        let public = server
+            .mock("POST", "/v1/responses")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("via the account".to_string())],
+        )];
+        let mut rx = provider
+            .stream(&messages, &[], &StreamOptions::default())
+            .await
+            .expect("account lane must stream through the codex backend");
+        while rx.recv().await.is_some() {}
+        codex.assert_async().await;
+        public.assert_async().await;
+
+        let sent: serde_json::Value =
+            serde_json::from_str(&captured.lock().unwrap()).expect("request body is json");
+        assert_eq!(sent["store"], serde_json::Value::Bool(false));
+        assert_eq!(sent["stream"], serde_json::Value::Bool(true));
+        assert!(
+            sent.get("previous_response_id").is_none(),
+            "the codex backend keeps no chain: {sent}"
+        );
+        assert!(sent.get("max_output_tokens").is_none());
+    }
+
+    /// Account/Codex-backend HTTP body uses the adapted schema from
+    /// `build_tool_payload`, not an unused helper. Tool count/names stay.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn signed_in_codex_backend_request_sends_adapted_porkbun_schema() {
+        use base64::Engine;
+        const TEST_KEY_ACCOUNT: &str = "CODESCRIBE_TEST_OPENAI_CODEX_SCHEMA_KEY";
+        let mut server = mockito::Server::new_async().await;
+        let mut env = ScopedEnv::new();
+        env.set(TEST_KEY_ACCOUNT, "synthetic-key-must-not-be-sent");
+        let id_token = format!(
+            "h.{}.s",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+                r#"{"email":"u@example.com","https://api.openai.com/auth":{"chatgpt_account_id":"acct_schema_123"}}"#
+            )
+        );
+        let tokens = account_auth::AccountTokens::new(
+            ProviderKind::OpenAiResponses,
+            "account-access".to_string(),
+            Some("account-refresh".to_string()),
+            Some(id_token),
+            None,
+            None,
+        );
+        env.set(
+            account_auth::OPENAI_ACCOUNT_TOKENS_ACCOUNT,
+            serde_json::to_string(&tokens).expect("tokens json"),
+        );
+        env.set(
+            super::CODEX_BACKEND_ENDPOINT_ENV,
+            format!("{}/backend-api/codex/responses", server.url()),
+        );
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint: format!("{}/v1/responses", server.url()),
+            api_key: String::new(),
+            api_key_account: Some(TEST_KEY_ACCOUNT.to_string()),
+            default_model: "gpt-6-astra".to_string(),
+            use_previous_response_id: true,
+            previous_response_id: Arc::new(Mutex::new(Some("resp_old_chain".to_string()))),
+            initial_response_timeout: Duration::from_secs(2),
+            inter_chunk_timeout: Duration::from_secs(2),
+            use_account_auth: true,
+            provider: ProviderKind::OpenAiResponses,
+        };
+        let body = [
+            r#"data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_codex_schema"}}"#,
+            "",
+            r#"data: {"type":"response.failed","sequence_number":1,"response":{"id":"resp_codex_schema","status":"failed","error":{"code":"synthetic_end","message":"done"}}}"#,
+            "",
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n");
+        let captured = Arc::new(std::sync::Mutex::new(String::new()));
+        let capture = Arc::clone(&captured);
+        let codex = server
+            .mock("POST", "/backend-api/codex/responses")
+            .match_header("authorization", "Bearer account-access")
+            .match_header("chatgpt-account-id", "acct_schema_123")
+            .match_header("originator", "codescribe")
+            .match_header("x-api-key", mockito::Matcher::Missing)
+            .expect(1)
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body_from_request(move |request| {
+                let raw = request.body().cloned().unwrap_or_default();
+                *capture.lock().unwrap() = String::from_utf8_lossy(&raw).into_owned();
+                body.clone().into_bytes()
+            })
+            .create_async()
+            .await;
+        let public = server
+            .mock("POST", "/v1/responses")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let porkbun = crate::agent::openai_schema::porkbun_update_contacts_input_schema();
+        let tools = vec![
+            ToolDefinition {
+                name: "mcp__porkbun__update_contacts".to_string(),
+                description: "Edit a domain's contacts".to_string(),
+                input_schema: porkbun.clone(),
+            },
+            ToolDefinition {
+                name: "native_echo".to_string(),
+                description: "echo".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "pattern": r"^[a-z]+$" }
+                    }
+                }),
+            },
+        ];
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("via the account".to_string())],
+        )];
+        let mut rx = provider
+            .stream(&messages, &tools, &StreamOptions::default())
+            .await
+            .expect("account lane must stream through the codex backend");
+        while rx.recv().await.is_some() {}
+        codex.assert_async().await;
+        public.assert_async().await;
+
+        let sent: serde_json::Value =
+            serde_json::from_str(&captured.lock().unwrap()).expect("request body is json");
+        assert_eq!(sent["model"], "gpt-6-astra");
+        let wire_tools = sent["tools"].as_array().expect("tools array");
+        assert_eq!(wire_tools.len(), 2);
+        assert_eq!(wire_tools[0]["name"], "mcp__porkbun__update_contacts");
+        assert_eq!(wire_tools[1]["name"], "native_echo");
+        assert!(
+            wire_tools[0]["parameters"]
+                .pointer("/properties/contact/properties/email/pattern")
+                .is_none(),
+            "Codex-backend body must not carry lookaround: {sent}"
+        );
+        assert_eq!(
+            wire_tools[0]["parameters"]
+                .pointer("/properties/contact/properties/email/format")
+                .and_then(serde_json::Value::as_str),
+            Some("email")
+        );
+        for role in ["registrant", "admin", "tech", "billing"] {
+            let pointer =
+                format!("/properties/contacts/properties/{role}/properties/email/pattern");
+            assert!(
+                wire_tools[0]["parameters"].pointer(&pointer).is_none(),
+                "{pointer} still present in Codex-backend body"
+            );
+        }
+        assert_eq!(
+            wire_tools[1]["parameters"]
+                .pointer("/properties/name/pattern")
+                .and_then(serde_json::Value::as_str),
+            Some(r"^[a-z]+$")
+        );
+        assert_eq!(
+            tools[0]
+                .input_schema
+                .pointer("/properties/contact/properties/email/pattern")
+                .and_then(serde_json::Value::as_str),
+            Some(crate::agent::openai_schema::ZOD_EMAIL_LOOKAROUND_PATTERN),
+            "registry schema must keep the original lookaround"
+        );
+        assert_eq!(porkbun, tools[0].input_schema);
+    }
+
     /// SSE `error` events surface as specific AgentEvent::Error, not session noise.
     #[tokio::test]
     async fn stream_surfaces_sse_error_event_as_specific_agent_error() {
@@ -1221,6 +1772,7 @@ mod tests {
             client: Client::new(),
             endpoint: format!("{}/v1/responses", server.url()),
             api_key: "test-key".to_string(),
+            api_key_account: None,
             default_model: "gpt-5.5".to_string(),
             use_previous_response_id: false,
             previous_response_id: Arc::new(Mutex::new(None)),
@@ -1261,18 +1813,7 @@ mod tests {
     #[tokio::test]
     async fn apply_chain_reset_clears_stored_previous_response_id_when_requested() {
         let stored_chain = Arc::new(Mutex::new(Some("resp_prev_failed".to_string())));
-        let provider = OpenAiProvider {
-            client: Client::new(),
-            endpoint: "http://unused.invalid/v1/responses".to_string(),
-            api_key: "test-key".to_string(),
-            default_model: "gpt-5.5".to_string(),
-            use_previous_response_id: true,
-            previous_response_id: Arc::clone(&stored_chain),
-            initial_response_timeout: Duration::from_secs(1),
-            inter_chunk_timeout: Duration::from_secs(1),
-            use_account_auth: false,
-            provider: ProviderKind::OpenAiResponses,
-        };
+        let provider = chained_test_provider(Arc::clone(&stored_chain));
 
         // Pre-condition: stored chain holds prior failed attempt's response id.
         assert_eq!(
@@ -1298,18 +1839,7 @@ mod tests {
     #[tokio::test]
     async fn restore_response_chain_reinstates_pre_turn_id_after_user_stop() {
         let stored_chain = Arc::new(Mutex::new(Some("resp_pre_turn".to_string())));
-        let provider = OpenAiProvider {
-            client: Client::new(),
-            endpoint: "http://unused.invalid/v1/responses".to_string(),
-            api_key: "test-key".to_string(),
-            default_model: "gpt-5.5".to_string(),
-            use_previous_response_id: true,
-            previous_response_id: Arc::clone(&stored_chain),
-            initial_response_timeout: Duration::from_secs(1),
-            inter_chunk_timeout: Duration::from_secs(1),
-            use_account_auth: false,
-            provider: ProviderKind::OpenAiResponses,
-        };
+        let provider = chained_test_provider(Arc::clone(&stored_chain));
 
         // Mid-turn advance (tool round) or dirty cancel would move the live id.
         *stored_chain.lock().await = Some("resp_mid_turn_cancelled".to_string());
@@ -1333,18 +1863,7 @@ mod tests {
     #[tokio::test]
     async fn apply_chain_reset_preserves_stored_chain_when_not_requested() {
         let stored_chain = Arc::new(Mutex::new(Some("resp_keep_me".to_string())));
-        let provider = OpenAiProvider {
-            client: Client::new(),
-            endpoint: "http://unused.invalid/v1/responses".to_string(),
-            api_key: "test-key".to_string(),
-            default_model: "gpt-5.5".to_string(),
-            use_previous_response_id: true,
-            previous_response_id: Arc::clone(&stored_chain),
-            initial_response_timeout: Duration::from_secs(1),
-            inter_chunk_timeout: Duration::from_secs(1),
-            use_account_auth: false,
-            provider: ProviderKind::OpenAiResponses,
-        };
+        let provider = chained_test_provider(Arc::clone(&stored_chain));
 
         let options = StreamOptions::default();
         assert!(!options.reset_chain, "default must NOT reset chain");
@@ -1413,18 +1932,7 @@ mod tests {
         // reset. apply_chain_reset must zero the stored chain so the rebuild
         // sees id=None.
         let stored_chain = Arc::new(Mutex::new(Some(chain_id.to_string())));
-        let provider = OpenAiProvider {
-            client: Client::new(),
-            endpoint: "http://unused.invalid/v1/responses".to_string(),
-            api_key: "test-key".to_string(),
-            default_model: "gpt-5.5".to_string(),
-            use_previous_response_id: true,
-            previous_response_id: Arc::clone(&stored_chain),
-            initial_response_timeout: Duration::from_secs(1),
-            inter_chunk_timeout: Duration::from_secs(1),
-            use_account_auth: false,
-            provider: ProviderKind::OpenAiResponses,
-        };
+        let provider = chained_test_provider(Arc::clone(&stored_chain));
         let reset_options = StreamOptions {
             reset_chain: true,
             ..StreamOptions::default()
@@ -1447,6 +1955,46 @@ mod tests {
         );
     }
 
+    /// Route-specific presentation must retain provider detail; unrelated 404s,
+    /// other statuses and API-key errors must not acquire an account diagnosis.
+    #[tokio::test]
+    async fn forwarder_explains_account_model_404_and_preserves_other_events() {
+        let missing = "Agent SSE HTTP 404 Not Found: The model gpt-6-sol does not exist or your team does not have access";
+        for account_model in [Some("gpt-6-sol".to_string()), None] {
+            let (provider_tx, provider_rx) = mpsc::channel(8);
+            let (consumer_tx, mut consumer_rx) = mpsc::channel(8);
+            let events = vec![
+                AgentEvent::TextDone("unchanged".to_string()),
+                AgentEvent::ResponseDone {
+                    response_id: Some("response".to_string()),
+                    clean: true,
+                },
+                AgentEvent::Error("Agent SSE HTTP 404 Not Found: endpoint missing".to_string()),
+                AgentEvent::Error("Agent SSE HTTP 403 Forbidden: model access denied".to_string()),
+                AgentEvent::Error(missing.to_string()),
+            ];
+            for event in &events {
+                provider_tx.send(event.clone()).await.expect("queue");
+            }
+            drop(provider_tx);
+            forward_events_and_track_chain(provider_rx, consumer_tx, None, account_model.clone())
+                .await;
+            for event in events {
+                let expected = if event == AgentEvent::Error(missing.to_string())
+                    && account_model.is_some()
+                {
+                    AgentEvent::Error(format!(
+                        "Model gpt-6-sol is not available on the signed-in account route (HTTP 404). {missing}"
+                    ))
+                } else {
+                    event
+                };
+                assert_eq!(consumer_rx.recv().await, Some(expected));
+            }
+            assert!(consumer_rx.recv().await.is_none());
+        }
+    }
+
     /// P3.7: the detached forwarder must not advance `previous_response_id` once
     /// the consumer has dropped its receiver. Otherwise a chain id from a turn
     /// nobody received outlives the session and poisons the next request.
@@ -1463,7 +2011,8 @@ mod tests {
         let forwarder = tokio::spawn(forward_events_and_track_chain(
             provider_rx,
             consumer_tx,
-            Arc::clone(&stored_chain),
+            Some(Arc::clone(&stored_chain)),
+            None,
         ));
 
         // Emit a clean ResponseDone with a real id — under a live consumer this
@@ -1497,7 +2046,8 @@ mod tests {
         let forwarder = tokio::spawn(forward_events_and_track_chain(
             provider_rx,
             consumer_tx,
-            Arc::clone(&stored_chain),
+            Some(Arc::clone(&stored_chain)),
+            None,
         ));
 
         provider_tx
@@ -1537,7 +2087,8 @@ mod tests {
         let forwarder = tokio::spawn(forward_events_and_track_chain(
             provider_rx,
             consumer_tx,
-            Arc::clone(&stored_chain),
+            Some(Arc::clone(&stored_chain)),
+            None,
         ));
 
         // Synthetic dirty terminal: an id may still be present, but clean=false.
@@ -1595,6 +2146,7 @@ mod tests {
             client: Client::new(),
             endpoint: format!("{}/v1/responses", server.url()),
             api_key: "test-key".to_string(),
+            api_key_account: None,
             default_model: "gpt-5.5".to_string(),
             use_previous_response_id: true,
             previous_response_id: Arc::clone(&stored_chain),
@@ -1658,7 +2210,8 @@ mod tests {
         let forwarder = tokio::spawn(forward_events_and_track_chain(
             provider_rx,
             consumer_tx,
-            Arc::clone(&stored_chain),
+            Some(Arc::clone(&stored_chain)),
+            None,
         ));
 
         provider_tx

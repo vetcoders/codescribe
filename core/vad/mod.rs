@@ -67,6 +67,13 @@ pub struct VadExtractStats {
     /// Raw per-window speech probabilities (one entry per processed
     /// 500ms window). Empty when extraction short-circuited.
     pub probabilities: Vec<f32>,
+    /// Silero per-chunk probabilities at the model's native hop
+    /// (512 samples @ 16 kHz = 32 ms). Empty when extraction short-circuited.
+    pub fine_probabilities: Vec<f32>,
+    /// Fine sparkline (one octile char per 512-sample chunk, not thresholded).
+    pub fine_sparkline: String,
+    /// Native hop in samples (512 on 16 kHz input).
+    pub fine_hop_samples: usize,
 }
 
 /// One retained slice of the original PCM timeline inside a compacted speech
@@ -169,6 +176,9 @@ pub fn extract_speech_indexed(
                 no_speech_reason: Some("vad_input_empty".to_string()),
                 sparkline: String::new(),
                 probabilities: Vec::new(),
+                fine_probabilities: Vec::new(),
+                fine_sparkline: String::new(),
+                fine_hop_samples: CHUNK_SIZE,
             },
             Vec::new(),
         );
@@ -183,6 +193,9 @@ pub fn extract_speech_indexed(
                 no_speech_reason: Some("vad_invalid_sample_rate".to_string()),
                 sparkline: String::new(),
                 probabilities: Vec::new(),
+                fine_probabilities: Vec::new(),
+                fine_sparkline: String::new(),
+                fine_hop_samples: CHUNK_SIZE,
             },
             Vec::new(),
         );
@@ -199,6 +212,9 @@ pub fn extract_speech_indexed(
                 no_speech_reason: Some("vad_invalid_window_size".to_string()),
                 sparkline: String::new(),
                 probabilities: Vec::new(),
+                fine_probabilities: Vec::new(),
+                fine_sparkline: String::new(),
+                fine_hop_samples: CHUNK_SIZE,
             },
             Vec::new(),
         );
@@ -220,6 +236,9 @@ pub fn extract_speech_indexed(
                     no_speech_reason: Some("vad_unavailable".to_string()),
                     sparkline: String::new(),
                     probabilities: Vec::new(),
+                    fine_probabilities: Vec::new(),
+                    fine_sparkline: String::new(),
+                    fine_hop_samples: CHUNK_SIZE,
                 },
                 Vec::new(),
             );
@@ -239,6 +258,7 @@ pub fn extract_speech_indexed(
     let mut total_windows = 0usize;
     let mut sparkline = String::new();
     let mut probabilities = Vec::new();
+    let mut fine_probabilities = Vec::new();
     let mut index_map = Vec::new();
     let mut last_window_was_speech = false;
 
@@ -267,11 +287,12 @@ pub fn extract_speech_indexed(
         // No per-window reset: Silero state is carried across windows so speech
         // onsets spanning a window boundary are not lost (see reset() above).
         //
-        // Use the per-window MAX probability (feed_max) rather than the last
-        // 32ms chunk: a ~500ms window that contains a fully-spoken word but ends
-        // in the brief pause after it must NOT be dropped on the strength of its
-        // trailing chunk alone.
-        let prob = vad.feed_max(window);
+        // Use the per-window MAX probability (feed_trace ≡ feed_max) rather
+        // than the last 32ms chunk: a ~500ms window that contains a fully-spoken
+        // word but ends in the brief pause after it must NOT be dropped on the
+        // strength of its trailing chunk alone. One pass also records the
+        // native 512-sample hop so two words in one 500ms bucket stay visible.
+        let prob = vad.feed_trace(window, &mut fine_probabilities);
         total_windows += 1;
         probabilities.push(prob);
 
@@ -317,6 +338,12 @@ pub fn extract_speech_indexed(
         Some("vad_no_speech_detected".to_string())
     };
 
+    let fine_sparkline = fine_probabilities
+        .iter()
+        .copied()
+        .map(fine_sparkline_char)
+        .collect();
+
     (
         speech_samples,
         VadExtractStats {
@@ -326,9 +353,29 @@ pub fn extract_speech_indexed(
             no_speech_reason,
             sparkline,
             probabilities,
+            fine_probabilities,
+            fine_sparkline,
+            fine_hop_samples: CHUNK_SIZE,
         },
         index_map,
     )
+}
+
+/// Octile bar for the 32 ms row. This alphabet is for the eye and for
+/// regression, not for admission — threshold mapping stays on the 500 ms row.
+fn fine_sparkline_char(prob: f32) -> char {
+    const CHARS: [char; 8] = [
+        '\u{2581}', // ▁
+        '\u{2582}', // ▂
+        '\u{2583}', // ▃
+        '\u{2584}', // ▄
+        '\u{2585}', // ▅
+        '\u{2586}', // ▆
+        '\u{2587}', // ▇
+        '\u{2588}', // █
+    ];
+    let idx = (prob.clamp(0.0, 1.0) * 8.0).floor() as usize;
+    CHARS[idx.min(7)]
 }
 
 /// Decide whether a final sub-window fragment is kept by [`extract_speech`].
@@ -468,6 +515,9 @@ mod tests {
         assert_eq!(stats.total_windows, 0);
         assert_eq!(stats.no_speech_reason.as_deref(), Some("vad_input_empty"));
         assert!(stats.probabilities.is_empty());
+        assert!(stats.fine_probabilities.is_empty());
+        assert!(stats.fine_sparkline.is_empty());
+        assert_eq!(stats.fine_hop_samples, 512);
     }
 
     /// Zero sample rate is a distinct no-speech reason, not a generic empty.
@@ -495,6 +545,99 @@ mod tests {
         assert_eq!(stats.probabilities.len(), 3);
         // Silence input must not be misclassified as speech.
         assert_eq!(stats.speech_windows, 0);
+    }
+
+    /// Historical 500 ms sparkline alphabet — admission row, thresholded.
+    fn historical_500ms_char(prob: f32, threshold: f32) -> char {
+        if prob >= 0.9 {
+            '\u{2588}'
+        } else if prob >= threshold {
+            '\u{2593}'
+        } else if prob >= 0.1 {
+            '\u{2591}'
+        } else {
+            ' '
+        }
+    }
+
+    /// Two 80 ms bursts inside the first 500 ms window of a 3 s take, plus a
+    /// short trailing fragment that must not be fed (same landmine as today).
+    fn synthetic_three_second_signal() -> Vec<f32> {
+        let n = SAMPLE_RATE as usize * 3;
+        let mut samples = vec![0.0f32; n];
+        let burst_len = SAMPLE_RATE as usize * 80 / 1000;
+        for start in [1280usize, 4480] {
+            for (i, sample) in samples[start..start + burst_len].iter_mut().enumerate() {
+                let t = i as f32 / SAMPLE_RATE as f32;
+                *sample = (2.0 * std::f32::consts::PI * 220.0 * t).sin() * 0.35;
+            }
+        }
+        samples.extend(std::iter::repeat_n(0.0, 1000));
+        samples
+    }
+
+    /// (a) 500 ms sparkline / probabilities / index_map match a feed_max
+    /// oracle on the same 3 s signal. (b) fine hop count is floor(fed/512).
+    /// (c) fine sparkline length equals that count. (d) hop is 512.
+    #[test]
+    fn three_second_synthetic_keeps_500ms_row_and_records_fine_timeline() {
+        let samples = synthetic_three_second_signal();
+        let (_speech, stats, index_map) = extract_speech_indexed(&samples, SAMPLE_RATE);
+
+        let window_size = (SAMPLE_RATE * EXTRACT_WINDOW_MS / 1000) as usize;
+        let mut oracle = AccumulatingVad::new(SAMPLE_RATE).expect("embedded Silero");
+        oracle.reset();
+        let threshold = oracle.threshold();
+        let mut expected_probabilities = Vec::new();
+        let mut expected_sparkline = String::new();
+        let mut expected_index_map = Vec::new();
+        let mut fed_samples = 0usize;
+        let mut compacted = 0u64;
+        for (window_index, window) in samples.chunks(window_size).enumerate() {
+            if window.len() < window_size / 2 {
+                break;
+            }
+            let source_start = window_index.saturating_mul(window_size) as u64;
+            let prob = oracle.feed_max(window);
+            expected_probabilities.push(prob);
+            expected_sparkline.push(historical_500ms_char(prob, threshold));
+            fed_samples += window.len();
+            if prob >= threshold {
+                let compacted_start = compacted;
+                compacted += window.len() as u64;
+                expected_index_map.push(SpeechIndexRange {
+                    compacted_start,
+                    compacted_end: compacted,
+                    source_start,
+                    source_end: source_start + window.len() as u64,
+                });
+            }
+        }
+
+        assert_eq!(
+            stats.probabilities, expected_probabilities,
+            "500 ms probabilities must stay bit-identical to feed_max"
+        );
+        assert_eq!(
+            stats.sparkline, expected_sparkline,
+            "500 ms sparkline chars must stay the historical threshold alphabet"
+        );
+        assert_eq!(index_map, expected_index_map);
+
+        let expected_fine_len = fed_samples / CHUNK_SIZE;
+        assert_eq!(stats.fine_probabilities.len(), expected_fine_len);
+        assert_eq!(stats.fine_sparkline.chars().count(), expected_fine_len);
+        assert_eq!(stats.fine_hop_samples, 512);
+
+        let rebuilt_fine: String = stats
+            .fine_probabilities
+            .iter()
+            .copied()
+            .map(fine_sparkline_char)
+            .collect();
+        assert_eq!(stats.fine_sparkline, rebuilt_fine);
+        assert_eq!(stats.total_windows, 6);
+        assert_eq!(fed_samples, SAMPLE_RATE as usize * 3);
     }
 
     /// Slab bounds span first..=last speech so interior pauses stay inside.

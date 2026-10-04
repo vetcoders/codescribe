@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 @testable import Codescribe
@@ -71,6 +72,78 @@ final class StreamScrollFreedomTests: XCTestCase {
     var state = StreamScrollFollowState()
 
     XCTAssertEqual(state.handle(.contentChanged), .scrollToLiveEdge)
+  }
+
+  func testAppKitScrollEventsSynchronouslyOwnViewportUntilLiveScrollEnds() {
+    let frame = NSRect(x: 0, y: 0, width: 420, height: 160)
+    let window = NSWindow(
+      contentRect: frame,
+      styleMask: [.titled],
+      backing: .buffered,
+      defer: true
+    )
+    window.isReleasedWhenClosed = false
+    let scrollView = NSScrollView(frame: frame)
+    scrollView.hasVerticalScroller = true
+    let documentView = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 1_200))
+    scrollView.documentView = documentView
+    window.contentView = scrollView
+
+    var state = StreamScrollFollowState()
+    let observer = ChatLiveScrollObserver { event in
+      _ = state.handle(event)
+    }
+    let coordinator = observer.makeCoordinator()
+    coordinator.attach(to: scrollView)
+    defer {
+      coordinator.detach()
+      window.close()
+    }
+
+    NotificationCenter.default.post(
+      name: NSScrollView.willStartLiveScrollNotification,
+      object: scrollView
+    )
+    XCTAssertFalse(
+      state.followingLive,
+      "the AppKit begin event must reduce before this turn returns"
+    )
+    XCTAssertEqual(state.handle(.contentChanged), .none)
+
+    scrollView.contentView.scroll(
+      to: NSPoint(
+        x: 0,
+        y: documentView.bounds.maxY - scrollView.contentView.bounds.height
+      )
+    )
+    scrollView.reflectScrolledClipView(scrollView.contentView)
+    NotificationCenter.default.post(
+      name: NSScrollView.didLiveScrollNotification,
+      object: scrollView
+    )
+    XCTAssertFalse(
+      state.followingLive,
+      "intermediate live-scroll geometry cannot resume follow"
+    )
+
+    NotificationCenter.default.post(
+      name: NSScrollView.didEndLiveScrollNotification,
+      object: scrollView
+    )
+    XCTAssertTrue(
+      state.followingLive,
+      "the finished gesture resumes only at the actual bottom"
+    )
+
+    coordinator.detach()
+    NotificationCenter.default.post(
+      name: NSScrollView.willStartLiveScrollNotification,
+      object: scrollView
+    )
+    XCTAssertTrue(
+      state.followingLive,
+      "dismantling removes the notification observer"
+    )
   }
 
   private func detachedState() -> StreamScrollFollowState {

@@ -5,20 +5,40 @@ import Foundation
 // object directly — it talks to this protocol so the view-model can be seeded
 // with mock data for #Preview, while the live app injects `RealSettingsEngine`.
 //
-// All CodescribeConfig methods are synchronous and read/write on-disk truth
-// (settings.json / .env / Keychain), so there are no Rust callbacks to hop onto
-// the main actor here — the adapter just forwards.
+// Credential acquisition and mutations run on the shared serial executor.
+// Synchronous registry/presence methods project only the existing core cache.
 //
 // Config-write contract (router env keys, sourced from core/config/loader.rs):
 //   WHISPER_LANGUAGE      "pl" | "en"
 //   AI_FORMATTING_ENABLED "1" | "0"
 //   FORMATTING_LEVEL      "off" | "correction" | "smart" | "max"
+//   PASTE_MODE            "safe" | "comfort" | "off"
 //   USE_LOCAL_STT         "1" | "0"
-//   LOCAL_MODEL / STT_ENDPOINT / LLM_MODEL / LLM_ENDPOINT / LLM_ASSISTIVE_* ...  free strings
-// Keychain accounts (CsKeyStatus, core/config/keychain.rs::KEYCHAIN_ACCOUNTS):
-//   LLM_API_KEY / STT_API_KEY / LLM_FORMATTING_API_KEY / LLM_ASSISTIVE_API_KEY / LLM_ANTHROPIC_API_KEY / GITHUB_TOKEN
+//   LOCAL_MODEL / STT_{FILE,LIVE}_ENDPOINT / LLM_<LANE>_PROVIDER / LLM_<LANE>_MODEL ...  free strings
+//   (no endpoint keys: endpoints belong to providers — vendors factory-pinned, custom rows CRUD)
+// Keychain accounts (CsKeyStatus, core/config/keychain.rs::KEYCHAIN_ACCOUNTS): one per vendor
+//   (LLM_<VENDOR>_API_KEY), STT_FILE_API_KEY, STT_LIVE_API_KEY, GITHUB_TOKEN; custom rows carry
+//   LLM_CUSTOM_<ID>_API_KEY
+
+/// One physical executor for Settings and Setup credential operations. A view
+/// cancelling its task does not cancel or free a synchronous Security call.
+enum ProviderCredentialIO {
+  private static let queue = DispatchQueue(label: "codescribe.provider-credentials", qos: .userInitiated)
+
+  static func perform<T: Sendable>(
+    _ operation: @escaping @Sendable () throws -> T
+  ) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+      queue.async {
+        do { continuation.resume(returning: try operation()) }
+        catch { continuation.resume(throwing: error) }
+      }
+    }
+  }
+}
 
 /// Subset of the codescribe config surface the Settings screen consumes.
+@MainActor
 protocol SettingsEngine {
   // Snapshot / location
   func loadSettings() -> CsSettings
@@ -27,37 +47,75 @@ protocol SettingsEngine {
   func onboardingMode() -> String?
   func setOnboardingMode(mode: String) throws
 
-  /// Delegates to core lane_truth normalization (eliminates suffix-list dupe in Swift).
-  func normalizeOpenaiResponsesEndpoint(_ endpoint: String) -> String
-
   // Config writes (auto-tiered by the core router)
   func updateConfig(key: String, value: String) throws
   func updateConfigMany(entries: [CsConfigEntry]) throws
+  func beginNewMaxConsultation() async throws -> String
+  func pendingMaxToolApprovals() async throws -> [PendingToolApproval]
+  func resolveMaxToolApproval(
+    _ request: PendingToolApproval, approved: Bool, remember: Bool
+  ) async throws -> Bool
 
   // Live audio hardware truth + explicit unset for the preferred device.
   func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot
   func resetAudioInputDevice() throws
 
+  // Local Whisper model catalog + picker selection (Settings → Dictation).
+  func loadWhisperModelCatalog() -> CsWhisperModelCatalog
+  func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch
+
+  // Acoustic admission: the controller's own precondition for any take
+  // (measured calibration for the device + armed Silero seal lane). Reads
+  // never open a stream; calibration captures ~10 s through the real recorder.
+  func loadAdmissionReadiness() async throws -> CsAdmissionReadiness
+  func calibrateEnergy(seconds: UInt32) async throws -> CsEnergyCalibrationReport
+
   // Voice Lab quality truth (JSONL stays behind the Rust bridge)
-  func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord]
+  func loadQualityRecentListing(limit: UInt64) throws -> CsQualityListing
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry]
+  func loadRuleCandidates(minOccurrences: UInt64) throws -> [CsRuleCandidate]
   func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsVoiceLabSaveResult
   func teachDictionaryFromStore() throws -> CsDictionaryTeachResult
+  func teachDictionaryFromStoreAsync() async throws -> CsDictionaryTeachResult
+  func teachSpan(variant: String, canonical: String, kind: String) throws -> CsQualityCommitResult
 
   // Keychain-backed API keys — presence booleans only, secrets never read back
   func keyStatus() -> CsKeyStatus
-  func keyAccounts() -> [String]
+  /// Non-provider Keychain accounts (GitHub); provider accounts ride on
+  /// `CsProviderOption`, STT accounts on `CsSttLane` (atomic endpoint + key).
+  func serviceKeyAccounts() -> [String]
+  /// Speech-to-text lanes, always two, File then Live (stt-lanes-v1 §C).
+  func sttLanes() -> [CsSttLane]
   func setApiKey(account: String, secret: String) throws
   func clearApiKey(account: String) throws
   func testApiKey(account: String) throws -> CsApiKeyProbeResult
+  func testApiKeyAsync(account: String) async throws -> CsApiKeyProbeResult
 
-  // Assistive/agent-lane providers and live model discovery
+  // Provider registry (vendors + custom rows), lane binding, model discovery.
   func availableProviders() -> [CsProviderOption]
+  func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot
+  func providerAccessRevision() -> UInt64
+  /// Metadata + credential revision only; nil means freshness cannot be certified.
+  func composerModelCacheStamp() -> String?
+  func setApiKeyAsync(account: String, secret: String) async throws
+  func clearApiKeyAsync(account: String) async throws
+  func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption
+  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws -> CsProviderOption
+  func removeCustomProviderAsync(id: String) async throws -> CsCustomProviderRemoval
+  func signOutAccountAsync(providerId: String) async throws
+  func addCustomProvider(draft: CsCustomProviderDraft) throws -> CsProviderOption
+  func updateCustomProvider(id: String, draft: CsCustomProviderDraft) throws -> CsProviderOption
+  func removeCustomProvider(id: String) throws -> CsCustomProviderRemoval
+  func setLaneProvider(lane: CsLlmLane, providerId: String) throws
   func discoverModels(providerId: String) -> CsModelDiscovery
+  func discoverModelsAsync(providerId: String) async -> CsModelDiscovery
   func startAccountLogin(providerId: String) throws -> CsAccountLoginResult
   // Blocks until the in-flight login completes/fails/times out — call from a
   // background queue only. Timeout shuts the local callback server down.
   func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64) throws -> CsAccountLoginResult
+  func awaitAccountLoginAsync(
+    providerId: String, timeoutSeconds: UInt64
+  ) async throws -> CsAccountLoginResult
   func cancelAccountLogin()
   func signOutAccount(providerId: String) throws
 
@@ -85,6 +143,35 @@ protocol SettingsEngine {
   func clearMcpConfiguration() throws
 }
 
+extension SettingsEngine {
+  func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
+    CsProviderAccessSnapshot(providers: availableProviders(), accountErrors: [:], keyStatus: keyStatus(), sttLanes: sttLanes(), revision: 0)
+  }
+  func providerAccessRevision() -> UInt64 { 0 }
+  func composerModelCacheStamp() -> String? { nil }
+  func setApiKeyAsync(account: String, secret: String) async throws { try setApiKey(account: account, secret: secret) }
+  func clearApiKeyAsync(account: String) async throws { try clearApiKey(account: account) }
+  func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption { try addCustomProvider(draft: draft) }
+  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws -> CsProviderOption { try updateCustomProvider(id: id, draft: draft) }
+  func removeCustomProviderAsync(id: String) async throws -> CsCustomProviderRemoval { try removeCustomProvider(id: id) }
+  func signOutAccountAsync(providerId: String) async throws { try signOutAccount(providerId: providerId) }
+
+  func teachDictionaryFromStoreAsync() async throws -> CsDictionaryTeachResult {
+    try teachDictionaryFromStore()
+  }
+  func testApiKeyAsync(account: String) async throws -> CsApiKeyProbeResult {
+    try testApiKey(account: account)
+  }
+  func discoverModelsAsync(providerId: String) async -> CsModelDiscovery {
+    discoverModels(providerId: providerId)
+  }
+  func awaitAccountLoginAsync(
+    providerId: String, timeoutSeconds: UInt64
+  ) async throws -> CsAccountLoginResult {
+    try awaitAccountLogin(providerId: providerId, timeoutSeconds: timeoutSeconds)
+  }
+}
+
 // MARK: - Real engine (UniFFI bridge adapter)
 
 /// Concrete adapter over the `CodescribeConfig` bridge object. Stateless: every
@@ -92,16 +179,38 @@ protocol SettingsEngine {
 /// truth. Injected by App.swift for the live app.
 final class RealSettingsEngine: SettingsEngine {
   private let config = CodescribeConfig()
+  /// Facade over the process-global controller slots; constructing it creates
+  /// no listener, controller, or tap.
+  private let hotkeys = CodescribeHotkeys()
+
+  func beginNewMaxConsultation() async throws -> String {
+    try await hotkeys.beginNewMaxConsultation()
+  }
+
+  func pendingMaxToolApprovals() async throws -> [PendingToolApproval] {
+    try await hotkeys.pendingMaxToolApprovals().map { request in
+      PendingToolApproval(
+        callID: request.callId, sessionID: request.sessionId, threadID: request.threadId,
+        tool: request.tool, server: request.server, risk: request.risk,
+        summary: request.summary, command: request.command, cwd: request.cwd, paths: request.paths
+      )
+    }
+  }
+
+  func resolveMaxToolApproval(
+    _ request: PendingToolApproval, approved: Bool, remember: Bool
+  ) async throws -> Bool {
+    try await hotkeys.resolveMaxToolApproval(
+      sessionId: request.sessionID, threadId: request.threadID, callId: request.callID,
+      approved: approved, remember: remember
+    )
+  }
 
   func loadSettings() -> CsSettings { config.loadSettings() }
   func configDir() -> String { config.configDir() }
   func shouldShowOnboarding() -> Bool { config.shouldShowOnboarding() }
   func onboardingMode() -> String? { config.onboardingMode() }
   func setOnboardingMode(mode: String) throws { try config.setOnboardingMode(mode: mode) }
-
-  func normalizeOpenaiResponsesEndpoint(_ endpoint: String) -> String {
-    config.normalizeOpenaiResponsesEndpoint(endpoint: endpoint)
-  }
 
   func updateConfig(key: String, value: String) throws {
     try config.updateConfig(key: key, value: value)
@@ -115,11 +224,26 @@ final class RealSettingsEngine: SettingsEngine {
   func resetAudioInputDevice() throws {
     try config.resetAudioInputDevice()
   }
-  func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
-    try qualityRecentRecords(limit: limit)
+  func loadWhisperModelCatalog() -> CsWhisperModelCatalog {
+    whisperModelCatalog()
+  }
+  nonisolated func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch {
+    try await setLocalWhisperModel(reference: reference)
+  }
+  func loadAdmissionReadiness() async throws -> CsAdmissionReadiness {
+    try await hotkeys.admissionReadiness()
+  }
+  func calibrateEnergy(seconds: UInt32) async throws -> CsEnergyCalibrationReport {
+    try await hotkeys.calibrateEnergy(seconds: seconds)
+  }
+  func loadQualityRecentListing(limit: UInt64) throws -> CsQualityListing {
+    try qualityRecentListing(limit: limit)
   }
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
     try lexiconCustomEntries()
+  }
+  func loadRuleCandidates(minOccurrences: UInt64) throws -> [CsRuleCandidate] {
+    try qualityRuleCandidates(minOccurrences: minOccurrences)
   }
   func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsVoiceLabSaveResult {
     try qualityFinalizeCorrection(correctionId: id, canonical: canonical)
@@ -127,9 +251,18 @@ final class RealSettingsEngine: SettingsEngine {
   func teachDictionaryFromStore() throws -> CsDictionaryTeachResult {
     try qualityTeachDictionaryFromStore()
   }
+  nonisolated func teachDictionaryFromStoreAsync() async throws -> CsDictionaryTeachResult {
+    try await Task.detached(priority: .userInitiated) {
+      try qualityTeachDictionaryFromStore()
+    }.value
+  }
+  func teachSpan(variant: String, canonical: String, kind: String) throws -> CsQualityCommitResult {
+    try qualityTeachSpan(variant: variant, canonical: canonical, kind: kind)
+  }
 
   func keyStatus() -> CsKeyStatus { config.keyStatus() }
-  func keyAccounts() -> [String] { config.keyAccounts() }
+  func serviceKeyAccounts() -> [String] { config.serviceKeyAccounts() }
+  func sttLanes() -> [CsSttLane] { config.sttLanes() }
   func setApiKey(account: String, secret: String) throws {
     try config.setApiKey(account: account, secret: secret)
   }
@@ -137,10 +270,55 @@ final class RealSettingsEngine: SettingsEngine {
   func testApiKey(account: String) throws -> CsApiKeyProbeResult {
     try config.testApiKey(account: account)
   }
+  nonisolated func testApiKeyAsync(account: String) async throws -> CsApiKeyProbeResult {
+    try await Task.detached(priority: .userInitiated) {
+      try CodescribeConfig().testApiKey(account: account)
+    }.value
+  }
 
+  func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().providerAccessSnapshot() }
+  }
+  func providerAccessRevision() -> UInt64 { config.providerAccessRevision() }
+  func composerModelCacheStamp() -> String? { config.composerModelCacheStamp() }
+  func setApiKeyAsync(account: String, secret: String) async throws {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().setApiKey(account: account, secret: secret) }
+  }
+  func clearApiKeyAsync(account: String) async throws {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().clearApiKey(account: account) }
+  }
+  func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().addCustomProvider(draft: draft) }
+  }
+  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws -> CsProviderOption {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().updateCustomProvider(id: id, draft: draft) }
+  }
+  func removeCustomProviderAsync(id: String) async throws -> CsCustomProviderRemoval {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().removeCustomProvider(id: id) }
+  }
+  func signOutAccountAsync(providerId: String) async throws {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().signOutAccount(providerId: providerId) }
+  }
   func availableProviders() -> [CsProviderOption] { config.availableProviders() }
+  func addCustomProvider(draft: CsCustomProviderDraft) throws -> CsProviderOption {
+    try config.addCustomProvider(draft: draft)
+  }
+  func updateCustomProvider(id: String, draft: CsCustomProviderDraft) throws -> CsProviderOption {
+    try config.updateCustomProvider(id: id, draft: draft)
+  }
+  func removeCustomProvider(id: String) throws -> CsCustomProviderRemoval {
+    try config.removeCustomProvider(id: id)
+  }
+  func setLaneProvider(lane: CsLlmLane, providerId: String) throws {
+    try config.setLaneProvider(lane: lane, providerId: providerId)
+  }
   func discoverModels(providerId: String) -> CsModelDiscovery {
     config.discoverModels(providerId: providerId)
+  }
+  nonisolated func discoverModelsAsync(providerId: String) async -> CsModelDiscovery {
+    await Task.detached(priority: .userInitiated) {
+      CodescribeConfig().discoverModels(providerId: providerId)
+    }.value
   }
   func startAccountLogin(providerId: String) throws -> CsAccountLoginResult {
     try config.startAccountLogin(providerId: providerId)
@@ -148,6 +326,16 @@ final class RealSettingsEngine: SettingsEngine {
   func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64) throws -> CsAccountLoginResult
   {
     try config.awaitAccountLogin(providerId: providerId, timeoutSeconds: timeoutSeconds)
+  }
+  nonisolated func awaitAccountLoginAsync(
+    providerId: String, timeoutSeconds: UInt64
+  ) async throws -> CsAccountLoginResult {
+    try await Task.detached(priority: .userInitiated) {
+      try CodescribeConfig().awaitAccountLogin(
+        providerId: providerId,
+        timeoutSeconds: timeoutSeconds
+      )
+    }.value
   }
   func cancelAccountLogin() { config.cancelAccountLogin() }
   func signOutAccount(providerId: String) throws {
@@ -204,9 +392,16 @@ struct MockSettingsEngine: SettingsEngine {
   var mode: String? = "agentic"
   var qualityRecords: [CsQualityRecord] = []
   var lexiconEntries: [CsLexiconEntry] = []
+  var unchangedQualityTakes: UInt64 = 0
   var qualityRecordsLoader: (() throws -> [CsQualityRecord])?
   var lexiconEntriesLoader: (() throws -> [CsLexiconEntry])?
   var audioSnapshot: CsAudioInputSnapshot = .sample
+  var admissionReadiness: CsAdmissionReadiness = .sampleGranted
+  var calibrationReport: CsEnergyCalibrationReport = .sample
+  var calibrateEnergyObserver: ((UInt32) throws -> CsEnergyCalibrationReport)?
+  var beginNewMaxConsultationObserver: (() async throws -> String)?
+  var pendingMaxApprovalsObserver: (() async throws -> [PendingToolApproval])?
+  var resolveMaxApprovalObserver: ((PendingToolApproval, Bool, Bool) async throws -> Bool)?
   var resetPreviewValue: CsResetPreview = .sample
   var agentResetPreviewValue: CsAgentResetPreview = .sample
   var formattingSnapshot: CsPromptSnapshot = .sampleFormatting
@@ -217,14 +412,44 @@ struct MockSettingsEngine: SettingsEngine {
   var resetAgentDataObserver: (() throws -> Void)?
   var clearMcpConfigurationObserver: (() throws -> Void)?
   var settingsLoader: (() -> CsSettings)?
+  /// Custom rows + lane bindings persist across calls (reference-typed, like settings.json).
+  var providerStore: MockProviderStore = MockProviderStore()
   var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
   var resetAudioInputDeviceObserver: (() throws -> Void)?
+  /// Preview seed for the local-Whisper picker; the observer records selections.
+  var whisperCatalog: CsWhisperModelCatalog = .sample
+  var selectLocalWhisperModelObserver: ((String) async throws -> CsWhisperModelSwitch)?
   var voiceLabEditObserver: ((String, String) throws -> CsVoiceLabSaveResult)?
+  var ruleCandidates: [CsRuleCandidate] = []
+  var ruleCandidatesLoader: (() throws -> [CsRuleCandidate])?
+  var teachSpanObserver: ((String, String, String) throws -> CsQualityCommitResult)?
+  /// Controlled acquisition for previews and integrator ordering witnesses.
+  var providerAccessSnapshotLoader: (() async throws -> CsProviderAccessSnapshot)?
+  var composerStampProvider: (() -> String?)?
+  var providersReader: (() -> [CsProviderOption])?
+  var discoveryLoader: ((String) -> CsModelDiscovery)?
   // Keep the long-standing config observer last so existing trailing-closure
   // call sites continue to bind to config writes, not Voice Lab edits.
   var updateConfigObserver: ((String, String) throws -> Void)?
 
   func loadSettings() -> CsSettings { settingsLoader?() ?? settings }
+  func pendingMaxToolApprovals() async throws -> [PendingToolApproval] {
+    try await pendingMaxApprovalsObserver?() ?? []
+  }
+  func resolveMaxToolApproval(
+    _ request: PendingToolApproval, approved: Bool, remember: Bool
+  ) async throws -> Bool {
+    try await resolveMaxApprovalObserver?(request, approved, remember) ?? false
+  }
+  func beginNewMaxConsultation() async throws -> String {
+    guard let beginNewMaxConsultationObserver else {
+      throw NSError(
+        domain: "Codescribe.Preview", code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Consultation reset is unavailable in this preview."]
+      )
+    }
+    return try await beginNewMaxConsultationObserver()
+  }
   func configDir() -> String { dir }
   func shouldShowOnboarding() -> Bool { onboarding }
   func onboardingMode() -> String? { mode }
@@ -240,12 +465,32 @@ struct MockSettingsEngine: SettingsEngine {
   func resetAudioInputDevice() throws {
     try resetAudioInputDeviceObserver?()
   }
-  func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
+  func loadWhisperModelCatalog() -> CsWhisperModelCatalog { whisperCatalog }
+  func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch {
+    if let selectLocalWhisperModelObserver {
+      return try await selectLocalWhisperModelObserver(reference)
+    }
+    return CsWhisperModelSwitch(applied: true, pending: false)
+  }
+  func loadAdmissionReadiness() async throws -> CsAdmissionReadiness { admissionReadiness }
+  func calibrateEnergy(seconds: UInt32) async throws -> CsEnergyCalibrationReport {
+    if let calibrateEnergyObserver {
+      return try calibrateEnergyObserver(seconds)
+    }
+    return calibrationReport
+  }
+  func loadQualityRecentListing(limit: UInt64) throws -> CsQualityListing {
     let records = try qualityRecordsLoader?() ?? qualityRecords
-    return Array(records.prefix(Int(clamping: limit)))
+    return CsQualityListing(
+      records: Array(records.prefix(Int(clamping: limit))),
+      unchangedTakes: unchangedQualityTakes
+    )
   }
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
     try lexiconEntriesLoader?() ?? lexiconEntries
+  }
+  func loadRuleCandidates(minOccurrences: UInt64) throws -> [CsRuleCandidate] {
+    try ruleCandidatesLoader?() ?? ruleCandidates
   }
   func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsVoiceLabSaveResult {
     if let voiceLabEditObserver {
@@ -262,6 +507,7 @@ struct MockSettingsEngine: SettingsEngine {
         variant: record.variant,
         editedText: canonical,
         action: "edit",
+        editProvenance: "manual_human",
         timestampMs: record.timestampMs,
         avgLogprob: nil,
         speechPct: nil,
@@ -282,14 +528,39 @@ struct MockSettingsEngine: SettingsEngine {
       rulesFromCorrectionSource: fromCorrection
     )
   }
+  func teachSpan(variant: String, canonical: String, kind: String) throws -> CsQualityCommitResult {
+    if let teachSpanObserver {
+      return try teachSpanObserver(variant, canonical, kind)
+    }
+    return CsQualityCommitResult(
+      pairsLearned: 1,
+      evidenceOnly: false,
+      acknowledgement: "Saved — 1 rule learned",
+      teachSeen: nil,
+      teachRequired: nil
+    )
+  }
 
+  func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
+    if let providerAccessSnapshotLoader { return try await providerAccessSnapshotLoader() }
+    return CsProviderAccessSnapshot(
+      providers: availableProviders(), accountErrors: [:], keyStatus: keyStatus(),
+      sttLanes: sttLanes(), revision: 0)
+  }
+  func composerModelCacheStamp() -> String? { composerStampProvider?() }
   func keyStatus() -> CsKeyStatus { status }
-  func keyAccounts() -> [String] {
-    [
-      "LLM_API_KEY", "STT_API_KEY", "LLM_FORMATTING_API_KEY",
-      "LLM_ASSISTIVE_API_KEY", "LLM_ANTHROPIC_API_KEY", "LLM_XAI_API_KEY",
-      "GITHUB_TOKEN",
-    ]
+  func serviceKeyAccounts() -> [String] { ["GITHUB_TOKEN"] }
+  /// Two sample lanes whose endpoint and key presence follow the mock's
+  /// settings / status, so a persisted `STT_*_ENDPOINT` write is witnessable.
+  func sttLanes() -> [CsSttLane] {
+    let loaded = loadSettings()
+    var file = CsSttLane.sampleFile
+    file.endpoint = loaded.sttFileEndpoint
+    file.apiKeySet = status.sttFileApiKeySet
+    var live = CsSttLane.sampleLive
+    live.endpoint = loaded.sttLiveEndpoint
+    live.apiKeySet = status.sttLiveApiKeySet
+    return [file, live]
   }
   func setApiKey(account: String, secret: String) throws {}
   func clearApiKey(account: String) throws {}
@@ -297,9 +568,23 @@ struct MockSettingsEngine: SettingsEngine {
     CsApiKeyProbeResult.sample(account: account)
   }
 
-  func availableProviders() -> [CsProviderOption] { CsProviderOption.sampleProviders }
+  func availableProviders() -> [CsProviderOption] {
+    providersReader?() ?? (CsProviderOption.sampleProviders + providerStore.custom)
+  }
+  func addCustomProvider(draft: CsCustomProviderDraft) throws -> CsProviderOption {
+    try providerStore.add(draft)
+  }
+  func updateCustomProvider(id: String, draft: CsCustomProviderDraft) throws -> CsProviderOption {
+    try providerStore.update(id: id, draft: draft)
+  }
+  func removeCustomProvider(id: String) throws -> CsCustomProviderRemoval {
+    try providerStore.remove(id: id)
+  }
+  func setLaneProvider(lane: CsLlmLane, providerId: String) throws {
+    try providerStore.setLane(lane, providerId: providerId, known: availableProviders())
+  }
   func discoverModels(providerId: String) -> CsModelDiscovery {
-    CsModelDiscovery.sample(for: providerId)
+    discoveryLoader?(providerId) ?? CsModelDiscovery.sample(for: providerId)
   }
   func startAccountLogin(providerId: String) throws -> CsAccountLoginResult {
     CsAccountLoginResult(
@@ -312,17 +597,6 @@ struct MockSettingsEngine: SettingsEngine {
     )
   }
 
-  func normalizeOpenaiResponsesEndpoint(_ endpoint: String) -> String {
-    // Mock: pass-through or minimal normalize for preview stability.
-    var base = endpoint.trimmingCharacters(
-      in: .whitespacesAndNewlines.union(.init(charactersIn: "/")))
-    for s in ["/v1/responses", "/v1/chat/completions", "/v1/completions"] where base.hasSuffix(s) {
-      base.removeLast(s.count)
-      return base + "/v1/responses"
-    }
-    if base.hasSuffix("/v1") { base.removeLast(3) }
-    return base + "/v1/responses"
-  }
   func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64) throws -> CsAccountLoginResult
   {
     CsAccountLoginResult(
@@ -380,6 +654,92 @@ struct MockSettingsEngine: SettingsEngine {
   }
 }
 
+/// Mock-side stand-in for the core registry's custom CRUD + lane bindings —
+/// reference-typed so the value-typed engine observes its own writes. Validation
+/// covers only what tests read; the real rules live in `core/llm/provider.rs`.
+@MainActor
+final class MockProviderStore {
+  enum Failure: Error, Equatable {
+    case emptyName
+    case invalidEndpoint(String)
+    case unknownProvider(String)
+  }
+
+  var custom: [CsProviderOption] = []
+  var laneProviders: [CsLlmLane: String] = [:]
+
+  /// Slug + scheme check in the core's shape; the row id is `custom:<slug>`.
+  private func row(_ draft: CsCustomProviderDraft, keySet: Bool) throws -> CsProviderOption {
+    let slug = String(draft.name.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" })
+      .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    guard !slug.isEmpty else { throw Failure.emptyName }
+    guard draft.endpoint.hasPrefix("http://") || draft.endpoint.hasPrefix("https://") else {
+      throw Failure.invalidEndpoint(draft.endpoint)
+    }
+    let account = slug.uppercased().replacingOccurrences(of: "-", with: "_")
+    return .row(
+      id: "custom:\(slug)", kind: "custom", name: draft.name, wire: draft.wire,
+      endpoint: draft.endpoint, account: "LLM_CUSTOM_\(account)_API_KEY", keySet: keySet)
+  }
+
+  /// Bridge rows are addressed by the bare slug (§D 17:55Z); the picker id has the prefix.
+  private func index(of slug: String) throws -> Int {
+    guard let index = custom.firstIndex(where: { $0.id == "custom:\(slug)" }) else {
+      throw Failure.unknownProvider(slug)
+    }
+    return index
+  }
+
+  func add(_ draft: CsCustomProviderDraft) throws -> CsProviderOption {
+    let option = try row(draft, keySet: draft.apiKey != nil)
+    custom.append(option)
+    return option
+  }
+
+  /// Id (and therefore the key account) is immutable; only name/wire/endpoint move.
+  func update(id: String, draft: CsCustomProviderDraft) throws -> CsProviderOption {
+    let index = try index(of: id)
+    var option = try row(draft, keySet: custom[index].apiKeySet || draft.apiKey != nil)
+    option.id = custom[index].id
+    option.apiKeyAccount = custom[index].apiKeyAccount
+    custom[index] = option
+    return option
+  }
+
+  func remove(id: String) throws -> CsCustomProviderRemoval {
+    let removed = try custom.remove(at: index(of: id))
+    let reset = [CsLlmLane.formatting, .assistive].filter { laneProviders[$0] == removed.id }
+    for lane in reset { laneProviders[lane] = "openai-responses" }
+    return CsCustomProviderRemoval(id: id, lanesReset: reset)
+  }
+
+  func setLane(_ lane: CsLlmLane, providerId: String, known: [CsProviderOption]) throws {
+    guard known.contains(where: { $0.id == providerId }) else {
+      throw Failure.unknownProvider(providerId)
+    }
+    laneProviders[lane] = providerId
+  }
+
+  /// Resolved-lane projection the way the loader would seal it.
+  func runtimeLane(_ lane: CsLlmLane, model: String = "gpt-5.2") -> CsRuntimeLlmLane {
+    let providerId = laneProviders[lane] ?? "openai-responses"
+    let provider = (CsProviderOption.sampleProviders + custom).first { $0.id == providerId }
+    return CsRuntimeLlmLane(
+      lane: lane,
+      providerId: providerId,
+      providerDisplayName: provider?.displayName ?? providerId,
+      wire: provider?.wire ?? "responses",
+      endpoint: provider?.endpoint ?? "",
+      model: model,
+      keyAccount: provider?.apiKeyAccount ?? "",
+      keyPresent: provider?.apiKeySet ?? false,
+      accountAuth: provider?.accountSignedIn ?? false,
+      available: provider.map { $0.apiKeySet || $0.accountSignedIn || !$0.keyRequired } ?? false,
+      unavailableReason: nil
+    )
+  }
+}
+
 // MARK: - Bridge value helpers
 
 extension CsAudioInputSnapshot {
@@ -390,6 +750,55 @@ extension CsAudioInputSnapshot {
     configuredDeviceAvailable: true,
     fallbackToDefault: false,
     runtimeConfigurationMatches: true
+  )
+}
+
+extension CsAdmissionReadiness {
+  static let sampleGranted = CsAdmissionReadiness(
+    ready: true,
+    code: "admission_granted",
+    message: "",
+    deviceName: "MacBook Pro Microphone",
+    sampleRate: 48_000,
+    calibrationVersion: "cal1-macbook-pro-microphone-1@48000hz",
+    calibrationStatus: "sealed",
+    calibrationPath: "~/Library/Application Support/Codescribe/energy-calibration.json",
+    calibratedDevices: ["MacBook Pro Microphone"],
+    sealLaneArmed: true,
+    sealLaneSettingArmed: true,
+    sealLaneSource: "settings",
+    sealLaneEnv: "CODESCRIBE_SILERO_FUSION"
+  )
+
+  static let sampleMissing = CsAdmissionReadiness(
+    ready: false,
+    code: "admission_calibration_missing",
+    message:
+      "no acoustic calibration measured yet — Run Calibrate microphone in Settings › Audio (about 10 seconds of normal speech).",
+    deviceName: nil,
+    sampleRate: nil,
+    calibrationVersion: nil,
+    calibrationStatus: "missing",
+    calibrationPath: "~/Library/Application Support/Codescribe/energy-calibration.json",
+    calibratedDevices: [],
+    sealLaneArmed: true,
+    sealLaneSettingArmed: true,
+    sealLaneSource: "settings",
+    sealLaneEnv: "CODESCRIBE_SILERO_FUSION"
+  )
+}
+
+extension CsEnergyCalibrationReport {
+  static let sample = CsEnergyCalibrationReport(
+    deviceName: "MacBook Pro Microphone",
+    sampleRate: 48_000,
+    measuredSeconds: 6.2,
+    activeSpeechMedianDbfs: -38.4,
+    noiseFloorDbfs: nil,
+    peakDbfs: -12.5,
+    existenceThresholdDbfs: -54.3,
+    version: "cal1-macbook-pro-microphone-1",
+    path: "~/Library/Application Support/Codescribe/energy-calibration.json"
   )
 }
 
@@ -441,6 +850,46 @@ extension CsPromptSnapshot {
   )
 }
 
+extension CsWhisperModelCatalog {
+  /// Preview seed: one active models-dir row, one HF-cache row, one refused
+  /// quantized row — the three states the picker must render.
+  static let sample = CsWhisperModelCatalog(
+    options: [
+      CsWhisperModelOption(
+        id: "whisper-large-v3-turbo",
+        label: "Large v3 Turbo · FP16",
+        path: "~/.codescribe/models/whisper-large-v3-turbo",
+        source: "models_dir",
+        usable: true,
+        reason: nil,
+        active: true
+      ),
+      CsWhisperModelOption(
+        id: "mlx-community/whisper-large-v3",
+        label: "Large v3 · FP16",
+        path: "~/.cache/huggingface/hub/models--mlx-community--whisper-large-v3",
+        source: "hf_cache",
+        usable: true,
+        reason: nil,
+        active: false
+      ),
+      CsWhisperModelOption(
+        id: "whisper-large-v3-turbo-q8",
+        label: "Large v3 Turbo Q8",
+        path: "~/.codescribe/models/whisper-large-v3-turbo-q8",
+        source: "models_dir",
+        usable: false,
+        reason: "Quantized weights are not supported by the local engine",
+        active: false
+      ),
+    ],
+    configured: "whisper-large-v3-turbo",
+    resolvedPath: "~/.codescribe/models/whisper-large-v3-turbo",
+    loaded: "~/.codescribe/models/whisper-large-v3-turbo",
+    overrideKind: nil
+  )
+}
+
 extension CsLanguage {
   /// Two-letter code shown in the UI and written to `WHISPER_LANGUAGE`.
   var shortCode: String {
@@ -454,9 +903,13 @@ extension CsLanguage {
   /// Human-readable label for the language picker.
   var displayName: String {
     switch self {
-    case .auto: return "Auto"
-    case .polish: return "Polish"
-    case .english: return "English"
+    case .auto:
+      return String(
+        localized: "Auto",
+        comment: "Dictation language picker: detect the spoken language automatically"
+      )
+    case .polish: return String(localized: "Polish", comment: "Dictation language name")
+    case .english: return String(localized: "English", comment: "Dictation language name")
     }
   }
 }
@@ -469,9 +922,17 @@ extension CsSettings {
     holdStartDelayMs: 250,
     doubleTapIntervalMs: 320,
     toggleSilenceSec: 1.5,
+    whisperContextWindowSec: 8,
+    whisperAdaptiveBuffer: false,
+    formatOnDevice: false,
+    lightPlusSentencePauseSec: 0.7,
     deferredInsertShortcut: "disabled",
+    channelModifier: "ctrl",
+    fnTapTogglesDictation: false,
+    middleMouseActsAsFn: false,
     whisperLanguage: .polish,
     aiFormattingEnabled: true,
+    pasteMode: .safe,
     transcriptSendMode: "end_of_utterance",
     transcriptTaggingEnabled: false,
     transcriptTagTemplate: "<codescribe mode=\"{mode}\" lang=\"{lang}\">\n{text}\n</codescribe>",
@@ -491,26 +952,25 @@ extension CsSettings {
     soundName: "Tink",
     soundVolume: 0.6,
     audioInputDevice: nil,
+    audioRetention: "forever",
     historyEnabled: true,
     quickNotesEnabled: true,
     quickNotesSaveOnly: false,
     useLocalStt: true,
     localModel: "whisper-large-v3-turbo",
-    sttEndpoint: nil,
-    sttEngine: nil,
-    finalPassMode: nil,
-    llmEndpoint: "https://api.openai.com/v1/responses",
+    sttFileEndpoint: nil,
+    sttLiveEndpoint: nil,
     restoreClipboard: true,
     restoreClipboardDelayMs: 200,
     startAtLogin: false,
     agentEnterSends: true,
+    agentAutoSend: false,
     dumpAudioLogs: false,
-    llmModel: "gpt-4o-mini",
-    llmFormattingEndpoint: "https://api.openai.com/v1/responses",
+    // Contract §C: lane = provider ref + model; no endpoint fields on CsSettings.
+    llmFormattingProvider: "openai-responses",
     llmFormattingModel: "gpt-4o-mini",
-    llmAssistiveEndpoint: "https://api.openai.com/v1/responses",
-    llmAssistiveModel: "gpt-4o",
     llmAssistiveProvider: "openai-responses",
+    llmAssistiveModel: "gpt-4o",
     formattingLevel: "correction",
     whisperModel: "whisper-large-v3-turbo",
     layeredTranscription: nil,
@@ -532,26 +992,28 @@ extension CsSettings {
 }
 
 extension CsKeyStatus {
-  /// All providers configured — used by the preview seed.
+  /// OpenAI + STT configured — used by the preview seed. Field order follows
+  /// `KEYCHAIN_ACCOUNTS` (§B.3: Libraxis first).
   static let sampleAllSet = CsKeyStatus(
-    llmApiKeySet: true,
-    sttApiKeySet: true,
-    llmFormattingApiKeySet: true,
-    llmAssistiveApiKeySet: true,
-    llmAnthropicApiKeySet: false,
+    llmLibraxisApiKeySet: false,
+    llmOpenaiApiKeySet: true,
     llmXaiApiKeySet: false,
+    llmAnthropicApiKeySet: false,
+    sttFileApiKeySet: true,
+    sttLiveApiKeySet: true,
     githubTokenSet: false
   )
 
-  /// Presence boolean for a canonical Keychain account name.
+  /// Presence boolean for a static Keychain account (`KEYCHAIN_ACCOUNTS`).
+  /// Custom-provider accounts are not here: read `CsProviderOption.apiKeySet`.
   func isSet(account: String) -> Bool {
     switch account {
-    case "LLM_API_KEY": return llmApiKeySet
-    case "STT_API_KEY": return sttApiKeySet
-    case "LLM_FORMATTING_API_KEY": return llmFormattingApiKeySet
-    case "LLM_ASSISTIVE_API_KEY": return llmAssistiveApiKeySet
-    case "LLM_ANTHROPIC_API_KEY": return llmAnthropicApiKeySet
+    case "LLM_LIBRAXIS_API_KEY": return llmLibraxisApiKeySet
+    case "LLM_OPENAI_API_KEY": return llmOpenaiApiKeySet
     case "LLM_XAI_API_KEY": return llmXaiApiKeySet
+    case "LLM_ANTHROPIC_API_KEY": return llmAnthropicApiKeySet
+    case "STT_FILE_API_KEY": return sttFileApiKeySet
+    case "STT_LIVE_API_KEY": return sttLiveApiKeySet
     case "GITHUB_TOKEN": return githubTokenSet
     default: return false
     }
@@ -562,52 +1024,69 @@ extension CsApiKeyProbeResult {
   static func sample(account: String) -> CsApiKeyProbeResult {
     CsApiKeyProbeResult(
       account: account,
-      status: account == "STT_API_KEY" ? .unsupported : .ok,
-      message: account == "STT_API_KEY"
-        ? "no cheap liveness probe is available for this STT key"
-        : "key accepted and quota available",
+      status: .ok,
+      message: "key accepted and quota available",
       probedEndpoint: nil
     )
   }
 }
 
+extension CsSttLane {
+  /// Mirrors `SttLane::File` (§B.0): https multipart or NDJSON `:stream`.
+  static let sampleFile = CsSttLane(
+    id: "file",
+    title: "File transcription",
+    accepts: "https multipart /v1/audio/transcriptions or NDJSON …:stream",
+    placeholder: "https://…/v1/audio/transcriptions",
+    endpoint: nil,
+    endpointWireKey: "STT_FILE_ENDPOINT",
+    keyAccount: "STT_FILE_API_KEY",
+    apiKeySet: false
+  )
+  /// Mirrors `SttLane::Live` (§B.0): wss live socket (stt-ws-v1).
+  static let sampleLive = CsSttLane(
+    id: "live",
+    title: "Live transcript",
+    accepts: "wss live socket (stt-ws-v1)",
+    placeholder: "wss://…/v1/audio/transcribe",
+    endpoint: nil,
+    endpointWireKey: "STT_LIVE_ENDPOINT",
+    keyAccount: "STT_LIVE_API_KEY",
+    apiKeySet: false
+  )
+}
+
 extension CsProviderOption {
-  /// Preview seed mirroring the core provider identities (OpenAI, Anthropic, xAI).
+  /// Row shape shared by the vendor seed and the mock custom store. Vendors
+  /// require a key; custom hosts are key-optional; `login` marks OAuth vendors.
+  static func row(
+    id: String, kind: String, name: String, wire: String, endpoint: String, account: String,
+    keySet: Bool = false, login: Bool = false
+  ) -> CsProviderOption {
+    CsProviderOption(
+      id: id, kind: kind, displayName: name, wire: wire, endpoint: endpoint,
+      apiKeyAccount: account, apiKeySet: keySet, keyRequired: kind == "vendor",
+      accountSignedIn: false, accountLoginEnabled: login,
+      accountStatusMessage: login ? "not signed in" : "provider account login unavailable",
+      oauthClientId: nil)
+  }
+
+  /// Preview seed mirroring `ALL_PROVIDERS` with factory endpoints; the mock
+  /// order is §B.3's (Libraxis, OpenAI, xAI, Anthropic) — I1 owns the real one.
   static let sampleProviders: [CsProviderOption] = [
-    // OpenAI + xAI ship public desktop client ids (NOTICE); Anthropic does not.
-    CsProviderOption(
-      id: "openai-responses",
-      displayName: "OpenAI (Responses)",
-      apiKeyAccount: "LLM_ASSISTIVE_API_KEY",
-      apiKeySet: true,
-      accountSignedIn: false,
-      accountLoginEnabled: true,
-      accountStatusMessage: "not signed in",
-      oauthClientId: nil,
-      models: []
-    ),
-    CsProviderOption(
-      id: "anthropic-messages",
-      displayName: "Anthropic (Messages)",
-      apiKeyAccount: "LLM_ANTHROPIC_API_KEY",
-      apiKeySet: false,
-      accountSignedIn: false,
-      accountLoginEnabled: false,
-      accountStatusMessage: "provider account login unavailable",
-      oauthClientId: nil,
-      models: []
-    ),
-    CsProviderOption(
-      id: "xai-responses",
-      displayName: "xAI (Grok)",
-      apiKeyAccount: "LLM_XAI_API_KEY",
-      apiKeySet: false,
-      accountSignedIn: false,
-      accountLoginEnabled: true,
-      accountStatusMessage: "not signed in",
-      oauthClientId: nil,
-      models: []
-    ),
+    .row(
+      id: "libraxis-responses", kind: "vendor", name: "Libraxis", wire: "responses",
+      endpoint: "https://api.libraxis.com/v1/responses", account: "LLM_LIBRAXIS_API_KEY"),
+    .row(
+      id: "openai-responses", kind: "vendor", name: "OpenAI", wire: "responses",
+      endpoint: "https://api.openai.com/v1/responses", account: "LLM_OPENAI_API_KEY",
+      keySet: true, login: true),
+    .row(
+      id: "xai-responses", kind: "vendor", name: "xAI", wire: "responses",
+      endpoint: "https://api.x.ai/v1/responses", account: "LLM_XAI_API_KEY", login: true),
+    .row(
+      id: "anthropic-messages", kind: "vendor", name: "Anthropic", wire: "messages",
+      endpoint: "https://api.anthropic.com/v1/messages", account: "LLM_ANTHROPIC_API_KEY"),
   ]
 }
 

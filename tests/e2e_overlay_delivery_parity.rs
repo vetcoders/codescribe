@@ -4,10 +4,9 @@
 //! live recording (`collect_buffered_engine_events` → `transcription_session`,
 //! ~100 ms callback chunks), then:
 //!
-//! 1. Builds **overlay assembly** = freezed `UtteranceFinal`s + open `Preview`
-//!    (product contract: previous freezed, current interim appended).
-//! 2. Builds **streaming floor** = joined finals only (what stop splice holds
-//!    when previews are sealed).
+//! 1. Builds committed text only from occurrence-authenticated ledger mutation
+//!    receipts. Raw finals and patches stay diagnostic.
+//! 2. Treats Preview as overlay-only paint, never as the delivery floor.
 //! 3. Runs **file final-pass** via `stt::transcribe_file_verdict` (same router
 //!    as controller stop adjudication).
 //! 4. Applies **length-regression floor** (`final_pass_is_length_regression`) —
@@ -16,8 +15,6 @@
 //! Opt-in (needs STT engine + model / Apple):
 //! ```bash
 //! CODESCRIBE_E2E_STT=1 cargo test --test e2e_overlay_delivery_parity -- --nocapture
-//! # optional: force Candle for deterministic CI without Apple
-//! CODESCRIBE_STT_ENGINE=candle CODESCRIBE_E2E_STT=1 cargo test --test e2e_overlay_delivery_parity -- --nocapture
 //! # optional single clip:
 //! CODESCRIBE_E2E_AUDIO=tests/assets/data_assets/01_no-to-dobra.wav ...
 //! ```
@@ -26,15 +23,22 @@
 //!
 //! Authored-By: grok <agents@vetcoders.io>
 
+#[path = "support/asr_settings.rs"]
+mod asr_settings;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use codescribe::audio;
+use codescribe_core::pipeline::acoustic_ledger::{
+    AcousticLedger, ObservationIdentity, ObservationProducer, OccurrenceIdentity,
+};
 use codescribe_core::pipeline::contracts::{
     EngineEvent, FINAL_PASS_REGRESSION_MIN_STREAM_CHARS, LayerSource,
     final_pass_is_length_regression,
 };
 use codescribe_core::pipeline::streaming::{
-    assemble_live_from_events, collect_buffered_engine_events,
+    TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE, TailPatchDrainDisposition, TailPatchSessionReceipt,
 };
 use codescribe_core::quality::{MergeMode, merge_live_whisper};
 use codescribe_core::stt;
@@ -45,14 +49,64 @@ mod e2e_stt_matrix;
 
 use e2e_stt_matrix::{STT_OPT_IN_ENV, skip_unless_opt_in};
 
-// ── Product live assembly (shipped `assemble_live_from_events`) ───────────────
+// ── Independent receipt oracle for the shipped ledger projection ───────────
 
-fn overlay_assembly_from_events(events: &[EngineEvent]) -> String {
-    assemble_live_from_events(events).full_text()
+#[derive(Debug, Default)]
+struct LedgerProjectionOracle {
+    document_by_occurrence: BTreeMap<OccurrenceIdentity, String>,
+    sealed_occurrences: BTreeSet<OccurrenceIdentity>,
 }
 
-fn streaming_floor_from_events(events: &[EngineEvent]) -> String {
-    assemble_live_from_events(events).streaming_floor()
+impl LedgerProjectionOracle {
+    fn from_events(events: &[EngineEvent]) -> Self {
+        let mut oracle = Self::default();
+        for event in events {
+            match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                } if receipt.grants_mutation() => {
+                    oracle
+                        .document_by_occurrence
+                        .insert(observation.occurrence.clone(), label.clone());
+                }
+                EngineEvent::LedgerSeal { receipt } => {
+                    oracle
+                        .sealed_occurrences
+                        .extend(receipt.sealed_occurrences.iter().cloned());
+                }
+                _ => {}
+            }
+        }
+        oracle
+    }
+
+    fn rendered_text(&self) -> String {
+        self.document_by_occurrence
+            .values()
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn occurrence_count(&self) -> usize {
+        self.document_by_occurrence.len()
+    }
+
+    fn sealed_count(&self) -> usize {
+        self.sealed_occurrences.len()
+    }
+}
+
+fn overlay_assembly_from_events(events: &[EngineEvent]) -> String {
+    LedgerProjectionOracle::from_events(events).rendered_text()
+}
+
+fn committed_projection_from_events(events: &[EngineEvent]) -> String {
+    LedgerProjectionOracle::from_events(events).rendered_text()
 }
 
 // ── Lane guard: the parity bar must measure the lane it was told to measure ───
@@ -82,11 +136,10 @@ fn measured_tail_patch_count(events: &[EngineEvent]) -> usize {
 /// Fail-closed contract between the target that asked for a lane and the lane
 /// the run actually exercised.
 ///
-/// `CODESCRIBE_LAYERED_TRANSCRIPTION` is a power-user key, NOT a promoted
-/// settings.json key (`config::settings::is_promoted_key`), so
-/// `Config::inject_file_env_for_runtime` copies it out of `~/.codescribe/.env`
-/// into the process environment. An operator who switched their daily dictation
-/// to `phase1` therefore armed Layer 1 inside a target whose entire purpose is
+/// Before the key was promoted to settings.json,
+/// `Config::inject_file_env_for_runtime` copied it out of `~/.codescribe/.env`.
+/// An operator who switched daily dictation to `phase1` therefore armed Layer 1
+/// inside a target whose entire purpose is
 /// to score Layer 0 against an Apple-fidelity reference — and Layer 1 is
 /// *supposed* to diverge from Apple, so the bar went red for doing its job.
 ///
@@ -109,10 +162,9 @@ fn measured_lane_matches_request(
         (None, leaked) => Err(format!(
             "this target scores Layer 0 against the Apple-fidelity reference, but the run \
              measured Layer 1: {leaked} ReplaceRange{{TailPatch}} event(s) reached the \
-             assembly. `CODESCRIBE_LAYERED_TRANSCRIPTION` is a power-user key, so \
-             ~/.codescribe/.env is injected into the process environment and can arm the \
-             layer underneath a Layer-0 bar. Pin the lane on the target \
-             (`CODESCRIBE_LAYERED_TRANSCRIPTION=off`) and re-run — the similarity number \
+             assembly. An unpinned ASR mode can arm the layer underneath a \
+             Layer-0 bar. Pin the lane on the target \
+             (`CODESCRIBE_ASR_MODE=apple_only`) and re-run — the similarity number \
              from this run says nothing about Layer 0."
         )),
         (Some(phase), 0) => Err(format!(
@@ -125,20 +177,106 @@ fn measured_lane_matches_request(
     }
 }
 
-fn sealed_final(utterance_id: u64, text: &str) -> EngineEvent {
-    EngineEvent::UtteranceFinal {
-        utterance_id,
-        text: text.into(),
-        raw_text: text.into(),
-        start_ts: 0.0,
-        end_ts: 1.0,
-        segments: vec![],
-        vad_speech_pct: None,
-        avg_logprob: None,
-        compression_ratio: None,
-        quality_gate_dropped: false,
-        confidence_flags: vec![],
+/// Product arming gate backed by the runtime receipt, not by settings/UI state
+/// and not by the number of successful text mutations. A submitted window may
+/// legitimately be skipped, but Layered ON with no submitted observation is a
+/// failed run regardless of how clean the Apple transcript looked.
+fn layered_arming_matches_request(
+    requested: bool,
+    receipt: Option<&TailPatchSessionReceipt>,
+) -> Result<(), String> {
+    if !requested {
+        if let Some(receipt) = receipt {
+            if receipt.armed {
+                return Err("Layered OFF receipt says the lane was armed".to_string());
+            }
+            if receipt.submitted > 0 {
+                return Err("Layered OFF submitted Layer 1 windows".to_string());
+            }
+        }
+        return Ok(());
     }
+
+    let receipt = receipt.ok_or_else(|| "Layered ON emitted no arming receipt".to_string())?;
+    if !receipt.armed {
+        return Err("Layered ON receipt says the lane was disarmed".to_string());
+    }
+    if receipt.submitted == 0 {
+        return Err("Layered ON armed the lane but submitted zero windows".to_string());
+    }
+    Ok(())
+}
+
+fn admitted_occurrence_label(occurrence_id: u64, text: &str) -> EngineEvent {
+    let sample_start = occurrence_id.saturating_mul(16_000);
+    let occurrence = OccurrenceIdentity::new(
+        "synthetic-ledger-session",
+        1,
+        sample_start,
+        sample_start + 8_000,
+    );
+    let observation =
+        ObservationIdentity::new(ObservationProducer::Apple, occurrence_id, 0, occurrence);
+    let receipt = AcousticLedger::new().admit(&observation, text);
+    EngineEvent::LedgerMutation {
+        observation,
+        label: text.to_string(),
+        receipt,
+    }
+}
+
+fn admitted_occurrence_revision(
+    occurrence_id: u64,
+    apple_label: &str,
+    whisper_label: &str,
+) -> Vec<EngineEvent> {
+    let sample_start = occurrence_id.saturating_mul(16_000);
+    let occurrence = OccurrenceIdentity::new(
+        "synthetic-ledger-session",
+        1,
+        sample_start,
+        sample_start + 8_000,
+    );
+    let apple = ObservationIdentity::new(
+        ObservationProducer::Apple,
+        occurrence_id,
+        0,
+        occurrence.clone(),
+    );
+    let whisper =
+        ObservationIdentity::new(ObservationProducer::Whisper, occurrence_id, 1, occurrence);
+    let mut ledger = AcousticLedger::new();
+    let apple_receipt = ledger.admit(&apple, apple_label);
+    // This observer owns decoded Words in the same bounded PCM window;
+    // a whole-label proposal alone cannot demonstrate an acoustic repair.
+    let tokens = whisper_label.split_whitespace().collect::<Vec<_>>();
+    assert!(!tokens.is_empty());
+    let pins = tokens
+        .iter()
+        .enumerate()
+        .map(|(index, token)| {
+            codescribe_core::pipeline::acoustic_ledger::WordPin::new(
+                sample_start + index as u64 * 8_000 / tokens.len() as u64,
+                sample_start + (index as u64 + 1) * 8_000 / tokens.len() as u64,
+                *token,
+            )
+            .with_decode_window(sample_start.saturating_sub(1_000), sample_start + 9_000)
+        })
+        .collect::<Vec<_>>();
+    let whisper_receipt = ledger.admit_word_slots_for_tests(&whisper, &pins);
+    assert!(whisper_receipt.grants_mutation(), "{whisper_receipt:?}");
+    vec![
+        EngineEvent::LedgerMutation {
+            observation: apple,
+            label: apple_label.to_string(),
+            receipt: apple_receipt,
+        },
+        EngineEvent::LedgerMutation {
+            observation: whisper,
+            label: whisper_label.to_string(),
+            receipt: whisper_receipt,
+        },
+    ]
 }
 
 fn tail_patch(utterance_id: u64, start: usize, end: usize, text: &str) -> EngineEvent {
@@ -151,12 +289,17 @@ fn tail_patch(utterance_id: u64, start: usize, end: usize, text: &str) -> Engine
     }
 }
 
+fn layered_acceptance_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!("fixtures/layered_engine_acceptance.json"))
+        .expect("canonical layered-engine acceptance fixture must stay valid JSON")
+}
+
 /// The refuted run, in miniature: `make test-engine-parity` (Layer 0) with the
 /// operator's `.env` arming `phase1` underneath it.
 #[test]
 fn parity_lane_guard_catches_layer1_leaking_into_the_layer0_bar() {
     let leaked = vec![
-        sealed_final(1, "korzystając z Tulczajn 2024"),
+        admitted_occurrence_label(1, "korzystając z Tulczajn 2024"),
         tail_patch(1, 14, 22, "Toolchain"),
     ];
     let err = measured_lane_matches_request(None, &leaked)
@@ -170,7 +313,7 @@ fn parity_lane_guard_catches_layer1_leaking_into_the_layer0_bar() {
 /// Mirror: the layered target must not silently score Layer 0.
 #[test]
 fn parity_lane_guard_catches_a_layered_run_that_never_armed_the_layer() {
-    let unarmed = vec![sealed_final(1, "korzystając z Tulczajn 2024")];
+    let unarmed = vec![admitted_occurrence_label(1, "korzystając z Tulczajn 2024")];
     let err = measured_lane_matches_request(Some(1), &unarmed)
         .expect_err("a layered bar with zero tail-patches gates nothing (P1-01)");
     assert!(
@@ -181,9 +324,9 @@ fn parity_lane_guard_catches_a_layered_run_that_never_armed_the_layer() {
 
 #[test]
 fn parity_lane_guard_passes_when_the_measured_lane_is_the_requested_lane() {
-    let layer0 = vec![sealed_final(1, "korzystając z Tulczajn 2024")];
+    let layer0 = vec![admitted_occurrence_label(1, "korzystając z Tulczajn 2024")];
     let layer1 = vec![
-        sealed_final(1, "korzystając z Tulczajn 2024"),
+        admitted_occurrence_label(1, "korzystając z Tulczajn 2024"),
         tail_patch(1, 14, 22, "Toolchain"),
     ];
     assert!(measured_lane_matches_request(None, &layer0).is_ok());
@@ -191,7 +334,7 @@ fn parity_lane_guard_passes_when_the_measured_lane_is_the_requested_lane() {
     // Seal-time lexicon (W1-A) also emits `ReplaceRange` and rides the Layer-0
     // lane by design — it must never be mistaken for a layered leak.
     let lexicon_on_layer0 = vec![
-        sealed_final(1, "korzystając z Tulczajn 2024"),
+        admitted_occurrence_label(1, "korzystając z Tulczajn 2024"),
         EngineEvent::ReplaceRange {
             utterance_id: 1,
             start: 14,
@@ -201,6 +344,52 @@ fn parity_lane_guard_passes_when_the_measured_lane_is_the_requested_lane() {
         },
     ];
     assert!(measured_lane_matches_request(None, &lexicon_on_layer0).is_ok());
+}
+
+#[test]
+fn layered_on_with_zero_submitted_windows_is_a_failed_arming_condition() {
+    let receipt =
+        TailPatchSessionReceipt::new(true, 0, 0, 0, 0, 0, TailPatchDrainDisposition::Completed);
+    let err = layered_arming_matches_request(true, Some(&receipt))
+        .expect_err("settings ON plus zero submitted work must fail closed");
+    assert!(
+        err.contains("zero windows"),
+        "unexpected receipt gate: {err}"
+    );
+}
+
+#[test]
+fn layered_arming_uses_submitted_work_not_only_successful_mutations() {
+    let honestly_skipped =
+        TailPatchSessionReceipt::new(true, 1, 0, 1, 0, 0, TailPatchDrainDisposition::Completed);
+    assert!(layered_arming_matches_request(true, Some(&honestly_skipped)).is_ok());
+
+    let leaked_while_off =
+        TailPatchSessionReceipt::new(false, 1, 0, 1, 0, 0, TailPatchDrainDisposition::NotArmed);
+    assert!(layered_arming_matches_request(false, Some(&leaked_while_off)).is_err());
+}
+
+#[test]
+fn stop_receipt_keeps_every_terminal_bucket_and_names_bounded_drain_timeout() {
+    let events = vec![EngineEvent::Warning {
+        code: TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE.to_string(),
+        message:
+            "armed=true submitted=10 applied=4 skipped=3 timed_out=1 abandoned=2 drain=timed_out"
+                .to_string(),
+    }];
+    let receipt = TailPatchSessionReceipt::from_events(&events)
+        .expect("runtime stop receipt must be recoverable from the event stream");
+
+    assert_eq!(receipt.applied, 4);
+    assert_eq!(receipt.skipped, 3);
+    assert_eq!(receipt.timed_out, 1);
+    assert_eq!(receipt.abandoned, 2);
+    assert_eq!(
+        receipt.applied + receipt.skipped + receipt.timed_out + receipt.abandoned,
+        receipt.submitted,
+        "stop evidence must account for every submitted window instead of silently passing"
+    );
+    assert_eq!(receipt.drain, TailPatchDrainDisposition::TimedOut);
 }
 
 /// Engine bar: multi-pause dictation must seal ≥2 freezed finals and cover the
@@ -214,25 +403,21 @@ fn assert_engine_multi_utterance_assembly(
     human: Option<&str>,
     clip_label: &str,
 ) {
-    let assembly = assemble_live_from_events(events);
-    let sealed = assembly.sealed_count();
-    let full = assembly.full_text();
+    let reducer = LedgerProjectionOracle::from_events(events);
+    let sealed = reducer.occurrence_count();
+    let ledger_seals = reducer.sealed_count();
+    let full = reducer.rendered_text();
     let chars = full.chars().count();
 
     eprintln!(
-        "  engine bar: sealed_finals={sealed} freezed={:?} full_chars={chars}",
-        assembly
-            .freezed
-            .iter()
-            .map(|s| s.chars().count())
-            .collect::<Vec<_>>()
+        "  engine bar: ledger_occurrences={sealed} ledger_seals={ledger_seals} full_chars={chars}"
     );
     eprintln!("  ── live assembly (full) ──\n{full}\n  ── end live assembly ──");
 
     assert!(
         sealed >= 2,
-        "CORE ENGINE: {clip_label} must emit ≥2 sealed UtteranceFinal (freezed+append); got {sealed}. \
-         Single-final tail is not a dictation engine."
+        "CORE ENGINE: {clip_label} must emit ≥2 ledger-authenticated occurrences; got {sealed}. \
+         A raw-final-only tail is not a dictation engine."
     );
     assert!(
         chars >= 120,
@@ -258,8 +443,7 @@ fn assert_engine_multi_utterance_assembly(
 }
 
 #[test]
-fn single_final_short_tail_fails_engine_bar() {
-    // Pin the known broken shape so pseudo-success cannot regress.
+fn raw_final_without_ledger_receipt_is_not_a_document_occurrence() {
     let events = vec![EngineEvent::UtteranceFinal {
         utterance_id: 1,
         text: "o Esterna przepisze krople".into(),
@@ -270,38 +454,32 @@ fn single_final_short_tail_fails_engine_bar() {
         vad_speech_pct: None,
         avg_logprob: None,
         compression_ratio: None,
-        quality_gate_dropped: false,
         confidence_flags: vec![],
     }];
-    let assembly = assemble_live_from_events(&events);
-    assert_eq!(assembly.sealed_count(), 1);
-    assert!(assembly.full_text().chars().count() < 40);
-    // Engine bar would fail: sealed < 2 and chars < 120.
-    assert!(
-        assembly.sealed_count() < 2 || assembly.full_text().chars().count() < 120,
-        "broken shape must fail engine bar predicates"
-    );
+    let reducer = LedgerProjectionOracle::from_events(&events);
+    assert_eq!(reducer.occurrence_count(), 0);
+    assert!(reducer.rendered_text().is_empty());
 }
 
-/// Delivery after adjudicate length guard — mirrors controller production path:
-/// length regression keeps stream floor; otherwise `merge_live_whisper` (never
-/// full-replace live with Whisper — audit F1).
+/// Delivery arbitration in this parity harness starts from the authenticated
+/// ledger projection. A regressing offline candidate cannot replace that floor;
+/// any accepted candidate remains test-only comparison evidence here.
 fn delivery_from_stream_and_final(stream: &str, final_text: &str) -> (&'static str, String) {
     let stream = stream.trim();
     let final_text = final_text.trim();
     if final_text.is_empty() {
-        return ("streaming_floor", stream.to_string());
+        return ("ledger_projection", stream.to_string());
     }
     if final_pass_is_length_regression(final_text, stream) {
-        return ("streaming_floor_after_regression", stream.to_string());
+        return ("ledger_projection_after_regression", stream.to_string());
     }
     if stream.is_empty() {
         return ("final_pass", final_text.to_string());
     }
     let merged = merge_live_whisper(stream, final_text);
     let source = match merged.mode {
-        MergeMode::Empty => "streaming_floor",
-        MergeMode::LiveOnly => "streaming_floor",
+        MergeMode::Empty => "ledger_projection",
+        MergeMode::LiveOnly => "ledger_projection",
         MergeMode::WhisperOnly => "final_pass",
         MergeMode::LiveFloorWhisperFill => "merged_live_whisper",
     };
@@ -426,7 +604,7 @@ fn normalized_character_metrics(reference: &str, delivered: &str) -> (usize, f64
 
 fn sha256_file(path: &Path) -> String {
     let bytes = std::fs::read(path).expect("read acceptance input for hashing");
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 const REPAIR_WAVE_ROW_FIELDS: [&str; 21] = [
@@ -561,79 +739,50 @@ fn repair_wave_privacy_contract_fails_on_transcript_body() {
 
 // ── Always-on contract tests (no STT / no model) ────────────────────────────
 
+/// One L0 preview pinned to an open occurrence; the pin is not under test here.
+fn preview(rev: u64, text: &str) -> EngineEvent {
+    EngineEvent::Preview {
+        rev,
+        text: text.to_string(),
+        pin: codescribe_core::pipeline::contracts::PreviewPin::open_occurrence(
+            codescribe_core::stt::tail_provider::TailSampleRange {
+                session: "overlay-parity".into(),
+                capture_epoch: 1,
+                sample_start: 0,
+                sample_end: 16_000,
+            },
+        ),
+    }
+}
+
 #[test]
-fn overlay_assembly_freezes_finals_and_appends_preview_tail() {
+fn preview_is_excluded_from_committed_projection_and_delivery_floor() {
     let events = vec![
-        EngineEvent::Preview {
-            rev: 1,
-            text: "pierwsze".into(),
-        },
-        EngineEvent::UtteranceFinal {
-            utterance_id: 1,
-            text: "pierwsze zdanie".into(),
-            raw_text: "pierwsze zdanie".into(),
-            start_ts: 0.0,
-            end_ts: 1.0,
-            segments: vec![],
-            vad_speech_pct: None,
-            avg_logprob: None,
-            compression_ratio: None,
-            quality_gate_dropped: false,
-            confidence_flags: vec![],
-        },
-        EngineEvent::Preview {
-            rev: 2,
-            text: "drugie".into(),
-        },
-        EngineEvent::Preview {
-            rev: 3,
-            text: "drugie zdanie live".into(),
-        },
+        preview(1, "pierwsze"),
+        admitted_occurrence_label(1, "pierwsze zdanie"),
+        preview(2, "drugie"),
+        preview(3, "drugie zdanie live"),
     ];
 
     let overlay = overlay_assembly_from_events(&events);
-    assert_eq!(overlay, "pierwsze zdanie drugie zdanie live");
+    assert_eq!(overlay, "pierwsze zdanie");
 
-    let floor = streaming_floor_from_events(&events);
+    let floor = committed_projection_from_events(&events);
     assert_eq!(floor, "pierwsze zdanie");
 
-    let assembly = assemble_live_from_events(&events);
-    assert_eq!(assembly.sealed_count(), 1);
-    assert_eq!(assembly.freezed, vec!["pierwsze zdanie".to_string()]);
-    assert_eq!(assembly.preview, "drugie zdanie live");
+    let reducer = LedgerProjectionOracle::from_events(&events);
+    assert_eq!(reducer.occurrence_count(), 1);
+    assert_eq!(reducer.rendered_text(), "pierwsze zdanie");
 }
 
-/// The parity bar measures `overlay_assembly_from_events` / the streaming
-/// floor. With `CODESCRIBE_LAYERED_TRANSCRIPTION=phase1` the run also emits
-/// Layer 1 `ReplaceRange { source: TailPatch }`, so those patches MUST be
-/// visible in what the bar reads — otherwise the layered-on run scores exactly
-/// like layered-off and the gate is blind to the layer it exists to gate.
-///
-/// Always-on (no model, no loopback): this is a contract on the harness itself,
-/// and it is the reason the layered-on parity number can be trusted at all.
+/// Raw patch events remain measurable diagnostics, but cannot mutate the
+/// occurrence-authenticated document. A legitimate repair must arrive as a
+/// ledger label mutation for the same PCM occurrence.
 #[test]
-fn parity_assembly_reads_layer1_tail_patches() {
-    use codescribe_core::pipeline::contracts::LayerSource;
-
-    let sealed = |id: u64, text: &str| EngineEvent::UtteranceFinal {
-        utterance_id: id,
-        text: text.into(),
-        raw_text: text.into(),
-        start_ts: 0.0,
-        end_ts: 1.0,
-        segments: vec![],
-        vad_speech_pct: None,
-        avg_logprob: None,
-        compression_ratio: None,
-        quality_gate_dropped: false,
-        confidence_flags: vec![],
-    };
-
-    // Layer 0 under-generated "Toolchain" as "Tulczajn"; Layer 1 re-transcribed
-    // the sealed window and patches the span in place.
-    let layer0 = vec![sealed(1, "korzystając z Tulczajn 2024")];
+fn raw_tail_patch_cannot_mutate_the_ledger_projection() {
+    let layer0 = vec![admitted_occurrence_label(1, "korzystając z Tulczajn 2024")];
     let layered = vec![
-        sealed(1, "korzystając z Tulczajn 2024"),
+        admitted_occurrence_label(1, "korzystając z Tulczajn 2024"),
         EngineEvent::ReplaceRange {
             utterance_id: 1,
             start: 14,
@@ -646,16 +795,142 @@ fn parity_assembly_reads_layer1_tail_patches() {
     let off = overlay_assembly_from_events(&layer0);
     let on = overlay_assembly_from_events(&layered);
     assert_eq!(off, "korzystając z Tulczajn 2024");
-    assert_eq!(on, "korzystając z Toolchain 2024");
-    assert_ne!(
-        off, on,
-        "layered-on parity must differ from layered-off — an identical score \
-         means the bar never saw Layer 1"
-    );
-    // The floor (finals only, what stop splice holds) carries the patch too.
+    assert_eq!(on, off);
+    assert_eq!(committed_projection_from_events(&layered), off);
+}
+
+/// Canonical Kora acceptance: Apple may publish the weak hypothesis first, but
+/// a later observer repairs the same PCM occurrence only through a ledger label
+/// mutation. No raw patch event participates in delivery.
+#[test]
+fn canonical_meaning_loss_is_repaired_by_same_occurrence_ledger_revision() {
+    let fixture = layered_acceptance_fixture();
+    let weak_apple = fixture["meaning_loss"]["apple"]
+        .as_str()
+        .expect("meaning-loss Apple hypothesis");
+    let spoken = fixture["meaning_loss"]["spoken"]
+        .as_str()
+        .expect("meaning-loss spoken truth");
+
+    let events = admitted_occurrence_revision(41, weak_apple, spoken);
+
     assert_eq!(
-        streaming_floor_from_events(&layered),
-        "korzystając z Toolchain 2024"
+        measured_tail_patch_count(&events),
+        0,
+        "document repair must not be represented by a raw patch"
+    );
+    let repaired_live = committed_projection_from_events(&events);
+    assert_eq!(repaired_live, spoken);
+
+    let (source, delivered) = delivery_from_stream_and_final(&repaired_live, "");
+    assert_eq!(source, "ledger_projection");
+    assert_eq!(
+        delivered, spoken,
+        "the ledger revision must restore meaning before delivery"
+    );
+    assert!(!delivered.contains("Musi latać"));
+}
+
+/// The first audible token is capture truth. A later label revision on the same
+/// occurrence may improve the body, but it may not eat the onset.
+#[test]
+fn onset_token_iwo_survives_same_occurrence_ledger_revision_and_delivery() {
+    let fixture = layered_acceptance_fixture();
+    let apple = fixture["onset"]["apple"]
+        .as_str()
+        .expect("onset Apple text");
+    let repaired = fixture["onset"]["repaired"]
+        .as_str()
+        .expect("onset repaired text");
+    let first_token = fixture["onset"]["required_first_token"]
+        .as_str()
+        .expect("required onset token");
+
+    let events = admitted_occurrence_revision(7, apple, repaired);
+    let live = committed_projection_from_events(&events);
+    let (_, delivered) = delivery_from_stream_and_final(&live, "");
+
+    assert!(
+        live.starts_with(&format!("{first_token} ")),
+        "live onset was lost: {live}"
+    );
+    assert!(
+        delivered.starts_with(&format!("{first_token} ")),
+        "delivery onset was lost after a valid live repair: {delivered}"
+    );
+}
+
+/// Idempotence is keyed by observation/span identity, never by equal text.
+/// Five distinct PCM occurrences remain five entries; replaying one exact
+/// observation is refused by the ledger before projection.
+#[test]
+fn same_span_replay_is_idempotent_while_five_distinct_repetitions_survive() {
+    let fixture = layered_acceptance_fixture();
+    let phrase = fixture["repetition"]["text"]
+        .as_str()
+        .expect("repetition text");
+    let distinct_ids = fixture["repetition"]["distinct_span_ids"]
+        .as_array()
+        .expect("distinct span ids");
+    let replayed_id = fixture["repetition"]["replayed_span_id"]
+        .as_u64()
+        .expect("replayed span id");
+    let expected = fixture["repetition"]["expected_deliveries"]
+        .as_u64()
+        .expect("expected repetition count") as usize;
+    let mut events = Vec::new();
+    let mut ledger = AcousticLedger::new();
+    for span_id in distinct_ids {
+        let span_id = span_id.as_u64().expect("numeric span id");
+        let sample_start = span_id.saturating_mul(16_000);
+        let observation = ObservationIdentity::new(
+            ObservationProducer::Apple,
+            span_id,
+            0,
+            OccurrenceIdentity::new(
+                "synthetic-ledger-session",
+                1,
+                sample_start,
+                sample_start + 8_000,
+            ),
+        );
+        let receipt = ledger.admit(&observation, phrase);
+        events.push(EngineEvent::LedgerMutation {
+            observation,
+            label: phrase.to_string(),
+            receipt,
+        });
+    }
+    let replay_start = replayed_id.saturating_mul(16_000);
+    let replay = ObservationIdentity::new(
+        ObservationProducer::Apple,
+        replayed_id,
+        0,
+        OccurrenceIdentity::new(
+            "synthetic-ledger-session",
+            1,
+            replay_start,
+            replay_start + 8_000,
+        ),
+    );
+    let replay_receipt = ledger.admit(&replay, phrase);
+    assert!(!replay_receipt.grants_mutation());
+    events.push(EngineEvent::LedgerMutation {
+        observation: replay,
+        label: phrase.to_string(),
+        receipt: replay_receipt,
+    });
+
+    let reducer = LedgerProjectionOracle::from_events(&events);
+    assert_eq!(reducer.occurrence_count(), expected);
+    assert_eq!(
+        reducer
+            .rendered_text()
+            .split_whitespace()
+            .filter(|token| *token == phrase)
+            .count(),
+        expected,
+        "text-equality dedup must not erase intentional repetitions, while an identity replay must not create a sixth"
     );
 }
 
@@ -693,7 +968,7 @@ fn delivery_prefers_stream_when_file_final_collapses_like_div0_apple() {
     assert!(final_pass_is_length_regression(short_final, stream));
 
     let (source, delivery) = delivery_from_stream_and_final(stream, short_final);
-    assert_eq!(source, "streaming_floor_after_regression");
+    assert_eq!(source, "ledger_projection_after_regression");
     assert_eq!(delivery, stream);
 }
 
@@ -776,6 +1051,7 @@ async fn e2e_file_audio_as_mic_overlay_and_delivery_parity() {
 }
 
 async fn run_one_clip(clip: &Path, language: Option<String>) {
+    let isolated = asr_settings::IsolatedAsrSettings::from_requested_mode();
     eprintln!("═══════════════════════════════════════════════════════════");
     eprintln!("  Overlay/delivery parity — {}", clip.display());
     eprintln!("═══════════════════════════════════════════════════════════");
@@ -803,47 +1079,57 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
             let _ = std::io::Write::flush(&mut std::io::stderr());
         }
     });
-    let events = collect_buffered_engine_events(&samples, sample_rate, language.clone())
-        .await
-        .unwrap_or_else(|e| panic!("live session on {}: {e}", clip.display()));
+    let events = codescribe_core::audio::streaming_recorder::replay_production_session(
+        &samples,
+        sample_rate,
+        language.clone(),
+        &isolated.settings,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("live session on {}: {e}", clip.display()))
+    .events;
     heartbeat.abort();
     eprintln!("  live session done in {:?}", t0.elapsed());
     let _ = std::io::Write::flush(&mut std::io::stderr());
 
-    let live = assemble_live_from_events(&events);
-    let overlay = live.full_text();
-    let stream_floor = live.streaming_floor();
+    let live = LedgerProjectionOracle::from_events(&events);
+    let overlay = live.rendered_text();
+    let stream_floor = live.rendered_text();
     let preview_count = events
         .iter()
         .filter(|e| matches!(e, EngineEvent::Preview { .. }))
         .count();
-    let final_count = live.sealed_count();
+    let final_count = live.occurrence_count();
 
     eprintln!(
-        "  events: total={} previews={} utterance_finals(sealed)={}",
+        "  events: total={} previews={} ledger_occurrences={}",
         events.len(),
         preview_count,
         final_count
     );
     eprintln!(
-        "  overlay_assembly chars={} (freezed+preview)",
+        "  committed_projection chars={} (preview excluded)",
         overlay.chars().count()
     );
     eprintln!(
-        "  streaming_floor chars={} (finals only)",
+        "  ledger_delivery_floor chars={} (authenticated revisions only)",
         stream_floor.chars().count()
     );
     if !overlay.is_empty() {
-        eprintln!("  ── overlay_assembly (full) ──\n{overlay}\n  ── end overlay_assembly ──");
+        eprintln!(
+            "  ── committed_projection (full) ──\n{overlay}\n  ── end committed_projection ──"
+        );
     }
     if !stream_floor.is_empty() && stream_floor != overlay {
-        eprintln!("  ── streaming_floor (full) ──\n{stream_floor}\n  ── end streaming_floor ──");
+        eprintln!(
+            "  ── ledger_delivery_floor (full) ──\n{stream_floor}\n  ── end ledger_delivery_floor ──"
+        );
     }
 
     // Live must produce something for speech fixtures (otherwise STT cold/broken).
     assert!(
         !overlay.trim().is_empty() || !stream_floor.trim().is_empty(),
-        "live assembly empty for speech fixture {} — check STT engine (CODESCRIBE_STT_ENGINE) \
+        "live assembly empty for speech fixture {} — check Apple STT bridge \
          and model/Apple availability. events={}",
         clip.display(),
         events.len()
@@ -896,7 +1182,7 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
 
     if final_pass_is_length_regression(final_verdict.text.trim(), stream_for_floor) {
         assert_eq!(
-            source, "streaming_floor_after_regression",
+            source, "ledger_projection_after_regression",
             "collapsing file final must not win over live assembly"
         );
         assert_eq!(delivery.trim(), stream_for_floor.trim());
@@ -905,7 +1191,7 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
         // Empty Apple file final (common SFSpeechURL collapse) is also a
         // regression: delivery must keep the live/stream floor, never blank.
         assert_eq!(
-            source, "streaming_floor",
+            source, "ledger_projection",
             "empty file final must not replace non-empty live assembly"
         );
         assert_eq!(delivery.trim(), stream_for_floor.trim());
@@ -914,7 +1200,7 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
         assert!(
             matches!(
                 source,
-                "final_pass" | "streaming_floor" | "merged_live_whisper"
+                "final_pass" | "ledger_projection" | "merged_live_whisper"
             ),
             "unexpected delivery source {source}"
         );
@@ -1019,13 +1305,14 @@ fn coverage_tokens(text: &str) -> Vec<String> {
 /// the coverage test and the apple-live parity test — the CAPTURE ROAD must be
 /// byte-identical between them or their verdicts measure different products.
 async fn capture_clip_via_device(device: &str, clip: &Path) -> (Vec<EngineEvent>, String, f32) {
+    let _isolated = asr_settings::IsolatedAsrSettings::from_requested_mode();
     let (samples, sample_rate) =
         audio::load_audio_file(clip).unwrap_or_else(|e| panic!("load {}: {e}", clip.display()));
     let clip_seconds = samples.len() as f32 / sample_rate as f32;
     eprintln!(
-        "device-capture: {:.1}s fixture through '{device}' (engine: {})",
+        "device-capture: {:.1}s fixture through '{device}' (ASR mode: {})",
         clip_seconds,
-        std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "default".into())
+        std::env::var("CODESCRIBE_ASR_MODE").unwrap_or_else(|_| "default".into())
     );
 
     // 1) Arm capture FIRST — the recorder must already be listening when the
@@ -1034,6 +1321,17 @@ async fn capture_clip_via_device(device: &str, clip: &Path) -> (Vec<EngineEvent>
     let mut recorder = codescribe_core::audio::streaming_recorder::StreamingRecorder::new()
         .expect("recorder init (is the loopback device present?)");
     recorder.set_event_sink(Some(sink.clone()));
+    let runtime_settings = std::sync::Arc::new(
+        codescribe_core::config::Config::load_runtime_snapshot_without_keychain()
+            .expect("isolated capture runtime snapshot"),
+    );
+    let capture_path = codescribe_core::audio::recorder::probe_input_capture_path()
+        .expect("resolve selected loopback capture path");
+    assert_eq!(capture_path.device_name, device);
+    runtime_settings
+        .energy_calibration_for_capture(&capture_path.device_name, capture_path.sample_rate)
+        .expect("measured loopback calibration is required before capture");
+    recorder.bind_session_authority(uuid::Uuid::new_v4().to_string(), runtime_settings);
     recorder
         .start_event_session(Some("pl".to_string()))
         .await
@@ -1082,11 +1380,11 @@ async fn capture_clip_via_device(device: &str, clip: &Path) -> (Vec<EngineEvent>
     recorder.stop().await.expect("stop capture session");
 
     let events = sink.0.lock().expect("collector lock").clone();
-    let live = assemble_live_from_events(&events);
+    let live = LedgerProjectionOracle::from_events(&events);
     let transcript = {
-        let full = live.full_text();
+        let full = live.rendered_text();
         if full.trim().is_empty() {
-            live.streaming_floor()
+            live.rendered_text()
         } else {
             full
         }
@@ -1094,7 +1392,7 @@ async fn capture_clip_via_device(device: &str, clip: &Path) -> (Vec<EngineEvent>
     eprintln!(
         "transcript chars={} sealed={} events={}",
         transcript.chars().count(),
-        live.sealed_count(),
+        live.occurrence_count(),
         events.len()
     );
     // Event-shape census — when the transcript is empty, WHICH events arrived
@@ -1276,13 +1574,13 @@ fn apple_reference_for_wav(wav: &Path) -> Option<String> {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "private truth-paired corpus; set CODESCRIBE_PRODUCTION_CORPUS_OUT"]
 async fn e2e_production_overlay_corpus_replay() {
+    let _isolated = asr_settings::IsolatedAsrSettings::from_requested_mode();
     init_e2e_tracing();
     // Capture operator intent before `UserSettings::load` or a production
     // final-pass loader can re-seed process env from persisted settings. Each
     // recording restores these pins so one corpus run cannot silently blend
     // live lanes after the preceding recording's stop path.
-    let requested_stt_engine = std::env::var("CODESCRIBE_STT_ENGINE").ok();
-    let requested_layered = std::env::var("CODESCRIBE_LAYERED_TRANSCRIPTION").ok();
+    let requested_asr_mode = std::env::var("CODESCRIBE_ASR_MODE").ok();
     let requested_local_final = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS").ok();
     let output_path = std::env::var("CODESCRIBE_PRODUCTION_CORPUS_OUT")
         .map(PathBuf::from)
@@ -1328,7 +1626,10 @@ async fn e2e_production_overlay_corpus_replay() {
         "exact repair-wave corpus must contain 3 truth-paired recordings"
     );
 
-    let settings = codescribe_core::config::UserSettings::load();
+    let mut settings = codescribe_core::config::UserSettings::load();
+    if let Some(mode) = requested_asr_mode.as_ref() {
+        settings.asr_mode = Some(mode.clone());
+    }
     let resolved = settings.resolved_asr_mode();
     let language = std::env::var("CODESCRIBE_E2E_LANG")
         .ok()
@@ -1342,11 +1643,8 @@ async fn e2e_production_overlay_corpus_replay() {
         // process. The pins are restored before the production session starts,
         // before any session worker reads them.
         unsafe {
-            if let Some(value) = requested_stt_engine.as_deref() {
-                std::env::set_var("CODESCRIBE_STT_ENGINE", value);
-            }
-            if let Some(value) = requested_layered.as_deref() {
-                std::env::set_var("CODESCRIBE_LAYERED_TRANSCRIPTION", value);
+            if let Some(value) = requested_asr_mode.as_deref() {
+                std::env::set_var("CODESCRIBE_ASR_MODE", value);
             }
             if let Some(value) = requested_local_final.as_deref() {
                 std::env::set_var("CODESCRIBE_LOCAL_STT_FINAL_PASS", value);
@@ -1381,7 +1679,6 @@ async fn e2e_production_overlay_corpus_replay() {
             clip,
             language.clone(),
             &settings,
-            codescribe_core::asr_session::GatewaySessionAvailability::Unavailable,
             lane,
         )
         .await
@@ -1421,6 +1718,14 @@ async fn e2e_production_overlay_corpus_replay() {
             .filter(|event| matches!(event, EngineEvent::Preview { .. }))
             .count();
         let tail_patches = measured_tail_patch_count(&replay.events);
+        let tail_patch_receipt = TailPatchSessionReceipt::from_events(&replay.events);
+        if replay.layer1_armed {
+            layered_arming_matches_request(true, tail_patch_receipt.as_ref()).unwrap_or_else(
+                |mismatch| {
+                    panic!("production replay {opaque_id} Layer 1 arming mismatch: {mismatch}")
+                },
+            );
+        }
 
         let acceptance = if class == "long" {
             normalized_character_parity >= 0.85
@@ -1471,6 +1776,12 @@ async fn e2e_production_overlay_corpus_replay() {
                 "final_count": replay.boundary_evidence.final_count,
                 "unique_final_id_count": replay.boundary_evidence.unique_final_id_count,
                 "tail_patches": tail_patches,
+                "tail_patch_submitted": tail_patch_receipt.as_ref().map(|receipt| receipt.submitted),
+                "tail_patch_applied": tail_patch_receipt.as_ref().map(|receipt| receipt.applied),
+                "tail_patch_skipped": tail_patch_receipt.as_ref().map(|receipt| receipt.skipped),
+                "tail_patch_timed_out": tail_patch_receipt.as_ref().map(|receipt| receipt.timed_out),
+                "tail_patch_abandoned": tail_patch_receipt.as_ref().map(|receipt| receipt.abandoned),
+                "tail_patch_drain": tail_patch_receipt.as_ref().map(|receipt| format!("{:?}", receipt.drain)),
                 "live_chars": replay.live_text.chars().count(),
                 "adjudicated_chars": replay.adjudicated_text.chars().count(),
                 "delivered_chars": replay.delivered_text.chars().count(),
@@ -1480,8 +1791,6 @@ async fn e2e_production_overlay_corpus_replay() {
                 "teacher_similarity": teacher.similarity,
                 "wer": wer,
                 "cer": cer,
-                "lexicon_rewrites": replay.postprocess_stats.lexicon_rewrites,
-                "gate_drops": replay.postprocess_stats.gate_drops,
                 "wall_seconds": run_started.elapsed().as_secs_f64(),
             })
             .as_object()
@@ -1519,8 +1828,7 @@ async fn e2e_production_overlay_corpus_replay() {
             "resolved_asr_mode": resolved.mode.as_str(),
             "gateway": "unavailable",
             "language": language,
-            "stt_engine": requested_stt_engine.as_deref().unwrap_or("auto"),
-            "layered_transcription": requested_layered.as_deref().unwrap_or("unset"),
+            "asr_mode": requested_asr_mode.as_deref().unwrap_or("unset"),
             "local_final_pass": requested_local_final.as_deref().unwrap_or("unset"),
             "capture_pacing_ms": 100,
             "event_reducer": "presentation_emitter_transcript_reducer",
@@ -1687,7 +1995,11 @@ async fn e2e_apple_live_parity() {
     // `Config::load()`: the first load injects ~/.codescribe/.env into the
     // process environment, so reading this afterwards would report a leak as if
     // it were the request. See `measured_lane_matches_request`.
-    let requested_lane = codescribe_core::stt::tail_patcher::layered_phase();
+    let requested_lane = match std::env::var("CODESCRIBE_ASR_MODE").as_deref() {
+        Ok("apple_only") => None,
+        Ok("local_power") => Some(1),
+        other => panic!("parity requires an explicit apple_only or local_power mode: {other:?}"),
+    };
 
     let clip = std::env::var("CODESCRIBE_E2E_AUDIO")
         .map(PathBuf::from)
@@ -1722,6 +2034,24 @@ async fn e2e_apple_live_parity() {
     );
     if let Err(mismatch) = measured_lane_matches_request(requested_lane, &events) {
         panic!("parity lane mismatch — {mismatch}");
+    }
+    let tail_patch_receipt = TailPatchSessionReceipt::from_events(&events);
+    if let Err(mismatch) =
+        layered_arming_matches_request(requested_lane.is_some(), tail_patch_receipt.as_ref())
+    {
+        panic!("parity Layer 1 arming mismatch — {mismatch}");
+    }
+    if let Some(receipt) = tail_patch_receipt {
+        eprintln!(
+            "parity Layer 1 receipt: armed={} submitted={} applied={} skipped={} timed_out={} abandoned={} drain={:?}",
+            receipt.armed,
+            receipt.submitted,
+            receipt.applied,
+            receipt.skipped,
+            receipt.timed_out,
+            receipt.abandoned,
+            receipt.drain,
+        );
     }
 
     let normalize = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");

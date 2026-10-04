@@ -30,6 +30,12 @@ struct BridgeRequest: Codable {
     let audioPath: String?
     let contextualStrings: [String]?
     let allowDownload: Bool
+    let deadlinePolicy: AppleDeadlinePolicy?
+}
+
+enum AppleDeadlinePolicy: String, Codable {
+    case liveFinal = "live_final"
+    case wholeFile = "whole_file"
 }
 
 struct BridgeSegment: Codable {
@@ -60,6 +66,8 @@ struct BridgeResponse: Codable {
     let error: String?
     /// SFSpeechRecognizer authorization: not_determined | denied | restricted | authorized
     let speechAuth: String?
+    /// Producer progress for offline SFSpeech, independent of recognized text.
+    var processedAudioSeconds: Double? = nil
 }
 
 enum BridgeError: Error, CustomStringConvertible {
@@ -103,6 +111,10 @@ private func dictationTranscriberEnabled() -> Bool {
     case "1", "true", "yes", "on": return true
     default: return false
     }
+}
+
+if CommandLine.arguments.contains("--file-result-self-test") {
+    exit(runFileResultSelfTest())
 }
 
 if CommandLine.arguments.contains("--phrase-restart-self-test") {
@@ -225,7 +237,8 @@ private func readRequest() throws -> BridgeRequest {
             locale: locale,
             audioPath: nil,
             contextualStrings: nil,
-            allowDownload: false
+            allowDownload: false,
+            deadlinePolicy: nil
         )
     }
 
@@ -273,17 +286,34 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
         guard let audioPath = request.audioPath, !audioPath.isEmpty else {
             throw BridgeError.missingAudioPath
         }
-        let transcription = try await transcribe(audioPath: audioPath, locale: locale)
+        guard let deadlinePolicy = request.deadlinePolicy else {
+            throw BridgeError.runtime("transcribe requires deadline_policy")
+        }
+        var transcription = try await transcribe(
+            audioPath: audioPath, locale: locale, deadlinePolicy: deadlinePolicy)
+        if transcription.fileError == nil && deadlinePolicy == .wholeFile {
+            do {
+                let file = try AVAudioFile(forReading: URL(fileURLWithPath: audioPath))
+                let seconds = Double(file.length) / max(file.processingFormat.sampleRate, 1.0)
+                try validateAppleFileResult(
+                    transcription, audioSeconds: seconds,
+                    processedSeconds: transcription.processedAudioSeconds)
+            } catch {
+                transcription.fileError = String(describing: error)
+            }
+        }
+        let accepted = transcription.fileError == nil
         return BridgeResponse(
-            ok: true,
-            status: "ok",
+            ok: accepted,
+            status: accepted ? "ok" : "error",
             text: transcription.text,
             segments: transcription.segments,
             localeSupported: true,
             localeInstalled: true,
             backend: transcription.backend.rawValue,
-            error: nil,
-            speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
+            error: transcription.fileError,
+            speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus()),
+            processedAudioSeconds: transcription.processedAudioSeconds
         )
     case "stream":
         // Streaming v2: ONE long-lived SFSpeechAudioBufferRecognitionRequest
@@ -310,6 +340,26 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
             backend: payload.backend.rawValue,
             error: nil,
             speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
+        )
+    case "transcribe_vocabulary_lab":
+        // Explicit SF-only replay: never route to an engine that ignores context.
+        // The app must already hold the grant; this command never requests one.
+        guard SFSpeechRecognizer.authorizationStatus() == .authorized else {
+            throw BridgeError.runtime("lab: Speech Recognition grant required")
+        }
+        guard let audioPath = request.audioPath, !audioPath.isEmpty else {
+            throw BridgeError.missingAudioPath
+        }
+        let transcription = try await transcribeWithSfSpeechAudioBuffer(
+            audioPath: audioPath,
+            locale: locale,
+            contextualStrings: request.contextualStrings
+        )
+        return BridgeResponse(
+            ok: true, status: "ok", text: transcription.text,
+            segments: transcription.segments, localeSupported: true,
+            localeInstalled: true, backend: transcription.backend.rawValue,
+            error: nil, speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
         )
     case "transcribe_live":
         // Live / virtual-mic: may select SpeechTranscriber (buffer/file) or
@@ -628,6 +678,8 @@ private struct TranscriptionPayload {
     let text: String
     let segments: [BridgeSegment]
     let backend: AppleSttBackend
+    var processedAudioSeconds: Double? = nil
+    var fileError: String? = nil
 }
 
 private func makeTranscriber(locale: Locale) -> SpeechTranscriber {
@@ -651,7 +703,7 @@ private func makeDictationTranscriber(locale: Locale) -> DictationTranscriber {
     )
 }
 
-private func transcribe(audioPath: String, locale: Locale) async throws -> TranscriptionPayload {
+private func transcribe(audioPath: String, locale: Locale, deadlinePolicy: AppleDeadlinePolicy) async throws -> TranscriptionPayload {
     // Same ready-backend decision as probe: ST only when supported+installed.
     let supportedLocales = await SpeechTranscriber.supportedLocales
     if let effectiveLocale = bestAvailableLocale(requested: locale, available: supportedLocales) {
@@ -659,7 +711,8 @@ private func transcribe(audioPath: String, locale: Locale) async throws -> Trans
         if containsLocale(installed, locale: effectiveLocale) {
             let payload = try await transcribeWithSpeechTranscriber(
                 audioPath: audioPath,
-                locale: effectiveLocale
+                locale: effectiveLocale,
+                requireFinalResults: deadlinePolicy == .wholeFile
             )
             return TranscriptionPayload(
                 text: payload.text,
@@ -670,17 +723,19 @@ private func transcribe(audioPath: String, locale: Locale) async throws -> Trans
         // ST in catalog but assets missing → armed DT lane, then SFSpeech.
         if let dt = try await transcribeWithDictationTranscriberIfArmed(
             audioPath: audioPath,
-            locale: locale
+            locale: locale,
+            requireFinalResults: deadlinePolicy == .wholeFile
         ) {
             return dt
         }
         if sfSpeechOnDeviceReady(locale: locale) {
-            return try await transcribeWithSfSpeech(audioPath: audioPath, locale: locale)
+            return try await transcribeWithSfSpeech(audioPath: audioPath, locale: locale, deadlinePolicy: deadlinePolicy)
         }
         // Last resort: attempt ST (may fail with a clear runtime error).
         let payload = try await transcribeWithSpeechTranscriber(
             audioPath: audioPath,
-            locale: effectiveLocale
+            locale: effectiveLocale,
+            requireFinalResults: deadlinePolicy == .wholeFile
         )
         return TranscriptionPayload(
             text: payload.text,
@@ -691,18 +746,20 @@ private func transcribe(audioPath: String, locale: Locale) async throws -> Trans
 
     if let dt = try await transcribeWithDictationTranscriberIfArmed(
         audioPath: audioPath,
-        locale: locale
+        locale: locale,
+        requireFinalResults: deadlinePolicy == .wholeFile
     ) {
         return dt
     }
-    return try await transcribeWithSfSpeech(audioPath: audioPath, locale: locale)
+    return try await transcribeWithSfSpeech(audioPath: audioPath, locale: locale, deadlinePolicy: deadlinePolicy)
 }
 
 /// Returns `nil` when the DT lane is unarmed or cannot serve the locale, so the
 /// caller falls through to the shipped default untouched.
 private func transcribeWithDictationTranscriberIfArmed(
     audioPath: String,
-    locale: Locale
+    locale: Locale,
+    requireFinalResults: Bool
 ) async throws -> TranscriptionPayload? {
     guard dictationTranscriberEnabled() else { return nil }
     let supported = await DictationTranscriber.supportedLocales
@@ -716,7 +773,8 @@ private func transcribeWithDictationTranscriberIfArmed(
     }
     let (text, segments) = try await transcribeWithDictationTranscriber(
         audioPath: audioPath,
-        transcriber: transcriber
+        transcriber: transcriber,
+        requireFinalResults: requireFinalResults
     )
     return TranscriptionPayload(text: text, segments: segments, backend: .dictationTranscriber)
 }
@@ -727,7 +785,8 @@ private func transcribeWithDictationTranscriberIfArmed(
 /// the corpus.
 private func transcribeWithDictationTranscriber(
     audioPath: String,
-    transcriber: DictationTranscriber
+    transcriber: DictationTranscriber,
+    requireFinalResults: Bool
 ) async throws -> (text: String, segments: [BridgeSegment]) {
     let analyzer = SpeechAnalyzer(modules: [transcriber])
     let file = try AVAudioFile(forReading: URL(fileURLWithPath: audioPath))
@@ -752,6 +811,9 @@ private func transcribeWithDictationTranscriber(
         }
         let combined = finalTextParts.joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        if requireFinalResults {
+            return (combined, normalizeSegments(finalSegments))
+        }
         let fallback = volatileText.trimmingCharacters(in: .whitespacesAndNewlines)
         return (
             combined.isEmpty ? fallback : combined,
@@ -770,7 +832,8 @@ private func sfSpeechOnDeviceReady(locale: Locale) -> Bool {
 
 private func transcribeWithSpeechTranscriber(
     audioPath: String,
-    locale: Locale
+    locale: Locale,
+    requireFinalResults: Bool
 ) async throws -> (text: String, segments: [BridgeSegment]) {
     let transcriber = makeTranscriber(locale: locale)
     let analyzer = SpeechAnalyzer(modules: [transcriber])
@@ -808,9 +871,16 @@ private func transcribeWithSpeechTranscriber(
     )
     inputBuilder.finish()
     try await analyzer.finalizeAndFinishThroughEndOfInput()
-    _ = await collector.result
+    if requireFinalResults {
+        try await collector.value
+    } else {
+        _ = await collector.result
+    }
 
     let combined = finalTextParts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    if requireFinalResults {
+        return (combined, normalizeSegments(finalSegments))
+    }
     let fallback = volatileText.trimmingCharacters(in: .whitespacesAndNewlines)
     let text = combined.isEmpty ? fallback : combined
     let segments = normalizeSegments(finalSegments.isEmpty ? volatileSegments : finalSegments)
@@ -836,7 +906,8 @@ private func transcribeLiveBuffered(
             // that is the live/buffer path for ST locales (not SF URL).
             let (text, segments) = try await transcribeWithSpeechTranscriber(
                 audioPath: audioPath,
-                locale: effectiveLocale
+                locale: effectiveLocale,
+                requireFinalResults: false
             )
             return TranscriptionPayload(
                 text: text,
@@ -853,8 +924,8 @@ private func transcribeLiveBuffered(
 }
 
 /// Defensive mirror of SFSpeech's 100-entry contextualStrings contract. Rust
-/// already emits a deterministic, budgeted list; this keeps direct bridge
-/// callers from smuggling empty or duplicate entries into the recognizer.
+/// callers may omit vocabulary; recognizer wiring is held pending bias validation.
+/// This keeps direct bridge callers from sending empty or duplicate entries.
 private func sanitizedContextualStrings(_ values: [String]?) -> [String] {
     var seen = Set<String>()
     var result: [String] = []
@@ -1511,6 +1582,7 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
 /// streaming. It intentionally reads the exact TSV compiled into the Rust
 /// mirror test, so fixture drift cannot make the two languages look aligned.
 private func runPhraseRestartVectorSelfTest() -> Int32 {
+    guard runFileResultSelfTest() == 0 else { return 1 }
     let source = URL(fileURLWithPath: #filePath)
     let root = source
         .deletingLastPathComponent()
@@ -1571,7 +1643,50 @@ private func runPhraseRestartVectorSelfTest() -> Int32 {
     }
 }
 
-private func transcribeWithSfSpeech(audioPath: String, locale: Locale) async throws -> TranscriptionPayload {
+/// Validate recognition coordinates and reported processing, not speech recall.
+/// Successful analyzer EOF/task completion admits an observation. Word gaps
+/// are not lost-audio evidence: pauses need not contain recognized words.
+/// Only PCM speech evidence can assess missing speech in this result.
+private func validateAppleFileResult(
+    _ payload: TranscriptionPayload, audioSeconds: Double, processedSeconds: Double? = nil,
+    phraseCounts: String? = nil
+) throws {
+    let tolerance = 0.5
+    let invalid = payload.segments.contains { segment in
+        !segment.startTs.isFinite || !segment.endTs.isFinite
+            || segment.startTs < 0 || segment.endTs <= segment.startTs
+            || segment.endTs > audioSeconds + tolerance
+    }
+    let processingIncomplete = processedSeconds.map {
+        !$0.isFinite || $0 < 0 || $0 + 0.05 < audioSeconds
+    } ?? false
+    if !audioSeconds.isFinite || audioSeconds <= 0 || invalid || processingIncomplete {
+        throw BridgeError.runtime(
+            "recognition_incomplete "
+                + appleFileCoverageDiagnostic(
+                    payload, audioSeconds: audioSeconds, processedSeconds: processedSeconds,
+                    phraseCounts: phraseCounts)
+                + " invalid_segments=\(invalid)")
+    }
+}
+
+/// Segment ranges are positions on the file clock, not a claim of continuous speech coverage.
+private func appleFileCoverageDiagnostic(
+    _ payload: TranscriptionPayload?, audioSeconds: Double, processedSeconds: Double?,
+    phraseCounts: String? = nil
+) -> String {
+    let segments = payload?.segments ?? []
+    let ranges = segments.map { "\($0.startTs)..\($0.endTs)" }.joined(separator: ",")
+    let processed = processedSeconds.map { String($0) } ?? "not_reported"
+    let first = segments.map(\.startTs).min() ?? 0
+    let last = segments.map(\.endTs).max() ?? 0
+    let phrases = phraseCounts.map { ", \($0)" } ?? ""
+    return "(audio_seconds=\(audioSeconds), processed_audio_seconds=\(processed), "
+        + "recognized_from_seconds=\(first), recognized_through_seconds=\(last), "
+        + "recognized_ranges_seconds=[\(ranges)], final_segments=\(segments.count)\(phrases))"
+}
+
+private func transcribeWithSfSpeech(audioPath: String, locale: Locale, deadlinePolicy: AppleDeadlinePolicy) async throws -> TranscriptionPayload {
     // SFSpeech URL path — Speech Recognition TCC required here (not on ST).
     try await ensureSpeechAuthorizedForSfSpeech()
     guard let recognizer = SFSpeechRecognizer(locale: locale) else {
@@ -1592,6 +1707,32 @@ private func transcribeWithSfSpeech(audioPath: String, locale: Locale) async thr
     let request = SFSpeechURLRecognitionRequest(url: url)
     request.requiresOnDeviceRecognition = true
     request.shouldReportPartialResults = false
+
+    if deadlinePolicy == .wholeFile {
+        request.shouldReportPartialResults = true
+        let audioFile = try AVAudioFile(forReading: url)
+        let audioSeconds = Double(audioFile.length) / max(audioFile.processingFormat.sampleRate, 1.0)
+        let deadlineSeconds = max(20.0, audioSeconds + 25.0)
+        let callbackQueue = OperationQueue()
+        callbackQueue.maxConcurrentOperationCount = 1
+        recognizer.queue = callbackQueue
+        let gate = SfSpeechSettleGate()
+        let timeout = SfSpeechTimeoutCancel()
+        return try await withCheckedThrowingContinuation { continuation in
+            let delegate = SfSpeechFileRecognitionDelegate(
+                gate: gate, timeout: timeout, continuation: continuation,
+                audioSeconds: audioSeconds, deadlineSeconds: deadlineSeconds,
+                recognizer: recognizer)
+            gate.storeDelegate(delegate)
+            timeout.schedule(after: deadlineSeconds) {
+                delegate.recognitionTimedOut()
+            }
+            // Hypotheses preserve phrases across restarts that produce no isFinal.
+            // The task terminal event remains the only success verdict.
+            let task = recognizer.recognitionTask(with: request, delegate: delegate)
+            gate.storeTask(task)
+        }
+    }
 
     // Keep the recognizer alive for the task lifetime.
     let retained = recognizer
@@ -1652,6 +1793,143 @@ private func transcribeWithSfSpeech(audioPath: String, locale: Locale) async thr
     }
 }
 
+/// Whole-file URL recognition shares the buffer accumulator's frozen + final snapshot.
+/// Terminal failures retain accumulated text with an explicit producer error.
+final class SfSpeechFileRecognitionDelegate: NSObject, SFSpeechRecognitionTaskDelegate, @unchecked Sendable {
+    private let gate: SfSpeechSettleGate
+    private let timeout: SfSpeechTimeoutCancel
+    private let continuation: CheckedContinuation<TranscriptionPayload, Error>
+    private let accumulator = SfSpeechPhraseAccumulator(timeOffset: 0)
+    private let audioSeconds: Double
+    private let deadlineSeconds: Double
+    // Retain the recognizer until a terminal verdict; Speech does not own its lifetime.
+    private let recognizer: SFSpeechRecognizer
+    private let progressLock = NSLock()
+    private var processedSeconds: Double = 0
+    // Count retained hypotheses, including revisions; not physical PCM occurrences.
+    private var frozenPhraseCount: Int = 0
+    private var finalResultCount: Int = 0
+
+    fileprivate init(
+        gate: SfSpeechSettleGate, timeout: SfSpeechTimeoutCancel,
+        continuation: CheckedContinuation<TranscriptionPayload, Error>,
+        audioSeconds: Double, deadlineSeconds: Double, recognizer: SFSpeechRecognizer
+    ) {
+        self.gate = gate
+        self.timeout = timeout
+        self.continuation = continuation
+        self.audioSeconds = audioSeconds
+        self.deadlineSeconds = deadlineSeconds
+        self.recognizer = recognizer
+        super.init()
+    }
+
+    private func fileSegments(_ transcription: SFTranscription) -> [BridgeSegment] {
+        // Apple's timestamp is relative to the start of the supplied audio, not
+        // the current phrase. This single URL request starts at file time zero;
+        // adding a phrase offset would count elapsed audio twice.
+        transcription.segments.compactMap { segment -> BridgeSegment? in
+            let text = segment.substring.trimmingCharacters(in: .whitespacesAndNewlines)
+            let start = segment.timestamp
+            let end = start + segment.duration
+            guard !text.isEmpty, start.isFinite, end.isFinite, end >= start else { return nil }
+            return BridgeSegment(text: text, startTs: start, endTs: end)
+        }
+    }
+
+    func speechRecognitionTask(_ task: SFSpeechRecognitionTask, didHypothesizeTranscription transcription: SFTranscription) {
+        let segments = fileSegments(transcription)
+        progressLock.lock()
+        defer { progressLock.unlock() }
+        guard !gate.isSettled() else { return }
+        if accumulator.storePartial(text: transcription.formattedString, segments: segments) != nil {
+            frozenPhraseCount += 1
+        }
+    }
+
+    func speechRecognitionTask(_ task: SFSpeechRecognitionTask, didFinishRecognition result: SFSpeechRecognitionResult) {
+        guard result.isFinal else { return }
+        let transcription = result.bestTranscription
+        let segments = fileSegments(transcription)
+        progressLock.lock()
+        defer { progressLock.unlock() }
+        guard !gate.isSettled() else { return }
+        accumulator.commitFinal(text: transcription.formattedString, segments: segments)
+        finalResultCount += 1
+    }
+
+    func speechRecognitionTask(_ task: SFSpeechRecognitionTask, didProcessAudioDuration duration: TimeInterval) {
+        guard duration.isFinite, duration >= 0 else { return }
+        progressLock.lock()
+        defer { progressLock.unlock() }
+        guard !gate.isSettled() else { return }
+        processedSeconds = max(processedSeconds, duration)
+    }
+
+    private func snapshotForTerminal(outcome: String) -> (
+        payload: TranscriptionPayload, processed: Double, phraseCounts: String, diagnostic: String
+    ) {
+        progressLock.lock()
+        defer { progressLock.unlock() }
+        // One assembly function for URL, buffer and stream; copy its payload
+        // and telemetry under the same lock before any terminal error is built.
+        var payload = accumulator.snapshotPayload()
+            ?? TranscriptionPayload(text: "", segments: [], backend: .sfSpeechRecognizer)
+        payload.processedAudioSeconds = processedSeconds
+        let counts = "phrase_restarts=\(frozenPhraseCount), recognition_finals=\(finalResultCount)"
+        let diagnostic = appleFileCoverageDiagnostic(
+            payload, audioSeconds: audioSeconds, processedSeconds: processedSeconds,
+            phraseCounts: counts)
+        fputs("INFO apple_file: terminal=\(outcome) \(diagnostic)\n", stderr)
+        return (payload, processedSeconds, counts, diagnostic)
+    }
+
+    func speechRecognitionTask(_ task: SFSpeechRecognitionTask, didFinishSuccessfully successfully: Bool) {
+        guard gate.trySettle() else { return }
+        timeout.cancel()
+        let snapshot = snapshotForTerminal(outcome: successfully ? "task_success" : "task_failure")
+        if successfully {
+            do {
+                try validateAppleFileResult(
+                    snapshot.payload, audioSeconds: audioSeconds, processedSeconds: snapshot.processed,
+                    phraseCounts: snapshot.phraseCounts)
+                continuation.resume(returning: snapshot.payload)
+            } catch {
+                fputs("ERROR apple_file: \(error)\n", stderr)
+                var payload = snapshot.payload
+                payload.fileError = String(describing: error)
+                continuation.resume(returning: payload)
+            }
+        } else {
+            var payload = snapshot.payload
+            let taskError = task.error?.localizedDescription ?? "recognition task failed"
+            payload.fileError = "sf_speech: \(taskError) " + snapshot.diagnostic
+            continuation.resume(returning: payload)
+        }
+    }
+
+    func speechRecognitionTaskWasCancelled(_ task: SFSpeechRecognitionTask) {
+        guard gate.trySettle() else { return }
+        timeout.cancel()
+        let snapshot = snapshotForTerminal(outcome: "cancelled")
+        var payload = snapshot.payload
+        payload.fileError = "sf_speech: recognition task cancelled " + snapshot.diagnostic
+        continuation.resume(returning: payload)
+    }
+
+    func recognitionTimedOut() {
+        guard gate.trySettle() else { return }
+        timeout.cancel()
+        let snapshot = snapshotForTerminal(outcome: "timeout")
+        var payload = snapshot.payload
+        payload.fileError = "sf_speech: recognition_timeout after \(deadlineSeconds)s "
+            + snapshot.diagnostic
+        continuation.resume(returning: payload)
+        // Claim the terminal verdict before cancel: cancellation may deliver callbacks.
+        gate.cancelTask()
+    }
+}
+
 /// Exactly-once settle gate for SFSpeech timeout vs callback race.
 ///
 /// Timeout work and recognition callbacks run on different queues; all state
@@ -1661,12 +1939,20 @@ final class SfSpeechSettleGate: @unchecked Sendable {
     private let lock = NSLock()
     private var settled = false
     private var recognitionTask: SFSpeechRecognitionTask?
+    private var retainedDelegate: SfSpeechFileRecognitionDelegate?
+
+    func storeDelegate(_ delegate: SfSpeechFileRecognitionDelegate) {
+        lock.lock()
+        defer { lock.unlock() }
+        if !settled { retainedDelegate = delegate }
+    }
 
     func storeTask(_ task: SFSpeechRecognitionTask) {
         lock.lock()
-        defer { lock.unlock() }
         recognitionTask = task
-        if settled {
+        let shouldCancel = settled
+        lock.unlock()
+        if shouldCancel {
             // Timeout already won before the task handle was stored.
             task.cancel()
         }
@@ -1674,8 +1960,9 @@ final class SfSpeechSettleGate: @unchecked Sendable {
 
     func cancelTask() {
         lock.lock()
-        defer { lock.unlock() }
-        recognitionTask?.cancel()
+        let task = recognitionTask
+        lock.unlock()
+        task?.cancel()
     }
 
     func trySettle() -> Bool {
@@ -1683,6 +1970,7 @@ final class SfSpeechSettleGate: @unchecked Sendable {
         defer { lock.unlock() }
         if settled { return false }
         settled = true
+        retainedDelegate = nil
         return true
     }
 
@@ -2004,4 +2292,35 @@ private func normalizedLocaleIdentifier(_ identifier: String) -> String {
         .trimmingCharacters(in: .whitespacesAndNewlines)
         .replacingOccurrences(of: "_", with: "-")
         .lowercased()
+}
+
+/// Regression vectors exercise production validation without invoking recognition.
+private func runFileResultSelfTest() -> Int32 {
+    let word = TranscriptionPayload(text: "Iwo", segments: [
+        BridgeSegment(text: "Iwo", startTs: 1, endTs: 2)
+    ], backend: .dictationTranscriber)
+    let empty = TranscriptionPayload(text: "", segments: [], backend: .dictationTranscriber)
+    let invalid = TranscriptionPayload(text: "Iwo", segments: [
+        BridgeSegment(text: "Iwo", startTs: 2, endTs: 1)
+    ], backend: .sfSpeechRecognizer)
+    do {
+        try validateAppleFileResult(word, audioSeconds: 3)
+        try validateAppleFileResult(empty, audioSeconds: 3)
+        try validateAppleFileResult(word, audioSeconds: 3, processedSeconds: 3)
+        for (payload, seconds, processed) in [
+            (word, 3.0, Optional(1.0)), (invalid, 3.0, nil),
+            (word, Double.nan, nil)
+        ] {
+            do {
+                try validateAppleFileResult(payload, audioSeconds: seconds, processedSeconds: processed)
+                fputs("file_result_self_test accepted invalid result\n", stderr)
+                return 1
+            } catch { }
+        }
+        fputs("file_result_self_test PASS\n", stderr)
+        return 0
+    } catch {
+        fputs("file_result_self_test rejected observation: \(error)\n", stderr)
+        return 1
+    }
 }

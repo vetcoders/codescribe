@@ -121,7 +121,7 @@ struct ComposerTextLayout: Equatable {
   }
 
   fileprivate static func composerFont(size: CGFloat) -> NSFont {
-    NSFont(name: FontLoader.spaceGrotesk, size: size) ?? .systemFont(ofSize: size)
+    .systemFont(ofSize: size)
   }
 }
 
@@ -153,6 +153,18 @@ struct ComposerTextView: NSViewRepresentable {
     textView.isRichText = false
     textView.importsGraphics = false
     textView.allowsUndo = true
+    // The composer accepts the user's words; system prediction and rewriting
+    // must not compete with explicit Agent or dictation actions.
+    textView.inlinePredictionType = .no
+    textView.isAutomaticTextCompletionEnabled = false
+    textView.isAutomaticTextReplacementEnabled = false
+    textView.isAutomaticSpellingCorrectionEnabled = false
+    textView.isAutomaticQuoteSubstitutionEnabled = false
+    textView.isAutomaticDashSubstitutionEnabled = false
+    if #available(macOS 15.0, *) {
+      textView.writingToolsBehavior = .none
+      textView.mathExpressionCompletionType = .no
+    }
     textView.drawsBackground = false
     textView.isHorizontallyResizable = false
     textView.isVerticallyResizable = true
@@ -165,13 +177,13 @@ struct ComposerTextView: NSViewRepresentable {
       height: CGFloat.greatestFiniteMagnitude
     )
     textView.string = text
-    textView.placeholder = "Type a message…"
+    textView.placeholder = String(localized: "Type a message…", comment: "Composer placeholder")
     textView.font = ComposerTextLayout.composerFont(size: 13.5 * textScale)
-    textView.textColor = NSColor(srgbRed: 0xE9 / 255, green: 0xE7 / 255, blue: 0xE0 / 255, alpha: 1)
-    textView.insertionPointColor = NSColor(
-      srgbRed: 0xD9 / 255, green: 0x77 / 255, blue: 0x57 / 255, alpha: 1)
+    textView.textColor = .labelColor
+    textView.insertionPointColor = NSColor(CSColor.terracotta)
     textView.setAccessibilityIdentifier(ComposerAccessibility.textViewIdentifier)
-    textView.setAccessibilityLabel("Message")
+    textView.setAccessibilityLabel(
+      String(localized: "Message", comment: "Accessibility label of the composer field"))
     textView.onKeyDown = { [weak coordinator = context.coordinator, weak textView] event in
       guard let coordinator, let textView else { return false }
       return coordinator.handleKeyDown(event, in: textView)
@@ -204,6 +216,8 @@ struct ComposerTextView: NSViewRepresentable {
       let length = min(selection.length, utf16Count - location)
       textView.setSelectedRange(NSRange(location: location, length: length))
     }
+    textView.textColor = .labelColor
+    textView.insertionPointColor = NSColor(CSColor.terracotta)
     textView.needsDisplay = true
     context.coordinator.refreshLayout(textView, in: scrollView)
 
@@ -358,12 +372,7 @@ private final class ComposerNativeTextView: NSTextView {
     guard string.isEmpty, !placeholder.isEmpty, let font else { return }
     let attributes: [NSAttributedString.Key: Any] = [
       .font: font,
-      .foregroundColor: NSColor(
-        srgbRed: 0x6F / 255,
-        green: 0x72 / 255,
-        blue: 0x68 / 255,
-        alpha: 1
-      ),
+      .foregroundColor: NSColor.placeholderTextColor,
     ]
     let origin = NSPoint(
       x: textContainerInset.width + (textContainer?.lineFragmentPadding ?? 0),

@@ -111,9 +111,10 @@ pub enum FinalityBar {
     /// banned from further overwrite of that span. Preview stays grey;
     /// committed is bright. This is not the document.
     UtteranceFinal,
-    /// Apple + Whisper + lexicon finished fusion for a Silero-bounded span.
-    /// The record `[sample_start, sample_end)` becomes append-only and may
-    /// start inline formatting. Order on the PCM axis is frozen.
+    /// Apple + Whisper + lexicon / Light+ finished L2 shaping for a
+    /// time-bounded span. The record `[sample_start, sample_end)` becomes
+    /// append-only and may schedule the existing Responses formatter. Order
+    /// on the PCM axis is frozen.
     UtteranceSealed,
     /// The whole session — tail and formatter included — was assembled into
     /// the document. Automation puts its hands down. Full HQ / Cloud may
@@ -129,8 +130,8 @@ pub enum FinalityBar {
 pub enum RelayLayer {
     Apple,
     Whisper,
-    Lexicon,
-    Formatter,
+    LexiconLightPlus,
+    ResponsesFormatter,
     Human,
 }
 
@@ -146,10 +147,18 @@ pub struct EngineContract {
     pub id: &'static str,
     pub primary_key: &'static str,
     pub relay: &'static [RelayLayer],
+    pub machine_layer_count: usize,
     pub bars: &'static [FinalityBar],
     pub forbidden: &'static [&'static str],
     pub whisper_window: &'static str,
     pub full_file_pass: &'static str,
+    pub inline_format_role: &'static str,
+    pub silero_role: &'static str,
+    pub sideband_role: &'static str,
+    pub sideband_labels: &'static [&'static str],
+    pub sideband_absence: &'static str,
+    pub final_bam_status: &'static str,
+    pub session_finalised_role: &'static str,
     pub product_goal: &'static str,
 }
 
@@ -160,10 +169,11 @@ pub const ENGINE_CONTRACT: EngineContract = EngineContract {
     relay: &[
         RelayLayer::Apple,
         RelayLayer::Whisper,
-        RelayLayer::Lexicon,
-        RelayLayer::Formatter,
+        RelayLayer::LexiconLightPlus,
+        RelayLayer::ResponsesFormatter,
         RelayLayer::Human,
     ],
+    machine_layer_count: 4,
     bars: &[
         FinalityBar::UtteranceFinal,
         FinalityBar::UtteranceSealed,
@@ -177,9 +187,25 @@ pub const ENGINE_CONTRACT: EngineContract = EngineContract {
         "auto_replace_after_transcript_sealed",
         "treat_committed_as_document",
         "treat_whole_text_mutable_until_session_seal",
+        "treat_apple_text_as_immutable_floor",
+        "infer_span_identity_from_text_similarity",
+        "infer_named_sound_from_silero",
+        "deduplicate_intentional_repetition_by_content",
+        "claim_layered_on_when_no_windows_reach_the_provider",
+        "drop_acoustic_observation_without_receipt",
+        "declare_a_pcm_range_the_payload_does_not_carry",
+        "present_mean_energy_as_span_identity",
+        "treat_mean_energy_db_as_identity",
     ],
-    whisper_window: "3-5s utterance-bounded partials",
+    whisper_window: "approximately_4s_with_approximately_1s_overlap",
     full_file_pass: "button_only_proposal",
+    inline_format_role: "schedule_existing_responses_formatter",
+    silero_role: "orthogonal_vad_and_pcm_time_evidence",
+    sideband_role: "content_free_exact_pcm_evidence_never_text_authority",
+    sideband_labels: &["speech_start", "speech_end", "pause_unknown_non_speech"],
+    sideband_absence: "fail_open_continuous_apple",
+    final_bam_status: "superseded_no_automatic_producer",
+    session_finalised_role: "lifecycle_only",
     product_goal: "energy × time → the true sentence, live in the buffer, ~10ms to paste",
 };
 
@@ -222,10 +248,6 @@ pub fn is_clock_lie(chars: usize, duration_secs: f32) -> bool {
 
 /// Grapheme ticks inside a word range are an even split, never a measurement.
 pub const LETTER_TIMING: &str = "interpolation_not_measurement";
-
-/// Directory Voice Lab scans. Corpus atlas HTML must land here (or under
-/// `$CODESCRIBE_ARTIFACTS_DIR`) or the operator never sees it.
-pub const VOICE_LAB_ARTIFACTS_ROOT: &str = "~/.vibecrafted/artifacts/vetcoders/codescribe";
 
 /// How Voice Lab labels a discovered HTML. Mirrors `discover_quality_reports`
 /// in voice-lab `server.py` — change both or the catalog lies.
@@ -281,7 +303,7 @@ pub fn render_engine_contract_html() -> String {
         ),
         (
             "utterance_sealed",
-            "Apple + Whisper + lexicon finished fusion for the Silero-bounded span. Record [sample_start, sample_end) is append-only and may start inline formatting. Order on the PCM axis is frozen.",
+            "Apple + Whisper + lexicon / Light+ finished L2 shaping for the time-bounded span. Record [sample_start, sample_end) is append-only and may schedule the existing Responses formatter. Order on the PCM axis is frozen.",
         ),
         (
             "transcript_sealed",
@@ -303,7 +325,7 @@ pub fn render_engine_contract_html() -> String {
 <p class="engine-contract-kicker">THE ENGINE · quality-report contract · {id}</p>
 <h2>Place on the canvas is given by energy in time — not by tokens.</h2>
 <p class="engine-contract-goal">{goal}</p>
-<p class="engine-contract-relay">Relay: Apple → Whisper → lexicon → formatter → human. Ban is per layer, per span. Whisper works 3–5 s partials at utterance boundaries and fills holes. It does not hallucinate into silence and does not see full audio unless a human presses the button.</p>
+<p class="engine-contract-relay">Four machine layers: L0 Apple → L1 Whisper → L2 lexicon / Light+ → L3 existing Responses formatter; then human. “Inline” is scheduling, not a separate model. Silero is orthogonal VAD and PCM-time evidence: exact speech edges plus pause=unknown_non_speech, never named-sound or text authority. Sideband absence fails open to continuous Apple. Final BAM is superseded and SessionFinalised is lifecycle-only.</p>
 <table class="engine-contract-bars">
 <thead><tr><th>Bar</th><th>Means</th></tr></thead>
 <tbody>
@@ -359,16 +381,44 @@ mod tests {
 
     #[test]
     fn relay_is_apple_then_whisper_then_lexicon_then_formatter_then_human() {
+        assert_eq!(ENGINE_CONTRACT.machine_layer_count, 4);
+        assert_eq!(ENGINE_CONTRACT.relay.len(), 5);
         assert_eq!(
             ENGINE_CONTRACT.relay,
             &[
                 RelayLayer::Apple,
                 RelayLayer::Whisper,
-                RelayLayer::Lexicon,
-                RelayLayer::Formatter,
+                RelayLayer::LexiconLightPlus,
+                RelayLayer::ResponsesFormatter,
                 RelayLayer::Human
             ]
         );
+        assert_eq!(
+            &ENGINE_CONTRACT.relay[..ENGINE_CONTRACT.machine_layer_count],
+            &[
+                RelayLayer::Apple,
+                RelayLayer::Whisper,
+                RelayLayer::LexiconLightPlus,
+                RelayLayer::ResponsesFormatter,
+            ]
+        );
+        assert_eq!(
+            ENGINE_CONTRACT.relay[ENGINE_CONTRACT.machine_layer_count],
+            RelayLayer::Human
+        );
+        assert_eq!(
+            ENGINE_CONTRACT.inline_format_role,
+            "schedule_existing_responses_formatter"
+        );
+        assert_eq!(
+            ENGINE_CONTRACT.silero_role,
+            "orthogonal_vad_and_pcm_time_evidence"
+        );
+        assert_eq!(
+            ENGINE_CONTRACT.final_bam_status,
+            "superseded_no_automatic_producer"
+        );
+        assert_eq!(ENGINE_CONTRACT.session_finalised_role, "lifecycle_only");
     }
 
     #[test]
@@ -399,6 +449,73 @@ mod tests {
             ENGINE_CONTRACT
                 .forbidden
                 .contains(&"treat_committed_as_document")
+        );
+        assert!(
+            ENGINE_CONTRACT
+                .forbidden
+                .contains(&"infer_span_identity_from_text_similarity")
+        );
+        assert!(
+            ENGINE_CONTRACT
+                .forbidden
+                .contains(&"deduplicate_intentional_repetition_by_content")
+        );
+        assert!(
+            ENGINE_CONTRACT
+                .forbidden
+                .contains(&"treat_mean_energy_db_as_identity")
+        );
+    }
+
+    /// The prose `## Forbidden` list owns the product invariant; the const is
+    /// its executable mirror. The two are the same set, in both directions. A
+    /// token that lives only in the doc renders on no quality plate and guards
+    /// nothing — that is exactly how
+    /// `infer_span_identity_from_text_similarity` and
+    /// `deduplicate_intentional_repetition_by_content` sat unenforced while the
+    /// live Apple path deleted repetition by text (measured 2026-08-22). A
+    /// token that lives only in the mirror forbids something the product
+    /// contract never said — `small_inline_llm`,
+    /// `final_bam_automatic_producer`, and
+    /// `session_finalised_content_mutation` sat in the mirror while the prose
+    /// already stated each rule in its own section (measured 2026-09-24).
+    /// Either direction alone passes a one-way lock; drift hides in the
+    /// direction nobody checks.
+    #[test]
+    fn every_prose_forbidden_is_mirrored_in_the_lock() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let body = std::fs::read_to_string(root.join(ENGINE_CONTRACT_DOC))
+            .unwrap_or_else(|err| panic!("{ENGINE_CONTRACT_DOC} must exist: {err}"));
+        let section = body
+            .split("## Forbidden (reports and agents)")
+            .nth(1)
+            .expect("canonical doc must keep the Forbidden section");
+        let section = section.split("\n## ").next().unwrap_or(section);
+
+        let prose: Vec<&str> = section
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("- `"))
+            .filter_map(|rest| rest.strip_suffix('`'))
+            .collect();
+        assert!(
+            prose.len() >= 15,
+            "Forbidden section parsed as {prose:?} — the bullet shape changed"
+        );
+        let mirror_only: Vec<&&str> = ENGINE_CONTRACT
+            .forbidden
+            .iter()
+            .filter(|token| !prose.contains(token))
+            .collect();
+        let prose_only: Vec<&str> = prose
+            .iter()
+            .copied()
+            .filter(|token| !ENGINE_CONTRACT.forbidden.contains(token))
+            .collect();
+        assert!(
+            mirror_only.is_empty() && prose_only.is_empty(),
+            "forbidden drift: mirror-only {mirror_only:?}, prose-only {prose_only:?} — \
+             reconcile {ENGINE_CONTRACT_DOC} ## Forbidden and ENGINE_CONTRACT.forbidden \
+             in the same cut"
         );
     }
 
@@ -456,7 +573,19 @@ mod tests {
             "treat_whole_text_mutable_until_session_seal",
             "rewrite_from_zero",
             "button_only_proposal",
-            "Apple → Whisper → lexicon → formatter → human",
+            "Apple → Whisper → Lexicon + Light+ → Responses formatter → human",
+            "Exactly four machine layers",
+            "L2 — Lexicon + Light+",
+            "L3 — Responses formatter",
+            "Inline describes scheduling",
+            "Silero is orthogonal",
+            "Sideband evidence contract",
+            "unknown_non_speech",
+            "infer_named_sound_from_silero",
+            "L3 may consume only measured pause duration",
+            "one continuous stream with no sideband events",
+            "Final BAM is superseded",
+            "SessionFinalised is lifecycle-only",
             "seal-atlas",
             "SealedSpan.words",
             "clock-lie",
@@ -476,9 +605,173 @@ mod tests {
     }
 
     #[test]
+    fn normative_docs_name_four_machine_layers_and_historical_adrs_are_superseded() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for relative in [
+            "docs/THE_ENGINE_CONTRACT.md",
+            "docs/TRANSCRIPT_LANES.md",
+            "docs/OVERLAY_STREAMING.md",
+            "docs/ARCHITECTURE.md",
+            "docs/WHISPER_LIVE.md",
+        ] {
+            let path = root.join(relative);
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("{} must exist: {err}", path.display()));
+            let lowered = body
+                .to_ascii_lowercase()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            for needle in [
+                "four machine layers",
+                "light+",
+                "responses",
+                "formatter",
+                "silero",
+                "orthogonal",
+                "final bam",
+                "superseded",
+                "sessionfinalised",
+                "lifecycle",
+            ] {
+                assert!(
+                    lowered.contains(needle),
+                    "{relative} missing four-layer contract token {needle:?}"
+                );
+            }
+            for rejected in [
+                "small inline llm",
+                "adopt a **five-layer",
+                "final bam, when built",
+            ] {
+                assert!(
+                    !lowered.contains(rejected),
+                    "{relative} contains active superseded claim {rejected:?}"
+                );
+            }
+        }
+
+        for relative in [
+            "docs/ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md",
+            "docs/ADR/2026-05-28-Correction-Continuous-Hands-Off.md",
+        ] {
+            let path = root.join(relative);
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("{} must exist: {err}", path.display()));
+            assert!(
+                body.contains("Status: SUPERSEDED IN FULL"),
+                "{relative} must be unmistakably historical"
+            );
+        }
+    }
+
+    #[test]
     fn full_file_pass_is_never_automatic() {
         assert_eq!(ENGINE_CONTRACT.full_file_pass, "button_only_proposal");
-        assert!(ENGINE_CONTRACT.whisper_window.contains("3-5s"));
+    }
+
+    /// `whisper_window` claims a cadence; the scheduler must run it. Two
+    /// consecutive windows on one contiguous capture share ~1 s of PCM, and
+    /// no window crosses a silence gap or a capture boundary. A spelling
+    /// assertion on the constant proved nothing — the runtime ran disjoint
+    /// windows under a green gate (measured 2026-09-24).
+    #[test]
+    fn whisper_window_cadence_is_run_by_the_scheduler() {
+        use crate::pipeline::acoustic_ledger::OccurrenceIdentity;
+        use crate::pipeline::streaming::layer1_window::{CoalescedPiece, Layer1Coalesce};
+        use std::time::Instant;
+
+        const RATE: u64 = 16_000;
+
+        fn piece(id: u64, start_secs: f32, end_secs: f32) -> CoalescedPiece {
+            let sample_start = (start_secs * RATE as f32) as u64;
+            let sample_end = (end_secs * RATE as f32) as u64;
+            CoalescedPiece {
+                utterance_id: id,
+                occurrence: OccurrenceIdentity::new(
+                    "whisper-window-cadence",
+                    1,
+                    sample_start,
+                    sample_end,
+                ),
+                committed_text: format!("fragment-{id}"),
+                audio: vec![0.0; sample_end.saturating_sub(sample_start) as usize],
+                sample_start,
+                sample_end,
+                start_ts: start_secs,
+                covered_through_secs: end_secs,
+                segment_count: 1,
+            }
+        }
+
+        let overlap_samples = (Layer1Coalesce::OVERLAP_SECS * RATE as f32) as u64;
+        let max_samples = (Layer1Coalesce::MAX_AUDIO_SECS * RATE as f32) as u64;
+
+        // One contiguous capture: consecutive windows share ~1 s of PCM.
+        let now = Instant::now();
+        let mut buffer = Layer1Coalesce::default();
+        let mut flushes = Vec::new();
+        for (id, start, end) in [(1, 0.0, 1.5), (2, 1.5, 3.0), (3, 3.0, 4.5)] {
+            flushes.extend(buffer.push_at(piece(id, start, end), RATE as u32, now));
+        }
+        assert_eq!(flushes.len(), 1, "the 4 s budget flushes the first window");
+        flushes.extend(buffer.force_flush());
+        assert_eq!(flushes.len(), 2);
+        for pair in flushes.windows(2) {
+            let start = pair[0].sample_start.max(pair[1].sample_start);
+            let shared = pair[0]
+                .sample_end
+                .min(pair[1].sample_end)
+                .saturating_sub(start);
+            assert_eq!(
+                shared, overlap_samples,
+                "consecutive windows on one contiguous capture must share ~1 s of PCM"
+            );
+            assert!(
+                pair[1].admit_sample_start >= pair[0].admit_sample_end,
+                "the shared second is decoder context, never admitted twice"
+            );
+        }
+        for flush in &flushes {
+            let declared = flush.sample_end - flush.sample_start;
+            assert_eq!(flush.audio.len() as u64, declared);
+            assert!(declared <= max_samples);
+        }
+
+        // A silence gap: the next window does not reach back across it.
+        let mut buffer = Layer1Coalesce::default();
+        assert!(
+            buffer
+                .push_at(piece(1, 0.0, 2.0), RATE as u32, now)
+                .is_empty()
+        );
+        let flushed = buffer.push_at(piece(2, 4.0, 5.0), RATE as u32, now);
+        assert_eq!(flushed.len(), 1, "the pause flushes the first window");
+        let held = buffer.force_flush();
+        assert_eq!(held.len(), 1);
+        assert_eq!(
+            held[0].sample_start,
+            (4.0 * RATE as f32) as u64,
+            "no overlap prefix may cross the silence gap"
+        );
+        assert_eq!(held[0].admit_sample_start, held[0].sample_start);
+
+        // A capture boundary: adjacent samples in another epoch never share a
+        // window, so nothing crosses the boundary.
+        let mut buffer = Layer1Coalesce::default();
+        assert!(
+            buffer
+                .push_at(piece(1, 0.0, 2.0), RATE as u32, now)
+                .is_empty()
+        );
+        let mut other_epoch = piece(2, 2.0, 3.0);
+        other_epoch.occurrence.capture_epoch = 2;
+        assert!(buffer.push_at(other_epoch, RATE as u32, now).is_empty());
+        let drained = buffer.force_flush();
+        assert_eq!(drained.len(), 2, "one window per capture epoch");
+        assert_eq!(drained[0].member_occurrences[0].1.capture_epoch, 1);
+        assert_eq!(drained[1].member_occurrences[0].1.capture_epoch, 2);
+        assert_eq!(drained[1].sample_start, drained[1].admit_sample_start);
     }
 
     #[test]

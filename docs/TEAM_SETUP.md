@@ -5,7 +5,7 @@
 ### 1. Prerequisites
 
 - macOS 14+ (Apple Silicon ARM64 only)
-- Rust 1.83+
+- Rust 1.94+ (the workspace MSRV)
 
 ### 2. Build & Run (Native App)
 
@@ -17,7 +17,7 @@ cd codescribe
 # Build and install the SwiftUI app over the Rust UniFFI core
 make app PROFILE=local-release
 make install-app
-make start
+/usr/bin/open "/Applications/Codescribe.app"
 ```
 
 ### 3. Development Mode
@@ -25,8 +25,23 @@ make start
 ```bash
 # Build and launch the debug app bundle
 make app PROFILE=debug
-open macos/build/Build/Products/Debug/Codescribe.app
+/usr/bin/open "$PWD/macos/build/Build/Products/Debug/Codescribe.app"
 ```
+
+Native dev/test launches must open the **app bundle through LaunchServices**.
+`make start` also uses LaunchServices but selects by app name first; use the
+explicit path above when choosing Debug or a particular build. Directly
+executing `Codescribe.app/Contents/MacOS/Codescribe` from a terminal or agent
+host is unsupported: TCC may attribute Speech Recognition to that host and
+abort even though the app bundle contains the usage description.
+
+Debug uses `com.vetcoders.codescribe.dev`; Release uses
+`com.vetcoders.codescribe`. Grant permissions separately for the app being
+tested. For an isolated manual profile, follow
+[Installation: supported native launch context](./INSTALLATION.md#supported-native-launch-context)
+and its `open --env` example. Opening an already running app does not change
+its environment, and `CODESCRIBE_DATA_DIR` does not isolate TCC permissions.
+Do not reset TCC or change the host's permissions to make a direct launch work.
 
 ## Permissions Required
 
@@ -35,6 +50,10 @@ Grant in: System Settings > Privacy & Security
 1. **Microphone** - for audio recording
 2. **Accessibility** - for global hotkeys
 3. **Input Monitoring** - for hotkey capture
+4. **Speech Recognition** - for the SFSpeechRecognizer path; allow from the
+   app's setup/launch prompt, or use System Settings if already denied. See
+   [Speech Recognition TCC](./SPEECH_RECOGNITION_TCC.md) for backend scope and
+   native acceptance evidence. XCTest startup alone does not verify this path.
 
 ## Hotkeys
 
@@ -49,7 +68,7 @@ Grant in: System Settings > Privacy & Security
 
 ### Mode Behavior
 
-- **RAW mode (Fn)**: Fast dictation. Transcript is pasted as-is (only local repetition cleanup).
+- **RAW mode (Fn)**: Fast dictation. RAW mode preserves decoded text, including intentional repetition, for occurrence-aware downstream adjudication.
   Ignores AI_FORMATTING_ENABLED setting.
 - **Toggle mode (Double Option)**: Respects the AI Formatting toggle. If enabled, sends to AI
   for formatting. If disabled, pastes raw.
@@ -59,7 +78,7 @@ Grant in: System Settings > Privacy & Security
 
 ## Model
 
-**Runtime Whisper policy**: `whisper-large-v3-turbo` (mlx-community fp16; legacy q8 fallback)
+**Runtime Whisper policy**: `whisper-large-v3-turbo` (mlx-community fp16 only; q8 refused)
 **Runtime Embedder**: `paraphrase-multilingual-MiniLM-L12-v2` (signed app resource or HF cache, for semantic gating)
 
 - `core/build.rs` keeps Whisper and MiniLM out of normal Cargo artifacts; explicit
@@ -67,30 +86,50 @@ Grant in: System Settings > Privacy & Security
 - Runtime fallback resolves Whisper from exactly one shared contract in `core/config/models.rs`:
   `CODESCRIBE_MODEL_PATH` → configured local model path/alias → configured HF repo snapshot →
   default local turbo model → default HF cache snapshot.
+- A model is ready only after config parsing, tokenizer parsing plus required Whisper control
+  tokens, the pinned mel checksum, and full safetensors structural/dtype validation. Downloads compose and validate the
+  complete replacement before promotion; repairing the default model replaces config and weights
+  as a paired generation instead of preserving independently valid artifacts from another architecture.
 - `make install-app` / `scripts/ensure-models.sh` are the easiest way to warm the expected cache paths.
+  Release/setup preflight calls the same runtime-owned bundle validator before it skips a download;
+  a directory with merely the expected filenames is repaired or rejected rather than embedded.
+  The fat-build selector shares the complete runtime bundle validator and embeds the first valid
+  supported weights filename, so malformed config/tokenizer/mel assets or a stale invalid primary
+  cannot shadow a valid alternative.
+  An explicit local `CODESCRIBE_EMBED_MODEL` must exist and pass that validator; it is never
+  reinterpreted as a Hugging Face repository id.
 
 **Developer note:**
 If runtime lookup cannot find the model, point `CODESCRIBE_MODEL_PATH` at a valid Whisper directory.
 
 ## Qube CLI Utilities
 
-The app path is the SwiftUI bundle. Terminal utilities are limited to batch quality/reporting tools:
+The app path is the SwiftUI bundle. Every terminal surface now hangs off one
+entry point:
 
 ```bash
-qube-report --help
-qube-daemon --help
+codescribe --help          # transcribe · bus · lexicon · report · daemon · teach · corpus
 ```
+
+`codescribe <subcommand>` is the single authoritative surface for these jobs.
+The four standalone binaries (`qube-report`, `qube-daemon`,
+`codescribe-teacher`, `codescribe-corpus`) run the same functions but are
+slated for removal under the one-throne rule — write nothing new against them.
 
 ## Quality & Tools
 
-New CLI tools for batch processing and automation:
-
 ```bash
 # Batch quality report
-qube-report --help
+codescribe report --help
 
 # Quality daemon
-qube-daemon --help
+codescribe daemon --help
+
+# Custom pronunciation lexicon: what is in it, replay, recover
+codescribe lexicon show
+
+# Transcript bus: size, composition, retention
+codescribe bus status
 ```
 
 ## Configuration

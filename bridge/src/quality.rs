@@ -8,13 +8,14 @@
 //!
 //! Privacy: local disk only.
 
-use codescribe_core::pipeline::highlight::{
-    OverlayHighlight, OverlayHighlightKind, overlay_highlights_enabled as highlights_lane_enabled,
+use codescribe_core::quality::diff::{
+    DiffSpan as CoreDiffSpan, DiffTier as CoreDiffTier, RuleCandidate as CoreRuleCandidate,
+    diff_spans as core_diff_spans, rule_candidates as core_rule_candidates,
 };
 use codescribe_core::quality::overlay_quality::{
-    CustomLexiconEntry, DictionaryTeachResult, OverlayCorrectionCommit, QualityRecord,
-    VoiceLabSaveOutcome, commit_overlay_correction_with_confidence, custom_lexicon_entries,
-    finalize_voice_lab_correction, recent_quality_records, teach_dictionary_from_store, teach_span,
+    CustomLexiconEntry, DictionaryTeachResult, OverlayCorrectionCommit, OverlayCorrectionInput,
+    QualityRecord, VoiceLabSaveOutcome, commit_overlay_correction, custom_lexicon_entries,
+    finalize_voice_lab_correction, recent_quality_listing, teach_dictionary_from_store, teach_span,
 };
 
 use crate::CsError;
@@ -24,19 +25,26 @@ use crate::CsError;
 pub struct CsQualityCommitResult {
     /// Lexicon pairs actually upserted (0 when evidence-only or filtered out).
     pub pairs_learned: u32,
-    /// True when the formatting level is not Correction.
+    /// True when no custom-lexicon pair was learned: non-teach evidence,
+    /// filtered edits, or an explicit teach still below its N-correction gate.
     pub evidence_only: bool,
     /// Ready-to-show overlay toast text ("Saved — N pair(s) learned" / "Saved as evidence").
     pub acknowledgement: String,
+    /// Structured progress for one normalized lexical pair.
+    pub teach_seen: Option<u64>,
+    pub teach_required: Option<u64>,
 }
 
 impl From<OverlayCorrectionCommit> for CsQualityCommitResult {
     /// Core commit → toast payload (pairs, evidence flag, ready acknowledgement).
     fn from(commit: OverlayCorrectionCommit) -> Self {
+        let progress = commit.confirmation_progress();
         Self {
             pairs_learned: commit.pairs_learned,
             evidence_only: commit.evidence_only,
             acknowledgement: commit.acknowledgement_message(),
+            teach_seen: progress.map(|value| value.0),
+            teach_required: progress.map(|value| value.1),
         }
     }
 }
@@ -50,6 +58,7 @@ pub struct CsQualityRecord {
     pub variant: String,
     pub edited_text: String,
     pub action: String,
+    pub edit_provenance: Option<String>,
     pub timestamp_ms: u64,
     pub avg_logprob: Option<f32>,
     pub speech_pct: Option<f32>,
@@ -65,6 +74,11 @@ impl From<QualityRecord> for CsQualityRecord {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("unknown")
             .to_string();
+        let edit_provenance = record
+            .meta
+            .get("edit_provenance")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
         Self {
             id: record.logical_id(),
             revision: record.revision,
@@ -72,10 +86,78 @@ impl From<QualityRecord> for CsQualityRecord {
             variant: record.delivered_text,
             edited_text: record.edited_text,
             action,
+            edit_provenance,
             timestamp_ms: record.timestamp_ms,
             avg_logprob: record.avg_logprob,
             speech_pct: record.speech_pct,
             confidence_flags: record.confidence_flags,
+        }
+    }
+}
+
+/// Classification of one changed span.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsDiffTier {
+    Vocabulary,
+    Casing,
+    Punctuation,
+    Insert,
+    Delete,
+}
+
+impl From<CoreDiffTier> for CsDiffTier {
+    fn from(tier: CoreDiffTier) -> Self {
+        match tier {
+            CoreDiffTier::Vocabulary => Self::Vocabulary,
+            CoreDiffTier::Casing => Self::Casing,
+            CoreDiffTier::Punctuation => Self::Punctuation,
+            CoreDiffTier::Insert => Self::Insert,
+            CoreDiffTier::Delete => Self::Delete,
+        }
+    }
+}
+
+/// One content change between the raw STT text and the human-edited text.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsDiffSpan {
+    pub raw: String,
+    pub edited: String,
+    pub tier: CsDiffTier,
+    pub context_before: String,
+    pub context_after: String,
+    /// PCM occurrence identity pinned to this span's words — `None` until cut
+    /// A6/T attaches per-word PCM identity to quality records.
+    pub occurrence_ref: Option<String>,
+}
+
+impl From<CoreDiffSpan> for CsDiffSpan {
+    fn from(span: CoreDiffSpan) -> Self {
+        Self {
+            raw: span.raw,
+            edited: span.edited,
+            tier: span.tier.into(),
+            context_before: span.context_before,
+            context_after: span.context_after,
+            occurrence_ref: span.occurrence_ref,
+        }
+    }
+}
+
+/// A target canonical term the user may want to teach, backed by repeated raw
+/// variants across corrections.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsRuleCandidate {
+    pub target: String,
+    pub variants: Vec<String>,
+    pub occurrences: u64,
+}
+
+impl From<CoreRuleCandidate> for CsRuleCandidate {
+    fn from(candidate: CoreRuleCandidate) -> Self {
+        Self {
+            target: candidate.target,
+            variants: candidate.variants,
+            occurrences: candidate.occurrences,
         }
     }
 }
@@ -136,66 +218,83 @@ impl From<CustomLexiconEntry> for CsLexiconEntry {
     }
 }
 
-/// Typed carrier for future per-token confidence (W11-C spike; unused by UI yet).
-/// Wire is present so W12 overlay "yellow words" can land without another bridge reshape.
-#[derive(uniffi::Record, Debug, Clone, PartialEq)]
-pub struct CsTokenConfidence {
-    pub token: String,
-    pub logprob: f32,
-}
-
 /// Persist one overlay correction: the quality record always lands, while lexicon
-/// learning is gated by `formatting_level`.
+/// learning is gated by explicit teach action plus the N-correction threshold.
 ///
-/// Only the Correction level teaches word pairs; higher levels are recorded as
-/// evidence with `pairs_learned = 0`, because a creative rewrite is not a
-/// transcription fix and would poison the lexicon. An unrecognised
-/// `formatting_level` is rejected before anything is written.
+/// Word pairs can be proposed by an explicit Teach gesture, a legacy
+/// `manual_human` edit, or a reducer-authenticated `user-edit-*` receipt; an
+/// auto-format result without that provenance is only evidence. Automatic
+/// promotion waits until the same normalized pair reaches the configured
+/// correction threshold. The separate Dictionary Teach command is an explicit
+/// bulk-promotion override. An unrecognised `formatting_level` is rejected
+/// before anything is written.
 ///
 /// The confidence fields (`avg_logprob`, `speech_pct`, `confidence_flags`) are
 /// stored alongside the text so later analysis can correlate corrections with how
 /// unsure the engine was.
+/// The nine columns of one quality receipt, carried as one record so the
+/// Swift overlay states them by name and the export needs no argument
+/// telescope. Mode and model stay bridge-owned ("overlay", none).
+#[derive(uniffi::Record)]
+pub struct CsOverlayCorrectionInput {
+    pub raw_text: String,
+    pub delivered_text: String,
+    pub edited_text: String,
+    pub action: String,
+    pub formatting_level: String,
+    pub edit_provenance: Option<String>,
+    pub avg_logprob: Option<f32>,
+    pub speech_pct: Option<f32>,
+    pub confidence_flags: Vec<String>,
+}
+
 #[uniffi::export]
-#[allow(clippy::too_many_arguments)]
 pub fn commit_overlay_quality_record(
-    raw_text: String,
-    delivered_text: String,
-    edited_text: String,
-    action: String,
-    formatting_level: String,
-    avg_logprob: Option<f32>,
-    speech_pct: Option<f32>,
-    confidence_flags: Vec<String>,
+    input: CsOverlayCorrectionInput,
 ) -> Result<CsQualityCommitResult, CsError> {
     // Delegate to core. Model/mode are best-effort for MVP (overlay always).
     // action carried for meta (over-correct for P2-03: "captureQualityIfEdited gubi action").
-    commit_overlay_correction_with_confidence(
-        &raw_text,
-        &delivered_text,
-        &edited_text,
-        "overlay",
-        None,
-        Some(&action),
-        Some(&formatting_level),
-        avg_logprob,
-        speech_pct,
-        confidence_flags,
-    )
+    commit_overlay_correction(OverlayCorrectionInput {
+        raw_text: input.raw_text,
+        delivered_text: input.delivered_text,
+        edited_text: input.edited_text,
+        mode: "overlay".to_string(),
+        model: None,
+        action: Some(input.action),
+        formatting_level: Some(input.formatting_level),
+        edit_provenance: input.edit_provenance,
+        avg_logprob: input.avg_logprob,
+        speech_pct: input.speech_pct,
+        confidence_flags: input.confidence_flags,
+    })
     .map(Into::into)
     .map_err(|e| CsError::Quality {
         msg: format!("quality commit failed: {}", e),
     })
 }
 
-/// Read the newest persisted corrections, newest first. Missing storage is an
-/// empty list; genuine I/O failures cross the bridge as a quality error.
+/// Dictionary listing over the bridge: real corrections plus the count of
+/// takes that changed nothing and recorded no telemetry (Founder report
+/// 2026-09-30 — whole untouched takes padded the corrections list).
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsQualityListing {
+    pub records: Vec<CsQualityRecord>,
+    pub unchanged_takes: u64,
+}
+
+/// Read the newest persisted corrections, newest first, with the
+/// unchanged-take count alongside. Missing storage is an empty listing;
+/// genuine I/O failures cross the bridge as a quality error.
 #[uniffi::export]
-pub fn quality_recent_records(limit: u64) -> Result<Vec<CsQualityRecord>, CsError> {
+pub fn quality_recent_listing(limit: u64) -> Result<CsQualityListing, CsError> {
     let limit = usize::try_from(limit).map_err(|error| CsError::Quality {
         msg: format!("quality record limit is invalid: {error}"),
     })?;
-    recent_quality_records(limit)
-        .map(|records| records.into_iter().map(Into::into).collect())
+    recent_quality_listing(limit)
+        .map(|listing| CsQualityListing {
+            records: listing.corrections.into_iter().map(Into::into).collect(),
+            unchanged_takes: listing.unchanged_takes,
+        })
         .map_err(|error| CsError::Quality {
             msg: format!("quality records read failed: {error}"),
         })
@@ -209,6 +308,33 @@ pub fn lexicon_custom_entries() -> Result<Vec<CsLexiconEntry>, CsError> {
         .map_err(|error| CsError::Quality {
             msg: format!("custom lexicon read failed: {error}"),
         })
+}
+
+/// Tiered word-level diff between the raw STT text and the human-edited text.
+#[uniffi::export]
+pub fn quality_diff_spans(raw: String, edited: String) -> Vec<CsDiffSpan> {
+    core_diff_spans(&raw, &edited)
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
+/// Mine repeated vocabulary corrections into dictionary-rule candidates.
+/// Targets already present in the dictionary are excluded.
+#[uniffi::export]
+pub fn quality_rule_candidates(min_occurrences: u64) -> Result<Vec<CsRuleCandidate>, CsError> {
+    let records = recent_quality_listing(0)
+        .map_err(|error| CsError::Quality {
+            msg: format!("quality rule candidates read failed: {error}"),
+        })?
+        .corrections;
+    let dictionary = custom_lexicon_entries().map_err(|error| CsError::Quality {
+        msg: format!("custom lexicon read failed: {error}"),
+    })?;
+    Ok(core_rule_candidates(&records, &dictionary, min_occurrences)
+        .into_iter()
+        .map(Into::into)
+        .collect())
 }
 
 /// Result of Dictionary "Teach" — promote corrections + proposed into live lexicon.
@@ -241,62 +367,6 @@ pub fn quality_teach_dictionary_from_store() -> Result<CsDictionaryTeachResult, 
         .map_err(|error| CsError::Quality {
             msg: format!("dictionary teach failed: {error:#}"),
         })
-}
-
-/// W13-6B highlight kind. Stringly so Swift can switch without another enum
-/// reshape if a third kind appears.
-#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CsOverlayHighlightKind {
-    LexiconCorrected,
-    SpeechGap,
-}
-
-impl From<OverlayHighlightKind> for CsOverlayHighlightKind {
-    fn from(kind: OverlayHighlightKind) -> Self {
-        match kind {
-            OverlayHighlightKind::LexiconCorrected => Self::LexiconCorrected,
-            OverlayHighlightKind::SpeechGap => Self::SpeechGap,
-        }
-    }
-}
-
-/// Span-based canvas highlight. Sample fields are the 3A PCM identity;
-/// char offsets are the Swift adapter onto already-committed utterance text.
-#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
-pub struct CsOverlayHighlight {
-    pub kind: CsOverlayHighlightKind,
-    pub utterance_id: u64,
-    pub char_start: u64,
-    pub char_end: u64,
-    pub session: String,
-    pub capture_epoch: u64,
-    pub sample_start: u64,
-    pub sample_end: u64,
-    pub before: String,
-    pub after: String,
-}
-
-impl From<OverlayHighlight> for CsOverlayHighlight {
-    fn from(value: OverlayHighlight) -> Self {
-        Self {
-            kind: value.kind.into(),
-            utterance_id: value.utterance_id,
-            char_start: value.char_start,
-            char_end: value.char_end,
-            session: value.range.session,
-            capture_epoch: value.range.capture_epoch,
-            sample_start: value.range.sample_start,
-            sample_end: value.range.sample_end,
-            before: value.before,
-            after: value.after,
-        }
-    }
-}
-
-/// W13-6B lane flag. Default OFF. Read-only; no permission prompt.
-#[uniffi::export]
-pub fn overlay_highlights_enabled() -> bool {
-    highlights_lane_enabled()
 }
 
 /// One-click Teach from a highlighted span. Reuses the existing quality +
@@ -336,7 +406,10 @@ mod tests {
             avg_logprob: Some(-0.5),
             speech_pct: Some(0.8),
             confidence_flags: vec!["low_logprob".into()],
-            meta: serde_json::json!({ "action": "copy" }),
+            meta: serde_json::json!({
+                "action": "copy",
+                "edit_provenance": "manual_human"
+            }),
         };
 
         assert_eq!(
@@ -348,6 +421,7 @@ mod tests {
                 variant: "delivered".into(),
                 edited_text: "edited".into(),
                 action: "copy".into(),
+                edit_provenance: Some("manual_human".into()),
                 timestamp_ms: 42,
                 avg_logprob: Some(-0.5),
                 speech_pct: Some(0.8),
@@ -377,17 +451,20 @@ mod tests {
         // restores its exact previous value before returning.
         unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
 
-        let result = commit_overlay_quality_record(
-            "synthetic raw".into(),
-            "synthetic variant".into(),
-            "synthetic canonical".into(),
-            "copy".into(),
-            "creative".into(),
-            Some(-1.2),
-            Some(0.75),
-            vec!["test_flag".into()],
-        );
-        let records = recent_quality_records(10).expect("read committed quality record");
+        let result = commit_overlay_quality_record(CsOverlayCorrectionInput {
+            raw_text: "synthetic raw".into(),
+            delivered_text: "synthetic variant".into(),
+            edited_text: "synthetic canonical".into(),
+            action: "copy".into(),
+            formatting_level: "creative".into(),
+            edit_provenance: None,
+            avg_logprob: Some(-1.2),
+            speech_pct: Some(0.75),
+            confidence_flags: vec!["test_flag".into()],
+        });
+        let records = recent_quality_listing(10)
+            .expect("read committed quality record")
+            .corrections;
         let lexicon = custom_lexicon_entries().expect("read custom lexicon");
 
         match previous {
@@ -416,16 +493,17 @@ mod tests {
     /// Unknown formatting_level fails closed before any quality write lands.
     #[test]
     fn commit_overlay_quality_record_rejects_unknown_level_before_write() {
-        let error = commit_overlay_quality_record(
-            "raw".into(),
-            "variant".into(),
-            "canonical".into(),
-            "close".into(),
-            "mystery".into(),
-            None,
-            None,
-            vec![],
-        )
+        let error = commit_overlay_quality_record(CsOverlayCorrectionInput {
+            raw_text: "raw".into(),
+            delivered_text: "variant".into(),
+            edited_text: "canonical".into(),
+            action: "close".into(),
+            formatting_level: "mystery".into(),
+            edit_provenance: None,
+            avg_logprob: None,
+            speech_pct: None,
+            confidence_flags: vec![],
+        })
         .expect_err("unknown level must be rejected");
 
         assert!(error.to_string().contains("unknown FORMATTING_LEVEL"));

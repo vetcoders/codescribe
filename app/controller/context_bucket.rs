@@ -18,6 +18,50 @@ use uuid::Uuid;
 
 /// Payload size above which a capture spills to disk instead of going inline.
 pub(crate) const DEFAULT_INLINE_LIMIT_BYTES: usize = 16 * 1024;
+const SELECTION_LABEL_PREFIX: &str = "selection_";
+const IMAGE_LABEL_PREFIX: &str = "image_";
+
+/// Remove only references in the label grammar minted by this bucket. Other
+/// braced user text is ordinary dictation and remains untouched.
+pub(crate) fn strip_markers_for_delivery(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        let (before, candidate) = rest.split_at(open);
+        result.push_str(before);
+        let marker_end = [SELECTION_LABEL_PREFIX, IMAGE_LABEL_PREFIX]
+            .into_iter()
+            .find_map(|prefix| {
+                let digits = candidate.strip_prefix('{')?.strip_prefix(prefix)?;
+                let count = digits.bytes().take_while(u8::is_ascii_digit).count();
+                (digits
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|digit| matches!(*digit, b'1'..=b'9'))
+                    && digits.as_bytes().get(count) == Some(&b'}'))
+                .then_some(1 + prefix.len() + count + 1)
+            });
+        if let Some(end) = marker_end {
+            let had_space_before = result.chars().last().is_some_and(char::is_whitespace);
+            if had_space_before {
+                result = result.trim_end_matches(char::is_whitespace).to_string();
+            }
+            rest = &candidate[end..];
+            let had_space_after = rest.chars().next().is_some_and(char::is_whitespace);
+            if had_space_after {
+                rest = rest.trim_start_matches(char::is_whitespace);
+            }
+            if (had_space_before || had_space_after) && !result.is_empty() && !rest.is_empty() {
+                result.push(' ');
+            }
+        } else {
+            result.push('{');
+            rest = &candidate[1..];
+        }
+    }
+    result.push_str(rest);
+    result
+}
 
 /// Reference handed back to the caller after a successful capture, so the
 /// transcript can point at the stored item.
@@ -67,9 +111,9 @@ struct ImageItem {
 
 /// Per-turn accumulator of captured selections and images.
 ///
-/// Holds no transcript state of its own: callers add captures, then either
-/// fold them into an outgoing message via
-/// [`ContextBucket::append_to_message`] or archive them.
+/// Holds no transcript state of its own: callers add captures, then archive
+/// them. Wire rendering of the `<codescribe_context>` block belongs to
+/// `app/os/selection.rs`, which is the one live producer.
 #[derive(Debug)]
 pub(crate) struct ContextBucket {
     selections_dir: PathBuf,
@@ -207,18 +251,6 @@ impl ContextBucket {
         self.items.is_empty() && self.images.is_empty()
     }
 
-    /// Whether any text selection was captured. Images do not count — callers
-    /// gate the `<codescribe_context>` block on selections alone.
-    pub(crate) fn has_selection_items(&self) -> bool {
-        !self.items.is_empty()
-    }
-
-    /// Number of captured selections — feeds the wire header's honest
-    /// `carried in <codescribe_context> (N selections)` count.
-    pub(crate) fn len(&self) -> usize {
-        self.items.len()
-    }
-
     /// Test helper: number of captured images.
     #[cfg(test)]
     pub(crate) fn image_count(&self) -> usize {
@@ -240,7 +272,7 @@ impl ContextBucket {
             return Ok(None);
         }
 
-        let label = format!("selection_{}", self.items.len() + 1);
+        let label = format!("{SELECTION_LABEL_PREFIX}{}", self.items.len() + 1);
         let payload = if selected_text.len() <= self.inline_limit_bytes {
             SelectionPayload::Inline(selected_text)
         } else {
@@ -284,7 +316,7 @@ impl ContextBucket {
                 self.images_dir.display()
             )
         })?;
-        let label = format!("image_{}", self.images.len() + 1);
+        let label = format!("{IMAGE_LABEL_PREFIX}{}", self.images.len() + 1);
         let path = self
             .images_dir
             .join(format!("{label}-{}.png", Uuid::new_v4()));
@@ -302,59 +334,6 @@ impl ContextBucket {
         });
         Ok(Some(ContextMarker { position: 0, label }))
     }
-
-    /// Fold captured context onto the end of an outgoing message.
-    ///
-    /// Selections render as a `<codescribe_context>` block of labelled tags;
-    /// images render as the vision marker list consumed by
-    /// `build_image_attachments_from_text`. Returns the message unchanged when
-    /// nothing was captured.
-    pub(crate) fn append_to_message(&self, message: &str) -> String {
-        if self.items.is_empty() && self.images.is_empty() {
-            return message.to_string();
-        }
-
-        let message = message.trim_end();
-        let mut out = String::with_capacity(message.len() + 128);
-        out.push_str(message);
-
-        if !self.items.is_empty() {
-            out.push_str("\n\n<codescribe_context>\n");
-            for item in &self.items {
-                out.push('<');
-                out.push_str(&item.label);
-                out.push_str(">\n");
-                match &item.payload {
-                    SelectionPayload::Inline(text) => out.push_str(text),
-                    SelectionPayload::Path(path) => {
-                        out.push_str("PATH: ");
-                        out.push_str(&path.to_string_lossy());
-                    }
-                }
-                out.push_str("\n</");
-                out.push_str(&item.label);
-                out.push_str(">\n");
-            }
-            out.push_str("</codescribe_context>");
-        }
-
-        // Vision marker block consumed by build_image_attachments_from_text.
-        if !self.images.is_empty() {
-            out.push_str("\n\n---\n");
-            out.push_str(codescribe_core::attachment::IMAGE_PATHS_MARKER);
-            out.push('\n');
-            for image in &self.images {
-                let path = match &image.payload {
-                    ImagePayload::Path(p) | ImagePayload::OversizedPath(p) => p,
-                };
-                out.push_str("- ");
-                out.push_str(&path.to_string_lossy());
-                out.push('\n');
-            }
-        }
-
-        out
-    }
 }
 
 /// Selection/image capture, spill, vision markers, and archive contracts.
@@ -362,123 +341,31 @@ impl ContextBucket {
 mod tests {
     use super::*;
 
-    /// Labels stay ordered (`selection_N`) and emit matching open/close tags.
     #[test]
-    fn three_selections_keep_order_and_explicit_tags() {
+    fn outward_text_removes_only_bucket_labels_and_repairs_marker_spacing() {
         let temp = tempfile::tempdir().expect("temp dir");
         let mut bucket = ContextBucket::new_selections_only(temp.path().join("selections"), 1024);
-
-        for (position, text) in [(5, "alpha"), (11, "beta"), (17, "gamma")] {
-            bucket
-                .add_selection(position, text.to_string())
-                .expect("selection capture");
-        }
-
-        assert_eq!(bucket.len(), 3);
-        assert_eq!(
-            bucket.append_to_message("say {selection_1} then {selection_2} and {selection_3}"),
-            "say {selection_1} then {selection_2} and {selection_3}\n\n\
-<codescribe_context>\n\
-<selection_1>\nalpha\n</selection_1>\n\
-<selection_2>\nbeta\n</selection_2>\n\
-<selection_3>\ngamma\n</selection_3>\n\
-</codescribe_context>"
-        );
-    }
-
-    /// Oversize selection spills to disk; wire body carries PATH only, not text.
-    #[test]
-    fn oversized_selection_is_persisted_and_message_contains_path_only() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let mut bucket = ContextBucket::new_selections_only(temp.path().join("selections"), 4);
-        let original = "five bytes and more";
-
-        let marker = bucket
-            .add_selection(0, original.to_string())
+        let selection = bucket
+            .add_selection(0, "captured".to_string())
             .expect("selection capture")
-            .expect("marker");
-        let message = bucket.append_to_message(&marker.label);
-        let path_line = message
-            .lines()
-            .find_map(|line| line.strip_prefix("PATH: "))
-            .expect("persisted path");
-
-        assert!(Path::new(path_line).is_file());
-        assert_eq!(
-            fs::read_to_string(path_line).expect("persisted body"),
-            original
-        );
-        assert!(!message.contains(original));
-        assert!(message.contains("<selection_1>"));
-    }
-
-    /// Inline limit is UTF-8 bytes, not Unicode scalar count (multi-byte spill).
-    #[test]
-    fn byte_limit_counts_utf8_bytes() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let mut bucket = ContextBucket::new_selections_only(temp.path().join("selections"), 3);
-
-        bucket
-            .add_selection(0, "żż".to_string())
-            .expect("selection capture");
-        let message = bucket.append_to_message("voice");
-
-        assert!(message.contains("PATH: "), "four UTF-8 bytes exceed limit");
-        assert!(!message.contains("żż"));
-    }
-
-    /// Whitespace-only selection is a silent no-op (no marker, no archive dirt).
-    #[test]
-    fn empty_selection_is_a_silent_noop() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let mut bucket = ContextBucket::new_selections_only(temp.path().join("selections"), 4);
-
-        assert_eq!(
-            bucket
-                .add_selection(0, "  \n".to_string())
-                .expect("no-op capture"),
-            None
-        );
-        assert!(bucket.is_empty());
-        assert_eq!(bucket.append_to_message("voice"), "voice");
-    }
-
-    /// PNG capture writes under images/ and appends the vision path marker list.
-    #[test]
-    fn image_capture_stores_file_and_emits_vision_marker() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let mut bucket = ContextBucket::new_selections_only(temp.path().join("selections"), 1024);
-        let png = b"\x89PNG\r\n\x1a\nfake-image";
-        let marker = bucket
-            .add_image_png(png)
+            .expect("nonempty selection");
+        let image = bucket
+            .add_image_png(b"png")
             .expect("image capture")
-            .expect("marker");
-        assert_eq!(marker.label, "image_1");
-        assert_eq!(bucket.image_count(), 1);
-        let message = bucket.append_to_message("describe this");
-        assert!(message.contains(codescribe_core::attachment::IMAGE_PATHS_MARKER));
-        assert!(message.contains("image_1-"));
-        assert!(message.contains(".png"));
-        // Path on disk under context/images/
-        let images_dir = temp.path().join("images");
-        assert!(images_dir.is_dir());
-        let entries: Vec<_> = std::fs::read_dir(&images_dir)
-            .expect("list images")
-            .collect();
-        assert_eq!(entries.len(), 1);
-    }
-
-    /// Oversized images still persist and append a path (honest degrade, no drop).
-    #[test]
-    fn oversized_image_still_persists_and_appends_path() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let mut bucket = ContextBucket::new_selections_only(temp.path().join("selections"), 4);
-        let big = vec![0u8; 32];
-        bucket.add_image_png(&big).expect("oversized image");
-        let message = bucket.append_to_message("see");
-        assert!(message.contains(codescribe_core::attachment::IMAGE_PATHS_MARKER));
-        assert!(message.contains("- "));
-        assert_eq!(bucket.image_count(), 1);
+            .expect("nonempty image");
+        let document = format!(
+            "  {{{}}} alpha  {{{}}}  beta {{name}} {{selection_x}} {{selection_0}}  ",
+            selection.label, image.label
+        );
+        assert_eq!(
+            strip_markers_for_delivery(&document),
+            "alpha beta {name} {selection_x} {selection_0}  "
+        );
+        assert_eq!(
+            strip_markers_for_delivery("bard{selection_1}zo {image_1} lubię"),
+            "bardzo lubię"
+        );
+        assert_eq!(strip_markers_for_delivery("{name} typed"), "{name} typed");
     }
 
     /// Empty PNG byte slice is a silent no-op — no file, no marker.
@@ -487,6 +374,9 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp dir");
         let mut bucket = ContextBucket::new_selections_only(temp.path().join("selections"), 1024);
         assert_eq!(bucket.add_image_png(&[]).expect("empty"), None);
+        // Assert the image lane specifically: `is_empty` also passes when a
+        // selection was silently dropped instead.
+        assert_eq!(bucket.image_count(), 0);
         assert!(bucket.is_empty());
     }
 

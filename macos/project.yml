@@ -3,12 +3,11 @@ options:
   bundleIdPrefix: com.vetcoders
   deploymentTarget:
     macOS: "14.0"
+  # Localization: English is the source/development language. Every other
+  # language lives only as a column in the String Catalogs under
+  # Codescribe/Resources/Localization — see docs/LOCALIZATION.md.
+  developmentLanguage: en
 packages:
-  # Phosphor Icons — MIT, first-party Swift package. The brand stroke layer
-  # behind the `CSIcon` wrapper (DesignSystem/CSIcon.swift). macOS 10.15+.
-  PhosphorSwift:
-    url: https://github.com/phosphor-icons/swift
-    from: 2.1.0
   # HighlightSwift — MIT, highlight.js via JavaScriptCore. Powers syntax
   # highlighting of finalized agent-chat code blocks. Returns AttributedString
   # from an async actor (tokenize runs off the main thread); we feed it our own
@@ -31,8 +30,6 @@ targets:
     platform: macOS
     sources: [Codescribe]
     dependencies:
-      - package: PhosphorSwift
-        product: PhosphorSwift
       - package: HighlightSwift
         product: HighlightSwift
       - package: Sparkle
@@ -62,7 +59,14 @@ targets:
         # 1 only on keyed `make install-app`. Production DMG must stay 0.
         CSDeveloperSurface: $(CS_DEVELOPER_SURFACE)
         SUEnableAutomaticChecks: true
+        CFBundleURLTypes:
+          - CFBundleURLName: com.vetcoders.codescribe.lab
+            CFBundleURLSchemes: [codescribe]
         LSUIElement: true
+        # LSMultipleInstancesProhibited is NOT set here: this target is also the
+        # CodescribeTests TEST_HOST, and a flagged host with the installed app's
+        # bundle id cannot launch while that app runs. Install/release lanes
+        # stamp it (scripts/lib/stamp-single-instance.sh, before codesign).
         NSMicrophoneUsageDescription: "Codescribe transcribes your speech locally with on-device Whisper."
         NSSpeechRecognitionUsageDescription: "Codescribe uses on-device speech recognition (including Polish) to turn your dictation into text without sending audio to the cloud."
         NSAppleEventsUsageDescription: "Codescribe uses Apple Events to bring apps forward and deliver transcribed text into the app you are working in."
@@ -82,13 +86,18 @@ targets:
         # release pipeline overrides this via scripts/build-app.sh.
         SPARKLE_ED_PUBLIC_KEY: ""
         CS_DEVELOPER_SURFACE: "0"
-        # Stable dev identity → own TCC/keychain slot across rebuilds.
-        PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
+        # String Catalog extraction: the Swift compiler emits one .stringsdata
+        # per source file; `make l10n-sync` folds them into Localizable.xcstrings
+        # (CLI builds never update the catalog on their own).
+        SWIFT_EMIT_LOC_STRINGS: YES
+        LOCALIZATION_PREFERS_STRING_CATALOGS: YES
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "Codescribe Dev"
         ENABLE_HARDENED_RUNTIME: NO
-        SWIFT_VERSION: 5.0
-        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Codescribe/Bridge/codescribe_ffiFFI.h
+        SWIFT_VERSION: 6.0
+        SWIFT_STRICT_CONCURRENCY: complete
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Codescribe/Codescribe-Bridging-Header.h
         OTHER_LDFLAGS: "-lcodescribe_ffi"
         # Runpath so the app finds the @rpath-id'd dylib both when run from Xcode
         # (against target/debug) and when distributed (embedded in Frameworks by
@@ -103,8 +112,12 @@ targets:
         # (and vice versa) — the base value used to hardcode target/debug, which
         # made every Release build fail with `ld: library 'codescribe_ffi' not found`.
         Debug:
+          # XCTest reuses this app. Its LaunchServices/TCC identity must never
+          # compete with the installed Release application.
+          PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe.dev
           LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/debug"
         Release:
+          PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
           LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/release"
   CodescribeTests:
     type: bundle.unit-test
@@ -120,6 +133,9 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: 6.0
+        SWIFT_STRICT_CONCURRENCY: complete
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
 # Without an explicit scheme the test bundle is unreachable: xcodegen emits no
 # scheme for bundle.unit-test targets, and old-style `-target` builds cannot
 # resolve SPM dependencies. `xcodebuild test -scheme Codescribe` is the entry.
@@ -129,5 +145,8 @@ schemes:
       targets:
         Codescribe: all
     test:
+      # Interface copy is asserted in English; pin the test host's language so
+      # the suite reads the same on any machine and after languages are added.
+      language: en
       targets:
         - CodescribeTests

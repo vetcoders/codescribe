@@ -50,3 +50,6 @@
 **/.astro/**
 **/.loct-context-*.md
 AGENT_BUS.md
+# Byte-verbatim copy of the Founder's April sidecar (sha256-checked against the
+# archive); reformatting would destroy the fixture's fidelity purpose.
+tests/fixtures/truth_sidecar_20260421.json

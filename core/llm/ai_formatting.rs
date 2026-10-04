@@ -23,16 +23,15 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tracing::{debug, info, trace, warn};
 
-use crate::config::{Config, FormattingPolicy};
+use crate::config::{FormattingPolicy, RuntimeLlmLane, RuntimeSettingsSnapshot};
 
 use super::account_auth;
-use super::lane_truth;
-use super::lane_truth::AssistiveLaneSnapshot;
-use super::provider::{LlmMode, ProviderKind, WireFamily, capability_policy};
+use super::provider::{ProviderKind, WireFamily, capability_policy};
+use super::responses_output::{ResponsesOutputItem, extract_output_channels};
 use super::responses_streaming_manager::{
     AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
 };
@@ -73,6 +72,44 @@ pub type AiStreamCallback = Arc<dyn Fn(&str) + Send + Sync>;
 /// Streaming reasoning-token callback, kept separate from assistant text.
 pub type AiReasoningCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Host-owned Max execution capability. Core formatting never constructs
+/// platform tools or discovers a conversation through process-global state.
+#[async_trait::async_trait]
+pub trait FormattingAgent: Send + Sync {
+    async fn execute(
+        &self,
+        turn_id: &str,
+        text: &str,
+        settings: &RuntimeSettingsSnapshot,
+    ) -> Result<String>;
+
+    /// Tool-free assessment; neither silence nor a seal alone establishes a
+    /// complete instruction. Unavailable assessment cannot authorize execution.
+    async fn assess_group(
+        &self,
+        _input: crate::agent::consultation::SealedConsultationInput,
+        _settings: &RuntimeSettingsSnapshot,
+    ) -> Result<crate::agent::consultation::ConsultationReadiness> {
+        anyhow::bail!("consultation readiness assessment unavailable")
+    }
+
+    /// Blocking durable preparation without execution permission. The live
+    /// host runs this off capture, then revalidates before authorizing the handle.
+    fn prepare_group(
+        &self,
+        _input: crate::agent::consultation::SealedConsultationInput,
+        _settings: &RuntimeSettingsSnapshot,
+    ) -> Result<crate::agent::consultation::PreparedConsultationGroup> {
+        anyhow::bail!("grouped consultation execution unavailable")
+    }
+}
+
+/// Explicit consultation and turn selected by the presentation/capture host.
+pub struct FormattingConsultation<'a> {
+    pub agent: &'a dyn FormattingAgent,
+    pub turn_id: &'a str,
+}
+
 /// Result of a formatting request: the text to use plus how it was obtained.
 ///
 /// `text` is always safe to deliver — on failure it carries the cleaned input
@@ -82,6 +119,72 @@ pub struct AiFormatResult {
     pub text: String,
     pub reasoning_text: Option<String>,
     pub status: AiFormatStatus,
+}
+
+/// Corrections changes punctuation and case, never the ordered spoken words.
+/// Repeated words are counted separately. These offsets are text evidence,
+/// not acoustic identities or permission to change a ledger slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorrectionsWordReceipt {
+    pub raw_word_count: usize,
+    pub output_word_count: usize,
+    pub first_difference: Option<usize>,
+}
+
+impl CorrectionsWordReceipt {
+    pub fn preserves_words(&self) -> bool {
+        self.first_difference.is_none()
+    }
+}
+
+fn corrections_words(text: &str) -> Vec<String> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+pub fn corrections_word_receipt(raw: &str, output: &str) -> CorrectionsWordReceipt {
+    let raw = corrections_words(raw);
+    let output = corrections_words(output);
+    let first_difference = raw
+        .iter()
+        .zip(&output)
+        .position(|(before, after)| before != after)
+        .or_else(|| (raw.len() != output.len()).then_some(raw.len().min(output.len())));
+    CorrectionsWordReceipt {
+        raw_word_count: raw.len(),
+        output_word_count: output.len(),
+        first_difference,
+    }
+}
+
+/// Light+ is a candidate floor too: until its word-preserving API is admitted,
+/// a rejected shape retains Raw rather than dropping a hesitation or marker.
+pub fn corrections_floor(raw: &str) -> String {
+    let shaped = crate::pipeline::light_plus::apply(raw);
+    if corrections_word_receipt(raw, &shaped).preserves_words() {
+        shaped
+    } else {
+        raw.to_string()
+    }
+}
+
+fn guard_corrections_result(raw: &str, mut result: AiFormatResult) -> AiFormatResult {
+    let receipt = corrections_word_receipt(raw, &result.text);
+    if !receipt.preserves_words() {
+        warn!(
+            rule = "corrections-words-v1",
+            raw_words = receipt.raw_word_count,
+            output_words = receipt.output_word_count,
+            first_difference = receipt.first_difference,
+            "Corrections rejected: ordered Raw words changed; retaining deterministic floor"
+        );
+        result.text = corrections_floor(raw);
+        result.reasoning_text = None;
+        result.status = AiFormatStatus::Failed;
+    }
+    result
 }
 
 /// One provider reply split into its two channels.
@@ -105,44 +208,6 @@ struct StreamRequestContext {
     inter_chunk_timeout: Duration,
 }
 
-/// One retained turn of the Ollama-only conversation memory.
-///
-/// Hosted providers chain context server-side via `previous_response_id`; Ollama
-/// has no such handle, so assistive turns are replayed from this local buffer.
-#[derive(Clone)]
-struct MemoryMessage {
-    role: String,
-    content: String,
-}
-
-/// Process-global Ollama turn buffer; hosted providers use `previous_response_id`.
-static OLLAMA_MEMORY: OnceLock<RwLock<Vec<MemoryMessage>>> = OnceLock::new();
-/// Soft cap on retained Ollama memory text; older turns are pruned FIFO.
-const MAX_OLLAMA_MEMORY_CHARS: usize = 4000;
-
-// Retry count is "extra attempts after the first request". Default 0 keeps
-// daily-driver formatting fail-fast instead of multiplying deterministic
-// provider/parser failures into long cascades.
-/// Extra attempts after the first request; 0 = fail-fast for daily formatting.
-const DEFAULT_AI_MAX_RETRIES: u32 = 0;
-/// Sleep between retries when [`DEFAULT_AI_MAX_RETRIES`] is raised via env.
-const DEFAULT_AI_RETRY_DELAY_MS: u64 = 500;
-// Bumped from 30s → 90s (2026-05-13). Operator observed
-// "Agent SSE inter-chunk timeout after 30s" mid-stream from chat overlay
-// during longer responses (multi-paragraph PL text with code blocks).
-// LLM backends ('programmer' model on api.libraxis.cloud) emit tokens
-// in bursts with 5-15s pauses for reasoning/tool-call hops; 30s budget
-// was too tight and triggered "Agent runtime unavailable. Using legacy
-// formatter" fallback mid-response, breaking the assistant UX. 90s
-// keeps streams alive across realistic backend hiccups without making
-// stalled requests linger forever. Env override `CODESCRIBE_AI_*_MS`
-// still wins for power users (operator can lower for fast models).
-/// Per-attempt wall budget for hosted providers before the attempt is abandoned.
-const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 90_000;
-/// Tighter per-attempt budget for local Ollama so a dead daemon fails fast.
-const DEFAULT_AI_OLLAMA_ATTEMPT_TIMEOUT_MS: u64 = 5_000;
-/// Max silence between SSE chunks mid-stream before the attempt is abandoned.
-const DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
 /// reqwest overall request timeout for the shared AI HTTP client.
 const DEFAULT_AI_CLIENT_TIMEOUT_MS: u64 = 90_000;
 /// TCP connect deadline for the shared AI HTTP client.
@@ -165,45 +230,6 @@ const THREAD_TITLE_MAX_CHARS: usize = 72;
 const THREAD_TITLE_PROMPT: &str = "Create a concise 3-6 word title for this conversation. \
 Use the user's language and a descriptive noun phrase. Return only the title on one line, \
 with no quotes, bullet, label, or decorative punctuation.";
-
-/// The full retry/timeout budget for one formatting call, resolved once per call.
-///
-/// Snapshotting the whole policy up front means a mid-flight env change cannot
-/// make attempt 2 of the same request behave differently from attempt 1.
-#[derive(Debug, Clone, Copy)]
-struct RetryPolicy {
-    max_retries: u32,
-    retry_delay: Duration,
-    attempt_timeout: Duration,
-    ollama_attempt_timeout: Duration,
-    inter_chunk_timeout: Duration,
-}
-
-impl RetryPolicy {
-    /// Read the policy from `CODESCRIBE_AI_*` overrides, falling back to the
-    /// module defaults for anything unset or unparseable.
-    fn from_env() -> Self {
-        Self {
-            max_retries: env_u32("CODESCRIBE_AI_MAX_RETRIES", DEFAULT_AI_MAX_RETRIES),
-            retry_delay: duration_from_env_ms(
-                "CODESCRIBE_AI_RETRY_DELAY_MS",
-                DEFAULT_AI_RETRY_DELAY_MS,
-            ),
-            attempt_timeout: duration_from_env_ms(
-                "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS",
-                DEFAULT_AI_ATTEMPT_TIMEOUT_MS,
-            ),
-            ollama_attempt_timeout: duration_from_env_ms(
-                "CODESCRIBE_AI_OLLAMA_ATTEMPT_TIMEOUT_MS",
-                DEFAULT_AI_OLLAMA_ATTEMPT_TIMEOUT_MS,
-            ),
-            inter_chunk_timeout: duration_from_env_ms(
-                "CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS",
-                DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS,
-            ),
-        }
-    }
-}
 
 /// Read a `u32` env override, falling back to `default` on unset or garbage.
 ///
@@ -242,7 +268,7 @@ fn duration_from_env_ms(key: &str, default_ms: u64) -> Duration {
 /// failures, transcript delivered raw. NOT retention: the same-key chain was
 /// proven alive hours later (2026-08-14, full recall of the 10:38 take). The
 /// stored id is poison for THIS key, so drop it and go unchained.
-fn is_stale_chain_error(error: &anyhow::Error) -> bool {
+pub(crate) fn is_stale_chain_error(error: &anyhow::Error) -> bool {
     error.to_string().contains("previous_response_not_found")
 }
 
@@ -255,11 +281,6 @@ fn should_retry_provider_error(error: &anyhow::Error) -> bool {
         || message.contains("Anthropic response truncated")
         || message.contains("SSE error internal_error")
         || message.contains("SSE error bad_request"))
-}
-
-/// Lazily initialised handle to the process-wide Ollama conversation memory.
-fn ollama_memory() -> &'static RwLock<Vec<MemoryMessage>> {
-    OLLAMA_MEMORY.get_or_init(|| RwLock::new(Vec::new()))
 }
 
 /// The shared HTTP client, built once on first use.
@@ -306,54 +327,6 @@ fn get_client() -> &'static Client {
 //
 // NO legacy variables. Clean contract only.
 
-// ---- FORMATTING mode config ----
-
-/// The formatting lane's endpoint, resolved from freshly loaded config.
-///
-/// Config is re-read on every call rather than cached, so a settings save takes
-/// effect on the next request instead of at the next app restart.
-fn get_formatting_endpoint() -> Result<String> {
-    Ok(lane_truth::endpoint(LlmMode::Formatting, &Config::load()))
-}
-
-/// The formatting lane's model id, resolved from freshly loaded config.
-fn get_formatting_model() -> Result<String> {
-    Ok(lane_truth::formatting_identity(&Config::load()).1)
-}
-
-/// The formatting lane's dedicated credential.
-///
-/// The error names the exact variable to set, because this is the failure a
-/// first-run operator hits most often.
-fn get_formatting_api_key() -> Result<String> {
-    lane_truth::secret("LLM_FORMATTING_API_KEY")
-        .context("LLM API key (formatting) is required. Set LLM_FORMATTING_API_KEY.")
-}
-
-// ---- ASSISTIVE mode config ----
-
-/// The assistive lane's endpoint, taken from a fresh lane snapshot.
-fn get_assistive_endpoint() -> Result<String> {
-    Ok(lane_truth::assistive_snapshot(&Config::load()).endpoint)
-}
-
-/// The assistive lane's model id, taken from a fresh lane snapshot.
-fn get_assistive_model() -> Result<String> {
-    Ok(lane_truth::assistive_snapshot(&Config::load()).model)
-}
-
-/// The API key for an explicit provider, read from its own registry key account
-/// so the error names the field the operator has to fill for *that* vendor.
-fn get_provider_api_key(provider: ProviderKind) -> Result<String> {
-    let account = provider.api_key_env_key();
-    lane_truth::secret(account).with_context(|| {
-        format!(
-            "{} API key is required. Set {account}.",
-            provider.display_name()
-        )
-    })
-}
-
 /// Get temperature from env var. Returns None if empty/unset (skip parameter).
 /// Supports mode-specific: LLM_FORMATTING_TEMPERATURE, LLM_ASSISTIVE_TEMPERATURE
 /// Falls back to LLM_TEMPERATURE, then to default (0.1 formatting, 0.3 assistive)
@@ -382,49 +355,16 @@ fn get_temperature(assistive: bool) -> Option<f32> {
     None
 }
 
-// ============================================================================
-// Endpoint routing — path-based, no domain heuristics
-// ============================================================================
-
-/// Endpoint format detected from URL path
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EndpointFormat {
-    /// Responses API (/v1/responses or anything else) — default
-    ResponsesApi,
-    /// Ollama native chat (/api/chat) — legacy compatibility
-    OllamaChat,
-    /// Anthropic Messages API (/v1/messages)
-    AnthropicMessages,
-}
-
 /// A fully resolved target for one thread-title request.
 ///
 /// Resolution is deliberately separated from sending so tests can drive every
 /// wire format against a mock server without touching real config or secrets.
 #[derive(Debug, Clone)]
 struct ThreadTitleProvider {
-    format: EndpointFormat,
+    wire_family: WireFamily,
     endpoint: String,
     model: String,
     api_key: Option<String>,
-}
-
-/// Resolve request format from explicit provider, preserving path-based Ollama
-/// compatibility only for the protected OpenAI/default lane.
-fn detect_format(endpoint: &str, provider: ProviderKind) -> EndpointFormat {
-    match provider.wire_family() {
-        WireFamily::AnthropicMessages => EndpointFormat::AnthropicMessages,
-        // Ollama's native chat path is a compatibility shim on the protected
-        // default lane only. A hosted Responses vendor (xAI) never serves
-        // `/api/chat`, and honouring the shim for it would let a stray endpoint
-        // string silently downgrade the request shape.
-        WireFamily::OpenAiResponses
-            if provider.owns_generic_lane_config() && endpoint.contains("/api/chat") =>
-        {
-            EndpointFormat::OllamaChat
-        }
-        WireFamily::OpenAiResponses => EndpointFormat::ResponsesApi,
-    }
 }
 
 /// Generate one isolated title through the currently selected formatting lane.
@@ -432,43 +372,37 @@ fn detect_format(endpoint: &str, provider: ProviderKind) -> EndpointFormat {
 /// This path deliberately does not call any formatting/assistive request helper:
 /// it sends exactly one bounded JSON request, passes only `text` as user input,
 /// and never reads or writes response-chain or Ollama memory state.
-pub async fn generate_thread_title(text: &str) -> Result<Option<String>> {
+pub async fn generate_thread_title(
+    text: &str,
+    formatting_lane: &RuntimeLlmLane,
+) -> Result<Option<String>> {
     if text.trim().is_empty() {
         return Ok(None);
     }
-    let provider = resolve_thread_title_provider()?;
+    let provider = resolve_thread_title_provider(formatting_lane)?;
     generate_thread_title_with_provider(text, &provider, THREAD_TITLE_TIMEOUT).await
 }
 
 /// Resolve the formatting lane into a concrete title target, including which
 /// credential applies.
 ///
-/// Key selection follows the lane rules rather than one global secret: the
-/// protected default lane keeps its own formatting credential, any other vendor
-/// authenticates from its own registry account, and Ollama needs none at all.
-fn resolve_thread_title_provider() -> Result<ThreadTitleProvider> {
-    let config = Config::load();
-    let provider = lane_truth::provider(LlmMode::Formatting);
-    let model = lane_truth::model_for_provider(LlmMode::Formatting, provider, &config);
-    let endpoint = lane_truth::provider_endpoint(LlmMode::Formatting, provider, &config);
-    let format = detect_format(&endpoint, provider);
-    let api_key = match format {
-        // The formatting runtime owns a separate credential on the protected
-        // default lane; any other vendor authenticates with its own registry
-        // key account rather than borrowing that one.
-        EndpointFormat::ResponsesApi if provider.owns_generic_lane_config() => {
-            Some(get_formatting_api_key()?)
-        }
-        EndpointFormat::ResponsesApi | EndpointFormat::AnthropicMessages => {
-            Some(get_provider_api_key(provider)?)
-        }
-        EndpointFormat::OllamaChat => None,
-    };
+/// Key selection follows the lane rules rather than one global secret. A local
+/// endpoint may legitimately have no credential; cloud availability was sealed
+/// by the loader and fails closed before a request is attempted.
+fn resolve_thread_title_provider(lane: &RuntimeLlmLane) -> Result<ThreadTitleProvider> {
+    let api_key = lane.credential().request_api_key();
+    if !lane.request_available() {
+        anyhow::bail!(
+            "{}",
+            lane.unavailable_reason()
+                .unwrap_or("Formatting lane is unavailable")
+        );
+    }
 
     Ok(ThreadTitleProvider {
-        format,
-        endpoint,
-        model,
+        wire_family: lane.wire_family(),
+        endpoint: lane.endpoint().to_string(),
+        model: lane.model().to_string(),
         api_key,
     })
 }
@@ -490,10 +424,9 @@ async fn generate_thread_title_with_provider(
 
 /// Dispatch the title request to the wire format the provider speaks.
 async fn request_thread_title(text: &str, provider: &ThreadTitleProvider) -> Result<String> {
-    match provider.format {
-        EndpointFormat::ResponsesApi => request_responses_thread_title(text, provider).await,
-        EndpointFormat::AnthropicMessages => request_anthropic_thread_title(text, provider).await,
-        EndpointFormat::OllamaChat => request_ollama_thread_title(text, provider).await,
+    match provider.wire_family {
+        WireFamily::OpenAiResponses => request_responses_thread_title(text, provider).await,
+        WireFamily::AnthropicMessages => request_anthropic_thread_title(text, provider).await,
     }
 }
 
@@ -505,10 +438,6 @@ async fn request_responses_thread_title(
     text: &str,
     provider: &ThreadTitleProvider,
 ) -> Result<String> {
-    let api_key = provider
-        .api_key
-        .as_deref()
-        .context("Formatting API key is required for thread titles")?;
     let request = ResponsesRequest {
         model: provider.model.clone(),
         input: vec![InputItem {
@@ -524,12 +453,16 @@ async fn request_responses_thread_title(
         stream: false,
     };
 
-    let response = get_client()
+    let mut request_builder = get_client()
         .post(&provider.endpoint)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("x-api-key", api_key)
         .header("Content-Type", "application/json")
-        .json(&request)
+        .json(&request);
+    if let Some(api_key) = provider.api_key.as_deref() {
+        request_builder = request_builder
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header("x-api-key", api_key);
+    }
+    let response = request_builder
         .send()
         .await
         .context("Thread title Responses request failed")?;
@@ -554,11 +487,7 @@ async fn request_anthropic_thread_title(
     text: &str,
     provider: &ThreadTitleProvider,
 ) -> Result<String> {
-    let api_key = provider
-        .api_key
-        .as_deref()
-        .context("Anthropic API key is required for thread titles")?;
-    let endpoint = lane_truth::normalize_anthropic_messages_endpoint(&provider.endpoint);
+    let endpoint = provider.endpoint.clone();
     let request = AnthropicMessagesRequest {
         model: provider.model.clone(),
         system: Some(THREAD_TITLE_PROMPT.to_string()),
@@ -572,12 +501,15 @@ async fn request_anthropic_thread_title(
         temperature: None,
     };
 
-    let response = get_client()
+    let mut request_builder = get_client()
         .post(&endpoint)
-        .header("x-api-key", api_key)
         .header("anthropic-version", ANTHROPIC_VERSION)
         .header("Content-Type", "application/json")
-        .json(&request)
+        .json(&request);
+    if let Some(api_key) = provider.api_key.as_deref() {
+        request_builder = request_builder.header("x-api-key", api_key);
+    }
+    let response = request_builder
         .send()
         .await
         .context("Thread title Anthropic request failed")?;
@@ -599,77 +531,6 @@ async fn request_anthropic_thread_title(
         );
     }
     Ok(extract_anthropic_text(&response))
-}
-
-/// One-shot title request over Ollama's native chat API.
-///
-/// The system/user pair is built inline instead of through
-/// [`build_ollama_messages`], because titling must not read or append to the
-/// shared conversation memory.
-async fn request_ollama_thread_title(text: &str, provider: &ThreadTitleProvider) -> Result<String> {
-    let request = OllamaRequest {
-        model: provider.model.clone(),
-        messages: vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: THREAD_TITLE_PROMPT.to_string(),
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: text.to_string(),
-            },
-        ],
-        stream: false,
-        options: OllamaOptions {
-            temperature: 0.1,
-            num_predict: THREAD_TITLE_MAX_TOKENS,
-        },
-    };
-
-    let endpoint = normalize_ollama_chat_endpoint(&provider.endpoint);
-    let response = get_client()
-        .post(&endpoint)
-        .header("Content-Type", "application/json")
-        .json(&request)
-        .send()
-        .await
-        .context("Thread title Ollama request failed")?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Thread title Ollama HTTP {status} - {body}");
-    }
-
-    let response: OllamaResponse = response
-        .json()
-        .await
-        .context("Failed to parse thread title Ollama response")?;
-    Ok(response
-        .message
-        .map(|message| message.content)
-        .or(response.response)
-        .unwrap_or_default())
-}
-
-/// Reduce any configured endpoint spelling to Ollama's `/api/chat` path.
-///
-/// Suffixes are stripped in a loop because operators paste stacked forms such as
-/// `.../api/chat/v1/responses`; one pass would leave a mangled base URL.
-fn normalize_ollama_chat_endpoint(endpoint: &str) -> String {
-    let mut base = endpoint.trim().trim_end_matches('/').to_string();
-    loop {
-        let previous_len = base.len();
-        for suffix in ["/v1/responses", "/api/chat", "/v1"] {
-            if base.ends_with(suffix) {
-                base.truncate(base.len() - suffix.len());
-                break;
-            }
-        }
-        if base.len() == previous_len {
-            break;
-        }
-    }
-    format!("{base}/api/chat")
 }
 
 /// Turn a raw model reply into a usable one-line title, or `None` if nothing
@@ -746,113 +607,6 @@ fn strip_title_wrapping(title: &str) -> &str {
 /// `LLM_USE_STREAMING` is intentionally ignored.
 fn use_streaming() -> bool {
     true
-}
-
-/// Drop the oldest turns until the buffer fits the character budget.
-///
-/// Bounded by characters rather than turn count: one long dictation can outweigh
-/// a dozen short exchanges, and it is the prompt size that actually costs.
-fn prune_memory(memory: &mut Vec<MemoryMessage>) {
-    while memory.iter().map(|m| m.content.len()).sum::<usize>() > MAX_OLLAMA_MEMORY_CHARS {
-        if memory.is_empty() {
-            break;
-        }
-        memory.remove(0);
-    }
-}
-
-/// Append one turn to the Ollama memory and re-apply the size budget.
-///
-/// A poisoned lock is swallowed: losing conversational context is preferable to
-/// failing a transcript the user is waiting on.
-fn push_memory(role: &str, content: &str) {
-    if let Ok(mut guard) = ollama_memory().write() {
-        guard.push(MemoryMessage {
-            role: role.to_string(),
-            content: content.to_string(),
-        });
-        prune_memory(&mut guard);
-    }
-}
-
-/// Clone the current memory so the request can be built without holding the lock.
-fn snapshot_memory() -> Vec<MemoryMessage> {
-    ollama_memory()
-        .read()
-        .map(|g| g.clone())
-        .unwrap_or_default()
-}
-
-/// Forget the Ollama conversation history.
-///
-/// The local counterpart to resetting a hosted response chain — call it when
-/// starting a new thread so the previous conversation cannot bleed through.
-pub fn reset_ollama_memory() {
-    if let Ok(mut guard) = ollama_memory().write() {
-        guard.clear();
-    }
-}
-
-/// Assemble the Ollama message list: system prompt, optional history, user turn.
-///
-/// History is replayed only in assistive mode. Formatting is a pure
-/// text-in/text-out transform, and prior turns would only invite the model to
-/// carry context across unrelated dictations.
-fn build_ollama_messages(
-    system_prompt: &str,
-    user_message: &str,
-    assistive: bool,
-) -> Vec<ChatMessage> {
-    let mut messages = Vec::new();
-    messages.push(ChatMessage {
-        role: "system".to_string(),
-        content: system_prompt.to_string(),
-    });
-
-    if assistive {
-        for m in snapshot_memory() {
-            messages.push(ChatMessage {
-                role: m.role,
-                content: m.content,
-            });
-        }
-    }
-
-    messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: user_message.to_string(),
-    });
-
-    messages
-}
-
-/// Ollama request format
-#[derive(Debug, Serialize)]
-struct OllamaRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
-    stream: bool,
-    options: OllamaOptions,
-}
-
-/// Ollama sampling options. `num_predict: 0` means "no cap" in Ollama's dialect.
-#[derive(Debug, Serialize)]
-struct OllamaOptions {
-    temperature: f32,
-    num_predict: u32,
-}
-
-/// Ollama response format
-#[derive(Debug, Deserialize)]
-struct OllamaResponse {
-    message: Option<OllamaMessage>,
-    response: Option<String>,
-}
-
-/// The assistant turn inside an Ollama chat response.
-#[derive(Debug, Deserialize)]
-struct OllamaMessage {
-    content: String,
 }
 
 /// Responses API request format (/v1/responses)
@@ -1101,37 +855,11 @@ fn anthropic_image_source_from_data_url(url: &str) -> Option<AnthropicImageSourc
     })
 }
 
-/// Responses API response format
+/// Responses API response format.
 #[derive(Debug, Deserialize)]
 struct ResponsesResponse {
     id: String,
-    output: Vec<OutputItem>,
-}
-
-/// One item of a Responses API output array.
-///
-/// `item_type` distinguishes a `message` from a `reasoning` item; the split
-/// matters because only the former may reach the user's transcript.
-#[derive(Debug, Deserialize)]
-struct OutputItem {
-    #[serde(rename = "type")]
-    item_type: String,
-    #[serde(default)]
-    content: Option<Vec<ContentPart>>,
-}
-
-/// A content part inside an output item.
-///
-/// Text arrives under `text` for output parts and under `summary` for reasoning
-/// summaries, so both are accepted and normalised downstream.
-#[derive(Debug, Deserialize)]
-struct ContentPart {
-    #[serde(rename = "type")]
-    part_type: String,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    summary: Option<String>,
+    output: Vec<ResponsesOutputItem>,
 }
 
 /// Anthropic Messages response format
@@ -1154,70 +882,6 @@ struct AnthropicResponseContent {
     part_type: String,
     #[serde(default)]
     text: Option<String>,
-}
-
-/// Legacy chat message (for Ollama compatibility)
-#[derive(Debug, Serialize, Clone)]
-struct ChatMessage {
-    role: String,
-    content: String,
-}
-
-/// The meaningful text of a content part, preferring `text` over `summary`.
-///
-/// Whitespace-only parts collapse to `None` so they cannot pad the joined output.
-fn part_text(part: &ContentPart) -> Option<&str> {
-    part.text
-        .as_deref()
-        .or(part.summary.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-}
-
-/// Fold a Responses output array into the assistant and reasoning channels.
-///
-/// The item type gates the part type: `output_text` counts only inside a
-/// `message`. That guard is what keeps a reasoning model's internal narration
-/// out of the text that gets pasted into the user's document.
-fn extract_output_channels(output: &[OutputItem]) -> ProviderOutput {
-    let mut assistant_parts = Vec::new();
-    let mut reasoning_parts = Vec::new();
-
-    for item in output {
-        let Some(parts) = item.content.as_ref() else {
-            continue;
-        };
-        let is_message = item.item_type == "message";
-        let is_reasoning = item.item_type == "reasoning";
-
-        for part in parts {
-            match part.part_type.as_str() {
-                "output_text" | "text" if is_message => {
-                    if let Some(text) = part_text(part) {
-                        assistant_parts.push(text.to_string());
-                    }
-                }
-                "reasoning_summary_text" if is_message || is_reasoning => {
-                    if let Some(text) = part_text(part) {
-                        reasoning_parts.push(text.to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let assistant_text = assistant_parts.join("").trim().to_string();
-    let reasoning_text = reasoning_parts.join("").trim().to_string();
-
-    ProviderOutput {
-        assistant_text,
-        reasoning_text: if reasoning_text.is_empty() {
-            None
-        } else {
-            Some(reasoning_text)
-        },
-    }
 }
 
 /// Concatenate the text blocks of an Anthropic response.
@@ -1429,20 +1093,30 @@ pub fn remove_simple_repetitions(text: &str) -> String {
 ///
 /// # Returns
 /// Formatted text or original if all providers fail
-pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) -> String {
-    format_text_with_status(text, language, assistive, None)
+pub async fn format_text(
+    text: &str,
+    language: Option<&str>,
+    assistive: bool,
+    runtime_settings: &RuntimeSettingsSnapshot,
+) -> String {
+    format_text_with_status(text, language, assistive, runtime_settings, None)
         .await
         .text
 }
 
-/// Format text using AI provider with fallback chain, returning status
+/// Format text using AI provider with fallback chain, returning status.
+///
+/// Callers supply the selected runtime generation. This entry never reloads
+/// settings, prompt files, or process env.
 pub async fn format_text_with_status(
     text: &str,
     language: Option<&str>,
     assistive: bool,
+    runtime_settings: &RuntimeSettingsSnapshot,
     on_delta: Option<AiStreamCallback>,
 ) -> AiFormatResult {
-    format_text_with_status_channels(text, language, assistive, on_delta, None).await
+    format_text_with_status_channels(text, language, assistive, runtime_settings, on_delta, None)
+        .await
 }
 
 /// Format text using AI provider with explicit channel callbacks.
@@ -1450,48 +1124,47 @@ pub async fn format_text_with_status(
 /// Contract:
 /// - `on_assistant_delta`: receives only `response.output_text.*` deltas.
 /// - `on_reasoning_delta`: receives only `response.reasoning_summary_text.*` deltas.
+/// - policy, lane, prompt, retry, and request timing all come from one immutable
+///   settings generation; assistive still selects the assistive lane/prompt.
 pub async fn format_text_with_status_channels(
     text: &str,
     language: Option<&str>,
     assistive: bool,
+    runtime_settings: &RuntimeSettingsSnapshot,
     on_assistant_delta: Option<AiStreamCallback>,
     on_reasoning_delta: Option<AiReasoningCallback>,
 ) -> AiFormatResult {
-    let policy = if assistive {
-        FormattingPolicy::Correction
-    } else {
-        match Config::formatting_policy() {
-            Ok(policy) => policy,
-            Err(error) => {
-                warn!("Rejected invalid formatting policy: {error}");
-                return AiFormatResult {
-                    text: text.to_string(),
-                    reasoning_text: None,
-                    status: AiFormatStatus::Failed,
-                };
-            }
-        }
-    };
     format_text_with_status_channels_for_policy(
         text,
         language,
         assistive,
-        policy,
+        runtime_settings,
         on_assistant_delta,
         on_reasoning_delta,
+        None,
     )
     .await
 }
 
-/// Format through an explicitly selected normalized policy. This is the seam
-/// used by deliberate one-shot formatting actions; it never changes persisted
-/// Auto Format state.
+/// Format through the normalized policy sealed in the selected generation.
+/// Deliberate one-shot callers choose a generation at their outer boundary;
+/// this request path cannot reconstruct policy or prompt independently.
 pub async fn format_text_with_status_for_policy(
     text: &str,
     language: Option<&str>,
-    policy: FormattingPolicy,
+    runtime_settings: &RuntimeSettingsSnapshot,
+    consultation: Option<FormattingConsultation<'_>>,
 ) -> AiFormatResult {
-    format_text_with_status_channels_for_policy(text, language, false, policy, None, None).await
+    format_text_with_status_channels_for_policy(
+        text,
+        language,
+        false,
+        runtime_settings,
+        None,
+        None,
+        consultation,
+    )
+    .await
 }
 
 /// The single implementation every public formatting entry point funnels into.
@@ -1511,10 +1184,66 @@ async fn format_text_with_status_channels_for_policy(
     text: &str,
     language: Option<&str>,
     assistive: bool,
-    policy: FormattingPolicy,
+    runtime_settings: &RuntimeSettingsSnapshot,
     on_assistant_delta: Option<AiStreamCallback>,
     on_reasoning_delta: Option<AiReasoningCallback>,
+    consultation: Option<FormattingConsultation<'_>>,
 ) -> AiFormatResult {
+    let result = request_format_text_with_status_channels_for_policy(
+        text,
+        language,
+        assistive,
+        runtime_settings,
+        on_assistant_delta,
+        on_reasoning_delta,
+        consultation,
+    )
+    .await;
+    if !assistive && runtime_settings.formatting_policy() == FormattingPolicy::Correction {
+        guard_corrections_result(text, result)
+    } else {
+        result
+    }
+}
+
+async fn request_format_text_with_status_channels_for_policy(
+    text: &str,
+    language: Option<&str>,
+    assistive: bool,
+    runtime_settings: &RuntimeSettingsSnapshot,
+    on_assistant_delta: Option<AiStreamCallback>,
+    on_reasoning_delta: Option<AiReasoningCallback>,
+    consultation: Option<FormattingConsultation<'_>>,
+) -> AiFormatResult {
+    let policy = runtime_settings.formatting_policy();
+    if !assistive && policy == FormattingPolicy::Max {
+        // Commands and corrections must not pass through the text-only floor,
+        // repetition cleanup, expansion retries or refusal/echo filters.
+        let result = match consultation {
+            Some(context) => {
+                context
+                    .agent
+                    .execute(context.turn_id, text, runtime_settings)
+                    .await
+            }
+            None => Err(anyhow::anyhow!("Max consultation executor unavailable")),
+        };
+        return match result {
+            Ok(text) => AiFormatResult {
+                text,
+                reasoning_text: None,
+                status: AiFormatStatus::Applied,
+            },
+            Err(error) => {
+                warn!(%error, "Max consultation did not produce an admitted answer");
+                AiFormatResult {
+                    text: text.to_string(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Failed,
+                }
+            }
+        };
+    }
     if !assistive && policy == FormattingPolicy::Off {
         return AiFormatResult {
             text: text.to_string(),
@@ -1541,16 +1270,29 @@ async fn format_text_with_status_channels_for_policy(
         text.to_string()
     };
 
-    let retry_policy = RetryPolicy::from_env();
-    let max_retries = retry_policy.max_retries;
+    let ai_execution = runtime_settings.ai_execution();
+    let formatter_execution = ai_execution.formatter();
+    let request_timing = ai_execution.request_timing();
+    let lane = if assistive {
+        runtime_settings.llm_lanes().assistive()
+    } else {
+        runtime_settings.llm_lanes().formatting()
+    };
+    let sealed_prompt = if assistive {
+        formatter_execution.assistive_prompt()
+    } else {
+        formatter_execution
+            .formatting_prompt()
+            .expect("Off policy bypasses before provider prompt selection")
+    };
+    let max_retries = formatter_execution.max_retries();
     debug!(
         "AI retry policy: max_retries={}, retry_delay={:?}, attempt_timeout={:?}, \
-         ollama_attempt_timeout={:?}, inter_chunk_timeout={:?}",
-        retry_policy.max_retries,
-        retry_policy.retry_delay,
-        retry_policy.attempt_timeout,
-        retry_policy.ollama_attempt_timeout,
-        retry_policy.inter_chunk_timeout
+         inter_chunk_timeout={:?}",
+        max_retries,
+        formatter_execution.retry_delay(),
+        request_timing.attempt_timeout(),
+        request_timing.inter_chunk_timeout()
     );
 
     // Mode key for the conversation chain this call rides on — needed by the
@@ -1562,9 +1304,8 @@ async fn format_text_with_status_channels_for_policy(
         crate::state::conversation::AiMode::Formatting
     };
     // One-shot chain self-heal: a stale stored response_id re-runs the SAME
-    // attempt unchained instead of consuming the retry budget (the budget is
-    // often 0, and a poisoned chain would otherwise hard-fail every take
-    // until restart).
+    // attempt unchained instead of consuming the selected retry budget; a
+    // poisoned chain would otherwise burn attempts without changing inputs.
     let mut stale_chain_retry_used = false;
     let mut attempt = 0;
     while attempt <= max_retries {
@@ -1574,30 +1315,26 @@ async fn format_text_with_status_channels_for_policy(
             assistive,
             cleaned.len()
         );
-        // Select prompt based on mode
-        let mut system_prompt = if assistive {
+        let mut system_prompt = sealed_prompt.composed_content().to_string();
+        if assistive {
             if attempt == 0 {
-                let model = get_assistive_model().unwrap_or_else(|_| "unknown".into());
-                info!("Using assistive mode (model: {})", model);
+                info!("Using assistive mode (model: {})", lane.model());
             }
-            formatting_provider_system_prompt(true, policy)
-                .expect("assistive mode always owns a provider prompt")
         } else {
             if attempt == 0 {
-                let model = get_formatting_model().unwrap_or_else(|_| "unknown".into());
-                info!("Using formatting mode (model: {})", model);
+                info!("Using formatting mode (model: {})", lane.model());
             }
-            formatting_provider_system_prompt(false, policy)
-                .expect("Off policy bypasses before provider prompt selection")
-        };
+        }
 
         // If retrying, wait and strengthen instructions
         if attempt > 0 {
             info!(
                 "Retry attempt {}/{} (waiting {:?})",
-                attempt, max_retries, retry_policy.retry_delay
+                attempt,
+                max_retries,
+                formatter_execution.retry_delay()
             );
-            tokio::time::sleep(retry_policy.retry_delay).await;
+            tokio::time::sleep(formatter_execution.retry_delay()).await;
 
             // Append critical instruction
             system_prompt.push_str(
@@ -1612,51 +1349,79 @@ async fn format_text_with_status_channels_for_policy(
             cleaned.clone()
         };
 
-        // Route from explicit provider selection, retaining endpoint-path Ollama
-        // compatibility only for the default OpenAI Responses lane.
-        let endpoint = if assistive {
-            get_assistive_endpoint().unwrap_or_default()
-        } else {
-            get_formatting_endpoint().unwrap_or_default()
-        };
-        let provider = lane_truth::provider(if assistive {
-            LlmMode::Assistive
-        } else {
-            LlmMode::Formatting
-        });
-        let endpoint_format = detect_format(&endpoint, provider);
+        // The loader already sealed the protocol family. Consumers must not
+        // infer a second route from endpoint spelling.
+        let wire_family = lane.wire_family();
         // Streaming is always enabled. Callbacks only decide whether UI receives live chunks.
         let streaming_enabled = use_streaming();
-        let should_stream =
-            streaming_enabled && matches!(endpoint_format, EndpointFormat::ResponsesApi);
-        let route = match (endpoint_format, should_stream) {
-            (EndpointFormat::OllamaChat, _) => "ollama",
-            (EndpointFormat::AnthropicMessages, _) => "anthropic-messages-json",
-            (EndpointFormat::ResponsesApi, true) => "responses-sse",
-            (EndpointFormat::ResponsesApi, false) => "responses-json",
+        let should_stream = streaming_enabled && wire_family == WireFamily::OpenAiResponses;
+        let route = match (wire_family, should_stream) {
+            (WireFamily::AnthropicMessages, _) => "anthropic-messages-json",
+            (WireFamily::OpenAiResponses, true) => "responses-sse",
+            (WireFamily::OpenAiResponses, false) => "responses-json",
         };
         // Streaming calls:
         // - attempt_timeout guards initial response latency (request -> first response readiness)
         // - inter_chunk_timeout guards stalled streams after they start
         // We intentionally do not cap total stream duration here.
         //
-        // Non-streaming / Ollama calls: attempt_timeout caps the total wait for a
-        // single JSON response.
+        // Non-streaming calls: attempt_timeout caps the total wait for a single
+        // JSON response.
         let stream_context = StreamRequestContext {
             callbacks: StreamCallbacks {
                 assistant: on_assistant_delta.clone(),
                 reasoning: on_reasoning_delta.clone(),
             },
-            initial_response_timeout: retry_policy.attempt_timeout,
-            inter_chunk_timeout: retry_policy.inter_chunk_timeout,
+            initial_response_timeout: request_timing.attempt_timeout(),
+            inter_chunk_timeout: request_timing.inter_chunk_timeout(),
         };
         let mut retryable_error = true;
-        let result_opt = if should_stream {
+        // On-device lane (opt-in knob, W6): one host attempt first. Any
+        // failure falls back to the cloud wire below inside the same retry
+        // budget, so refusal detection, `AiNoop` handling and the retry
+        // policy apply to both engines identically.
+        let on_device_output = if !assistive && runtime_settings.values().format_on_device {
+            match crate::llm::on_device::on_device_formatter() {
+                Some(formatter) => match formatter.format(&system_prompt, &user_message).await {
+                    Ok(assistant_text) => {
+                        if let Some(callback) = stream_context.callbacks.assistant.as_ref() {
+                            callback(&assistant_text);
+                        }
+                        info!(
+                            "Formatted on-device ({} -> {} chars)",
+                            user_message.len(),
+                            assistant_text.len()
+                        );
+                        Some(ProviderOutput {
+                            assistant_text,
+                            reasoning_text: None,
+                        })
+                    }
+                    Err(error) => {
+                        warn!(%error, "on-device formatter failed; falling back to the cloud lane");
+                        None
+                    }
+                },
+                None => {
+                    warn!(
+                        "on-device formatting selected but no host formatter is registered; \
+                         using the cloud lane"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let result_opt = if on_device_output.is_some() {
+            on_device_output
+        } else if should_stream {
             match call_provider_once(
-                endpoint_format,
+                wire_family,
                 &user_message,
                 &system_prompt,
                 assistive,
+                lane,
                 should_stream,
                 stream_context.clone(),
             )
@@ -1684,18 +1449,15 @@ async fn format_text_with_status_channels_for_policy(
                 }
             }
         } else {
-            let attempt_timeout = if endpoint_format == EndpointFormat::OllamaChat {
-                retry_policy.ollama_attempt_timeout
-            } else {
-                retry_policy.attempt_timeout
-            };
+            let attempt_timeout = request_timing.attempt_timeout();
             match tokio::time::timeout(
                 attempt_timeout,
                 call_provider_once(
-                    endpoint_format,
+                    wire_family,
                     &user_message,
                     &system_prompt,
                     assistive,
+                    lane,
                     should_stream,
                     stream_context.clone(),
                 ),
@@ -1736,13 +1498,7 @@ async fn format_text_with_status_channels_for_policy(
         };
 
         if let Some(output) = result_opt {
-            // Deterministic protected-vocabulary pass AFTER the LLM. The model can
-            // silently corrupt proper nouns ("Loctree" -> "Luxury") or drop
-            // operator/tool/agent names while rewriting prose; re-applying the
-            // lexicon restores any registered mispronunciation to its canonical
-            // form. Safe + idempotent: it only rewrites known variants, never
-            // ordinary language. Applies to both formatting and assistive modes.
-            let formatted = crate::stream_postprocess::apply_lexicon(&output.assistant_text);
+            let formatted = output.assistant_text;
             let reasoning_text = output.reasoning_text;
 
             // Detect AI refusal responses (OpenAI content policy)
@@ -1838,43 +1594,35 @@ async fn format_text_with_status_channels_for_policy(
     }
 }
 
-/// Exact system prompt handed to the provider for a normalized request.
-/// Exposed so delivery tests can observe the provider seam rather than merely
-/// asserting enum-to-enum mappings.
-pub fn formatting_provider_system_prompt(
-    assistive: bool,
-    policy: FormattingPolicy,
-) -> Option<String> {
-    if assistive {
-        Some(crate::config::prompts::get_assistive_prompt())
-    } else {
-        crate::config::prompts::get_formatting_prompt_for_policy(policy)
-    }
-}
-
 /// Perform exactly one provider attempt over the selected wire format.
 ///
 /// Carries no retry logic of its own — the caller owns the budget, so this stays
 /// the single place where "one attempt" is defined.
 async fn call_provider_once(
-    endpoint_format: EndpointFormat,
+    wire_family: WireFamily,
     user_message: &str,
     system_prompt: &str,
     assistive: bool,
+    lane: &RuntimeLlmLane,
     streaming_enabled: bool,
     stream_context: StreamRequestContext,
 ) -> Result<ProviderOutput> {
-    match endpoint_format {
-        EndpointFormat::OllamaChat => call_ollama(user_message, system_prompt, assistive).await,
-        EndpointFormat::AnthropicMessages => {
-            call_anthropic_messages(user_message, system_prompt, assistive).await
+    match wire_family {
+        WireFamily::AnthropicMessages => {
+            call_anthropic_messages(user_message, system_prompt, assistive, lane).await
         }
-        EndpointFormat::ResponsesApi => {
+        WireFamily::OpenAiResponses => {
             if streaming_enabled {
-                call_llm_endpoint_streaming(user_message, system_prompt, assistive, stream_context)
-                    .await
+                call_llm_endpoint_streaming(
+                    user_message,
+                    system_prompt,
+                    assistive,
+                    lane,
+                    stream_context,
+                )
+                .await
             } else {
-                call_llm_endpoint(user_message, system_prompt, assistive).await
+                call_llm_endpoint(user_message, system_prompt, assistive, lane).await
             }
         }
     }
@@ -1889,27 +1637,22 @@ async fn call_anthropic_messages(
     user_message: &str,
     system_prompt: &str,
     assistive: bool,
+    lane: &RuntimeLlmLane,
 ) -> Result<ProviderOutput> {
-    let mode = if assistive {
-        LlmMode::Assistive
-    } else {
-        LlmMode::Formatting
-    };
-    let configured_endpoint = if assistive {
-        get_assistive_endpoint()?
-    } else {
-        get_formatting_endpoint()?
-    };
-    let model =
-        lane_truth::model_for_provider(mode, ProviderKind::AnthropicMessages, &Config::load());
-    let api_key = get_provider_api_key(ProviderKind::AnthropicMessages)?;
-
+    let api_key = lane.credential().request_api_key().unwrap_or_default();
+    if !lane.request_available() {
+        anyhow::bail!(
+            "{}",
+            lane.unavailable_reason()
+                .unwrap_or("Anthropic lane is unavailable")
+        );
+    }
     call_anthropic_messages_resolved(
         user_message,
         system_prompt,
         assistive,
-        &configured_endpoint,
-        &model,
+        lane.endpoint(),
+        lane.model(),
         &api_key,
     )
     .await
@@ -1931,7 +1674,7 @@ async fn call_anthropic_messages_resolved(
     model: &str,
     api_key: &str,
 ) -> Result<ProviderOutput> {
-    let endpoint = lane_truth::normalize_anthropic_messages_endpoint(configured_endpoint);
+    let endpoint = configured_endpoint.to_string();
     let policy = capability_policy(ProviderKind::AnthropicMessages, model);
     let temperature = policy.sanitize_temperature(get_temperature(assistive));
     let max_tokens = env_u32(
@@ -1959,12 +1702,15 @@ async fn call_anthropic_messages_resolved(
         temperature,
     };
 
-    let response = get_client()
+    let mut request_builder = get_client()
         .post(&endpoint)
-        .header("x-api-key", api_key)
         .header("anthropic-version", ANTHROPIC_VERSION)
         .header("Content-Type", "application/json")
-        .json(&request)
+        .json(&request);
+    if !api_key.trim().is_empty() {
+        request_builder = request_builder.header("x-api-key", api_key);
+    }
+    let response = request_builder
         .send()
         .await
         .context("Anthropic request failed")?;
@@ -2015,6 +1761,45 @@ async fn call_anthropic_messages_resolved(
     })
 }
 
+/// Chain state shared by the JSON and SSE formatting calls.
+///
+/// Thread titles do not use this: a title is one shot and must not join the
+/// conversation chain.
+fn responses_chain_request(
+    user_message: &str,
+    system_prompt: &str,
+    assistive: bool,
+    model: String,
+    stream: bool,
+) -> (
+    crate::state::conversation::AiMode,
+    Option<String>,
+    ResponsesRequest,
+) {
+    let ai_mode = if assistive {
+        crate::state::conversation::AiMode::Assistive
+    } else {
+        crate::state::conversation::AiMode::Formatting
+    };
+    let previous_response_id =
+        crate::state::conversation::get_previous_response_id_for_mode(ai_mode);
+    let temperature = get_temperature(assistive);
+    let request = ResponsesRequest {
+        model,
+        input: build_responses_input(
+            system_prompt,
+            previous_response_id.as_deref(),
+            build_responses_user_content(user_message),
+        ),
+        instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
+        previous_response_id: previous_response_id.clone(),
+        max_output_tokens: None,
+        temperature,
+        stream,
+    };
+    (ai_mode, previous_response_id, request)
+}
+
 /// Call LLM endpoint using /v1/responses API
 ///
 /// Uses mode-aware config: LLM_{FORMATTING,ASSISTIVE}_{ENDPOINT,MODEL,API_KEY}
@@ -2023,36 +1808,13 @@ async fn call_llm_endpoint(
     user_message: &str,
     system_prompt: &str,
     assistive: bool,
+    lane: &RuntimeLlmLane,
 ) -> Result<ProviderOutput> {
-    // Mode-aware config: formatting vs assistive use different providers
-    let (endpoint, model, api_key, bearer_only) = if assistive {
-        let lane = lane_truth::assistive_snapshot(&Config::load());
-        let (api_key, bearer_only) = resolve_assistive_auth(&lane).await?;
-        (lane.endpoint, lane.model, api_key, bearer_only)
-    } else {
-        (
-            get_formatting_endpoint()?,
-            get_formatting_model()?,
-            get_formatting_api_key()?,
-            false,
-        )
-    };
-
-    // Temperature from env (None = skip parameter for models that don't support it)
+    let endpoint = lane.endpoint().to_string();
+    let model = lane.model().to_string();
+    let (api_key, bearer_only) = resolve_lane_auth(lane).await?;
     let temperature = get_temperature(assistive);
 
-    // Determine AI mode for conversation tracking (separate streams per mode)
-    let ai_mode = if assistive {
-        crate::state::conversation::AiMode::Assistive
-    } else {
-        crate::state::conversation::AiMode::Formatting
-    };
-
-    // Get previous_response_id for this mode's conversation chain
-    let previous_response_id =
-        crate::state::conversation::get_previous_response_id_for_mode(ai_mode);
-
-    // TRACE: full chain details for debugging (before model is moved)
     trace!(
         "LLM request chain: endpoint={}, model={}, mode={}, temp={:?}",
         endpoint,
@@ -2067,31 +1829,20 @@ async fn call_llm_endpoint(
         temperature
     );
 
-    // Build Responses API request (no token limit - let API decide)
-    let request = ResponsesRequest {
-        model,
-        input: build_responses_input(
-            system_prompt,
-            previous_response_id.as_deref(),
-            build_responses_user_content(user_message),
-        ),
-        // Param on the first turn only; chained turns carry the prompt in input.
-        instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
-        previous_response_id: previous_response_id.clone(),
-        max_output_tokens: None,
-        temperature,
-        stream: false,
-    };
+    let (ai_mode, _previous_response_id, request) =
+        responses_chain_request(user_message, system_prompt, assistive, model, false);
 
     // API keys use dual-header (Bearer + x-api-key). OAuth access tokens are
     // Bearer-only — OpenAI rejects account tokens posted as x-api-key.
     let mut request_builder = get_client()
         .post(&endpoint)
-        .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&request);
-    if !bearer_only {
-        request_builder = request_builder.header("x-api-key", &api_key);
+    if !api_key.trim().is_empty() {
+        request_builder = request_builder.header("Authorization", format!("Bearer {}", api_key));
+        if !bearer_only {
+            request_builder = request_builder.header("x-api-key", &api_key);
+        }
     }
     let response = request_builder.send().await.context("Request failed")?;
 
@@ -2104,7 +1855,11 @@ async fn call_llm_endpoint(
     let responses_result: ResponsesResponse =
         response.json().await.context("Failed to parse response")?;
 
-    let output = extract_output_channels(&responses_result.output);
+    let channels = extract_output_channels(&responses_result.output);
+    let output = ProviderOutput {
+        assistant_text: channels.assistant_text,
+        reasoning_text: channels.reasoning_text,
+    };
 
     if output.assistant_text.is_empty() {
         anyhow::bail!("No text content in response (id: {})", responses_result.id);
@@ -2120,156 +1875,46 @@ async fn call_llm_endpoint(
     Ok(output)
 }
 
-/// One chained Responses request over the formatting lane, chain owned by the
-/// caller (W13-1 inline-format buffer).
-///
-/// Deliberately does NOT touch [`crate::state::conversation`]: the inline
-/// buffer keeps its own `previous_response_id` per dictation session, so chunk
-/// chaining can reset per session without disturbing the persistent
-/// formatting-mode conversation. Returns `(assistant_text, response_id)`.
-pub(crate) async fn format_inline_chunk(
-    chunk_text: &str,
-    language: Option<&str>,
-    previous_response_id: Option<String>,
-    system_prompt: &str,
-) -> Result<(String, Option<String>)> {
-    let endpoint = get_formatting_endpoint()?;
-    let model = get_formatting_model()?;
-    let api_key = get_formatting_api_key()?;
-    format_inline_chunk_resolved(
-        chunk_text,
-        language,
-        previous_response_id,
-        system_prompt,
-        &endpoint,
-        &model,
-        &api_key,
-    )
-    .await
-}
-
-/// Send one inline-chunk Responses request against explicitly supplied wire
-/// values. Resolution is split out (mirroring
-/// [`call_anthropic_messages_resolved`]) so the delivery harness can exercise
-/// the wire contract against a mock without config in play.
-pub(crate) async fn format_inline_chunk_resolved(
-    chunk_text: &str,
-    language: Option<&str>,
-    previous_response_id: Option<String>,
-    system_prompt: &str,
-    endpoint: &str,
-    model: &str,
-    api_key: &str,
-) -> Result<(String, Option<String>)> {
-    let user_message = match language {
-        Some(lang) => format!("[Language: {lang}]\n\n{chunk_text}"),
-        None => chunk_text.to_string(),
-    };
-    let request = ResponsesRequest {
-        model: model.to_string(),
-        input: build_responses_input(
-            system_prompt,
-            previous_response_id.as_deref(),
-            vec![InputContent::Text { text: user_message }],
-        ),
-        // Param on the first turn only; chained turns carry the prompt in input.
-        instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
-        previous_response_id,
-        max_output_tokens: None,
-        temperature: get_temperature(false),
-        stream: false,
-    };
-
-    let response = get_client()
-        .post(endpoint)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("x-api-key", api_key)
-        .header("Content-Type", "application/json")
-        .json(&request)
-        .send()
-        .await
-        .context("Inline chunk request failed")?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Inline chunk HTTP {} - {}", status, body);
-    }
-
-    let responses_result: ResponsesResponse = response
-        .json()
-        .await
-        .context("Failed to parse inline chunk response")?;
-    let output = extract_output_channels(&responses_result.output);
-    if output.assistant_text.is_empty() {
-        anyhow::bail!(
-            "No text content in inline chunk response (id: {})",
-            responses_result.id
-        );
-    }
-    Ok((output.assistant_text, Some(responses_result.id)))
-}
-
 /// Resolve assistive-lane auth: signed-in ChatGPT OAuth wins over a stored API key.
 /// Returns `(secret, bearer_only)` — OAuth tokens must not also go out as `x-api-key`.
-async fn resolve_assistive_auth(lane: &AssistiveLaneSnapshot) -> Result<(String, bool)> {
-    if lane.account_auth {
-        let token = account_auth::access_token(ProviderKind::OpenAiResponses)
+async fn resolve_lane_auth(lane: &RuntimeLlmLane) -> Result<(String, bool)> {
+    if lane.credential().account_auth()
+        && let Some(vendor) = lane.vendor()
+    {
+        let token = account_auth::access_token(vendor)
             .await
-            .map_err(|error| anyhow::anyhow!("ChatGPT account authentication failed: {error}"))?;
+            .map_err(|error| anyhow::anyhow!("Provider account authentication failed: {error}"))?;
         return Ok((token, true));
     }
-    let account = lane.provider.api_key_env_key();
-    let api_key = lane
-        .api_key
-        .clone()
-        .with_context(|| format!("LLM API key (assistive) is required. Set {account}."))?;
-    Ok((api_key, false))
+    let api_key = lane.credential().request_api_key();
+    if api_key.is_none() && !lane.request_available() {
+        anyhow::bail!(
+            "{}",
+            lane.unavailable_reason()
+                .unwrap_or("LLM lane is unavailable")
+        );
+    }
+    Ok((api_key.unwrap_or_default(), false))
 }
 
-/// Call LLM endpoint with SSE streaming (Responses API)
-///
-/// Uses mode-aware config: LLM_{FORMATTING,ASSISTIVE}_{ENDPOINT,MODEL,API_KEY}
+/// Call LLM endpoint with SSE streaming (Responses API) through the sealed lane.
 async fn call_llm_endpoint_streaming(
     user_message: &str,
     system_prompt: &str,
     assistive: bool,
+    lane: &RuntimeLlmLane,
     stream_context: StreamRequestContext,
 ) -> Result<ProviderOutput> {
-    // Mode-aware config: formatting vs assistive use different providers
-    let (endpoint, model, api_key, auth_header_mode) = if assistive {
-        let lane = lane_truth::assistive_snapshot(&Config::load());
-        let (api_key, bearer_only) = resolve_assistive_auth(&lane).await?;
-        let mode = if bearer_only {
-            AuthHeaderMode::BearerOnly
-        } else {
-            AuthHeaderMode::BearerAndApiKey
-        };
-        (lane.endpoint, lane.model, api_key, mode)
+    let endpoint = lane.endpoint().to_string();
+    let model = lane.model().to_string();
+    let (api_key, bearer_only) = resolve_lane_auth(lane).await?;
+    let auth_header_mode = if bearer_only {
+        AuthHeaderMode::BearerOnly
     } else {
-        (
-            get_formatting_endpoint()?,
-            get_formatting_model()?,
-            get_formatting_api_key()?,
-            AuthHeaderMode::BearerAndApiKey,
-        )
+        AuthHeaderMode::BearerAndApiKey
     };
-
-    // Temperature from env (None = skip parameter for models that don't support it)
     let temperature = get_temperature(assistive);
 
-    // Determine AI mode for conversation tracking (separate streams per mode)
-    let ai_mode = if assistive {
-        crate::state::conversation::AiMode::Assistive
-    } else {
-        crate::state::conversation::AiMode::Formatting
-    };
-
-    // Get previous_response_id for this mode's conversation chain
-    let previous_response_id =
-        crate::state::conversation::get_previous_response_id_for_mode(ai_mode);
-
-    // TRACE: full chain details for debugging (before model is moved)
     trace!(
         "SSE request chain: endpoint={}, model={}, mode={}, temp={:?}",
         endpoint,
@@ -2284,21 +1929,8 @@ async fn call_llm_endpoint_streaming(
         temperature
     );
 
-    // No token limit - let API decide
-    let request = ResponsesRequest {
-        model,
-        input: build_responses_input(
-            system_prompt,
-            previous_response_id.as_deref(),
-            build_responses_user_content(user_message),
-        ),
-        // Param on the first turn only; chained turns carry the prompt in input.
-        instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
-        previous_response_id: previous_response_id.clone(),
-        max_output_tokens: None,
-        temperature,
-        stream: true,
-    };
+    let (ai_mode, previous_response_id, request) =
+        responses_chain_request(user_message, system_prompt, assistive, model, true);
 
     let StreamRequestContext {
         callbacks,
@@ -2343,126 +1975,9 @@ async fn call_llm_endpoint_streaming(
     Ok(output)
 }
 
-/// Call Ollama/local LLM for text formatting/assistive mode
-///
-/// Uses mode-aware config. Ollama native API uses /api/chat endpoint format.
-async fn call_ollama(
-    user_message: &str,
-    system_prompt: &str,
-    assistive: bool,
-) -> Result<ProviderOutput> {
-    // Mode-aware config
-    let (host, model) = if assistive {
-        (get_assistive_endpoint()?, get_assistive_model()?)
-    } else {
-        (get_formatting_endpoint()?, get_formatting_model()?)
-    };
-
-    // Normalize: strip known path suffixes, then always use /api/chat
-    let base_host = host
-        .trim_end_matches('/')
-        .trim_end_matches("/api/chat")
-        .trim_end_matches("/v1/responses")
-        .trim_end_matches("/v1");
-    let endpoint = format!("{}/api/chat", base_host);
-
-    // Use higher temperature for assistive mode
-    let temperature = if assistive { 0.3 } else { 0.1 };
-
-    let messages = build_ollama_messages(system_prompt, user_message, assistive);
-
-    // No token limit - let Ollama decide
-    let request = OllamaRequest {
-        model,
-        messages,
-        stream: false,
-        options: OllamaOptions {
-            temperature,
-            num_predict: 0, // 0 = no limit in Ollama
-        },
-    };
-
-    debug!(
-        "Calling Ollama for {} (temp={})",
-        if assistive { "assistive" } else { "formatting" },
-        temperature
-    );
-
-    let response = get_client()
-        .post(&endpoint)
-        .header("Content-Type", "application/json")
-        .json(&request)
-        .send()
-        .await
-        .context("Ollama request failed")?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Ollama HTTP {} - {}", status, body);
-    }
-
-    let ollama_response: OllamaResponse = response
-        .json()
-        .await
-        .context("Failed to parse Ollama response")?;
-
-    let formatted = ollama_response
-        .message
-        .map(|m| m.content)
-        .or(ollama_response.response)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-
-    if formatted.is_empty() {
-        anyhow::bail!("Empty Ollama response");
-    }
-
-    if assistive {
-        push_memory("user", user_message);
-        push_memory("assistant", &formatted);
-    }
-
-    Ok(ProviderOutput {
-        assistant_text: formatted,
-        reasoning_text: None,
-    })
-}
-
-/// Check if AI formatting is available
-/// Returns true if at least formatting mode is configured
-pub fn has_api_key() -> bool {
-    let endpoint = match get_formatting_endpoint() {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-
-    if get_formatting_model().is_err() {
-        return false;
-    }
-
-    let provider = lane_truth::provider(LlmMode::Formatting);
-    let endpoint_format = detect_format(&endpoint, provider);
-
-    // OllamaChat doesn't need API key
-    if matches!(endpoint_format, EndpointFormat::OllamaChat) {
-        return true;
-    }
-
-    // A non-default vendor authenticates with its own registry key account; the
-    // protected default lane keeps its dedicated formatting credential.
-    if !provider.owns_generic_lane_config() {
-        return get_provider_api_key(provider).is_ok();
-    }
-
-    // Responses API requires API key
-    get_formatting_api_key().is_ok()
-}
-
 /// Check if AI formatting is available for report/test flows.
-pub fn is_formatting_available() -> bool {
-    has_api_key()
+pub fn is_formatting_available(lane: &RuntimeLlmLane) -> bool {
+    lane.request_available()
 }
 
 /// Wire-contract and text-hygiene tests for the formatting module.
@@ -2473,7 +1988,80 @@ pub fn is_formatting_available() -> bool {
 /// would otherwise read each other's overrides.
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn corrections_word_receipt_counts_repetitions_and_order() {
+        use super::corrections_word_receipt;
+        for output in ["Iwo Iwo.", "Iwo Ola Iwo.", "Iwo Iwo Iwo Iwo."] {
+            assert!(!corrections_word_receipt("Iwo Iwo Iwo", output).preserves_words());
+        }
+        assert!(corrections_word_receipt("iwo iwo iwo", "Iwo, Iwo. Iwo!").preserves_words());
+        assert!(!corrections_word_receipt("plan był dobry", "dobry był plan").preserves_words());
+    }
+
+    #[test]
+    fn corrections_word_guard_rejects_loss_and_delivers_safe_light_plus() {
+        use super::{AiFormatResult, AiFormatStatus, guard_corrections_result};
+        let raw = "czy plan który przedstawiles był dobry";
+        let result = guard_corrections_result(
+            raw,
+            AiFormatResult {
+                text: "Czy który przedstawiles był dobry?".into(),
+                reasoning_text: Some("private reasoning".into()),
+                status: AiFormatStatus::Applied,
+            },
+        );
+        assert_eq!(result.status, AiFormatStatus::Failed);
+        assert_eq!(result.text, crate::pipeline::light_plus::apply(raw));
+        assert!(result.reasoning_text.is_none());
+    }
+
+    #[test]
+    fn corrections_floor_accounts_for_hesitations_markers_and_numbers() {
+        use super::{corrections_floor, corrections_word_receipt};
+        let raw = "yyy hm mhm no właśnie [laugh] dawka 1,4 mg";
+        let output = corrections_floor(raw);
+        assert!(corrections_word_receipt(raw, &output).preserves_words());
+        assert!(!corrections_word_receipt(raw, "no właśnie dawka 14 mg").preserves_words());
+    }
+
+    #[test]
+    fn corrections_word_guard_also_checks_failed_and_noop_text() {
+        use super::{AiFormatResult, AiFormatStatus, guard_corrections_result};
+        for status in [
+            AiFormatStatus::Failed,
+            AiFormatStatus::AiNoop,
+            AiFormatStatus::Skipped,
+        ] {
+            let result = guard_corrections_result(
+                "Iwo Iwo Iwo",
+                AiFormatResult {
+                    text: "Iwo".into(),
+                    reasoning_text: None,
+                    status,
+                },
+            );
+            assert_eq!(result.status, AiFormatStatus::Failed);
+            assert_eq!(result.text, "Iwo Iwo Iwo.");
+        }
+    }
+
+    #[test]
+    fn corrections_word_guard_accepts_case_punctuation_and_paragraphs() {
+        use super::{AiFormatResult, AiFormatStatus, guard_corrections_result};
+        let formatted = "Plan, który przedstawiłeś.\n\nIwo, Iwo!";
+        let result = guard_corrections_result(
+            "plan który przedstawiłeś Iwo Iwo",
+            AiFormatResult {
+                text: formatted.into(),
+                reasoning_text: None,
+                status: AiFormatStatus::Applied,
+            },
+        );
+        assert_eq!(result.status, AiFormatStatus::Applied);
+        assert_eq!(result.text, formatted);
+    }
     use super::*;
+    use crate::config::Config;
     use mockito::Matcher;
     use serde_json::json;
     use serial_test::serial;
@@ -2484,8 +2072,6 @@ mod tests {
         "LLM_TEMPERATURE",
         "CODESCRIBE_ANTHROPIC_MAX_TOKENS",
     ];
-    /// Env flag set in the lane-truth child process so nested tests skip re-spawn.
-    const LANE_TRUTH_TEST_CHILD: &str = "CODESCRIBE_LANE_TRUTH_TEST_CHILD";
 
     /// The stale-chain classifier keys on the provider's error code alone:
     /// `previous_response_not_found` (id minted under a rotated-away key) is
@@ -2555,40 +2141,7 @@ mod tests {
         assert_eq!(first[0].role, "user");
     }
 
-    /// RAII holder that restores one env var to its prior value on drop.
-    ///
-    /// Captures the previous value rather than assuming the variable was unset,
-    /// so a test run under an operator dotenv leaves the environment as it found it.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Set the variable, remembering what was there before.
-        fn set(key: &'static str, value: &str) -> Self {
-            let prev = std::env::var(key).ok();
-            unsafe { std::env::set_var(key, value) };
-            Self { key, prev }
-        }
-
-        /// Unset the variable, remembering what was there before.
-        fn remove(key: &'static str) -> Self {
-            let prev = std::env::var(key).ok();
-            unsafe { std::env::remove_var(key) };
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the captured value, or unset again if there was none.
-        fn drop(&mut self) {
-            match self.prev.as_deref() {
-                Some(value) => unsafe { std::env::set_var(self.key, value) },
-                None => unsafe { std::env::remove_var(self.key) },
-            }
-        }
-    }
+    use crate::test_isolation::EnvGuard;
 
     /// A bundle of [`EnvGuard`]s that unwinds in one go at end of scope.
     struct TestEnv {
@@ -2615,13 +2168,13 @@ mod tests {
 
     /// Build a title target directly, bypassing config resolution entirely.
     fn title_provider(
-        format: EndpointFormat,
+        wire_family: WireFamily,
         endpoint: String,
         model: &str,
         api_key: Option<&str>,
     ) -> ThreadTitleProvider {
         ThreadTitleProvider {
-            format,
+            wire_family,
             endpoint,
             model: model.to_string(),
             api_key: api_key.map(ToOwned::to_owned),
@@ -2701,7 +2254,7 @@ mod tests {
         set_response_id_for_mode(AiMode::Formatting, "resp_existing_chain".to_string());
         let before = get_previous_response_id_for_mode(AiMode::Formatting);
         let provider = title_provider(
-            EndpointFormat::ResponsesApi,
+            WireFamily::OpenAiResponses,
             format!("{}/v1/responses", server.url()),
             "title-model",
             Some("title-key"),
@@ -2757,8 +2310,8 @@ mod tests {
             .create_async()
             .await;
         let provider = title_provider(
-            EndpointFormat::AnthropicMessages,
-            server.url(),
+            WireFamily::AnthropicMessages,
+            format!("{}/v1/messages", server.url()),
             "claude-sonnet-4-6",
             Some("anthropic-title-key"),
         );
@@ -2772,61 +2325,6 @@ mod tests {
         .expect("Anthropic title request should succeed");
         assert_eq!(title.as_deref(), Some("Anthropic title"));
         mock.assert_async().await;
-    }
-
-    #[tokio::test]
-    #[serial]
-    /// Ollama's title path is the local analogue of chain-statelessness: memory
-    /// is pre-seeded with two turns and must still hold exactly two afterwards,
-    /// proving the title neither read from nor appended to the conversation.
-    async fn ollama_thread_title_uses_same_prompt_cap_without_memory() {
-        reset_ollama_memory();
-        push_memory("user", "stale conversation memory");
-        push_memory("assistant", "stale answer");
-
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/api/chat")
-            .match_body(Matcher::Json(json!({
-                "model": "qwen-title",
-                "messages": [
-                    {"role": "system", "content": THREAD_TITLE_PROMPT},
-                    {"role": "user", "content": "Raw\nOllama input"}
-                ],
-                "stream": false,
-                "options": {
-                    "temperature": 0.1,
-                    "num_predict": THREAD_TITLE_MAX_TOKENS
-                }
-            })))
-            .expect(1)
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(json!({"message": {"content": "Ollama title"}}).to_string())
-            .create_async()
-            .await;
-        let provider = title_provider(
-            EndpointFormat::OllamaChat,
-            format!("{}/api/chat/v1/responses", server.url()),
-            "qwen-title",
-            None,
-        );
-
-        let title = generate_thread_title_with_provider(
-            "Raw\nOllama input",
-            &provider,
-            THREAD_TITLE_TIMEOUT,
-        )
-        .await
-        .expect("Ollama title request should succeed");
-        assert_eq!(title.as_deref(), Some("Ollama title"));
-        assert_eq!(
-            snapshot_memory().len(),
-            2,
-            "title path must not mutate memory"
-        );
-        mock.assert_async().await;
-        reset_ollama_memory();
     }
 
     #[tokio::test]
@@ -2849,7 +2347,7 @@ mod tests {
             .create_async()
             .await;
         let provider = title_provider(
-            EndpointFormat::ResponsesApi,
+            WireFamily::OpenAiResponses,
             format!("{}/v1/responses", server.url()),
             "title-model",
             Some("title-key"),
@@ -2962,83 +2460,182 @@ mod tests {
         assert!(!is_effectively_same("to jest test", "To jest test"));
     }
 
-    /// The shipped default is fail-fast — one attempt, no retry. Pinned because
-    /// raising it silently multiplies latency on every deterministic failure.
+    /// C15D falsifier: public formatter entries require one selected runtime
+    /// generation rather than separate policy, lane, prompt, or timing facts.
+    ///
+    /// Statically proves that all public formatting entry points require the immutable
+    /// runtime settings generation (`&RuntimeSettingsSnapshot`) without polling futures,
+    /// guaranteeing zero network activity.
+    ///
+    /// `#[serial]`: the snapshot load resolves the process-global
+    /// `CODESCRIBE_DATA_DIR`; running off the serial lane let this load consume a
+    /// serial settings test's one-time V1 migration and rewrite its private
+    /// fixture (traced 2026-10-01, X-hermetic-test-config load loop).
     #[test]
-    fn default_retry_policy_is_single_attempt() {
-        assert_eq!(DEFAULT_AI_MAX_RETRIES, 0);
-        assert_eq!(DEFAULT_AI_RETRY_DELAY_MS, 500);
+    #[serial]
+    fn formatter_entry_requires_runtime_settings_snapshot() {
+        let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+        let _f1 = format_text("test", None, false, &runtime_settings);
+        let _f2 = format_text_with_status("test", None, false, &runtime_settings, None);
+        let _f3 =
+            format_text_with_status_channels("test", None, false, &runtime_settings, None, None);
+        let _f4 = format_text_with_status_for_policy("test", None, &runtime_settings, None);
     }
 
-    /// Saved settings win over stale env — a settings change takes effect on the
-    /// next request, not the next restart.
-    ///
-    /// Re-executes itself as a child process with an isolated data dir and
-    /// deliberately stale `LLM_*` env. That indirection is required: the lane
-    /// resolvers read process-global state, so the contract cannot be observed
-    /// honestly from inside a shared test process.
+    /// Saved settings win on the next seal — a settings change takes effect on
+    /// the next request, not the next restart. Provider and model come from
+    /// `settings.json` through the one resolution path in the loader.
     #[test]
-    fn lane_configs_read_fresh_truth_after_settings_save() {
-        if std::env::var_os(LANE_TRUTH_TEST_CHILD).is_none() {
-            let data_dir = tempfile::TempDir::new().expect("isolated data dir");
-            let executable = std::env::current_exe().expect("current core test executable");
-            let status = std::process::Command::new(executable)
-                .arg("--exact")
-                .arg("llm::ai_formatting::tests::lane_configs_read_fresh_truth_after_settings_save")
-                .arg("--nocapture")
-                .env(LANE_TRUTH_TEST_CHILD, "1")
-                .env("CODESCRIBE_DATA_DIR", data_dir.path())
-                .env("CODESCRIBE_DISABLE_KEYCHAIN", "1")
-                .envs([
-                    ("LLM_FORMATTING_PROVIDER", "openai-responses"),
-                    (
-                        "LLM_FORMATTING_ENDPOINT",
-                        "https://stale-formatting.example/v1",
-                    ),
-                    ("LLM_FORMATTING_MODEL", "stale-formatting-model"),
-                    ("LLM_ASSISTIVE_PROVIDER", "openai-responses"),
-                    (
-                        "LLM_ASSISTIVE_ENDPOINT",
-                        "https://stale-assistive.example/v1",
-                    ),
-                    ("LLM_ASSISTIVE_MODEL", "stale-assistive-model"),
-                ])
-                .status()
-                .expect("run isolated lane-truth test");
-            assert!(
-                status.success(),
-                "isolated lane-truth test failed: {status}"
-            );
-            return;
+    #[serial]
+    fn runtime_llm_lanes_read_fresh_settings_after_save() {
+        let data_dir = tempfile::TempDir::new().expect("isolated data dir");
+        let mut env = TestEnv::clean();
+        env.set(
+            "CODESCRIBE_DATA_DIR",
+            data_dir.path().to_str().expect("utf-8 test data path"),
+        );
+        env.set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        for key in LANE_SELECTOR_ENV_KEYS {
+            env.guards.push(EnvGuard::remove(key));
         }
-
-        crate::config::UserSettings {
-            llm_formatting_endpoint: Some("https://fresh-formatting.example/v1".to_string()),
-            llm_formatting_model: Some("fresh-formatting-model".to_string()),
-            llm_assistive_provider: Some("openai-responses".to_string()),
-            llm_assistive_endpoint: Some("https://fresh-assistive.example/v1".to_string()),
-            llm_assistive_model: Some("fresh-assistive-model".to_string()),
+        let mut settings = crate::config::UserSettings {
+            llm_formatting_provider: Some("xai-responses".to_string()),
+            llm_formatting_model: Some("grok-fresh".to_string()),
+            llm_assistive_provider: Some("anthropic-messages".to_string()),
+            llm_assistive_model: Some("claude-fresh".to_string()),
             ..Default::default()
-        }
-        .save()
-        .expect("persist lane settings");
+        };
+        settings.save().expect("persist lane settings");
 
+        let snapshot = Config::load_runtime_snapshot().expect("seal runtime settings");
         assert_eq!(
-            get_formatting_endpoint().expect("formatting endpoint"),
-            "https://fresh-formatting.example/v1/responses"
+            snapshot.llm_lanes().formatting().endpoint(),
+            "https://api.x.ai/v1/responses"
         );
+        assert_eq!(snapshot.llm_lanes().formatting().model(), "grok-fresh");
         assert_eq!(
-            get_formatting_model().expect("formatting model"),
-            "fresh-formatting-model"
+            snapshot.llm_lanes().assistive().endpoint(),
+            "https://api.anthropic.com/v1/messages"
         );
-        assert_eq!(
-            get_assistive_endpoint().expect("assistive endpoint"),
-            "https://fresh-assistive.example/v1/responses"
+        assert_eq!(snapshot.llm_lanes().assistive().model(), "claude-fresh");
+
+        settings.llm_assistive_model = Some("claude-fresher".to_string());
+        settings.save().expect("persist changed model");
+        let snapshot = Config::load_runtime_snapshot().expect("re-seal runtime settings");
+        assert_eq!(snapshot.llm_lanes().assistive().model(), "claude-fresher");
+    }
+
+    /// Every env selector that could hand a lane a provider or a model.
+    const LANE_SELECTOR_ENV_KEYS: [&str; 4] = [
+        "LLM_FORMATTING_PROVIDER",
+        "LLM_FORMATTING_MODEL",
+        "LLM_ASSISTIVE_PROVIDER",
+        "LLM_ASSISTIVE_MODEL",
+    ];
+
+    /// Both lanes on one Custom row at the mock server, sealed before any key
+    /// exists (the production controller built through `new_without_keychain`);
+    /// the key that appears in the Keychain bundle afterwards is what every
+    /// request authenticates with — Custom keys never pass through env.
+    #[tokio::test]
+    #[serial]
+    async fn every_runtime_llm_lane_authenticates_from_the_key_present_at_request_time() {
+        use crate::config::RuntimeLlmLaneKind;
+        use crate::config::keychain::test_support::install_bundle;
+        use crate::llm::provider::{CustomProvider, WireFamily};
+        use crate::state::conversation::{AiMode, reset_conversation_for_mode};
+
+        let data_dir = tempfile::TempDir::new().expect("isolated data dir");
+        let mut server = mockito::Server::new_async().await;
+        let mut env = TestEnv::clean();
+        env.set(
+            "CODESCRIBE_DATA_DIR",
+            data_dir.path().to_str().expect("utf-8 test data path"),
         );
-        assert_eq!(
-            get_assistive_model().expect("assistive model"),
-            "fresh-assistive-model"
-        );
+        env.set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        for key in LANE_SELECTOR_ENV_KEYS {
+            env.guards.push(EnvGuard::remove(key));
+        }
+        let row = CustomProvider::new("Witness Box", WireFamily::OpenAiResponses, &server.url())
+            .expect("valid custom row");
+        let account = row.key_account();
+        let mut settings = crate::config::UserSettings::default();
+        settings.add_custom_provider(row).expect("add custom row");
+        settings.llm_formatting_provider = Some("custom:witness-box".to_string());
+        settings.llm_formatting_model = Some("gpt-test-formatting".to_string());
+        settings.llm_assistive_provider = Some("custom:witness-box".to_string());
+        settings.llm_assistive_model = Some("gpt-test-assistive".to_string());
+        settings.save().expect("persist lane settings");
+
+        // Seal the lane topology before any credential exists.
+        let _empty_bundle = install_bundle(&[]);
+        let snapshot = Config::load_runtime_snapshot().expect("seal credential-free topology");
+        for lane in [
+            RuntimeLlmLaneKind::Formatting,
+            RuntimeLlmLaneKind::Assistive,
+        ] {
+            let lane = snapshot.llm_lanes().lane(lane);
+            assert_eq!(lane.credential().key_account(), account);
+            assert!(
+                lane.credential().api_key().is_none(),
+                "baseline snapshot must not already contain the test credential",
+            );
+        }
+
+        let cases = [
+            (
+                RuntimeLlmLaneKind::Formatting,
+                "synthetic-formatting-key",
+                false,
+            ),
+            (
+                RuntimeLlmLaneKind::Assistive,
+                "synthetic-assistive-key",
+                true,
+            ),
+        ];
+        for (kind, synthetic_key, assistive) in cases {
+            let _bundle = install_bundle(&[(account.as_str(), synthetic_key)]);
+            let expected_authorization = format!("Bearer {synthetic_key}");
+            let mock = server
+                .mock("POST", "/v1/responses")
+                .match_header("authorization", expected_authorization.as_str())
+                .match_header("x-api-key", synthetic_key)
+                .match_body(Matcher::Any)
+                .expect(1)
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(
+                    json!({
+                        "id": format!("resp-{}", kind.as_str()),
+                        "output": [{
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "authenticated"}]
+                        }]
+                    })
+                    .to_string(),
+                )
+                .create_async()
+                .await;
+
+            reset_conversation_for_mode(if assistive {
+                AiMode::Assistive
+            } else {
+                AiMode::Formatting
+            });
+            let output = call_llm_endpoint(
+                "request-time credential witness",
+                "test system prompt",
+                assistive,
+                snapshot.llm_lanes().lane(kind),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{} lane request failed: {error}", kind.as_str()));
+            assert_eq!(output.assistant_text, "authenticated");
+            mock.assert_async().await;
+        }
+        reset_conversation_for_mode(AiMode::Formatting);
+        reset_conversation_for_mode(AiMode::Assistive);
     }
 
     #[tokio::test]
@@ -3083,7 +2680,7 @@ mod tests {
             "hello world",
             "format carefully",
             false,
-            &server.url(),
+            &format!("{}/v1/messages", server.url()),
             "claude-sonnet-4-6",
             "anthropic-test-key",
         )
@@ -3134,7 +2731,7 @@ mod tests {
             "hello world",
             "format carefully",
             false,
-            &server.url(),
+            &format!("{}/v1/messages", server.url()),
             "claude-opus-4-8",
             "anthropic-test-key",
         )
@@ -3177,7 +2774,7 @@ mod tests {
             "hello world",
             "format carefully",
             false,
-            &server.url(),
+            &format!("{}/v1/messages", server.url()),
             "claude-sonnet-4-6",
             "anthropic-test-key",
         )
@@ -3223,7 +2820,7 @@ mod tests {
             "hello world",
             "format carefully",
             false,
-            &server.url(),
+            &format!("{}/v1/messages", server.url()),
             "claude-sonnet-4-6",
             "anthropic-test-key",
         )

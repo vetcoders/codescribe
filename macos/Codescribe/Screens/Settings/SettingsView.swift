@@ -2,28 +2,21 @@ import AppKit
 import Combine
 import SwiftUI
 
-// Settings window: a NATIVE `NavigationSplitView` whose sidebar is a real
-// `List(selection:)` in `.sidebar` style — the same chrome the Agent window
-// already uses, and the reason that window survives an OS bump without visual
-// drift while this one used to.
-//
-// The previous shell was a plain `HStack` with a 212pt hand-drawn rail. It was
-// written that way to dodge one concrete problem: a NavigationSplitView reserves
-// a toolbar strip above the sidebar, which pushed the rail ~70px down. Dropping
-// the split view took the whole native surface with it — no collapse, no search,
-// no section headers, no system material, no keyboard navigation, and a rail
-// that had to re-implement selection state by hand.
-//
-// The strip is not dead space, it is the toolbar: the wordmark and version live
-// in it, and it hosts the system sidebar toggle. That turns the reason for the
-// fork into the feature the operator asked for.
+// Shared Settings content, hosted by the app’s single resizable Settings window.
 struct SettingsView: View {
+  static let windowID = "codescribe-settings"
   @StateObject private var model: SettingsViewModel
+  // Native selection reconciliation writes only view state. Navigation and
+  // its refresh effects are committed by onChange, outside the List setter.
+  @State private var sidebarSelection: SettingsSection?
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
   @State private var search: String = ""
+  @State private var pendingScrollAnchor: SettingsAnchor?
+  @State private var hostWindow: NSWindow?
 
   init(model: SettingsViewModel? = nil) {
     _model = StateObject(wrappedValue: model ?? SettingsViewModel())
+    _sidebarSelection = State(initialValue: model?.section ?? .creator)
   }
 
   var body: some View {
@@ -34,47 +27,73 @@ struct SettingsView: View {
     } detail: {
       detail
     }
-    .navigationTitle("")
+    .navigationTitle(Text(verbatim: ""))
     .toolbar {
-      ToolbarItem(placement: .navigation) {
-        HStack(spacing: 9) {
-          Wordmark(size: 14)
-            .fixedSize(horizontal: true, vertical: false)
-          Text("v\(model.appVersion)")
-            .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textFaintAlt)
-        }
+      if #available(macOS 26.0, *) {
+        brandToolbar.sharedBackgroundVisibility(.hidden)
+      } else {
+        brandToolbar
       }
     }
     .csFocusPolicy()
-    .developerPowerCorner(padding: 12)
+    .controlSize(.regular)
     .frame(minWidth: 880, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
-    .background(SettingsWindowCapabilities())
-    // The panels still paint hand-picked dark tokens, so the window stays
-    // pinned to dark until the palette itself is theme-aware. Removing this
-    // line before that work lands would render dark text on a light system
-    // background — the sidebar is native either way.
-    .preferredColorScheme(.dark)
     .onAppear {
+      sidebarSelection = model.section
       model.refresh()
       consumePendingDeepLink()
     }
-    .onReceive(NotificationCenter.default.publisher(for: SettingsDeepLink.pendingSectionDidChange))
-    { _ in
+    .task {
+      // The health footer must include the controller's real recording
+      // admission verdict even when Audio is not the selected section.
+      await model.refreshAdmission()
+    }
+    .background(HostingWindowReader { hostWindow = $0 })
+    .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
+      guard let window = notification.object as? NSWindow,
+        window === hostWindow, window.isVisible
+      else { return }
+      model.refreshProviderAccess()
+    }
+    .onReceive(
+      NotificationCenter.default.publisher(
+        for: SettingsDeepLink.pendingSectionDidChange, object: SettingsDeepLink.shared)
+    ) { _ in
+      // Only a Settings surface the user can actually see may take the one-shot
+      // target. A hosted-but-hidden instance (closed scene, XCTest host) must
+      // leave it for whichever surface opens next.
+      guard hostWindow?.isVisible == true else { return }
       consumePendingDeepLink()
     }
   }
 
+  private var brandToolbar: some ToolbarContent {
+    ToolbarItem(placement: .navigation) {
+      HStack(spacing: 16) {
+        Wordmark(size: 16)
+          .fixedSize(horizontal: true, vertical: false)
+        Text(verbatim: "v\(model.appVersion)")
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(Color.secondary)
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 6)
+    }
+  }
+
   /// Native sidebar: grouped sections, SF Symbol rows, system selection, and a
-  /// search field that matches panel names AND what each panel does.
+  /// search field that matches panel names AND what each panel does. One flat
+  /// row per section — a pane's parts are tabs inside the pane, not child rows.
   private var sidebar: some View {
-    List(selection: routeSelection) {
+    List(selection: $sidebarSelection) {
       ForEach(SettingsSectionGroup.allCases) { group in
         let items = matchedSections.filter { $0.group == group }
         if !items.isEmpty {
           Section(group.title) {
             ForEach(items) { item in
-              sidebarRow(item)
+              Label(item.title, systemImage: item.symbol)
+                .tag(item)
+                .accessibilityIdentifier("settings-rail-\(item.rawValue)")
             }
           }
         }
@@ -86,164 +105,85 @@ struct SettingsView: View {
       placement: .sidebar,
       prompt: "Search settings"
     )
-  }
-
-  /// A paginated section renders as an expandable parent whose children are
-  /// its pages; everything else stays a plain row. While a search is active
-  /// the tree is pre-expanded — a hit the user cannot see is not a hit.
-  @ViewBuilder
-  private func sidebarRow(_ item: SettingsSection) -> some View {
-    let pages = visiblePages(in: item)
-    if pages.isEmpty {
-      Label(item.title, systemImage: item.symbol)
-        .tag(SettingsRoute.section(item))
-        .accessibilityIdentifier("settings-rail-\(item.rawValue)")
-    } else {
-      DisclosureGroup(isExpanded: expansion(for: item)) {
-        ForEach(pages) { page in
-          Label(page.title, systemImage: page.symbol)
-            .tag(SettingsRoute.page(page))
-            .accessibilityIdentifier("settings-rail-page-\(page.rawValue)")
-        }
-      } label: {
-        Label(item.title, systemImage: item.symbol)
-          .tag(SettingsRoute.section(item))
-          .accessibilityIdentifier("settings-rail-\(item.rawValue)")
-      }
+    .onChange(of: sidebarSelection) { _, selection in
+      // Clearing/filtering the native selection does not clear the detail.
+      guard let selection, selection != model.section else { return }
+      model.select(selection)
+    }
+    .onChange(of: model.section) { _, section in
+      sidebarSelection = section
+      landOnSearchHit(in: section)
     }
   }
 
-  /// Sections the current query reveals: a title/keyword hit on the section
-  /// itself, or on any of its pages (so "mcp" surfaces Agent).
+  /// Sections the current query reveals, directly or through one of their tabs.
   private var matchedSections: [SettingsSection] {
-    let direct = Set(SettingsSection.matching(query: search))
-    let viaPages = Set(SettingsPage.matching(query: search).map(\.section))
-    let hits =
-      search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      ? direct
-      : direct.union(viaPages)
-    return SettingsSection.allCases.filter { hits.contains($0) }
+    SettingsSection.revealed(by: search)
   }
 
-  /// Pages to show under a section: all of them normally, only the matches
-  /// while searching — unless the section itself matched, which means the user
-  /// asked for the section and deserves its full contents.
-  private func visiblePages(in section: SettingsSection) -> [SettingsPage] {
-    let all = SettingsPage.pages(in: section)
-    guard !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-      !SettingsSection.matching(query: search).contains(section)
-    else { return all }
-    let matched = Set(SettingsPage.matching(query: search))
-    return all.filter { matched.contains($0) }
-  }
-
-  private func expansion(for section: SettingsSection) -> Binding<Bool> {
-    Binding(
-      get: {
-        !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-          || model.section == section
-      },
-      set: { expanded in
-        // Expanding a collapsed parent is also a navigation intent.
-        if expanded, model.section != section { model.select(section) }
-      }
-    )
-  }
-
-  /// `List` selection is optional by contract; a nil write (⌘-click clearing a
-  /// row) must not blank the detail pane, so it is dropped instead of applied.
-  private var routeSelection: Binding<SettingsRoute?> {
-    Binding(
-      get: { model.route },
-      set: { if let value = $0 { model.select(value) } }
-    )
+  /// A section opened while searching lands on the tab the query named, so
+  /// "mcp" opens Agent › MCP servers rather than Agent's first tab.
+  private func landOnSearchHit(in section: SettingsSection) {
+    guard let tab = SettingsTab.searchLanding(in: section, query: search),
+      model.currentTab != tab
+    else { return }
+    model.select(tab)
   }
 
   private func consumePendingDeepLink() {
-    guard let target = SettingsDeepLink.consume() else { return }
+    guard let target = SettingsDeepLink.shared.consume() else { return }
     model.select(target)
+    pendingScrollAnchor = target.anchor
   }
 
   @ViewBuilder
   private var detail: some View {
-    ScrollView {
+    ScrollViewReader { proxy in
       Group {
         switch model.section.destination {
         case .dictation:
           EnginePanel(model: model)
-        case .shortcuts:
-          ShortcutsPanel(model: model)
-        case .providers:
-          KeysPanel(model: model)
         case .agent:
           AgentPanel(model: model)
-        case .prompts:
-          PromptPanel(model: model)
-        case .user:
-          UserPanel(model: model)
-        case .dictionary:
-          VoiceLabPanel(model: model)
-        case .audio:
-          AudioPanel(model: model)
-        case .license:
-          LicensePanel(model: model)
-        case .creator:
-          CreatorPanel(model: model)
-        case .lab:
-          LabPanel()
+        default:
+          ScrollView {
+            untabbedDetail
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+          .scrollContentBackground(.hidden)
         }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
+      .onChange(of: pendingScrollAnchor) { _, anchor in
+        guard let anchor else { return }
+        DispatchQueue.main.async {
+          proxy.scrollTo(anchor, anchor: .top)
+          pendingScrollAnchor = nil
+        }
+      }
     }
-    .scrollContentBackground(.hidden)
-    .background(Self.windowGradient)
   }
 
-  /// linear-gradient(135deg,#15110e,#0b0c10 55%,#0d1012) from the mock.
-  static let windowGradient = LinearGradient(
-    stops: [
-      .init(color: Color(hex: 0x15110E), location: 0.0),
-      .init(color: Color(hex: 0x0B0C10), location: 0.55),
-      .init(color: Color(hex: 0x0D1012), location: 1.0),
-    ],
-    startPoint: .topLeading,
-    endPoint: .bottomTrailing
-  )
-}
-
-/// SwiftUI's Settings scene can silently keep the content-sized AppKit style
-/// mask even when `.windowResizability` is present (notably after restoring an
-/// older saved frame). Enforce normal macOS window capabilities on the actual
-/// host window so Settings can resize, zoom and enter native full screen.
-private struct SettingsWindowCapabilities: NSViewRepresentable {
-  func makeNSView(context: Context) -> NSView {
-    let view = NSView(frame: .zero)
-    DispatchQueue.main.async { configure(view.window) }
-    return view
-  }
-
-  func updateNSView(_ nsView: NSView, context: Context) {
-    DispatchQueue.main.async { configure(nsView.window) }
-  }
-
-  private func configure(_ window: NSWindow?) {
-    guard let window else { return }
-    window.styleMask.formUnion([.resizable, .miniaturizable, .fullSizeContentView])
-    window.collectionBehavior.insert(.fullScreenPrimary)
-    let minimum = NSSize(width: 880, height: 620)
-    window.minSize = minimum
-    window.level = .normal
-    window.standardWindowButton(.zoomButton)?.isEnabled = true
-    window.standardWindowButton(.miniaturizeButton)?.isEnabled = true
-
-    var frame = window.frame
-    frame.size.width = max(frame.width, minimum.width)
-    frame.size.height = max(frame.height, minimum.height)
-    if let screen = window.screen ?? NSScreen.main {
-      frame = window.constrainFrameRect(frame, to: screen)
-    }
-    if frame != window.frame {
-      window.setFrame(frame, display: false)
+  @ViewBuilder
+  private var untabbedDetail: some View {
+    switch model.section.destination {
+    case .shortcuts:
+      ShortcutsPanel(model: model)
+    case .providers:
+      ProvidersPanel(model: model)
+    case .user:
+      UserPanel(model: model)
+    case .dictionary:
+      VoiceLabPanel(model: model)
+    case .audio:
+      AudioPanel(model: model)
+    case .license:
+      LicensePanel(model: model)
+    case .creator:
+      CreatorPanel(model: model)
+    case .lab:
+      LabPanel(model: model)
+    case .dictation, .agent:
+      EmptyView()
     }
   }
 }
@@ -265,7 +205,7 @@ private struct SettingsHealthFooter: View {
         } label: {
           content(health)
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .help("Open \(target.title) settings")
       } else {
         content(health)
@@ -287,7 +227,7 @@ private struct SettingsHealthFooter: View {
     .padding(.vertical, 12)
     .contentShape(Rectangle())
     .overlay(alignment: .top) {
-      Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
+      Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
     }
   }
 }
@@ -297,57 +237,81 @@ extension SettingsHealthLevel {
     switch self {
     case .healthy: return CSColor.oliveLight
     case .degraded: return CSColor.amber
-    case .offline: return CSColor.terracottaLight
-    case .unknown: return CSColor.textFaint
+    case .offline: return CSColor.terracotta
+    case .unknown: return Color.secondary
     }
   }
 }
 
 // MARK: - Shared Settings chrome (consumed by every panel)
 
+struct SettingsPageHeader: View {
+  let title: String
+  var blurb: String?
+
+  init(_ title: String, blurb: String? = nil) {
+    self.title = title
+    self.blurb = blurb
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: CSSpace.sm) {
+      Text(title)
+        .font(.title2.weight(.semibold))
+        .foregroundStyle(.primary)
+        .accessibilityAddTraits(.isHeader)
+      if let blurb, !blurb.isEmpty {
+        Text(blurb)
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
 struct SettingsSectionLabel: View {
   let text: String
   init(_ text: String) { self.text = text }
   var body: some View {
-    Text(text.uppercased())
-      .font(CSFont.mono(12, .semibold))
-      .tracking(0.5)
-      .foregroundStyle(CSColor.textMuted)
+    Text(text)
+      .font(.subheadline.weight(.semibold))
+      .foregroundStyle(.secondary)
+      .accessibilityAddTraits(.isHeader)
   }
 }
 
 struct SettingsMenuLabel: View {
   let text: String
   var mono: Bool = false
-  var chrome: Bool = false
 
   var body: some View {
-    if chrome {
-      content
-        .padding(.horizontal, 11)
-        .padding(.vertical, 7)
-        .background(
-          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-            .fill(CSColor.surfaceRaised(0.03))
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-            .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-        )
-        .contentShape(Rectangle())
-    } else {
-      content
-    }
-  }
-
-  private var content: some View {
-    HStack(spacing: 6) {
+    HStack(spacing: CSSpace.xs) {
       Text(text)
-        .font(mono ? CSFont.mono(12.5, .semibold) : CSFont.ui(12.5, .semibold))
-        .foregroundStyle(CSColor.textHigh)
+        .font(mono ? CSFont.mono(12.5, .semibold) : .body.weight(.semibold))
+        .foregroundStyle(.primary)
         .lineLimit(1)
-      CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.textFaint)
+      CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: Color.secondary)
     }
+    .accessibilityElement(children: .combine)
+  }
+}
+
+extension View {
+  /// Grouped settings inset that follows the system appearance.
+  /// `csSettingsCard` stays on surfaces that still paint a fixed dark canvas.
+  func settingsGroupedInset(padding: CGFloat = CSSpace.card) -> some View {
+    self
+      .padding(padding)
+      .background(
+        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+          .fill(Color.primary.opacity(0.05))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+      )
   }
 }
 
@@ -369,11 +333,11 @@ struct RuntimeRow: View {
     HStack(spacing: 12) {
       Text(key)
         .font(CSFont.mono(12, .medium))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .frame(width: 160, alignment: .leading)
       Text(value)
-        .font(mono ? CSFont.mono(12.5, .semibold) : CSFont.ui(12.5, .semibold))
-        .foregroundStyle(mono ? CSColor.textBodyAlt : CSColor.textHigh)
+        .font(mono ? CSFont.mono(12.5, .semibold) : .body.weight(.semibold))
+        .foregroundStyle(.primary)
         .lineLimit(1)
         .truncationMode(.middle)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -381,7 +345,7 @@ struct RuntimeRow: View {
     }
     .padding(.horizontal, 16)
     .padding(.vertical, 13)
-    .background(tint ? CSColor.surfaceRaised(0.02) : Color.clear)
+    .background(tint ? Color.primary.opacity(0.04) : Color.clear)
   }
 
   @ViewBuilder
@@ -415,8 +379,38 @@ struct RuntimeRow: View {
       .frame(width: 960, height: 620)
   }
 
-  #Preview("Settings — Prompts") {
-    SettingsView(model: SettingsViewModel.preview(.prompts))
+  #Preview("Settings — Agent") {
+    SettingsView(model: SettingsViewModel.preview(.agent))
       .frame(width: 960, height: 620)
   }
 #endif
+
+/// Hands the hosting NSWindow to SwiftUI so event handlers can ask whether this
+/// surface is actually on screen. The callback fires on every window move,
+/// including detach (nil), so a stale handle cannot pass the visibility gate.
+private struct HostingWindowReader: NSViewRepresentable {
+  let onWindow: (NSWindow?) -> Void
+
+  func makeNSView(context: Context) -> WindowReportingView {
+    let view = WindowReportingView()
+    view.onWindow = onWindow
+    return view
+  }
+
+  func updateNSView(_ view: WindowReportingView, context: Context) {
+    view.onWindow = onWindow
+  }
+
+  final class WindowReportingView: NSView {
+    var onWindow: ((NSWindow?) -> Void)?
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      let window = self.window
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        self.onWindow?(window ?? self.window)
+      }
+    }
+  }
+}

@@ -26,12 +26,28 @@ use super::detector::{
 use crossbeam_channel::Sender;
 use std::time::{Duration, Instant};
 
+/// Start intent must wake a pending stop before entering the FIFO dispatcher:
+/// that dispatcher may still be awaiting the previous take's stop future.
+#[cfg(any(target_os = "macos", test))]
+fn preempts_stop_paste(event: &HotkeyEvent) -> bool {
+    matches!(
+        event,
+        HotkeyEvent::Hold {
+            action: super::detector::HoldAction::Down,
+            ..
+        } | HotkeyEvent::ToggleNormal
+            | HotkeyEvent::ToggleRaw
+            | HotkeyEvent::ToggleAssistive
+    )
+}
+
 // --- macOS CGEventTap Implementation using raw bindings ---
 
 /// The real implementation: a session-level CGEventTap driven on its own
 /// thread by a CFRunLoop.
 #[cfg(target_os = "macos")]
 mod macos {
+    use super::super::detector::digit_from_virtual_keycode;
     use super::*;
     use std::ffi::c_void;
     use std::ptr;
@@ -58,6 +74,22 @@ mod macos {
     /// Opaque `CFRunLoopRef` — **not** owned; `CFRunLoopGetCurrent` does not
     /// retain, so this one is never released.
     type CFRunLoopRef = *mut c_void;
+    /// Opaque `CFRunLoopTimerRef` — retained by `CFRunLoopTimerCreate`.
+    type CFRunLoopTimerRef = *mut c_void;
+
+    /// Callback CoreFoundation uses for a run-loop timer.
+    type CFRunLoopTimerCallBack = extern "C" fn(timer: CFRunLoopTimerRef, info: *mut c_void);
+
+    /// `CFRunLoopTimerContext` with version 0. Retain/release stay null because
+    /// the info pointer is the tap's `HotkeyState`, owned by `EventTapResources`.
+    #[repr(C)]
+    struct CFRunLoopTimerContext {
+        version: isize,
+        info: *mut c_void,
+        retain: *const c_void,
+        release: *const c_void,
+        copy_description: *const c_void,
+    }
 
     /// Discriminant of a CGEvent (key down, key up, flags changed, or a
     /// tap-disabled sentinel).
@@ -74,6 +106,10 @@ mod macos {
     const K_CG_EVENT_KEY_UP: CGEventType = 11;
     /// A modifier changed state — carries every hold and double-tap gesture.
     const K_CG_EVENT_FLAGS_CHANGED: CGEventType = 12;
+    /// A mouse button other than left or right went down. Button 2 is the middle button.
+    const K_CG_EVENT_OTHER_MOUSE_DOWN: CGEventType = 25;
+    /// A mouse button other than left or right was released.
+    const K_CG_EVENT_OTHER_MOUSE_UP: CGEventType = 26;
 
     // CGEventType "tap disabled" sentinels. CoreGraphics emits these (the two
     // highest u32 values) when it forcibly disables a tap — either because a
@@ -101,6 +137,8 @@ mod macos {
     // CGEventField for keycode
     /// Field selector that yields the virtual keycode of a keyboard event.
     const K_CG_KEYBOARD_EVENT_KEYCODE: CGEventField = 9;
+    /// Field selector that yields the mouse button number (2 = middle).
+    const K_CG_MOUSE_EVENT_BUTTON_NUMBER: CGEventField = 3;
 
     // macOS virtual keycodes for Option keys
     /// Left Option — the formatting-mode double-tap side.
@@ -186,6 +224,22 @@ mod macos {
         fn CFRunLoopStop(rl: CFRunLoopRef);
         /// Nudge a run loop so it notices a pending stop instead of sleeping on.
         fn CFRunLoopWakeUp(rl: CFRunLoopRef);
+        /// Create a repeating timer. The returned object is retained.
+        fn CFRunLoopTimerCreate(
+            allocator: *const c_void,
+            fire_date: f64,
+            interval: f64,
+            flags: u64,
+            order: isize,
+            callout: CFRunLoopTimerCallBack,
+            context: *mut CFRunLoopTimerContext,
+        ) -> CFRunLoopTimerRef;
+        /// Attach a timer to a run loop. The run loop retains it.
+        fn CFRunLoopAddTimer(rl: CFRunLoopRef, timer: CFRunLoopTimerRef, mode: *const c_void);
+        /// Stop a timer so it will not fire again.
+        fn CFRunLoopTimerInvalidate(timer: CFRunLoopTimerRef);
+        /// Current absolute time, the unit `CFRunLoopTimerCreate` expects.
+        fn CFAbsoluteTimeGetCurrent() -> f64;
         /// Release a retained CoreFoundation object.
         fn CFRelease(cf: *const c_void);
 
@@ -253,6 +307,25 @@ mod macos {
         }
     }
 
+    /// Wait at most `timeout` for a worker to finish. The reaper retains the
+    /// listener slot until the worker has actually exited, even when shutdown
+    /// must continue after the deadline.
+    fn join_worker_bounded<G: Send + 'static>(
+        worker: JoinHandle<()>,
+        guard: G,
+        timeout: Duration,
+    ) -> bool {
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            if worker.join().is_err() {
+                tracing::warn!("Hotkey worker thread panicked during shutdown");
+            }
+            drop(guard);
+            let _ = done_tx.send(());
+        });
+        done_rx.recv_timeout(timeout).is_ok()
+    }
+
     /// Shared teardown rendezvous between the owning thread, the worker, and
     /// the C callback.
     ///
@@ -267,6 +340,7 @@ mod macos {
         tap: AtomicPtr<c_void>,
         source: AtomicPtr<c_void>,
         run_loop: AtomicPtr<c_void>,
+        timer: AtomicPtr<c_void>,
     }
 
     impl RuntimeControl {
@@ -290,6 +364,9 @@ mod macos {
             // ownership transfer: whoever gets a non-null value from swap is
             // responsible for teardown. This prevents the double-invalidate
             // race with `Drop for EventTapResources`.
+            let timer = self.timer.swap(ptr::null_mut(), Ordering::SeqCst) as CFRunLoopTimerRef;
+            release_run_loop_timer(timer);
+
             let tap = self.tap.swap(ptr::null_mut(), Ordering::SeqCst) as CFMachPortRef;
             if !tap.is_null() {
                 unsafe {
@@ -388,6 +465,10 @@ mod macos {
             // This eliminates the double-invalidate crash (EXC_BREAKPOINT in
             // CFRunLoopSourceInvalidate).
 
+            let timer =
+                self.control.timer.swap(ptr::null_mut(), Ordering::SeqCst) as CFRunLoopTimerRef;
+            release_run_loop_timer(timer);
+
             let tap = self.control.tap.swap(ptr::null_mut(), Ordering::SeqCst) as CFMachPortRef;
             if !tap.is_null() {
                 unsafe {
@@ -450,22 +531,22 @@ mod macos {
             }
         }
 
-        /// Stop the listener and join its thread.
+        /// Stop the listener and wait at most three seconds for its thread.
         ///
         /// Idempotent — `Drop` calls it too, and a second call after an
-        /// explicit shutdown returns immediately. A panicking worker is logged
-        /// rather than propagated, because failing to join must not stop the
-        /// listener slot from being released.
+        /// explicit shutdown returns immediately. A reaper keeps the listener
+        /// slot until a slow worker really exits; quit never waits forever.
         pub fn shutdown(&mut self) {
             if self.worker.is_none() && self.running_guard.is_none() {
                 return;
             }
 
             self.control.request_stop();
-            if let Some(worker) = self.worker.take()
-                && worker.join().is_err()
-            {
-                tracing::warn!("Hotkey worker thread panicked during shutdown");
+            if let Some(worker) = self.worker.take() {
+                let guard = self.running_guard.take();
+                if !join_worker_bounded(worker, guard, Duration::from_secs(3)) {
+                    tracing::warn!("Hotkey worker did not exit within three seconds");
+                }
             }
             self.running_guard.take();
         }
@@ -503,6 +584,9 @@ mod macos {
     /// Map a macOS virtual keycode onto the keys the detector distinguishes;
     /// everything else becomes `Other`.
     fn map_keycode(keycode: i64) -> HotkeyPhysicalKey {
+        if let Some(digit) = digit_from_virtual_keycode(keycode) {
+            return HotkeyPhysicalKey::Digit(digit);
+        }
         match keycode {
             K_VK_OPTION => HotkeyPhysicalKey::LeftOption,
             K_VK_RIGHT_OPTION => HotkeyPhysicalKey::RightOption,
@@ -512,6 +596,44 @@ mod macos {
             K_VK_SPACE => HotkeyPhysicalKey::Space,
             K_VK_V => HotkeyPhysicalKey::V,
             _ => HotkeyPhysicalKey::Other,
+        }
+    }
+
+    fn release_run_loop_timer(timer: CFRunLoopTimerRef) {
+        if timer.is_null() {
+            return;
+        }
+        unsafe {
+            // SAFETY: `timer` is a non-null CFRunLoopTimerRef we retained at
+            // create time. Invalidate stops further callbacks; CFRelease drops
+            // that retain. The run loop's own retain is released by invalidate.
+            CFRunLoopTimerInvalidate(timer);
+            CFRelease(timer as *const c_void);
+        }
+    }
+
+    fn deliver_event(state: &mut HotkeyState, event: HotkeyEvent) {
+        if super::preempts_stop_paste(&event) {
+            crate::controller::preempt_stop_paste_for_next_take();
+        }
+        let _ = state.tx.send(event);
+    }
+
+    /// Promote a pending Fn tap into hold-to-talk once the hold delay has elapsed.
+    extern "C" fn fn_tap_timer_callback(_timer: CFRunLoopTimerRef, info: *mut c_void) {
+        if info.is_null() || !ENABLED.load(Ordering::Relaxed) {
+            return;
+        }
+        // SAFETY: `info` is the tap's boxed HotkeyState, stable until the timer
+        // is invalidated during teardown. The callback and the tap share the
+        // hotkey run-loop thread.
+        let state = unsafe { &mut *info.cast::<HotkeyState>() };
+        if state.control.is_stop_requested() {
+            return;
+        }
+        let runtime_config = get_hotkey_runtime_config();
+        if let Some(event) = state.detector.poll(Instant::now(), runtime_config) {
+            deliver_event(state, event);
         }
     }
 
@@ -622,11 +744,29 @@ mod macos {
                     modifiers,
                 }
             }
+            K_CG_EVENT_OTHER_MOUSE_DOWN | K_CG_EVENT_OTHER_MOUSE_UP => {
+                // Listen-only: the click still reaches the frontmost app.
+                // Buttons other than 2 (middle) are ignored, including click-drag.
+                if !runtime_config.middle_mouse_acts_as_fn {
+                    return event;
+                }
+                // SAFETY: read-only field accessor on the callback-owned `event`.
+                let button =
+                    unsafe { CGEventGetIntegerValueField(event, K_CG_MOUSE_EVENT_BUTTON_NUMBER) };
+                if button != 2 {
+                    return event;
+                }
+                HotkeyDetectorInput::MiddleButton {
+                    now,
+                    pressed: event_type == K_CG_EVENT_OTHER_MOUSE_DOWN,
+                    modifiers,
+                }
+            }
             _ => return event,
         };
 
         if let Some(hotkey_event) = state.detector.feed(input, runtime_config) {
-            let _ = state.tx.send(hotkey_event);
+            deliver_event(state, hotkey_event);
         }
 
         event
@@ -693,8 +833,12 @@ mod macos {
         let mut resources = EventTapResources::new(tx, control);
 
         // Key-up resets one-shot command chords so key repeat cannot emit duplicates.
-        let event_mask: u64 =
-            (1 << K_CG_EVENT_FLAGS_CHANGED) | (1 << K_CG_EVENT_KEY_DOWN) | (1 << K_CG_EVENT_KEY_UP);
+        // Other-mouse down/up observe button 2; the tap stays listen-only.
+        let event_mask: u64 = (1 << K_CG_EVENT_FLAGS_CHANGED)
+            | (1 << K_CG_EVENT_KEY_DOWN)
+            | (1 << K_CG_EVENT_KEY_UP)
+            | (1 << K_CG_EVENT_OTHER_MOUSE_DOWN)
+            | (1 << K_CG_EVENT_OTHER_MOUSE_UP);
 
         // Create the event tap
         let tap = unsafe {
@@ -745,6 +889,39 @@ mod macos {
         resources.set_run_loop(run_loop);
         unsafe {
             CFRunLoopAddSource(run_loop, source, kCFRunLoopCommonModes);
+        }
+
+        // 50 ms poll so an enabled Fn tap can become hold-to-talk at the
+        // existing hold delay without a second gesture recognizer.
+        let mut timer_context = CFRunLoopTimerContext {
+            version: 0,
+            info: resources.user_info_ptr(),
+            retain: ptr::null(),
+            release: ptr::null(),
+            copy_description: ptr::null(),
+        };
+        // SAFETY: null allocator, a context whose info pointer is the boxed
+        // HotkeyState, and a callback that only reads that state. The timer
+        // is retained here and released in teardown.
+        let timer = unsafe {
+            CFRunLoopTimerCreate(
+                ptr::null(),
+                CFAbsoluteTimeGetCurrent(),
+                0.05,
+                0,
+                0,
+                fn_tap_timer_callback,
+                &mut timer_context,
+            )
+        };
+        if !timer.is_null() {
+            unsafe {
+                CFRunLoopAddTimer(run_loop, timer, kCFRunLoopCommonModes);
+            }
+            resources
+                .control
+                .timer
+                .store(timer.cast::<c_void>(), Ordering::SeqCst);
         }
 
         let bindings = get_mode_hotkey_bindings();
@@ -847,6 +1024,35 @@ mod macos {
         }
 
         #[test]
+        fn bounded_join_returns_on_deadline_and_releases_slot_after_worker_exit() {
+            struct Slot(mpsc::Sender<()>);
+            impl Drop for Slot {
+                fn drop(&mut self) {
+                    let _ = self.0.send(());
+                }
+            }
+
+            let (release_tx, release_rx) = mpsc::channel();
+            let (slot_tx, slot_rx) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                release_rx.recv().expect("release worker");
+            });
+            assert!(!join_worker_bounded(
+                worker,
+                Slot(slot_tx),
+                Duration::from_millis(20)
+            ));
+            assert!(
+                slot_rx.try_recv().is_err(),
+                "slot must stay owned while worker lives"
+            );
+            release_tx.send(()).expect("release worker");
+            slot_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("slot released after worker exit");
+        }
+
+        #[test]
         /// Dropping a runtime stops its worker and clears the listener slot without panic.
         fn runtime_drop_stops_worker_without_panic() {
             let _guard = LIFECYCLE_TEST_LOCK
@@ -907,3 +1113,38 @@ mod macos {
 }
 
 pub use macos::{HotkeyRuntime, disable, enable, is_enabled, start_listener};
+
+#[cfg(test)]
+mod stop_preemption_tests {
+    use super::*;
+    use crate::os::hotkeys::{HoldAction, HoldMode};
+
+    #[test]
+    fn next_take_intent_preempts_but_release_and_ui_actions_do_not() {
+        for event in [
+            HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: HoldMode::Raw,
+            },
+            HotkeyEvent::ToggleNormal,
+            HotkeyEvent::ToggleRaw,
+            HotkeyEvent::ToggleAssistive,
+        ] {
+            assert!(preempts_stop_paste(&event), "{event:?}");
+        }
+        for event in [
+            HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Raw,
+            },
+            HotkeyEvent::HoldUpdate {
+                mode: HoldMode::Raw,
+            },
+            HotkeyEvent::AttachSelection,
+            HotkeyEvent::ShowAgent,
+            HotkeyEvent::InsertHere,
+        ] {
+            assert!(!preempts_stop_paste(&event), "{event:?}");
+        }
+    }
+}

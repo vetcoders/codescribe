@@ -1,0 +1,54 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "NSAppleEventsUsageDescription" : {
+      "comment" : "System permission prompt: why Codescribe sends Apple Events to other apps.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe uses Apple Events to bring apps forward and deliver transcribed text into the app you are working in."
+          }
+        }
+      }
+    },
+    "NSMicrophoneUsageDescription" : {
+      "comment" : "System permission prompt: why Codescribe needs the microphone.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe transcribes your speech locally with on-device Whisper."
+          }
+        }
+      }
+    },
+    "NSScreenCaptureUsageDescription" : {
+      "comment" : "System permission prompt: why Codescribe captures the screen.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe captures the screen when you ask the assistant to look at what is currently on screen."
+          }
+        }
+      }
+    },
+    "NSSpeechRecognitionUsageDescription" : {
+      "comment" : "System permission prompt: why Codescribe uses on-device speech recognition.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe uses on-device speech recognition (including Polish) to turn your dictation into text without sending audio to the cloud."
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

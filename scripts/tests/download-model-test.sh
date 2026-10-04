@@ -1,0 +1,144 @@
+#!/bin/bash
+# Hermetic regression for default Whisper bundle promotion.
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/codescribe-download-model-test.XXXXXX")
+export TEST_ROOT
+
+cleanup() {
+  find "$TEST_ROOT" -type f -delete 2>/dev/null || true
+  find "$TEST_ROOT" -type l -delete 2>/dev/null || true
+  find "$TEST_ROOT" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+}
+trap cleanup EXIT
+
+make_tiny_weights() {
+  local destination="$1"
+  local header='{"model.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}'
+  # The header is 65 bytes; safetensors prefixes it with little-endian u64.
+  printf '\x41\0\0\0\0\0\0\0%s\0\0' "$header" > "$destination"
+}
+
+hf() {
+  if [[ "${1:-}" == "auth" ]]; then
+    return 1
+  fi
+  if [[ "${2:-}" == "openai/whisper-large-v3-turbo" ]]; then
+    case "${FAKE_TOKENIZER_OUTPUT_MODE:-valid}" in
+      empty) return 0 ;;
+      multi) printf '%s\n%s\n' "$FAKE_TOKENIZER" "$FAKE_TOKENIZER" ;;
+      directory) printf '%s\n' "$TEST_ROOT" ;;
+      *) printf '%s\n' "$FAKE_TOKENIZER" ;;
+    esac
+  else
+    printf '%s\n' "$FAKE_MODEL_SNAPSHOT"
+  fi
+}
+export -f hf
+
+curl() {
+  local destination=""
+  while [[ "$#" -gt 0 ]]; do
+    if [[ "$1" == "-o" ]]; then
+      destination="$2"
+      shift 2
+    else
+      shift
+    fi
+  done
+  cp "$FAKE_MEL_FILTERS" "$destination"
+}
+export -f curl
+
+export CI=true
+ORIGINAL_HOME="$HOME"
+export CARGO_HOME="${CARGO_HOME:-$ORIGINAL_HOME/.cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-$ORIGINAL_HOME/.rustup}"
+export HOME="$TEST_ROOT/home"
+FAKE_BIN="$TEST_ROOT/bin"
+mkdir -p "$FAKE_BIN"
+# This shell regression owns destination promotion mechanics; Rust tests own
+# the canonical bundle validator exercised by the real script.
+printf '#!/bin/bash\nexit 0\n' > "$FAKE_BIN/cargo"
+chmod +x "$FAKE_BIN/cargo"
+export PATH="$FAKE_BIN:$PATH"
+printf -v TILDE_PREFIX '%s/' '~'
+export CODESCRIBE_MODELS_DIR="${TILDE_PREFIX}models"
+export FAKE_CONFIG="$ROOT_DIR/tests/fixtures/whisper_test_config.json"
+export FAKE_TOKENIZER="$ROOT_DIR/tests/fixtures/whisper_tokenizer.json"
+export FAKE_MEL_FILTERS="$TEST_ROOT/mel_filters.npz"
+mkdir -p "$HOME/models"
+command -v python3 >/dev/null 2>&1 || {
+  echo "python3 is required for download-model-test" >&2
+  exit 1
+}
+python3 -c 'import sys; sys.stdout.buffer.write(bytes.fromhex(sys.stdin.read()))' \
+  < "$ROOT_DIR/tests/fixtures/whisper_mel_filters.npz.hex" \
+  > "$FAKE_MEL_FILTERS"
+
+VALIDATION_SNAPSHOT="$TEST_ROOT/snapshot-tokenizer-validation"
+mkdir -p "$VALIDATION_SNAPSHOT"
+cp "$FAKE_CONFIG" "$VALIDATION_SNAPSHOT/config.json"
+make_tiny_weights "$VALIDATION_SNAPSHOT/weights.safetensors"
+export FAKE_MODEL_SNAPSHOT="$VALIDATION_SNAPSHOT"
+
+for mode in empty multi directory; do
+  export FAKE_TOKENIZER_OUTPUT_MODE="$mode"
+  if "$ROOT_DIR/scripts/download-model.sh" >"$TEST_ROOT/tokenizer-$mode.out" 2>"$TEST_ROOT/tokenizer-$mode.err"; then
+    echo "expected invalid tokenizer output mode to fail: $mode" >&2
+    exit 1
+  fi
+  grep -q "hf download did not return one tokenizer file" "$TEST_ROOT/tokenizer-$mode.err"
+done
+unset FAKE_TOKENIZER_OUTPUT_MODE
+
+FAILURE_TMP="$TEST_ROOT/failing-stage"
+mkdir -p "$FAILURE_TMP"
+export REAL_CP
+REAL_CP=$(command -v cp)
+# Literal child-script lines intentionally defer expansion until the fake cp runs.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/bin/bash' \
+  'destination="${!#}"' \
+  'if [[ "$destination" == *"/weights.safetensors.partial" ]]; then' \
+  '  printf partial > "$destination"' \
+  '  exit 1' \
+  'fi' \
+  'exec "$REAL_CP" "$@"' \
+  > "$FAKE_BIN/cp"
+chmod +x "$FAKE_BIN/cp"
+if TMPDIR="$FAILURE_TMP" "$ROOT_DIR/scripts/download-model.sh" >/dev/null 2>&1; then
+  echo "expected interrupted weight staging copy to fail" >&2
+  exit 1
+fi
+rm -f "$FAKE_BIN/cp"
+if find "$FAILURE_TMP" -type d -name 'codescribe-whisper-model.*' | grep -q .; then
+  echo "failed staging cleanup left a model directory" >&2
+  exit 1
+fi
+
+run_promotion_case() {
+  local selected_name="$1"
+  local stale_name="$2"
+  local snapshot="$TEST_ROOT/snapshot-$selected_name"
+  local destination="$HOME/models/whisper-large-v3-turbo"
+
+  mkdir -p "$snapshot" "$destination"
+  cp "$FAKE_CONFIG" "$snapshot/config.json"
+  make_tiny_weights "$snapshot/$selected_name"
+  make_tiny_weights "$destination/$stale_name"
+  export FAKE_MODEL_SNAPSHOT="$snapshot"
+
+  "$ROOT_DIR/scripts/download-model.sh" >/dev/null
+
+  [[ -f "$destination/$selected_name" ]]
+  [[ ! -e "$destination/$stale_name" ]]
+}
+
+run_promotion_case model.safetensors weights.safetensors
+run_promotion_case weights.safetensors model.safetensors
+
+echo "download-model alternate-weight promotion: PASS"

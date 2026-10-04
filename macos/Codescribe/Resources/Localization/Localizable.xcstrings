@@ -1,0 +1,5465 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "" : {
+      "shouldTranslate" : false
+    },
+    "%@\nEndpoint: %@" : {
+      "comment" : "Tooltip: probe message, then the endpoint that was probed",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@\nEndpoint: %2$@"
+          }
+        }
+      }
+    },
+    "%@\nRollback incomplete. Preserve these paths for recovery:\n%@" : {
+      "comment" : "First placeholder is the underlying failure, second a newline-separated path list",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@\nRollback incomplete. Preserve these paths for recovery:\n%2$@"
+          }
+        }
+      }
+    },
+    "%@ - agent reply ready" : {
+      "comment" : "Menu bar tooltip while an unread agent reply waits; %@ is the status tooltip"
+    },
+    "%@ OAuth client id" : {
+      "comment" : "Popover title; the placeholder is a vendor brand, e.g. ChatGPT"
+    },
+    "%@ account" : {
+      "comment" : "The placeholder is a vendor brand, e.g. ChatGPT"
+    },
+    "%@ custom provider" : {
+
+    },
+    "%@ endpoint" : {
+
+    },
+    "%@ is unavailable. Recording continues on the live default input." : {
+      "comment" : "The placeholder is the configured input device name"
+    },
+    "%@ lane" : {
+
+    },
+    "%@ lane reset to the default vendor — the custom provider was removed" : {
+      "comment" : "The placeholder is one lane name"
+    },
+    "%@ lanes reset to the default vendor — the custom provider was removed" : {
+      "comment" : "The placeholder is a localized list of lane names"
+    },
+    "%@ model" : {
+
+    },
+    "%@ model ID" : {
+
+    },
+    "%@ provider" : {
+
+    },
+    "%@ running..." : {
+      "comment" : "Tool activity row: the tool name while its call runs"
+    },
+    "%@ s of speech had no words · %@" : {
+      "comment" : "“s” is seconds. First placeholder is a pre-formatted duration, e.g. “1.3”; second is a list of positions in the take, e.g. “0:12, 0:58”",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ s of speech had no words · %2$@"
+          }
+        }
+      }
+    },
+    "%@ seconds" : {
+
+    },
+    "%@ secret" : {
+
+    },
+    "%@ tabs" : {
+
+    },
+    "%@ to %@, source %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ to %2$@, source %3$@"
+          }
+        }
+      }
+    },
+    "%@ wire" : {
+
+    },
+    "%@ · %@ · identical tokenizer: %@" : {
+      "comment" : "Placeholders: storage state, size on disk, name of the twin model",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ · %2$@ · identical tokenizer: %3$@"
+          }
+        }
+      }
+    },
+    "%@ · nobody listening" : {
+      "comment" : "Channel row; the placeholder is the delivery state of that channel"
+    },
+    "%@ — show details" : {
+      "comment" : "Agent glyph tooltip; the placeholder is the channel state label"
+    },
+    "%@ — unavailable" : {
+
+    },
+    "%@, %lld tools" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@, %#@tools@"
+          },
+          "substitutions" : {
+            "tools" : {
+              "argNum" : 2,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg tool"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg tools"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%@, Fine-tuned" : {
+      "comment" : "VoiceOver label for a language choice with a specialized model"
+    },
+    "%@, overridden" : {
+      "comment" : "VoiceOver value: a toggle state frozen by an override"
+    },
+    "%lld attachments" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld attachment"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld attachments"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld chars" : {
+      "comment" : "Length of an archived take; the integer counts characters",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld char"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld chars"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld configured" : {
+
+    },
+    "%lld corrections (%lld vocabulary) · %lld unchanged takes · %lld rules in dictionary" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%#@corrections@ (%#@vocabulary@) · %#@unchangedTakes@ · %#@rules@ in dictionary"
+          },
+          "substitutions" : {
+            "corrections" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg correction"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg corrections"
+                    }
+                  }
+                }
+              }
+            },
+            "rules" : {
+              "argNum" : 4,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg rule"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg rules"
+                    }
+                  }
+                }
+              }
+            },
+            "unchangedTakes" : {
+              "argNum" : 3,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg unchanged take"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg unchanged takes"
+                    }
+                  }
+                }
+              }
+            },
+            "vocabulary" : {
+              "argNum" : 2,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg vocabulary"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg vocabulary"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld corrections on disk · dictionary empty — Teach explicitly promotes eligible store pairs now." : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld correction on disk · dictionary empty — Teach explicitly promotes eligible store pairs now."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld corrections on disk · dictionary empty — Teach explicitly promotes eligible store pairs now."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld live rules (variant→canonical) · %lld with correction provenance · %lld store rows." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%#@rules@ (variant→canonical) · %#@provenance@ · %#@rows@."
+          },
+          "substitutions" : {
+            "provenance" : {
+              "argNum" : 2,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg with correction provenance"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg with correction provenance"
+                    }
+                  }
+                }
+              }
+            },
+            "rows" : {
+              "argNum" : 3,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg store row"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg store rows"
+                    }
+                  }
+                }
+              }
+            },
+            "rules" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg live rule"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg live rules"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld models discovered from provider" : {
+      "comment" : "Model discovery status; needs a plural variation",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld model discovered from provider"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld models discovered from provider"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld of %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld of %2$lld"
+          }
+        }
+      }
+    },
+    "%lld percent" : {
+
+    },
+    "%lld recordings from %lld days, %lld threads (%@ MB)" : {
+      "comment" : "Reset impact; each count needs its own plural variation",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%#@recordings@ from %#@days@, %#@threads@ (%4$@ MB)"
+          },
+          "substitutions" : {
+            "days" : {
+              "argNum" : 2,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg day"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg days"
+                    }
+                  }
+                }
+              }
+            },
+            "recordings" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg recording"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg recordings"
+                    }
+                  }
+                }
+              }
+            },
+            "threads" : {
+              "argNum" : 3,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg thread"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg threads"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld s left" : {
+
+    },
+    "%lld servers" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld server"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld servers"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld unsaved edits to recover" : {
+      "comment" : "The placeholder is how many retained edits are waiting",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld unsaved edit to recover"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld unsaved edits to recover"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%llu occurrences" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%llu occurrence"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%llu occurrences"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "(no source path — restored turn keeps name only)" : {
+
+    },
+    "(removed) " : {
+      "comment" : "Diff marker: the word was deleted"
+    },
+    "+%lld minor (punctuation, casing)" : {
+
+    },
+    "A longer gap in speech opens a new sentence in pasted dictation." : {
+
+    },
+    "A newer take replaced this overlay" : {
+
+    },
+    "A quick Fn press starts dictation and the next tap stops it. Holding past the hold delay stays hold-to-talk. For best results set the macOS Fn key action to Do Nothing — Codescribe reacts to a single tap, and macOS can claim a double-press for its own dictation." : {
+
+    },
+    "A signed CSK1 key unlocks the Agentic lane. Validation is local and the key stays in the macOS Keychain." : {
+
+    },
+    "A transcript revision cannot be empty" : {
+
+    },
+    "AI formatting" : {
+
+    },
+    "AI provider" : {
+      "comment" : "Setup step eyebrow"
+    },
+    "AI provider key" : {
+      "comment" : "Summary row: whether an API key is stored for the chosen AI provider"
+    },
+    "API key" : {
+      "comment" : "Lane auth: an API key is stored"
+    },
+    "API key (optional)" : {
+
+    },
+    "API key configured. Supported Assistive requests, cloud Formatting and model discovery can use this provider's key. No account is connected." : {
+
+    },
+    "API keys will also be removed from Keychain and are not recoverable from Trash." : {
+
+    },
+    "ASR mode" : {
+
+    },
+    "About" : {
+
+    },
+    "Accessibility" : {
+
+    },
+    "Accessibility Access" : {
+      "comment" : "Permission step heading"
+    },
+    "Account" : {
+      "comment" : "Sidebar group of settings sections"
+    },
+    "Account access unavailable" : {
+
+    },
+    "Account connected and API key configured. Supported Assistive requests can use the account; Formatting and model discovery use the provider API key." : {
+
+    },
+    "Account connected for supported Assistive requests. No API key is configured. You can continue without adding one; cloud Formatting and model discovery require a provider API key." : {
+
+    },
+    "Account sign-in and API keys are separate ways to connect. Account sign-in supports Assistive; cloud Formatting and model discovery use an API key. Keys are stored in the macOS Keychain and never shown back. You can skip this step and configure access later in Settings › Providers." : {
+
+    },
+    "Account sign-in supports Assistive requests, but model discovery requires a provider API key. Keep the current model or enter a Model ID in Settings › Agent › LLM lanes." : {
+
+    },
+    "Acoustic coverage was measured as complete, but this transcript has no current terminal seal." : {
+
+    },
+    "Activate / Restore" : {
+
+    },
+    "Active STT" : {
+
+    },
+    "Active · Agentic unlocked" : {
+
+    },
+    "Adaptive buffer (experimental)" : {
+      "shouldTranslate" : false
+    },
+    "Add" : {
+
+    },
+    "Add API key to discover models" : {
+
+    },
+    "Add custom provider" : {
+
+    },
+    "Add custom provider." : {
+
+    },
+    "Add provider" : {
+
+    },
+    "Add root" : {
+
+    },
+    "Add server" : {
+      "comment" : "MCP servers: header of the form that adds a server"
+    },
+    "Add this provider's API key in Settings › Providers to discover models, or enter a Model ID in Settings › Agent › LLM lanes." : {
+
+    },
+    "Advanced" : {
+
+    },
+    "Advanced · OAuth client id…" : {
+
+    },
+    "Agent" : {
+      "comment" : "Agent window title\nSettings section\nTitle of the agent chat window"
+    },
+    "Agent and voice-assistant requests" : {
+
+    },
+    "Agent attached" : {
+
+    },
+    "Agent bridge installation could not be completed atomically: %@" : {
+      "comment" : "The placeholder is a technical diagnostic produced by the installer"
+    },
+    "Agent capabilities not ready" : {
+
+    },
+    "Agent capabilities ready" : {
+
+    },
+    "Agent channel" : {
+
+    },
+    "Agent channel modifier" : {
+
+    },
+    "Agent channel open" : {
+
+    },
+    "Agent channel status unavailable" : {
+
+    },
+    "Agent confirmed receipt" : {
+
+    },
+    "Agent delivery is no longer available" : {
+
+    },
+    "Agent listening..." : {
+      "comment" : "Tray status: the assistive (agent) lane is recording"
+    },
+    "Agent pinned, disable Always on Top" : {
+
+    },
+    "Agent provider and MCP connector secrets are present and will be deleted permanently." : {
+
+    },
+    "Agent readiness" : {
+
+    },
+    "Agent readiness covers Assistive access and native tools. Cloud Formatting is configured separately in Settings › Agent › LLM lanes." : {
+
+    },
+    "Agent transcript tagging" : {
+
+    },
+    "Agent unpinned, enable Always on Top" : {
+
+    },
+    "Agent workspace roots" : {
+
+    },
+    "Agent — %@" : {
+      "comment" : "The placeholder is a model name"
+    },
+    "Agentic" : {
+      "comment" : "Operating lane: dictation plus an AI agent"
+    },
+    "Agentic adds one more setup step (readiness check). Basic skips it." : {
+      "comment" : "Setup step footnote; Agentic and Basic are the two lane names"
+    },
+    "Agentic requires a license. Basic dictation remains free." : {
+
+    },
+    "Agentic — dictation + AI agent" : {
+      "comment" : "Operating lane choice; Agentic is the lane name"
+    },
+    "All set" : {
+      "comment" : "Setup step eyebrow"
+    },
+    "Allow" : {
+      "comment" : "Tool permission level"
+    },
+    "Allow %@" : {
+      "comment" : "Button on a permission step; %@ is a privacy scope such as Microphone"
+    },
+    "Allow microphone access" : {
+
+    },
+    "Allow once" : {
+
+    },
+    "Allow · Ask · Deny. Defaults: read-only allow, side-effectful ask. \"Always allow\" from the approval card writes the same identity key." : {
+
+    },
+    "Allow, ask, or deny — per tool. Deny wins over everything." : {
+
+    },
+    "Already granted." : {
+
+    },
+    "Also heard · not committed" : {
+      "comment" : "Tooltip over the unanchored-evidence chip"
+    },
+    "Also heard, not committed: %@, %lld total" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Also heard, not committed: %1$@, %2$lld total"
+          }
+        }
+      }
+    },
+    "Also remove API keys from Keychain" : {
+
+    },
+    "Also reset my base prompts (assistive.txt and formatting.txt)" : {
+
+    },
+    "Always allow" : {
+
+    },
+    "Anchor" : {
+      "comment" : "Overlay placement menu: header above the screen positions the overlay snaps to"
+    },
+    "Anonymous activation" : {
+
+    },
+    "Another response is being spoken." : {
+
+    },
+    "Anthropic API key" : {
+      "comment" : "Anthropic is a company name"
+    },
+    "Any host speaking the OpenAI Responses or Anthropic Messages wire — a local model server, a gateway, a relay. The key is optional; add as many as you need." : {
+
+    },
+    "Apple dictation needs Speech Recognition access — grant it in Settings › Dictation or System Settings › Privacy & Security › Speech Recognition" : {
+
+    },
+    "Apple on-device (experimental)" : {
+      "shouldTranslate" : false
+    },
+    "Apple on-device formatting is selected. Cloud requests still require this lane's credentials. %@" : {
+      "comment" : "The placeholder is the resolved cloud lane availability"
+    },
+    "Apple only" : {
+      "comment" : "Dictation lane: on-device Apple Speech"
+    },
+    "Apple only = live Apple without Layer 1. Local power = Apple-first with mandatory on-device Whisper refinement. Cloud uses its consent-gated provider, not local Whisper." : {
+
+    },
+    "Apple only — on-device Apple Speech plus your dictionary. The default, and the mode every failure falls back to." : {
+
+    },
+    "Apple paints immediately; the validated local FP16 model repairs the same audio spans during the take." : {
+
+    },
+    "Apple was unsure of this word" : {
+
+    },
+    "Applies to the next formatting pass. The on-device model runs first; any failure falls back to the cloud provider. A .env value overrides this toggle." : {
+      "shouldTranslate" : false
+    },
+    "Applies to the next recording. Adaptive buffering preserves phrase boundaries within bounded audio and wait limits." : {
+      "shouldTranslate" : false
+    },
+    "Approve in browser…" : {
+
+    },
+    "Arm modifier" : {
+
+    },
+    "Arm with" : {
+
+    },
+    "Ask" : {
+      "comment" : "Tool permission level"
+    },
+    "Assistant · %@" : {
+
+    },
+    "Assistive" : {
+      "comment" : "Prompt file: voice-assistant base prompt\nRequest lane: agent and voice assistant"
+    },
+    "Assistive prompt" : {
+
+    },
+    "Attach" : {
+      "comment" : "Open panel confirm button"
+    },
+    "Attach an image (PNG, JPEG, GIF, WebP)" : {
+
+    },
+    "Attach images to send to the agent" : {
+
+    },
+    "Attach selection" : {
+
+    },
+    "Audio" : {
+      "comment" : "Settings section"
+    },
+    "Audio availability for this take could not be confirmed here. You can start a new take." : {
+
+    },
+    "Audio for this take is available, but retranscription is not available here." : {
+
+    },
+    "Audio for this take is available. Use Transcribe this take again in More actions." : {
+
+    },
+    "Audio input device" : {
+
+    },
+    "Auto" : {
+      "comment" : "Dictation language picker: detect the spoken language automatically"
+    },
+    "Auto Format" : {
+
+    },
+    "Auto Paste" : {
+
+    },
+    "Auto-detect" : {
+      "comment" : "Dictation language choice: let the engine detect the language"
+    },
+    "Auto-send to Agent" : {
+
+    },
+    "Automatic detection" : {
+
+    },
+    "Automatic paste" : {
+
+    },
+    "Back" : {
+
+    },
+    "Backend unavailable!" : {
+      "comment" : "Menu bar tooltip: the Codescribe core is not running"
+    },
+    "Baked into this fat build · %@" : {
+
+    },
+    "Balanced transcript editing (formatting-smart.txt)" : {
+      "comment" : "formatting-smart.txt is a file name — do not translate"
+    },
+    "Base size; Agent mode stays proportionally larger" : {
+
+    },
+    "Base system prompt for the voice assistant (assistive.txt)" : {
+      "comment" : "assistive.txt is a file name — do not translate"
+    },
+    "Basic" : {
+      "comment" : "Operating lane: dictation only"
+    },
+    "Basic stays free." : {
+
+    },
+    "Basic — dictation only" : {
+      "comment" : "Operating lane choice; Basic is the lane name"
+    },
+    "Bindings persist to settings.json and reload the detector live" : {
+
+    },
+    "Bottom Center" : {
+      "comment" : "Overlay screen anchor"
+    },
+    "Bottom Left" : {
+      "comment" : "Overlay screen anchor"
+    },
+    "Bottom Right" : {
+      "comment" : "Overlay screen anchor"
+    },
+    "Bring your words into the apps you already use. We’ll connect your microphone, choose your language and shortcuts, and optionally add an AI assistant. Every choice can be changed later in Settings." : {
+
+    },
+    "Browse saved takes; this does not retry the current take" : {
+
+    },
+    "Buffer delay" : {
+
+    },
+    "Built" : {
+
+    },
+    "Built-in fallback" : {
+
+    },
+    "Built: %@" : {
+      "comment" : "About panel provenance line; %@ is the build timestamp"
+    },
+    "CODESCRIBE_LAYERED_TRANSCRIPTION disables live refinement. Remove the diagnostic override from .env and restart." : {
+      "comment" : "CODESCRIBE_LAYERED_TRANSCRIPTION is an environment variable name"
+    },
+    "Cached initialize + tools/list result per configured server" : {
+
+    },
+    "Calibrate" : {
+
+    },
+    "Calibrate microphone" : {
+
+    },
+    "Calibrated %@: speech %@ dBFS, peak %@ dBFS over %@ s → existence floor %@ dBFS" : {
+      "comment" : "First placeholder is a device name; the rest are pre-formatted numbers. dBFS is a unit",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Calibrated %1$@: speech %2$@ dBFS, peak %3$@ dBFS over %4$@ s → existence floor %5$@ dBFS"
+          }
+        }
+      }
+    },
+    "Calibration %@; seal lane armed." : {
+      "comment" : "The placeholder is a calibration profile version"
+    },
+    "Calibration capture progress" : {
+
+    },
+    "Calibration refused: %@" : {
+      "comment" : "The placeholder is a technical failure description"
+    },
+    "Calibration required" : {
+
+    },
+    "Calibration result" : {
+
+    },
+    "Calibration waits for microphone access" : {
+
+    },
+    "Cancel" : {
+
+    },
+    "Cancel queued message" : {
+
+    },
+    "Capabilities" : {
+      "comment" : "Settings tab: agent capability matrix"
+    },
+    "Capabilities." : {
+
+    },
+    "Capability matrix" : {
+
+    },
+    "Capture a thought while it’s fresh." : {
+
+    },
+    "Capture has ended and the engine is transcribing the take." : {
+
+    },
+    "Capture is live and the words go to the agent." : {
+
+    },
+    "Capture is live while the shortcut is held." : {
+
+    },
+    "Capture is live, but nothing has reached speaking level for over a second." : {
+
+    },
+    "Capture screen context to give the AI assistant visual awareness of what you're working on." : {
+      "comment" : "Why the app asks for the Screen Recording scope"
+    },
+    "Capture stays live until you stop it." : {
+
+    },
+    "Changed" : {
+      "comment" : "Dictionary: header above the words the correction changed"
+    },
+    "Channel status unavailable — last open state retained" : {
+
+    },
+    "Channel toggle failed: %@" : {
+
+    },
+    "Chat column width: Comfortable, Wide, or Full" : {
+
+    },
+    "Check %@" : {
+      "comment" : "The placeholder is a file path"
+    },
+    "Check for Updates…" : {
+
+    },
+    "Check levels & engine" : {
+
+    },
+    "Checking acoustic admission…" : {
+
+    },
+    "Checking calibration…" : {
+
+    },
+    "Checking license…" : {
+
+    },
+    "Checking license… Basic dictation remains free." : {
+
+    },
+    "Checking provider access…" : {
+
+    },
+    "Checking provider access… You can continue with Basic dictation." : {
+
+    },
+    "Checking recording activity…" : {
+
+    },
+    "Checking recording readiness…" : {
+
+    },
+    "Checking seal lane…" : {
+
+    },
+    "Choose Stop recording or use your recording shortcut to finish this take." : {
+
+    },
+    "Choose a screen anchor or allow free dragging" : {
+
+    },
+    "Choose automatic detection or a language-specialized path" : {
+
+    },
+    "Choose the assistant model" : {
+
+    },
+    "Choose where it goes" : {
+
+    },
+    "Choose where to send your dictation. Your assistant can listen as you speak; changes wait until you finish." : {
+
+    },
+    "Clear %@" : {
+
+    },
+    "Clear MCP configuration?" : {
+
+    },
+    "Clear MCP configuration…" : {
+
+    },
+    "Clear this model override" : {
+
+    },
+    "Click to edit. Edits stay local until committed to the transcript ledger." : {
+
+    },
+    "Close" : {
+
+    },
+    "Close actions" : {
+
+    },
+    "Close overlay" : {
+
+    },
+    "Closes the dictation overlay" : {
+
+    },
+    "Cloud" : {
+      "comment" : "Active STT row: the cloud engine served the last transcription\nDictation lane: cloud refinement"
+    },
+    "Cloud & privacy" : {
+
+    },
+    "Cloud STT pass over the last session audio" : {
+
+    },
+    "Cloud STT pass over the selected audio file" : {
+
+    },
+    "Cloud consent is granted. Audio may leave this Mac only in Cloud mode." : {
+
+    },
+    "Cloud consent is not granted. The picker stays on Apple only." : {
+
+    },
+    "Cloud diagnostics are counters only — latency, bytes, error and model identifiers. Never audio, never transcript text." : {
+
+    },
+    "Cloud live" : {
+      "comment" : "Cloud streaming transcriber"
+    },
+    "Cloud mode and consent stay on Dictation; endpoints and keys live here." : {
+
+    },
+    "Cloud pass" : {
+
+    },
+    "Cloud provider" : {
+      "shouldTranslate" : false
+    },
+    "Cloud — live refinement through the Libraxis gateway. Requires your explicit consent to send audio off this Mac; the app stores no vendor keys." : {
+
+    },
+    "Codescribe - %@" : {
+      "comment" : "Menu bar tooltip; Codescribe is the product name, %@ is a status phrase"
+    },
+    "Codescribe couldn't write the Markdown file for “%@”. Check the Transcripts folder shown under Settings › User › Local data, then try again." : {
+      "comment" : "The placeholder is the thread title"
+    },
+    "Codescribe detected speech that no recognizer turned into words; its timing is unavailable for this take." : {
+
+    },
+    "Codescribe does not phone home while you work. A future fulfillment service may refresh the validation timestamp explicitly; offline grace is 30 days." : {
+
+    },
+    "Codescribe heard speech at %@ that no recognizer turned into words — it may have been cut off, noise or the microphone." : {
+      "comment" : "The placeholder is a list of time ranges within the take, e.g. “0:12–0:14, 0:58–1:00”"
+    },
+    "Codescribe license key" : {
+
+    },
+    "Codescribe menu" : {
+      "comment" : "Accessibility title of the menu bar panel; Codescribe is the product name"
+    },
+    "Codescribe transcribes on this Mac. Audio leaves this Mac only in Cloud mode, and only after you explicitly allow it." : {
+
+    },
+    "Codescribe will not overwrite %@: %@" : {
+      "comment" : "First placeholder is a file path, second a technical diagnostic",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Codescribe will not overwrite %1$@: %2$@"
+          }
+        }
+      }
+    },
+    "Codescribe will relaunch as a fresh install." : {
+
+    },
+    "Coding assistants" : {
+      "comment" : "Setup: eyebrow above the coding-assistant choices"
+    },
+    "Collapse" : {
+      "comment" : "Fold the message back to its head"
+    },
+    "Collapse sidebar (⌃⌘S)" : {
+
+    },
+    "Collapsed" : {
+      "comment" : "Accessibility value: a disclosure row is closed"
+    },
+    "Comfort" : {
+      "comment" : "Paste policy: paste wherever the caret is"
+    },
+    "Comfortable" : {
+      "comment" : "Chat width"
+    },
+    "Command during Fn hold" : {
+
+    },
+    "Commit" : {
+
+    },
+    "Commit transcript revision" : {
+
+    },
+    "Commit: %@" : {
+      "comment" : "About panel provenance line; %@ is the source commit of this build"
+    },
+    "Commits this draft through the transcript ledger" : {
+
+    },
+    "Committing revision…" : {
+
+    },
+    "Compact" : {
+      "comment" : "Sidebar state"
+    },
+    "Complete step 1 before measuring this input." : {
+
+    },
+    "Complete step 1 before validating the acoustic lane." : {
+
+    },
+    "Config, logs & runtime data" : {
+
+    },
+    "Conflicts" : {
+
+    },
+    "Connect Codescribe to your agent." : {
+      "comment" : "Setup step heading; Codescribe is the product name"
+    },
+    "Connect a live coding session" : {
+      "comment" : "Detail under a coding-assistant checkbox"
+    },
+    "Connect a microphone and refresh Audio settings." : {
+
+    },
+    "Connect an AI provider." : {
+
+    },
+    "Connect the assistants you want to work with." : {
+      "comment" : "Setup chapter subtitle"
+    },
+    "Connect your coding agent" : {
+
+    },
+    "Connection details" : {
+
+    },
+    "Consultation reset is unavailable." : {
+
+    },
+    "Continue" : {
+      "comment" : "Setup wizard button: go to the next step"
+    },
+    "Continue across takes, or start fresh without deleting previous history." : {
+
+    },
+    "Controlled by %@ override." : {
+      "comment" : "The placeholder is an environment variable name"
+    },
+    "Controlled by the product setting below." : {
+
+    },
+    "Controls whether committed utterances can be sealed." : {
+
+    },
+    "Copied" : {
+      "comment" : "Tray banner: the transcript was copied"
+    },
+    "Copies the projected transcript" : {
+
+    },
+    "Copies the retained previous take, including any unsaved edit, to the clipboard" : {
+
+    },
+    "Copy" : {
+
+    },
+    "Copy code" : {
+
+    },
+    "Copy debug info" : {
+
+    },
+    "Copy full prompt" : {
+
+    },
+    "Copy last transcript" : {
+
+    },
+    "Copy message" : {
+
+    },
+    "Copy needs the recording engine" : {
+
+    },
+    "Copy path" : {
+
+    },
+    "Copy previous take to clipboard" : {
+
+    },
+    "Copy transcript" : {
+
+    },
+    "Correct spelling" : {
+      "comment" : "Field prompt: type the word as it should be written"
+    },
+    "Correct the original transcript" : {
+
+    },
+    "Corrected original" : {
+      "comment" : "Dictionary: header above the editor holding the corrected text"
+    },
+    "Correction" : {
+      "comment" : "Formatting level: fix-ups only\nPrompt file: correction-only formatting"
+    },
+    "Correction history and custom dictionary. Teach is explicit bulk promotion; automatic learning still needs 3 matching human corrections." : {
+
+    },
+    "Correction only AI formatting (formatting.txt)" : {
+      "comment" : "formatting.txt is a file name — do not translate"
+    },
+    "Correction prompt" : {
+
+    },
+    "Correction saved. %@" : {
+
+    },
+    "Correction, balanced editing, or a tool-enabled Max consultation" : {
+
+    },
+    "Could not load threads. Try refreshing the list." : {
+
+    },
+    "Could not open this transcript." : {
+
+    },
+    "Could not refresh threads. The previous list is still shown." : {
+
+    },
+    "Could not reload threads. The previous list was restored." : {
+
+    },
+    "Could not save note" : {
+      "comment" : "Tray banner: writing the daily note failed"
+    },
+    "Could not save the correction" : {
+
+    },
+    "Could not search threads. The previous list is still shown." : {
+
+    },
+    "Could not start a new consultation: %@" : {
+      "comment" : "The placeholder is a system error message"
+    },
+    "Couldn't apply “%@”: %@" : {
+      "comment" : "Palette pick failed: the picked entry, then the reason it failed",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Couldn't apply “%1$@”: %2$@"
+          }
+        }
+      }
+    },
+    "Couldn't change recording: %@" : {
+
+    },
+    "Couldn't commit transcript revision: %@" : {
+      "comment" : "The placeholder is the engine's own failure text"
+    },
+    "Couldn't copy the previous take — it is still retained, try again" : {
+
+    },
+    "Couldn't copy the unsaved edit — it is still retained, try again" : {
+
+    },
+    "Couldn't copy transcript: %@" : {
+      "comment" : "The placeholder is the engine's own failure text"
+    },
+    "Couldn't finalize transcript" : {
+
+    },
+    "Couldn't finalize transcript: %@" : {
+      "comment" : "The placeholder is the engine's own failure text"
+    },
+    "Couldn't finish transcription" : {
+
+    },
+    "Couldn't format transcript: %@" : {
+      "comment" : "The placeholder is the engine's own failure text"
+    },
+    "Couldn't paste transcript: %@" : {
+      "comment" : "The placeholder is the engine's own failure text"
+    },
+    "Couldn't read tool grants" : {
+
+    },
+    "Couldn't read transcript history: %@" : {
+      "comment" : "The placeholder is the engine's own failure text"
+    },
+    "Couldn't restore transcript version: %@" : {
+      "comment" : "The placeholder is the engine's own failure text"
+    },
+    "Couldn't retranscribe recording: %@" : {
+      "comment" : "The placeholder is the engine's own failure text"
+    },
+    "Couldn't save overlay preference" : {
+
+    },
+    "Couldn't send to Agent" : {
+
+    },
+    "Couldn't start recording" : {
+
+    },
+    "Couldn't start recording: %@" : {
+      "comment" : "The placeholder is the engine's own failure text"
+    },
+    "Couldn't transcribe this take again" : {
+
+    },
+    "Couldn't undo retranscribe: %@" : {
+      "comment" : "The placeholder is the engine's own failure text"
+    },
+    "Creator" : {
+      "comment" : "Settings section: first-run setup and basics"
+    },
+    "Ctrl+digit switches an agent channel. Choose Fn if you want the globe key instead. Command is not offered — it collides with tab switching." : {
+
+    },
+    "Current" : {
+
+    },
+    "Currently using: %@" : {
+      "comment" : "The placeholder is an input device name"
+    },
+    "Custom" : {
+
+    },
+    "Custom dictionary · %lld" : {
+
+    },
+    "Custom file" : {
+
+    },
+    "Custom provider API key" : {
+
+    },
+    "Custom provider endpoint" : {
+
+    },
+    "Custom provider name" : {
+
+    },
+    "Custom provider wire" : {
+
+    },
+    "Custom providers" : {
+
+    },
+    "Cycle automatic formatting level" : {
+
+    },
+    "Cycle automatic paste mode" : {
+
+    },
+    "Cycle pointer recording indicator size" : {
+
+    },
+    "DAILY\n%@\n\nHELPER %@\n%@\n\nDaily is unchanged until you save a correction." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "DAILY\n%1$@\n\nHELPER %2$@\n%3$@\n\nDaily is unchanged until you save a correction."
+          }
+        }
+      }
+    },
+    "Danger zone" : {
+
+    },
+    "Data footprint" : {
+
+    },
+    "Defaults" : {
+
+    },
+    "Deferred insert" : {
+
+    },
+    "Deferred insert shortcut" : {
+
+    },
+    "Degraded (env override)" : {
+
+    },
+    "Delete Thread" : {
+
+    },
+    "Delete this thread?" : {
+
+    },
+    "Deletes the provider row and its API key from the Keychain. Any request lane using it falls back to the default vendor." : {
+
+    },
+    "Delivered after formatting · %lld characters" : {
+      "comment" : "Dictionary: header above the text that was delivered; the count is its length",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Delivered after formatting · %lld character"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Delivered after formatting · %lld characters"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Delivery interrupted" : {
+
+    },
+    "Delivery interrupted — the transcript is still here" : {
+
+    },
+    "Deny" : {
+      "comment" : "Tool permission level"
+    },
+    "Detect keyboard shortcuts to start and stop voice recording." : {
+      "comment" : "Why the app asks for the Input Monitoring scope"
+    },
+    "Device choice and sound feedback use the live recorder config." : {
+
+    },
+    "Diagnostic details" : {
+
+    },
+    "Diagnostics" : {
+
+    },
+    "Dictation" : {
+      "comment" : "Settings section"
+    },
+    "Dictation failed — transcript kept" : {
+
+    },
+    "Dictionary" : {
+      "comment" : "Settings section: custom vocabulary"
+    },
+    "Directories the agent may read and write. Everything outside them is out of reach." : {
+
+    },
+    "Directories the assistant scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped." : {
+
+    },
+    "Disable Always on Top" : {
+
+    },
+    "Disable this server" : {
+
+    },
+    "Disabled" : {
+      "comment" : "Deferred-insert chord: no chord is bound"
+    },
+    "Discard previous take" : {
+
+    },
+    "Discard transcript draft" : {
+
+    },
+    "Dismiss" : {
+
+    },
+    "Done!" : {
+      "comment" : "Tray status: the last session finished"
+    },
+    "Dot colors" : {
+
+    },
+    "Double-tap Left/Right Option to start, tap again to stop." : {
+      "comment" : "Hotkey preset detail; Option is the key cap on a Mac keyboard"
+    },
+    "Download" : {
+
+    },
+    "Download Whisper" : {
+
+    },
+    "Download failed" : {
+
+    },
+    "Download finished but model still unavailable" : {
+
+    },
+    "Downloading…" : {
+
+    },
+    "Draft · not committed" : {
+
+    },
+    "Drops the retained previous take without recovering it" : {
+
+    },
+    "Edit" : {
+
+    },
+    "Edit correction for %@" : {
+
+    },
+    "Edit custom provider %@" : {
+
+    },
+    "Edit custom provider." : {
+
+    },
+    "Edit queued message" : {
+
+    },
+    "Edit the raw markdown" : {
+
+    },
+    "Edited on disk in mcp.json. Hand edits (env, custom fields) are preserved." : {
+
+    },
+    "Edited · %lld characters" : {
+      "comment" : "Dictionary: header above the text after the person's edit; the count is its length",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Edited · %lld character"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Edited · %lld characters"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Edits the BASE prompt file. The core still appends its tuning prompt at runtime." : {
+
+    },
+    "Embedded" : {
+
+    },
+    "Enable Always on Top" : {
+
+    },
+    "Enable Codescribe in System Settings › Privacy & Security › Microphone." : {
+
+    },
+    "Enable this server" : {
+
+    },
+    "Endpoint" : {
+
+    },
+    "Endpoints and keys live on Providers › Speech-to-text Cloud Service." : {
+
+    },
+    "Engine" : {
+      "comment" : "Settings tab: speech-to-text engine"
+    },
+    "Engine controls" : {
+
+    },
+    "Engine not wired yet." : {
+
+    },
+    "English" : {
+      "comment" : "Dictation language choice\nDictation language name"
+    },
+    "Enter a CSK1 license key." : {
+      "comment" : "CSK1 is the license-key prefix — keep it verbatim"
+    },
+    "Enter an HTTP or HTTPS URL with a host, such as https://api.example.com." : {
+
+    },
+    "Enter license" : {
+
+    },
+    "Enter or restore key" : {
+
+    },
+    "Error" : {
+      "comment" : "Tray status: the backend is unavailable"
+    },
+    "Expand sidebar (⌃⌘S)" : {
+
+    },
+    "Expanded" : {
+      "comment" : "Accessibility value: a disclosure row is open\nSidebar state"
+    },
+    "Export assistant replies only" : {
+
+    },
+    "Export failed" : {
+      "comment" : "Alert title when a thread export wrote nothing"
+    },
+    "Export to Markdown" : {
+
+    },
+    "Exported to Markdown" : {
+      "comment" : "Alert title after a successful thread export"
+    },
+    "Exports save to the Transcripts folder" : {
+      "comment" : "Menu section header above the Markdown export actions"
+    },
+    "External MCP servers the agent can call, and their transports." : {
+
+    },
+    "Favorite" : {
+
+    },
+    "Favorite thread" : {
+
+    },
+    "File missing on disk" : {
+
+    },
+    "File transcription key" : {
+      "comment" : "Stored secret label"
+    },
+    "Fine-tune the exact keys later in Settings › Shortcuts." : {
+      "comment" : "Setup step footnote; Settings › Shortcuts is a navigation path in the app"
+    },
+    "Fine-tuned" : {
+
+    },
+    "Finish" : {
+      "comment" : "Setup wizard button: close the wizard"
+    },
+    "Finish recording" : {
+
+    },
+    "Finish setup above" : {
+
+    },
+    "Finish the current turn before changing the thread search." : {
+
+    },
+    "Finishing recording" : {
+
+    },
+    "Finishing recording…" : {
+
+    },
+    "Finishing…" : {
+      "comment" : "Overlay cap while the take is transcribed"
+    },
+    "First, choose what you want to do." : {
+      "comment" : "Setup chapter subtitle"
+    },
+    "Fixed windows" : {
+      "shouldTranslate" : false
+    },
+    "Fold this message back to its head" : {
+
+    },
+    "Format transcript" : {
+
+    },
+    "Formatter revision receipt was inconsistent" : {
+
+    },
+    "Formatting" : {
+      "comment" : "Request lane: transcript cleanup"
+    },
+    "Formatting is disabled. This lane is not required for readiness." : {
+
+    },
+    "Formatting requires this provider's API key; an Assistive account does not authorize it. Add the key in Settings › Providers." : {
+
+    },
+    "Formatting revision…" : {
+
+    },
+    "Free motion" : {
+      "comment" : "Overlay placement mode: the user drags freely"
+    },
+    "Full" : {
+      "comment" : "Chat width: the whole window"
+    },
+    "Full Disk Access" : {
+      "comment" : "Permission step heading"
+    },
+    "Full HQ file pass" : {
+
+    },
+    "Full local Whisper file pass over the last session audio" : {
+
+    },
+    "Full local Whisper pass over the selected audio file" : {
+
+    },
+    "Full transcript · raw %lld chars · edited %lld chars" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Full transcript · raw %1$lld chars · edited %2$lld chars"
+          }
+        }
+      }
+    },
+    "Gateway session URL" : {
+
+    },
+    "Get license" : {
+
+    },
+    "Get set up." : {
+
+    },
+    "GitHub token" : {
+      "comment" : "GitHub is a product name"
+    },
+    "GitHub token. Speech-to-text endpoints and keys live in the section above." : {
+
+    },
+    "Give your voice tools" : {
+      "comment" : "Setup chapter heading"
+    },
+    "Global / unknown" : {
+
+    },
+    "Global chord pastes the armed transcript at the caret. Apps bound to the same chord will also react." : {
+
+    },
+    "Good level" : {
+      "comment" : "Measured microphone level"
+    },
+    "Grant microphone access first" : {
+
+    },
+    "Grants %@ access." : {
+
+    },
+    "Grants Codescribe access to the microphone selected above" : {
+
+    },
+    "Hands-free" : {
+      "comment" : "Settings tab: hands-free dictation"
+    },
+    "Hands-free silence" : {
+
+    },
+    "Hands-free silence duration" : {
+
+    },
+    "Hands-free silence." : {
+
+    },
+    "Hands-off (toggle)" : {
+      "comment" : "Hotkey preset name"
+    },
+    "Hang up channel" : {
+
+    },
+    "Hear the real input." : {
+
+    },
+    "Heard %@. Current correction %@. Revision %llu." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Heard %1$@. Current correction %2$@. Revision %3$llu."
+          }
+        }
+      }
+    },
+    "Help" : {
+
+    },
+    "Helper %@ failed: %@" : {
+      "comment" : "Placeholders: the pass name, then an error message",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Helper %1$@ failed: %2$@"
+          }
+        }
+      }
+    },
+    "Helper %@ matches daily." : {
+
+    },
+    "Hide full transcript" : {
+
+    },
+    "Hide live preview" : {
+
+    },
+    "Hold Fn/Globe to dictate, or double-tap Option to toggle." : {
+      "comment" : "Hotkey preset detail; Fn, Globe and Option are Mac key caps"
+    },
+    "Hold to talk" : {
+      "comment" : "Hotkey preset name"
+    },
+    "Hotkey conflict" : {
+      "comment" : "Tray status: a recording shortcut was detected but blocked"
+    },
+    "Hotkeys" : {
+      "comment" : "Settings section\nSetup step eyebrow"
+    },
+    "How do you trigger recording?" : {
+      "comment" : "Setup step heading"
+    },
+    "How long the Apple engine waits in silence before it rests." : {
+
+    },
+    "How many seconds of audio Whisper hears with each fragment. A shorter window is faster, but a short ending can be lost." : {
+
+    },
+    "How the overlay paces live text. Committed transcripts are unchanged." : {
+
+    },
+    "Hybrid (both)" : {
+      "comment" : "Hotkey preset name: hold and toggle"
+    },
+    "Idle" : {
+      "comment" : "Tray status: ready, not recording"
+    },
+    "Input Monitoring" : {
+
+    },
+    "Input Monitoring Access" : {
+      "comment" : "Permission step heading"
+    },
+    "Input device" : {
+
+    },
+    "Insert armed transcript" : {
+
+    },
+    "Insert into current draft" : {
+
+    },
+    "Insert needs the recording engine" : {
+
+    },
+    "Insert transcript" : {
+
+    },
+    "Install selected" : {
+      "comment" : "Button: install the bridge for the checked coding assistants"
+    },
+    "Install skill" : {
+
+    },
+    "Install state" : {
+
+    },
+    "Install the Codescribe skill and bus helper from this app. No repository clone or manual file copying is needed." : {
+
+    },
+    "Installed" : {
+
+    },
+    "Installed from this app. Original folder preserved at:\n%@\nReload your agent client's skills, then invoke /codescribe. Voice delivery is not yet verified." : {
+      "comment" : "The placeholder is a newline-separated path list; /codescribe is a command — keep it verbatim"
+    },
+    "Intelligence" : {
+      "comment" : "Sidebar group of settings sections"
+    },
+    "Interim interval" : {
+
+    },
+    "Invalid key" : {
+
+    },
+    "JetBrains Mono — meta 11" : {
+      "shouldTranslate" : false
+    },
+    "Jump to current" : {
+
+    },
+    "Jump to the current reply" : {
+
+    },
+    "Keep control of the destination." : {
+
+    },
+    "Keep the overlay open after a take until you close it" : {
+
+    },
+    "Keep visible between takes" : {
+
+    },
+    "Key OK" : {
+
+    },
+    "Keychain error %@" : {
+      "comment" : "Fallback when macOS has no message; the placeholder is the status code"
+    },
+    "Keys and endpoints. Vendors always use their factory endpoint; a custom provider is any host that speaks /v1/responses or /v1/messages. Which model each lane sends lives under Agent › Request lanes." : {
+
+    },
+    "LLM lanes" : {
+      "comment" : "Settings tab: LLM request lanes"
+    },
+    "Lab" : {
+      "comment" : "Settings section: developer experiments",
+      "shouldTranslate" : false
+    },
+    "Lab mode" : {
+      "shouldTranslate" : false
+    },
+    "Lab mode is on. Overlay follows the tray toggle — Lab does not steal it." : {
+      "shouldTranslate" : false
+    },
+    "Language" : {
+      "comment" : "Setup step eyebrow"
+    },
+    "Leave empty to keep the stored key" : {
+
+    },
+    "Ledger projection" : {
+
+    },
+    "Legal & docs" : {
+
+    },
+    "Length unavailable" : {
+
+    },
+    "Libraxis API key" : {
+      "comment" : "Libraxis is a company name"
+    },
+    "License" : {
+      "comment" : "Settings section"
+    },
+    "License access is unavailable. Retry in Settings › License. Basic dictation remains free." : {
+
+    },
+    "License access is unavailable. The last verified license still follows its original expiry." : {
+
+    },
+    "License access unavailable" : {
+
+    },
+    "License status" : {
+
+    },
+    "Light+ sentence pause" : {
+
+    },
+    "Live Whisper refinement" : {
+
+    },
+    "Live audio level" : {
+
+    },
+    "Live macOS permission status. Click a missing permission to grant it." : {
+
+    },
+    "Live preview" : {
+
+    },
+    "Live quality data is unavailable: %@" : {
+
+    },
+    "Live transcript" : {
+
+    },
+    "Live transcript key" : {
+      "comment" : "Stored secret label"
+    },
+    "Load helper text into the correction editor without saving" : {
+
+    },
+    "Local FP16 model (%@) for direct Whisper or Local power refinement." : {
+
+    },
+    "Local Whisper is not the selected provider." : {
+
+    },
+    "Local Whisper model." : {
+
+    },
+    "Local by design." : {
+
+    },
+    "Local data" : {
+
+    },
+    "Local path" : {
+
+    },
+    "Local power" : {
+      "comment" : "Dictation lane: local model weights"
+    },
+    "Local power — optional on-device model weights in a separate helper process, downloaded only when you choose them." : {
+
+    },
+    "Local process" : {
+
+    },
+    "Low confidence" : {
+      "comment" : "Dictionary badge: the engine was unsure here"
+    },
+    "MCP connects your assistant to additional tools. You can add servers later in Settings." : {
+
+    },
+    "MCP servers" : {
+
+    },
+    "MCP servers extend the agent with extra tools like code search, PR review, or web search. Add your first server below, or skip it and wire one any time." : {
+
+    },
+    "MCP servers." : {
+
+    },
+    "MCP settings…" : {
+
+    },
+    "Make it yours" : {
+      "comment" : "Setup chapter heading"
+    },
+    "Make the connection" : {
+      "comment" : "Setup chapter heading"
+    },
+    "Manage MCP servers" : {
+
+    },
+    "Manage provider access…" : {
+
+    },
+    "Master switch. The Off level below always skips the LLM." : {
+
+    },
+    "Max" : {
+      "comment" : "Formatting level: maximum prose polish\nPrompt file: maximum prose polish"
+    },
+    "Max consultation" : {
+
+    },
+    "Max consultations" : {
+      "comment" : "Thread rail section"
+    },
+    "Max permissions" : {
+
+    },
+    "Max prompt" : {
+
+    },
+    "Maximum supported prose polish (formatting-max.txt)" : {
+      "comment" : "formatting-max.txt is a file name — do not translate"
+    },
+    "Measure about 10 seconds of normal speech on the current microphone." : {
+
+    },
+    "Measures about ten seconds of normal speech; audio is not kept" : {
+
+    },
+    "Measuring…" : {
+
+    },
+    "Message" : {
+      "comment" : "Accessibility label of the composer field"
+    },
+    "Messages (/v1/messages)" : {
+
+    },
+    "Mic calibration in Settings…" : {
+
+    },
+    "Mic input is quiet" : {
+
+    },
+    "Microphone" : {
+
+    },
+    "Microphone Access" : {
+      "comment" : "Permission step heading"
+    },
+    "Microphone access denied" : {
+
+    },
+    "Microphone access is off" : {
+
+    },
+    "Microphone access is off for Codescribe. Enable it in System Settings › Privacy & Security › Microphone." : {
+
+    },
+    "Microphone active · channel %@" : {
+
+    },
+    "Microphone busy with shortcut dictation" : {
+
+    },
+    "Microphone calibrated" : {
+
+    },
+    "Microphone not calibrated yet" : {
+
+    },
+    "Middle mouse acts as Fn" : {
+
+    },
+    "Missing or invalid FP16 bundle · Local power is not ready" : {
+
+    },
+    "Missing {text}; delivered transcript will be appended after the template." : {
+      "comment" : "{text} is a template token the user types — keep it verbatim"
+    },
+    "Model" : {
+
+    },
+    "Model discovery failed. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes." : {
+
+    },
+    "Model discovery failed: %@. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes." : {
+      "comment" : "The placeholder is a status message from the core"
+    },
+    "Models unavailable" : {
+
+    },
+    "More actions" : {
+
+    },
+    "Move app data to Trash?" : {
+
+    },
+    "Move app data to Trash…" : {
+
+    },
+    "Move mcp.json to Trash" : {
+
+    },
+    "Move to Trash & Relaunch" : {
+
+    },
+    "Moves %@ to Trash." : {
+      "comment" : "The placeholder is the counted reset impact"
+    },
+    "Moves %lld Agent threads and %lld Agent files to Trash." : {
+      "comment" : "Agent reset impact; each count needs its own plural variation",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Moves %#@threads@ and %#@files@ to Trash."
+          },
+          "substitutions" : {
+            "files" : {
+              "argNum" : 2,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg Agent file"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg Agent files"
+                    }
+                  }
+                }
+              }
+            },
+            "threads" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg Agent thread"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg Agent threads"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Moves only Agent conversations, runtime identity, MCP and tool state to Trash. Agent provider and MCP connector secrets are deleted permanently. Recordings, transcriptions, dictionary, lexicon, quality reports, prompts, audio, hotkeys, dictation, license, and macOS permissions are preserved." : {
+
+    },
+    "Moves only mcp.json to Trash after confirmation." : {
+
+    },
+    "Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, threads, preferences, and API keys stay untouched." : {
+
+    },
+    "Moves recordings, transcript history, conversations, logs, preferences, and local configuration to Trash so they can be recovered. Your assistive.txt and formatting.txt base prompts are preserved by default." : {
+
+    },
+    "Multilingual" : {
+
+    },
+    "Multilingual — detects the language as you speak." : {
+      "comment" : "Detail under the Auto-detect dictation language choice"
+    },
+    "Name" : {
+
+    },
+    "Named voice messages to your existing conversation" : {
+
+    },
+    "Native container" : {
+      "shouldTranslate" : false
+    },
+    "Native substrate vs enrichment providers (IntelliJ optional)." : {
+
+    },
+    "Network error" : {
+
+    },
+    "Never pastes automatically; the transcript stays on the overlay." : {
+
+    },
+    "New consultation" : {
+
+    },
+    "New consultation started. Previous history is preserved." : {
+
+    },
+    "New recordings open with the transcript. Turn off to show only the recording bar." : {
+
+    },
+    "New thread" : {
+      "comment" : "Default title of an unnamed conversation\nHeadline of a conversation with no turns yet"
+    },
+    "Next" : {
+
+    },
+    "No API key is configured for this provider. Add one in Settings › Providers, choose another provider, or skip this step for dictation." : {
+
+    },
+    "No Agent provider or MCP connector secrets are currently stored." : {
+
+    },
+    "No MCP servers yet — this is optional." : {
+
+    },
+    "No OAuth client-id setting for provider %@" : {
+      "comment" : "The placeholder is a provider identifier"
+    },
+    "No account is required. Your configuration and transcript history stay on this Mac." : {
+
+    },
+    "No account or API key is configured for this provider. Connect a supported account for Assistive, or add an API key in Settings › Providers. You can skip this step for dictation." : {
+
+    },
+    "No archived audio for this row — will not fall back to last_session.wav." : {
+
+    },
+    "No calibration for the current microphone" : {
+
+    },
+    "No confidence telemetry in %lld of %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "No confidence telemetry in %1$lld of %2$lld"
+          }
+        }
+      }
+    },
+    "No corrections yet — edit a transcript in the overlay so the engine can learn." : {
+
+    },
+    "No coverage measurement for this take" : {
+
+    },
+    "No coverage measurement was recorded for this take." : {
+
+    },
+    "No credits (check billing)" : {
+
+    },
+    "No custom providers yet." : {
+
+    },
+    "No helper in Apple-only — pick Local power or Cloud." : {
+
+    },
+    "No inline preview" : {
+
+    },
+    "No input device available" : {
+
+    },
+    "No matches" : {
+
+    },
+    "No models returned. Enter a Model ID in Settings › Agent › LLM lanes." : {
+
+    },
+    "No new transcript was produced for this take." : {
+
+    },
+    "No result summary was stored for this call." : {
+
+    },
+    "No saved transcriptions yet." : {
+
+    },
+    "No seal was recorded for this take, so nothing here is certified complete." : {
+
+    },
+    "No speech detected" : {
+
+    },
+    "No text change — kept for its confidence telemetry." : {
+
+    },
+    "No text selected" : {
+      "comment" : "Tray banner: no selection was found to append to the daily note"
+    },
+    "No tools registered yet — open the agent once or add an MCP server." : {
+
+    },
+    "No transcript to save" : {
+      "comment" : "Tray banner: there is no recent transcript to append to the daily note"
+    },
+    "No transcript was delivered." : {
+
+    },
+    "No transcript was produced for this take." : {
+
+    },
+    "No transcripts yet" : {
+
+    },
+    "Not a secret. Blank clears the lane; the bridge rejects a URL whose scheme does not fit this lane." : {
+
+    },
+    "Not installed" : {
+
+    },
+    "Not ready" : {
+
+    },
+    "Not selected" : {
+      "comment" : "VoiceOver value for a language not chosen"
+    },
+    "Not sent — dictated text is in the draft" : {
+
+    },
+    "Not set" : {
+
+    },
+    "Not yet served" : {
+      "comment" : "Active STT row before the first transcription of this launch"
+    },
+    "Notes" : {
+      "comment" : "Tray group: the daily-note actions"
+    },
+    "Notes Mode" : {
+
+    },
+    "Nothing was captured this session." : {
+
+    },
+    "OK" : {
+
+    },
+    "Off" : {
+      "comment" : "Toggle state"
+    },
+    "Off by default. The event contains only the app version and macOS version — never audio or transcript text." : {
+
+    },
+    "Off by default. When enabled, both prompt files move to Trash with the rest of the app data." : {
+
+    },
+    "Offline grace · %lld days left" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Offline grace · %lld day left"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Offline grace · %lld days left"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Older" : {
+      "comment" : "Thread rail section"
+    },
+    "On" : {
+      "comment" : "Toggle state"
+    },
+    "One gesture per mode. Changes apply immediately — no restart." : {
+
+    },
+    "Only this base prompt file will change. The previous version remains recoverable in the prompt backups folder." : {
+
+    },
+    "Open" : {
+
+    },
+    "Open %@ settings" : {
+
+    },
+    "Open Codescribe documentation" : {
+
+    },
+    "Open Privacy Policy" : {
+
+    },
+    "Open System Settings" : {
+      "comment" : "Button that deep-links into the macOS System Settings privacy pane"
+    },
+    "Open Terms of Use and EULA" : {
+
+    },
+    "Open Voice Lab" : {
+      "shouldTranslate" : false
+    },
+    "Open channel" : {
+
+    },
+    "Open codescribe.vetcoders.io/license — enter your email, paste the key back here" : {
+
+    },
+    "Open history" : {
+
+    },
+    "Open history folder" : {
+
+    },
+    "Open log folder" : {
+
+    },
+    "Open notes folder" : {
+
+    },
+    "Open overlay" : {
+
+    },
+    "Open the full text in a scrollable, selectable view" : {
+
+    },
+    "Open the loopback Voice Lab. Production builds never show this panel." : {
+      "shouldTranslate" : false
+    },
+    "Open today's note" : {
+
+    },
+    "OpenAI API key" : {
+      "comment" : "OpenAI is a company name"
+    },
+    "Opens this thread" : {
+      "comment" : "Accessibility hint on a history row"
+    },
+    "Operating lane" : {
+      "comment" : "Setup step eyebrow"
+    },
+    "Optional override (settings.json) — empty restores the shipped default." : {
+
+    },
+    "Optional — skip it to limit file-aware features only." : {
+
+    },
+    "Orange" : {
+      "comment" : "Recording light colour"
+    },
+    "Orange — processing after recording" : {
+
+    },
+    "Original audio is not available for this correction." : {
+
+    },
+    "Original file not available" : {
+
+    },
+    "Overlay actions" : {
+
+    },
+    "Override OAuth client id…" : {
+
+    },
+    "Paste after dictation" : {
+
+    },
+    "Paste key…" : {
+
+    },
+    "Paste mode" : {
+
+    },
+    "Pastes only into a text field; terminals only when it doesn't look like a command." : {
+
+    },
+    "Pastes wherever the caret is, terminals too; commands and password fields are held." : {
+
+    },
+    "Path" : {
+
+    },
+    "Path unavailable" : {
+
+    },
+    "Per-server probe" : {
+
+    },
+    "Permission checklist" : {
+
+    },
+    "Permission for %@" : {
+
+    },
+    "Permission matrix." : {
+
+    },
+    "Permission required" : {
+
+    },
+    "Permission · %@" : {
+      "comment" : "Eyebrow on a permission step; %@ is a privacy scope such as Microphone"
+    },
+    "Permissions" : {
+      "comment" : "Settings tab: macOS permission matrix"
+    },
+    "Pick a provider and a model per request path. Discovery lists what the provider serves; the Model ID field always accepts a name the list does not know." : {
+
+    },
+    "Pick a starting preset. This sets the Dictation, Formatting, and Assistive shortcuts for you." : {
+      "comment" : "Setup step blurb; Dictation, Formatting and Assistive are the three modes"
+    },
+    "Pick your dictation language." : {
+      "comment" : "Setup step heading"
+    },
+    "Pinned" : {
+      "comment" : "Always-on-top state"
+    },
+    "Pinned, %@" : {
+      "comment" : "VoiceOver value; the placeholder is a screen anchor or “Free motion”"
+    },
+    "Play" : {
+
+    },
+    "Play original" : {
+
+    },
+    "Play the original recording for this correction" : {
+
+    },
+    "Play the recorder's live start confirmation" : {
+
+    },
+    "Playing %@" : {
+      "comment" : "The placeholder is an audio file name"
+    },
+    "Pointer Indicator" : {
+
+    },
+    "Pointer indicator" : {
+
+    },
+    "Polish" : {
+      "comment" : "Dictation language choice\nDictation language name"
+    },
+    "Position overlay" : {
+
+    },
+    "Power Apple live dictation on-device. Speech never leaves your Mac." : {
+      "comment" : "Why the app asks for the Speech Recognition scope"
+    },
+    "Powers AI formatting and the agent lane. Stored in the macOS Keychain — write-only, never shown back. Optional: skip and add it later in Settings › Keys." : {
+
+    },
+    "Preparing voice input" : {
+
+    },
+    "Preserve original and install for %@" : {
+
+    },
+    "Press Finish to close setup and start using Codescribe. Anything you skipped is available in Settings." : {
+
+    },
+    "Press and hold Fn/Globe while you speak; release to stop." : {
+      "comment" : "Hotkey preset detail; Fn and Globe are the key caps on a Mac keyboard"
+    },
+    "Preview" : {
+      "comment" : "Settings tab: live transcript preview timing"
+    },
+    "Preview attachment" : {
+
+    },
+    "Preview attachment (original file may be missing)" : {
+
+    },
+    "Preview off · committed transcripts are unchanged" : {
+
+    },
+    "Preview timing preset" : {
+
+    },
+    "Preview timing." : {
+
+    },
+    "Previous" : {
+
+    },
+    "Previous take" : {
+
+    },
+    "Previous take available. Open actions to copy or discard it." : {
+
+    },
+    "Privacy" : {
+      "comment" : "Settings tab: cloud and privacy"
+    },
+    "Privacy Policy" : {
+      "comment" : "About panel link to the public privacy page"
+    },
+    "Processing..." : {
+      "comment" : "Tray status: transcribing"
+    },
+    "Product setting is read-only while %@ keeps the lane armed. Remove the power-user override to edit here." : {
+      "comment" : "The placeholder is an environment variable name"
+    },
+    "Product setting is read-only while %@ keeps the lane disarmed. Remove the power-user override to edit here." : {
+      "comment" : "The placeholder is an environment variable name"
+    },
+    "Programming vocabulary and your %@ entries enrich the selected language." : {
+      "comment" : "The placeholder is the name of the Voice Lab settings section"
+    },
+    "Prompt file" : {
+
+    },
+    "Prompt source" : {
+
+    },
+    "Prompts" : {
+      "comment" : "Settings tab: editable prompts"
+    },
+    "Prompts." : {
+
+    },
+    "Provider" : {
+
+    },
+    "Provider API key" : {
+      "comment" : "Summary row: whether an API key is stored for the chosen AI provider"
+    },
+    "Provider access is still being updated." : {
+
+    },
+    "Provider access is unavailable. No credential status has been confirmed." : {
+
+    },
+    "Provider access is unavailable. Retry to check account and API key status." : {
+
+    },
+    "Provider access is unavailable. The last checked values are shown below." : {
+
+    },
+    "Provider access unavailable" : {
+
+    },
+    "Provider account" : {
+
+    },
+    "Provider account access is unavailable. Remove the stored account in Settings › Providers, then sign in again." : {
+
+    },
+    "Provider and model per request path. Endpoints and keys live on Providers; the resolved runtime truth is below the editors." : {
+
+    },
+    "Providers" : {
+      "comment" : "Settings section: AI provider accounts"
+    },
+    "Providers." : {
+
+    },
+    "Pulsing red" : {
+      "comment" : "Recording light colour"
+    },
+    "Purple — voice goes to the agent" : {
+
+    },
+    "Queued" : {
+
+    },
+    "Queued message" : {
+
+    },
+    "Quick settings" : {
+
+    },
+    "Quick start" : {
+
+    },
+    "Quiet" : {
+      "comment" : "Measured microphone level"
+    },
+    "Quit codescribe" : {
+      "comment" : "Tray row; codescribe is the product name, kept lowercase"
+    },
+    "Raw STT · %lld characters" : {
+      "comment" : "Dictionary: header above the text the recognizer produced; the count is its length",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Raw STT · %lld character"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Raw STT · %lld characters"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Read error" : {
+
+    },
+    "Read project files for AI context. Optional — limits file-aware features if skipped." : {
+      "comment" : "Why the app asks for the Full Disk Access scope"
+    },
+    "Read-only" : {
+
+    },
+    "Readiness check unavailable" : {
+
+    },
+    "Reading the controller's calibration and seal-lane verdict." : {
+
+    },
+    "Reading the controller's measured profile." : {
+
+    },
+    "Reading the effective product setting and override." : {
+
+    },
+    "Reading the product setting and any power-user override." : {
+
+    },
+    "Ready" : {
+      "comment" : "Menu bar tooltip: ready to record"
+    },
+    "Ready for Whisper engine · %@" : {
+
+    },
+    "Ready to install after you select an agent client." : {
+
+    },
+    "Ready to record" : {
+
+    },
+    "Ready to record on %@" : {
+      "comment" : "The placeholder is an input device name"
+    },
+    "Ready · %@" : {
+      "comment" : "The placeholder is a model path or model id"
+    },
+    "Recent corrections · %lld" : {
+
+    },
+    "Recheck" : {
+
+    },
+    "Recording" : {
+      "comment" : "Recording light state\nTray status: a recording is live"
+    },
+    "Recording cannot start" : {
+
+    },
+    "Recording did not start." : {
+
+    },
+    "Recording failed" : {
+
+    },
+    "Recording for the agent" : {
+      "comment" : "Recording light state"
+    },
+    "Recording hands-free" : {
+      "comment" : "Recording light state"
+    },
+    "Recording in progress" : {
+
+    },
+    "Recording readiness" : {
+
+    },
+    "Recording start sound" : {
+
+    },
+    "Recording start sound volume" : {
+
+    },
+    "Recording started, but transcription did not finish." : {
+
+    },
+    "Recording stays disabled until step 1 is complete." : {
+
+    },
+    "Recording time" : {
+
+    },
+    "Recording..." : {
+      "comment" : "Tray status: dictation is recording"
+    },
+    "Recordings, transcriptions, dictionary and lexicon data, quality corpus and reports, prompts, audio, hotkeys, dictation settings, license, and macOS permissions stay unchanged." : {
+
+    },
+    "Recovered text — review before using" : {
+
+    },
+    "Red" : {
+      "comment" : "Recording light colour"
+    },
+    "Red — dictation or formatting is recording" : {
+
+    },
+    "Refresh" : {
+
+    },
+    "Refresh %@ data" : {
+
+    },
+    "Refresh %@ models" : {
+
+    },
+    "Refresh audio input devices" : {
+
+    },
+    "Refresh installation status" : {
+
+    },
+    "Refresh pending requests" : {
+
+    },
+    "Refresh provider access" : {
+
+    },
+    "Refresh status" : {
+
+    },
+    "Refreshing…" : {
+
+    },
+    "Relaxed" : {
+
+    },
+    "Remote HTTP" : {
+
+    },
+    "Remove" : {
+
+    },
+    "Remove %@?" : {
+
+    },
+    "Remove attachment" : {
+
+    },
+    "Remove custom provider %@" : {
+
+    },
+    "Remove license" : {
+
+    },
+    "Remove provider and its key" : {
+
+    },
+    "Remove the stored %@ account tokens" : {
+
+    },
+    "Remove this key from the Keychain" : {
+
+    },
+    "Remove this server from mcp.json" : {
+
+    },
+    "Rename" : {
+
+    },
+    "Rename thread" : {
+
+    },
+    "Render as markdown" : {
+
+    },
+    "Render the previous %lld turns" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Render the previous %lld turn"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Render the previous %lld turns"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Replace a manually installed Codescribe skill?" : {
+
+    },
+    "Replace key…" : {
+
+    },
+    "Replace manual copy…" : {
+
+    },
+    "Request lanes." : {
+
+    },
+    "Requests another transcription of this recording" : {
+
+    },
+    "Requests formatting between takes" : {
+
+    },
+    "Required by the direct Whisper engine or Local power live refinement" : {
+
+    },
+    "Required for Apple live dictation. Without it Codescribe cannot run on-device Speech." : {
+
+    },
+    "Required for committed utterances; stored in Settings." : {
+
+    },
+    "Required local FP16 model (%@). Missing or invalid weights keep Local power not ready." : {
+
+    },
+    "Requires confirmation and keeps a recoverable backup." : {
+
+    },
+    "Reset" : {
+
+    },
+    "Reset %@ model" : {
+
+    },
+    "Reset Agent" : {
+
+    },
+    "Reset Agent. Destructive action." : {
+
+    },
+    "Reset Agent?" : {
+
+    },
+    "Reset Agent…" : {
+
+    },
+    "Reset app data. Destructive action." : {
+
+    },
+    "Reset audio input to system default" : {
+
+    },
+    "Reset removes the preference; it never writes an empty device name." : {
+
+    },
+    "Reset to defaults" : {
+
+    },
+    "Resolve the conflict above before saving" : {
+
+    },
+    "Resolved runtime truth" : {
+
+    },
+    "Responses (/v1/responses)" : {
+
+    },
+    "Rest the Apple engine after this much silence; the next speech edge wakes a fresh epoch so Whisper can patch the sealed span" : {
+
+    },
+    "Restore %@ to the built-in default?" : {
+
+    },
+    "Restore default" : {
+
+    },
+    "Restore default transcript tag template" : {
+
+    },
+    "Restore only %@" : {
+
+    },
+    "Restore this prompt" : {
+
+    },
+    "Restored draft" : {
+      "comment" : "Title of a rebuilt thread shell"
+    },
+    "Restores the latest projected transcript" : {
+
+    },
+    "Restores the transcript this retranscribe replaced, as a new revision" : {
+
+    },
+    "Restore…" : {
+
+    },
+    "Retranscribe" : {
+
+    },
+    "Retranscribe recording" : {
+
+    },
+    "Retranscribe this take on the helper engine" : {
+
+    },
+    "Retranscription failed" : {
+
+    },
+    "Retranscription needs the recording engine" : {
+
+    },
+    "Retry license access" : {
+
+    },
+    "Retry provider access" : {
+
+    },
+    "Reveal in Finder" : {
+
+    },
+    "Review and refine your transcript." : {
+
+    },
+    "Rewritten by your dictionary" : {
+
+    },
+    "Running %@ on archived audio…" : {
+      "comment" : "The placeholder is the name of a speech-to-text pass"
+    },
+    "Running build" : {
+
+    },
+    "Runtime input: %@" : {
+      "comment" : "The placeholder is an input device name"
+    },
+    "Runtime rows reflect the live engine — changes apply on the next recording session." : {
+
+    },
+    "Runtime truth · read-only rows" : {
+
+    },
+    "SKU" : {
+
+    },
+    "STT model (preference)" : {
+
+    },
+    "Safe" : {
+      "comment" : "Paste policy: cautious destinations"
+    },
+    "Save" : {
+
+    },
+    "Save %@" : {
+
+    },
+    "Save %@ model" : {
+
+    },
+    "Save a key first to test it" : {
+
+    },
+    "Save changes" : {
+
+    },
+    "Save correction" : {
+
+    },
+    "Save failed: %@" : {
+
+    },
+    "Save key" : {
+
+    },
+    "Save last transcript" : {
+
+    },
+    "Save roots" : {
+
+    },
+    "Save selection" : {
+      "comment" : "Tray row: save the text selected in another app to the daily note"
+    },
+    "Save the prompt" : {
+
+    },
+    "Saved in settings.json; runtime falls back safely if it disappears" : {
+
+    },
+    "Saved the assistant replies as %@ in %@." : {
+      "comment" : "Placeholders: file name, then folder path",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Saved the assistant replies as %1$@ in %2$@."
+          }
+        }
+      }
+    },
+    "Saved the whole thread as %@ in %@." : {
+      "comment" : "Placeholders: file name, then folder path",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Saved the whole thread as %1$@ in %2$@."
+          }
+        }
+      }
+    },
+    "Saved to daily note" : {
+      "comment" : "Tray banner: the text was appended to today's note"
+    },
+    "Saved · %@" : {
+      "comment" : "Download finished; the placeholder is a file path"
+    },
+    "Saved — %lld rules learned" : {
+      "comment" : "Needs a plural variation: one rule learned / N rules learned",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Saved — %lld rule learned"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Saved — %lld rules learned"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Saved — dictionary learning failed: %@" : {
+      "comment" : "The placeholder is a technical failure description"
+    },
+    "Saved — no test for this key" : {
+
+    },
+    "Saved: %@. Restart Codescribe to apply it; an explicit AUDIO_INPUT_DEVICE launch override can keep a different runtime input active." : {
+      "comment" : "The placeholder is the saved input device name"
+    },
+    "Saved; no dictionary rule derived" : {
+
+    },
+    "Saving correction" : {
+
+    },
+    "Saving provider…" : {
+
+    },
+    "Screen Recording" : {
+
+    },
+    "Screen Recording Access" : {
+      "comment" : "Permission step heading"
+    },
+    "Seal check waits for microphone access" : {
+
+    },
+    "Seal lane" : {
+
+    },
+    "Seal lane armed" : {
+
+    },
+    "Seal lane is disarmed by %@ override" : {
+      "comment" : "The placeholder is an environment variable name"
+    },
+    "Seal lane is off in Settings › Audio" : {
+
+    },
+    "Seal lane must be enabled" : {
+
+    },
+    "Search server or tool" : {
+
+    },
+    "Search settings" : {
+
+    },
+    "Search threads" : {
+
+    },
+    "Select Codex, Claude Code, or both before installing." : {
+      "comment" : "Codex and Claude Code are product names — do not translate"
+    },
+    "Selected" : {
+      "comment" : "VoiceOver value for a chosen language"
+    },
+    "Selection and app captured with this voice turn" : {
+
+    },
+    "Send an untouched transcript 5 seconds after the take ends." : {
+
+    },
+    "Send message" : {
+
+    },
+    "Send one content-free event after your first successful dictation" : {
+
+    },
+    "Send transcript to Agent" : {
+
+    },
+    "Sends the accepted transcript to Agent" : {
+
+    },
+    "Sends the projected transcript to the selected destination" : {
+
+    },
+    "Service keys" : {
+
+    },
+    "Session-mint endpoint for live Cloud Layer 1. Not the live socket above. Clearing restores unset." : {
+
+    },
+    "Sets the transcription language. Auto-detect handles mixed or multilingual speech. Change it any time in Settings." : {
+      "comment" : "Setup step blurb; Auto-detect is the name of the first language choice"
+    },
+    "Settings" : {
+
+    },
+    "Settings…" : {
+
+    },
+    "Setup" : {
+      "comment" : "Sidebar group of settings sections"
+    },
+    "Setup Wizard…" : {
+
+    },
+    "Setup is complete. Your voice takes it from here." : {
+      "comment" : "Setup chapter subtitle"
+    },
+    "Setup progress" : {
+
+    },
+    "Shape your words" : {
+
+    },
+    "Share anonymous activation ping" : {
+
+    },
+    "Shift during Fn hold" : {
+
+    },
+    "Shift or Command during an already-started Fn hold attaches {selection_N}. It does not start voice chat, hide the overlay, or stop the take. Fn+Shift from idle is dictation, not Assistive." : {
+
+    },
+    "Shortcuts need Input Monitoring + Accessibility" : {
+
+    },
+    "Show Agent" : {
+      "comment" : "Tray row: opens the agent chat window"
+    },
+    "Show Dock Icon" : {
+
+    },
+    "Show earlier messages" : {
+
+    },
+    "Show earlier · %lld turns" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Show earlier · %lld turn"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Show earlier · %lld turns"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Show full text · %@" : {
+      "comment" : "The placeholder is a size, e.g. 142 KB"
+    },
+    "Show in Finder" : {
+
+    },
+    "Show live preview" : {
+
+    },
+    "Show or hide transcript tools" : {
+
+    },
+    "Show raw text" : {
+
+    },
+    "Show transcript by default" : {
+
+    },
+    "Shows Agent-only impact and requires typing %@ before continuing." : {
+
+    },
+    "Shows agent channel details" : {
+
+    },
+    "Shows the live impact, names whether base prompts are preserved, and requires typing %@ before data moves to Trash." : {
+
+    },
+    "Side effects" : {
+
+    },
+    "Sign in with %@" : {
+
+    },
+    "Sign out" : {
+
+    },
+    "Sign out %@" : {
+
+    },
+    "Sign out of %@" : {
+
+    },
+    "Silence" : {
+      "comment" : "Recording light state"
+    },
+    "Silero VAD did not load" : {
+
+    },
+    "Skill installed from this app. Reload skills in your agent client, then invoke /codescribe. Installation does not attach a listener or verify voice delivery." : {
+      "comment" : "/codescribe is a command the user types — keep it verbatim"
+    },
+    "Skip" : {
+
+    },
+    "Smart" : {
+      "comment" : "Formatting level: balanced editing\nPrompt file: balanced transcript editing"
+    },
+    "Smart prompt" : {
+
+    },
+    "Smooth" : {
+
+    },
+    "Snappy" : {
+
+    },
+    "Something went wrong: %@" : {
+
+    },
+    "Sound feedback" : {
+
+    },
+    "Source unavailable" : {
+
+    },
+    "Source: %@" : {
+      "comment" : "The placeholder is a transcription engine name, e.g. Whisper"
+    },
+    "Space Grotesk — body 14" : {
+      "shouldTranslate" : false
+    },
+    "Space Grotesk — body 18" : {
+      "shouldTranslate" : false
+    },
+    "Spawn the server and list its tools" : {
+
+    },
+    "Speak" : {
+      "comment" : "Read aloud"
+    },
+    "Speak in. Code out." : {
+      "shouldTranslate" : false
+    },
+    "Speak naturally" : {
+
+    },
+    "Speak this response. AI-generated voice." : {
+
+    },
+    "Speech Recognition" : {
+
+    },
+    "Speech Recognition Access" : {
+      "comment" : "Permission step heading"
+    },
+    "Speech Recognition access is unavailable — check System Settings › Privacy & Security › Speech Recognition" : {
+
+    },
+    "Speech Recognition is off for Codescribe — enable it in System Settings › Privacy & Security › Speech Recognition" : {
+
+    },
+    "Speech coverage not measured" : {
+
+    },
+    "Speech coverage was measured as complete, but this take has no terminal seal." : {
+
+    },
+    "Speech coverage was not measured because no acoustic measurement was taken." : {
+
+    },
+    "Speech coverage was not measured because the measurement could not be used." : {
+
+    },
+    "Speech coverage was not measured because the measurement covered only part of this take." : {
+
+    },
+    "Speech coverage was not measured because the measurement did not match this take." : {
+
+    },
+    "Speech coverage was not measured because the measurement was unavailable." : {
+
+    },
+    "Speech engine is unavailable." : {
+
+    },
+    "Speech had no words" : {
+
+    },
+    "Speech too quiet or short — adjust the mic and try again" : {
+
+    },
+    "Speech unavailable" : {
+
+    },
+    "Speech-to-text Cloud Service" : {
+
+    },
+    "Start Assistive" : {
+      "comment" : "Tray row: start an agent recording"
+    },
+    "Start Dictation" : {
+      "comment" : "Tray row: start a dictation recording"
+    },
+    "Start a dictation session" : {
+
+    },
+    "Start dictation" : {
+
+    },
+    "Start in Assistive" : {
+      "comment" : "Tray toggle: new recordings start in the assistive (agent) lane"
+    },
+    "Start recording" : {
+
+    },
+    "Start sound" : {
+
+    },
+    "Start voice input" : {
+
+    },
+    "Start with dictation, or bring an assistant into the conversation. Change this any time in Settings." : {
+      "comment" : "Setup step blurb"
+    },
+    "Starting" : {
+      "comment" : "Tray status: a recording start is in flight"
+    },
+    "Starting download…" : {
+
+    },
+    "Starting recording…" : {
+
+    },
+    "Starting..." : {
+      "comment" : "Tray status: the runtime is still booting"
+    },
+    "Starting…" : {
+      "comment" : "Tray row: a recording start is in flight"
+    },
+    "Starts a new take in the current dictation mode" : {
+
+    },
+    "Starts a real dictation session in the shared recorder" : {
+
+    },
+    "State" : {
+
+    },
+    "Status: %@" : {
+      "comment" : "Tray detail row; %@ is a status phrase such as Error or Hotkey conflict"
+    },
+    "Step %lld of %lld" : {
+      "comment" : "Setup wizard progress; first %lld is the current step, second the total",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Step %1$lld of %2$lld"
+          }
+        }
+      }
+    },
+    "Step %lld, %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Step %1$lld, %2$@"
+          }
+        }
+      }
+    },
+    "Stop" : {
+
+    },
+    "Stop Assistive" : {
+      "comment" : "Tray row: stop the agent recording"
+    },
+    "Stop Dictation" : {
+      "comment" : "Tray row: stop the dictation recording"
+    },
+    "Stop playing the original recording" : {
+
+    },
+    "Stop recording" : {
+
+    },
+    "Stop response" : {
+
+    },
+    "Stop speaking" : {
+
+    },
+    "Stop voice input" : {
+
+    },
+    "Stopped" : {
+
+    },
+    "Stopping" : {
+      "comment" : "Turn status"
+    },
+    "Stopping response" : {
+
+    },
+    "Stops capture and requests the final projection" : {
+
+    },
+    "Stops the active take in the shared recorder" : {
+
+    },
+    "Stored calibration cannot be used" : {
+
+    },
+    "Streaming" : {
+      "comment" : "Turn status"
+    },
+    "Streaming Whisper" : {
+      "comment" : "Active STT row. Whisper is a product name; Streaming says it transcribed live"
+    },
+    "Strong level" : {
+      "comment" : "Measured microphone level"
+    },
+    "Suggested rule for %@ from %lld variants. %llu occurrences." : {
+      "comment" : "VoiceOver summary of a suggested dictionary rule. First placeholder is the word the rule corrects to; each count needs its own plural variation",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Suggested rule for %1$@ from %#@variants@. %#@occurrences@."
+          },
+          "substitutions" : {
+            "occurrences" : {
+              "argNum" : 3,
+              "formatSpecifier" : "llu",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg occurrence"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg occurrences"
+                    }
+                  }
+                }
+              }
+            },
+            "variants" : {
+              "argNum" : 2,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg variant"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg variants"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Suggested rules · %lld" : {
+
+    },
+    "System Settings" : {
+      "comment" : "Button: open the System Settings pane"
+    },
+    "System default" : {
+
+    },
+    "System default: %@" : {
+      "comment" : "The placeholder is an input device name"
+    },
+    "System surfaces own their material and borders." : {
+      "shouldTranslate" : false
+    },
+    "Tag transcripts for AI agents" : {
+
+    },
+    "Take not sealed yet" : {
+
+    },
+    "Talk with an AI assistant and connect its tools, so your voice can drive an AI assistant, not just type." : {
+      "comment" : "Operating lane choice detail"
+    },
+    "Tap Fn to dictate" : {
+
+    },
+    "Taught +%lld from corrections, +%lld from proposed → %lld live rules (%lld correction-sourced)." : {
+      "comment" : "Counted teach summary; the live-rules count needs a plural variation",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Taught +%1$lld from corrections, +%2$lld from proposed → %#@rules@ (%4$lld correction-sourced)."
+          },
+          "substitutions" : {
+            "rules" : {
+              "argNum" : 3,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg live rule"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg live rules"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Teach" : {
+
+    },
+    "Teach %@ as %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Teach %1$@ as %2$@"
+          }
+        }
+      }
+    },
+    "Teach dictionary from corrections and proposed rules" : {
+
+    },
+    "Teach failed: %@" : {
+      "comment" : "The placeholder is a technical failure description"
+    },
+    "Template" : {
+
+    },
+    "Terminal and process tools always require Allow once. Commands and paths remain constrained to Agent workspace roots." : {
+
+    },
+    "Terms of Use & EULA" : {
+      "comment" : "About panel link to the public terms page; EULA = end-user licence agreement"
+    },
+    "Test" : {
+      "comment" : "Button label: run a connection test"
+    },
+    "Test %@" : {
+
+    },
+    "Test mic" : {
+
+    },
+    "Test this key" : {
+
+    },
+    "Text formatting" : {
+      "shouldTranslate" : false
+    },
+    "The %@ pass returned no text" : {
+      "comment" : "The placeholder is the name of the engine that ran the pass"
+    },
+    "The Codescribe skill folder for %@ will be moved to a retained backup beside it, then replaced with the copy bundled in this app. Your other skills and agent configuration are not changed. No listener will be started." : {
+
+    },
+    "The app bundle does not contain the Codescribe agent bridge payload." : {
+
+    },
+    "The assistive model isn't reachable yet — open Settings → Engine to configure the assistive lane." : {
+
+    },
+    "The bundled agent bridge failed checksum verification: %@" : {
+      "comment" : "The placeholder is a technical diagnostic produced by the installer"
+    },
+    "The cloud transcriber was unsure of this word" : {
+
+    },
+    "The configured device is present and selected by the recorder." : {
+
+    },
+    "The configured input" : {
+
+    },
+    "The custom dictionary is empty — accepted overlay corrections will appear here." : {
+
+    },
+    "The endpoint is normalized to the wire's canonical path on save." : {
+
+    },
+    "The engine heard speech it has not transcribed yet and is running a recovery pass; this is the engine catching up, not your microphone." : {
+
+    },
+    "The existing transcript is still here." : {
+
+    },
+    "The handover came back. These words are retained here — recover them before the next take." : {
+
+    },
+    "The local FP16 bundle is missing or invalid. Local power is explicitly not ready until validation passes." : {
+
+    },
+    "The middle mouse button follows the same press, hold, and tap rules as Fn. The click still reaches the frontmost app." : {
+
+    },
+    "The named agent can hear live drafts and reply during the pause. Installation, commits, deletion, and every other state-changing action wait for transcript_sealed." : {
+      "comment" : "Setup step explanation; transcript_sealed is an event name, keep it verbatim"
+    },
+    "The on-device model behind the direct Whisper engine and Local power refinement." : {
+
+    },
+    "The recorder resolves this device from Core Audio at runtime." : {
+
+    },
+    "The retranscribed take is no longer current" : {
+
+    },
+    "The shared recorder is preparing this take." : {
+
+    },
+    "The shared recorder is processing this take. Wait before starting another." : {
+
+    },
+    "The signed app does not contain the agent bridge payload." : {
+
+    },
+    "The text received so far is still here. It may be incomplete." : {
+
+    },
+    "The transcriber was unsure of this word" : {
+
+    },
+    "The visible take has no session identity" : {
+
+    },
+    "The visible take's audio is unavailable" : {
+
+    },
+    "Thermal throttling" : {
+      "comment" : "Tray status: the host is too hot to run speech-to-text at full speed"
+    },
+    "Think it. Say it. Keep your flow." : {
+
+    },
+    "Thinking" : {
+      "comment" : "Turn status"
+    },
+    "This build embeds Whisper (fat SKU). Runtime download is not required." : {
+
+    },
+    "This connection is optional. You can continue and set it up later." : {
+      "comment" : "Setup step footnote on the agent-readiness step"
+    },
+    "This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available." : {
+
+    },
+    "This is retained text from an earlier take, including any unsaved edit. It is separate from the current take's audio." : {
+
+    },
+    "This permission request is no longer active." : {
+
+    },
+    "This provider does not require an API key. Choose a model in Settings › Agent › LLM lanes." : {
+
+    },
+    "This removes “%@” and its saved conversation. There is no undo." : {
+      "comment" : "The placeholder is the thread title"
+    },
+    "This response has no text to speak." : {
+
+    },
+    "This turn was restored from history. Codescribe kept the filename but not the bytes or path on disk." : {
+
+    },
+    "This type is not rendered in-app. Use Open to hand it to the system default app." : {
+
+    },
+    "This week" : {
+      "comment" : "Thread rail section"
+    },
+    "Thread actions" : {
+
+    },
+    "Thread title" : {
+
+    },
+    "Threads" : {
+      "comment" : "Thread rail section eyebrow"
+    },
+    "Today" : {
+      "comment" : "Thread rail section"
+    },
+    "Toggle Sidebar" : {
+
+    },
+    "Toggle the full transcript for this correction" : {
+
+    },
+    "Tool activity · %@" : {
+
+    },
+    "Tool overrides · %lld" : {
+
+    },
+    "Tool permissions" : {
+
+    },
+    "Tool permissions." : {
+
+    },
+    "Tools" : {
+      "comment" : "Settings tab: tool permissions"
+    },
+    "Tools with “always allow”" : {
+      "comment" : "Palette command: tools that carry a standing approval"
+    },
+    "Top Center" : {
+      "comment" : "Overlay screen anchor"
+    },
+    "Top Left" : {
+      "comment" : "Overlay screen anchor"
+    },
+    "Top Right" : {
+      "comment" : "Overlay screen anchor"
+    },
+    "Transcribe again" : {
+
+    },
+    "Transcribe this take again" : {
+
+    },
+    "Transcribe your voice into text. Audio is processed locally on your Mac." : {
+      "comment" : "Why the app asks for the Microphone scope"
+    },
+    "Transcriber catching up" : {
+
+    },
+    "Transcribing" : {
+      "comment" : "Recording light state"
+    },
+    "Transcript cleanup and formatting" : {
+
+    },
+    "Transcript delivery" : {
+
+    },
+    "Transcript formatter authority is unavailable" : {
+
+    },
+    "Transcript restore receipt was inconsistent" : {
+
+    },
+    "Transcript revision authority is unavailable" : {
+
+    },
+    "Transcript revision receipt was inconsistent" : {
+
+    },
+    "Transcript tag template" : {
+
+    },
+    "Transcript tag template editor" : {
+
+    },
+    "Transcript tag template preview" : {
+
+    },
+    "Transcript tag template warning" : {
+
+    },
+    "Transcription Overlay" : {
+
+    },
+    "Transcription failed" : {
+
+    },
+    "Transcription history" : {
+
+    },
+    "Transcription incomplete" : {
+
+    },
+    "Transcription interrupted" : {
+
+    },
+    "Transcripts" : {
+
+    },
+    "Transport" : {
+
+    },
+    "Trigger keys." : {
+
+    },
+    "Tune shortcuts" : {
+
+    },
+    "Type %@ to continue" : {
+
+    },
+    "Type a message…" : {
+      "comment" : "Composer placeholder"
+    },
+    "Type transcribed text into any application and control text insertion." : {
+      "comment" : "Why the app asks for the Accessibility scope"
+    },
+    "Typing speed" : {
+
+    },
+    "Undo needs the recording engine" : {
+
+    },
+    "Undo retranscribe" : {
+
+    },
+    "Unfavorite" : {
+
+    },
+    "Unfavorite thread" : {
+
+    },
+    "Unknown" : {
+      "comment" : "Active STT row: the engine id was empty"
+    },
+    "Unknown formatting policy: %@" : {
+      "comment" : "The placeholder is a stored policy identifier"
+    },
+    "Unlicensed · Basic" : {
+
+    },
+    "Unpinned" : {
+      "comment" : "Always-on-top state"
+    },
+    "Unreviewed" : {
+      "comment" : "Dictionary badge: the session closed before this take was reviewed"
+    },
+    "Untitled" : {
+      "comment" : "Thread that carries no title"
+    },
+    "Untitled thread" : {
+      "comment" : "Thread with no title"
+    },
+    "Untitled transcript" : {
+      "comment" : "Archived take with no preview text"
+    },
+    "Update selected" : {
+      "comment" : "Button: update the bridge for the checked coding assistants"
+    },
+    "Update skill" : {
+
+    },
+    "Updates expired · installed app remains active" : {
+
+    },
+    "Updates through" : {
+
+    },
+    "Updating provider access…" : {
+
+    },
+    "Use %@ or choose Start recording." : {
+      "comment" : "The placeholder is the configured dictation gesture"
+    },
+    "Use helper as correction" : {
+
+    },
+    "Use system default" : {
+
+    },
+    "User" : {
+      "comment" : "Settings section: account profile"
+    },
+    "Uses audio from the take currently shown in the overlay" : {
+
+    },
+    "Uses audio from the take currently shown in the overlay." : {
+
+    },
+    "Using system fallback: %@" : {
+      "comment" : "The placeholder is an input device name"
+    },
+    "Vendors" : {
+
+    },
+    "Version" : {
+
+    },
+    "Very quiet" : {
+      "comment" : "Measured microphone level"
+    },
+    "Violet" : {
+      "comment" : "Recording light colour"
+    },
+    "Voice & formatting" : {
+
+    },
+    "Voice Lab" : {
+      "shouldTranslate" : false
+    },
+    "Voice Lab…" : {
+      "comment" : "Tray row: opens the Voice Lab console",
+      "shouldTranslate" : false
+    },
+    "Voice chat" : {
+      "comment" : "Fallback title for a dictated thread"
+    },
+    "Voice-to-text anywhere. The simplest, fastest setup." : {
+      "comment" : "Operating lane choice detail"
+    },
+    "Volume" : {
+
+    },
+    "Wait for this response to finish." : {
+
+    },
+    "Waiting for browser…" : {
+
+    },
+    "Waiting for measured level" : {
+
+    },
+    "Waiting for the agent to confirm receipt" : {
+
+    },
+    "Waiting for the controller's admission verdict." : {
+
+    },
+    "Waiting for the shared recorder's lifecycle." : {
+
+    },
+    "Welcome" : {
+      "comment" : "Setup step eyebrow"
+    },
+    "Welcome to codescribe" : {
+      "comment" : "Setup wizard window title; codescribe is the product name, kept lowercase"
+    },
+    "What I checked · %lld running · %lld tools" : {
+      "comment" : "Tool activity header: calls still running, then the total",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "What I checked · %1$lld running · %#@tools@"
+          },
+          "substitutions" : {
+            "tools" : {
+              "argNum" : 2,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg tool"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg tools"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "What I checked · %lld stopped · %lld tools" : {
+      "comment" : "Tool activity header: calls stopped, then the total",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "What I checked · %1$lld stopped · %#@tools@"
+          },
+          "substitutions" : {
+            "tools" : {
+              "argNum" : 2,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg tool"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg tools"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "What I checked · %lld tools" : {
+      "comment" : "Tool activity header: how many tool calls the model made",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "What I checked · %lld tool"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "What I checked · %lld tools"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "What the local agent substrate can currently do, and why." : {
+
+    },
+    "What's actually running." : {
+
+    },
+    "Where audio lives, and the one condition under which it leaves this Mac." : {
+
+    },
+    "Where should your words go?" : {
+      "comment" : "Setup step heading"
+    },
+    "Where the transcript goes when a Hold or toggle take ends." : {
+
+    },
+    "Whisper (fallback)" : {
+      "comment" : "Whisper is a product name; the parenthesis says it was not the chosen engine"
+    },
+    "Whisper buffering" : {
+      "shouldTranslate" : false
+    },
+    "Whisper context" : {
+
+    },
+    "Whisper context window" : {
+
+    },
+    "Whisper language" : {
+
+    },
+    "Whisper was unsure of this word" : {
+
+    },
+    "Wide" : {
+      "comment" : "Chat width"
+    },
+    "Wire" : {
+
+    },
+    "Without your consent, Cloud never arms: dictation continues with Apple plus your dictionary, and no local model is loaded in its place." : {
+
+    },
+    "Word audio unavailable" : {
+
+    },
+    "Words per tick" : {
+
+    },
+    "Workspace" : {
+      "comment" : "Settings tab: agent workspace roots"
+    },
+    "Workspace roots." : {
+
+    },
+    "Wrap delivered dictation in an explicit source tag" : {
+
+    },
+    "Write in the composer, or dictate. The reply stays in this thread." : {
+
+    },
+    "Yellow" : {
+      "comment" : "Recording light colour"
+    },
+    "Yesterday" : {
+      "comment" : "Thread rail section"
+    },
+    "You can continue without granting this, but the matching feature stays off until you do." : {
+
+    },
+    "You can edit bindings here, but they won't fire until both are granted. Click to open System Settings." : {
+
+    },
+    "You decide what Codescribe can access." : {
+      "comment" : "Setup chapter subtitle; Codescribe is the product name"
+    },
+    "You use dev power mode" : {
+      "comment" : "Corner mark on a developer build while Voice Lab power mode is on",
+      "shouldTranslate" : false
+    },
+    "You · %@" : {
+
+    },
+    "You're ready to talk." : {
+
+    },
+    "Your assistive.txt and three formatting prompt files will also move to Trash." : {
+      "comment" : "assistive.txt is a file name — keep it verbatim"
+    },
+    "Your assistive.txt and three formatting prompt files will be preserved." : {
+      "comment" : "assistive.txt is a file name — keep it verbatim"
+    },
+    "Your language. Your shortcuts. Your way of working." : {
+      "comment" : "Setup chapter subtitle"
+    },
+    "Your license period ended. Renew to keep using Agentic — Basic dictation remains free." : {
+
+    },
+    "Your next thought starts here" : {
+      "comment" : "Setup chapter heading"
+    },
+    "Your recordings leave your machine." : {
+
+    },
+    "Your speech is reaching the microphone very quietly, so words may be missed; move closer or run mic calibration." : {
+
+    },
+    "Your voice, a new possibility" : {
+      "comment" : "Setup chapter heading"
+    },
+    "Zoom" : {
+
+    },
+    "_No prompt set._" : {
+      "comment" : "Placeholder for an empty prompt file; underscores render as italic"
+    },
+    "account" : {
+      "comment" : "Lane auth: signed-in account, lower case"
+    },
+    "active" : {
+      "comment" : "Palette row: the entry currently in use"
+    },
+    "allow %@" : {
+
+    },
+    "another installation is active or its lock is unavailable; try again after it finishes" : {
+      "comment" : "Reason clause appended to the atomic-installation failure sentence"
+    },
+    "app · %@" : {
+
+    },
+    "args, space-separated (e.g. mcp)" : {
+
+    },
+    "assistive lane: credential missing" : {
+      "comment" : "Settings health footer, lower case: no supported account or API key"
+    },
+    "assistive lane: no key" : {
+      "comment" : "Settings health footer, lower case: no API key for the assistive lane"
+    },
+    "assistive lane: not ready" : {
+      "comment" : "Settings health footer, lower case"
+    },
+    "attach file / image" : {
+      "comment" : "Composer hint: what can be attached"
+    },
+    "audio.microphone.permission.allow" : {
+      "comment" : "Button: grant the microphone permission now",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Allow"
+          }
+        }
+      }
+    },
+    "bearer token (optional, saved in Keychain)" : {
+
+    },
+    "call id" : {
+      "comment" : "Tool inspect field"
+    },
+    "cancelled" : {
+      "comment" : "Tool call status"
+    },
+    "cannot open the installation lock" : {
+      "comment" : "Reason clause appended to the atomic-installation failure sentence"
+    },
+    "chat.callout.caution" : {
+      "comment" : "Callout header in agent chat: an action with a risky outcome",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Caution"
+          }
+        }
+      }
+    },
+    "chat.callout.important" : {
+      "comment" : "Callout header in agent chat: something the reader must know",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Important"
+          }
+        }
+      }
+    },
+    "chat.callout.note" : {
+      "comment" : "Callout header in agent chat: a neutral aside",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Note"
+          }
+        }
+      }
+    },
+    "chat.callout.tip" : {
+      "comment" : "Callout header in agent chat: helpful advice",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Tip"
+          }
+        }
+      }
+    },
+    "chat.callout.warning" : {
+      "comment" : "Callout header in agent chat: needs attention to avoid a problem",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Warning"
+          }
+        }
+      }
+    },
+    "cloud" : {
+      "comment" : "Retranscribe pass: the cloud engine"
+    },
+    "command (e.g. prview)" : {
+
+    },
+    "connected" : {
+
+    },
+    "connected — %lld tools" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "connected — %lld tool"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "connected — %lld tools"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "connecting…" : {
+
+    },
+    "context" : {
+
+    },
+    "copied" : {
+      "comment" : "Button state after copying"
+    },
+    "copy" : {
+      "comment" : "Button: copy this code block\nButton: copy this message"
+    },
+    "copy failed" : {
+
+    },
+    "copy unavailable" : {
+
+    },
+    "custom" : {
+      "comment" : "Menu suffix: a provider the user added by hand"
+    },
+    "degraded — %@" : {
+      "comment" : "The placeholder is an error message from the MCP handshake"
+    },
+    "denied" : {
+      "comment" : "Permission row status, lower case"
+    },
+    "dictionary.correction.header" : {
+      "comment" : "Dictionary: header of one correction card",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Correction"
+          }
+        }
+      }
+    },
+    "disabled" : {
+
+    },
+    "disabled · AI formatting off" : {
+      "comment" : "Formatting status: the AI formatting master switch is off"
+    },
+    "disconnected — disabled" : {
+
+    },
+    "disconnected — not tested" : {
+
+    },
+    "discovering models…" : {
+      "comment" : "In-progress status"
+    },
+    "duration" : {
+      "comment" : "Tool inspect field"
+    },
+    "enabled" : {
+
+    },
+    "ended" : {
+      "comment" : "Tool activity row: no result arrived\nTool call status: ended without a result"
+    },
+    "endpoint" : {
+
+    },
+    "endpoint %@" : {
+
+    },
+    "endpoint (https://…/mcp)" : {
+
+    },
+    "error" : {
+      "comment" : "Overlay status pill: the take failed\nTool inspect section"
+    },
+    "factory endpoint" : {
+
+    },
+    "fail: %@" : {
+      "comment" : "The placeholder is an error message composed by the MCP probe"
+    },
+    "failed" : {
+      "comment" : "Tool activity row: tool call failed\nTool call status"
+    },
+    "finalizing" : {
+
+    },
+    "format failed" : {
+
+    },
+    "format unavailable" : {
+
+    },
+    "formatted" : {
+
+    },
+    "formatting lane: unavailable" : {
+      "comment" : "Settings health footer"
+    },
+    "formatting…" : {
+
+    },
+    "granted" : {
+      "comment" : "Permission row status, lower case\nPermission status: this permission is granted"
+    },
+    "granted %@ · select to revoke" : {
+      "comment" : "The placeholder is when the tool grant was given"
+    },
+    "incomplete coverage" : {
+
+    },
+    "input device" : {
+
+    },
+    "insert unavailable" : {
+
+    },
+    "inserted" : {
+
+    },
+    "inserting…" : {
+
+    },
+    "invalid policy" : {
+      "comment" : "Formatting status: stored level is unknown"
+    },
+    "kept for recovery" : {
+
+    },
+    "kept in composer recovery" : {
+
+    },
+    "listening" : {
+
+    },
+    "live view shows the newest output · full text kept (%@)" : {
+      "comment" : "The placeholder is a size, e.g. 142 KB"
+    },
+    "local Whisper HQ" : {
+      "comment" : "Retranscribe pass: the local engine"
+    },
+    "macOS has not granted Codescribe access to the selected input yet." : {
+
+    },
+    "managed folder found, receipt differs — Update will re-adopt it." : {
+      "comment" : "Update is the button label on the Agent settings panel"
+    },
+    "managed folder found, receipt missing or unreadable — Update will re-adopt it." : {
+      "comment" : "Update is the button label on the Agent settings panel"
+    },
+    "manual adoption requires an ordinary skill folder with SKILL.md and no managed marker" : {
+      "comment" : "SKILL.md is a file name — keep it verbatim"
+    },
+    "measured profile" : {
+
+    },
+    "measurement unavailable" : {
+
+    },
+    "model %@" : {
+
+    },
+    "model discovery failed" : {
+      "comment" : "Model discovery status"
+    },
+    "model discovery failed — %@" : {
+      "comment" : "The placeholder is a status message from the core"
+    },
+    "name (e.g. prview)" : {
+
+    },
+    "no ax" : {
+      "comment" : "Footer notice: no Accessibility permission"
+    },
+    "no capability rows (refresh or start agent substrate)" : {
+
+    },
+    "no composer receiver" : {
+
+    },
+    "no insert" : {
+
+    },
+    "no key required" : {
+      "comment" : "Lane auth, lower case"
+    },
+    "no models returned by provider" : {
+      "comment" : "Model discovery status"
+    },
+    "no paste" : {
+
+    },
+    "no sealed utterance" : {
+
+    },
+    "no speech" : {
+
+    },
+    "not connected" : {
+
+    },
+    "not determined" : {
+      "comment" : "Permission row status, lower case: the user has not decided yet"
+    },
+    "not loaded yet" : {
+
+    },
+    "not set" : {
+
+    },
+    "not tested" : {
+
+    },
+    "nothing to undo" : {
+
+    },
+    "now" : {
+      "comment" : "Timestamp of a thread or message created just now"
+    },
+    "ok — %lld tools" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "ok — %lld tool"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "ok — %lld tools"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "open System Settings" : {
+
+    },
+    "optional" : {
+
+    },
+    "overlay.recordingLight.tooltip" : {
+      "comment" : "Recording light tooltip: colour name, state name, then one sentence of meaning",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ — %2$@. %3$@"
+          }
+        }
+      }
+    },
+    "overlay.retranscribe.cloud" : {
+      "comment" : "Button under Transcribe again: run the transcription in the cloud",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Cloud"
+          }
+        }
+      }
+    },
+    "overlay.retranscribe.local" : {
+      "comment" : "Button under Transcribe again: run the transcription on this Mac",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Local"
+          }
+        }
+      }
+    },
+    "previous take copied" : {
+
+    },
+    "previous take discarded" : {
+
+    },
+    "previous take retained" : {
+
+    },
+    "queued · waiting for receipt" : {
+
+    },
+    "ran" : {
+      "comment" : "Tool activity row: tool call finished"
+    },
+    "raw" : {
+      "comment" : "Button: show the message as plain text"
+    },
+    "reasoning summary" : {
+
+    },
+    "receipt and managed folder found." : {
+      "comment" : "Installer evidence, follows \"<client name>: \" on one line"
+    },
+    "receipt confirmed by the agent" : {
+
+    },
+    "receipt found, managed folder missing or invalid — existing unowned folders will not be overwritten." : {
+
+    },
+    "recording setup: action needed" : {
+      "comment" : "Settings health footer, lower case"
+    },
+    "recording setup: checking" : {
+      "comment" : "Settings health footer, lower case"
+    },
+    "recover failed — kept" : {
+
+    },
+    "remote · no authentication · policy: ask" : {
+
+    },
+    "remote · token in Keychain · policy: ask" : {
+
+    },
+    "request/response bodies not on this event" : {
+
+    },
+    "result" : {
+      "comment" : "Tool inspect section"
+    },
+    "retranscribe refused · %@" : {
+      "comment" : "The placeholder is the engine's own failure text"
+    },
+    "retranscribe returned no text" : {
+
+    },
+    "retranscribe unavailable" : {
+
+    },
+    "retranscribe undone" : {
+
+    },
+    "retranscribed" : {
+
+    },
+    "retranscribed — Back keeps the old text" : {
+
+    },
+    "retranscribing · %@" : {
+      "comment" : "The placeholder is the name of the engine running the pass"
+    },
+    "revision %llu" : {
+
+    },
+    "rewritten by your dictionary" : {
+      "comment" : "VoiceOver marker spoken on a word the user's dictionary replaced"
+    },
+    "rich" : {
+      "comment" : "Button: render the message as markdown"
+    },
+    "running" : {
+      "comment" : "Tool call status"
+    },
+    "secrets live only in the Keychain — presence shown, value hidden" : {
+
+    },
+    "sent · waiting for receipt" : {
+
+    },
+    "set" : {
+      "comment" : "Status chip: a value is stored"
+    },
+    "settings.formatting.level.off" : {
+      "comment" : "Formatting level: no AI formatting",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Off"
+          }
+        }
+      }
+    },
+    "settings.holdBadge.size.off" : {
+      "comment" : "Hold badge size: the badge is disabled",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Off"
+          }
+        }
+      }
+    },
+    "settings.paste.policy.off" : {
+      "comment" : "Paste policy: never paste automatically",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Off"
+          }
+        }
+      }
+    },
+    "settings.previewTiming.preset.off" : {
+      "comment" : "Preview timing preset: pacing is turned off",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Off"
+          }
+        }
+      }
+    },
+    "settings.search.section.agent" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "tools, workspace, permissions, server, auto-send"
+          }
+        }
+      }
+    },
+    "settings.search.section.audio" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "microphone, mikrofon, input, device, levels"
+          }
+        }
+      }
+    },
+    "settings.search.section.creator" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "setup, onboarding, permissions, quick start, language"
+          }
+        }
+      }
+    },
+    "settings.search.section.engine" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "speech, transcription, cloud, consent"
+          }
+        }
+      }
+    },
+    "settings.search.section.keys" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "api key, provider, endpoint, model, token"
+          }
+        }
+      }
+    },
+    "settings.search.section.license" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "subscription, activation, trial, billing"
+          }
+        }
+      }
+    },
+    "settings.search.section.shortcuts" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "hotkey, keyboard, shortcut, trigger, hold, toggle"
+          }
+        }
+      }
+    },
+    "settings.search.section.user" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "account, profile, sign in, identity"
+          }
+        }
+      }
+    },
+    "settings.search.section.voiceLab" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "lexicon, dictionary, vocabulary, corrections, słownik"
+          }
+        }
+      }
+    },
+    "settings.search.tab.agentLanes" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "provider, model, endpoint, assistive, formatting"
+          }
+        }
+      }
+    },
+    "settings.search.tab.agentMcp" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "server, transport"
+          }
+        }
+      }
+    },
+    "settings.search.tab.agentPrompts" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "prompt, system prompt, persona, instructions, assistive, correction, smart, max"
+          }
+        }
+      }
+    },
+    "settings.search.tab.agentStatus" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "capability, native, enhanced, readiness"
+          }
+        }
+      }
+    },
+    "settings.search.tab.agentTools" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "permission, allow, ask, deny, tool"
+          }
+        }
+      }
+    },
+    "settings.search.tab.agentWorkspace" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "roots, directory, repo, path"
+          }
+        }
+      }
+    },
+    "settings.search.tab.dictationEngine" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "engine, runtime"
+          }
+        }
+      }
+    },
+    "settings.search.tab.dictationHandsFree" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "hands-free, silence, toggle, epoch"
+          }
+        }
+      }
+    },
+    "settings.search.tab.dictationPermissions" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "permission, accessibility, input monitoring"
+          }
+        }
+      }
+    },
+    "settings.search.tab.dictationPreview" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "preview, timing, typing, cadence, overlay"
+          }
+        }
+      }
+    },
+    "settings.search.tab.dictationPrivacy" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "cloud, privacy, consent, egress"
+          }
+        }
+      }
+    },
+    "settings.search.tab.dictationWhisper" : {
+      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "model, download, local"
+          }
+        }
+      }
+    },
+    "speech and assistive setup ready · cloud formatting not required" : {
+      "comment" : "Settings health footer"
+    },
+    "speech engine: unavailable" : {
+      "comment" : "Settings health footer, lower case"
+    },
+    "speech, assistive and formatting setup ready" : {
+      "comment" : "Settings health footer"
+    },
+    "status" : {
+      "comment" : "Tool inspect field"
+    },
+    "status unavailable" : {
+
+    },
+    "stopped" : {
+      "comment" : "Tool activity row: stopped by the user"
+    },
+    "streaming" : {
+      "comment" : "Composer hint: the reply streams in live"
+    },
+    "succeeded" : {
+      "comment" : "Tool call status"
+    },
+    "system health: unknown" : {
+      "comment" : "Settings health footer, lower case"
+    },
+    "systems ready" : {
+      "comment" : "Settings health footer, lower case"
+    },
+    "take audio unavailable" : {
+
+    },
+    "take changed" : {
+
+    },
+    "testing…" : {
+
+    },
+    "the Codescribe-managed marker is missing or does not match this client and bridge root" : {
+
+    },
+    "thinking..." : {
+      "comment" : "The model is still reasoning"
+    },
+    "thinking…" : {
+
+    },
+    "today %@" : {
+      "comment" : "Thread rail row: updated today; the placeholder is the time of day, e.g. 14:05"
+    },
+    "tool" : {
+      "comment" : "Tool activity row: a tool call is running"
+    },
+    "tray.keycap.off" : {
+      "comment" : "Tray keycap, a few letters wide: this toggle is disabled",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Off"
+          }
+        }
+      }
+    },
+    "tray.keycap.on" : {
+      "comment" : "Tray keycap, a few letters wide: this toggle is enabled",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "On"
+          }
+        }
+      }
+    },
+    "unavailable" : {
+      "comment" : "Lane availability, lower case"
+    },
+    "uncertain" : {
+      "comment" : "VoiceOver marker spoken on a word the engine was unsure of"
+    },
+    "under 0.1 s of speech had no words · %@" : {
+      "comment" : "“s” is seconds. The placeholder is a list of positions in the take, e.g. “0:12, 0:58”"
+    },
+    "undo failed — kept" : {
+
+    },
+    "undo unavailable" : {
+
+    },
+    "unsaved edit copied" : {
+
+    },
+    "unsaved edit discarded" : {
+
+    },
+    "unsealed transcript" : {
+
+    },
+    "unset" : {
+      "comment" : "Model row: no model preference stored, lower case\nStatus chip: no value stored"
+    },
+    "unverified coverage" : {
+
+    },
+    "using cached models" : {
+      "comment" : "Model discovery status"
+    },
+    "using cached models — %@" : {
+      "comment" : "The placeholder is a status message from the core"
+    },
+    "worked · %@s" : {
+
+    },
+    "xAI (Grok) API key" : {
+      "comment" : "xAI and Grok are product names"
+    },
+    "yesterday" : {
+      "comment" : "Thread rail row: updated yesterday"
+    },
+    "your Dictation shortcut" : {
+
+    }
+  },
+  "version" : "1.0"
+}

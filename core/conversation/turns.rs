@@ -229,13 +229,6 @@ impl TurnManager {
         self.state
     }
 
-    /// Get turn duration so far
-    pub fn turn_duration(&self) -> Duration {
-        self.turn_start
-            .map(|s| Instant::now().duration_since(s))
-            .unwrap_or(Duration::ZERO)
-    }
-
     /// Reset to idle state
     pub fn reset(&mut self) {
         self.state = ConversationState::Idle;

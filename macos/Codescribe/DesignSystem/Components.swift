@@ -63,6 +63,10 @@ private struct CSFocusPolicyMonitor: NSViewRepresentable {
   }
 
   func updateNSView(_ nsView: CSFocusPolicyMonitorView, context: Context) {}
+
+  static func dismantleNSView(_ nsView: CSFocusPolicyMonitorView, coordinator: ()) {
+    nsView.invalidate()
+  }
 }
 
 @MainActor
@@ -92,10 +96,8 @@ private final class CSFocusPolicyMonitorView: NSView {
     }
   }
 
-  deinit {
-    if let mouseMonitor {
-      NSEvent.removeMonitor(mouseMonitor)
-    }
+  func invalidate() {
+    removeMouseMonitor()
   }
 
   private func removeMouseMonitor() {
@@ -112,23 +114,36 @@ extension View {
   }
 }
 
-/// Keyboard focus ring that follows the control's own rounded geometry.
-///
-/// AppKit's default ring is a squarish halo that ignores a custom chip's
-/// corner radius — on the dark glass surfaces it reads as a grey box stamped
-/// across the control (operator screenshots 2026-08-09, next to Claude
-/// Desktop's accent ring as the bar to clear). This style draws our ring —
-/// a thin accent stroke hugging the control 2pt out, rounded to
-/// `cornerRadius + 2` so the inner and outer curves stay concentric; the
-/// weight and offset are calibrated against Claude Desktop's ring, which the
-/// operator holds up as the reference ("olbrzymie i brzydkie" was the verdict
-/// on the first, thicker cut). Suppressing the system halo is the adopting
-/// Button's job: use `View.csFocusRing(cornerRadius:)`, never
-/// `.buttonStyle(.csFocusRing(...))` alone.
-///
-/// Keyboard-only by construction: `CSFocusPolicy` releases focus after
-/// pointer clicks, so the ring appears exactly when a keyboard user is
-/// navigating — the accessibility cue stays, only its geometry is ours.
+/// One physical pixel in the system accent, following the control's own shape.
+struct CSFocusOutline: View {
+  var isFocused: Bool
+  var cornerRadius: CGFloat
+  @Environment(\.displayScale) private var displayScale
+
+  var body: some View {
+    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+      .strokeBorder(
+        CSColor.chromeAccent.opacity(isFocused ? 1 : 0),
+        lineWidth: 1 / max(displayScale, 1)
+      )
+      .allowsHitTesting(false)
+      .accessibilityHidden(true)
+  }
+}
+
+/// Adds focus feedback without replacing a native glass or bordered button style.
+private struct CSFocusOutlineModifier: ViewModifier {
+  var cornerRadius: CGFloat
+  @FocusState private var isFocused: Bool
+
+  func body(content: Content) -> some View {
+    content
+      .focused($isFocused)
+      .focusEffectDisabled()
+      .overlay { CSFocusOutline(isFocused: isFocused, cornerRadius: cornerRadius) }
+  }
+}
+
 struct CSFocusRingButtonStyle: ButtonStyle {
   var cornerRadius: CGFloat
   @Environment(\.isFocused) private var isFocused
@@ -136,75 +151,62 @@ struct CSFocusRingButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .opacity(configuration.isPressed ? 0.82 : 1)
-      .overlay(
-        RoundedRectangle(cornerRadius: cornerRadius + 2, style: .continuous)
-          .strokeBorder(
-            CSColor.chromeAccent.opacity(isFocused ? 0.9 : 0),
-            lineWidth: 1.5
-          )
-          .padding(-2)
-      )
-      .animation(.easeOut(duration: 0.12), value: isFocused)
+      .overlay { CSFocusOutline(isFocused: isFocused, cornerRadius: cornerRadius) }
   }
 }
 
 extension ButtonStyle where Self == CSFocusRingButtonStyle {
   /// Plain-look button carrying the Codescribe focus ring. Use instead of
   /// `.plain` on custom-drawn chips, cards, and segments.
-  static func csFocusRing(cornerRadius: CGFloat) -> CSFocusRingButtonStyle {
+  static func csFocusRing(cornerRadius: CGFloat = CSRadius.chip) -> CSFocusRingButtonStyle {
     CSFocusRingButtonStyle(cornerRadius: cornerRadius)
   }
 }
 
 extension View {
-  /// The one correct way to adopt the Codescribe focus ring on a Button.
-  ///
-  /// `focusEffectDisabled()` is an environment write and only flows DOWN the
-  /// tree — inside `makeBody` it reaches the label's descendants, never the
-  /// Button that actually draws AppKit's grey halo. So the kill switch must
-  /// ride on the Button itself, paired here with the style so the two can't
-  /// drift apart (adopting the style alone leaves the system ring stacked
-  /// on top of ours — operator screenshot 2026-08-09, the "stodoła").
-  func csFocusRing(cornerRadius: CGFloat) -> some View {
+  /// Preserve the control's button style while replacing its focus halo.
+  func csFocusOutline(cornerRadius: CGFloat = CSRadius.chip) -> some View {
+    modifier(CSFocusOutlineModifier(cornerRadius: cornerRadius))
+  }
+
+  /// Custom plain buttons share the same outline as native controls.
+  func csFocusRing(cornerRadius: CGFloat = CSRadius.chip) -> some View {
     buttonStyle(.csFocusRing(cornerRadius: cornerRadius))
       .focusEffectDisabled()
   }
 }
 
-/// Dark glass container: ultraThinMaterial tinted + hairline border + deep shadow.
-/// Overlay passes `sitsInForest` so the panel drinks the desktop instead of
-/// painting an opaque under-layer that killed the original glass.
-struct GlassPanel<Content: View>: View {
-  var cornerRadius: CGFloat = CSRadius.window
-  var blurTint: Double = 0.84
-  var sitsInForest: Bool = false
-  @ViewBuilder var content: Content
+/// Flat actions share the product's rounded, single-pixel keyboard focus.
+private struct CSActionButtonStyle: ButtonStyle {
+  let prominent: Bool
+  @Environment(\.isEnabled) private var isEnabled
+  @Environment(\.displayScale) private var displayScale
 
-  var body: some View {
-    content
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.body.weight(prominent ? .semibold : .regular))
+      .foregroundStyle(Color.primary.opacity(isEnabled ? 1 : 0.4))
+      .padding(.horizontal, 14)
+      .padding(.vertical, 8)
       .background(
-        ZStack {
-          if sitsInForest {
-            Rectangle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
-            CSColor.ink.opacity(0.22)
-          } else {
-            CSColor.glassUnder
-            Rectangle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
-            CSColor.glassBase.opacity(blurTint - 0.6)
-          }
-        }
+        Color.accentColor.opacity(isEnabled ? (prominent ? 0.12 : 0.035) : 0.015),
+        in: .rect(cornerRadius: CSRadius.chip)
       )
-      .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-          .strokeBorder(CSColor.hairline(sitsInForest ? 0.07 : 0.09), lineWidth: 1)
-      )
-      .shadow(
-        color: .black.opacity(sitsInForest ? 0.22 : 0.6),
-        radius: sitsInForest ? 22 : 50,
-        x: 0,
-        y: sitsInForest ? 10 : 40
-      )
+      .overlay {
+        RoundedRectangle(cornerRadius: CSRadius.chip)
+          .strokeBorder(
+            Color.accentColor.opacity(isEnabled ? (prominent ? 0.32 : 0.22) : 0.08),
+            lineWidth: 1 / max(displayScale, 1))
+      }
+      .contentShape(.rect(cornerRadius: CSRadius.chip))
+      .opacity(configuration.isPressed && isEnabled ? 0.7 : 1)
+  }
+}
+
+extension View {
+  func csAction(prominent: Bool = false) -> some View {
+    buttonStyle(CSActionButtonStyle(prominent: prominent))
+      .csFocusOutline()
   }
 }
 
@@ -219,6 +221,7 @@ struct ModeDot: View {
 
 /// Status pill with a softpulsing dot and an optional expanding ripple ring.
 struct StatusPill: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let text: String
   var color: Color = CSColor.oliveLight
   var rippling: Bool = false
@@ -229,7 +232,7 @@ struct StatusPill: View {
   var body: some View {
     HStack(spacing: 6) {
       ZStack {
-        if rippling {
+        if rippling && !reduceMotion {
           Circle().strokeBorder(color, lineWidth: 1)
             .frame(width: 9, height: 9)
             .scaleEffect(ripple ? 2.7 : 0.5)
@@ -250,14 +253,21 @@ struct StatusPill: View {
       Text(text)
         .csMono(11, .medium)
         .foregroundStyle(color)
+        // A squeezed chrome HStack was wrapping this one word into a vertical
+        // capsule (S-t-r-e-a-m-i-n-g, operator crop 2026-09-22). Capsules stay
+        // horizontal; the title truncates first.
+        .lineLimit(1)
+        .fixedSize()
     }
     .padding(.horizontal, 9)
     .padding(.vertical, 4)
     .background(color.opacity(0.12))
     .overlay(Capsule().strokeBorder(color.opacity(0.3), lineWidth: 1))
     .clipShape(Capsule())
+    .fixedSize()
     .onAppear { syncStatusAnimations() }
     .onChange(of: rippling) { _, _ in syncStatusAnimations() }
+    .onChange(of: reduceMotion) { _, _ in syncStatusAnimations() }
   }
 
   /// `pulse` and `ripple` drive `.repeatForever` animations. They must run ONLY
@@ -269,7 +279,7 @@ struct StatusPill: View {
   /// Gate it on `rippling` and, when inactive, snap the state back with animation
   /// disabled so the in-flight repeatForever is torn down rather than left running.
   private func syncStatusAnimations() {
-    if rippling {
+    if rippling && !reduceMotion {
       withAnimation(CSMotion.softpulse) { pulse = true }
       withAnimation(CSMotion.ripple) { ripple = true }
     } else {
@@ -299,12 +309,15 @@ struct StaticStatusPill: View {
       Text(text)
         .csMono(11, .medium)
         .foregroundStyle(color)
+        .lineLimit(1)
+        .fixedSize()
     }
     .padding(.horizontal, 9)
     .padding(.vertical, 4)
     .background(color.opacity(0.12))
     .overlay(Capsule().strokeBorder(color.opacity(0.3), lineWidth: 1))
     .clipShape(Capsule())
+    .fixedSize()
   }
 }
 
@@ -315,7 +328,7 @@ struct Wordmark: View {
   var body: some View {
     HStack(spacing: 9) {
       ModeDot(color: dotColor, size: size * 0.6)
-      Text("codescribe")
+      Text(verbatim: "codescribe")
         .font(CSFont.ui(size, .bold))
         .tracking(-0.3)
         .foregroundStyle(CSColor.textHigh)

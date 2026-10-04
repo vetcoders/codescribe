@@ -39,36 +39,142 @@ final class AgentSummonAction {
   }
 }
 
+/// Testable seam for an explicit Settings open: the tray row, the Agent chrome
+/// button, the license gate and ⌘, all route here through `presentSettings()`.
+///
+/// Settings is a plain SwiftUI `Window` in an LSUIElement app, and the tray
+/// hosts its rows in a non-activating panel. `openWindow` alone therefore put
+/// Settings on screen while Codescribe stayed inactive, and the next click
+/// beside it left the window under the frontmost app (Founder, 2026-09-29).
+/// Settings now arrives the way an explicit Agent open does
+/// (`AppDelegate.showAgent`): Codescribe becomes the active app first, then the
+/// scene fronts its window as key. Opening the tray menu itself never comes
+/// here — only an entry that names Settings does.
+@MainActor
+struct SettingsOpenAction {
+  let activateApp: @MainActor () -> Void
+  let openScene: @MainActor () -> Void
+
+  func perform() {
+    activateApp()
+    openScene()
+  }
+}
+
+extension OpenWindowAction {
+  @MainActor
+  func presentSettings() {
+    SettingsOpenAction(
+      activateApp: { NSApp.activate(ignoringOtherApps: true) },
+      openScene: { self(id: SettingsView.windowID) }
+    ).perform()
+  }
+}
+
 /// UniFFI callbacks arrive off-main. This listener performs exactly one hop to
 /// the AppDelegate-owned action and carries no recording/model payload.
-final class AgentAppActionListener: CsAppActionListener, @unchecked Sendable {
-  private let summonAgent: @MainActor () -> Void
+final class AgentAppActionListener: CsAppActionListener, Sendable {
+  private enum Action: Sendable { case showAgent, maxApprovalsChanged }
+  private let continuation: AsyncStream<Action>.Continuation
+  private let consumer: Task<Void, Never>
 
+  @MainActor
   init(
-    summonAgent: @escaping @MainActor () -> Void
+    maxApprovalsChanged: @escaping @MainActor @Sendable () async -> Void = {},
+    summonAgent: @escaping @MainActor @Sendable () -> Void
   ) {
-    self.summonAgent = summonAgent
+    let channel = AsyncStream<Action>.makeStream()
+    continuation = channel.continuation
+    consumer = Task { @MainActor in
+      for await action in channel.stream {
+        switch action {
+        case .showAgent: summonAgent()
+        case .maxApprovalsChanged: await maxApprovalsChanged()
+        }
+      }
+    }
   }
 
   func onShowAgent() {
-    DispatchQueue.main.async {
-      MainActor.assumeIsolated {
-        self.summonAgent()
-      }
+    continuation.yield(.showAgent)
+  }
+
+  func onMaxApprovalsChanged() {
+    continuation.yield(.maxApprovalsChanged)
+  }
+
+  func invalidate() {
+    continuation.finish()
+    consumer.cancel()
+  }
+}
+
+/// AppKit grants one deferred Quit reply. The injected deadline lets XCTest
+/// exercise both completion orders without launching or terminating NSApp.
+@MainActor
+final class AppTerminationCoordinator {
+  private let deadline: @Sendable () async -> Void
+  private var started = false
+  private var replied = false
+  private var deadlineTask: Task<Void, Never>?
+
+  init(
+    deadline: @escaping @Sendable () async -> Void = {
+      try? await Task.sleep(for: .seconds(10))
     }
+  ) {
+    self.deadline = deadline
+  }
+
+  func begin(
+    cleanup: @escaping @MainActor () async -> Void,
+    reply: @escaping @MainActor () -> Void
+  ) {
+    guard !started else { return }
+    started = true
+    deadlineTask = Task { @MainActor in
+      await deadline()
+      finish(reply: reply)
+    }
+    Task { @MainActor in
+      await cleanup()
+      finish(reply: reply)
+    }
+  }
+
+  private func finish(reply: @MainActor () -> Void) {
+    guard !replied else { return }
+    replied = true
+    deadlineTask?.cancel()
+    deadlineTask = nil
+    reply()
   }
 }
 
 @main
 struct CodescribeApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+  @Environment(\.openWindow) private var openWindow
 
   init() {
+    if CommandLine.arguments.contains("--install-agent-bridge") {
+      do {
+        print(try RealAgentBridgeInstaller().installRuntime())
+        Darwin.exit(0)
+      } catch {
+        print("Agent bridge installation failed: " + error.localizedDescription)
+        Darwin.exit(1)
+      }
+    }
     FontLoader.register()
   }
 
   var body: some Scene {
-    Settings {
+    settingsWindow
+  }
+
+  private var settingsWindow: some Scene {
+    Window("Settings", id: SettingsView.windowID) {
       SettingsView(
         model: SettingsViewModel(
           engine: RealSettingsEngine(),
@@ -78,10 +184,14 @@ struct CodescribeApp: App {
           licenseService: LicenseService.shared
         ))
     }
-    // Make the Settings window user-resizable: the content's `.frame` floor
-    // becomes the window minimum, and it can grow from there (default is a
-    // fixed content-sized window). SwiftUI restores the frame across launches.
+    .defaultSize(width: 1000, height: 720)
     .windowResizability(.contentMinSize)
+    .commands {
+      CommandGroup(replacing: .appSettings) {
+        Button("Settings…") { openWindow.presentSettings() }
+          .keyboardShortcut(",", modifiers: .command)
+      }
+    }
   }
 }
 
@@ -90,9 +200,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private static let showAgentNotification = Notification.Name("com.vetcoders.codescribe.showAgent")
   private static let notificationObject = Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe"
 
-  private static let helpURL = URL(string: "https://vetcoders.github.io/codescribe/")!
-  private static let privacyURL = URL(string: "https://vetcoders.github.io/codescribe/privacy")!
-  private static let termsURL = URL(string: "https://vetcoders.github.io/codescribe/terms")!
+  private static let helpURL = URL(string: "https://github.com/vetcoders/codescribe#readme")!
+  private static let privacyURL = URL(string: "https://codescribe.vetcoders.io/privacy")!
+  private static let termsURL = URL(string: "https://codescribe.vetcoders.io/terms")!
 
   // Every core-touching handle below is `lazy` for correctness, not for launch
   // cost. The XCTest bundle uses this app as its host, so `AppDelegate` is
@@ -135,6 +245,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // kill live voice-reply rendering. Held for the app's lifetime.
   private var voiceDeliveryListener: VoiceDeliveryListener?
   private var appActionListener: AgentAppActionListener?
+  private var onDeviceFormatter: OnDeviceFormatterHost?
+  private lazy var maxPermissionModel = SettingsViewModel(engine: RealSettingsEngine())
   private lazy var agentSummonAction = AgentSummonAction(
     store: model.chat,
     showAgent: { [weak self] in self?.showAgent() }
@@ -147,8 +259,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // NSWorkspace sleep/wake bridge. The observer itself only coalesces one
   // next-tick callback; the async Rust hop happens outside AppKit's callout.
   private var sleepWakeObserver: SystemSleepWakeObserver?
-  private let popover = NSPopover()
+  private lazy var trayPanel = TrayPanel()
   private var shouldExitForDuplicate = false
+  private let terminationCoordinator = AppTerminationCoordinator()
   // First-run onboarding wizard host. Presented at launch when the core gate
   // (`shouldShowOnboarding`) reports setup is due.
   private lazy var onboarding = OnboardingWindowController(engine: RealOnboardingEngine())
@@ -156,6 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // duplicate-instance/test-host guard) so the XCTest host never starts a
   // scheduled updater alongside the live app.
   private var updater: UpdaterService?
+  private let vocabularyAB = VocabularyABAction()
 
   /// True when the process is the XCTest host, not a user launch. The unit-test
   /// runner reuses this app as its host: without this gate the duplicate-instance
@@ -176,12 +290,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     NSApp.terminate(nil)
   }
 
+  func application(_ application: NSApplication, open urls: [URL]) {
+    guard !Self.isRunningTests, !shouldExitForDuplicate else { return }
+    for url in urls {
+      vocabularyAB.receive(url, labEnabled: DictationOverlayGate.isLabModeOn())
+    }
+  }
+
+  func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
+
+  /// A reopen — Dock icon click, `open -a`, a Finder or Spotlight launch of the
+  /// already running app — presents nothing. Left unhandled, SwiftUI answers a
+  /// reopen by presenting a window scene, and the only one here is the Settings
+  /// `Window`: a scratch probe on 2026-09-29 (accessory app, one `Window`
+  /// scene, `kAEReopenApplication` sent to itself) got the closed window back
+  /// on screen, and returning false kept it closed. Settings opens only from an
+  /// explicit entry (`OpenWindowAction.presentSettings`).
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool)
+    -> Bool
+  {
+    false
+  }
+
   func applicationDidFinishLaunching(_ notification: Notification) {
     guard !shouldExitForDuplicate, !Self.isRunningTests else { return }
     // Honour the persisted "Show Dock Icon" toggle at launch. LSUIElement
     // makes us an accessory by default; promote to .regular when enabled so
     // the launch state matches the tray toggle.
-    NSApp.setActivationPolicy(config.trayToggles().showDockIcon ? .regular : .accessory)
+    let trayToggles = config.trayToggles()
+    NSApp.setActivationPolicy(trayToggles.showDockIcon ? .regular : .accessory)
+
+    do {
+      let runtime = try startApplicationRuntime()
+      appLogger.info(
+        "Application runtime started with \(runtime.workerCount, privacy: .public) workers: \(runtime.workerNames.joined(separator: ","), privacy: .public)"
+      )
+    } catch {
+      appLogger.fault(
+        "Application runtime failed to start: \(error.localizedDescription, privacy: .public)")
+      NSApp.terminate(nil)
+      return
+    }
+
+    Task { @MainActor in
+      let detail = await Task.detached(priority: .utility) {
+        RealAgentBridgeInstaller().synchronizeManagedPayload()
+      }.value
+      appLogger.info("\(detail, privacy: .public)")
+      SettingsViewModel.recordAgentBridgeLaunchSynchronization(detail)
+    }
 
     DistributedNotificationCenter.default().addObserver(
       self,
@@ -191,11 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       suspensionBehavior: .deliverImmediately
     )
 
-    popover.behavior = .transient
-    popover.contentSize = NSSize(width: 300, height: 460)
-    popover.contentViewController = NSHostingController(
-      rootView: TrayMenuView(viewModel: model.tray, trayStatus: trayStatus)
-    )
+    trayPanel.onDismiss = { [weak self] in self?.model.tray.collapseDisclosures() }
 
     model.tray.onIntent = { intent in
       switch intent {
@@ -214,6 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     installStatusItem()
     installTextScaleMonitor()
     registerAppActions()
+    registerOnDeviceFormatter()
     startHotkeys()
     installSystemSleepWakeObserver()
     registerVoiceDelivery()
@@ -249,7 +403,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       NSApp.setActivationPolicy(.regular)
     }
     NSApp.activate(ignoringOtherApps: true)
-    SpeechRecognitionPermission.request { [weak self] state in
+    Task { @MainActor [weak self] in
+      let state = await SpeechRecognitionPermission.request()
       guard let self else { return }
       if priorPolicy == .accessory {
         // Restore accessory only when the user has not enabled Dock icon.
@@ -279,16 +434,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
         .foregroundColor: NSColor.secondaryLabelColor,
       ]
-      let credits = NSMutableAttributedString(
-        string: "Commit: \(commit)\nBuilt: \(builtAt)\n\n",
-        attributes: mono
-      )
+      let provenance =
+        String(
+          localized: "Commit: \(commit)",
+          comment: "About panel provenance line; %@ is the source commit of this build"
+        ) + "\n"
+        + String(
+          localized: "Built: \(builtAt)",
+          comment: "About panel provenance line; %@ is the build timestamp"
+        ) + "\n\n"
+      let credits = NSMutableAttributedString(string: provenance, attributes: mono)
       let privacy = NSAttributedString(
-        string: "Privacy Policy",
+        string: String(
+          localized: "Privacy Policy",
+          comment: "About panel link to the public privacy page"),
         attributes: mono.merging([.link: Self.privacyURL]) { _, new in new }
       )
       let terms = NSAttributedString(
-        string: "Terms of Use & EULA",
+        string: String(
+          localized: "Terms of Use & EULA",
+          comment: "About panel link to the public terms page; EULA = end-user licence agreement"),
         attributes: mono.merging([.link: Self.termsURL]) { _, new in new }
       )
       credits.append(privacy)
@@ -327,7 +492,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // (and the bridge's OS toast) so the action is never a silent no-op.
     model.tray.onSaveLastTranscript = { [weak self, notes, threads, model] in
       let text = Self.latestTranscriptText(threads) ?? ""
-      self?.saveToNote(tray: model.tray, emptyMessage: "No transcript to save") {
+      let emptyMessage = String(
+        localized: "No transcript to save",
+        comment: "Tray banner: there is no recent transcript to append to the daily note")
+      self?.saveToNote(tray: model.tray, emptyMessage: emptyMessage) {
         try notes.saveText(text: text)
       }
     }
@@ -338,7 +506,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // first, then fall back to the AX/clipboard path for other apps.
     model.tray.onSaveSelection = { [weak self, notes, model] in
       guard let self else { return }
-      self.saveToNote(tray: model.tray, emptyMessage: "No text selected") {
+      let emptyMessage = String(
+        localized: "No text selected",
+        comment: "Tray banner: no selection was found to append to the daily note")
+      self.saveToNote(tray: model.tray, emptyMessage: emptyMessage) {
         if let own = self.harvestAgentWindowSelection() {
           notesLog.info(
             "save selection: harvested \(own.count, privacy: .public) chars from agent window")
@@ -357,23 +528,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     model.tray.onCopyDebugInfo = { [config, notes, hotkeys] in
       Task { @MainActor in
         let recording = await hotkeys.isRecording()
-        let settings = config.loadSettings()
-        let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
-        let build = info?["CFBundleVersion"] as? String ?? "?"
-        let stt =
-          settings.useLocalStt
-          ? "local (\(settings.localModel))"
-          : "cloud (\(settings.sttEndpoint ?? "default"))"
-        let text = [
-          "codescribe debug info",
-          "app version: \(version) (\(build))",
-          "macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
-          "recording: \(recording)",
-          "STT engine: \(stt)",
-          "config dir: \(config.configDir())",
-          "notes dir: \(notes.notesDir())",
-        ].joined(separator: "\n")
+        let settings: CsSettings?
+        do {
+          settings = try config.loadDiagnosticSettings()
+        } catch {
+          // Report unavailability, not raw errors or invented default values.
+          settings = nil
+        }
+        let text = codescribeDebugInfo(
+          build: .current(), osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+          recording: recording, settings: settings, lastServing: currentServingVerdict(),
+          settingsFile: config.settingsFilePath(), dataDirectory: config.configDir(),
+          notesDirectory: notes.notesDir()
+        )
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
       }
@@ -405,14 +572,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       let saved = try perform()
       if let saved, !saved.isEmpty {
         notesLog.info("note saved (\(saved.count, privacy: .public) chars)")
-        tray.showNoteStatus(.init(kind: .success, message: "Saved to daily note"))
+        tray.showNoteStatus(
+          .init(
+            kind: .success,
+            message: String(
+              localized: "Saved to daily note",
+              comment: "Tray banner: the text was appended to today's note")))
       } else {
         notesLog.info("note save: nothing to save")
         tray.showNoteStatus(.init(kind: .failure, message: emptyMessage))
       }
     } catch {
       notesLog.error("note save failed: \(error.localizedDescription, privacy: .public)")
-      tray.showNoteStatus(.init(kind: .failure, message: "Could not save note"))
+      tray.showNoteStatus(
+        .init(
+          kind: .failure,
+          message: String(
+            localized: "Could not save note",
+            comment: "Tray banner: writing the daily note failed")))
     }
   }
 
@@ -465,17 +642,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     return harvested
   }
 
-  func applicationWillTerminate(_ notification: Notification) {
-    // Mirrors the launch guards: the test host never started hotkeys, and
-    // touching the lazy handle here would construct the bridge at teardown
-    // purely to stop something that was never running.
-    guard !Self.isRunningTests else { return }
-    VoiceLabRuntime.stopOwnedProcess()
-    hotkeys.stop()
+  func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    guard !shouldExitForDuplicate, !Self.isRunningTests else { return .terminateNow }
+    terminationCoordinator.begin(
+      cleanup: { [weak self] in await self?.shutdownForTermination() },
+      reply: { sender.reply(toApplicationShouldTerminate: true) }
+    )
+    return .terminateLater
+  }
+
+  private func shutdownForTermination() async {
+    // The launch guards in applicationShouldTerminate keep the XCTest host
+    // from constructing a bridge here solely to stop it at teardown.
+    let voiceStop = Task { await VoiceLabRuntime.shared.stopOwnedProcess() }
+    trayPanel.dismiss()
+    model.chat.invalidate()
+    appActionListener?.invalidate()
+    voiceDeliveryListener?.invalidate()
+    trayStatus.invalidate()
     sleepWakeObserver?.invalidate()
     sleepWakeObserver = nil
     if let textScaleMonitor { NSEvent.removeMonitor(textScaleMonitor) }
     DistributedNotificationCenter.default().removeObserver(self)
+    // UniFFI stop calls are synchronous. Keep them off the main actor so the
+    // ten-second AppKit reply deadline can fire even if a native stop stalls.
+    let hotkeyRuntime = hotkeys
+    let nativeStop = Task.detached { [hotkeyRuntime] in
+      hotkeyRuntime.stop()
+      do {
+        let runtime = try shutdownApplicationRuntime()
+        appLogger.info(
+          "Application runtime stopped with \(runtime.activeTasks, privacy: .public) owned tasks and \(runtime.stoppedWorkerNames.count, privacy: .public) stopped workers"
+        )
+      } catch {
+        appLogger.error(
+          "Application runtime shutdown failed: \(error.localizedDescription, privacy: .public)"
+        )
+      }
+    }
+    await nativeStop.value
+    await voiceStop.value
   }
 
   /// Bind the active recorder to the real host power lifecycle.
@@ -579,10 +785,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       button.image = statusItemImage()
       button.contentTintColor = hasUnreadAgentUpdate ? NSColor.systemYellow : nil
     }
+    let tooltip = trayStatus.tooltip
     button.toolTip =
       hasUnreadAgentUpdate
-      ? "\(trayStatus.status.tooltip) - agent reply ready"
-      : trayStatus.status.tooltip
+      ? String(
+        localized: "\(tooltip) - agent reply ready",
+        comment: "Menu bar tooltip while an unread agent reply waits; %@ is the status tooltip")
+      : tooltip
   }
 
   private func statusItemImage() -> NSImage? {
@@ -600,12 +809,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Wrap in TextScaleRoot so ⌘+/-/0 on the chat window scale the message
     // bodies + composer via `\.csTextScale`, independently of the overlay.
     let root = TextScaleRoot(controller: model.chatTextScale) {
-      AgentChatView(store: model.chat)
-        .preferredColorScheme(.dark)
+      AgentChatView(store: model.chat, maxPermissions: maxPermissionModel)
     }
     let hosting = NSHostingController(rootView: root)
     let window = NSWindow(contentViewController: hosting)
-    window.title = "codescribe — Agent"
+    window.title = String(localized: "Agent", comment: "Title of the agent chat window")
     window.setContentSize(NSSize(width: 1120, height: 720))
     window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
     window.titlebarAppearsTransparent = true
@@ -660,14 +868,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private func showTray() {
     guard let button = statusItem.button else { return }
-    NSApp.activate(ignoringOtherApps: true)
-    popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-    popover.contentViewController?.view.window?.makeKey()
+    trayPanel.present(from: button) {
+      TrayMenuView(viewModel: model.tray, trayStatus: trayStatus)
+    }
   }
 
   @objc private func toggleTray() {
-    if popover.isShown {
-      popover.performClose(nil)
+    if trayPanel.isVisible {
+      trayPanel.dismiss()
     } else {
       showTray()
     }
@@ -693,6 +901,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func registerAppActions() {
     let action = agentSummonAction
     let listener = AgentAppActionListener(
+      maxApprovalsChanged: { [weak self] in
+        guard let self else { return }
+        await self.maxPermissionModel.refreshMaxToolApprovals()
+        if !self.maxPermissionModel.maxToolApprovals.isEmpty
+          || self.maxPermissionModel.maxApprovalError != nil
+        {
+          self.showAgent(activating: false)
+        }
+      },
       summonAgent: { [weak action] in
         action?.perform()
         appLogger.info("Agent summon command handled: window fronted and composer focus requested")
@@ -700,6 +917,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     )
     appActionListener = listener
     hotkeys.setAppActionListener(listener: listener)
+  }
+
+  private func registerOnDeviceFormatter() {
+    let formatter = OnDeviceFormatterHost()
+    onDeviceFormatter = formatter
+    hotkeys.setOnDeviceFormatter(formatter: formatter)
   }
 
   private func startHotkeys() {
@@ -738,7 +961,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       NSRunningApplication
       .runningApplications(withBundleIdentifier: bundleIdentifier)
       .contains { app in
-        app.processIdentifier != currentPID && !app.isTerminated
+        isOtherInstance(
+          bundleIdentifier: bundleIdentifier, currentPID: currentPID,
+          candidateBundleIdentifier: app.bundleIdentifier,
+          candidatePID: app.processIdentifier, isTerminated: app.isTerminated
+        )
       }
   }
+
+  static func isOtherInstance(
+    bundleIdentifier: String, currentPID: pid_t,
+    candidateBundleIdentifier: String?, candidatePID: pid_t, isTerminated: Bool
+  ) -> Bool {
+    candidateBundleIdentifier == bundleIdentifier && candidatePID != currentPID && !isTerminated
+  }
+}
+
+/// A bounded diagnostic projection, not a dump of configuration or credentials.
+@MainActor
+func codescribeDebugInfo(
+  build: AppBuildInfo, osVersion: String, recording: Bool, settings: CsSettings?,
+  lastServing: CsLastServingVerdict?, settingsFile: String,
+  dataDirectory: String, notesDirectory: String
+) -> String {
+  var lines = [
+    "codescribe debug info",
+    "app version: \(build.version) (\(build.build))",
+    "source commit: \(build.commit)",
+    "built at: \(build.builtAt)",
+    "macOS: \(osVersion)",
+    "recording: \(recording)",
+    "settings file: \(settingsFile)",
+    "app data dir: \(dataDirectory)",
+    "notes dir: \(notesDirectory)",
+  ]
+  if let settings {
+    lines += [
+      "configuration: resolved now; may include loader repairs; not proof of the active capture snapshot",
+      "configured ASR mode: \(settings.asrMode ?? "not specified")",
+      "configured input device: \(settings.audioInputDevice ?? "system default")",
+      "formatting enabled: \(settings.aiFormattingEnabled)",
+      "configured formatting policy: \(settings.formattingLevel ?? "not specified")",
+      "configured formatting provider: \(settings.llmFormattingProvider ?? "not specified")",
+      "configured formatting model: \(settings.llmFormattingModel ?? "not specified")",
+      "configured agent provider: \(settings.llmAssistiveProvider ?? "not specified")",
+      "configured agent model: \(settings.llmAssistiveModel ?? "not specified")",
+    ]
+  } else {
+    lines.append(
+      "configuration: unavailable; loader refused or a configuration refusal was recorded in this process"
+    )
+  }
+  if let lastServing {
+    lines.append("last completed serving engine: \(lastServing.engine)")
+    lines.append("last serving disposition: \(lastServing.disposition ?? "not reported")")
+    lines.append("last serving used alternate engine: \(lastServing.fallbackUsed)")
+  } else {
+    lines.append("last completed serving engine: not yet observed in this process")
+  }
+  lines.append("Contains local paths and configuration labels; review before sharing.")
+  return lines.joined(separator: "\n")
 }

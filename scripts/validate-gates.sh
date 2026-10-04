@@ -127,10 +127,25 @@ fi
 if [[ "$test_setup" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
     fail "TEST_SETUP must establish process-wide test data isolation"
 fi
+if ! grep -Fq 'test-isolation = []' core/Cargo.toml; then
+    fail "codescribe-core must declare the test-isolation feature"
+fi
+for manifest in Cargo.toml core/Cargo.toml bridge/Cargo.toml; do
+    if ! sed -n '/^\[dev-dependencies\]/,/^\[/p' "$manifest" | grep -Fq 'features = ["test-isolation"]'; then
+        fail "$manifest must enable the codescribe-core test-isolation dev feature"
+    fi
+done
+if [[ "$verify_recipe" != *'bash scripts/tests/test-isolation-not-shipped-test.sh'* ]]; then
+    fail "verify must inspect ship-shaped artifacts for the test fence"
+fi
 if [[ "$verify_recipe" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
     fail "verify must establish process-wide test data isolation before cargo"
 elif [[ "${verify_recipe%%cargo test*}" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
     fail "verify must export its isolated data directory before the first cargo test"
+fi
+if [[ "$verify_recipe" != *'bash scripts/verify-test-home.sh'* ||
+      "$verify_recipe" != *'bash scripts/tests/verify-test-home-test.sh'* ]]; then
+    fail "verify must run sandbox HOME cargo steps and their leak counterexample"
 fi
 if ! grep -Fq 'export CODESCRIBE_DATA_DIR="$$CODESCRIBE_TEST_DATA_DIR_GUARD"' "$MAKEFILE"; then
     fail "ENV_LOAD must restore the harness-owned CODESCRIBE_DATA_DIR after sourcing operator dotenv"
@@ -140,7 +155,7 @@ fi
 # Naming them makes removal of the setup fail closed instead of disappearing
 # from a dynamic search together with the protection it was meant to enforce.
 for target in test test-quick test-e2e test-e2e-real test-sse test-formatting \
-              test-engine-apple-channel test-engine-candle test-all; do
+              test-engine-apple-channel test-all; do
     target_recipe="$(make_target_block "$target")"
     if [[ -z "$target_recipe" ]]; then
         fail "$target is missing while test isolation still expects it"
@@ -149,18 +164,27 @@ for target in test test-quick test-e2e test-e2e-real test-sse test-formatting \
     fi
 done
 
-swift_recipe="$(make_target_block 'test-swift')"
-if [[ "$swift_recipe" != *'test-swift: $(ENGINE_BRIDGE)'* ]]; then
-    fail "test-swift must build the canonical Apple STT bridge dependency"
-fi
-if [[ "${swift_recipe%%xcodebuild test*}" != *'$(ENGINE_BRIDGE) --phrase-restart-self-test || exit $$?'* ]]; then
-    fail "test-swift must fail-fast on the phrase-restart Swift lockstep self-test before XCTest"
-fi
-if [[ "${swift_recipe%%xcodebuild test*}" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
-    fail "test-swift must export its isolated data directory before xcodebuild test"
-fi
-if [[ "${swift_recipe%%xcodebuild test*}" != *'xcodegen generate'* ]]; then
-    fail "test-swift must regenerate the ignored Xcode project so new Swift tests enter XCTest"
+# Closed source contract, not a general Make/shell parser. Python's standard
+# library compares complete reviewed productions; it never evaluates Make,
+# sources the helper, or executes a target. Bash 3.2 remains the shell contract.
+# The standalone test-swift rule must pass the prerequisite bridge as argument 2
+# in the SAME shell after TEST_DATA_DIR_SETUP. Duplicate/conditional definitions,
+# includes/eval and alternate shell settings are outside this bounded language.
+# Helper stages in the module consume the WHOLE body in order (including the result
+# pipeline), so a function, early exit, here-doc, dead branch, alias or swallowed
+# failure cannot lend its tokens to a successful path. Only blank/comment lines
+# BETWEEN complete stages are ignored; continuation and quoted payload bytes
+# inside a stage are exact. Safe equivalent rewrites need a reviewed production
+# update plus counterexamples, rather than a permissive token-search fallback.
+# Assumptions: ordinary Bash/Make/tool semantics and trusted caller overrides;
+# this validates repository source, not arbitrary MAKEFLAGS/BASH_ENV or tools.
+# Resolve verifier code beside this entrypoint without changing candidate cwd.
+SWIFT_GATE_MODULE="$(dirname "${BASH_SOURCE[0]}")/validate_swift_gate.py"
+if [[ ! -f "$SWIFT_GATE_MODULE" || ! -r "$SWIFT_GATE_MODULE" ]]; then
+    fail "test-swift [module-missing]: verifier module is missing or unreadable: $SWIFT_GATE_MODULE"
+elif ! python3 "$SWIFT_GATE_MODULE" "$MAKEFILE"; then
+    echo "  ✗ test-swift [module-failure]: verifier process failed: $SWIFT_GATE_MODULE" >&2
+    fail "test-swift connected Make/helper contract could not be established"
 fi
 
 # ---------------------------------------------------------------------------

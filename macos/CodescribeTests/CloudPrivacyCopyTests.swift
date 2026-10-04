@@ -77,12 +77,13 @@ final class CloudPrivacyCopyTests: XCTestCase {
           for entry in entries { applyWrite(entry.key, entry.value) }
         },
         updateConfigObserver: applyWrite
-      )
+      ),
+      permissionProbe: MockPermissionProbe()
     )
     XCTAssertEqual(model.asrModeId, "apple_only")
     model.setAsrMode("cloud")
-    XCTAssertTrue(writes.contains { $0 == ("CODESCRIBE_CLOUD_CONSENT", "granted") })
-    XCTAssertTrue(writes.contains { $0 == ("CODESCRIBE_ASR_MODE", "cloud") })
+    XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
+    XCTAssertEqual(writes.map(\.1), ["granted", "cloud"])
     XCTAssertEqual(model.asrModeId, "cloud")
   }
 

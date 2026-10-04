@@ -1,13 +1,13 @@
 import Foundation
 import Security
 
-protocol LicenseKeychainStoring {
+protocol LicenseKeychainStoring: Sendable {
   func load() throws -> Data?
   func save(_ data: Data) throws
   func delete() throws
 }
 
-private struct PersistedLicense: Codable {
+private struct PersistedLicense: Codable, Sendable {
   let key: String
   let lastOnlineValidation: Int64
 }
@@ -36,7 +36,8 @@ struct SystemLicenseKeychain: LicenseKeychainStoring {
     let status = SecItemCopyMatching(query as CFDictionary, &result)
     if status == errSecItemNotFound { return nil }
     guard status == errSecSuccess else { throw LicenseKeychainError(status) }
-    return result as? Data
+    guard let data = result as? Data else { throw LicenseKeychainError(errSecDecode) }
+    return data
   }
 
   func save(_ data: Data) throws {
@@ -82,7 +83,10 @@ struct LicenseKeychainError: LocalizedError {
 
   var errorDescription: String? {
     SecCopyErrorMessageString(status, nil) as String?
-      ?? "Keychain error \(status)"
+      ?? String(
+        localized: "Keychain error \(String(status))",
+        comment: "Fallback when macOS has no message; the placeholder is the status code"
+      )
   }
 }
 
@@ -112,28 +116,47 @@ final class LicenseService: ObservableObject {
   }()
   static let preview = LicenseService(keychain: nil, autoload: false)
 
-  @Published private(set) var status: CsLicenseStatus = .unlicensed
+  enum ReadState { case loading, available, unavailable }
+
+  @Published private var persisted: PersistedLicense?
+  @Published private(set) var readState: ReadState = .loading
+  @Published private(set) var isBusy = false
   @Published private(set) var lastError: String?
 
-  /// Core's contract (`LicenseStatus::allows_agentic`) is explicit: the SKU
-  /// answers "was this key ever entitled", never "is the entitlement current" —
-  /// callers must combine it with the evaluated state. Gating on the SKU alone
-  /// made every activated key a lifetime unlock because `updates_until` was
-  /// computed by core and then ignored here.
+  // The signed payload is the authority; evaluate it at the current clock on
+  // every gate read. A slow storage refresh must not freeze an active license
+  // past updates_until or extend its original offline validation timestamp.
+  var status: CsLicenseStatus {
+    (try? statusBridge(
+      persisted?.key, persisted?.lastOnlineValidation,
+      Int64(now().timeIntervalSince1970)
+    )) ?? .unlicensed
+  }
+
   var canUseAgentic: Bool {
-    guard status.agenticEntitled else { return false }
-    switch status.state {
+    let current = status
+    guard current.agenticEntitled else { return false }
+    switch current.state {
     case .active, .graceOffline: return true
     case .unlicensed, .expiredUpdates: return false
     }
   }
+
   var agenticBlockMessage: String {
-    status.state == .expiredUpdates
-      ? "Your license period ended. Renew to keep using Agentic — Basic dictation remains free."
-      : "Agentic requires a license. Basic dictation remains free."
+    if persisted == nil, readState != .available {
+      return readState == .loading
+        ? String(localized: "Checking license… Basic dictation remains free.")
+        : String(localized: "License access is unavailable. Retry in Settings › License. Basic dictation remains free.")
+    }
+    return status.state == .expiredUpdates
+      ? String(localized: "Your license period ended. Renew to keep using Agentic — Basic dictation remains free.")
+      : String(localized: "Agentic requires a license. Basic dictation remains free.")
   }
 
-  private let keychain: LicenseKeychainStoring?
+  private let keychain: (any LicenseKeychainStoring)?
+  // Owned by this service, never by a view task. Cancellation does not release
+  // isBusy: a synchronous SecItem call still owns the slot until it returns.
+  private let storageQueue = DispatchQueue(label: "codescribe.license-storage", qos: .userInitiated)
   private let now: () -> Date
   private let activateBridge: (String, Int64) throws -> CsLicenseStatus
   private let statusBridge: (String?, Int64?, Int64) throws -> CsLicenseStatus
@@ -157,61 +180,96 @@ final class LicenseService: ObservableObject {
     self.now = now
     self.activateBridge = activateBridge
     self.statusBridge = statusBridge
-    if autoload { refresh() }
+    if autoload { refresh() } else { readState = .available }
+  }
+
+  private func storage<T: Sendable>(
+    _ operation: @escaping @Sendable ((any LicenseKeychainStoring)?) throws -> T
+  ) async throws -> T {
+    let store = keychain
+    return try await withCheckedThrowingContinuation { continuation in
+      storageQueue.async {
+        do { continuation.resume(returning: try operation(store)) }
+        catch { continuation.resume(throwing: error) }
+      }
+    }
   }
 
   func refresh() {
-    do {
-      let stored = try keychain?.load().map {
-        try JSONDecoder().decode(PersistedLicense.self, from: $0)
+    guard !isBusy else { return }
+    isBusy = true
+    readState = .loading
+    Task { @MainActor [self] in
+      defer { isBusy = false }
+      let data: Data?
+      do {
+        data = try await storage { try $0?.load() }
+      } catch {
+        // A storage failure is not evidence of absence. Retain the previously
+        // verified payload and keep evaluating its time bounds normally.
+        readState = .unavailable
+        lastError = error.localizedDescription
+        return
       }
-      status = try statusBridge(
-        stored?.key,
-        stored?.lastOnlineValidation,
-        Int64(now().timeIntervalSince1970)
-      )
-      lastError = nil
-    } catch {
-      status = .unlicensed
-      lastError = String(describing: error)
+      do {
+        let loaded = try data.map { try JSONDecoder().decode(PersistedLicense.self, from: $0) }
+        _ = try statusBridge(
+          loaded?.key, loaded?.lastOnlineValidation, Int64(now().timeIntervalSince1970)
+        )
+        persisted = loaded
+        readState = .available
+        lastError = nil
+      } catch {
+        // Successfully read malformed or invalid signed data fails closed.
+        persisted = nil
+        readState = .unavailable
+        lastError = error.localizedDescription
+      }
     }
   }
 
   @discardableResult
-  func activate(_ rawKey: String) -> Bool {
+  func activate(_ rawKey: String) async -> Bool {
+    guard !isBusy else { return false }
     let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !key.isEmpty else {
-      lastError = "Enter a CSK1 license key."
+      lastError = String(localized: "Enter a CSK1 license key.", comment: "CSK1 is the license-key prefix — keep it verbatim")
       return false
     }
+    isBusy = true
+    defer { isBusy = false }
     do {
       let timestamp = Int64(now().timeIntervalSince1970)
-      let validated = try activateBridge(key, timestamp)
-      let persisted = try JSONEncoder().encode(
-        PersistedLicense(
-          key: key,
-          lastOnlineValidation: timestamp
-        ))
-      try keychain?.save(persisted)
-      status = validated
+      _ = try activateBridge(key, timestamp)
+      let candidate = PersistedLicense(key: key, lastOnlineValidation: timestamp)
+      let data = try JSONEncoder().encode(candidate)
+      try await storage { try $0?.save(data) }
+      // Publication follows durable success. A failed replacement never
+      // discards an existing verified license or renews its grace timestamp.
+      persisted = candidate
+      readState = .available
       lastError = nil
       return true
     } catch {
-      status = .unlicensed
-      lastError = String(describing: error)
+      lastError = error.localizedDescription
       return false
     }
   }
 
-  func removeLicense() {
+  func removeLicense() async {
+    guard !isBusy else { return }
+    isBusy = true
+    defer { isBusy = false }
     do {
-      try keychain?.delete()
-      status = .unlicensed
+      try await storage { try $0?.delete() }
+      persisted = nil
+      readState = .available
       lastError = nil
     } catch {
-      lastError = String(describing: error)
+      lastError = error.localizedDescription
     }
   }
+
 }
 
 extension CsLicenseStatus {

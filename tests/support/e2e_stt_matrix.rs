@@ -7,32 +7,18 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 pub const STT_OPT_IN_ENV: &str = "CODESCRIBE_E2E_STT";
 pub const ROUNDTRIP_OPT_IN_ENV: &str = "CODESCRIBE_E2E_ROUNDTRIP";
 
-/// Default fp16 alias (composed dir: mlx-community weights + q8 companions).
+/// Default composed fp16 alias.
 pub const WHISPER_FP16_MODEL: &str = "whisper-large-v3-turbo";
-pub const WHISPER_TURBO_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
-pub const WHISPER_LARGE_MODEL: &str = "whisper-large-v3-mlx-q8";
-
-const HF_TURBO_REPO_DIRS: &[&str] = &[
-    "models--LibraxisAI--whisper-large-v3-turbo-mlx-q8",
-    "models--libraxisai--whisper-large-v3-turbo-mlx-q8",
-];
-const HF_LARGE_REPO_DIRS: &[&str] = &[
-    "models--LibraxisAI--whisper-large-v3-mlx-q8",
-    "models--libraxisai--whisper-large-v3-mlx-q8",
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelSource {
     EnvOverride,
-    UserTurbo,
-    UserLarge,
-    HfTurboSnapshot,
-    HfLargeSnapshot,
+    ModelsDir,
+    RuntimeResolver,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,12 +55,7 @@ pub fn test_audio_path() -> PathBuf {
 }
 
 pub fn whisper_model_is_complete(path: &Path) -> bool {
-    let has_weights =
-        path.join("weights.safetensors").exists() || path.join("model.safetensors").exists();
-    path.join("config.json").exists()
-        && path.join("tokenizer.json").exists()
-        && path.join("mel_filters.npz").exists()
-        && has_weights
+    codescribe_core::config::models::validate_whisper_model_bundle(path).is_ok()
 }
 
 pub fn whisper_model_missing_parts(path: &Path) -> Vec<&'static str> {
@@ -98,43 +79,32 @@ pub fn whisper_model_missing_parts(path: &Path) -> Vec<&'static str> {
     missing
 }
 
-pub fn default_hf_cache_bases(home_dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-
-    if let Ok(path) = std::env::var("CODESCRIBE_HF_CACHE") {
-        out.push(PathBuf::from(path));
-    }
-    if let Ok(path) = std::env::var("HUGGINGFACE_HUB_CACHE") {
-        out.push(PathBuf::from(path));
-    }
-    if let Ok(path) = std::env::var("HF_HUB_CACHE") {
-        out.push(PathBuf::from(path));
-    }
-    if let Ok(path) = std::env::var("HF_HOME") {
-        out.push(PathBuf::from(path).join("hub"));
-    }
-
-    out.push(home_dir.join(".cache/huggingface/hub"));
-    out.sort();
-    out.dedup();
-    out
+pub fn discover_local_whisper_model() -> Option<ModelDiscovery> {
+    codescribe_core::config::models::resolve_runtime_whisper_model_path(None)
+        .ok()
+        .map(|path| ModelDiscovery {
+            source: ModelSource::RuntimeResolver,
+            path,
+        })
 }
 
-pub fn discover_local_whisper_model() -> Option<ModelDiscovery> {
-    let home_dir = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-    let env_override = std::env::var("CODESCRIBE_MODEL_PATH")
-        .ok()
-        .map(PathBuf::from);
-    let hf_bases = default_hf_cache_bases(&home_dir);
-    discover_local_whisper_model_for(&home_dir, env_override.as_deref(), &hf_bases)
+pub fn expand_models_root(home_dir: &Path, value: &str) -> PathBuf {
+    value
+        .strip_prefix("~/")
+        .map_or_else(|| PathBuf::from(value), |relative| home_dir.join(relative))
 }
 
 pub fn discover_local_whisper_model_for(
     home_dir: &Path,
     env_override: Option<&Path>,
-    hf_cache_bases: &[PathBuf],
+) -> Option<ModelDiscovery> {
+    discover_local_whisper_model_for_with_root(home_dir, env_override, None)
+}
+
+pub fn discover_local_whisper_model_for_with_root(
+    home_dir: &Path,
+    env_override: Option<&Path>,
+    models_root: Option<&Path>,
 ) -> Option<ModelDiscovery> {
     if let Some(path) = env_override
         && whisper_model_is_complete(path)
@@ -145,47 +115,15 @@ pub fn discover_local_whisper_model_for(
         });
     }
 
-    // The fp16 default and the legacy q8 dir are the same turbo model, so both
-    // report as UserTurbo; the fp16 alias wins, mirroring runtime precedence.
-    let user_fp16 = home_dir.join(".codescribe/models").join(WHISPER_FP16_MODEL);
+    let default_root = home_dir.join(".codescribe/models");
+    let models_root = models_root
+        .filter(|path| path.exists())
+        .unwrap_or(&default_root);
+    let user_fp16 = models_root.join(WHISPER_FP16_MODEL);
     if whisper_model_is_complete(&user_fp16) {
         return Some(ModelDiscovery {
-            source: ModelSource::UserTurbo,
+            source: ModelSource::ModelsDir,
             path: user_fp16,
-        });
-    }
-
-    let user_turbo = home_dir
-        .join(".codescribe/models")
-        .join(WHISPER_TURBO_MODEL);
-    if whisper_model_is_complete(&user_turbo) {
-        return Some(ModelDiscovery {
-            source: ModelSource::UserTurbo,
-            path: user_turbo,
-        });
-    }
-
-    let user_large = home_dir
-        .join(".codescribe/models")
-        .join(WHISPER_LARGE_MODEL);
-    if whisper_model_is_complete(&user_large) {
-        return Some(ModelDiscovery {
-            source: ModelSource::UserLarge,
-            path: user_large,
-        });
-    }
-
-    if let Some(path) = find_latest_hf_snapshot(hf_cache_bases, HF_TURBO_REPO_DIRS) {
-        return Some(ModelDiscovery {
-            source: ModelSource::HfTurboSnapshot,
-            path,
-        });
-    }
-
-    if let Some(path) = find_latest_hf_snapshot(hf_cache_bases, HF_LARGE_REPO_DIRS) {
-        return Some(ModelDiscovery {
-            source: ModelSource::HfLargeSnapshot,
-            path,
         });
     }
 
@@ -193,48 +131,19 @@ pub fn discover_local_whisper_model_for(
 }
 
 pub fn model_discovery_hint(home_dir: &Path) -> String {
+    let default_root = home_dir.join(".codescribe/models");
+    let models_root = std::env::var("CODESCRIBE_MODELS_DIR")
+        .ok()
+        .map(|value| expand_models_root(home_dir, &value))
+        .filter(|path| path.exists())
+        .unwrap_or(default_root);
     format!(
-        "Looked for complete Whisper model in CODESCRIBE_MODEL_PATH, {home}/.codescribe/models/{fp16}, {home}/.codescribe/models/{turbo}, {home}/.codescribe/models/{large}, and HF cache snapshots. Required files: config.json, tokenizer.json, mel_filters.npz, weights.safetensors or model.safetensors.",
-        home = home_dir.display(),
-        fp16 = WHISPER_FP16_MODEL,
-        turbo = WHISPER_TURBO_MODEL,
-        large = WHISPER_LARGE_MODEL
+        "The production resolver found no valid fp16 Whisper model in CODESCRIBE_MODEL_PATH, {root}/{fp16}, or a supported Hugging Face cache snapshot. The bundle must have parseable config and tokenizer files, the pinned mel_filters.npz checksum, structurally valid F16/F32 safetensors, and no quantization declaration.",
+        root = models_root.display(),
+        fp16 = WHISPER_FP16_MODEL
     )
 }
 
 pub fn normalize_transcript(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn find_latest_hf_snapshot(hf_cache_bases: &[PathBuf], repo_dir_names: &[&str]) -> Option<PathBuf> {
-    let mut best: Option<(SystemTime, PathBuf)> = None;
-
-    for base in hf_cache_bases {
-        for repo in repo_dir_names {
-            let snapshots = base.join(repo).join("snapshots");
-            let entries = match std::fs::read_dir(&snapshots) {
-                Ok(entries) => entries,
-                Err(_) => continue,
-            };
-
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_dir() || !whisper_model_is_complete(&path) {
-                    continue;
-                }
-
-                let modified = entry
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .unwrap_or(SystemTime::UNIX_EPOCH);
-
-                match &best {
-                    Some((best_time, _)) if *best_time >= modified => {}
-                    _ => best = Some((modified, path)),
-                }
-            }
-        }
-    }
-
-    best.map(|(_, path)| path)
 }

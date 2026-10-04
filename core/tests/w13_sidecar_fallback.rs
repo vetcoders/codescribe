@@ -7,7 +7,7 @@ use codescribe_core::stt::tail_provider::{
     FakeTailProvider, RemoteTailProvider, STT_SIDECAR_TOKEN_ENV, SidecarTailProvider,
     TailEvidenceSource, TailEvidenceStability, TailProvider, TailProviderEvidence,
     TailProviderFailureKind, TailProviderId, TailProviderPayload, TailProviderRequest,
-    TailRequestIdentity, TailSampleRange, TailTimingQuality, TimedTailSegment,
+    TailRequestIdentity, TailSampleRange, TailSegmentGrain, TailTimingQuality, TimedTailSegment,
     transcribe_with_fallback,
 };
 
@@ -32,15 +32,17 @@ fn fake_payload(request: &TailProviderRequest, text: &str) -> TailProviderPayloa
         identity: request.identity.clone(),
         text: text.to_string(),
         segments: vec![TimedTailSegment {
+            confidence: None,
+            grain: TailSegmentGrain::Phrase,
             text: text.to_string(),
             range: request.identity.range.clone(),
         }],
         avg_logprob: Some(-0.1),
         compression_ratio: Some(1.0),
-        quality_gate_dropped: false,
         provider_id: TailProviderId::Fake,
         elapsed_ms: 3,
         evidence: TailProviderEvidence {
+            segment_grain: TailSegmentGrain::Phrase,
             source: TailEvidenceSource::Whisper,
             revision: Some("fake-sidecar-r1".to_string()),
             stability: TailEvidenceStability::Final,

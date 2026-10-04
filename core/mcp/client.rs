@@ -218,11 +218,9 @@ pub struct McpProbe {
     pub tools: Vec<McpTool>,
 }
 
-/// Canonical config location: `$HOME/.codescribe/mcp.json`. Errors only when
-/// `HOME` is unset; the file itself need not exist.
+/// Canonical MCP config in the configured Codescribe data directory.
 pub fn default_mcp_config_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME").context("HOME environment variable is not set")?;
-    Ok(PathBuf::from(home).join(".codescribe").join("mcp.json"))
+    Ok(crate::config::Config::config_dir().join("mcp.json"))
 }
 
 /// Call surface for one configured MCP server.

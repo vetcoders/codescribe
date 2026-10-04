@@ -3,7 +3,7 @@
 //! When `CODESCRIBE_QUBE_DONOR=on`, each stop writes a date-subfolder pair under
 //! `~/.codescribe/qube_inbox/<YYYY-MM-DD>/<session_ts>.{wav,txt}` so `qube-daemon`
 //! (`--input ~/.codescribe/qube_inbox`) can mine lexicon candidates even when
-//! `FINAL_PASS_MODE=off` (donor never runs Whisper — files only).
+//! ASR mode (donor never runs Whisper — files only).
 //!
 //! Default is hard-off. Persist failures log a warning and never fail delivery.
 
@@ -54,6 +54,21 @@ pub fn persist_qube_donor_pair(
     delivered_text: &str,
     timestamp: DateTime<Local>,
 ) -> Result<Option<QubeDonorPaths>, String> {
+    // Keep this synchronous API, but acquire the filesystem lock and perform
+    // all source opens on a joined worker, never on the caller's executor.
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || persist_qube_donor_pair_on_worker(wav_src, delivered_text, timestamp))
+            .join()
+            .map_err(|_| "qube donor: audio worker panicked".to_string())?
+    })
+}
+
+fn persist_qube_donor_pair_on_worker(
+    wav_src: &Path,
+    delivered_text: &str,
+    timestamp: DateTime<Local>,
+) -> Result<Option<QubeDonorPaths>, String> {
     if !qube_donor_enabled() {
         return Ok(None);
     }
@@ -63,6 +78,16 @@ pub fn persist_qube_donor_pair(
         debug!("qube donor skipped: empty delivered transcript");
         return Ok(None);
     }
+
+    #[cfg(unix)]
+    let (wav_src, _audio_lease) =
+        crate::state::history::audio_retention::AudioReadLease::acquire_for_path(
+            &Config::config_dir(),
+            wav_src,
+        )
+        .map_err(|e| format!("qube donor: acquire audio input lease: {e}"))?;
+    #[cfg(unix)]
+    let wav_src = wav_src.as_path();
 
     if !wav_src.exists() {
         return Err(format!(
@@ -199,7 +224,34 @@ fn wav_sample_count(path: &Path) -> Result<u64, String> {
 mod tests {
     use super::*;
     use serial_test::serial;
+    use std::ffi::OsString;
     use std::sync::{Mutex, OnceLock};
+
+    struct EnvSnapshot(Vec<(&'static str, Option<OsString>)>);
+
+    impl EnvSnapshot {
+        fn capture() -> Self {
+            Self(
+                [ENV_KEY, "CODESCRIBE_DATA_DIR", "CODESCRIBE_ENV_PATH"]
+                    .into_iter()
+                    .map(|key| (key, std::env::var_os(key)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            for (key, previous) in &self.0 {
+                unsafe {
+                    match previous {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
 
     /// Process-wide mutex so serial donor tests do not race env mutation.
     fn env_lock() -> &'static Mutex<()> {
@@ -228,6 +280,7 @@ mod tests {
     #[serial]
     fn donor_optin_disabled_by_default() {
         let _g = env_lock().lock().unwrap();
+        let _env = EnvSnapshot::capture();
         unsafe {
             std::env::remove_var(ENV_KEY);
         }
@@ -239,6 +292,7 @@ mod tests {
     #[serial]
     fn donor_optin_parses_on_off() {
         let _g = env_lock().lock().unwrap();
+        let _env = EnvSnapshot::capture();
         unsafe {
             std::env::set_var(ENV_KEY, "on");
         }
@@ -247,9 +301,6 @@ mod tests {
             std::env::set_var(ENV_KEY, "off");
         }
         assert!(!qube_donor_enabled());
-        unsafe {
-            std::env::remove_var(ENV_KEY);
-        }
     }
 
     /// Enabled path: matching-stem WAV+TXT under `qube_inbox/<day>/`.
@@ -257,6 +308,7 @@ mod tests {
     #[serial]
     fn donor_optin_writes_wav_txt_layout_when_on() {
         let _g = env_lock().lock().unwrap();
+        let _env = EnvSnapshot::capture();
         let temp = tempfile::tempdir().expect("temp");
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp.path());
@@ -291,11 +343,6 @@ mod tests {
         assert!(paths.wav.metadata().expect("meta").len() > 0);
         assert_eq!(fs::read_to_string(&paths.txt).expect("read txt"), delivered);
         assert!(wav_sample_count(&paths.wav).expect("samples") > 0);
-
-        unsafe {
-            std::env::remove_var(ENV_KEY);
-            std::env::remove_var("CODESCRIBE_DATA_DIR");
-        }
     }
 
     /// Default-off never creates the inbox tree or pair files.
@@ -303,6 +350,7 @@ mod tests {
     #[serial]
     fn donor_optin_off_writes_no_files() {
         let _g = env_lock().lock().unwrap();
+        let _env = EnvSnapshot::capture();
         let temp = tempfile::tempdir().expect("temp");
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp.path());
@@ -317,10 +365,6 @@ mod tests {
             !temp.path().join("qube_inbox").exists(),
             "default-off must not create qube_inbox"
         );
-
-        unsafe {
-            std::env::remove_var("CODESCRIBE_DATA_DIR");
-        }
     }
 
     /// Header-only / zero-sample WAV is skipped even when donor is on.
@@ -328,6 +372,7 @@ mod tests {
     #[serial]
     fn donor_optin_skips_zero_sample_wav() {
         let _g = env_lock().lock().unwrap();
+        let _env = EnvSnapshot::capture();
         let temp = tempfile::tempdir().expect("temp");
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp.path());
@@ -337,40 +382,5 @@ mod tests {
         write_test_wav(&src, &[]);
         let result = persist_qube_donor_pair(&src, "text", Local::now()).expect("ok");
         assert!(result.is_none());
-        unsafe {
-            std::env::remove_var(ENV_KEY);
-            std::env::remove_var("CODESCRIBE_DATA_DIR");
-        }
-    }
-
-    /// Donor path is pure file I/O — never a Whisper stop-path invocation surface.
-    #[test]
-    #[serial]
-    fn donor_optin_zero_whisper_surface_when_final_pass_off() {
-        let _g = env_lock().lock().unwrap();
-        // Structural contract: Off routing skips Whisper; donor only copies files.
-        assert_eq!(crate::config::FinalPassRoutingMode::Off.as_str(), "off");
-        // Runtime proof: `persist_qube_donor_pair` only uses fs/hound — no STT.
-        let temp = tempfile::tempdir().expect("temp");
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", temp.path());
-            std::env::set_var(ENV_KEY, "on");
-            std::env::set_var("FINAL_PASS_MODE", "off");
-        }
-        let src = temp.path().join("s.wav");
-        write_test_wav(&src, &[10, 20, 30, 40]);
-        let paths = persist_qube_donor_pair(&src, "donor text", Local::now())
-            .expect("ok")
-            .expect("pair");
-        assert!(paths.wav.exists());
-        assert!(paths.txt.exists());
-        // No whisper timing side effects from donor work.
-        let timing = crate::stt::whisper::take_final_pass_timing();
-        assert_eq!(timing, crate::stt::whisper::FinalPassTiming::default());
-        unsafe {
-            std::env::remove_var(ENV_KEY);
-            std::env::remove_var("FINAL_PASS_MODE");
-            std::env::remove_var("CODESCRIBE_DATA_DIR");
-        }
     }
 }

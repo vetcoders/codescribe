@@ -106,11 +106,11 @@ ssh_probe="$(sed -n '2p' "$probe_log")"
   exit 1
 }
 [[ "$ssh_probe" == "git@github.com:vetcoders/voice-lab.git" ]] || {
-  echo "second probe must be SSH for Monika fallback, got ${ssh_probe}" >&2
+  echo "second probe must be SSH fallback, got ${ssh_probe}" >&2
   exit 1
 }
 
-# Monika: gh git_protocol=ssh probes SSH first.
+# An SSH-configured host probes SSH first.
 : >"$probe_log"
 cat >"$fake_git/gh" <<'EOF'
 #!/bin/sh
@@ -153,9 +153,9 @@ rm -f "$fake_git/gh"
 
 # Sibling-shaped checkout via CODESCRIBE_VOICE_LAB_SRC runs setup.sh.
 pack="$WORKDIR/pack"
-mkdir -p "$pack/examples/monika/keys"
+mkdir -p "$pack/examples/operator/keys"
 printf 'x' >"$pack/server.py"
-cat >"$pack/examples/monika/settings.json" <<'JSON'
+cat >"$pack/examples/operator/settings.json" <<'JSON'
 {
   "schema_version": 3,
   "speech": {

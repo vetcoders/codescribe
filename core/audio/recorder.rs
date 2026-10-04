@@ -56,6 +56,7 @@
 //   - silence duration before auto-stop (Silero default profile)
 //   - AUTO_SILENCE: enable/disable silence detection (default: false)
 
+use crate::config::Config;
 use crate::vad;
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -221,6 +222,211 @@ pub struct RecorderDiagnostics {
     pub duration_sec: f32,
 }
 
+/// A take that could not be certified as a complete PCM archive.
+/// Paths and sample ranges remain recovery evidence, never a successful take.
+#[derive(Clone)]
+pub struct CaptureArchiveError {
+    pub cause: String,
+    pub source_path: Option<PathBuf>,
+    pub sample_rate: u32,
+    pub captured_samples: usize,
+    pub written_samples: usize,
+    /// Unconfirmed spill samples beginning at `written_samples`. A failed chunk
+    /// is retained whole; its prefix may also exist in the source file.
+    pub unwritten_samples: Arc<Vec<i16>>,
+    pub buffer_start_offset: usize,
+    pub retained_samples: Arc<Vec<i16>>,
+}
+
+impl std::fmt::Display for CaptureArchiveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Complete audio archive unavailable: {}; source={:?}, captured={}, written={}, unwritten={}, retained={} at offset {}, rate={}Hz",
+            self.cause,
+            self.source_path,
+            self.captured_samples,
+            self.written_samples,
+            self.unwritten_samples.len(),
+            self.retained_samples.len(),
+            self.buffer_start_offset,
+            self.sample_rate
+        )
+    }
+}
+
+impl std::fmt::Debug for CaptureArchiveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+impl std::error::Error for CaptureArchiveError {}
+
+/// Recorder-issued proof of a complete, synced recovery file. The private
+/// evidence pins this proof to the failed capture that supplied the PCM.
+#[derive(Debug)]
+pub struct RecoveredCaptureArchive {
+    path: PathBuf,
+    evidence: CaptureArchiveError,
+}
+
+impl RecoveredCaptureArchive {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl std::fmt::Display for RecoveredCaptureArchive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "complete captured audio recovery file at {}; original processing failure remains",
+            self.path.display(),
+        )
+    }
+}
+
+impl CaptureArchiveError {
+    /// Rebuild only a fully accounted native PCM take. A physical tail beyond
+    /// `written_samples` is unconfirmed and must never be spliced twice.
+    fn complete_pcm(&self) -> Result<Vec<i16>> {
+        anyhow::ensure!(self.sample_rate > 0, "recovery has no native sample rate");
+        anyhow::ensure!(self.captured_samples > 0, "recovery has no captured PCM");
+        anyhow::ensure!(
+            self.written_samples <= self.captured_samples,
+            "confirmed prefix exceeds the captured take"
+        );
+        let unconfirmed_end = self
+            .written_samples
+            .checked_add(self.unwritten_samples.len())
+            .context("unconfirmed PCM sample extent overflow")?;
+        let retained_end = self
+            .buffer_start_offset
+            .checked_add(self.retained_samples.len())
+            .context("retained PCM sample extent overflow")?;
+        anyhow::ensure!(
+            unconfirmed_end <= self.captured_samples && retained_end == self.captured_samples,
+            "recovery PCM extents disagree with the captured take"
+        );
+
+        // A complete RAM take needs no readable file at all. Still reconcile
+        // every unconfirmed sample; conflicting evidence must not become audio.
+        if self.buffer_start_offset == 0 {
+            anyhow::ensure!(
+                self.retained_samples[self.written_samples..unconfirmed_end]
+                    == self.unwritten_samples[..],
+                "unconfirmed recovery PCM disagrees with the complete RAM take"
+            );
+            return Ok(self.retained_samples.as_ref().clone());
+        }
+
+        let mut pcm = Vec::new();
+        if self.written_samples > 0 {
+            let path = self
+                .source_path
+                .as_deref()
+                .context("confirmed PCM has no source archive")?;
+            let mut reader = open_native_pcm_archive(path, self.sample_rate)?;
+            for sample in reader.samples::<i16>().take(self.written_samples) {
+                pcm.push(sample.context("confirmed PCM prefix is unreadable")?);
+            }
+            anyhow::ensure!(
+                pcm.len() == self.written_samples,
+                "source archive is shorter than its confirmed PCM prefix"
+            );
+        }
+        pcm.extend(self.unwritten_samples.iter().copied());
+        anyhow::ensure!(
+            self.buffer_start_offset <= pcm.len(),
+            "recovery has a missing PCM gap before the retained tail"
+        );
+        let overlap = pcm.len() - self.buffer_start_offset;
+        anyhow::ensure!(
+            pcm[self.buffer_start_offset..] == self.retained_samples[..overlap],
+            "overlapping recovery PCM disagrees"
+        );
+        pcm.extend(self.retained_samples[overlap..].iter().copied());
+        anyhow::ensure!(
+            pcm.len() == self.captured_samples,
+            "recovery does not cover the complete captured take"
+        );
+        Ok(pcm)
+    }
+
+    /// Publish a new full WAV for the existing retention consumer. Keep the
+    /// failed source untouched, even when reconstruction or publication fails.
+    pub fn recover_complete_archive(&self) -> Result<RecoveredCaptureArchive> {
+        let pcm = self.complete_pcm()?;
+        let directory = takes_dir()?;
+        let identity = uuid::Uuid::new_v4();
+        let pending = directory.join(format!(".codescribe_recovery_{identity}.pending"));
+        // Reuse the native take namespace admitted by the retention owner.
+        let published = directory.join(format!("codescribe_recording_{}.wav", identity.as_u128()));
+        write_wav_file(&pending, &pcm, self.sample_rate, CHANNELS)?;
+        let reader = open_native_pcm_archive(&pending, self.sample_rate)?;
+        verify_recovered_pcm(reader, &pcm)?;
+        // Exclusive linking publishes only the closed, synced and verified file.
+        // A collision or failed sync leaves both PCM evidence and source intact.
+        std::fs::hard_link(&pending, &published).context("publish recovered PCM archive")?;
+        std::fs::File::open(&directory)?.sync_all()?;
+        if let Err(error) = std::fs::remove_file(&pending) {
+            warn!(%error, "complete recovered archive published; pending link remains");
+        }
+        Ok(RecoveredCaptureArchive {
+            path: published,
+            evidence: self.clone(),
+        })
+    }
+}
+
+fn open_native_pcm_archive(
+    path: &Path,
+    sample_rate: u32,
+) -> Result<hound::WavReader<std::fs::File>> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .with_context(|| format!("open recovery PCM source {}", path.display()))?;
+    anyhow::ensure!(
+        file.metadata()?.is_file(),
+        "recovery PCM source is not a regular file"
+    );
+    let reader = hound::WavReader::new(file).context("read recovery PCM header")?;
+    let spec = reader.spec();
+    anyhow::ensure!(
+        spec.channels == CHANNELS
+            && spec.sample_rate == sample_rate
+            && spec.bits_per_sample == 16
+            && spec.sample_format == hound::SampleFormat::Int,
+        "recovery PCM source has a foreign format or native rate"
+    );
+    Ok(reader)
+}
+
+fn verify_recovered_pcm(mut reader: hound::WavReader<std::fs::File>, pcm: &[i16]) -> Result<()> {
+    anyhow::ensure!(
+        usize::try_from(reader.len()).ok() == Some(pcm.len()),
+        "recovered archive sample count disagrees"
+    );
+    let mut samples = reader.samples::<i16>();
+    for &expected in pcm {
+        let actual = samples
+            .next()
+            .context("recovered archive is physically truncated")??;
+        anyhow::ensure!(actual == expected, "recovered archive PCM disagrees");
+    }
+    anyhow::ensure!(samples.next().is_none(), "recovered archive has extra PCM");
+    reader
+        .into_inner()
+        .sync_all()
+        .context("sync complete recovered PCM")?;
+    Ok(())
+}
+
 /// Outcome of a non-stopping buffer snapshot. Recording stream remains active.
 ///
 /// Caller stores `end_offset` and passes it as `from_offset` in the next
@@ -261,6 +467,70 @@ pub type AudioCallback = Box<dyn Fn(&[f32]) + Send + Sync + 'static>;
 /// until [`Recorder::stop`] writes them to a temp WAV;
 /// [`Recorder::snapshot_wav`] can slice the buffer without interrupting
 /// capture.
+/// Resolve the input device exactly as a recording start would: an
+/// A named `AUDIO_INPUT_DEVICE` must be present. The system default is used
+/// only without an explicit selection. Shared by [`Recorder::start`] and
+/// [`probe_input_capture_path`], so disappearance before stream opening refuses.
+fn select_input_device(host: &cpal::Host) -> Result<(Device, String)> {
+    let preferred = std::env::var("AUDIO_INPUT_DEVICE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let device = resolve_capture_device(
+        preferred.as_deref(),
+        || {
+            Ok(host
+                .input_devices()
+                .context("Failed to enumerate input devices")?
+                .filter_map(|device| {
+                    let name = device.description().ok()?.to_string();
+                    Some((device, name))
+                }))
+        },
+        || host.default_input_device(),
+    )?;
+
+    let device_name = device
+        .description()
+        .map(|d| d.to_string())
+        .unwrap_or_else(|_| "Unknown".to_string());
+    Ok((device, device_name))
+}
+
+fn resolve_capture_device<T, I: Iterator<Item = (T, String)>>(
+    preferred: Option<&str>,
+    named_devices: impl FnOnce() -> Result<I>,
+    default_device: impl FnOnce() -> Option<T>,
+) -> Result<T> {
+    if let Some(preferred) = preferred {
+        let needle = preferred.to_lowercase();
+        named_devices()?
+            .find(|(_, name)| name == preferred || name.to_lowercase().contains(&needle))
+            .map(|(device, _)| device)
+            .with_context(|| format!("Requested audio input device is unavailable: {preferred}"))
+    } else {
+        default_device().context("No input device available")
+    }
+}
+
+/// Identity of the capture path a recording would open right now — device
+/// name, native sample rate, native channels — without opening a stream or
+/// prompting for permission. The admission gate resolves the calibration
+/// profile from this before any microphone is touched.
+pub fn probe_input_capture_path() -> Result<crate::audio::capture_receipt::CapturePathMeta> {
+    let host = cpal::default_host();
+    let (device, device_name) = select_input_device(&host)?;
+    let supported = device
+        .default_input_config()
+        .context("Failed to get default input config")?;
+    Ok(crate::audio::capture_receipt::CapturePathMeta {
+        device_name,
+        sample_rate: supported.sample_rate(),
+        channels: supported.channels().max(1),
+    })
+}
+
 pub struct Recorder {
     pub config: RecorderConfig,
     buffer: AudioBuffer,
@@ -278,9 +548,10 @@ pub struct Recorder {
     /// Native channel count of the last opened stream (1 after downmix).
     last_native_channels: u16,
     on_data: Option<AudioCallback>,
-    /// Disk spill of the full streaming take (operator decision B): survives
-    /// the RAM ring cap; `None` when disabled or not a streaming session.
+    /// Mandatory full-take archive for a streaming session with a capped ring.
     spill: Option<SpillSink>,
+    /// Failed archives stay owned here until their PCM is recovered.
+    archive_error: Option<CaptureArchiveError>,
     /// Callback invoked when VAD (silence detection) stops recording
     on_vad_stop: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Local VAD for auto-silence (replaces global VadWorker)
@@ -330,6 +601,7 @@ impl Recorder {
             on_vad_stop: None,
             recorder_vad: None,
             spill: None,
+            archive_error: None,
         })
     }
 
@@ -391,6 +663,9 @@ impl Recorder {
     /// Clears the buffer, creates and starts a new input stream,
     /// and launches the asynchronous collection task to read audio data.
     pub async fn start(&mut self) -> Result<()> {
+        if let Some(error) = &self.archive_error {
+            return Err(error.clone().into());
+        }
         let is_recording = self.is_recording.load(Ordering::SeqCst);
         let has_stream = self.stream.is_some();
 
@@ -406,6 +681,15 @@ impl Recorder {
         if self.is_recording.load(Ordering::SeqCst) || self.stream.is_some() {
             anyhow::bail!("Recording is already in progress");
         }
+        anyhow::ensure!(
+            self.spill.is_none()
+                && self
+                    .buffer
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_empty(),
+            "Previous capture still owns recoverable audio; finalize it before starting another take"
+        );
 
         info!("Starting recording...");
 
@@ -418,43 +702,10 @@ impl Recorder {
         self.diagnostics = RecorderDiagnostics::default();
         self.warn_inert_vad_stop_callback("Recorder start");
 
-        // Select input device
+        // Select input device — the same policy the admission probe uses, so
+        // readiness can never disagree with the device a take would open.
         let host = cpal::default_host();
-
-        let preferred = std::env::var("AUDIO_INPUT_DEVICE")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        let device = if let Some(preferred) = preferred {
-            let devices = host
-                .input_devices()
-                .context("Failed to enumerate input devices")?;
-
-            let mut selected: Option<Device> = None;
-            for d in devices {
-                if let Ok(desc) = d.description() {
-                    let name = desc.to_string();
-                    if name == preferred || name.to_lowercase().contains(&preferred.to_lowercase())
-                    {
-                        selected = Some(d);
-                        break;
-                    }
-                }
-            }
-
-            selected
-                .or_else(|| host.default_input_device())
-                .context("No input device available")?
-        } else {
-            host.default_input_device()
-                .context("No input device available")?
-        };
-
-        let device_name = device
-            .description()
-            .map(|d| d.to_string())
-            .unwrap_or_else(|_| "Unknown".to_string());
+        let (device, device_name) = select_input_device(&host)?;
         info!("Using input device: {}", device_name);
         self.last_input_device = device_name;
 
@@ -488,6 +739,29 @@ impl Recorder {
         // Use actual sample rate for silence detection calculations
         let sample_rate = native_sample_rate;
 
+        // A capped streaming ring is admitted only after its full archive opens.
+        // Retention is a public settings choice, never a recorder environment switch.
+        let has_streaming_callback = self.on_data.is_some();
+        let spill_tx = if has_streaming_callback {
+            let sink = SpillSink::spawn(native_sample_rate, &takes_dir()?)
+                .context("Cannot start streaming capture without a full audio archive")?;
+            let tx = sink
+                .sender()
+                .context("Full audio archive has no sample sender")?;
+            self.spill = Some(sink);
+            info!(
+                "Audio spill armed: full take survives the {}s ring cap",
+                STREAMING_BUFFER_CAP_SECONDS
+            );
+            Some(tx)
+        } else {
+            None
+        };
+        let spill_send_failed = self
+            .spill
+            .as_ref()
+            .map(|sink| Arc::clone(&sink.send_failed));
+
         // Create local VAD for auto-silence (replaces global VadWorker)
         self.recorder_vad = if self.config.auto_silence {
             RecorderVad::new(native_sample_rate)
@@ -513,35 +787,9 @@ impl Recorder {
         let silent_frames_clone = Arc::clone(&silent_frames);
         let seen_speech = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let seen_speech_clone = Arc::clone(&seen_speech);
-        let has_streaming_callback = self.on_data.is_some();
         let on_data = self.on_data.take();
         let buffer_cap_samples =
             has_streaming_callback.then(|| streaming_buffer_cap_samples(native_sample_rate));
-
-        // Disk spill (operator decision B): streaming sessions keep the FULL
-        // take on disk while the RAM ring stays capped for live consumers.
-        self.spill = None;
-        let spill_tx = if has_streaming_callback
-            && audio_spill_from_env_value(std::env::var("CODESCRIBE_AUDIO_SPILL").ok().as_deref())
-        {
-            match SpillSink::spawn(native_sample_rate, &std::env::temp_dir()) {
-                Ok(sink) => {
-                    let tx = sink.sender();
-                    self.spill = Some(sink);
-                    info!(
-                        "Audio spill armed: full take survives the {}s ring cap",
-                        STREAMING_BUFFER_CAP_SECONDS
-                    );
-                    tx
-                }
-                Err(e) => {
-                    warn!("Audio spill unavailable, ring-only session: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
 
         // Share local VAD with audio callback (RecorderVad is Send via channel+atomic)
         let vad_prob = self
@@ -555,7 +803,7 @@ impl Recorder {
 
         let stream = device
             .build_input_stream(
-                &stream_config,
+                stream_config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     let mono_samples = downmix_to_mono(data, native_channels);
 
@@ -568,15 +816,25 @@ impl Recorder {
                     let mono_i16 = convert_mono_f32_to_i16(&mono_samples);
                     if let Some(ref tx) = spill_tx {
                         // Send-only on the audio thread; the writer thread does the I/O.
-                        let _ = tx.send(mono_i16.clone());
+                        if tx.send(mono_i16.clone()).is_err()
+                            && let Some(failed) = &spill_send_failed
+                        {
+                            failed.store(true, Ordering::SeqCst);
+                        }
                     }
-                    if let Ok(mut buf) = buffer.lock() {
-                        append_mono_i16_samples(
-                            &mut buf,
-                            &buffer_start_offset,
-                            &mono_i16,
-                            buffer_cap_samples,
-                        );
+                    {
+                        let mut buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
+                        // If the writer receiver died, retain future PCM in RAM.
+                        // Previously evicted samples still require the spill source.
+                        let cap = if spill_send_failed
+                            .as_ref()
+                            .is_some_and(|failed| failed.load(Ordering::SeqCst))
+                        {
+                            None
+                        } else {
+                            buffer_cap_samples
+                        };
+                        append_mono_i16_samples(&mut buf, &buffer_start_offset, &mono_i16, cap);
                     }
 
                     // Feed audio to local VAD (non-blocking)
@@ -687,10 +945,21 @@ impl Recorder {
     /// Returns the absolute path to the saved .wav file, or None if no audio
     /// was recorded or an error occurred.
     pub async fn stop(&mut self) -> Result<Option<PathBuf>> {
+        let was_active = self.close_capture().await;
+        self.finalize_closed_capture(was_active)
+    }
+
+    /// Close the microphone before any archive or transcription work begins.
+    /// The returned flag belongs to this stop and must be passed to finalization.
+    pub async fn close_capture(&mut self) -> bool {
         if !self.is_recording.load(Ordering::SeqCst) && self.stream.is_none() {
             warn!("Stop called but no active stream");
-            self.last_duration = 0.0;
-            return Ok(None);
+            return self.spill.is_some()
+                || !self
+                    .buffer
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_empty();
         }
 
         info!("Stopping recording...");
@@ -710,10 +979,59 @@ impl Recorder {
         self.recorder_vad = None;
         self.device = None;
         self.is_recording.store(false, Ordering::SeqCst);
+        true
+    }
 
-        // The stream is gone, so every callback-held spill sender is dropped —
-        // finalize returns the COMPLETE take (immune to the ring cap).
-        let spill_take = self.spill.take().and_then(SpillSink::finalize);
+    /// Finalize the already closed take. Spill joining and WAV serialization
+    /// happen here, after the stop path has settled its initial delivery.
+    pub fn finalize_closed_capture(&mut self, was_active: bool) -> Result<Option<PathBuf>> {
+        anyhow::ensure!(
+            !self.is_active(),
+            "Close capture before finalizing its archive"
+        );
+        if let Some(error) = &self.archive_error {
+            return Err(error.clone().into());
+        }
+        if !was_active {
+            return Ok(None);
+        }
+        let buffer_start = self.buffer_start_offset.load(Ordering::SeqCst);
+        let captured_samples =
+            buffer_start + self.buffer.lock().unwrap_or_else(|e| e.into_inner()).len();
+        // Every callback has returned; exact PCM accounting can now be compared.
+        let spill_take = match self.spill.take() {
+            Some(sink) => match sink.finalize() {
+                Ok((path, samples)) if samples == captured_samples => Some((path, samples)),
+                Ok((path, samples)) => {
+                    let error = CaptureArchiveError {
+                        cause: "spill sample accounting does not cover the captured take".into(),
+                        source_path: Some(path),
+                        sample_rate: self.actual_sample_rate,
+                        captured_samples,
+                        written_samples: samples,
+                        unwritten_samples: Arc::new(Vec::new()),
+                        buffer_start_offset: buffer_start,
+                        retained_samples: Arc::new(Vec::new()),
+                    };
+                    return self.retain_archive_error(error);
+                }
+                Err(error) => return self.retain_archive_error(error),
+            },
+            None if buffer_start > 0 => {
+                let error = CaptureArchiveError {
+                    cause: "RAM ring has evicted the take head and no full spill exists".into(),
+                    source_path: None,
+                    sample_rate: self.actual_sample_rate,
+                    captured_samples,
+                    written_samples: 0,
+                    unwritten_samples: Arc::new(Vec::new()),
+                    buffer_start_offset: buffer_start,
+                    retained_samples: Arc::new(Vec::new()),
+                };
+                return self.retain_archive_error(error);
+            }
+            None => None,
+        };
         if let Some((path, samples)) = spill_take
             && samples > 0
         {
@@ -757,16 +1075,35 @@ impl Recorder {
             num_frames, self.last_duration, self.actual_sample_rate
         );
 
-        // Create temp file
-        let temp_path = std::env::temp_dir().join(format!(
-            "codescribe_recording_{}.wav",
-            chrono::Utc::now().timestamp_millis()
-        ));
-
-        info!("Saving audio to: {:?}", temp_path);
-
-        // Write WAV file using actual sample rate
-        write_wav_file(&temp_path, &wav_data, self.actual_sample_rate, CHANNELS)?;
+        // Scratch WAV under ~/.codescribe/takes (or $CODESCRIBE_DATA_DIR/takes).
+        let archive = takes_dir().map(|dir| {
+            dir.join(format!(
+                "codescribe_recording_{}.wav",
+                chrono::Utc::now().timestamp_millis()
+            ))
+        });
+        let mut source_path = None;
+        let saved = archive.and_then(|path| {
+            source_path = Some(path.clone());
+            write_wav_file(&path, &wav_data, self.actual_sample_rate, CHANNELS)?;
+            Ok(path)
+        });
+        let temp_path = match saved {
+            Ok(path) => path,
+            Err(error) => {
+                let error = CaptureArchiveError {
+                    cause: format!("RAM archive write failed: {error:#}"),
+                    source_path,
+                    sample_rate: self.actual_sample_rate,
+                    captured_samples,
+                    written_samples: 0,
+                    unwritten_samples: Arc::new(Vec::new()),
+                    buffer_start_offset: buffer_start,
+                    retained_samples: Arc::new(Vec::new()),
+                };
+                return self.retain_archive_error(error);
+            }
+        };
 
         info!("Audio successfully saved to WAV file");
 
@@ -778,6 +1115,60 @@ impl Recorder {
         self.buffer_start_offset.store(0, Ordering::SeqCst);
 
         Ok(Some(temp_path))
+    }
+
+    /// Recovery receipt for an unsuccessful archive; starting a new take cannot erase it.
+    pub fn archive_error(&self) -> Option<&CaptureArchiveError> {
+        self.archive_error.as_ref()
+    }
+
+    /// Release the failed take only after its exact PCM reached durable storage
+    /// and the existing retention consumer succeeded. Errors keep the latch and
+    /// buffer intact, so another start cannot erase the only remaining audio.
+    pub fn acknowledge_archive_recovery(
+        &mut self,
+        recovered: &RecoveredCaptureArchive,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            !self.is_active() && self.spill.is_none(),
+            "capture must be closed before completing archive recovery"
+        );
+        let error = self
+            .archive_error
+            .as_ref()
+            .context("no failed take owns archive recovery")?;
+        let evidence = &recovered.evidence;
+        anyhow::ensure!(
+            error.sample_rate == evidence.sample_rate
+                && error.captured_samples == evidence.captured_samples
+                && error.written_samples == evidence.written_samples
+                && error.buffer_start_offset == evidence.buffer_start_offset
+                && error.source_path == evidence.source_path
+                && Arc::ptr_eq(&error.retained_samples, &evidence.retained_samples)
+                && Arc::ptr_eq(&error.unwritten_samples, &evidence.unwritten_samples),
+            "recovered archive proof belongs to a different failed capture"
+        );
+        self.last_duration = evidence.captured_samples as f32 / evidence.sample_rate as f32;
+        self.diagnostics.frames = evidence.captured_samples;
+        self.diagnostics.bytes = evidence.captured_samples * std::mem::size_of::<i16>();
+        self.diagnostics.duration_sec = self.last_duration;
+        self.buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.buffer_start_offset.store(0, Ordering::SeqCst);
+        self.archive_error = None;
+        Ok(())
+    }
+
+    fn retain_archive_error(&mut self, mut error: CaptureArchiveError) -> Result<Option<PathBuf>> {
+        let samples = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+        error.buffer_start_offset = self.buffer_start_offset.load(Ordering::SeqCst);
+        error.captured_samples = error.buffer_start_offset + samples.len();
+        error.retained_samples = Arc::new(samples.iter().copied().collect());
+        error!("{error}");
+        self.archive_error = Some(error.clone());
+        Err(error.into())
     }
 
     /// Snapshot a slice of the recording buffer to a WAV file WITHOUT stopping
@@ -814,7 +1205,7 @@ impl Recorder {
         let sample_count = slice.len();
         let duration_sec = sample_count as f32 / self.actual_sample_rate as f32;
 
-        let temp_path = std::env::temp_dir().join(format!(
+        let temp_path = takes_dir()?.join(format!(
             "codescribe_segment_{}.wav",
             chrono::Utc::now().timestamp_millis()
         ));
@@ -832,18 +1223,6 @@ impl Recorder {
             sample_count,
             duration_sec,
         }))
-    }
-
-    /// Current sample count in the buffer.
-    ///
-    /// Use as `from_offset` for the next `snapshot_wav` call when you want to
-    /// start a fresh segment without saving anything yet. Returns 0 on poisoned
-    /// lock (recoverable).
-    pub fn current_sample_offset(&self) -> usize {
-        let buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
-        self.buffer_start_offset
-            .load(Ordering::SeqCst)
-            .saturating_add(buf.len())
     }
 }
 
@@ -886,16 +1265,45 @@ fn streaming_buffer_cap_samples(sample_rate: u32) -> usize {
     (sample_rate as usize).saturating_mul(STREAMING_BUFFER_CAP_SECONDS)
 }
 
-/// Parse `CODESCRIBE_AUDIO_SPILL`: ON by default; only `0`/`false`/`no`/`off`
-/// (case-insensitive) opt out.
+/// Scratch directory for take WAVs: `Config::config_dir()/takes`.
 ///
-/// Default ON because the operator decision (2026-08-10, option B) is that a
-/// streaming session must never lose audio to the RAM ring cap — a >5 min
-/// phone-call take archived without its head is worse than a temp file.
-fn audio_spill_from_env_value(value: Option<&str>) -> bool {
-    value
-        .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
-        .unwrap_or(true)
+/// Honours `CODESCRIBE_DATA_DIR` (default `$HOME/.codescribe`). Created on
+/// demand with `create_dir_all`; failure is a readable error, never a panic.
+/// Used by the streaming spill, the stop-time buffer dump, and the segment
+/// snapshot. Filenames stay `codescribe_recording_<ms>.wav` /
+/// `codescribe_segment_<ms>.wav`.
+///
+/// Public so `tests/takes_dir.rs` can assert the path without a microphone.
+/// `cargo test --test takes_dir` compiles this crate without `--cfg test`,
+/// so a `#[cfg(test)] pub(crate)` re-export would not compile that verifier.
+pub fn takes_dir() -> Result<PathBuf> {
+    let dir = Config::config_dir().join("takes");
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create take scratch directory {}", dir.display()))?;
+    Ok(dir)
+}
+
+/// Microphone-free production writer for `tests/takes_dir.rs`.
+///
+/// `Recorder::{start,stop,snapshot_wav}` need a live capture device.
+/// `SpillSink` stays private; this seam calls `SpillSink::spawn` with
+/// [`takes_dir`] and forwards `samples` on the existing writer thread
+/// (no disk I/O on a capture callback, no fsync).
+#[doc(hidden)]
+pub fn spill_take_wav_for_tests(samples: &[i16], sample_rate: u32) -> Result<PathBuf> {
+    let dir = takes_dir()?;
+    let sink = SpillSink::spawn(sample_rate, &dir)?;
+    if let Some(tx) = sink.sender() {
+        tx.send(samples.to_vec())
+            .map_err(|_| anyhow::anyhow!("audio spill sender closed before write"))?;
+    }
+    let (path, written) = sink.finalize()?;
+    anyhow::ensure!(
+        written == samples.len(),
+        "audio spill wrote {written} samples, expected {}",
+        samples.len()
+    );
+    Ok(path)
 }
 
 /// Disk spill for a streaming session: every captured chunk is forwarded to a
@@ -905,7 +1313,12 @@ fn audio_spill_from_env_value(value: Option<&str>) -> bool {
 /// COMPLETE take, immune to [`STREAMING_BUFFER_CAP_SECONDS`] eviction.
 struct SpillSink {
     tx: Option<std::sync::mpsc::Sender<Vec<i16>>>,
-    handle: Option<std::thread::JoinHandle<Result<(PathBuf, usize)>>>,
+    handle:
+        Option<std::thread::JoinHandle<std::result::Result<(PathBuf, usize), CaptureArchiveError>>>,
+    path: PathBuf,
+    sample_rate: u32,
+    written_samples: Arc<AtomicUsize>,
+    send_failed: Arc<AtomicBool>,
 }
 
 impl SpillSink {
@@ -921,30 +1334,87 @@ impl SpillSink {
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
-        let mut writer = hound::WavWriter::create(&path, spec)
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .with_context(|| format!("spill wav create {}", path.display()))?;
+        let mut writer = hound::WavWriter::new(std::io::BufWriter::new(file), spec)
             .map_err(|e| anyhow::anyhow!("spill wav create {}: {e}", path.display()))?;
+        writer
+            .flush()
+            .map_err(|e| anyhow::anyhow!("spill wav admission flush {}: {e}", path.display()))?;
         let (tx, rx) = std::sync::mpsc::channel::<Vec<i16>>();
+        let written_samples = Arc::new(AtomicUsize::new(0));
+        let progress = Arc::clone(&written_samples);
+        let writer_path = path.clone();
         let handle = std::thread::Builder::new()
             .name("audio-spill".into())
-            .spawn(move || -> Result<(PathBuf, usize)> {
+            .spawn(move || {
                 let mut written = 0usize;
+                let mut failure = None;
+                let mut unwritten = Vec::new();
                 while let Ok(chunk) = rx.recv() {
-                    for sample in &chunk {
-                        writer
-                            .write_sample(*sample)
-                            .map_err(|e| anyhow::anyhow!("spill wav write: {e}"))?;
+                    if failure.is_some() {
+                        // A failed disk cannot own these samples. Drain into recovery
+                        // memory so the callback remains send-only and loses no queue.
+                        unwritten.extend(chunk);
+                        continue;
                     }
-                    written += chunk.len();
+                    for sample in &chunk {
+                        if let Err(error) = writer.write_sample(*sample) {
+                            let cause =
+                                format!("spill wav write {}: {error}", writer_path.display());
+                            error!("{cause}; retaining unwritten PCM in memory");
+                            failure = Some(cause);
+                            break;
+                        }
+                    }
+                    // Confirm each chunk outside the callback. Retaining the entire
+                    // failed chunk also covers PCM still held by a buffered writer.
+                    if failure.is_none()
+                        && let Err(error) = writer.flush()
+                    {
+                        let cause = format!("spill wav flush {}: {error}", writer_path.display());
+                        error!("{cause}; retaining unconfirmed PCM in memory");
+                        failure = Some(cause);
+                    }
+                    if failure.is_some() {
+                        unwritten.extend(chunk);
+                    } else {
+                        written += chunk.len();
+                    }
+                    progress.store(written, Ordering::SeqCst);
                 }
-                writer
-                    .finalize()
-                    .map_err(|e| anyhow::anyhow!("spill wav finalize: {e}"))?;
-                Ok((path, written))
+                if let Err(error) = writer.finalize() {
+                    let cause = format!("spill wav finalize {}: {error}", writer_path.display());
+                    failure = Some(match failure {
+                        Some(first) => format!("{first}; {cause}"),
+                        None => cause,
+                    });
+                }
+                match failure {
+                    Some(cause) => Err(CaptureArchiveError {
+                        cause,
+                        source_path: Some(writer_path),
+                        sample_rate,
+                        captured_samples: written + unwritten.len(),
+                        written_samples: written,
+                        unwritten_samples: Arc::new(unwritten),
+                        buffer_start_offset: 0,
+                        retained_samples: Arc::new(Vec::new()),
+                    }),
+                    None => Ok((writer_path, written)),
+                }
             })
             .map_err(|e| anyhow::anyhow!("spill thread spawn: {e}"))?;
         Ok(Self {
             tx: Some(tx),
             handle: Some(handle),
+            path,
+            sample_rate,
+            written_samples,
+            send_failed: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -963,20 +1433,29 @@ impl SpillSink {
     }
 
     /// Close the channel, join the writer, return the finalized take.
-    /// `None` means the spill failed — callers fall back to the RAM ring.
-    fn finalize(mut self) -> Option<(PathBuf, usize)> {
+    /// Failure retains its cause, source path and recoverable sample ranges.
+    fn finalize(mut self) -> std::result::Result<(PathBuf, usize), CaptureArchiveError> {
         self.tx.take(); // drop our sender; callback senders die with the stream
-        let handle = self.handle.take()?;
-        match handle.join() {
-            Ok(Ok(result)) => Some(result),
-            Ok(Err(e)) => {
-                warn!("Audio spill failed during write/finalize: {e}");
-                None
-            }
-            Err(_) => {
-                warn!("Audio spill writer thread panicked");
-                None
-            }
+        let joined = self.handle.take().map(|handle| handle.join());
+        match joined {
+            Some(Ok(Ok(result))) if !self.send_failed.load(Ordering::SeqCst) => Ok(result),
+            Some(Ok(Err(error))) => Err(error),
+            other => Err(CaptureArchiveError {
+                cause: match other {
+                    Some(Ok(Ok(_))) => "capture callback could not send PCM to the spill writer",
+                    Some(Err(_)) => "spill writer thread panicked",
+                    None => "spill writer handle is missing",
+                    Some(Ok(Err(_))) => unreachable!(),
+                }
+                .into(),
+                source_path: Some(self.path.clone()),
+                sample_rate: self.sample_rate,
+                captured_samples: 0,
+                written_samples: self.written_samples.load(Ordering::SeqCst),
+                unwritten_samples: Arc::new(Vec::new()),
+                buffer_start_offset: 0,
+                retained_samples: Arc::new(Vec::new()),
+            }),
         }
     }
 }
@@ -1061,8 +1540,13 @@ fn write_wav_file(path: &PathBuf, samples: &[i16], sample_rate: u32, channels: u
         sample_format: hound::SampleFormat::Int,
     };
 
-    let mut writer = WavWriter::create(path, spec)
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
         .with_context(|| format!("Failed to create WAV file at {:?}", path))?;
+    let mut writer = WavWriter::new(std::io::BufWriter::new(file), spec)
+        .with_context(|| format!("Failed to initialize WAV file at {:?}", path))?;
 
     for &sample in samples {
         writer
@@ -1100,6 +1584,372 @@ pub fn wav_duration_secs(path: &Path) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn recovery_evidence(source: Option<PathBuf>) -> CaptureArchiveError {
+        CaptureArchiveError {
+            cause: "injected producer failure".into(),
+            source_path: source,
+            sample_rate: 16_000,
+            captured_samples: 4,
+            written_samples: 2,
+            unwritten_samples: Arc::new(vec![33, 44]),
+            buffer_start_offset: 3,
+            retained_samples: Arc::new(vec![44]),
+        }
+    }
+
+    #[test]
+    fn recovery_uses_each_confirmed_and_unconfirmed_sample_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("partial.wav");
+        // The writer may have physically emitted data not yet confirmed.
+        // Reconstruct from the confirmed prefix and its whole unconfirmed chunk.
+        write_wav_file(&path, &[11, 22, 33], 16_000, 1).unwrap();
+        let evidence = recovery_evidence(Some(path.clone()));
+        assert_eq!(evidence.complete_pcm().unwrap(), [11, 22, 33, 44]);
+        let mut conflict = evidence.clone();
+        conflict.retained_samples = Arc::new(vec![99]);
+        assert!(conflict.complete_pcm().is_err());
+        assert_eq!(hound::WavReader::open(path).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn recovery_refuses_missing_pcm_instead_of_joining_across_a_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("partial.wav");
+        write_wav_file(&path, &[11, 22], 16_000, 1).unwrap();
+        let mut evidence = recovery_evidence(Some(path));
+        evidence.unwritten_samples = Arc::new(Vec::new());
+        assert!(evidence.complete_pcm().is_err());
+    }
+
+    #[test]
+    fn recovery_requires_a_readable_native_prefix_or_a_complete_ram_take() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("partial.wav");
+        write_wav_file(&path, &[11], 16_000, 1).unwrap();
+        let mut evidence = recovery_evidence(Some(path.clone()));
+        assert!(
+            evidence.complete_pcm().is_err(),
+            "truncated prefix must refuse"
+        );
+        std::fs::remove_file(&path).unwrap();
+        write_wav_file(&path, &[11, 22], 8_000, 1).unwrap();
+        assert!(
+            evidence.complete_pcm().is_err(),
+            "foreign native rate must refuse"
+        );
+        evidence.buffer_start_offset = 0;
+        evidence.retained_samples = Arc::new(vec![11, 22, 33, 44]);
+        evidence.source_path = Some(dir.path().join("unreadable.wav"));
+        assert_eq!(evidence.complete_pcm().unwrap(), [11, 22, 33, 44]);
+        evidence.unwritten_samples = Arc::new(vec![33, 99]);
+        assert!(
+            evidence.complete_pcm().is_err(),
+            "conflicting full RAM evidence must refuse"
+        );
+    }
+
+    #[test]
+    fn recovery_acknowledgement_requires_the_original_capture_proof() {
+        let mut recorder = Recorder::with_config(RecorderConfig::default()).unwrap();
+        let mut evidence = recovery_evidence(None);
+        evidence.buffer_start_offset = 0;
+        evidence.retained_samples = Arc::new(vec![11, 22, 33, 44]);
+        recorder.buffer.lock().unwrap().extend([11, 22, 33, 44]);
+        recorder.archive_error = Some(evidence.clone());
+        // Path equality and equal PCM values do not confer capture ownership.
+        let mut foreign = evidence.clone();
+        foreign.retained_samples = Arc::new(evidence.retained_samples.as_ref().clone());
+        let path = PathBuf::from("proof-issued-only-after-retention.wav");
+        assert!(
+            recorder
+                .acknowledge_archive_recovery(&RecoveredCaptureArchive {
+                    path: path.clone(),
+                    evidence: foreign
+                })
+                .is_err()
+        );
+        assert_eq!(recorder.buffer.lock().unwrap().len(), 4);
+        assert!(recorder.archive_error().is_some());
+        let proof = RecoveredCaptureArchive { path, evidence };
+        recorder.acknowledge_archive_recovery(&proof).unwrap();
+        assert!(recorder.buffer.lock().unwrap().is_empty());
+        assert!(recorder.archive_error().is_none());
+        assert!(recorder.acknowledge_archive_recovery(&proof).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires a single-test child with RLIMIT_FSIZE=1024 and SIGXFSZ ignored"]
+    fn forensic_actual_spill_write_failure_keeps_complete_native_pcm() {
+        let mut limits = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &mut limits) },
+            0
+        );
+        assert_eq!(
+            limits.rlim_cur, 1024,
+            "run only through the isolated fault harness"
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let sink = SpillSink::spawn(16_000, directory.path()).unwrap();
+        let prefix = (0..256).map(|n| n as i16 - 128).collect::<Vec<_>>();
+        let failed = (0..2048).map(|n| n as i16 - 1024).collect::<Vec<_>>();
+        let after_failure = vec![0; 1024];
+        let expected = prefix
+            .iter()
+            .chain(&failed)
+            .chain(&after_failure)
+            .copied()
+            .collect::<Vec<_>>();
+        sink.feed(prefix.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while sink.written_samples.load(Ordering::SeqCst) < prefix.len() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "prefix must be confirmed before the disk fault"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(sink.written_samples.load(Ordering::SeqCst), prefix.len());
+        let path = sink.path.clone();
+        sink.feed(failed.clone());
+        sink.feed(after_failure.clone());
+        let mut recorder = Recorder::with_config(RecorderConfig::default()).unwrap();
+        recorder.actual_sample_rate = 16_000;
+        let retained = 63;
+        recorder
+            .buffer
+            .lock()
+            .unwrap()
+            .extend(expected[expected.len() - retained..].iter().copied());
+        recorder
+            .buffer_start_offset
+            .store(expected.len() - retained, Ordering::SeqCst);
+        recorder.spill = Some(sink);
+        let result = recorder.finalize_closed_capture(true);
+        assert!(
+            result.is_err(),
+            "an actual truncated disk write must never certify a complete take"
+        );
+        let error = result.unwrap_err();
+        let evidence = error.downcast_ref::<CaptureArchiveError>().unwrap();
+        assert_eq!(evidence.captured_samples, expected.len());
+        assert_eq!(evidence.written_samples, prefix.len());
+        assert_eq!(
+            evidence.unwritten_samples.as_slice(),
+            [&failed[..], &after_failure[..]].concat()
+        );
+        assert_eq!(
+            evidence.retained_samples.as_slice(),
+            &expected[expected.len() - retained..]
+        );
+        assert_eq!(evidence.source_path.as_deref(), Some(path.as_path()));
+        assert!(std::fs::metadata(&path).unwrap().len() <= 1024);
+        assert_eq!(
+            evidence.complete_pcm().unwrap(),
+            expected,
+            "disk prefix and unconfirmed queue must preserve every sample including silence and tail"
+        );
+        assert!(recorder.archive_error().is_some());
+        assert_eq!(recorder.buffer.lock().unwrap().len(), retained);
+        limits.rlim_cur = limits.rlim_max;
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &limits) }, 0);
+        let recovered = evidence.recover_complete_archive().unwrap();
+        let decoded = hound::WavReader::open(recovered.path())
+            .unwrap()
+            .samples::<i16>()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(decoded, expected);
+        assert!(
+            path.is_file(),
+            "the failed original must stay recoverable until admission"
+        );
+        recorder.acknowledge_archive_recovery(&recovered).unwrap();
+        assert!(recorder.archive_error().is_none());
+        assert!(recorder.buffer.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn spill_failure_after_ring_eviction_cannot_certify_a_shortened_take() {
+        let dir = tempfile::tempdir().unwrap();
+        let partial = dir.path().join("partial.wav");
+        write_wav_file(&partial, &[11, 22], 16_000, 1).unwrap();
+        let mut recorder = Recorder::with_config(RecorderConfig::default()).unwrap();
+        recorder.actual_sample_rate = 16_000;
+        recorder.buffer.lock().unwrap().extend([33, 44]);
+        recorder.buffer_start_offset.store(2, Ordering::SeqCst);
+        recorder.spill = Some(SpillSink {
+            tx: None,
+            handle: Some(std::thread::spawn({
+                let partial = partial.clone();
+                move || {
+                    Err(CaptureArchiveError {
+                        cause: "injected spill write failure".into(),
+                        source_path: Some(partial),
+                        sample_rate: 16_000,
+                        captured_samples: 4,
+                        written_samples: 2,
+                        unwritten_samples: Arc::new(vec![33, 44]),
+                        buffer_start_offset: 0,
+                        retained_samples: Arc::new(Vec::new()),
+                    })
+                }
+            })),
+            path: partial.clone(),
+            sample_rate: 16_000,
+            written_samples: Arc::new(AtomicUsize::new(2)),
+            send_failed: Arc::new(AtomicBool::new(false)),
+        });
+        let result = recorder.finalize_closed_capture(true);
+        assert!(
+            result.is_err(),
+            "evicted ring cannot become a complete archive after writer failure: {result:?}"
+        );
+        assert_eq!(
+            recorder.buffer.lock().unwrap().len(),
+            2,
+            "recoverable tail remains owned"
+        );
+        assert_eq!(recorder.buffer_start_offset.load(Ordering::SeqCst), 2);
+        assert!(partial.is_file(), "partial source must remain recoverable");
+        let failure = result.unwrap_err();
+        let evidence = failure.downcast_ref::<CaptureArchiveError>().unwrap();
+        assert_eq!(evidence.captured_samples, 4);
+        assert_eq!(evidence.written_samples, 2);
+        assert_eq!(evidence.unwritten_samples.as_slice(), &[33, 44]);
+        assert_eq!(evidence.retained_samples.as_slice(), &[33, 44]);
+        assert_eq!(evidence.source_path.as_deref(), Some(partial.as_path()));
+        let again = recorder.finalize_closed_capture(true).unwrap_err();
+        assert_eq!(again.to_string(), failure.to_string());
+        assert_eq!(recorder.buffer.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_complete_native_take_keeps_silence_and_every_sample_beyond_the_ring_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let rate = 1_000;
+        let mut expected = vec![0_i16; 305_000];
+        expected[0] = i16::MIN;
+        expected[42_000] = 73;
+        expected[300_000] = -912;
+        expected[304_999] = i16::MAX;
+        let mut recorder = Recorder::with_config(RecorderConfig::default()).unwrap();
+        recorder.actual_sample_rate = rate;
+        let sink = SpillSink::spawn(rate, dir.path()).unwrap();
+        for chunk in expected.chunks(1_000) {
+            sink.feed(chunk.to_vec());
+            append_mono_i16_samples(
+                &mut recorder.buffer.lock().unwrap(),
+                &recorder.buffer_start_offset,
+                chunk,
+                Some(streaming_buffer_cap_samples(rate)),
+            );
+        }
+        assert_eq!(recorder.buffer_start_offset.load(Ordering::SeqCst), 5_000);
+        recorder.spill = Some(sink);
+        let path = recorder.finalize_closed_capture(true).unwrap().unwrap();
+        let reader = hound::WavReader::open(path).unwrap();
+        assert_eq!(reader.spec().sample_rate, rate);
+        assert_eq!(reader.spec().channels, 1);
+        assert_eq!(reader.spec().bits_per_sample, 16);
+        let actual: Vec<i16> = reader.into_samples().collect::<Result<_, _>>().unwrap();
+        assert_eq!(
+            actual, expected,
+            "the archive must preserve head, silence and tail byte for byte"
+        );
+        assert!(recorder.buffer.lock().unwrap().is_empty());
+        assert!(recorder.finalize_closed_capture(false).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_evicted_ring_without_a_full_archive_never_becomes_a_successful_take() {
+        let mut recorder = Recorder::with_config(RecorderConfig::default()).unwrap();
+        recorder.actual_sample_rate = 16_000;
+        recorder.buffer.lock().unwrap().extend([33, 44]);
+        recorder.buffer_start_offset.store(2, Ordering::SeqCst);
+        let result = recorder.finalize_closed_capture(true);
+        assert!(
+            result.is_err(),
+            "a missing head cannot be certified: {result:?}"
+        );
+        assert_eq!(
+            recorder
+                .buffer
+                .lock()
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            [33, 44]
+        );
+    }
+
+    #[test]
+    fn archive_admission_failure_is_reported_before_any_samples_can_be_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let impossible_directory = dir.path().join("file-not-directory");
+        std::fs::write(&impossible_directory, b"preserve this file").unwrap();
+        assert!(SpillSink::spawn(16_000, &impossible_directory).is_err());
+        assert_eq!(
+            std::fs::read(&impossible_directory).unwrap(),
+            b"preserve this file"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn explicit_capture_device_never_opens_system_default() {
+        for devices in [vec![], vec![(1, "MacBook Microphone".to_string())]] {
+            assert!(
+                resolve_capture_device(
+                    Some("BlackHole 2ch"),
+                    || Ok(devices.into_iter()),
+                    || panic!("explicit input must never consult system default")
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(
+            resolve_capture_device(
+                Some("blackhole 2ch"),
+                || Ok(vec![(7, "BlackHole 2ch".to_string())].into_iter()),
+                || panic!("named match owns capture")
+            )
+            .unwrap(),
+            7
+        );
+    }
+
+    #[test]
+    fn unselected_capture_uses_default_without_enumerating() {
+        assert_eq!(
+            resolve_capture_device(
+                None,
+                || -> Result<std::vec::IntoIter<(u8, String)>> {
+                    panic!("no named-device enumeration")
+                },
+                || Some(9)
+            )
+            .unwrap(),
+            9
+        );
+        assert!(
+            resolve_capture_device(
+                None,
+                || -> Result<std::vec::IntoIter<(u8, String)>> {
+                    panic!("no named-device enumeration")
+                },
+                || None
+            )
+            .is_err()
+        );
+    }
 
     // Note: RMS tests removed - now using Silero VAD (see vad module tests)
 
@@ -1165,16 +2015,6 @@ mod tests {
             .map(|s| s.expect("sample"))
             .collect();
         assert_eq!(read, pattern);
-    }
-
-    /// Spill defaults ON for streaming sessions; only explicit falsey opts out.
-    #[test]
-    fn audio_spill_env_parser_defaults_on() {
-        assert!(audio_spill_from_env_value(None));
-        for disabled in ["0", "false", "no", "off", "OFF"] {
-            assert!(!audio_spill_from_env_value(Some(disabled)));
-        }
-        assert!(audio_spill_from_env_value(Some("1")));
     }
 
     /// Default config tracks Silero hang_sec; SAMPLE_RATE/CHANNELS stay 16k mono.

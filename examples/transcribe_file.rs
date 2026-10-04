@@ -37,7 +37,6 @@ fn main() -> anyhow::Result<()> {
     let model_candidates = [
         env::var("CODESCRIBE_MODEL_PATH").ok().map(PathBuf::from),
         Some(PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo")),
-        Some(PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8")),
     ];
 
     let model_path = model_candidates

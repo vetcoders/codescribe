@@ -23,28 +23,7 @@ import XCTest
 /// terminal beat is conditional.
 @MainActor
 final class AgentVoiceLaneOwnershipTests: XCTestCase {
-  private final class SpyRoutingEngine: AgentChatEngine {
-    private(set) var assistiveTargets: [String?] = []
-
-    func isAvailable() -> Bool { true }
-    func availabilityDetail() -> String? { nil }
-    func generateThreadTitle(_ text: String) async throws -> String? { nil }
-    func streamReply(
-      _ text: String,
-      threadId: String,
-      attachmentPaths: [String],
-      onDelta: @escaping @MainActor (String) -> Void,
-      onReasoning: @escaping @MainActor (String) -> Void,
-      onToolExecuting: @escaping @MainActor (String, String) -> Void,
-      onToolResult: @escaping @MainActor (String, String, Bool, String) -> Void
-    ) async throws -> String { "" }
-    func cancelReply(threadId: String) -> Bool { false }
-    func setAssistiveTargetThread(backendId: String?) {
-      assistiveTargets.append(backendId)
-    }
-  }
-
-  private final class StubThreadsProvider: ChatThreadsProviding {
+  private final class StubThreadsProvider: ThreadsFixture {
     var rows: [(id: String, title: String)]
 
     init(_ rows: [(id: String, title: String)]) {
@@ -60,26 +39,18 @@ final class AgentVoiceLaneOwnershipTests: XCTestCase {
       }
     }
 
-    func searchThreads(query: String) -> [ChatThread] { listThreads() }
-    func loadMessages(backendId: String) -> [ChatMessage] { [] }
-    func deleteThread(backendId: String) -> Bool { true }
-    func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
-    func renameThread(backendId: String, title: String) -> Bool { true }
-    func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
-    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
-    func generateThreadId() -> String { "t_generated" }
   }
 
   private struct Fixture {
     let store: AgentChatStore
-    let engine: SpyRoutingEngine
+    let engine: AssistiveTargetLogEngine
     let capturing: UUID
     let other: UUID
   }
 
   /// Two persisted threads, rail sitting on the first one.
   private func makeFixture() -> Fixture {
-    let engine = SpyRoutingEngine()
+    let engine = AssistiveTargetLogEngine()
     let store = AgentChatStore(
       engine: engine,
       threadsProvider: StubThreadsProvider([
@@ -134,6 +105,34 @@ final class AgentVoiceLaneOwnershipTests: XCTestCase {
     XCTAssertEqual(message, "boom")
     XCTAssertFalse(f.store.dictationBlocked)
     XCTAssertNil(f.store.dictationThreadID, "a failed session still owns nothing")
+  }
+
+  func testVoiceListenerErrorSettlesThinkingAndShowsProviderReason() async throws {
+    let f = makeFixture()
+    let listener = VoiceDeliveryListener(store: f.store, revealChat: {})
+    defer { listener.invalidate() }
+    let reason =
+      "Model gpt-6-sol is not available on the signed-in account route (HTTP 404). "
+      + "The model gpt-6-sol does not exist or your team does not have access."
+
+    listener.onTurnStarted(threadId: "t_capture", userText: "Compare {selection_2}")
+    for _ in 0..<200 {
+      if f.store.currentThread?.messages.last?.isThinking == true { break }
+      try await Task.sleep(for: .milliseconds(5))
+    }
+    let pending = try XCTUnwrap(f.store.currentThread?.messages.last)
+    XCTAssertTrue(pending.isThinking, "the voice opener creates a thinking placeholder")
+
+    listener.onError(message: reason)
+    for _ in 0..<200 {
+      if f.store.currentThread?.messages.last?.isThinking == false { break }
+      try await Task.sleep(for: .milliseconds(5))
+    }
+    let failed = try XCTUnwrap(f.store.currentThread?.messages.last)
+    XCTAssertEqual(failed.id, pending.id, "the same placeholder must settle")
+    XCTAssertFalse(failed.isThinking)
+    XCTAssertFalse(failed.isStreaming)
+    XCTAssertEqual(failed.text, "[error] " + reason)
   }
 
   // MARK: Thread-switch ghost
@@ -203,7 +202,7 @@ final class AgentVoiceLaneOwnershipTests: XCTestCase {
   }
 
   func testVoiceTurnBindingRepublishesEvenWhileACaptureIsLatched() {
-    let engine = SpyRoutingEngine()
+    let engine = AssistiveTargetLogEngine()
     let store = AgentChatStore(
       engine: engine,
       threadsProvider: StubThreadsProvider([("t_history", "History")])

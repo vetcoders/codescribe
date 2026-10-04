@@ -14,6 +14,4 @@ enum CSMotion {
   static let floatIn = Animation.easeOut(duration: 0.35)
   // cursor blink (1s steps)
   static let blink = Animation.linear(duration: 1).repeatForever(autoreverses: true)
-  // hero glow breathe 6–7s
-  static let breathe = Animation.easeInOut(duration: 6.5).repeatForever(autoreverses: true)
 }

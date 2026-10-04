@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use rand::RngCore;
+use rand::Rng;
 use tiny_http::{Header, Request, Response, Server, StatusCode};
 
 use crate::llm::account_auth::pkce::{PkceCodes, generate_pkce};
@@ -37,10 +37,45 @@ use crate::llm::provider::ProviderKind;
 use base64::Engine;
 
 /// Browser page after a successful OAuth callback — tells the user to close it.
+///
+/// The authorization code arrives in the query string; the page scrubs it
+/// from the address bar on load so a screenshot or a browser history entry
+/// never carries it, then tries to close itself (browsers only honour that
+/// for script-opened tabs, so the fallback line stays).
 const SUCCESS_HTML: &str = r#"<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Codescribe signed in</title></head>
-<body><h1>Codescribe signed in</h1><p>You can close this window.</p></body>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Codescribe signed in</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid; place-items: center;
+    background: #0f1115; color: #e6e6e6;
+    font: 15px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  main { text-align: center; padding: 32px; }
+  .brand { display: inline-flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 600; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #e8845b; }
+  h1 { font-size: 22px; font-weight: 600; margin: 24px 0 8px; }
+  p { margin: 0; color: #9a9a9a; }
+  .ok { color: #9dc98f; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand"><span class="dot"></span>codescribe</div>
+  <h1><span class="ok">Signed in.</span> Back to Codescribe.</h1>
+  <p>You can close this window.</p>
+</main>
+<script>
+  try { history.replaceState(null, "", location.pathname); } catch (_) {}
+  setTimeout(function () { try { window.close(); } catch (_) {} }, 800);
+</script>
+</body>
 </html>"#;
 
 /// One loopback login attempt. `provider` is the identity the resulting tokens
@@ -226,16 +261,13 @@ pub async fn run_login_server(opts: ServerOptions) -> Result<LoginServer, Accoun
 ///
 /// Separating the decision from the reply is what lets a single variant —
 /// [`ResponseAndExit`] — express "answer the browser, then stop the server"
-/// without the handler needing to reach the server loop.
+/// without the handler needing to reach the server loop. Login completion
+/// answers in that one response, so the browser does not depend on a second
+/// hop to `localhost` (IPv6 trap on `127.0.0.1`-bound listeners).
 ///
 /// [`ResponseAndExit`]: HandledRequest::ResponseAndExit
 enum HandledRequest {
     Response(Response<Cursor<Vec<u8>>>),
-    /// Kept for rare 302 paths (e.g. future multi-hop success pages). Callback
-    /// completion now uses [`ResponseAndExit`] so login does not depend on a
-    /// second hop to `localhost` (IPv6 trap on `127.0.0.1`-bound listeners).
-    #[allow(dead_code)]
-    Redirect(Header),
     ResponseAndExit {
         headers: Vec<Header>,
         body: Vec<u8>,
@@ -253,11 +285,6 @@ async fn respond(
 ) -> Option<Result<(), AccountAuthError>> {
     match handled {
         HandledRequest::Response(response) => {
-            let _ = tokio::task::spawn_blocking(move || request.respond(response)).await;
-            None
-        }
-        HandledRequest::Redirect(header) => {
-            let response = Response::empty(302).with_header(header);
             let _ = tokio::task::spawn_blocking(move || request.respond(response)).await;
             None
         }
@@ -501,7 +528,7 @@ fn build_authorize_url(
 /// OpenID `nonce` — same unguessability requirement, same generator.
 fn generate_state() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
@@ -609,7 +636,7 @@ mod tests {
     #[serial]
     async fn login_roundtrip_callback_exchanges_code_and_stores_tokens() {
         let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-        let _tokens = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _tokens = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
 
         let mut issuer = mockito::Server::new_async().await;
         let _mock = issuer
@@ -660,7 +687,7 @@ mod tests {
     #[serial]
     async fn chatgpt_identity_token_stores_without_responses_write() {
         let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-        let _tokens = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _tokens = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
 
         let mut issuer = mockito::Server::new_async().await;
         let _exchange = issuer
@@ -719,41 +746,7 @@ mod tests {
     }
 
     /// RAII env override for serial tests; restores prior value on drop.
-    #[derive(Debug)]
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Set `key=value`, capturing the previous state for restore.
-        fn set(key: &'static str, value: &str) -> Self {
-            let previous = std::env::var(key).ok();
-            // SAFETY: env-touching tests here are serialized with `serial`.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, previous }
-        }
-
-        /// Remove `key`, capturing the previous state for restore.
-        fn unset(key: &'static str) -> Self {
-            let previous = std::env::var(key).ok();
-            // SAFETY: env-touching tests here are serialized with `serial`.
-            unsafe { std::env::remove_var(key) };
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the exact process env captured at set/unset.
-        fn drop(&mut self) {
-            match &self.previous {
-                // SAFETY: env-touching tests here are serialized with `serial`.
-                Some(value) => unsafe { std::env::set_var(self.key, value) },
-                // SAFETY: env-touching tests here are serialized with `serial`.
-                None => unsafe { std::env::remove_var(self.key) },
-            }
-        }
-    }
+    use crate::test_isolation::EnvGuard;
 
     /// Authorization-code grant posts form body and maps access/refresh/id.
     #[tokio::test]
@@ -854,8 +847,8 @@ mod tests {
     #[serial]
     async fn paste_code_provider_is_refused_a_loopback_server() {
         let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-        let _openai = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
-        let _anthropic = EnvGuard::unset(ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT);
+        let _openai = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _anthropic = EnvGuard::remove(ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT);
 
         let opts = ServerOptions::new(ProviderKind::AnthropicMessages, "client".to_string())
             .expect("Anthropic has an OAuth registry row");
@@ -879,8 +872,8 @@ mod tests {
     #[test]
     #[serial]
     fn server_options_take_issuer_and_port_from_the_providers_row() {
-        let _openai_issuer = EnvGuard::unset("CODESCRIBE_OPENAI_OAUTH_ISSUER");
-        let _anthropic_issuer = EnvGuard::unset("CODESCRIBE_ANTHROPIC_OAUTH_ISSUER");
+        let _openai_issuer = EnvGuard::remove("CODESCRIBE_OPENAI_OAUTH_ISSUER");
+        let _anthropic_issuer = EnvGuard::remove("CODESCRIBE_ANTHROPIC_OAUTH_ISSUER");
 
         let openai = openai_opts("client");
         assert_eq!(openai.provider, ProviderKind::OpenAiResponses);

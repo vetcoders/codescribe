@@ -25,7 +25,7 @@ pub const VOCABULARY_OFF: &str = "off";
 const MAX_ATTENTION_FINDINGS: usize = 8;
 
 /// Silence-corpus residue Whisper emits on empty audio. Must stay in the
-/// same spirit as `pipeline/streaming/quality_gate.rs` (`WHISPER_HALLUCINATIONS_*`).
+/// same spirit as the decoder's hallucination diagnostics.
 const SILENCE_CORPUS_RESIDUE: &[&str] = &[
     "thank you",
     "thanks for watching",
@@ -98,6 +98,15 @@ pub enum QualityIssueKind {
     AutoReplaceAfterTranscriptSealed,
     TreatCommittedAsDocument,
     TreatWholeTextMutableUntilSessionSeal,
+    TreatAppleTextAsImmutableFloor,
+    InferSpanIdentityFromTextSimilarity,
+    InferNamedSoundFromSilero,
+    DeduplicateIntentionalRepetitionByContent,
+    TreatMeanEnergyDbAsIdentity,
+    ClaimLayeredOnWhenNoWindowsReachTheProvider,
+    DropAcousticObservationWithoutReceipt,
+    DeclareAPcmRangeThePayloadDoesNotCarry,
+    PresentMeanEnergyAsSpanIdentity,
     // ── Clock / Seal Atlas ───────────────────────────────────────────────
     ClockLie,
     UtteranceGrainSilenceTail,
@@ -115,8 +124,6 @@ pub enum QualityIssueKind {
     // ── Confidence flags ─────────────────────────────────────────────────
     VeryLowSpeech,
     PossibleHallucinationLogprob,
-    QualityGateDropped,
-    SileroDroppedTailHallucinations,
     LocalFinalPassUnavailable,
     CloudFallbackUsed,
     StreamingPreviewUsedAsVerdict,
@@ -225,6 +232,14 @@ pub struct TakeQualityEvidence {
     pub confidence_flags: Vec<String>,
 }
 
+impl TakeQualityEvidence {
+    /// Copy an admission census. The count is `AcousticLedger::clock_lie_count`;
+    /// this method does not measure the spans again.
+    pub fn observe_clock_lie_count(&mut self, clock_lie_count: usize) {
+        self.clock_lie_count = clock_lie_count;
+    }
+}
+
 impl QualityIssueKind {
     /// Exhaustive catalog order. Coverage test walks this slice.
     pub const ALL: &'static [Self] = &[
@@ -235,6 +250,15 @@ impl QualityIssueKind {
         Self::AutoReplaceAfterTranscriptSealed,
         Self::TreatCommittedAsDocument,
         Self::TreatWholeTextMutableUntilSessionSeal,
+        Self::TreatAppleTextAsImmutableFloor,
+        Self::InferSpanIdentityFromTextSimilarity,
+        Self::InferNamedSoundFromSilero,
+        Self::DeduplicateIntentionalRepetitionByContent,
+        Self::TreatMeanEnergyDbAsIdentity,
+        Self::ClaimLayeredOnWhenNoWindowsReachTheProvider,
+        Self::DropAcousticObservationWithoutReceipt,
+        Self::DeclareAPcmRangeThePayloadDoesNotCarry,
+        Self::PresentMeanEnergyAsSpanIdentity,
         Self::ClockLie,
         Self::UtteranceGrainSilenceTail,
         Self::LetterTimingAsMeasurement,
@@ -248,8 +272,6 @@ impl QualityIssueKind {
         Self::LiveMissWhisperOk,
         Self::VeryLowSpeech,
         Self::PossibleHallucinationLogprob,
-        Self::QualityGateDropped,
-        Self::SileroDroppedTailHallucinations,
         Self::LocalFinalPassUnavailable,
         Self::CloudFallbackUsed,
         Self::StreamingPreviewUsedAsVerdict,
@@ -289,6 +311,23 @@ impl QualityIssueKind {
             Self::TreatWholeTextMutableUntilSessionSeal => {
                 "treat_whole_text_mutable_until_session_seal"
             }
+            Self::TreatAppleTextAsImmutableFloor => "treat_apple_text_as_immutable_floor",
+            Self::InferSpanIdentityFromTextSimilarity => "infer_span_identity_from_text_similarity",
+            Self::InferNamedSoundFromSilero => "infer_named_sound_from_silero",
+            Self::DeduplicateIntentionalRepetitionByContent => {
+                "deduplicate_intentional_repetition_by_content"
+            }
+            Self::TreatMeanEnergyDbAsIdentity => "treat_mean_energy_db_as_identity",
+            Self::ClaimLayeredOnWhenNoWindowsReachTheProvider => {
+                "claim_layered_on_when_no_windows_reach_the_provider"
+            }
+            Self::DropAcousticObservationWithoutReceipt => {
+                "drop_acoustic_observation_without_receipt"
+            }
+            Self::DeclareAPcmRangeThePayloadDoesNotCarry => {
+                "declare_a_pcm_range_the_payload_does_not_carry"
+            }
+            Self::PresentMeanEnergyAsSpanIdentity => "present_mean_energy_as_span_identity",
             Self::ClockLie => "clock_lie",
             Self::UtteranceGrainSilenceTail => "utterance_grain_silence_tail",
             Self::LetterTimingAsMeasurement => "letter_timing_as_measurement",
@@ -302,8 +341,6 @@ impl QualityIssueKind {
             Self::LiveMissWhisperOk => "live_miss_whisper_ok",
             Self::VeryLowSpeech => "very_low_speech",
             Self::PossibleHallucinationLogprob => "possible_hallucination_logprob",
-            Self::QualityGateDropped => "quality_gate_dropped",
-            Self::SileroDroppedTailHallucinations => "silero_dropped_tail_hallucinations",
             Self::LocalFinalPassUnavailable => "local_final_pass_unavailable",
             Self::CloudFallbackUsed => "cloud_fallback_used",
             Self::StreamingPreviewUsedAsVerdict => "streaming_preview_used_as_verdict",
@@ -397,6 +434,87 @@ impl QualityIssueKind {
                 "Closed spans were mutated as if the whole buffer were still open.",
                 "Sealed [sample_start, sample_end) stayed append-only.",
                 "Restrict mutation to the open tail.",
+            ),
+            Self::TreatAppleTextAsImmutableFloor => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P0,
+                FindingTarget::EngineCode,
+                "Apple live text was fenced as a protected word floor.",
+                "Whisper/Lexicon corrected the same PCM range through the ledger.",
+                "Rank producers by authority on the range; Apple is a hypothesis.",
+            ),
+            Self::InferSpanIdentityFromTextSimilarity => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P0,
+                FindingTarget::EngineCode,
+                "Span identity was decided by text similarity instead of the PCM 4-tuple.",
+                "Admission keyed on session/capture_epoch/sample_start/sample_end.",
+                "Delete text-match identity. OccurrenceIdentity is the only key.",
+            ),
+            Self::InferNamedSoundFromSilero => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P1,
+                FindingTarget::EngineCode,
+                "Plain Silero VAD was presented as a named-sound classifier.",
+                "Sideband claims stay speech_start/speech_end/pause unknown_non_speech.",
+                "Route named sounds to a measured provider; Silero is edges only.",
+            ),
+            Self::DeduplicateIntentionalRepetitionByContent => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P0,
+                FindingTarget::EngineCode,
+                "Equal text on disjoint PCM ranges was collapsed into one token.",
+                "N distinct ranges delivered N observations (five Iwo corridor).",
+                "Repetition survives by identity; only hesitation rules may collapse.",
+            ),
+            Self::TreatMeanEnergyDbAsIdentity => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P1,
+                FindingTarget::EngineCode,
+                "Mean energy_db was used as a collision-proof span identifier.",
+                "energy_db appears only as quality evidence, never in a key.",
+                "Keep mean dB out of every identity/equality decision.",
+            ),
+            Self::ClaimLayeredOnWhenNoWindowsReachTheProvider => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P0,
+                FindingTarget::EngineCode,
+                "Layered reported ON while zero windows reached the provider.",
+                "armed_without_submissions is reported as a failed arming condition.",
+                "Refuse the ON claim without an armed-lane receipt and submissions.",
+            ),
+            Self::DropAcousticObservationWithoutReceipt => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P0,
+                FindingTarget::EngineCode,
+                "An acoustic observation vanished with no receipt naming the outcome.",
+                "Every admit answers exactly one MutationReceipt, kept or refused.",
+                "No silent drop: unanchored evidence stays visible and receipted.",
+            ),
+            Self::DeclareAPcmRangeThePayloadDoesNotCarry => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P0,
+                FindingTarget::EngineCode,
+                "A window declared [start, end) over PCM it did not carry.",
+                "declared range == carried samples; validate_pcm admits the window.",
+                "Split at gaps and epochs; never pad or truncate to fake the range.",
+            ),
+            Self::PresentMeanEnergyAsSpanIdentity => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P1,
+                FindingTarget::EngineCode,
+                "A report presented mean energy as if it identified the span.",
+                "Identity renders as the PCM 4-tuple; energy is a separate column.",
+                "Label energy as evidence on the PCM axis, not as identity.",
             ),
             Self::ClockLie => spec(
                 self,
@@ -513,25 +631,7 @@ impl QualityIssueKind {
                 FindingTarget::EngineCode,
                 "avg_logprob crossed the hallucination ceiling.",
                 "avg_logprob is above -1.0, or the text is short-whitelist speech.",
-                "Keep the quality gate; inspect the span before teaching lexicon.",
-            ),
-            Self::QualityGateDropped => spec(
-                self,
-                QualityIssueFamily::Confidence,
-                FindingSeverity::P1,
-                FindingTarget::EngineCode,
-                "A quality gate dropped text that existed.",
-                "The gate reason is missing, or the text was short-whitelist speech.",
-                "Attribute the drop. Empty ≠ silence ≠ failure.",
-            ),
-            Self::SileroDroppedTailHallucinations => spec(
-                self,
-                QualityIssueFamily::Confidence,
-                FindingSeverity::Note,
-                FindingTarget::EngineCode,
-                "Silero dropped Whisper segments that sat in trailing silence.",
-                "Those segments overlap speech frames.",
-                "This is a successful filter, not a Daily error.",
+                "Inspect the span before teaching lexicon; this score is diagnostic only.",
             ),
             Self::LocalFinalPassUnavailable => spec(
                 self,
@@ -601,7 +701,7 @@ impl QualityIssueKind {
                 QualityIssueFamily::Confidence,
                 FindingSeverity::P2,
                 FindingTarget::EngineCode,
-                "Whisper compression_ratio crossed the quality-gate threshold.",
+                "Whisper compression_ratio crossed the diagnostic threshold.",
                 "compression_ratio is below the engine threshold.",
                 "Pair with logprob. Do not teach lexicon from a compressed dump.",
             ),
@@ -930,13 +1030,9 @@ fn flag_findings(evidence: &TakeQualityEvidence) -> Vec<SupervisorFinding> {
 
 fn kind_for_flag(flag: &str) -> Option<QualityIssueKind> {
     let token = flag.trim();
-    if token.starts_with("silero_dropped_tail_hallucinations") {
-        return Some(QualityIssueKind::SileroDroppedTailHallucinations);
-    }
     match token {
         "very_low_speech" => Some(QualityIssueKind::VeryLowSpeech),
         "possible_hallucination_logprob" => Some(QualityIssueKind::PossibleHallucinationLogprob),
-        "quality_gate_dropped" => Some(QualityIssueKind::QualityGateDropped),
         "local_final_pass_unavailable" => Some(QualityIssueKind::LocalFinalPassUnavailable),
         "cloud_fallback_used" => Some(QualityIssueKind::CloudFallbackUsed),
         "streaming_preview_used_as_verdict" => {
@@ -1149,6 +1245,30 @@ mod tests {
         }
     }
 
+    /// Every `ENGINE_CONTRACT.forbidden` token has exactly one finding kind,
+    /// and no other kind wears a forbidden token as its wire id. Until this
+    /// map existed the supervisor could not even name 9 of the 16 forbiddens.
+    #[test]
+    fn every_mirror_forbidden_maps_to_exactly_one_finding_kind() {
+        use crate::quality::engine_contract::ENGINE_CONTRACT;
+        for token in ENGINE_CONTRACT.forbidden {
+            let matching: Vec<_> = QualityIssueKind::ALL
+                .iter()
+                .filter(|kind| kind.as_str() == *token)
+                .collect();
+            assert_eq!(
+                matching.len(),
+                1,
+                "mirror forbidden {token:?} must map to exactly one QualityIssueKind, found {matching:?}"
+            );
+            assert_eq!(
+                matching[0].spec().family,
+                QualityIssueFamily::EngineContract,
+                "{token:?} must sit in the engine_contract family"
+            );
+        }
+    }
+
     #[test]
     fn hq_and_cloud_columns_stay_proposals() {
         assert_eq!(
@@ -1298,15 +1418,11 @@ mod tests {
     fn confidence_flag_maps_to_typed_kind() {
         let report = classify_take_findings(&TakeQualityEvidence {
             daily_text: "ok".into(),
-            confidence_flags: vec![
-                "possible_hallucination_logprob".into(),
-                "silero_dropped_tail_hallucinations:2".into(),
-            ],
+            confidence_flags: vec!["possible_hallucination_logprob".into()],
             ..TakeQualityEvidence::default()
         });
         let kinds: HashSet<_> = report.findings.iter().map(|row| row.kind).collect();
         assert!(kinds.contains(&QualityIssueKind::PossibleHallucinationLogprob));
-        assert!(kinds.contains(&QualityIssueKind::SileroDroppedTailHallucinations));
     }
 
     #[test]

@@ -40,6 +40,7 @@ use codescribe_core::agent::{
     AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
     ToolDefinition,
 };
+use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane, keychain};
 use codescribe_core::llm::provider::{ProviderKind, capability_policy};
 
 /// Value of the mandatory `anthropic-version` header.
@@ -53,10 +54,6 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// against this same limit, which made the old 8192 doubly throttling.
 const DEFAULT_MAX_TOKENS: u32 = 128_000;
 
-/// How long to wait for response headers before giving up.
-const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
-/// How long a started stream may stall between chunks before giving up.
-const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
 /// Transport-level ceiling on the whole request; generous, since a long tool
 /// turn is legitimate and the finer timeouts above do the real policing.
 const STREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(3600);
@@ -71,8 +68,10 @@ pub struct AnthropicProvider {
     client: Client,
     /// Messages endpoint URL; validated before every send.
     endpoint: String,
-    /// Sent as `x-api-key`. Anthropic always authenticates, so this is required.
+    /// Fixed key used only by direct internal fixtures.
     api_key: String,
+    /// Keychain/env account resolved anew for every request in production.
+    api_key_account: Option<String>,
     /// Pinned API version sent with each request.
     anthropic_version: String,
     /// Model used when the caller leaves `StreamOptions::model` blank.
@@ -86,29 +85,33 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    /// Build from the resolved assistive lane (fresh settings → env →
-    /// Keychain). Anthropic always authenticates, so a missing key is a
-    /// readable error naming the exact account — the availability gate
-    /// reports the same reason before a send is ever attempted.
+    /// Build from the resolved assistive lane topology. Anthropic always
+    /// authenticates, but the key is resolved at send time so a resident
+    /// provider observes Settings saves and rotations immediately.
     pub fn from_lane(
-        lane: codescribe_core::llm::lane_truth::AssistiveLaneSnapshot,
+        lane: &RuntimeLlmLane,
+        request_timing: &RuntimeAiRequestTiming,
     ) -> Result<Self> {
-        let api_key = lane
-            .api_key
-            .context("Anthropic API key (assistive) is required. Set LLM_ANTHROPIC_API_KEY.")?;
-        let endpoint = lane.endpoint;
-        // Model comes from the shared assistive-lane setting; Settings supplies a
-        // Claude model when the assistive provider is Anthropic.
-        let default_model = lane.model;
+        let mut result = Self::from_configuration(
+            lane.endpoint().to_string(),
+            lane.model().to_string(),
+            String::new(),
+            request_timing,
+        )?;
+        result.api_key_account = Some(lane.credential().key_account().to_string());
+        Ok(result)
+    }
 
-        let initial_response_timeout = Duration::from_millis(parse_env_u64(
-            "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS",
-            DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS,
-        ));
-        let inter_chunk_timeout = Duration::from_millis(parse_env_u64(
-            "CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS",
-            DEFAULT_INTER_CHUNK_TIMEOUT_MS,
-        ));
+    /// Per-turn configuration supplied by an embedding application. Credentials
+    /// belong to that caller; this provider never reads a different app's keys.
+    pub fn from_configuration(
+        endpoint: String,
+        default_model: String,
+        api_key: String,
+        request_timing: &RuntimeAiRequestTiming,
+    ) -> Result<Self> {
+        let initial_response_timeout = request_timing.attempt_timeout();
+        let inter_chunk_timeout = request_timing.inter_chunk_timeout();
 
         let client = Client::builder()
             .timeout(STREAM_REQUEST_TIMEOUT)
@@ -126,6 +129,7 @@ impl AnthropicProvider {
             client,
             endpoint,
             api_key,
+            api_key_account: None,
             anthropic_version: ANTHROPIC_VERSION.to_string(),
             default_model,
             default_max_tokens: DEFAULT_MAX_TOKENS,
@@ -188,24 +192,26 @@ impl AgentProvider for AnthropicProvider {
         let (tx, rx) = mpsc::channel(256);
         let client = self.client.clone();
         let endpoint = self.endpoint.clone();
-        let api_key = self.api_key.clone();
-        let anthropic_version = self.anthropic_version.clone();
-        let initial_response_timeout = self.initial_response_timeout;
-        let inter_chunk_timeout = self.inter_chunk_timeout;
+        let api_key = self
+            .api_key_account
+            .as_deref()
+            .and_then(keychain::runtime_key)
+            .unwrap_or_else(|| self.api_key.clone());
+        anyhow::ensure!(
+            !api_key.trim().is_empty(),
+            "Anthropic API key (assistive) is required. Set LLM_ANTHROPIC_API_KEY."
+        );
+        let transport = AnthropicStreamTransport {
+            client,
+            endpoint,
+            api_key,
+            anthropic_version: self.anthropic_version.clone(),
+            initial_response_timeout: self.initial_response_timeout,
+            inter_chunk_timeout: self.inter_chunk_timeout,
+        };
 
         tokio::spawn(async move {
-            if let Err(error) = run_anthropic_stream(
-                client,
-                endpoint,
-                api_key,
-                anthropic_version,
-                initial_response_timeout,
-                inter_chunk_timeout,
-                body,
-                tx.clone(),
-            )
-            .await
-            {
+            if let Err(error) = run_anthropic_stream(transport, body, tx.clone()).await {
                 let _ = tx.send(AgentEvent::Error(error.to_string())).await;
             }
         });
@@ -213,31 +219,17 @@ impl AgentProvider for AnthropicProvider {
         Ok(rx)
     }
 
-    /// Wrap a tool outcome as a user-role message with one `ToolResult` block.
-    /// Anthropic requires tool results in user turns; this is the session glue.
     fn build_tool_result(
         &self,
         call_id: &str,
         content: Vec<ContentBlock>,
         is_error: bool,
     ) -> Message {
-        Message::new(
-            Role::User,
-            vec![ContentBlock::ToolResult {
-                tool_use_id: call_id.to_string(),
-                content,
-                is_error,
-            }],
-        )
+        super::user_tool_result(call_id, content, is_error)
     }
 
-    /// Build an in-memory image content block from raw bytes and a media type.
-    /// Empty bytes are still accepted here; the request builder skips empty images.
     fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
-        ContentBlock::Image {
-            data: data.to_vec(),
-            media_type: media_type.to_string(),
-        }
+        super::image_block(data, media_type)
     }
 
     /// Expose initial-response and inter-chunk timeouts for the session harness.
@@ -517,6 +509,20 @@ fn role_str(role: Role) -> &'static str {
 
 // allow(too_many_arguments): task entry point for one Anthropic SSE stream; all
 // values are owned moves into the spawned task.
+/// Everything one spawned Anthropic SSE turn owns about its transport.
+///
+/// Bundled because the task entry point took eight positional arguments; the
+/// six transport values always travel together and are moved into the task as
+/// a unit, so a struct is the honest shape.
+struct AnthropicStreamTransport {
+    client: Client,
+    endpoint: String,
+    api_key: String,
+    anthropic_version: String,
+    initial_response_timeout: Duration,
+    inter_chunk_timeout: Duration,
+}
+
 /// Drive one Messages SSE stream, emitting [`AgentEvent`]s onto `tx`.
 ///
 /// Reads the byte stream line by line, keying off each `data:` payload's own
@@ -531,17 +537,19 @@ fn role_str(role: Role) -> &'static str {
 /// # Errors
 /// Returns an error for an invalid endpoint, a failed or non-2xx request, a
 /// read failure, or any of the three timeouts firing.
-#[allow(clippy::too_many_arguments)]
 async fn run_anthropic_stream(
-    client: Client,
-    endpoint: String,
-    api_key: String,
-    anthropic_version: String,
-    initial_response_timeout: Duration,
-    inter_chunk_timeout: Duration,
+    transport: AnthropicStreamTransport,
     request_body: Value,
     tx: mpsc::Sender<AgentEvent>,
 ) -> Result<()> {
+    let AnthropicStreamTransport {
+        client,
+        endpoint,
+        api_key,
+        anthropic_version,
+        initial_response_timeout,
+        inter_chunk_timeout,
+    } = transport;
     let endpoint_url =
         validate_anthropic_endpoint(&endpoint).context("Invalid Anthropic endpoint URL")?;
     let request_builder = client
@@ -930,14 +938,6 @@ fn validate_anthropic_endpoint(endpoint: &str) -> Result<reqwest::Url> {
     Ok(url)
 }
 
-/// Read a `u64` env override, falling back on absent or unparseable values.
-fn parse_env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(default)
-}
-
 // ── SSE wire types ───────────────────────────────────────────────────────────
 
 /// One decoded SSE `data:` payload.
@@ -1028,6 +1028,8 @@ mod tests {
     use codescribe_core::agent::AgentAssetStore;
     use serde_json::json;
     use std::time::Duration;
+
+    use codescribe_core::test_isolation::ScopedEnv;
 
     /// Test helper: one-block text message with the given role.
     fn text_message(role: Role, text: &str) -> Message {
@@ -1298,12 +1300,15 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     /// Tool-result image assets load and encode as base64 inside the result content.
     fn tool_result_carries_image_asset_as_base64() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         let asset = AgentAssetStore::save_image(b"png bytes", "image/png")
             .expect("image asset should save");
-        let path = asset.path.clone();
         let message = Message::new(
             Role::User,
             vec![ContentBlock::ToolResult {
@@ -1315,7 +1320,6 @@ mod tests {
         let blocks = message_content_blocks(&message).unwrap();
         assert_eq!(blocks[0]["content"][0]["type"], "image");
         assert_eq!(blocks[0]["content"][0]["source"]["type"], "base64");
-        std::fs::remove_file(path).ok();
     }
 
     #[test]
@@ -1347,15 +1351,18 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     /// ImageAsset paths are read from disk when the request body is built, not earlier.
     fn request_body_loads_image_asset_from_disk_at_request_time() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         // D8: an ImageAsset (screenshot pipeline, C9) rides through
         // build_request_body as base64 read from disk at request time — the
         // asset reference itself never reaches the wire.
         let asset = AgentAssetStore::save_image(b"asset bytes on disk", "image/png")
             .expect("image asset should save");
-        let path = asset.path.clone();
         let messages = vec![Message::new(
             Role::User,
             vec![
@@ -1377,13 +1384,16 @@ mod tests {
             content[1]["source"]["data"].as_str().unwrap(),
             BASE64.encode(b"asset bytes on disk")
         );
-        std::fs::remove_file(path).ok();
     }
 
     #[test]
+    #[serial_test::serial]
     /// Persisted thread images rehydrate as assets and still enter the next-turn prompt.
     fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         // Turn 2 on a restored thread: an inline composer image persisted via
         // the thread store must come back as a disk-backed asset and still
         // reach the request payload instead of being skipped as byteless.
@@ -1404,10 +1414,6 @@ mod tests {
             blocks[0]["source"]["data"].as_str().unwrap(),
             BASE64.encode(&image_bytes)
         );
-
-        if let ContentBlock::ImageAsset(asset) = &restored.content[0] {
-            std::fs::remove_file(&asset.path).ok();
-        }
     }
 
     #[test]
@@ -1426,12 +1432,53 @@ mod tests {
             client: Client::new(),
             endpoint: endpoint.to_string(),
             api_key: "test-key".to_string(),
+            api_key_account: None,
             anthropic_version: ANTHROPIC_VERSION.to_string(),
             default_model: "claude-opus-4-8".to_string(),
             default_max_tokens: 1024,
             initial_response_timeout: Duration::from_secs(2),
             inter_chunk_timeout: Duration::from_secs(2),
         }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn agent_provider_fetches_the_anthropic_key_after_construction_before_sending() {
+        const TEST_KEY_ACCOUNT: &str = "CODESCRIBE_TEST_ANTHROPIC_REQUEST_KEY";
+        let mut server = mockito::Server::new_async().await;
+        let endpoint = format!("{}/v1/messages", server.url());
+        let mut env = ScopedEnv::new();
+        env.remove(TEST_KEY_ACCOUNT);
+        let mut provider = provider_for(&endpoint);
+        provider.api_key.clear();
+        provider.api_key_account = Some(TEST_KEY_ACCOUNT.to_string());
+
+        env.set(TEST_KEY_ACCOUNT, "synthetic-anthropic-agent-key");
+        let body = [
+            r#"data: {"type":"message_start","message":{"id":"msg_live_key"}}"#,
+            "",
+            r#"data: {"type":"message_stop"}"#,
+            "",
+        ]
+        .join("\n");
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_header("x-api-key", "synthetic-anthropic-agent-key")
+            .match_header("anthropic-version", ANTHROPIC_VERSION)
+            .expect(1)
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let messages = vec![text_message(Role::User, "request-time Anthropic key")];
+        let mut rx = provider
+            .stream(&messages, &[], &StreamOptions::default())
+            .await
+            .expect("Anthropic agent request should start");
+        while rx.recv().await.is_some() {}
+        mock.assert_async().await;
     }
 
     #[tokio::test]

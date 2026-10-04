@@ -84,7 +84,7 @@ final class AgentThreadTitleTests: XCTestCase {
     }
   }
 
-  private final class TitleThreadsProvider: ChatThreadsProviding {
+  private final class TitleThreadsProvider: ThreadsFixture {
     enum Event: Equatable {
       case list
       case generated(String)
@@ -117,9 +117,6 @@ final class AgentThreadTitleTests: XCTestCase {
       return [thread]
     }
 
-    func searchThreads(query: String) -> [ChatThread] { listThreads() }
-    func loadMessages(backendId: String) -> [ChatMessage] { [] }
-
     func deleteThread(backendId: String) -> Bool {
       events.append(.deleted)
       guard threadExists else { return false }
@@ -144,7 +141,6 @@ final class AgentThreadTitleTests: XCTestCase {
       return true
     }
 
-    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
     func generateThreadId() -> String { backendID }
   }
 

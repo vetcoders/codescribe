@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
@@ -69,6 +71,108 @@ final class ChatLayoutPolicyTests: XCTestCase {
 
   func testDefaultsKeyIsStableForAppStorage() {
     XCTAssertEqual(ChatLayoutPolicy.defaultsKey, "codescribe.chatWidthMode")
+  }
+
+  // MARK: - Agent window floor (chrome density)
+
+  func testAgentWindowFloorFitsExpandedRailAndReadableColumn() {
+    XCTAssertEqual(AgentWindowMetrics.minWidth, 640)
+    XCTAssertEqual(AgentWindowMetrics.minHeight, 440)
+    let detailAtFloor =
+      AgentWindowMetrics.minWidth - AgentSidebarMetrics.minimumWidth
+    XCTAssertGreaterThanOrEqual(
+      detailAtFloor,
+      ChatLayoutPolicy.minimumReadable,
+      "640pt floor must still fit the expanded rail min plus a readable detail column"
+    )
+    XCTAssertGreaterThan(
+      AgentWindowMetrics.minWidth,
+      AgentSidebarMetrics.maximumWidth,
+      "window floor must stay wider than a fully dragged rail so native collapse is not the only way to keep detail visible"
+    )
+  }
+
+  func testSidebarHasReadableFloorAndBoundedExpansion() {
+    XCTAssertEqual(AgentSidebarMetrics.minimumWidth, 267)
+    XCTAssertEqual(AgentSidebarMetrics.maximumWidth, 360)
+  }
+
+  @MainActor
+  func testNativeSidebarItemEnforcesBoundsAfterWindowAttachment() throws {
+    final class LayoutEngine: ChatEngineFixture {}
+    let store = AgentChatStore(
+      engine: LayoutEngine(),
+      threads: [
+        ChatThread(
+          title: String(repeating: "Long thread title ", count: 8), meta: "now", model: "gpt-6-sol")
+      ])
+    let host = NSHostingController(rootView: AgentChatView(store: store))
+    let window = NSWindow(contentViewController: host)
+    window.setContentSize(NSSize(width: 1120, height: 720))
+    window.orderFrontRegardless()
+    defer { window.orderOut(nil) }
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    func find(_ view: NSView) -> NSSplitViewController? {
+      if let split = view as? NSSplitView { return split.delegate as? NSSplitViewController }
+      return view.subviews.lazy.compactMap { find($0) }.first
+    }
+    XCTAssertEqual(window.title, "Agent — gpt-6-sol")
+    let split = try XCTUnwrap(find(host.view), "Native split must be reachable after attachment")
+    let item = try XCTUnwrap(split.splitViewItems.first(where: { $0.behavior == .sidebar }))
+    XCTAssertEqual(item.minimumThickness, 267)
+    XCTAssertEqual(item.maximumThickness, 360)
+
+    store.threads[0].title = "Short"
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    XCTAssertEqual(item.maximumThickness, 267)
+    XCTAssertLessThanOrEqual(item.viewController.view.frame.width, 268)
+    let shortWidth = item.viewController.view.frame.width
+    store.threads[0].title = "Moderately descriptive thread title"
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    XCTAssertGreaterThan(item.maximumThickness, 267)
+    XCTAssertLessThan(
+      item.maximumThickness, 360,
+      "Intrinsic measurement must produce intermediate widths, not only floor/ceiling buckets")
+    store.threads[0].title = String(repeating: "Long thread title ", count: 8)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    XCTAssertEqual(item.maximumThickness, 360)
+    XCTAssertEqual(
+      item.viewController.view.frame.width, shortWidth, accuracy: 1,
+      "A wider content cap must not expand the user's divider")
+    store.threads[0].title = "Short again"
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    XCTAssertEqual(item.maximumThickness, 267)
+    store.threads[0].model = String(repeating: "model-name-", count: 10)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    XCTAssertEqual(item.maximumThickness, 360, "Metadata participates in intrinsic row width")
+    let retainedThreads = store.threads
+    store.threads = []
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    XCTAssertEqual(
+      item.maximumThickness, 360, "Transient empty search results must not reset the cap")
+    store.threads = retainedThreads
+    store.threads[0].title = String(repeating: "Long thread title ", count: 8)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    for windowWidth in [1120.0, 640.0, 1800.0, 800.0] {
+      window.setContentSize(NSSize(width: windowWidth, height: 720))
+      for proposed in [1600.0, 50.0, 300.0, 900.0, 0.0] {
+        split.splitView.setPosition(proposed, ofDividerAt: 0)
+        split.splitView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let width = item.viewController.view.frame.width
+        XCTAssertFalse(item.isCollapsed)
+        XCTAssertGreaterThanOrEqual(width, 266)
+        XCTAssertLessThanOrEqual(width, 361)
+        XCTAssertGreaterThanOrEqual(split.splitViewItems[1].viewController.view.frame.width, 319)
+      }
+      item.isCollapsed = true
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      XCTAssertTrue(item.isCollapsed)
+      item.isCollapsed = false
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      XCTAssertGreaterThanOrEqual(item.viewController.view.frame.width, 266)
+      XCTAssertLessThanOrEqual(item.viewController.view.frame.width, 361)
+    }
   }
 
   // MARK: - R1 window-collapse clamps

@@ -329,6 +329,7 @@ fn servers_map_mut(root: &mut Value) -> Result<&mut Map<String, Value>> {
 /// Atomic write: serialize pretty, write a sibling temp, fsync, rename over the
 /// target. Best-effort cleanup of the temp on failure.
 fn write_atomic(path: &Path, value: &Value) -> Result<()> {
+    crate::test_isolation::assert_test_write_allowed(path);
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
     if let Some(parent) = parent {
         std::fs::create_dir_all(parent)

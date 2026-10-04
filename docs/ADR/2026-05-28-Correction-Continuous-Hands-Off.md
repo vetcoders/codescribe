@@ -1,6 +1,12 @@
 # ADR 2026-05-28 — Correction: Ciągły Hands-Off Dictation + Warstwowe Korekty (Sekwencyjnie)
 
-> **Status:** PROPOSED
+> **Status: SUPERSEDED IN FULL (2026-08-22).** Ten dokument zachowuje
+> historyczną kolejność i pięciowarstwowy inwentarz, ale nie jest aktywnym
+> kontraktem implementacyjnym. Obowiązują dokładnie cztery warstwy maszynowe:
+> L0 Apple, L1 Whisper, L2 Lexicon + Light+, L3 istniejący formatter Responses.
+> Silero jest ortogonalnym źródłem VAD/czasu, Final BAM nie ma producenta, a
+> `SessionFinalised` wyłącznie zamyka cykl życia. Aktualna władza:
+> [`THE_ENGINE_CONTRACT.md`](../THE_ENGINE_CONTRACT.md).
 > **Koryguje:** ADR 2026-05-26 — Warstwowy, inkrementalny pipeline transkrypcji
 > **Priorytet:** Najpierw przywrócić ciągłość transkryptu w hands-off, dopiero potem nakładać zaawansowane warstwy.
 
@@ -125,7 +131,7 @@ Po zrobieniu tego porządku (najpierw ciągłość, potem korekty) dostajemy:
 
 **Data:** 2026-05-28
 **Autor:** Operator
-**Status:** PROPOSED — wymaga implementacji w ścisłej kolejności z gate'em po Fazie 1.
+**Status historyczny:** PROPOSED — superseded 2026-08-22; nie uruchamia prac implementacyjnych.
 
 ## Revision 2026-06-11: Format is in-overlay
 

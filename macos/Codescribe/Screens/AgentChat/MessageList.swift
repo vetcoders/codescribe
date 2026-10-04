@@ -21,9 +21,9 @@ enum ChatWidthMode: String, CaseIterable, Identifiable {
 
   var label: String {
     switch self {
-    case .comfortable: return "Comfortable"
-    case .wide: return "Wide"
-    case .full: return "Full"
+    case .comfortable: return String(localized: "Comfortable", comment: "Chat width")
+    case .wide: return String(localized: "Wide", comment: "Chat width")
+    case .full: return String(localized: "Full", comment: "Chat width: the whole window")
     }
   }
 
@@ -193,6 +193,10 @@ struct MessageList: View {
   let messages: [ChatMessage]
   /// Flips a bubble between raw mono and rich markdown. State lives in the
   /// store (per-message `renderMode`), never in this view.
+  var speechUnavailableReason: String? = String(localized: "Speech engine is unavailable.")
+  var speakingMessageID: UUID?
+  var onSpeak: (ChatMessage) -> Void = { _ in }
+  var onStopSpeaking: () -> Void = {}
   var onToggleRenderMode: (UUID) -> Void = { _ in }
 
   /// Follow-tail with pause-on-scroll (the overlay transcript pattern): auto-scroll
@@ -237,6 +241,10 @@ struct MessageList: View {
               ShowEarlierButton(hiddenCount: hiddenTurnCount) {
                 visibleTurnBudget += Self.turnWindow
               }
+            }
+            if messages.isEmpty {
+              AgentEmptyThread()
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             ForEach(visibleMessages) { message in
               turn(message, containerWidth: containerWidth, mode: widthMode)
@@ -289,7 +297,7 @@ struct MessageList: View {
           _ = followState.handle(.userViewportChanged(isAtLiveEdge: isAtLiveEdge))
         }
         .onChange(of: Self.tailSignature(messages)) { _, _ in
-          perform(followState.handle(.contentChanged), with: proxy)
+          perform(followState.handle(.contentChanged), with: proxy, animated: false)
         }
         .onChange(of: messages.last?.isStreaming == true) { wasStreaming, isStreaming in
           if wasStreaming, !isStreaming {
@@ -386,9 +394,36 @@ struct MessageList: View {
         message: message,
         containerWidth: containerWidth,
         mode: mode,
-        onToggleRenderMode: onToggleRenderMode
+        onToggleRenderMode: onToggleRenderMode,
+        speechUnavailableReason: speechUnavailableReason,
+        speakingMessageID: speakingMessageID,
+        onSpeak: onSpeak,
+        onStopSpeaking: onStopSpeaking
       )
     }
+  }
+}
+
+private let agentEmptyThreadTitle = String(
+  localized: "New thread", comment: "Headline of a conversation with no turns yet")
+private let agentEmptyThreadDetail = String(
+  localized: "Write in the composer, or dictate. The reply stays in this thread.")
+
+/// Quiet first screen for a thread that has no turns yet.
+private struct AgentEmptyThread: View {
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(agentEmptyThreadTitle)
+        .font(CSFont.ui(15, .semibold))
+        .foregroundStyle(Color.primary)
+      Text(agentEmptyThreadDetail)
+        .font(CSFont.ui(13, .regular))
+        .foregroundStyle(Color.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .frame(maxWidth: 420, alignment: .leading)
+    .padding(.top, 28)
+    .accessibilityElement(children: .combine)
   }
 }
 
@@ -406,17 +441,17 @@ private struct ShowEarlierButton: View {
       HStack(spacing: 6) {
         CSIconView(
           icon: .chevronRight, size: 8, weight: .semibold,
-          color: CSColor.textFaintAlt)
-        Text("Show earlier · \(hiddenCount) turn\(hiddenCount == 1 ? "" : "s")")
+          color: CSColor.textTertiary)
+        Text("Show earlier · \(hiddenCount) turns")
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(hovering ? CSColor.textBody : CSColor.textFaintAlt)
+          .foregroundStyle(hovering ? Color.primary : CSColor.textTertiary)
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 6)
-      .background(CSColor.surfaceRaised(0.04))
+      .background(Color.primary.opacity(0.04))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
       .contentShape(Rectangle())
@@ -442,15 +477,14 @@ private struct JumpToCurrentButton: View {
           color: CSColor.chromeAccent)
         Text("Current")
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(hovering ? CSColor.textHigh : CSColor.textBody)
+          .foregroundStyle(hovering ? Color.primary : Color.secondary)
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 6)
-      .background(CSColor.glassUnder.opacity(0.92))
-      .background(CSColor.surfaceRaised(0.05))
+      .background(CSColor.controlFill)
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
     }
@@ -473,7 +507,8 @@ private struct ChatBottomKey: PreferenceKey {
 /// macOS 14-compatible user-intent detector. SwiftUI's geometry preference
 /// reports position but cannot distinguish a wheel/trackpad/scrollbar gesture
 /// from `ScrollViewProxy.scrollTo`; AppKit live-scroll notifications can.
-private struct ChatLiveScrollObserver: NSViewRepresentable {
+@MainActor
+struct ChatLiveScrollObserver: NSViewRepresentable {
   let onEvent: (StreamScrollFollowState.Event) -> Void
 
   func makeCoordinator() -> Coordinator {
@@ -497,6 +532,7 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
     coordinator.detach()
   }
 
+  @MainActor
   final class AttachmentView: NSView {
     var onAttach: ((NSScrollView) -> Void)?
 
@@ -506,17 +542,20 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
     }
 
     func attachWhenReady() {
-      DispatchQueue.main.async { [weak self] in
+      Task { @MainActor [weak self] in
+        await Task.yield()
         guard let self, let scrollView = enclosingScrollView else { return }
         onAttach?(scrollView)
       }
     }
   }
 
+  @MainActor
   final class Coordinator {
     var onEvent: (StreamScrollFollowState.Event) -> Void
     private weak var scrollView: NSScrollView?
-    private var observers: [NSObjectProtocol] = []
+    private var scrollObservers: [NSObjectProtocol] = []
+    private var liveScrollInProgress = false
 
     init(onEvent: @escaping (StreamScrollFollowState.Event) -> Void) {
       self.onEvent = onEvent
@@ -527,36 +566,47 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
       detach()
       self.scrollView = scrollView
       let center = NotificationCenter.default
-      observers = [
+      scrollObservers = [
         center.addObserver(
           forName: NSScrollView.willStartLiveScrollNotification,
           object: scrollView,
-          queue: .main
+          queue: nil
         ) { [weak self] _ in
-          self?.onEvent(.userScrollBegan)
+          MainActor.assumeIsolated {
+            guard let self else { return }
+            self.liveScrollInProgress = true
+            self.onEvent(.userScrollBegan)
+          }
         },
         center.addObserver(
           forName: NSScrollView.didLiveScrollNotification,
           object: scrollView,
-          queue: .main
+          queue: nil
         ) { [weak self] _ in
-          self?.reportViewport(asScrollEnd: true)
+          MainActor.assumeIsolated {
+            guard let self else { return }
+            self.reportViewport(asScrollEnd: !self.liveScrollInProgress)
+          }
         },
         center.addObserver(
           forName: NSScrollView.didEndLiveScrollNotification,
           object: scrollView,
-          queue: .main
+          queue: nil
         ) { [weak self] _ in
-          self?.reportViewport()
+          MainActor.assumeIsolated {
+            guard let self else { return }
+            self.liveScrollInProgress = false
+            self.reportViewport(asScrollEnd: true)
+          }
         },
       ]
     }
 
     func detach() {
-      let center = NotificationCenter.default
-      observers.forEach(center.removeObserver)
-      observers.removeAll()
+      for observer in scrollObservers { NotificationCenter.default.removeObserver(observer) }
+      scrollObservers.removeAll()
       scrollView = nil
+      liveScrollInProgress = false
     }
 
     private func reportViewport(asScrollEnd: Bool = false) {
@@ -568,10 +618,6 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
         asScrollEnd
           ? .userScrollEnded(isAtLiveEdge: isAtLiveEdge)
           : .userViewportChanged(isAtLiveEdge: isAtLiveEdge))
-    }
-
-    deinit {
-      detach()
     }
   }
 }
@@ -633,7 +679,7 @@ private struct YouTurn: View {
       // Calm surface, not an alarm plate (U17): the bubble sits on the
       // shared raised surface; terracotta stays on ACCENTS only — the
       // timestamp above and this thin border.
-      .background(CSColor.surfaceRaised(0.06))
+      .background(Color.primary.opacity(0.06))
       .overlay(
         UnevenRoundedRectangle(
           topLeadingRadius: 14, bottomLeadingRadius: 14,
@@ -690,15 +736,15 @@ private struct ContextChip: View {
             icon: expanded ? .chevronDown : .chevronRight,
             size: 8,
             weight: .semibold,
-            color: CSColor.textFaintAlt
+            color: CSColor.textTertiary
           )
           Text("context")
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textFaintAlt)
+            .foregroundStyle(CSColor.textTertiary)
         }
         .contentShape(Rectangle())
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .help("Selection and app captured with this voice turn")
 
       if expanded {
@@ -706,7 +752,7 @@ private struct ContextChip: View {
           if let app {
             Text("app · \(app)")
               .font(CSFont.mono(10.5, .medium))
-              .foregroundStyle(CSColor.textMuted)
+              .foregroundStyle(Color.secondary)
           }
           if let selection {
             // Huge pasted selections (legacy assistive wires) must
@@ -717,7 +763,7 @@ private struct ContextChip: View {
                 OversizedMessageBody(fullText: selection) { head in
                   Text(head)
                     .font(CSFont.mono(10.5))
-                    .foregroundStyle(CSColor.textBodyAlt)
+                    .foregroundStyle(Color.primary)
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -725,7 +771,7 @@ private struct ContextChip: View {
               } else {
                 Text(selection)
                   .font(CSFont.mono(10.5))
-                  .foregroundStyle(CSColor.textBodyAlt)
+                  .foregroundStyle(Color.primary)
                   .textSelection(.enabled)
                   .lineSpacing(3)
                   .fixedSize(horizontal: false, vertical: true)
@@ -733,7 +779,7 @@ private struct ContextChip: View {
               }
             }
             .padding(8)
-            .background(CSColor.surfaceRaised(0.05))
+            .background(Color.primary.opacity(0.05))
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
             .clipped()
           }
@@ -772,24 +818,25 @@ private struct AttachmentChip: View {
         }
         Text(attachment.name)
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.textBodyAlt)
+          .foregroundStyle(Color.primary)
           .lineLimit(1)
           .truncationMode(.middle)
           .frame(maxWidth: 160)
       }
       .padding(.horizontal, 9)
       .padding(.vertical, 5)
-      .background(CSColor.surfaceRaised(0.05))
+      .background(Color.primary.opacity(0.05))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
     }
     .csFocusRing(cornerRadius: CSRadius.pill)
     .help(
       attachment.url == nil
-        ? "Preview attachment (original file may be missing)" : "Preview attachment"
+        ? String(localized: "Preview attachment (original file may be missing)")
+        : String(localized: "Preview attachment")
     )
     .onAppear {
       if thumbnail == nil, let url = attachment.url {
@@ -813,7 +860,8 @@ struct AttachmentPreviewSheet: View {
   @State private var zoom: CGFloat = 1.0
 
   private var pathText: String {
-    attachment.url?.path ?? "(no source path — restored turn keeps name only)"
+    attachment.url?.path
+      ?? String(localized: "(no source path — restored turn keeps name only)")
   }
 
   private var fileExists: Bool {
@@ -827,11 +875,11 @@ struct AttachmentPreviewSheet: View {
         VStack(alignment: .leading, spacing: 4) {
           Text(attachment.name)
             .font(CSFont.mono(13, .semibold))
-            .foregroundStyle(CSColor.textBodyAlt)
+            .foregroundStyle(Color.primary)
             .textSelection(.enabled)
           Text(attachment.type)
             .font(CSFont.mono(10.5, .medium))
-            .foregroundStyle(CSColor.textFaintAlt)
+            .foregroundStyle(CSColor.textTertiary)
         }
         Spacer(minLength: 8)
         Button("Close") { dismiss() }
@@ -851,35 +899,39 @@ struct AttachmentPreviewSheet: View {
               .frame(maxWidth: .infinity, maxHeight: .infinity)
           }
           .frame(minHeight: 280, maxHeight: 480)
-          .background(CSColor.surfaceRaised(0.04))
+          .background(Color.primary.opacity(0.04))
           .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
 
           HStack(spacing: 10) {
             Text("Zoom")
               .font(CSFont.mono(10.5, .medium))
-              .foregroundStyle(CSColor.textFaintAlt)
+              .foregroundStyle(CSColor.textTertiary)
             Slider(value: $zoom, in: 0.5...3.0, step: 0.1)
             Text(String(format: "%.0f%%", zoom * 100))
               .font(CSFont.mono(10.5, .medium))
-              .foregroundStyle(CSColor.textMuted)
+              .foregroundStyle(Color.secondary)
               .frame(width: 44, alignment: .trailing)
           }
         } else if attachment.url == nil {
           missingBanner(
-            title: "Original file not available",
-            detail:
-              "This turn was restored from history. Codescribe kept the filename but not the bytes or path on disk."
+            title: String(localized: "Original file not available"),
+            detail: String(
+              localized:
+                "This turn was restored from history. Codescribe kept the filename but not the bytes or path on disk."
+            )
           )
         } else if !fileExists {
           missingBanner(
-            title: "File missing on disk",
+            title: String(localized: "File missing on disk"),
             detail: pathText
           )
         } else {
           missingBanner(
-            title: "No inline preview",
-            detail:
-              "This type is not rendered in-app. Use Open to hand it to the system default app."
+            title: String(localized: "No inline preview"),
+            detail: String(
+              localized:
+                "This type is not rendered in-app. Use Open to hand it to the system default app."
+            )
           )
         }
       }
@@ -887,17 +939,17 @@ struct AttachmentPreviewSheet: View {
       VStack(alignment: .leading, spacing: 4) {
         Text("Path")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
         Text(pathText)
           .font(CSFont.mono(10.5))
-          .foregroundStyle(CSColor.textBodyAlt)
+          .foregroundStyle(Color.primary)
           .textSelection(.enabled)
           .lineLimit(3)
           .truncationMode(.middle)
       }
       .padding(10)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(CSColor.surfaceRaised(0.04))
+      .background(Color.primary.opacity(0.04))
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
 
       HStack(spacing: 10) {
@@ -944,15 +996,15 @@ struct AttachmentPreviewSheet: View {
     VStack(alignment: .leading, spacing: 8) {
       Text(title)
         .font(CSFont.mono(12, .semibold))
-        .foregroundStyle(CSColor.terracottaLight)
+        .foregroundStyle(CSColor.terracotta)
       Text(detail)
         .font(CSFont.mono(11))
-        .foregroundStyle(CSColor.textMuted)
+        .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .padding(14)
+    .padding(CSSpace.card)
     .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
-    .background(CSColor.surfaceRaised(0.04))
+    .background(Color.primary.opacity(0.04))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(CSColor.terracotta.opacity(0.22), lineWidth: 1)
@@ -1022,15 +1074,24 @@ private struct ToolLineRow: View {
 
   private var isRunning: Bool { line.state == .running }
   private var isQuiet: Bool { line.state == .unknown || line.state == .cancelled }
+  /// The run shown next to the verb: one string, so the running marker is not
+  /// a localized suffix glued onto a localized prefix.
+  private var detailRun: String {
+    isRunning
+      ? String(
+        localized: "\(line.detail) running...",
+        comment: "Tool activity row: the tool name while its call runs")
+      : line.detail
+  }
   private var canInspect: Bool { line.hasInspectPayload }
   private var rowColor: Color {
     switch line.state {
     case .running:
       return CSColor.amber
     case .failed:
-      return CSColor.terracottaLight
+      return CSColor.terracotta
     case .cancelled, .unknown:
-      return CSColor.textFaintAlt
+      return CSColor.textTertiary
     case .succeeded:
       return CSColor.oliveLight
     }
@@ -1045,9 +1106,9 @@ private struct ToolLineRow: View {
           if isRunning {
             PulseDot()
           }
-          (Text(line.verb).foregroundColor(rowColor)
-            + Text(" \(line.detail)\(isRunning ? " running..." : "")").foregroundColor(
-              isQuiet ? CSColor.textFaintAlt : ChatPalette.toolBody))
+          (Text(verbatim: line.verbLabel).foregroundStyle(rowColor)
+            + Text(verbatim: " " + detailRun).foregroundStyle(
+              isQuiet ? CSColor.textTertiary : ChatPalette.toolBody))
             .font(CSFont.mono(11.5, .medium))
             .lineSpacing(4)
             .textSelection(.enabled)
@@ -1056,7 +1117,7 @@ private struct ToolLineRow: View {
           {
             Text(duration)
               .font(CSFont.mono(10, .medium))
-              .foregroundStyle(CSColor.textFaintAlt)
+              .foregroundStyle(CSColor.textTertiary)
           }
           if canInspect {
             CSIconView(
@@ -1069,7 +1130,7 @@ private struct ToolLineRow: View {
         }
         .contentShape(Rectangle())
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .disabled(!canInspect)
 
       if canInspect, showInspect {
@@ -1087,22 +1148,30 @@ private struct ToolInspectPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
-      inspectRow(label: "status", value: ToolInspectPresentation.statusLabel(for: line.state))
+      inspectRow(
+        label: String(localized: "status", comment: "Tool inspect field"),
+        value: ToolInspectPresentation.statusDisplayLabel(for: line.state))
       if let duration = ToolInspectPresentation.durationLabel(ms: line.durationMs) {
-        inspectRow(label: "duration", value: duration)
+        inspectRow(
+          label: String(localized: "duration", comment: "Tool inspect field"), value: duration)
       }
       if let callID = line.callID, !callID.isEmpty {
-        inspectRow(label: "call id", value: callID)
+        inspectRow(
+          label: String(localized: "call id", comment: "Tool inspect field"), value: callID)
       }
       if let reason = line.reason, !reason.isEmpty {
         VStack(alignment: .leading, spacing: 2) {
-          Text(line.state == .failed ? "error" : "result")
-            .font(CSFont.mono(9.5, .semibold))
-            .foregroundStyle(CSColor.textFaintAlt)
-            .textCase(.uppercase)
+          Text(
+            line.state == .failed
+              ? String(localized: "error", comment: "Tool inspect section")
+              : String(localized: "result", comment: "Tool inspect section")
+          )
+          .font(CSFont.mono(9.5, .semibold))
+          .foregroundStyle(CSColor.textTertiary)
+          .textCase(.uppercase)
           Text(reason)
             .font(CSFont.mono(10.5, .medium))
-            .foregroundStyle(line.state == .failed ? CSColor.terracottaLight : CSColor.textBodyAlt)
+            .foregroundStyle(line.state == .failed ? CSColor.terracotta : Color.primary)
             .textSelection(.enabled)
             .lineSpacing(2)
             .fixedSize(horizontal: false, vertical: true)
@@ -1110,7 +1179,7 @@ private struct ToolInspectPanel: View {
       } else {
         Text("No result summary was stored for this call.")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
       }
       // Honest residual: full request/response bodies and artifact store
       // links need bridge event fields beyond the current ToolLine contract.
@@ -1118,7 +1187,7 @@ private struct ToolInspectPanel: View {
         CopyMessageButton(text: line.technicalCopyText)
         Text("request/response bodies not on this event")
           .font(CSFont.mono(9.5, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
           .lineLimit(1)
       }
       .padding(.top, 2)
@@ -1128,11 +1197,11 @@ private struct ToolInspectPanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.04))
+        .fill(Color.primary.opacity(0.04))
     )
     .overlay(
       RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.06), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
     )
   }
 
@@ -1140,12 +1209,12 @@ private struct ToolInspectPanel: View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       Text(label)
         .font(CSFont.mono(9.5, .semibold))
-        .foregroundStyle(CSColor.textFaintAlt)
+        .foregroundStyle(CSColor.textTertiary)
         .textCase(.uppercase)
         .frame(width: 64, alignment: .leading)
       Text(value)
         .font(CSFont.mono(10.5, .medium))
-        .foregroundStyle(CSColor.textBodyAlt)
+        .foregroundStyle(Color.primary)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1168,7 +1237,7 @@ private struct ToolTurn: View {
       HStack(spacing: 8) {
         Text("Tool activity · \(message.timestamp)")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
         CopyMessageButton(text: copyText)
         Spacer(minLength: 0)
       }
@@ -1189,7 +1258,7 @@ private struct ToolTurn: View {
             icon: hasRunning ? .more : hasCancelled ? .stop : .success,
             size: 11,
             color: hasRunning
-              ? CSColor.amber : hasCancelled ? CSColor.textFaintAlt : CSColor.oliveLight
+              ? CSColor.amber : hasCancelled ? CSColor.textTertiary : CSColor.oliveLight
           )
           Text(message.toolTitle)
             .font(CSFont.mono(11, .semibold))
@@ -1201,10 +1270,10 @@ private struct ToolTurn: View {
         .contentShape(Rectangle())
       }
       .disclosureGroupStyle(FlatDisclosureStyle())
-      .background(CSColor.surfaceRaised(0.025))
+      .background(Color.primary.opacity(0.025))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
       .clipped()
@@ -1232,10 +1301,10 @@ private struct FlatDisclosureStyle: DisclosureGroupStyle {
       } label: {
         configuration.label
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
 
       if configuration.isExpanded {
-        Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
+        Rectangle().fill(Color.primary.opacity(0.05)).frame(height: 1)
         configuration.content
       }
     }
@@ -1249,13 +1318,38 @@ private struct AssistantTurn: View {
   let containerWidth: CGFloat
   let mode: ChatWidthMode
   let onToggleRenderMode: (UUID) -> Void
+  let speechUnavailableReason: String?
+  let speakingMessageID: UUID?
+  let onSpeak: (ChatMessage) -> Void
+  let onStopSpeaking: () -> Void
+
+  private var speechReason: String? {
+    speechUnavailableReason
+      ?? (message.isThinking || message.isStreaming
+        ? String(localized: "Wait for this response to finish.") : nil)
+      ?? (message.text.isEmpty
+        ? String(localized: "This response has no text to speak.") : nil)
+      ?? (speakingMessageID != nil && speakingMessageID != message.id
+        ? String(localized: "Another response is being spoken.") : nil)
+  }
+
+  private var speechButton: some View {
+    AssistantSpeechButton(
+      messageID: message.id,
+      isSpeaking: speakingMessageID == message.id,
+      unavailableReason: speechReason
+    ) {
+      if speakingMessageID == message.id { onStopSpeaking() } else { onSpeak(message) }
+    }
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       HStack(spacing: 8) {
         Text("Assistant · \(message.timestamp)")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
+        speechButton
         if !message.isThinking {
           CopyMessageButton(text: message.text)
           if !message.text.isEmpty {
@@ -1291,7 +1385,7 @@ private struct AssistantTurn: View {
           if message.wasStopped, message.text == "Stopped" {
             Text("Stopped")
               .font(CSFont.mono(11, .medium))
-              .foregroundStyle(CSColor.textFaintAlt)
+              .foregroundStyle(CSColor.textTertiary)
           } else if message.isStreaming {
             // A runaway stream keeps only its live tail in the
             // SwiftUI text stack — bounds both the per-delta
@@ -1326,14 +1420,14 @@ private struct AssistantTurn: View {
       }
       .padding(.horizontal, 15)
       .padding(.vertical, 13)
-      .background(CSColor.surfaceRaised(0.03))
+      .background(Color.primary.opacity(0.03))
       .overlay(
         UnevenRoundedRectangle(
           topLeadingRadius: 14, bottomLeadingRadius: 4,
           bottomTrailingRadius: 14, topTrailingRadius: 14,
           style: .continuous
         )
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
       )
       .clipShape(
         UnevenRoundedRectangle(
@@ -1342,7 +1436,10 @@ private struct AssistantTurn: View {
           style: .continuous
         )
       )
-      .contextMenu { CopyButton(text: message.text) }
+      .contextMenu {
+        CopyButton(text: message.text)
+        speechButton
+      }
       .clipped()
     }
     .frame(
@@ -1392,9 +1489,13 @@ private struct ReasoningDisclosure: View {
           weight: .semibold,
           color: ChatPalette.thinking.opacity(0.75)
         )
-        Text(isLive ? "thinking..." : "reasoning summary")
-          .font(CSFont.mono(10.5, .semibold))
-          .foregroundStyle(ChatPalette.thinking)
+        Text(
+          isLive
+            ? String(localized: "thinking...", comment: "The model is still reasoning")
+            : String(localized: "reasoning summary")
+        )
+        .font(CSFont.mono(10.5, .semibold))
+        .foregroundStyle(ChatPalette.thinking)
         Spacer(minLength: 0)
       }
       .padding(.horizontal, 11)
@@ -1405,10 +1506,10 @@ private struct ReasoningDisclosure: View {
     .onChange(of: isLive) { _, live in
       if live { expanded = true }
     }
-    .background(CSColor.surfaceRaised(0.018))
+    .background(Color.primary.opacity(0.018))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.055), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(0.055), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
   }
@@ -1437,7 +1538,7 @@ private struct RawText: View {
     // raw mode must stay copyable like the markdown render.
     let content = Text(raw)
       .font(CSFont.mono(13 * textScale))
-      .foregroundStyle(CSColor.textBodyAlt)
+      .foregroundStyle(Color.primary)
       .lineSpacing(4)
       .fixedSize(horizontal: false, vertical: true)
       .textSelection(.enabled)
@@ -1465,14 +1566,20 @@ private struct RenderModeButton: View {
     Button(action: action) {
       HStack(spacing: 4) {
         CSIconView(icon: .setupWizard, size: 9)
-        Text(mode == .raw ? "rich" : "raw")
-          .font(CSFont.mono(10, .medium))
+        Text(
+          mode == .raw
+            ? String(localized: "rich", comment: "Button: render the message as markdown")
+            : String(localized: "raw", comment: "Button: show the message as plain text")
+        )
+        .font(CSFont.mono(10, .medium))
       }
-      .foregroundStyle(hovering ? CSColor.textMuted : CSColor.textFaintAlt)
+      .foregroundStyle(hovering ? Color.secondary : CSColor.textTertiary)
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .onHover { hovering = $0 }
-    .help(mode == .raw ? "Render as markdown" : "Show raw text")
+    .help(
+      mode == .raw
+        ? String(localized: "Render as markdown") : String(localized: "Show raw text"))
   }
 }
 
@@ -1508,12 +1615,16 @@ private struct CopyMessageButton: View {
     } label: {
       HStack(spacing: 4) {
         CSIconView(icon: copied ? .check : .copy, size: 9)
-        Text(copied ? "copied" : "copy")
-          .font(CSFont.mono(10, .medium))
+        Text(
+          copied
+            ? String(localized: "copied", comment: "Button state after copying")
+            : String(localized: "copy", comment: "Button: copy this message")
+        )
+        .font(CSFont.mono(10, .medium))
       }
       .foregroundStyle(labelColor)
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .disabled(text.isEmpty)
     .onHover { hovering = $0 }
     .help("Copy message")
@@ -1521,7 +1632,7 @@ private struct CopyMessageButton: View {
 
   private var labelColor: Color {
     if copied { return CSColor.oliveLight }
-    return hovering ? CSColor.textMuted : CSColor.textFaintAlt
+    return hovering ? Color.secondary : CSColor.textTertiary
   }
 }
 
@@ -1552,5 +1663,32 @@ private struct PulseDot: View {
       .frame(width: 6, height: 6)
       .opacity(pulse ? 1 : 0.6)
       .onAppear { withAnimation(CSMotion.softpulse) { pulse = true } }
+  }
+}
+
+/// Shared by the permanent turn action and its context-menu entry.
+struct AssistantSpeechButton: View {
+  let messageID: UUID
+  let isSpeaking: Bool
+  let unavailableReason: String?
+  let action: () -> Void
+
+  var isDisabled: Bool { !isSpeaking && unavailableReason != nil }
+  var help: String {
+    unavailableReason ?? String(localized: "Speak this response. AI-generated voice.")
+  }
+
+  var body: some View {
+    Button(
+      isSpeaking
+        ? String(localized: "Stop speaking") : String(localized: "Speak", comment: "Read aloud"),
+      systemImage: isSpeaking ? "stop.fill" : "speaker.wave.2", action: action
+    )
+    .buttonStyle(.plain)
+    .font(CSFont.mono(10, .medium))
+    .foregroundStyle(Color.secondary)
+    .disabled(isDisabled)
+    .help(help)
+    .accessibilityIdentifier("assistant-speak-\(messageID)")
   }
 }

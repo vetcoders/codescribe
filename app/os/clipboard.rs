@@ -2,13 +2,10 @@
 //
 // Purpose: Provides clipboard operations and paste simulation for macOS
 //
-// Note: Some functions are not yet wired up to main.rs (pending integration)
-//
 // Dependencies: arboard (clipboard access), core-graphics (keyboard simulation)
 //
 // Key Components:
 // - paste_and_restore: Smart paste with clipboard snapshot and restoration
-// - paste_text: Simple paste with optional restore
 // - copy: Copy text to clipboard
 // - paste: Paste without simulation
 // - ClipboardSnapshot: Captures and restores all clipboard formats
@@ -57,8 +54,6 @@ pub(crate) fn get_image_png_best_effort() -> Option<Vec<u8>> {
 const KEYCODE_V: CGKeyCode = 9;
 /// macOS virtual key code for 'C' key
 const KEYCODE_C: CGKeyCode = 8;
-/// macOS virtual key code for Right Arrow
-const KEYCODE_RIGHT_ARROW: CGKeyCode = 124;
 
 /// Delay in milliseconds before restoring the original clipboard content
 /// Can be overridden via RESTORE_CLIPBOARD_DELAY_MS environment variable
@@ -164,9 +159,9 @@ pub(crate) struct SyntheticPastePreflight {
 }
 
 impl SyntheticPastePreflight {
-    /// Both signals must hold; either one missing means the keystroke is dropped.
+    /// Either signal holding allows synthetic event delivery.
     pub(crate) fn can_post_events(self) -> bool {
-        self.cg_post_event_access && self.ax_trusted
+        self.cg_post_event_access || self.ax_trusted
     }
 }
 
@@ -200,6 +195,265 @@ pub(crate) fn synthetic_paste_preflight() -> SyntheticPastePreflight {
     }
 }
 
+/// STOP-owned destination identity. It outlives hold-key release and the final wait.
+#[derive(Debug)]
+pub(crate) struct StopPasteTarget {
+    pid: Option<i32>,
+    #[cfg(target_os = "macos")]
+    element: Option<stop_target_identity::Identity>,
+}
+
+impl StopPasteTarget {
+    /// Keep the foreground process even when its focused AX element is unreadable.
+    pub(crate) fn capture() -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            let captured_pid = stop_target_identity::frontmost_pid();
+            let element = captured_pid.and_then(stop_target_identity::Identity::capture);
+            // AX can time out while focus moves. Retain the latest process read,
+            // and never attach the earlier element to a different process.
+            let pid = stop_target_identity::frontmost_pid();
+            let element = if pid == captured_pid { element } else { None };
+            Self { pid, element }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Self { pid: None }
+        }
+    }
+
+    /// Whether a focused element was readable in this capture.
+    pub(crate) fn readable(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.element.is_some()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    fn check_current(&self) -> StopTargetCheck {
+        let current = Self::capture();
+        #[cfg(target_os = "macos")]
+        {
+            compare_stop_targets(
+                self.pid,
+                self.element.as_ref(),
+                current.pid,
+                current.element.as_ref(),
+                stop_target_identity::Identity::same_element,
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            compare_stop_targets::<()>(self.pid, None, current.pid, None, |_, _| true)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StopTargetCheck {
+    changed: bool,
+    readable_at_stop: bool,
+    readable_at_paste: bool,
+}
+
+/// Missing identity is not evidence of a destination change.
+fn compare_stop_targets<E>(
+    stopped_pid: Option<i32>,
+    stopped_element: Option<&E>,
+    current_pid: Option<i32>,
+    current_element: Option<&E>,
+    same_element: impl FnOnce(&E, &E) -> bool,
+) -> StopTargetCheck {
+    let pid_changed = matches!((stopped_pid, current_pid), (Some(a), Some(b)) if a != b);
+    let element_changed = match (stopped_element, current_element) {
+        (Some(stopped), Some(current)) => !same_element(stopped, current),
+        _ => false,
+    };
+    StopTargetCheck {
+        changed: pid_changed || element_changed,
+        readable_at_stop: stopped_element.is_some(),
+        readable_at_paste: current_element.is_some(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod stop_target_identity {
+    use crate::os::ax_ffi::AXUIElementCopyAttributeValue;
+    use core_foundation::base::TCFType;
+    use core_foundation::string::CFString;
+    use objc::runtime::Class;
+    use objc::{msg_send, sel, sel_impl};
+    use std::ffi::c_void;
+    use std::ptr::NonNull;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    unsafe extern "C" {
+        fn AXUIElementCreateApplication(pid: i32) -> *mut c_void;
+        fn AXUIElementGetPid(element: *mut c_void, pid: *mut i32) -> i32;
+        fn AXUIElementSetMessagingTimeout(element: *mut c_void, seconds: f32) -> i32;
+        fn CFRelease(value: *const c_void);
+        fn CFEqual(left: *const c_void, right: *const c_void) -> u8;
+    }
+
+    /// Retained AX object identity; no selection text or display label is identity.
+    #[derive(Debug)]
+    pub(super) struct Identity {
+        element: NonNull<c_void>,
+    }
+
+    // SAFETY: this owns a retained, immutable AX handle. It never exposes the
+    // pointer or mutates the element; CF equality and release are thread safe.
+    // AX handles represent remote UI objects and are not AppKit view objects.
+    unsafe impl Send for Identity {}
+    // SAFETY: shared access performs only CFEqual on retained immutable handles.
+    unsafe impl Sync for Identity {}
+
+    impl Drop for Identity {
+        fn drop(&mut self) {
+            // SAFETY: capture owns exactly one Copy-rule reference.
+            unsafe { CFRelease(self.element.as_ptr()) };
+        }
+    }
+
+    pub(super) fn frontmost_pid() -> Option<i32> {
+        // SAFETY: NSWorkspace and NSRunningApplication accessors are read-only;
+        // returned objects are borrowed for this call and no pointer escapes.
+        unsafe {
+            let class = Class::get("NSWorkspace")?;
+            let workspace: *mut objc::runtime::Object = msg_send![class, sharedWorkspace];
+            if workspace.is_null() {
+                return None;
+            }
+            let app: *mut objc::runtime::Object = msg_send![workspace, frontmostApplication];
+            if app.is_null() {
+                return None;
+            }
+            let pid: i32 = msg_send![app, processIdentifier];
+            (pid > 0).then_some(pid)
+        }
+    }
+
+    impl Identity {
+        pub(super) fn capture(pid: i32) -> Option<Self> {
+            // SAFETY: both AX Create/Copy results are owned and released exactly
+            // once. Output pointers are valid; failed reads never become identity.
+            unsafe {
+                let application = NonNull::new(AXUIElementCreateApplication(pid))?;
+                // A stalled app must not add the default AX RPC timeout to the
+                // stop-final wait. The pid survives an unreadable AX element.
+                if AXUIElementSetMessagingTimeout(application.as_ptr(), 0.05) != 0 {
+                    CFRelease(application.as_ptr());
+                    return None;
+                }
+                let attribute = CFString::new("AXFocusedUIElement");
+                let mut element = std::ptr::null_mut();
+                let result = AXUIElementCopyAttributeValue(
+                    application.as_ptr(),
+                    attribute.as_concrete_TypeRef().cast_mut().cast(),
+                    &mut element,
+                );
+                CFRelease(application.as_ptr());
+                let element = NonNull::new(element)?;
+                let identity = Self { element };
+                let mut element_pid = 0;
+                if result != 0
+                    || AXUIElementGetPid(element.as_ptr(), &mut element_pid) != 0
+                    || element_pid != pid
+                    || frontmost_pid() != Some(pid)
+                {
+                    return None;
+                }
+                Some(identity)
+            }
+        }
+
+        pub(super) fn same_element(&self, current: &Self) -> bool {
+            // SAFETY: both objects retain their Copy-rule AX reference.
+            unsafe { CFEqual(self.element.as_ptr(), current.element.as_ptr()) != 0 }
+        }
+    }
+}
+
+/// Delivery truth for the retained STOP target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopPasteDelivery {
+    Pasted,
+    CopiedTargetChanged,
+}
+
+/// Delivery and target observability from the same check immediately before paste.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StopPasteReceipt {
+    pub delivery: StopPasteDelivery,
+    pub target_readable_at_stop: bool,
+    pub target_readable_at_paste: bool,
+}
+
+/// Clipboard replacement precedes the final identity check. Only an observed
+/// destination change suppresses the keyboard event and delayed restore.
+fn write_stop_paste(
+    text: &str,
+    write: impl FnOnce(&str) -> Result<u64>,
+    check_target: impl FnOnce() -> StopTargetCheck,
+    post_paste: impl FnOnce() -> Result<()>,
+    target_changed: impl FnOnce(StopPasteReceipt),
+) -> Result<(StopPasteReceipt, u64)> {
+    let epoch = write(text)?;
+    let target = check_target();
+    let receipt = StopPasteReceipt {
+        delivery: if target.changed {
+            StopPasteDelivery::CopiedTargetChanged
+        } else {
+            StopPasteDelivery::Pasted
+        },
+        target_readable_at_stop: target.readable_at_stop,
+        target_readable_at_paste: target.readable_at_paste,
+    };
+    if target.changed {
+        target_changed(receipt);
+        return Ok((receipt, epoch));
+    }
+    post_paste()?;
+    Ok((receipt, epoch))
+}
+
+/// Paste into the frontmost app unless known pids or readable AX elements differ.
+/// An unreadable element alone does not suppress delivery.
+pub(crate) fn paste_to_stop_target(
+    text: &str,
+    target: &StopPasteTarget,
+) -> Result<StopPasteReceipt> {
+    let snapshot = ClipboardSnapshot::capture().ok();
+    let (receipt, epoch) = write_stop_paste(
+        text,
+        set_clipboard_with_epoch,
+        || target.check_current(),
+        simulate_cmd_v,
+        |receipt| {
+            warn!(
+                event = "stop_paste_target_changed",
+                action = "copied",
+                text_bytes = text.len(),
+                target_readable_at_stop = receipt.target_readable_at_stop,
+                target_readable_at_paste = receipt.target_readable_at_paste,
+                "stop_paste_target_changed"
+            );
+        },
+    )?;
+    if receipt.delivery == StopPasteDelivery::Pasted {
+        // Do not emit a delayed Right Arrow into a destination that may have
+        // changed since Cmd+V. The target owns its post-paste selection behavior.
+        if let Some(snapshot) = snapshot {
+            schedule_clipboard_restore(snapshot, epoch, get_restore_delay());
+        }
+    }
+    Ok(receipt)
+}
+
 /// Gets the clipboard restore delay from environment or uses default
 fn get_restore_delay() -> Duration {
     let delay_ms = std::env::var("RESTORE_CLIPBOARD_DELAY_MS")
@@ -207,17 +461,6 @@ fn get_restore_delay() -> Duration {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(DEFAULT_RESTORE_DELAY_MS);
     Duration::from_millis(delay_ms)
-}
-
-/// Checks if clipboard restore is enabled via environment variable
-fn is_restore_enabled() -> bool {
-    std::env::var("RESTORE_CLIPBOARD")
-        .ok()
-        .map(|v| {
-            let lower = v.to_lowercase();
-            !matches!(lower.as_str(), "0" | "false" | "no" | "off")
-        })
-        .unwrap_or(true) // Default: enabled
 }
 
 /// Clipboard snapshot containing all available formats
@@ -393,14 +636,21 @@ fn simulate_key_event(keycode: CGKeyCode, key_down: bool, flags: CGEventFlags) -
 ///
 /// This is thread-safe and doesn't use TSM APIs that crash on macOS 26.2.
 fn simulate_cmd_v() -> Result<()> {
+    post_paste_keys(simulate_key_event)
+}
+
+/// The complete synthetic key sequence for paste, with an injectable event sink.
+fn post_paste_keys(
+    mut post_key: impl FnMut(CGKeyCode, bool, CGEventFlags) -> Result<()>,
+) -> Result<()> {
     let cmd_flag = CGEventFlags::CGEventFlagCommand;
 
     // Key down: V with Cmd modifier
-    simulate_key_event(KEYCODE_V, true, cmd_flag)?;
+    post_key(KEYCODE_V, true, cmd_flag)?;
     thread::sleep(Duration::from_millis(10));
 
     // Key up: V with Cmd modifier
-    simulate_key_event(KEYCODE_V, false, cmd_flag)?;
+    post_key(KEYCODE_V, false, cmd_flag)?;
 
     Ok(())
 }
@@ -457,18 +707,6 @@ pub(crate) fn simulate_cmd_c() -> Result<()> {
     Ok(())
 }
 
-/// Simulates Right Arrow keystroke using CGEvent
-fn simulate_right_arrow() -> Result<()> {
-    // Key down: Right Arrow (no modifiers)
-    simulate_key_event(KEYCODE_RIGHT_ARROW, true, CGEventFlags::empty())?;
-    thread::sleep(Duration::from_millis(5));
-
-    // Key up: Right Arrow
-    simulate_key_event(KEYCODE_RIGHT_ARROW, false, CGEventFlags::empty())?;
-
-    Ok(())
-}
-
 /// Hand the clipboard back on a background thread once the paste has settled.
 ///
 /// The restore is conditional on `paste_epoch` still being current. Any
@@ -506,7 +744,7 @@ fn schedule_clipboard_restore(
 
 /// Smart paste with configurable clipboard restoration
 ///
-/// This is a more flexible version of paste_text that allows you to control
+/// This is the lower-level form of [`paste_and_restore`] that lets the caller control
 /// whether the clipboard is restored. Useful when you want to paste multiple
 /// times without fighting clipboard restoration.
 ///
@@ -557,42 +795,14 @@ pub fn paste_text_smart(text: &str, restore: bool) -> Result<()> {
     // 4. Wait for paste to settle
     thread::sleep(Duration::from_millis(50));
 
-    // 5. Simulate Right Arrow to deselect pasted text
-    simulate_right_arrow().context("Failed to simulate Right Arrow")?;
-    debug!("Cleared selection (moved cursor to end)");
-
-    // 6. Optional: restore clipboard snapshot after delay
+    // The destination owns its selection after paste; post no additional keys.
+    // 5. Optional: restore clipboard snapshot after delay
     if let Some(snapshot) = snapshot {
         let delay = get_restore_delay();
         schedule_clipboard_restore(snapshot, paste_epoch, delay);
     }
 
     Ok(())
-}
-
-/// Pastes text into the currently active application
-///
-/// This function implements a sophisticated paste operation:
-/// 1. Saves current clipboard content (if restore is enabled)
-/// 2. Sets clipboard to new text
-/// 3. Simulates Cmd+V keypress
-/// 4. Waits briefly for paste to complete
-/// 5. Simulates Right Arrow to deselect pasted text
-/// 6. Restores original clipboard content after configurable delay
-///
-/// The clipboard restore can be disabled by setting RESTORE_CLIPBOARD=0
-/// The restore delay can be configured via RESTORE_CLIPBOARD_DELAY_MS
-///
-/// # Arguments
-/// * `text` - The text to paste
-///
-/// # Errors
-/// Returns error if clipboard or keyboard simulation fails
-///
-/// # Platform Support
-/// Currently macOS-only. Uses Cmd modifier for paste simulation.
-pub fn paste_text(text: &str) -> Result<()> {
-    paste_text_smart(text, is_restore_enabled())
 }
 
 /// Pastes text and always restores the previous clipboard content
@@ -624,6 +834,212 @@ pub fn paste_and_restore(text: &str) -> Result<()> {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn paste_posts_only_cmd_v_down_and_up() {
+        let mut events = Vec::new();
+        post_paste_keys(|keycode, key_down, flags| {
+            events.push((keycode, key_down, flags));
+            Ok(())
+        })
+        .expect("paste key sequence");
+
+        assert_eq!(
+            events,
+            [
+                (9, true, CGEventFlags::CGEventFlagCommand),
+                (9, false, CGEventFlags::CGEventFlagCommand),
+            ]
+        );
+    }
+
+    #[test]
+    fn smart_paste_has_no_post_paste_key_step() {
+        let source = include_str!("clipboard.rs");
+        let paste = source
+            .split(concat!("pub fn ", "paste_text_smart("))
+            .nth(1)
+            .expect("smart paste exists")
+            .split(concat!("pub fn ", "paste_and_restore("))
+            .next()
+            .expect("smart paste body exists");
+        // Guard the caller too: a second simulation after Cmd+V was the bug.
+        assert_eq!(paste.matches("simulate_").count(), 1);
+        assert!(paste.contains("simulate_cmd_v()"));
+        assert!(!paste.contains(".post("));
+    }
+
+    #[test]
+    fn paste_propagates_key_post_failure_without_extra_keys() {
+        for failing_post in [1, 2] {
+            let mut events = Vec::new();
+            let result = post_paste_keys(|keycode, key_down, flags| {
+                events.push((keycode, key_down, flags));
+                if events.len() == failing_post {
+                    anyhow::bail!("key poster refused event");
+                }
+                Ok(())
+            });
+
+            assert_eq!(result.unwrap_err().to_string(), "key poster refused event");
+            let expected = [
+                (9, true, CGEventFlags::CGEventFlagCommand),
+                (9, false, CGEventFlags::CGEventFlagCommand),
+            ];
+            assert_eq!(events, expected[..failing_post]);
+        }
+    }
+
+    #[test]
+    fn stop_target_switch_during_wait_copies_every_word_without_posting_keys() {
+        use std::cell::{Cell, RefCell};
+
+        let stopped_at = Instant::now();
+        let switched_at = stopped_at + Duration::from_secs(2);
+        let paste_at = stopped_at + Duration::from_secs(8);
+        let text = "committed words [untimed preview words]";
+        // A known process change suffices even when either element is unreadable.
+        // Two readable, unequal elements also prove a change within one process.
+        for (stop_element, current_pid, current_element) in [
+            (Some(1), Some(28), Some(2)),
+            (Some(1), Some(17), Some(2)),
+            (Some(1), Some(28), None),
+            (None, Some(28), Some(2)),
+            (None, Some(28), None),
+        ] {
+            let clipboard = RefCell::new(String::from("old clipboard"));
+            let key_posts = Cell::new(0);
+            let receipts = RefCell::new(Vec::new());
+            let (outcome, _) = write_stop_paste(
+                text,
+                |complete| {
+                    *clipboard.borrow_mut() = complete.to_string();
+                    Ok(42)
+                },
+                || {
+                    assert!(paste_at >= switched_at);
+                    compare_stop_targets(
+                        Some(17),
+                        stop_element.as_ref(),
+                        current_pid,
+                        current_element.as_ref(),
+                        |a, b| a == b,
+                    )
+                },
+                || {
+                    key_posts.set(key_posts.get() + 1);
+                    Ok(())
+                },
+                |receipt| receipts.borrow_mut().push(receipt),
+            )
+            .expect("copy complete stop text");
+            assert_eq!(outcome.delivery, StopPasteDelivery::CopiedTargetChanged);
+            assert_eq!(outcome.target_readable_at_stop, stop_element.is_some());
+            assert_eq!(outcome.target_readable_at_paste, current_element.is_some());
+            assert_eq!(*clipboard.borrow(), text);
+            assert_eq!(key_posts.get(), 0);
+            assert_eq!(*receipts.borrow(), [outcome]);
+        }
+    }
+
+    #[test]
+    fn unreadable_stop_target_without_a_known_change_posts_paste_once() {
+        use std::cell::Cell;
+
+        // None represents an unreadable AX element (including timeout), or a
+        // pid capture that failed. Neither is evidence of a target switch.
+        for (stop_pid, stop_element, paste_pid, paste_element) in [
+            (Some(17), Some(1), Some(17), None),
+            (Some(17), None, Some(17), Some(1)),
+            (Some(17), None, Some(17), None),
+            (None, None, Some(17), Some(1)),
+            (Some(17), Some(1), None, None),
+            (None, None, None, None),
+        ] {
+            let key_posts = Cell::new(0);
+            let (receipt, _) = write_stop_paste(
+                "all visible words",
+                |_| Ok(23),
+                || {
+                    compare_stop_targets(
+                        stop_pid,
+                        stop_element.as_ref(),
+                        paste_pid,
+                        paste_element.as_ref(),
+                        |a, b| a == b,
+                    )
+                },
+                || {
+                    key_posts.set(key_posts.get() + 1);
+                    Ok(())
+                },
+                |_| panic!("unreadable identity alone cannot prove a change"),
+            )
+            .expect("paste with unreadable identity");
+            assert_eq!(receipt.delivery, StopPasteDelivery::Pasted);
+            assert_eq!(receipt.target_readable_at_stop, stop_element.is_some());
+            assert_eq!(receipt.target_readable_at_paste, paste_element.is_some());
+            assert_eq!(key_posts.get(), 1);
+        }
+    }
+
+    #[test]
+    fn stop_target_is_checked_after_clipboard_write_and_before_any_key() {
+        use std::cell::{Cell, RefCell};
+
+        let current_element = Cell::new(1);
+        let actions = RefCell::new(Vec::new());
+        let (outcome, _) = write_stop_paste(
+            "all words",
+            |_| {
+                actions.borrow_mut().push("clipboard");
+                // Target can change during clipboard work, after the wait ended.
+                current_element.set(2);
+                Ok(7)
+            },
+            || {
+                actions.borrow_mut().push("target");
+                compare_stop_targets(
+                    Some(17),
+                    Some(&1),
+                    Some(17),
+                    Some(&current_element.get()),
+                    |a, b| a == b,
+                )
+            },
+            || {
+                actions.borrow_mut().push("key");
+                Ok(())
+            },
+            |_| actions.borrow_mut().push("receipt"),
+        )
+        .expect("changed target copy");
+        assert_eq!(outcome.delivery, StopPasteDelivery::CopiedTargetChanged);
+        assert_eq!(*actions.borrow(), ["clipboard", "target", "receipt"]);
+    }
+
+    #[test]
+    fn unchanged_stop_target_posts_paste_once_and_returns_restore_epoch() {
+        use std::cell::Cell;
+
+        let key_posts = Cell::new(0);
+        let (outcome, epoch) = write_stop_paste(
+            "complete text",
+            |_| Ok(19),
+            || compare_stop_targets(Some(17), Some(&1), Some(17), Some(&1), |a, b| a == b),
+            || {
+                key_posts.set(key_posts.get() + 1);
+                Ok(())
+            },
+            |_| panic!("unchanged target must not emit changed receipt"),
+        )
+        .expect("paste unchanged target");
+        assert_eq!(outcome.delivery, StopPasteDelivery::Pasted);
+        assert!(outcome.target_readable_at_stop);
+        assert!(outcome.target_readable_at_paste);
+        assert_eq!(epoch, 19);
+        assert_eq!(key_posts.get(), 1);
+    }
 
     /// Round-trip plain text through set_clipboard / get_clipboard when available.
     #[test]

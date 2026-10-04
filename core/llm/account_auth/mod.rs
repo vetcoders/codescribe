@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::config::UserSettings;
-use crate::config::keychain::{delete_key, load_key, save_key};
+use crate::config::keychain::{cached_runtime_key, delete_key, ensure_bundle_loaded, save_key};
 use crate::llm::provider::ProviderKind;
 
 /// Device-code OAuth grant for providers that cannot do loopback redirects.
@@ -406,8 +406,40 @@ pub struct AccountAuthStatus {
 /// "not signed in" as the message. Never fails — an unsupported provider simply
 /// reads as not configured, not signed in.
 pub fn account_status(provider: ProviderKind) -> AccountAuthStatus {
+    project_account_status(provider, load_account_tokens(provider).ok())
+}
+
+/// Passive UI metadata: this never opens the credential store.
+pub fn cached_account_status(provider: ProviderKind) -> AccountAuthStatus {
+    match account_status_snapshot(provider) {
+        Ok(status) => status,
+        Err(_) => AccountAuthStatus {
+            provider,
+            signed_in: false,
+            client_id_configured: client_id_for_provider(provider).is_ok(),
+            message: "Account access unavailable. Remove the stored account and sign in again."
+                .into(),
+        },
+    }
+}
+
+/// Strict UI refresh preserves storage/corruption errors rather than sign-out.
+pub fn account_status_snapshot(
+    provider: ProviderKind,
+) -> Result<AccountAuthStatus, AccountAuthError> {
+    let tokens = match cached_account_tokens(provider) {
+        Ok(tokens) => Some(tokens),
+        Err(AccountAuthError::NotSignedIn(_)) => None,
+        Err(error) => return Err(error),
+    };
+    Ok(project_account_status(provider, tokens))
+}
+
+fn project_account_status(
+    provider: ProviderKind,
+    tokens: Option<AccountTokens>,
+) -> AccountAuthStatus {
     let client_id_configured = client_id_for_provider(provider).is_ok();
-    let tokens = load_account_tokens(provider).ok();
     let signed_in = tokens.is_some();
     let message = if !client_id_configured {
         NO_CLIENT_ID_MESSAGE.to_string()
@@ -448,7 +480,7 @@ pub fn client_id_for_provider(provider: ProviderKind) -> Result<String, AccountA
 /// today OpenAI's Codex CLI app id and xAI's Grok CLI id (both disclosed in
 /// `NOTICE`). Anthropic stays gated on the operator pasting their own.
 fn configured_client_id_for(config: ProviderOAuthConfig) -> Option<String> {
-    let settings = UserSettings::load();
+    let settings = UserSettings::load_projection();
     (config.client_id_from_settings)(&settings)
         .and_then(non_empty_trimmed)
         .or_else(|| {
@@ -466,22 +498,72 @@ fn non_empty_trimmed(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+/// Unverified JWT payload claims. Display and routing metadata only —
+/// authorization always rides the access token itself.
+fn jwt_claims(token: &str) -> Option<serde_json::Value> {
+    use base64::Engine;
+    let payload = token.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.as_bytes())
+        .ok()?;
+    serde_json::from_slice(&decoded).ok()
+}
+
 /// Best-effort display identity from the id_token JWT payload (email, else
 /// sub). Display-only — the claims are NOT verified here; authorization always
 /// rides the access token, never this label.
 fn id_token_identity(tokens: &AccountTokens) -> Option<String> {
-    use base64::Engine;
-    let payload = tokens.id_token.as_deref()?.split('.').nth(1)?;
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload.as_bytes())
-        .ok()?;
-    let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    let claims = jwt_claims(tokens.id_token.as_deref()?)?;
     ["email", "sub"].iter().find_map(|key| {
         claims
             .get(key)
             .and_then(serde_json::Value::as_str)
             .and_then(|value| non_empty_trimmed(value.to_string()))
     })
+}
+
+/// ChatGPT workspace id a request on the vendor's own backend must carry as
+/// `ChatGPT-Account-ID`. Claim path per codex-rs `token_data.rs`
+/// (`https://api.openai.com/auth`.`chatgpt_account_id` on the id_token), with
+/// opencode's fallbacks (top-level `chatgpt_account_id`, `organizations[0].id`),
+/// then the same walk over the access token.
+pub fn account_id_from_tokens(tokens: &AccountTokens) -> Option<String> {
+    tokens
+        .id_token
+        .as_deref()
+        .and_then(account_id_from_jwt)
+        .or_else(|| account_id_from_jwt(&tokens.access_token))
+}
+
+fn account_id_from_jwt(token: &str) -> Option<String> {
+    let claims = jwt_claims(token)?;
+    let as_id = |value: Option<&serde_json::Value>| {
+        value
+            .and_then(serde_json::Value::as_str)
+            .and_then(|id| non_empty_trimmed(id.to_string()))
+    };
+    as_id(
+        claims
+            .get("https://api.openai.com/auth")
+            .and_then(|auth| auth.get("chatgpt_account_id")),
+    )
+    .or_else(|| as_id(claims.get("chatgpt_account_id")))
+    .or_else(|| {
+        as_id(
+            claims
+                .get("organizations")
+                .and_then(|orgs| orgs.get(0))
+                .and_then(|org| org.get("id")),
+        )
+    })
+}
+
+/// [`account_id_from_tokens`] over the stored account for `provider`; `None`
+/// when not signed in or when the tokens carry no workspace claim.
+pub fn account_id(provider: ProviderKind) -> Option<String> {
+    load_account_tokens(provider)
+        .ok()
+        .and_then(|tokens| account_id_from_tokens(&tokens))
 }
 
 /// Issuer base URL for `provider`: env override, else the provider default.
@@ -522,7 +604,7 @@ fn responses_probe_endpoint(provider: ProviderKind) -> Option<String> {
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT.to_string()),
+                .unwrap_or_else(|| ProviderKind::OpenAiResponses.endpoint().to_string()),
         ),
         _ => None,
     }
@@ -596,10 +678,19 @@ async fn verify_responses_write_access_at(
 pub fn load_account_tokens(provider: ProviderKind) -> Result<AccountTokens, AccountAuthError> {
     ensure_provider_supported(provider)?;
     let account = token_account(provider)?;
-    let payload = std::env::var(account)
+    if std::env::var(account)
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| load_key(account))
+        .is_none()
+    {
+        ensure_bundle_loaded().map_err(|error| AccountAuthError::Storage(format!("{error:#}")))?;
+    }
+    cached_account_tokens(provider)
+}
+
+fn cached_account_tokens(provider: ProviderKind) -> Result<AccountTokens, AccountAuthError> {
+    ensure_provider_supported(provider)?;
+    let payload = cached_runtime_key(token_account(provider)?)
         .ok_or_else(|| AccountAuthError::NotSignedIn(provider.as_str().to_string()))?;
     serde_json::from_str(&payload).map_err(|error| AccountAuthError::Storage(error.to_string()))
 }
@@ -617,6 +708,7 @@ pub fn clear_account_tokens(provider: ProviderKind) -> Result<(), AccountAuthErr
     // undone by a stale override. Sign-out is a single user-driven action,
     // not a hot concurrent path.
     unsafe { std::env::remove_var(account) };
+    crate::config::keychain::advance_bundle_revision();
     Ok(())
 }
 
@@ -783,6 +875,35 @@ fn now_unix() -> i64 {
 /// Unit tests for client-id resolution, keychain isolation, and registry shape.
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[serial]
+    fn credential_projection_malformed_account_is_unknown_and_preserves_other_credentials() {
+        let (_settings_guard, _directory) = isolated_settings_dir("credential_projection");
+        let _key = EnvGuard::remove("LLM_OPENAI_API_KEY");
+        let _stt = EnvGuard::remove("STT_FILE_API_KEY");
+        let _tokens = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _cache = crate::config::keychain::test_support::install_bundle(&[
+            (
+                OPENAI_ACCOUNT_TOKENS_ACCOUNT,
+                "{synthetic-private-token-json",
+            ),
+            ("LLM_OPENAI_API_KEY", "synthetic-independent-api-key"),
+            ("STT_FILE_API_KEY", "synthetic-independent-stt-key"),
+        ]);
+        let probe = crate::config::keychain::CredentialAcquisitionProbe::forbid();
+        let strict = account_status_snapshot(ProviderKind::OpenAiResponses);
+        assert!(matches!(strict, Err(AccountAuthError::Storage(_))));
+        let display = cached_account_status(ProviderKind::OpenAiResponses);
+        assert!(!display.signed_in);
+        assert_eq!(
+            display.message,
+            "Account access unavailable. Remove the stored account and sign in again."
+        );
+        assert!(!display.message.contains("synthetic-private-token-json"));
+        assert!(crate::config::keychain::key_present("LLM_OPENAI_API_KEY"));
+        assert!(crate::config::keychain::key_present("STT_FILE_API_KEY"));
+        assert!(probe.attempts().is_empty());
+    }
     use super::*;
     use serial_test::serial;
 
@@ -793,7 +914,7 @@ mod tests {
             .prefix(&format!("cs_account_auth_{tag}_"))
             .tempdir()
             .expect("create scratch settings dir");
-        (EnvGuard::set_path("CODESCRIBE_DATA_DIR", dir.path()), dir)
+        (EnvGuard::set("CODESCRIBE_DATA_DIR", dir.path()), dir)
     }
 
     /// Capability probe only: 401 means no Responses write; 400 means the
@@ -837,7 +958,7 @@ mod tests {
         let (_data_dir, _dir) = isolated_settings_dir("gate");
         // Pin the Anthropic env: the operator's dotenv is inherited by the
         // test process, so an unpinned var makes this pass or fail by machine.
-        let _anthropic_guard = EnvGuard::unset(ANTHROPIC_CLIENT_ID_ENV);
+        let _anthropic_guard = EnvGuard::remove(ANTHROPIC_CLIENT_ID_ENV);
         let anthropic = client_id_for_provider(ProviderKind::AnthropicMessages).unwrap_err();
         assert!(matches!(anthropic, AccountAuthError::NoClientId { .. }));
         assert!(anthropic.to_string().contains(NO_CLIENT_ID_MESSAGE));
@@ -901,8 +1022,8 @@ mod tests {
         use base64::Engine;
         let (_data_dir, _dir) = isolated_settings_dir("status");
         let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-        let _tokens = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
-        let _env = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
+        let _tokens = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _env = EnvGuard::remove(OPENAI_CLIENT_ID_ENV);
 
         // 1. OpenAI with no operator paste ⇒ Codex default is configured,
         //    sign-in is enabled, tokens absent.
@@ -929,7 +1050,7 @@ mod tests {
 
         // 3. Stored tokens with an id_token email ⇒ signed in as <email>.
         let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(r#"{"email":"maciej@example.com"}"#);
+            .encode(r#"{"email":"user@example.com"}"#);
         let tokens = AccountTokens::new(
             ProviderKind::OpenAiResponses,
             "access".to_string(),
@@ -942,7 +1063,7 @@ mod tests {
         let status = account_status(ProviderKind::OpenAiResponses);
         assert!(status.client_id_configured);
         assert!(status.signed_in);
-        assert_eq!(status.message, "signed in as maciej@example.com");
+        assert_eq!(status.message, "signed in as user@example.com");
     }
 
     /// Identity for the Keys panel comes from the id_token email claim when present.
@@ -950,7 +1071,7 @@ mod tests {
     fn signed_in_status_carries_the_id_token_email_when_present() {
         use base64::Engine;
         let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(r#"{"email":"maciej@example.com","sub":"user-123"}"#);
+            .encode(r#"{"email":"user@example.com","sub":"user-123"}"#);
         let tokens = AccountTokens {
             provider: ProviderKind::OpenAiResponses.as_str().to_string(),
             access_token: "access".to_string(),
@@ -961,7 +1082,7 @@ mod tests {
         };
         assert_eq!(
             id_token_identity(&tokens).as_deref(),
-            Some("maciej@example.com")
+            Some("user@example.com")
         );
 
         let no_id_token = AccountTokens {
@@ -976,7 +1097,7 @@ mod tests {
     #[serial]
     fn keychain_mock_round_trips_serialized_account_tokens() {
         let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-        let _tokens = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _tokens = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
         let tokens = AccountTokens::new(
             ProviderKind::OpenAiResponses,
             "access".to_string(),
@@ -998,8 +1119,8 @@ mod tests {
     #[serial]
     fn provider_accounts_never_share_a_keychain_slot() {
         let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-        let _openai = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
-        let _anthropic = EnvGuard::unset(ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT);
+        let _openai = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _anthropic = EnvGuard::remove(ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT);
 
         let openai = AccountTokens::new(
             ProviderKind::OpenAiResponses,
@@ -1048,9 +1169,9 @@ mod tests {
     #[serial]
     fn each_provider_reads_its_own_client_id_and_issuer() {
         let (_settings_guard, _dir) = isolated_settings_dir("provider_identity");
-        let _openai_env = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
+        let _openai_env = EnvGuard::remove(OPENAI_CLIENT_ID_ENV);
         let _anthropic_env = EnvGuard::set(ANTHROPIC_CLIENT_ID_ENV, "anthropic-from-env");
-        let _issuer = EnvGuard::unset(ANTHROPIC_ISSUER_ENV);
+        let _issuer = EnvGuard::remove(ANTHROPIC_ISSUER_ENV);
 
         // OpenAI has neither setting nor env ⇒ Codex public app id, never
         // Anthropic's env value.
@@ -1115,14 +1236,22 @@ mod tests {
     /// or fail loudly. A silent `UnsupportedProvider` on a provider the picker
     /// offers is a dead sign-in button with no explanation.
     #[test]
-    fn every_selectable_provider_has_an_oauth_row() {
-        use crate::llm::provider::ALL_PROVIDERS;
-        for provider in ALL_PROVIDERS {
+    fn every_oauth_row_names_a_selectable_provider() {
+        // OAuth is optional per vendor (Libraxis is key-only): every OAuth row must
+        // point at a selectable vendor, and a vendor without a row still resolves.
+        use crate::llm::provider::{ALL_PROVIDERS, ProviderKind, ProviderRef, ProviderRegistry};
+        for row in PROVIDER_OAUTH_REGISTRY {
             assert!(
-                provider_oauth_config(provider).is_ok(),
-                "{provider} is selectable but has no OAuth row"
+                ALL_PROVIDERS.contains(&row.provider),
+                "{} has an OAuth row but is not selectable",
+                row.provider
             );
         }
+        let libraxis = ProviderRegistry::new(Vec::new())
+            .resolve(&ProviderRef::Vendor(ProviderKind::LibraxisResponses))
+            .expect("Libraxis resolves without an OAuth row");
+        assert_eq!(libraxis.oauth_vendor, None);
+        assert!(libraxis.key_required);
     }
 
     /// Client-id resolution reads the row's own accessor, so each provider sees
@@ -1131,8 +1260,8 @@ mod tests {
     #[serial]
     fn each_row_reads_only_its_own_saved_client_id() {
         let (_data_dir, _dir) = isolated_settings_dir("row_accessor");
-        let _openai_env = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
-        let _anthropic_env = EnvGuard::unset(ANTHROPIC_CLIENT_ID_ENV);
+        let _openai_env = EnvGuard::remove(OPENAI_CLIENT_ID_ENV);
+        let _anthropic_env = EnvGuard::remove(ANTHROPIC_CLIENT_ID_ENV);
 
         UserSettings {
             openai_oauth_client_id: Some("openai-app".to_string()),
@@ -1180,7 +1309,7 @@ mod tests {
     #[serial]
     fn openai_resolves_codex_cli_client_id_without_settings() {
         let (_data_dir, _dir) = isolated_settings_dir("openai_default_client_id");
-        let _openai_env = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
+        let _openai_env = EnvGuard::remove(OPENAI_CLIENT_ID_ENV);
         UserSettings {
             openai_oauth_client_id: None,
             ..Default::default()
@@ -1231,47 +1360,57 @@ mod tests {
     }
 
     /// RAII env mutator for `#[serial]` tests; restores the prior value on drop.
-    #[derive(Debug)]
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
+    use crate::test_isolation::EnvGuard;
 
-    impl EnvGuard {
-        /// Set `key` to `value`, remembering the previous process-env state.
-        fn set(key: &'static str, value: &str) -> Self {
-            let previous = std::env::var(key).ok();
-            // SAFETY: these process-env tests are serialized with `serial`.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, previous }
-        }
-
-        /// Set `key` to a filesystem path string, remembering the previous state.
-        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
-            let previous = std::env::var(key).ok();
-            // SAFETY: these process-env tests are serialized with `serial`.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, previous }
-        }
-
-        /// Remove `key` from the process env, remembering whether it was set.
-        fn unset(key: &'static str) -> Self {
-            let previous = std::env::var(key).ok();
-            // SAFETY: these process-env tests are serialized with `serial`.
-            unsafe { std::env::remove_var(key) };
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the captured prior value (or re-unset) so serial tests stay isolated.
-        fn drop(&mut self) {
-            match &self.previous {
-                // SAFETY: these process-env tests are serialized with `serial`.
-                Some(value) => unsafe { std::env::set_var(self.key, value) },
-                // SAFETY: these process-env tests are serialized with `serial`.
-                None => unsafe { std::env::remove_var(self.key) },
-            }
-        }
+    /// The Codex backend needs the workspace id from the token claims; the
+    /// codex-rs path wins, the opencode fallbacks follow, and a token with no
+    /// claim yields `None` rather than an empty header.
+    #[test]
+    fn account_id_walks_the_codex_and_opencode_claim_paths() {
+        use base64::Engine;
+        let jwt = |payload: &str| {
+            format!(
+                "h.{}.s",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload)
+            )
+        };
+        let tokens = |access: &str, id: Option<&str>| {
+            AccountTokens::new(
+                ProviderKind::OpenAiResponses,
+                access.to_string(),
+                None,
+                id.map(str::to_string),
+                None,
+                None,
+            )
+        };
+        let codex = jwt(
+            r#"{"email":"u@example.com","https://api.openai.com/auth":{"chatgpt_account_id":"acct_codex"}}"#,
+        );
+        assert_eq!(
+            account_id_from_tokens(&tokens("opaque", Some(&codex))).as_deref(),
+            Some("acct_codex")
+        );
+        let flat = jwt(r#"{"chatgpt_account_id":"acct_flat"}"#);
+        assert_eq!(
+            account_id_from_tokens(&tokens("opaque", Some(&flat))).as_deref(),
+            Some("acct_flat")
+        );
+        let orgs = jwt(r#"{"organizations":[{"id":"org_first"},{"id":"org_second"}]}"#);
+        assert_eq!(
+            account_id_from_tokens(&tokens("opaque", Some(&orgs))).as_deref(),
+            Some("org_first")
+        );
+        // No id_token: the access token's claims are walked the same way.
+        let access = jwt(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"acct_access"}}"#);
+        assert_eq!(
+            account_id_from_tokens(&tokens(&access, None)).as_deref(),
+            Some("acct_access")
+        );
+        assert_eq!(
+            account_id_from_tokens(&tokens("opaque", Some(&jwt(r#"{"email":"x"}"#)))),
+            None
+        );
+        assert_eq!(account_id_from_tokens(&tokens("not-a-jwt", None)), None);
     }
 }

@@ -7,9 +7,10 @@ import SwiftUI
 
 struct ToolPermissionsSection: View {
   @ObservedObject var model: SettingsViewModel
-  @State private var toolsExpanded = false
   @State private var searchText = ""
-  @State private var expandedServers: Set<String> = []
+  /// Server whose tools are listed. View state; when the search filters it
+  /// away the browser shows the first server with hits instead.
+  @State private var selectedServer: String?
 
   private var grouped: [(server: String, items: [ToolPermissionItem])] {
     ToolPermissionGrouping.groups(
@@ -20,180 +21,71 @@ struct ToolPermissionsSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel("Tool permissions")
+      SettingsSectionLabel(String(localized: "Tool permissions"))
 
       Text(
-        "Allow · Ask · Deny. Defaults: read-only allow, side-effectful ask. "
-          + "\"Always allow\" from the approval card writes the same identity key."
+        "Allow · Ask · Deny. Defaults: read-only allow, side-effectful ask. \"Always allow\" from the approval card writes the same identity key."
       )
       .font(CSFont.mono(11, .medium))
-      .foregroundStyle(CSColor.textFaint)
+      .foregroundStyle(Color.secondary)
       .padding(.top, 4)
 
       defaultsCard
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
 
       if model.toolCapabilities.isEmpty {
         emptyCapabilities
           .padding(.top, 12)
       } else {
-        DisclosureGroup(
-          "Tool overrides · \(model.toolCapabilities.count)",
-          isExpanded: $toolsExpanded
-        ) {
-          hierarchyChrome
-            .padding(.top, 8)
-
-          ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
-              ForEach(grouped, id: \.server) { group in
-                ServerPermissionGroup(
-                  server: group.server,
-                  items: group.items,
-                  isExpanded: Binding(
-                    get: {
-                      // When searching, force open so hits are visible.
-                      if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        return true
-                      }
-                      return expandedServers.contains(group.server)
-                    },
-                    set: { open in
-                      if open {
-                        expandedServers.insert(group.server)
-                      } else {
-                        expandedServers.remove(group.server)
-                      }
-                    }
-                  ),
-                  onLevel: { identity, level in
-                    model.setToolPermission(identity: identity, level: level)
-                  }
-                )
-              }
-            }
-          }
-          .frame(maxHeight: 360)
-          .padding(.top, 8)
-        }
-        .padding(.top, 12)
-        .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(CSColor.textBody)
+        SettingsSectionLabel(
+          String(localized: "Tool overrides · \(model.toolCapabilities.count)")
+        )
+        .padding(.top, CSSpace.section)
+        ToolOverridesBrowser(
+          model: model,
+          groups: grouped,
+          searchText: $searchText,
+          selectedServer: $selectedServer
+        )
+        .padding(.top, CSSpace.control)
       }
     }
-    .onAppear {
-      model.reloadToolPermissions()
-      seedExpandedServersIfNeeded()
-    }
-    .onChange(of: model.toolCapabilities.map(\.identity)) { _, _ in
-      seedExpandedServersIfNeeded()
-    }
-  }
-
-  private var hierarchyChrome: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 8) {
-        Image(systemName: "magnifyingglass")
-          .font(.system(size: 11, weight: .medium))
-          .foregroundStyle(CSColor.textFaint)
-        TextField("Search server or tool", text: $searchText)
-          .textFieldStyle(.plain)
-          .font(CSFont.mono(11.5, .medium))
-          .foregroundStyle(CSColor.textBody)
-      }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 7)
-      .background(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .fill(CSColor.surfaceRaised(0.03))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.06), lineWidth: 1)
-      )
-
-      HStack(spacing: 12) {
-        Button("Expand all") {
-          expandedServers = Set(grouped.map(\.server))
-        }
-        .csFocusRing(cornerRadius: 8)
-        .font(CSFont.mono(10.5, .semibold))
-        .foregroundStyle(CSColor.oliveLight)
-
-        Button("Collapse all") {
-          expandedServers.removeAll()
-        }
-        .csFocusRing(cornerRadius: 8)
-        .font(CSFont.mono(10.5, .semibold))
-        .foregroundStyle(CSColor.textFaint)
-
-        Spacer(minLength: 0)
-
-        Text("\(grouped.count) server\(grouped.count == 1 ? "" : "s")")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
-      }
-    }
-  }
-
-  private func seedExpandedServersIfNeeded() {
-    // First open: expand the first server so the hierarchy is discoverable
-    // without dumping every tool. Preserve operator choices after that.
-    guard expandedServers.isEmpty, let first = grouped.first?.server else { return }
-    expandedServers = [first]
+    .onAppear { model.reloadToolPermissions() }
   }
 
   private var defaultsCard: some View {
     VStack(alignment: .leading, spacing: 10) {
       Text("Defaults")
         .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(CSColor.textBody)
+        .foregroundStyle(Color.primary)
 
       HStack(spacing: 12) {
-        defaultPicker(
-          title: "Read-only",
-          selection: Binding(
-            get: { model.permissionPolicy.readOnlyDefault },
-            set: { model.setPermissionDefault(kind: .readOnly, level: $0) }
-          )
-        )
-        defaultPicker(
-          title: "Side effects",
-          selection: Binding(
-            get: { model.permissionPolicy.sideEffectDefault },
-            set: { model.setPermissionDefault(kind: .sideEffect, level: $0) }
-          )
-        )
-        defaultPicker(
-          title: "Global / unknown",
-          selection: Binding(
-            get: { model.permissionPolicy.defaultLevel },
-            set: { model.setPermissionDefault(kind: .global, level: $0) }
-          )
-        )
+        defaultPicker(title: "Read-only", selection: $model.readOnlyDefaultPicker)
+        defaultPicker(title: "Side effects", selection: $model.sideEffectDefaultPicker)
+        defaultPicker(title: "Global / unknown", selection: $model.globalDefaultPicker)
       }
     }
-    .padding(14)
+    .padding(CSSpace.card)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.02))
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(Color.primary.opacity(0.04))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 
-  private func defaultPicker(title: String, selection: Binding<String>) -> some View {
+  private func defaultPicker(title: LocalizedStringKey, selection: Binding<String>) -> some View {
     VStack(alignment: .leading, spacing: 4) {
       Text(title)
         .font(CSFont.mono(10, .medium))
-        .foregroundStyle(CSColor.textFaint)
+        .foregroundStyle(Color.secondary)
       Picker(title, selection: selection) {
-        Text("Allow").tag("allow")
-        Text("Ask").tag("ask")
-        Text("Deny").tag("deny")
+        Text("Allow", comment: "Tool permission level").tag("allow")
+        Text("Ask", comment: "Tool permission level").tag("ask")
+        Text("Deny", comment: "Tool permission level").tag("deny")
       }
       .labelsHidden()
       .pickerStyle(.segmented)
@@ -204,7 +96,7 @@ struct ToolPermissionsSection: View {
   private var emptyCapabilities: some View {
     Text("No tools registered yet — open the agent once or add an MCP server.")
       .font(CSFont.mono(11, .medium))
-      .foregroundStyle(CSColor.textFaint)
+      .foregroundStyle(Color.secondary)
       .padding(.vertical, 10)
   }
 }
@@ -301,77 +193,32 @@ enum ToolPermissionGrouping {
   }
 }
 
-// MARK: - Server group + capability row
+// MARK: - Capability row
 
-private struct ServerPermissionGroup: View {
-  let server: String
-  let items: [ToolPermissionItem]
-  @Binding var isExpanded: Bool
-  let onLevel: (String, String) -> Void
-
-  var body: some View {
-    DisclosureGroup(isExpanded: $isExpanded) {
-      VStack(spacing: 6) {
-        ForEach(items) { item in
-          ToolCapabilityRow(
-            item: item,
-            onLevel: { onLevel(item.identity, $0) }
-          )
-        }
-      }
-      .padding(.top, 6)
-    } label: {
-      HStack(spacing: 8) {
-        Text(server)
-          .font(CSFont.ui(12, .semibold))
-          .foregroundStyle(CSColor.textBody)
-        Text("\(items.count)")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
-          .padding(.horizontal, 6)
-          .padding(.vertical, 2)
-          .background(
-            Capsule(style: .continuous)
-              .fill(CSColor.surfaceRaised(0.05))
-          )
-        Spacer(minLength: 0)
-      }
-    }
-    .font(CSFont.ui(12, .semibold))
-    .foregroundStyle(CSColor.textBody)
-  }
-}
-
-private struct ToolCapabilityRow: View {
+struct ToolCapabilityRow: View {
   let item: ToolPermissionItem
-  let onLevel: (String) -> Void
+  @Binding var level: String
 
   var body: some View {
     HStack(alignment: .center, spacing: 12) {
       VStack(alignment: .leading, spacing: 2) {
         Text(item.name)
           .font(CSFont.ui(12.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
           .lineLimit(1)
         Text(item.identity)
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
           .lineLimit(1)
-        Text("\(item.origin) · \(item.risk)")
+        Text(verbatim: "\(item.origin) · \(item.risk)")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
       }
       Spacer(minLength: 8)
-      Picker(
-        "Level",
-        selection: Binding(
-          get: { item.effective },
-          set: { onLevel($0) }
-        )
-      ) {
-        Text("Allow").tag("allow")
-        Text("Ask").tag("ask")
-        Text("Deny").tag("deny")
+      Picker("Permission for \(item.name)", selection: $level) {
+        Text("Allow", comment: "Tool permission level").tag("allow")
+        Text("Ask", comment: "Tool permission level").tag("ask")
+        Text("Deny", comment: "Tool permission level").tag("deny")
       }
       .labelsHidden()
       .pickerStyle(.segmented)
@@ -380,12 +227,12 @@ private struct ToolCapabilityRow: View {
     .padding(.horizontal, 14)
     .padding(.vertical, 10)
     .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.02))
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(Color.primary.opacity(0.04))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.06), lineWidth: 1)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 }

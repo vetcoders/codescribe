@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Print 1 only when both production-truth public keys resolve.
+# Print 1 only with private Voice Lab access and both public keys.
 # Used by `make install-app` to bake CSDeveloperSurface. Default is 0.
 # Release / DMG builds must never call this as an enablement path.
 #
@@ -60,7 +60,8 @@ if [[ "${CODESCRIBE_DEVELOPER_SURFACE:-}" == "0" ]]; then
   exit 0
 fi
 
-if [[ "$sparkle_ok" -eq 1 && "$license_ok" -eq 1 ]]; then
+if [[ "$sparkle_ok" -eq 1 && "$license_ok" -eq 1 ]] &&
+  "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install-voice-lab.sh" --verify-access; then
   echo 1
 else
   echo 0

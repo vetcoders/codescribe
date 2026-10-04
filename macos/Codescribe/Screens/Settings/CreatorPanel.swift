@@ -7,18 +7,14 @@ import SwiftUI
 
 struct CreatorPanel: View {
   @ObservedObject var model: SettingsViewModel
+  @State private var manualSkillClient: AgentBridgeClient?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      EyebrowLabel(text: "Settings · Creator")
-      Text("Get set up.")
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
-        .padding(.top, 6)
+      SettingsPageHeader(String(localized: "Get set up."))
 
-      SettingsSectionLabel("Permission checklist")
-        .padding(.top, 22)
+      SettingsSectionLabel(String(localized: "Permission checklist"))
+        .padding(.top, CSSpace.section)
       VStack(spacing: 8) {
         ForEach([
           PermissionKind.microphone,
@@ -30,19 +26,20 @@ struct CreatorPanel: View {
           PermissionChecklistRow(
             kind: kind,
             state: model.permissions.state(kind),
-            onStateChanged: { model.refresh() }
+            onStateChanged: { model.refreshPermissions() }
           )
         }
       }
-      .padding(.top, 11)
+      .padding(.top, CSSpace.control)
 
-      SettingsSectionLabel("Voice & formatting")
-        .padding(.top, 24)
+      SettingsSectionLabel(String(localized: "Voice & formatting"))
+        .padding(.top, CSSpace.section)
       VStack(spacing: 8) {
         LanguageIdentityRow(selection: languageBinding)
         SettingsControlRow(
-          title: "AI formatting",
-          subtitle: "Compatibility gate; Off below always bypasses the LLM"
+          title: String(localized: "AI formatting"),
+          subtitle: String(
+            localized: "Master switch. The Off level below always skips the LLM.")
         ) {
           Toggle("", isOn: formattingEnabledBinding)
             .toggleStyle(.switch)
@@ -50,8 +47,9 @@ struct CreatorPanel: View {
             .tint(CSColor.chromeAccent)
         }
         SettingsControlRow(
-          title: "Auto Format",
-          subtitle: "Correction only, balanced editing, or maximum polish"
+          title: String(localized: "Auto Format"),
+          subtitle: String(
+            localized: "Correction, balanced editing, or a tool-enabled Max consultation")
         ) {
           Picker("", selection: formattingLevelBinding) {
             ForEach(FormattingPolicyOption.allCases) { policy in
@@ -63,11 +61,39 @@ struct CreatorPanel: View {
           .frame(width: 330)
           .disabled(!model.settings.aiFormattingEnabled)
         }
+        if model.maxConsultationEnabled {
+          SettingsControlRow(
+            title: String(localized: "Max consultation"),
+            subtitle: String(
+              localized:
+                "Continue across takes, or start fresh without deleting previous history."
+            )
+          ) {
+            Button(model.newMaxConsultationPending ? "Starting…" : "New consultation") {
+              Task { await model.beginNewMaxConsultation() }
+            }
+            .disabled(model.newMaxConsultationPending)
+            .accessibilityIdentifier("settings-new-max-consultation")
+          }
+          if let notice = model.maxConsultationNotice {
+            Text(notice)
+              .font(.callout)
+              .foregroundStyle(Color.primary)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+        }
       }
-      .padding(.top, 11)
+      .padding(.top, CSSpace.control)
 
-      SettingsSectionLabel("Quick start")
-        .padding(.top, 24)
+      if model.maxConsultationEnabled || !model.maxToolApprovals.isEmpty {
+        MaxApprovalCards(model: model).padding(.top, CSSpace.section)
+      }
+
+      agentBridgeSection
+        .padding(.top, CSSpace.section)
+
+      SettingsSectionLabel(String(localized: "Quick start"))
+        .padding(.top, CSSpace.section)
       HStack(spacing: 10) {
         QuickStartCard(
           icon: .mic,
@@ -84,14 +110,85 @@ struct CreatorPanel: View {
         QuickStartCard(
           icon: .shortcuts,
           title: "Tune shortcuts",
-          subtitle: "Hotkeys & cadence",
+          subtitle: "Hotkeys",
           accessibilityId: "settings-quickstart-tune-shortcuts"
         ) { model.performQuickStart(.tuneShortcuts) }
       }
-      .padding(.top, 11)
+      .padding(.top, CSSpace.control)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
+    .onAppear { model.refreshCreatorAgentBridge() }
+    .onReceive(
+      NotificationCenter.default.publisher(
+        for: SettingsViewModel.agentBridgeLaunchSynchronizationDidFinish)
+    ) { _ in
+      model.refreshCreatorAgentBridge()
+    }
+    .confirmationDialog(
+      "Replace a manually installed Codescribe skill?",
+      isPresented: Binding(
+        get: { manualSkillClient != nil },
+        set: { if !$0 { manualSkillClient = nil } }
+      ),
+      presenting: manualSkillClient
+    ) { client in
+      Button("Preserve original and install for \(client.displayName)") {
+        model.adoptCreatorManualSkill(for: client)
+        manualSkillClient = nil
+      }
+      Button("Cancel", role: .cancel) { manualSkillClient = nil }
+    } message: { client in
+      Text(
+        "The Codescribe skill folder for \(client.displayName) will be moved to a retained backup beside it, then replaced with the copy bundled in this app. Your other skills and agent configuration are not changed. No listener will be started."
+      )
+    }
+    .task { await model.refreshMaxToolApprovals() }
+  }
+
+  private var agentBridgeSection: some View {
+    VStack(alignment: .leading, spacing: CSSpace.control) {
+      SettingsSectionLabel(String(localized: "Connect your coding agent"))
+      Text(
+        "Install the Codescribe skill and bus helper from this app. No repository clone or manual file copying is needed."
+      )
+      .font(.callout)
+      .foregroundStyle(Color.primary)
+      ForEach(AgentBridgeClient.allCases) { client in
+        SettingsControlRow(
+          title: client.displayName,
+          subtitle: String(localized: "Named voice messages to your existing conversation")
+        ) {
+          Button(
+            model.creatorAgentBridgeStatus.installedClients.contains(client)
+              ? "Update skill" : "Install skill"
+          ) {
+            model.installCreatorAgentBridge(for: client)
+          }
+          .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
+          .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
+          if model.creatorAgentBridgeError != nil {
+            Button("Replace manual copy…") { manualSkillClient = client }
+              .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
+              .accessibilityIdentifier("settings-agent-bridge-adopt-\(client.rawValue)")
+          }
+        }
+      }
+      Button("Refresh installation status", action: model.refreshCreatorAgentBridge)
+      Text(model.creatorAgentBridgeStatus.detail)
+        .font(.caption)
+        .foregroundStyle(Color.secondary)
+        .textSelection(.enabled)
+      if let notice = model.creatorAgentBridgeNotice {
+        Text(notice).font(.callout).foregroundStyle(Color.primary).textSelection(.enabled)
+      }
+      if let error = model.creatorAgentBridgeError {
+        Text(error)
+          .font(.callout)
+          .foregroundStyle(CSColor.terracotta)
+          .textSelection(.enabled)
+      }
+    }
   }
 
   // MARK: - Bindings (read VM state, write through the router)
@@ -118,6 +215,39 @@ struct CreatorPanel: View {
   }
 }
 
+/// The same permission cards are used by settings recovery and automatic display.
+struct MaxApprovalCards: View {
+  @ObservedObject var model: SettingsViewModel
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: CSSpace.control) {
+      SettingsSectionLabel(String(localized: "Max permissions"))
+      Button(model.maxApprovalBusy ? "Refreshing…" : "Refresh pending requests") {
+        Task { await model.refreshMaxToolApprovals() }
+      }
+      .disabled(model.maxApprovalBusy)
+      ForEach(model.maxToolApprovals) { request in
+        ToolApprovalCard(
+          request: request,
+          reject: {
+            Task { await model.resolveMaxToolApproval(request, approved: false) }
+          },
+          allowOnce: {
+            Task { await model.resolveMaxToolApproval(request, approved: true) }
+          },
+          allowAlways: {
+            Task { await model.resolveMaxToolApproval(request, approved: true, remember: true) }
+          }
+        )
+        .disabled(model.maxApprovalBusy || model.maxApprovalError != nil)
+      }
+      if let error = model.maxApprovalError {
+        Text(error).foregroundStyle(CSColor.amber)
+      }
+    }
+  }
+}
+
 // MARK: - Language identity
 
 struct LanguageIdentityPresentation: Identifiable, Equatable {
@@ -128,20 +258,29 @@ struct LanguageIdentityPresentation: Identifiable, Equatable {
   var id: String { language.shortCode }
 
   var accessibilityLabel: String {
-    isFineTuned ? "\(title), Fine-tuned" : title
+    isFineTuned
+      ? String(
+        localized: "\(title), Fine-tuned",
+        comment: "VoiceOver label for a language choice with a specialized model")
+      : title
   }
 
   func accessibilityValue(isSelected: Bool) -> String {
-    isSelected ? "Selected" : "Not selected"
+    isSelected
+      ? String(localized: "Selected", comment: "VoiceOver value for a chosen language")
+      : String(localized: "Not selected", comment: "VoiceOver value for a language not chosen")
   }
 
-  static let supportingCopy =
-    "Programming vocabulary and your \(SettingsSection.voiceLab.title) entries enrich the selected language."
+  static let supportingCopy = String(
+    localized:
+      "Programming vocabulary and your \(SettingsSection.voiceLab.title) entries enrich the selected language.",
+    comment: "The placeholder is the name of the Voice Lab settings section"
+  )
 
   static let choices: [LanguageIdentityPresentation] = [
-    .init(language: .auto, title: "Multilingual", isFineTuned: false),
-    .init(language: .polish, title: "Polish", isFineTuned: true),
-    .init(language: .english, title: "English", isFineTuned: true),
+    .init(language: .auto, title: String(localized: "Multilingual"), isFineTuned: false),
+    .init(language: .polish, title: String(localized: "Polish"), isFineTuned: true),
+    .init(language: .english, title: String(localized: "English"), isFineTuned: true),
   ]
 }
 
@@ -153,29 +292,29 @@ private struct LanguageIdentityRow: View {
       VStack(alignment: .leading, spacing: 2) {
         Text("Whisper language")
           .font(CSFont.ui(13.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
         Text("Choose automatic detection or a language-specialized path")
           .font(CSFont.ui(11.5))
-          .foregroundStyle(CSColor.textMutedAlt)
+          .foregroundStyle(Color.secondary)
       }
 
       LanguageIdentityPicker(selection: $selection)
 
       Text(LanguageIdentityPresentation.supportingCopy)
         .font(CSFont.ui(10.5))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
     .padding(.horizontal, 15)
     .padding(.vertical, 12)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.025))
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(Color.primary.opacity(0.05))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 }
@@ -205,10 +344,10 @@ private struct LanguageIdentityPicker: View {
             } else {
               Text("Automatic detection")
                 .font(CSFont.ui(8.5, .medium))
-                .foregroundStyle(CSColor.textMutedAlt)
+                .foregroundStyle(Color.secondary)
             }
           }
-          .foregroundStyle(isSelected ? CSColor.textHigh : CSColor.textBody)
+          .foregroundStyle(isSelected ? Color.primary : Color.secondary)
           .frame(maxWidth: .infinity, minHeight: 43)
           .padding(.horizontal, 5)
           .background(
@@ -218,12 +357,12 @@ private struct LanguageIdentityPicker: View {
           .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
               .strokeBorder(
-                isSelected ? CSColor.chromeAccent.opacity(0.5) : CSColor.hairline(0.07),
+                isSelected ? CSColor.chromeAccent.opacity(0.5) : Color.primary.opacity(0.12),
                 lineWidth: 1
               )
           )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .accessibilityLabel(choice.accessibilityLabel)
         .accessibilityValue(choice.accessibilityValue(isSelected: isSelected))
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
@@ -246,25 +385,16 @@ struct SettingsControlRow<Control: View>: View {
     HStack(spacing: 12) {
       VStack(alignment: .leading, spacing: 2) {
         Text(title)
-          .font(CSFont.ui(13.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
+          .font(.body.weight(.semibold))
+          .foregroundStyle(.primary)
         Text(subtitle)
-          .font(CSFont.ui(11.5))
-          .foregroundStyle(CSColor.textMutedAlt)
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       control()
     }
-    .padding(.horizontal, 15)
-    .padding(.vertical, 12)
-    .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.025))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
-    )
+    .settingsGroupedInset()
   }
 }
 
@@ -281,41 +411,44 @@ private struct PermissionChecklistRow: View {
   var body: some View {
     HStack(spacing: 12) {
       statusBadge
-      Text(kind.rawValue)
+      Text(kind.displayName)
         .font(CSFont.ui(13.5, .medium))
-        .foregroundStyle(CSColor.textBody)
+        .foregroundStyle(Color.primary)
         .frame(maxWidth: .infinity, alignment: .leading)
       if granted {
-        Text("granted")
+        Text("granted", comment: "Permission status: this permission is granted")
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(CSColor.oliveLight)
       } else {
         Button {
           if state == .notDetermined, kind.supportsInAppPermissionRequest {
-            kind.requestInApp { _ in onStateChanged?() }
+            Task { @MainActor in
+              _ = await kind.requestInApp()
+              onStateChanged?()
+            }
           } else {
             kind.openSystemSettings()
           }
         } label: {
           Text(
             state == .notDetermined && kind.supportsInAppPermissionRequest
-              ? "allow \(kind.rawValue)"
+              ? "allow \(kind.displayName)"
               : "open System Settings"
           )
           .font(CSFont.mono(11, .semibold))
-          .foregroundStyle(CSColor.terracottaLight)
+          .foregroundStyle(CSColor.terracotta)
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
       }
     }
     .padding(.horizontal, 15)
     .padding(.vertical, 13)
     .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .fill((granted ? CSColor.olive : CSColor.terracotta).opacity(0.08))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder((granted ? CSColor.olive : CSColor.terracotta).opacity(0.22), lineWidth: 1)
     )
   }
@@ -328,7 +461,7 @@ private struct PermissionChecklistRow: View {
         icon: granted ? .success : .warning,
         size: 11,
         weight: .semibold,
-        color: granted ? CSColor.oliveLight : CSColor.terracottaLight
+        color: granted ? CSColor.oliveLight : CSColor.terracotta
       )
     }
     .frame(width: 20, height: 20)
@@ -343,8 +476,8 @@ private struct PermissionChecklistRow: View {
 /// and the duplicate "Launchpads" decoration row below them was removed with it.
 private struct QuickStartCard: View {
   let icon: CSIcon
-  let title: String
-  let subtitle: String
+  let title: LocalizedStringKey
+  let subtitle: LocalizedStringKey
   let accessibilityId: String
   let action: () -> Void
 
@@ -353,15 +486,15 @@ private struct QuickStartCard: View {
   var body: some View {
     Button(action: action) {
       VStack(alignment: .leading, spacing: 0) {
-        CSIconView(icon: icon, size: 16, color: CSColor.textHigh)
+        CSIconView(icon: icon, size: 16, color: Color.primary)
         Text(title)
           .font(CSFont.ui(13, .semibold))
-          .foregroundStyle(CSColor.textHigh)
+          .foregroundStyle(Color.primary)
           .padding(.top, 9)
         Text(subtitle)
           .font(CSFont.ui(11.5))
           .lineSpacing(2)
-          .foregroundStyle(CSColor.textMutedAlt)
+          .foregroundStyle(Color.secondary)
           .padding(.top, 3)
         Spacer(minLength: 0)
       }
@@ -370,11 +503,11 @@ private struct QuickStartCard: View {
       .padding(.vertical, 16)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .fill(CSColor.surfaceRaised(hovered ? 0.05 : 0.025))
+          .fill(Color.primary.opacity(hovered ? 0.1 : 0.05))
       )
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(CSColor.hairline(hovered ? 0.14 : 0.07), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
       .contentShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
     }
@@ -390,7 +523,5 @@ private struct QuickStartCard: View {
   #Preview("Creator panel") {
     ScrollView { CreatorPanel(model: .preview) }
       .frame(width: 720, height: 620)
-      .background(SettingsView.windowGradient)
-      .preferredColorScheme(.dark)
   }
 #endif

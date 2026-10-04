@@ -3,8 +3,13 @@ import OSLog
 
 /// Lab extras baked only by keyed `make install-app`.
 enum DeveloperSurface {
-  /// Corner caption on overlay, chat, and Settings for an org `install-app` bake.
-  static let powerModeCaption = "You use dev power mode"
+  /// Corner caption only while Voice Lab is enabled on a developer build.
+  static var powerModeCaption: String {
+    String(
+      localized: "You use dev power mode",
+      comment: "Corner mark on a developer build while Voice Lab power mode is on"
+    )
+  }
 
   static func parse(_ raw: Any?) -> Bool {
     if let flag = raw as? Bool { return flag }
@@ -19,11 +24,15 @@ enum DeveloperSurface {
   static func isEnabled(in bundle: Bundle = .main) -> Bool {
     parse(bundle.object(forInfoDictionaryKey: "CSDeveloperSurface"))
   }
+
+  static func isPowerModeEnabled(labMode: Bool, surfaceEnabled: Bool? = nil) -> Bool {
+    (surfaceEnabled ?? isEnabled()) && labMode
+  }
 }
 
 /// Daily overlay visibility. The tray "Transcription Overlay" toggle is the
-/// product switch. Lab mode is a developer veto that never writes that toggle
-/// and never fires on a production bundle, even if UserDefaults still holds
+/// product switch. Lab mode never writes that toggle and is unavailable on
+/// a production bundle, even if UserDefaults still holds
 /// `codescribe.lab_mode` from a previous install-app.
 enum DictationOverlayGate {
   static let labModeDefaultsKey = "codescribe.lab_mode"
@@ -36,15 +45,15 @@ enum DictationOverlayGate {
     defaults: UserDefaults = .standard,
     surfaceEnabled: Bool? = nil
   ) -> Bool {
-    let surface = surfaceEnabled ?? DeveloperSurface.isEnabled()
-    return surface && defaults.bool(forKey: labModeDefaultsKey)
+    DeveloperSurface.isPowerModeEnabled(
+      labMode: defaults.bool(forKey: labModeDefaultsKey), surfaceEnabled: surfaceEnabled)
   }
 
   static func shouldShowOverlay(
     trayEnabled: Bool,
-    defaults: UserDefaults = .standard,
-    surfaceEnabled: Bool? = nil
+    defaults _: UserDefaults = .standard,
+    surfaceEnabled _: Bool? = nil
   ) -> Bool {
-    trayEnabled && !isLabModeOn(defaults: defaults, surfaceEnabled: surfaceEnabled)
+    trayEnabled
   }
 }

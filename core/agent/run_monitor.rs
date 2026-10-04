@@ -11,7 +11,6 @@
 //! cursor surface; raw transcript logs are fallback evidence only, clipped to
 //! [`MAX_HEARTBEAT_EXCERPT_BYTES`] so a heartbeat can never flood a thread.
 
-use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -286,18 +285,6 @@ impl RunMonitorStore {
         self.save(&data)?;
         Ok(true)
     }
-
-    /// Remove finished records, keeping active ones. Returns removed count.
-    pub fn prune_done(&self) -> Result<usize> {
-        let mut data = self.load()?;
-        let before = data.monitors.len();
-        data.monitors.retain(RunMonitorRecord::is_active);
-        let removed = before - data.monitors.len();
-        if removed > 0 {
-            self.save(&data)?;
-        }
-        Ok(removed)
-    }
 }
 
 /// Fields extracted from a Vibecrafted control-plane `meta.json`. Unknown
@@ -567,21 +554,6 @@ pub fn is_valid_run_id(run_id: &str) -> bool {
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
         && !run_id.starts_with('.')
-}
-
-/// Distinct states currently represented among active monitors — the cheap
-/// inspection surface for status UIs.
-pub fn active_state_summary(records: &[RunMonitorRecord]) -> Vec<(RunMonitorState, usize)> {
-    let mut seen: Vec<(RunMonitorState, usize)> = Vec::new();
-    let mut order: HashSet<&'static str> = HashSet::new();
-    for record in records.iter().filter(|record| record.is_active()) {
-        if order.insert(record.state.as_str()) {
-            seen.push((record.state, 1));
-        } else if let Some(slot) = seen.iter_mut().find(|(state, _)| *state == record.state) {
-            slot.1 += 1;
-        }
-    }
-    seen
 }
 
 /// Store durability, classification, heartbeat, and path-safety unit tests.

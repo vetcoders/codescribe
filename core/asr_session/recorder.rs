@@ -6,8 +6,8 @@
 //!
 //! - **Injected authority.** The lane never constructs a provider. It receives
 //!   a [`Layer1Decision`] — an already-authorized, typed decision made by the
-//!   consent/settings owner. [`Layer1Decision::Disarmed`] is the
-//!   stock product: canvas plus lexicon, no error, no fallback loading.
+//!   consent/settings owner. The decision distinguishes Apple-only, local
+//!   exact-span Whisper, and a generic injected provider.
 //! - **Bounded, non-blocking fan-out.** [`RecorderLayer1Lane::offer_pcm`]
 //!   returns immediately on every call. A refiner that cannot keep up costs
 //!   refinement frames, never capture: sustained overflow degrades the lane to
@@ -17,8 +17,9 @@
 //!   canvas.
 //! - **Finals go through the doctrine seam.** Every final is vetted by
 //!   [`SessionIngest`] (ordering, idempotence, sealed utterances) and the
-//!   session outcome routes through [`crate::quality::merge_live_layer1`] —
-//!   the live floor is immutable; Layer 1 text can only fill gaps and tails.
+//!   session outcome routes through [`crate::quality::merge_live_layer1`]. A
+//!   generic full-session candidate remains evidence until it has exact span
+//!   identity; the Apple path owns the bounded rewrite fence.
 //! - **Every failure lands on Apple + lexicon.** Overflow, disconnect,
 //!   sleep/wake, and an incomplete stop-drain all degrade to
 //!   [`RefinerMode::Off`]. Nothing in this module can reach local Whisper —
@@ -36,13 +37,24 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::time::Duration;
 
 use tracing::{info, warn};
 
 use super::events::{AsrErrorKind, AsrSessionEvent, TranscriptEvent};
 use super::ingest::{IngestVerdict, SessionIngest};
 use super::provider::{AsrSessionProvider, RefinerMode, SessionInput};
-use crate::quality::{Layer1MergedDelivery, merge_live_layer1};
+
+/// Audio kept back from a cloud session so a Silero close can still be the
+/// exclusive end of the next `commit`. Half a second only has to cover the
+/// worker's decision lag.
+pub const CLOUD_COMMIT_HOLDBACK: Duration = Duration::from_millis(500);
+
+/// Samples of [`CLOUD_COMMIT_HOLDBACK`] at `sample_rate` Hz.
+pub fn cloud_commit_holdback_samples(sample_rate: u32) -> usize {
+    usize::try_from(u64::from(sample_rate) * CLOUD_COMMIT_HOLDBACK.as_millis() as u64 / 1_000)
+        .unwrap_or(usize::MAX)
+}
 
 /// Consecutive overflowed frames tolerated before the lane degrades.
 ///
@@ -64,6 +76,9 @@ pub const STOP_DRAIN_MAX_POLLS: u32 = 32;
 /// The message carries only the typed reason token — never transcript, audio,
 /// or provider payload content.
 pub const LAYER1_DEGRADED_WARNING_CODE: &str = "layer1_lane_degraded";
+
+/// `EngineEvent::Warning` code for collected finals absent from ledger and paste.
+pub const LAYER1_FINALS_NOT_ADMITTED_WARNING_CODE: &str = "layer1_finals_not_admitted";
 
 /// Host lifecycle boundary delivered to the active recording session.
 ///
@@ -114,28 +129,160 @@ pub fn recorder_lifecycle_channel() -> (RecorderLifecycleHandle, RecorderLifecyc
     )
 }
 
+/// Transport token carried with a CLOUD decision.
+///
+/// This is not a second provider selector. The session still reads
+/// `RuntimeSettingsSnapshot::tail_provider`; the decision copies that frozen
+/// choice so a receipt can name both lanes without an stt import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TailPatchTransport {
+    /// Local-power default, and any explicit `inprocess` env override.
+    InProcess,
+    /// Sidecar selected by `STT_TAIL_PROVIDER`.
+    Sidecar,
+    /// CLOUD default when `STT_TAIL_PROVIDER` is absent: multipart HTTP.
+    Remote,
+    /// Test double selected by `STT_TAIL_PROVIDER`.
+    Fake,
+}
+
+impl TailPatchTransport {
+    /// Stable token shared with `TailProviderId::as_str`.
+    pub const fn as_token(self) -> &'static str {
+        match self {
+            Self::InProcess => "inprocess",
+            Self::Sidecar => "sidecar",
+            Self::Remote => "remote",
+            Self::Fake => "fake",
+        }
+    }
+
+    /// Receipt/log refiner for a live session plus this tail transport.
+    pub const fn cloud_refiner(self) -> &'static str {
+        match self {
+            Self::Remote => "cloud_session+remote_tail_patch",
+            Self::InProcess => "cloud_session+inprocess_tail_patch",
+            Self::Sidecar => "cloud_session+sidecar_tail_patch",
+            Self::Fake => "cloud_session+fake_tail_patch",
+        }
+    }
+
+    /// Map the frozen provider token. Unknown tokens follow the session's
+    /// `unwrap_or(InProcess)` so the receipt names the lane the session runs.
+    pub fn from_provider_token(token: Option<&str>) -> Self {
+        match token {
+            Some("remote") => Self::Remote,
+            Some("sidecar") => Self::Sidecar,
+            Some("fake") => Self::Fake,
+            Some("inprocess") | None => Self::InProcess,
+            Some(_) => Self::InProcess,
+        }
+    }
+}
+
 /// The injected, already-authorized Layer 1 decision a recording starts with.
 ///
 /// Construction and consent are deliberately *not* this module's business: the
 /// settings/consent owner builds the provider and hands the finished decision
 /// in. A recording that receives [`Self::Disarmed`] is the normal product —
 /// not an error, and never a trigger for loading anything heavier.
+/// [`Self::LocalTailPatch`] alone is still local power. [`Self::Cloud`] is the
+/// consented CLOUD cut: the live provider and an armed tail disposition.
 pub enum Layer1Decision {
     /// No Layer 1 refiner for this recording. Canvas plus lexicon, complete.
     Disarmed,
-    /// An already-authorized provider, ready to open.
+    /// Local Whisper owns bounded, PCM-identified tail patches for this
+    /// recording. This is deliberately a recording-start decision, not a
+    /// second environment read inside the Apple session.
+    LocalTailPatch(LocalTailPatchDisposition),
+    /// An already-authorized provider, ready to open. No tail disposition.
     Armed(Box<dyn AsrSessionProvider + Send>),
+    /// Consented CLOUD: live provider plus the tail-patch disposition.
+    ///
+    /// The Apple session reads [`Self::local_tail_patch_disposition`] before
+    /// [`RecorderLayer1Lane::open`] consumes this value. `open` starts only
+    /// the provider; the tail lane stays with the session.
+    Cloud {
+        /// Live WebSocket provider, already authorized.
+        provider: Box<dyn AsrSessionProvider + Send>,
+        /// Tail disposition. Only armed values are visible to the session.
+        tail: LocalTailPatchDisposition,
+        /// Transport copied from the frozen snapshot provider id.
+        transport: TailPatchTransport,
+        /// Refine endpoint copied from settings. Omitted from receipts.
+        refine_endpoint: String,
+    },
 }
 
 impl Layer1Decision {
     /// Whether this decision carries a provider.
     pub fn is_armed(&self) -> bool {
-        matches!(self, Self::Armed(_))
+        matches!(
+            self,
+            Self::Armed(_)
+                | Self::Cloud { .. }
+                | Self::LocalTailPatch(
+                    LocalTailPatchDisposition::ArmedDefault
+                        | LocalTailPatchDisposition::ArmedPhase(_)
+                )
+        )
+    }
+
+    /// Recording-start tail-patch disposition.
+    ///
+    /// [`Self::LocalTailPatch`] returns its disposition unchanged.
+    /// [`Self::Cloud`] returns the disposition only when it is armed, which is
+    /// what the Apple session uses to start the tail lane beside the provider.
+    pub fn local_tail_patch_disposition(&self) -> Option<LocalTailPatchDisposition> {
+        match self {
+            Self::LocalTailPatch(disposition) => Some(*disposition),
+            Self::Cloud { tail, .. } if tail.is_armed() => Some(*tail),
+            Self::Cloud { .. } | Self::Disarmed | Self::Armed(_) => None,
+        }
+    }
+}
+
+/// Why the local Whisper tail-patch lane is armed or degraded for one take.
+///
+/// This is intentionally distinct from the generic provider lane: Cloud owns
+/// provider fan-out, while Local power owns exact-span Whisper jobs. Both are
+/// resolved once at recording start and carried through [`Layer1Decision`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalTailPatchDisposition {
+    /// The product mode does not request local Whisper.
+    NotApplicable,
+    /// Local power's product default: Apple live plus local Whisper patches.
+    ArmedDefault,
+    /// Explicit `phase1` compatibility token armed the same lane. Reserved
+    /// later phases are degraded until they acquire their own runtime owner.
+    ArmedPhase(u8),
+    /// Local power was selected but an explicit hard-off token disabled its
+    /// required patcher. This is degraded, never a healthy Apple-only state.
+    DegradedExplicitOff,
+    /// Local power was selected but the override token was not understood.
+    DegradedInvalidOverride,
+}
+
+impl LocalTailPatchDisposition {
+    /// Whether the Apple session must construct the local tail-patch lane.
+    pub fn is_armed(self) -> bool {
+        matches!(self, Self::ArmedDefault | Self::ArmedPhase(_))
+    }
+
+    /// Stable content-free token for logs and receipts.
+    pub fn as_token(self) -> &'static str {
+        match self {
+            Self::NotApplicable => "not_applicable",
+            Self::ArmedDefault => "armed_default",
+            Self::ArmedPhase(_) => "armed_phase",
+            Self::DegradedExplicitOff => "degraded_explicit_off",
+            Self::DegradedInvalidOverride => "degraded_invalid_override",
+        }
     }
 }
 
 impl Default for Layer1Decision {
-    /// The stock product decision: no Layer 1.
+    /// Safe fallback decision: no Layer 1.
     fn default() -> Self {
         Self::Disarmed
     }
@@ -146,9 +293,24 @@ impl fmt::Debug for Layer1Decision {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Disarmed => f.write_str("Layer1Decision::Disarmed"),
+            Self::LocalTailPatch(disposition) => f
+                .debug_struct("Layer1Decision::LocalTailPatch")
+                .field("disposition", disposition)
+                .finish(),
             Self::Armed(provider) => f
                 .debug_struct("Layer1Decision::Armed")
                 .field("mode", &provider.mode().as_token())
+                .finish(),
+            Self::Cloud {
+                provider,
+                tail,
+                transport,
+                refine_endpoint: _,
+            } => f
+                .debug_struct("Layer1Decision::Cloud")
+                .field("mode", &provider.mode().as_token())
+                .field("tail", &tail.as_token())
+                .field("transport", &transport.as_token())
                 .finish(),
         }
     }
@@ -251,35 +413,6 @@ impl Layer1SessionOutcome {
     pub fn degrade_reason(&self) -> Option<Layer1DegradeReason> {
         self.degrade
     }
-
-    /// The refiner's transcript candidate: sealed finals joined in order.
-    ///
-    /// `None` when the session produced no accepted finals — the caller keeps
-    /// the canvas untouched rather than merging against an empty candidate.
-    pub fn refined_transcript(&self) -> Option<String> {
-        if self.finals.is_empty() {
-            return None;
-        }
-        Some(
-            self.finals
-                .iter()
-                .map(|event| event.text.trim())
-                .filter(|text| !text.is_empty())
-                .collect::<Vec<_>>()
-                .join(" "),
-        )
-    }
-
-    /// Route the outcome through the integrated doctrine-safe truth seam.
-    ///
-    /// This is [`merge_live_layer1`]: the committed live floor is immutable,
-    /// Layer 1 text may fill aligned gaps and extend the tail, and a
-    /// substitution always keeps the live token. Callers deliver
-    /// [`Layer1MergedDelivery::text`]; they never deliver the raw candidate.
-    pub fn adjudicate_against_live_floor(&self, live_floor: &str) -> Layer1MergedDelivery {
-        let candidate = self.refined_transcript();
-        merge_live_layer1(live_floor, candidate.as_deref().unwrap_or(""))
-    }
 }
 
 /// The per-recording Layer 1 lane: open at start, fan out, drain at stop.
@@ -306,6 +439,21 @@ pub struct RecorderLayer1Lane {
     degrade: Option<Layer1DegradeReason>,
     /// One-shot notice so the session can emit a single degrade warning event.
     degrade_notice: Option<Layer1DegradeReason>,
+    /// Capture rate of the audio this lane was opened with.
+    sample_rate: u32,
+    /// Cloud sessions hold the newest audio so a commit can stop exactly at a
+    /// Silero close. Every other mode pushes immediately.
+    hold_back: bool,
+    /// Samples successfully handed to the provider. This is the server clock.
+    pushed_samples: u64,
+    /// Audio newer than [`Self::pushed_samples`] and not yet sent.
+    held: Vec<f32>,
+    /// Finals not yet handed to the worker.
+    pending_forward: Vec<TranscriptEvent>,
+    /// Finals the worker channel refused because the worker had already exited.
+    unforwarded_after_exit: u64,
+    /// `pushed - S` for each commit that had already passed S.
+    commit_late_lags: Vec<u64>,
 }
 
 impl fmt::Debug for RecorderLayer1Lane {
@@ -341,10 +489,18 @@ impl RecorderLayer1Lane {
             consecutive_overflows: 0,
             degrade: None,
             degrade_notice: None,
+            sample_rate: input.sample_rate.max(1),
+            hold_back: false,
+            pushed_samples: 0,
+            held: Vec::new(),
+            pending_forward: Vec::new(),
+            unforwarded_after_exit: 0,
+            commit_late_lags: Vec::new(),
         };
         match decision {
-            Layer1Decision::Disarmed => lane,
-            Layer1Decision::Armed(mut provider) => {
+            Layer1Decision::Disarmed | Layer1Decision::LocalTailPatch(_) => lane,
+            Layer1Decision::Armed(provider) | Layer1Decision::Cloud { provider, .. } => {
+                let mut provider = provider;
                 match provider.open(input) {
                     Ok(()) => {
                         info!(
@@ -352,6 +508,7 @@ impl RecorderLayer1Lane {
                             sample_rate = input.sample_rate,
                             "Layer 1 lane opened at recording start"
                         );
+                        lane.hold_back = provider.mode() == RefinerMode::CloudSession;
                         lane.state = Layer1LaneState::Live;
                         lane.provider = Some(provider);
                     }
@@ -424,12 +581,102 @@ impl RecorderLayer1Lane {
         if !self.is_live() || samples.is_empty() {
             return FanOutVerdict::Inactive;
         }
+        if !self.hold_back {
+            return self.push_samples(samples);
+        }
+        self.held.extend_from_slice(samples);
+        self.release_aged()
+    }
+
+    /// Samples the provider has accepted. A cloud commit stops on this clock.
+    pub fn pushed_samples(&self) -> u64 {
+        self.pushed_samples
+    }
+
+    /// Lags of commits that had to land on audio already pushed past S.
+    pub fn commit_late_lags(&self) -> &[u64] {
+        &self.commit_late_lags
+    }
+
+    /// Finals still waiting, plus any the worker channel refused after exit.
+    pub fn unforwarded_finals(&self) -> u64 {
+        self.pending_forward.len() as u64 + self.unforwarded_after_exit
+    }
+
+    /// Take finals the worker has not seen yet.
+    pub fn take_unforwarded_finals(&mut self) -> Vec<TranscriptEvent> {
+        std::mem::take(&mut self.pending_forward)
+    }
+
+    /// The worker was already gone when a final was ready.
+    pub fn note_final_after_worker_exit(&mut self) {
+        self.unforwarded_after_exit = self.unforwarded_after_exit.saturating_add(1);
+    }
+
+    /// Push every sample still held. Audio EOF uses this before `end`.
+    pub fn flush_holdback(&mut self) -> FanOutVerdict {
+        if !self.is_live() || self.held.is_empty() {
+            return FanOutVerdict::Inactive;
+        }
+        let held = std::mem::take(&mut self.held);
+        self.push_samples(&held)
+    }
+
+    /// Push audio through capture sample `sample`, then commit there.
+    ///
+    /// `sample` is the exclusive Silero close. When that sample was already
+    /// pushed, the commit lands on the pushed position and records
+    /// `commit_late { lag_samples }`. The commit itself is never skipped.
+    /// Returns the lag when the commit was late.
+    pub fn commit_through(&mut self, sample: u64) -> Option<u64> {
+        if !self.is_live() {
+            return None;
+        }
+        if sample < self.pushed_samples {
+            let lag = self.pushed_samples - sample;
+            self.commit_late_lags.push(lag);
+            self.provider_commit(self.pushed_samples);
+            info!(
+                commit_late = 1,
+                lag_samples = lag,
+                pushed = self.pushed_samples,
+                requested = sample,
+                "cloud_live_commit"
+            );
+            return Some(lag);
+        }
+        let need = usize::try_from(sample - self.pushed_samples).unwrap_or(usize::MAX);
+        let take = need.min(self.held.len());
+        if take > 0 {
+            let chunk: Vec<f32> = self.held.drain(..take).collect();
+            let _ = self.push_samples(&chunk);
+        }
+        self.provider_commit(self.pushed_samples);
+        None
+    }
+
+    /// Release audio older than the capture head by [`CLOUD_COMMIT_HOLDBACK`].
+    fn release_aged(&mut self) -> FanOutVerdict {
+        let keep = cloud_commit_holdback_samples(self.sample_rate);
+        if self.held.len() <= keep {
+            return FanOutVerdict::Forwarded;
+        }
+        let release = self.held.len() - keep;
+        let chunk: Vec<f32> = self.held.drain(..release).collect();
+        self.push_samples(&chunk)
+    }
+
+    fn push_samples(&mut self, samples: &[f32]) -> FanOutVerdict {
+        if samples.is_empty() || !self.is_live() {
+            return FanOutVerdict::Inactive;
+        }
         let Some(provider) = self.provider.as_mut() else {
             return FanOutVerdict::Inactive;
         };
         match provider.push_audio(samples) {
             Ok(()) => {
                 self.consecutive_overflows = 0;
+                self.pushed_samples = self.pushed_samples.saturating_add(samples.len() as u64);
                 self.telemetry.frames_forwarded += 1;
                 FanOutVerdict::Forwarded
             }
@@ -446,6 +693,19 @@ impl RecorderLayer1Lane {
                 self.degrade_dropping_provider(Layer1DegradeReason::Disconnect(kind));
                 FanOutVerdict::Inactive
             }
+        }
+    }
+
+    fn provider_commit(&mut self, sample: u64) {
+        if !self.is_live() {
+            return;
+        }
+        let Some(provider) = self.provider.as_mut() else {
+            return;
+        };
+        if let Err(kind) = provider.commit(sample) {
+            self.telemetry.provider_errors += 1;
+            self.degrade_dropping_provider(Layer1DegradeReason::Disconnect(kind));
         }
     }
 
@@ -485,6 +745,9 @@ impl RecorderLayer1Lane {
     /// outcome and the lane ends [`Layer1LaneState::Stopped`] — the stop path
     /// never propagates a Layer 1 failure.
     pub fn stop(&mut self) -> Layer1SessionOutcome {
+        if self.is_live() {
+            let _ = self.flush_holdback();
+        }
         if let Some(mut provider) = self.provider.take() {
             // Route anything already decoded before asking for the tail.
             for event in provider.drain() {
@@ -531,12 +794,12 @@ impl RecorderLayer1Lane {
             IngestVerdict::Accepted => match event {
                 AsrSessionEvent::Partial(transcript) => {
                     self.telemetry.partials_applied += 1;
-                    self.draft
-                        .insert(transcript.identity.utterance_id(), transcript.text);
+                    self.draft.insert(transcript.utterance_id, transcript.text);
                 }
                 AsrSessionEvent::Final(transcript) => {
                     self.telemetry.finals_accepted += 1;
-                    self.draft.remove(&transcript.identity.utterance_id());
+                    self.draft.remove(&transcript.utterance_id);
+                    self.pending_forward.push(transcript.clone());
                     self.finals.push(transcript);
                 }
                 AsrSessionEvent::Error(error) => {
@@ -579,6 +842,7 @@ impl RecorderLayer1Lane {
     /// they already passed the doctrine seam and remain gap-fill candidates.
     fn degrade_dropping_provider(&mut self, reason: Layer1DegradeReason) {
         self.provider = None;
+        self.held.clear();
         self.draft.clear();
         self.state = Layer1LaneState::Degraded(reason);
         self.note_degrade(reason);
@@ -610,12 +874,9 @@ fn session_fatal(kind: AsrErrorKind) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::events::{
-        ErrorEvent, EventIdentity, SessionId, TranscriptEvent as Transcript,
-    };
+    use super::super::events::{ErrorEvent, SessionId, TranscriptEvent as Transcript};
     use super::super::fake::FakeAsrSessionProvider;
     use super::*;
-    use crate::quality::Layer1MergeMode;
 
     /// Session identity every fixture in this module records under.
     fn session_id() -> SessionId {
@@ -631,35 +892,46 @@ mod tests {
         }
     }
 
-    /// Identity triple within the fixture session.
-    fn identity(utterance_id: u64, sequence_id: u64) -> EventIdentity {
-        EventIdentity::new(session_id(), utterance_id, sequence_id)
-    }
-
     /// Partial event fixture.
     fn partial(utterance_id: u64, sequence_id: u64, text: &str) -> AsrSessionEvent {
         AsrSessionEvent::Partial(Transcript {
-            identity: identity(utterance_id, sequence_id),
+            session_id: session_id(),
+            utterance_id,
+            sequence_id,
             text: text.to_string(),
             range: None,
+            commit: None,
         })
     }
 
     /// Final event fixture.
     fn final_event(utterance_id: u64, sequence_id: u64, text: &str) -> AsrSessionEvent {
         AsrSessionEvent::Final(Transcript {
-            identity: identity(utterance_id, sequence_id),
+            session_id: session_id(),
+            utterance_id,
+            sequence_id,
             text: text.to_string(),
             range: None,
+            commit: None,
         })
     }
 
     /// Typed error event fixture.
     fn error_event(sequence_id: u64, kind: AsrErrorKind) -> AsrSessionEvent {
         AsrSessionEvent::Error(ErrorEvent {
-            identity: identity(0, sequence_id),
+            session_id: session_id(),
+            utterance_id: 0,
+            sequence_id,
             kind,
         })
+    }
+
+    /// One provider push. Cloud hold-back keeps half a second, so a 320-sample
+    /// offer never reaches the provider; this offers just past that fence.
+    fn force_provider_push(lane: &mut RecorderLayer1Lane) -> FanOutVerdict {
+        let keep = cloud_commit_holdback_samples(lane.sample_rate);
+        let extra = keep.saturating_sub(lane.held.len()).saturating_add(1);
+        lane.offer_pcm(&vec![0.1; extra.max(1)])
     }
 
     /// An armed decision over a scripted fake provider.
@@ -678,7 +950,7 @@ mod tests {
         assert_eq!(lane.state(), Layer1LaneState::Unarmed);
         assert_eq!(lane.refiner_mode(), RefinerMode::Off);
 
-        assert_eq!(lane.offer_pcm(&[0.1; 320]), FanOutVerdict::Inactive);
+        assert_eq!(force_provider_push(&mut lane), FanOutVerdict::Inactive);
         lane.poll();
         assert!(lane.take_degrade_notice().is_none(), "no degrade to report");
 
@@ -686,7 +958,6 @@ mod tests {
         assert_eq!(lane.state(), Layer1LaneState::Stopped);
         assert!(outcome.finals().is_empty());
         assert!(outcome.degrade_reason().is_none());
-        assert!(outcome.refined_transcript().is_none());
     }
 
     /// A provider whose open fails is dropped and the recording proceeds
@@ -708,7 +979,7 @@ mod tests {
             lane.take_degrade_notice(),
             Some(Layer1DegradeReason::OpenFailed(AsrErrorKind::Protocol))
         );
-        assert_eq!(lane.offer_pcm(&[0.1; 320]), FanOutVerdict::Inactive);
+        assert_eq!(force_provider_push(&mut lane), FanOutVerdict::Inactive);
     }
 
     /// Partials are volatile draft: replaced freely, cleared by their final,
@@ -724,15 +995,15 @@ mod tests {
             &input(),
         );
 
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert_eq!(lane.draft_text(1), Some("pacjent"));
 
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert_eq!(lane.draft_text(1), Some("pacjent ma"), "draft is replaced");
 
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert_eq!(lane.draft_text(1), None, "the final clears its draft");
         assert_eq!(lane.finals().len(), 1);
@@ -753,7 +1024,7 @@ mod tests {
         );
 
         for _ in 0..3 {
-            lane.offer_pcm(&[0.1; 320]);
+            force_provider_push(&mut lane);
             lane.poll();
         }
 
@@ -778,7 +1049,10 @@ mod tests {
             RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input());
 
         for _ in 0..(OVERFLOW_DEGRADE_LIMIT - 1) {
-            assert_eq!(lane.offer_pcm(&[0.1; 320]), FanOutVerdict::DroppedOverflow);
+            assert_eq!(
+                force_provider_push(&mut lane),
+                FanOutVerdict::DroppedOverflow
+            );
         }
         assert!(lane.is_live(), "a short overflow run is absorbed");
         assert_eq!(
@@ -797,7 +1071,7 @@ mod tests {
             RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input());
 
         for _ in 0..OVERFLOW_DEGRADE_LIMIT {
-            lane.offer_pcm(&[0.1; 320]);
+            force_provider_push(&mut lane);
         }
         assert_eq!(
             lane.state(),
@@ -809,7 +1083,7 @@ mod tests {
             Some(Layer1DegradeReason::Overflow)
         );
         // Capture is oblivious: further offers are ignored, never errors.
-        assert_eq!(lane.offer_pcm(&[0.1; 320]), FanOutVerdict::Inactive);
+        assert_eq!(force_provider_push(&mut lane), FanOutVerdict::Inactive);
     }
 
     /// A successful push resets the consecutive-overflow run, so scattered
@@ -821,7 +1095,7 @@ mod tests {
         for _ in 0..(OVERFLOW_DEGRADE_LIMIT - 1) {
             // The fake accepts pushes (no failure armed): every offer forwards
             // and the overflow run stays at zero.
-            assert_eq!(lane.offer_pcm(&[0.1; 320]), FanOutVerdict::Forwarded);
+            assert_eq!(force_provider_push(&mut lane), FanOutVerdict::Forwarded);
         }
         assert!(lane.is_live());
         assert_eq!(lane.telemetry().overflow_frame_drops, 0);
@@ -835,7 +1109,7 @@ mod tests {
         let mut lane =
             RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input());
 
-        assert_eq!(lane.offer_pcm(&[0.1; 320]), FanOutVerdict::Inactive);
+        assert_eq!(force_provider_push(&mut lane), FanOutVerdict::Inactive);
         assert_eq!(
             lane.state(),
             Layer1LaneState::Degraded(Layer1DegradeReason::Disconnect(AsrErrorKind::Transport))
@@ -849,7 +1123,7 @@ mod tests {
     fn fatal_error_event_degrades_the_lane() {
         let mut lane =
             RecorderLayer1Lane::open(armed(vec![error_event(1, AsrErrorKind::Auth)]), &input());
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert_eq!(
             lane.state(),
@@ -867,11 +1141,11 @@ mod tests {
             ]),
             &input(),
         );
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert!(lane.is_live(), "rate limiting must not end the session");
 
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert_eq!(lane.finals().len(), 1, "the session keeps producing");
     }
@@ -880,7 +1154,7 @@ mod tests {
     #[test]
     fn sleep_wake_degrades_and_clears_the_draft() {
         let mut lane = RecorderLayer1Lane::open(armed(vec![partial(1, 1, "pacjent")]), &input());
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert_eq!(lane.draft_len(), 1);
 
@@ -898,7 +1172,7 @@ mod tests {
     async fn recorder_lifecycle_adapter_reaches_active_lane_transition() {
         let (handle, mut events) = recorder_lifecycle_channel();
         let mut lane = RecorderLayer1Lane::open(armed(vec![partial(1, 1, "pacjent")]), &input());
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert_eq!(lane.draft_len(), 1);
 
@@ -938,8 +1212,12 @@ mod tests {
         assert_eq!(lane.state(), Layer1LaneState::Stopped);
         assert_eq!(outcome.finals().len(), 2);
         assert_eq!(
-            outcome.refined_transcript().as_deref(),
-            Some("pacjent ma goraczke podano plyny")
+            outcome
+                .finals()
+                .iter()
+                .map(|event| event.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pacjent ma goraczke", "podano plyny"]
         );
         assert!(
             outcome.degrade_reason().is_none(),
@@ -960,8 +1238,8 @@ mod tests {
         );
         let mut lane =
             RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input());
-        lane.offer_pcm(&[0.1; 320]);
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
+        force_provider_push(&mut lane);
         lane.poll();
         assert!(matches!(lane.state(), Layer1LaneState::Degraded(_)));
 
@@ -973,44 +1251,6 @@ mod tests {
         );
     }
 
-    /// The outcome routes through the T0 truth seam: the committed live floor
-    /// is immutable and Layer 1 text only fills the tail/gaps.
-    #[test]
-    fn outcome_adjudication_preserves_the_live_floor() {
-        let mut lane = RecorderLayer1Lane::open(
-            armed(vec![final_event(
-                1,
-                1,
-                "pacjent ma goraczke i wymioty od wczoraj",
-            )]),
-            &input(),
-        );
-        let outcome = lane.stop();
-
-        let live_floor = "pacjent ma goraczke";
-        let merged = outcome.adjudicate_against_live_floor(live_floor);
-        assert_eq!(merged.mode, Layer1MergeMode::LiveFloorGapFill);
-        assert!(
-            merged.text.starts_with(live_floor),
-            "committed live text must survive adjudication verbatim"
-        );
-        assert!(
-            merged.text.contains("wymioty"),
-            "the provider tail may extend the floor"
-        );
-    }
-
-    /// With no finals the outcome refuses to fabricate a candidate, and the
-    /// seam reports the live floor untouched.
-    #[test]
-    fn empty_outcome_leaves_the_live_floor_alone() {
-        let mut lane = RecorderLayer1Lane::open(Layer1Decision::Disarmed, &input());
-        let outcome = lane.stop();
-        let merged = outcome.adjudicate_against_live_floor("pacjent ma goraczke");
-        assert_eq!(merged.mode, Layer1MergeMode::LiveOnly);
-        assert_eq!(merged.text, "pacjent ma goraczke");
-    }
-
     /// Stopping a degraded or unarmed lane is a quiet no-op path — the stop
     /// path never propagates Layer 1 trouble.
     #[test]
@@ -1019,7 +1259,7 @@ mod tests {
             .failing_pushes(AsrErrorKind::Transport);
         let mut lane =
             RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input());
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         assert!(matches!(lane.state(), Layer1LaneState::Degraded(_)));
 
         let outcome = lane.stop();
@@ -1029,5 +1269,89 @@ mod tests {
             Some(Layer1DegradeReason::Disconnect(AsrErrorKind::Transport))
         );
         assert!(outcome.finals().is_empty());
+    }
+
+    #[test]
+    fn holdback_stays_bounded_under_stalled_provider() {
+        for (sample_rate, chunk_len) in [(16_000, 320), (44_100, 777), (88_200, 8_820)] {
+            let mut input = input();
+            input.sample_rate = sample_rate;
+            let provider = FakeAsrSessionProvider::new(RefinerMode::CloudSession)
+                .failing_pushes(AsrErrorKind::Overflow);
+            let mut lane =
+                RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
+            let keep = cloud_commit_holdback_samples(sample_rate);
+            let chunk = vec![0.1; chunk_len];
+            let mut offered_samples = 0;
+            let mut rejected_pushes = 0;
+            for _ in 0..(keep / chunk_len + OVERFLOW_DEGRADE_LIMIT as usize + 10) {
+                let was_live = lane.is_live();
+                let before = lane.held.len();
+                assert!(before <= keep);
+                // The only append adds one incoming chunk; release drains
+                // the excess before invoking even a stalled provider.
+                assert!(before + chunk.len() <= keep + chunk_len);
+                offered_samples += chunk.len();
+                let verdict = lane.offer_pcm(&chunk);
+                if was_live && offered_samples > keep {
+                    assert_eq!(verdict, FanOutVerdict::DroppedOverflow);
+                    rejected_pushes += 1;
+                } else if was_live {
+                    assert_eq!(verdict, FanOutVerdict::Forwarded);
+                    assert_eq!(lane.telemetry().overflow_frame_drops, 0);
+                } else {
+                    assert_eq!(verdict, FanOutVerdict::Inactive);
+                }
+                assert!(lane.held.len() <= keep);
+                assert_eq!(lane.telemetry().overflow_frame_drops, rejected_pushes);
+            }
+            assert_eq!(rejected_pushes, u64::from(OVERFLOW_DEGRADE_LIMIT));
+            assert_eq!(lane.telemetry().frames_forwarded, 0);
+            assert_eq!(
+                lane.state(),
+                Layer1LaneState::Degraded(Layer1DegradeReason::Overflow)
+            );
+            assert!(lane.held.is_empty());
+        }
+    }
+
+    #[test]
+    fn aged_audio_reaches_provider_without_flushing_holdback() {
+        let mut lane = RecorderLayer1Lane::open(armed(vec![partial(1, 1, "aged")]), &input());
+        let keep = cloud_commit_holdback_samples(lane.sample_rate);
+        lane.offer_pcm(&vec![0.1; keep]);
+        assert_eq!(lane.telemetry().frames_forwarded, 0);
+        assert_eq!(lane.pushed_samples(), 0);
+        assert_eq!(lane.offer_pcm(&[0.2; 320]), FanOutVerdict::Forwarded);
+        lane.poll();
+        assert_eq!(lane.pushed_samples(), 320);
+        assert_eq!(lane.telemetry().frames_forwarded, 1);
+        assert_eq!(lane.draft_text(1), Some("aged"));
+        assert_eq!(lane.held.len(), keep);
+        assert_eq!(&lane.held[keep - 320..], &[0.2; 320]);
+    }
+
+    #[test]
+    fn commit_pushes_exactly_the_silero_close_then_commits() {
+        let mut lane = RecorderLayer1Lane::open(armed(vec![]), &input());
+        let close_at = cloud_commit_holdback_samples(lane.sample_rate) as u64 + 100;
+        lane.offer_pcm(&vec![0.1; close_at as usize]);
+        assert_eq!(lane.pushed_samples(), 100);
+        assert_eq!(lane.commit_through(close_at), None);
+        assert_eq!(lane.pushed_samples(), close_at);
+        assert!(lane.commit_late_lags().is_empty());
+    }
+
+    #[test]
+    fn commit_past_the_holdback_lands_on_the_pushed_sample_and_still_commits() {
+        let mut lane = RecorderLayer1Lane::open(armed(vec![]), &input());
+        let close_at = cloud_commit_holdback_samples(lane.sample_rate) as u64 + 50;
+        lane.offer_pcm(&vec![0.1; 20_000]);
+        let pushed = lane.pushed_samples();
+        assert!(pushed > close_at);
+        assert_eq!(lane.commit_through(close_at), Some(pushed - close_at));
+        assert_eq!(lane.pushed_samples(), pushed);
+        assert_eq!(lane.commit_late_lags(), &[pushed - close_at]);
+        assert!(lane.is_live(), "a late commit still commits");
     }
 }
