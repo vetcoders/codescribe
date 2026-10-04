@@ -1,11 +1,6 @@
 import SwiftUI
 
-// Tray Menu (glass dropdown panel).
-//
-// Reusable content view: App.swift hosts this inside an `NSPopover`
-// (`NSHostingController(rootView: TrayMenuView(viewModel:))`) anchored to a
-// manual `NSStatusItem` — deliberately not `MenuBarExtra`, to sidestep the
-// WindowServer status-item session-state issue seen on this bundle id.
+// TrayPanel supplies the native glass and anchors this content to NSStatusItem.
 // 300pt wide, glass panel, status header bound to runtime, terracotta marking
 // ONLY the primary action ("Show Agent"), Notes / Diagnostics as nested
 // disclosure groups. Dictation toggle + quick config toggles are wired through
@@ -15,51 +10,65 @@ struct TrayMenuView: View {
   @ObservedObject var trayStatus: TrayStatusStore
   // macOS 14+ action to open the app's Settings scene — replaces the fragile
   // private `showSettingsWindow:` selector that stopped working on newer macOS.
-  @Environment(\.openSettings) private var openSettings
+  // The row goes through `presentSettings()` so the window arrives with
+  // Codescribe active: this menu is a non-activating panel.
+  @Environment(\.openWindow) private var openWindow
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
-    GlassPanel(cornerRadius: CSRadius.tray) {
-      VStack(spacing: 0) {
-        statusHeader
+    VStack(spacing: 0) {
+      statusHeader
+      if trayStatus.showsDetailStatusRow {
         trayStatusRow
-        TrayDivider(top: 3, bottom: 5)
-
-        primaryActions
-
-        TrayDivider()
-        quickSettingsGroup
-
-        notesGroup
-        diagnosticsGroup
-
-        TrayDivider()
-        TrayRow(icon: .settings, title: "Settings…", shortcut: "⌘,") {
-          openSettings()
-        }
-        if DeveloperSurface.isEnabled() {
-          TrayRow(icon: .diagnostics, title: "Voice Lab…") {
-            VoiceLabRuntime.openConsole()
-          }
-        }
-        TrayRow(icon: .setupWizard, title: "Setup Wizard…") { viewModel.onOpenSetupWizard() }
-        TrayRow(icon: .refresh, title: "Check for Updates…") {
-          viewModel.onCheckForUpdates()
-        }
-        TrayRow(icon: .help, title: "Help") { viewModel.onHelp() }
-        TrayRow(icon: .info, title: "About") { viewModel.onAbout() }
-
-        TrayDivider()
-        TrayRow(
-          icon: .power,
-          iconColor: CSColor.terracottaDeep,
-          title: "Quit codescribe",
-          titleColor: TrayRow.subnoteColor,
-          shortcut: "⌘Q"
-        ) { viewModel.onQuit() }
       }
-      .padding(7)
+      TrayDivider(top: 3, bottom: 5)
+
+      primaryActions
+
+      TrayDivider()
+      quickSettingsGroup
+
+      notesGroup
+      diagnosticsGroup
+
+      TrayDivider()
+      TrayRow(
+        icon: .settings,
+        title: String(localized: "Settings…"),
+        shortcut: "⌘,"
+      ) {
+        openWindow.presentSettings()
+      }
+      if DeveloperSurface.isEnabled() {
+        TrayRow(
+          icon: .diagnostics,
+          title: String(localized: "Voice Lab…", comment: "Tray row: opens the Voice Lab console")
+        ) {
+          Task { await VoiceLabRuntime.shared.openConsole() }
+        }
+      }
+      TrayRow(icon: .setupWizard, title: String(localized: "Setup Wizard…")) {
+        viewModel.onOpenSetupWizard()
+      }
+      TrayRow(icon: .refresh, title: String(localized: "Check for Updates…")) {
+        viewModel.onCheckForUpdates()
+      }
+      TrayRow(icon: .help, title: String(localized: "Help")) { viewModel.onHelp() }
+      TrayRow(icon: .info, title: String(localized: "About")) { viewModel.onAbout() }
+
+      TrayDivider()
+      TrayRow(
+        icon: .power,
+        iconColor: CSColor.terracottaDeep,
+        title: String(
+          localized: "Quit codescribe",
+          comment: "Tray row; codescribe is the product name, kept lowercase"),
+        shortcut: "⌘Q"
+      ) { viewModel.onQuit() }
     }
+    .padding(7)
     .frame(width: 300)
+    .transaction { if reduceMotion { $0.disablesAnimations = true } }
     .onAppear { viewModel.refreshStatus() }
     .onDisappear { viewModel.collapseDisclosures() }
   }
@@ -83,14 +92,14 @@ struct TrayMenuView: View {
       }
     }
     .padding(.horizontal, 12)
-    .padding(.top, 11)
+    .padding(.top, CSSpace.control)
     .padding(.bottom, 10)
   }
 
   private var trayStatusRow: some View {
     HStack(spacing: 7) {
       CSIconView(icon: trayStatus.icon, size: 11, weight: .bold, color: trayStatus.color)
-      Text(trayStatus.status.menuLabel)
+      Text(trayStatus.detailLabel)
         .font(CSFont.ui(12, .medium))
         .foregroundStyle(trayStatus.color)
         .lineLimit(1)
@@ -99,7 +108,7 @@ struct TrayMenuView: View {
     .padding(.horizontal, 11)
     .padding(.vertical, 7)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
         .fill(trayStatus.color.opacity(0.10))
     )
     .padding(.horizontal, 5)
@@ -112,7 +121,7 @@ struct TrayMenuView: View {
     VStack(spacing: 0) {
       TrayRow(
         icon: .agent,
-        title: "Show Agent",
+        title: String(localized: "Show Agent", comment: "Tray row: opens the agent chat window"),
         titleColor: viewModel.agentAvailable ? CSColor.textBody : CSColor.textFaint,
         titleWeight: .semibold,
         shortcut: "⌥⌥",
@@ -127,7 +136,7 @@ struct TrayMenuView: View {
       ) { viewModel.toggleDictation() }
 
       historyGroup
-      TrayRow(icon: .copy, title: "Copy last transcript") {
+      TrayRow(icon: .copy, title: String(localized: "Copy last transcript")) {
         viewModel.copyLastTranscript()
       }
 
@@ -147,7 +156,7 @@ struct TrayMenuView: View {
     VStack(spacing: 0) {
       TrayRow(
         icon: .history,
-        title: "Open history",
+        title: String(localized: "Open history"),
         disclosureExpanded: viewModel.historyExpanded,
         style: viewModel.historyExpanded ? .raised : .plain
       ) {
@@ -157,7 +166,7 @@ struct TrayMenuView: View {
       if viewModel.historyExpanded {
         TrayDisclosureChildren {
           if viewModel.historyItems.isEmpty {
-            TrayChildRow(title: "No transcripts yet")
+            TrayChildRow(title: String(localized: "No transcripts yet"))
           } else {
             ForEach(viewModel.historyItems) { item in
               TrayChildRow(title: item.title) {
@@ -165,7 +174,7 @@ struct TrayMenuView: View {
               }
             }
           }
-          TrayChildRow(title: "Open history folder") {
+          TrayChildRow(title: String(localized: "Open history folder")) {
             viewModel.openHistoryFolder()
           }
         }
@@ -181,7 +190,7 @@ struct TrayMenuView: View {
     VStack(spacing: 0) {
       TrayRow(
         icon: .settings,
-        title: "Quick settings",
+        title: String(localized: "Quick settings"),
         disclosureExpanded: viewModel.quickSettingsExpanded,
         style: viewModel.quickSettingsExpanded ? .raised : .plain
       ) {
@@ -200,36 +209,48 @@ struct TrayMenuView: View {
 
   private var quickToggles: some View {
     VStack(spacing: 0) {
-      toggleRow(icon: .dock, title: "Show Dock Icon", isOn: viewModel.showDockIcon) {
-        viewModel.setShowDockIcon($0)
-      }
+      toggleRow(
+        icon: .dock,
+        title: String(localized: "Show Dock Icon"),
+        isOn: viewModel.showDockIcon
+      ) { viewModel.setShowDockIcon($0) }
       toggleRow(
         icon: .overlay,
-        title: "Transcription Overlay",
+        title: String(localized: "Transcription Overlay"),
         isOn: viewModel.overlayEnabled
       ) { viewModel.setOverlayEnabled($0) }
       autoPasteToggle
       autoFormatMenu
       holdBadgeMenu
-      toggleRow(icon: .notesMode, title: "Notes Mode", isOn: viewModel.notesModeEnabled) {
-        viewModel.setNotesMode($0)
-      }
+      toggleRow(
+        icon: .notesMode,
+        title: String(localized: "Notes Mode"),
+        isOn: viewModel.notesModeEnabled
+      ) { viewModel.setNotesMode($0) }
       toggleRow(
         icon: .agent,
-        title: "Start in Assistive",
+        title: String(
+          localized: "Start in Assistive",
+          comment: "Tray toggle: new recordings start in the assistive (agent) lane"),
         isOn: viewModel.startInAssistive,
         onColor: CSColor.assistive
       ) { viewModel.setStartInAssistive($0) }
     }
   }
 
-  /// Auto Paste shares the exact baseline row (icon + trailing On/Off keycap)
-  /// with Show Dock Icon and Transcription Overlay — one visual grammar for
-  /// every quick toggle. TrayRow keeps the locked palette and geometry.
+  /// Auto Paste is a cycling row in the Auto Format grammar: each click
+  /// advances Safe → Comfort → Off → Safe (one stored `PASTE_MODE`, the same
+  /// choice as Settings › Shortcuts). The current mode sits in the keycap.
   private var autoPasteToggle: some View {
-    toggleRow(icon: .send, title: "Auto Paste", isOn: viewModel.autoPasteEnabled) {
-      viewModel.setAutoPasteEnabled($0)
-    }
+    TrayRow(
+      icon: .send,
+      title: String(localized: "Auto Paste"),
+      shortcut: viewModel.pasteMode.visibleName,
+      shortcutColor: viewModel.pasteMode == .off ? CSColor.textFaintAlt : CSColor.oliveLight
+    ) { viewModel.setPasteMode(viewModel.pasteMode.next) }
+    .accessibilityLabel("Auto Paste")
+    .accessibilityValue(viewModel.pasteMode.visibleName)
+    .accessibilityHint("Cycle automatic paste mode")
   }
 
   /// Auto Format is a cycling row in the same baseline grammar: each click
@@ -238,7 +259,7 @@ struct TrayMenuView: View {
   private var autoFormatMenu: some View {
     TrayRow(
       icon: .edit,
-      title: "Auto Format",
+      title: String(localized: "Auto Format"),
       shortcut: viewModel.autoFormatLevel.visibleName,
       shortcutColor: viewModel.autoFormatLevel == .off
         ? CSColor.textFaintAlt : CSColor.oliveLight
@@ -253,7 +274,7 @@ struct TrayMenuView: View {
   private var holdBadgeMenu: some View {
     TrayRow(
       icon: .record,
-      title: "Pointer Indicator",
+      title: String(localized: "Pointer Indicator"),
       shortcut: viewModel.holdBadgeOption.visibleName,
       shortcutColor: viewModel.holdBadgeOption == .off
         ? CSColor.textFaintAlt : CSColor.oliveLight
@@ -275,17 +296,29 @@ struct TrayMenuView: View {
     TrayRow(
       icon: icon,
       title: title,
-      shortcut: isOn ? "On" : "Off",
+      shortcut: isOn
+        ? String(
+          localized: "tray.keycap.on", defaultValue: "On",
+          comment: "Tray keycap, a few letters wide: this toggle is enabled")
+        : String(
+          localized: "tray.keycap.off", defaultValue: "Off",
+          comment: "Tray keycap, a few letters wide: this toggle is disabled"),
       shortcutColor: isOn ? onColor : CSColor.textFaintAlt
     ) { set(!isOn) }
   }
 
   private var recordingActionTitle: String {
-    if viewModel.isStartingDictation { return "Starting…" }
-    if viewModel.isRecording {
-      return trayStatus.status.assistive ? "Stop Assistive" : "Stop Dictation"
+    if viewModel.isStartingDictation {
+      return String(localized: "Starting…", comment: "Tray row: a recording start is in flight")
     }
-    return viewModel.startInAssistive ? "Start Assistive" : "Start Dictation"
+    if viewModel.isRecording {
+      return trayStatus.status.assistive
+        ? String(localized: "Stop Assistive", comment: "Tray row: stop the agent recording")
+        : String(localized: "Stop Dictation", comment: "Tray row: stop the dictation recording")
+    }
+    return viewModel.startInAssistive
+      ? String(localized: "Start Assistive", comment: "Tray row: start an agent recording")
+      : String(localized: "Start Dictation", comment: "Tray row: start a dictation recording")
   }
 
   private var recordingActionColor: Color {
@@ -304,7 +337,7 @@ struct TrayMenuView: View {
     VStack(spacing: 0) {
       TrayRow(
         icon: .notes,
-        title: "Notes",
+        title: String(localized: "Notes", comment: "Tray group: the daily-note actions"),
         disclosureExpanded: viewModel.notesExpanded,
         style: viewModel.notesExpanded ? .raised : .plain
       ) {
@@ -313,16 +346,20 @@ struct TrayMenuView: View {
 
       if viewModel.notesExpanded {
         TrayDisclosureChildren {
-          TrayChildRow(title: "Save last transcript") {
+          TrayChildRow(title: String(localized: "Save last transcript")) {
             viewModel.onSaveLastTranscript()
           }
-          TrayChildRow(title: "Save selection") {
+          TrayChildRow(
+            title: String(
+              localized: "Save selection",
+              comment: "Tray row: save the text selected in another app to the daily note")
+          ) {
             viewModel.onSaveSelection()
           }
-          TrayChildRow(title: "Open notes folder") {
+          TrayChildRow(title: String(localized: "Open notes folder")) {
             viewModel.onOpenNotesFolder()
           }
-          TrayChildRow(title: "Open today's note") {
+          TrayChildRow(title: String(localized: "Open today's note")) {
             viewModel.onOpenTodayNote()
           }
           if let status = viewModel.noteStatus {
@@ -339,7 +376,7 @@ struct TrayMenuView: View {
     VStack(spacing: 0) {
       TrayRow(
         icon: .diagnostics,
-        title: "Diagnostics",
+        title: String(localized: "Diagnostics"),
         disclosureExpanded: viewModel.diagnosticsExpanded,
         style: viewModel.diagnosticsExpanded ? .raised : .plain
       ) {
@@ -350,8 +387,12 @@ struct TrayMenuView: View {
 
       if viewModel.diagnosticsExpanded {
         TrayDisclosureChildren {
-          TrayChildRow(title: "Open log folder") { viewModel.onOpenLogFolder() }
-          TrayChildRow(title: "Copy debug info") { viewModel.onCopyDebugInfo() }
+          TrayChildRow(title: String(localized: "Open log folder")) {
+            viewModel.onOpenLogFolder()
+          }
+          TrayChildRow(title: String(localized: "Copy debug info")) {
+            viewModel.onCopyDebugInfo()
+          }
         }
       }
     }
@@ -381,7 +422,7 @@ private struct TrayNoteStatusRow: View {
     .padding(.horizontal, 11)
     .padding(.vertical, 7)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
         .fill(tint.opacity(0.10))
     )
     .transition(.opacity)
@@ -394,13 +435,8 @@ private struct TrayNoteStatusRow: View {
   #Preview("Tray · Idle") {
     let vm = TrayViewModel(engine: MockTrayEngine(recording: false), isRecording: false)
     TrayMenuView(viewModel: vm, trayStatus: .preview())
-      .padding(40)
-      .background(
-        LinearGradient(
-          colors: [Color(hex: 0x15110E), Color(hex: 0x0B0C10), Color(hex: 0x0D1012)],
-          startPoint: .topLeading, endPoint: .bottomTrailing
-        )
-      )
+      .padding(CSSpace.previewInset)
+      .background(CSColor.windowWash)
       .onAppear { FontLoader.register() }
   }
 
@@ -408,15 +444,10 @@ private struct TrayNoteStatusRow: View {
     let vm = TrayViewModel(engine: MockTrayEngine(recording: true), isRecording: true)
     TrayMenuView(
       viewModel: vm,
-      trayStatus: .preview(kind: .listening, tone: .active, label: "Status: Recording...")
+      trayStatus: .preview(kind: .listening, tone: .active)
     )
-    .padding(40)
-    .background(
-      LinearGradient(
-        colors: [Color(hex: 0x15110E), Color(hex: 0x0B0C10), Color(hex: 0x0D1012)],
-        startPoint: .topLeading, endPoint: .bottomTrailing
-      )
-    )
+    .padding(CSSpace.previewInset)
+    .background(CSColor.windowWash)
     .onAppear { FontLoader.register() }
   }
 #endif

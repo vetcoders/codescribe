@@ -5,17 +5,55 @@
 Apple live dictation uses `SFSpeechRecognizer` inside the bundled
 `codescribe-stt-bridge` helper (`Contents/MacOS/codescribe-stt-bridge`).
 
-Speech Recognition is a **per-app TCC identity** (`com.vetcoders.codescribe`).
+Speech Recognition authorization belongs to the **responsible process's TCC
+identity**, not to the data directory or the shell command's executable path.
 
-| Context              | Who gets the grant               |
-| -------------------- | -------------------------------- |
-| CLI / terminal tests | Terminal app (Ghostty, iTerm, …) |
-| Codescribe.app       | `com.vetcoders.codescribe`       |
+| Context                                                     | TCC identity                                                                        |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Release app bundle via LaunchServices                       | `com.vetcoders.codescribe`                                                          |
+| Debug app bundle via LaunchServices                         | `com.vetcoders.codescribe.dev`                                                      |
+| CLI / terminal probes                                       | Normally the terminal/host; not proof of an app grant                               |
+| Direct `Codescribe.app/Contents/MacOS/Codescribe` execution | Unsupported native app startup; may retain the terminal/agent host's responsibility |
 
 Granting Speech for the terminal does **not** authorize the app. That is why
 CLI can probe `speech_auth: authorized` while the installed app fails live
 with `speech_auth_not_determined` / hard fail when Candle fallback is disabled
 for live.
+
+## Supported native launch context
+
+Launch the **app bundle through LaunchServices**: Finder, Spotlight, or
+`/usr/bin/open` with the intended `.app` path. `make start` also uses `open`,
+but resolves the app by name first; use an explicit bundle path when selecting
+a particular dev/test build. See [Installation: supported native launch
+context](./INSTALLATION.md#supported-native-launch-context) for commands and
+per-launch environment variables.
+
+Do **not** execute `Contents/MacOS/Codescribe` directly from a shell, agent
+host, debugger wrapper or subprocess for native speech acceptance. This is
+unsupported even when the executable remains inside a bundle whose
+`Info.plist` contains `NSSpeechRecognitionUsageDescription`. TCC can attribute
+the request to the launching host and abort for a missing usage description
+there. `CODESCRIBE_DATA_DIR` selects application data; it does not create a
+different TCC identity. Do not grant Speech to the host, edit its usage
+description, reset TCC or disable authorization to make this launch pass.
+
+[Issue #93](https://github.com/vetcoders/codescribe/issues/93) records this
+failure on Release 0.15.2 (1652), commit `862bd0a63`, on 2026-10-02: direct
+execution aborted in TCC with the agent host as responsible process; the same
+build launched through LaunchServices reached Listening. That observation
+predates localization and is not a retest of newer builds.
+
+The current source already supplies the usage description in
+`macos/project.yml` and requests Speech from the main app through
+`AppDelegate.ensureSpeechRecognitionAtLaunch()` and
+`SpeechRecognitionPermission.request()`. Keep this permission path and the
+backend-specific authorization rules below. Terminal bridge probes and the
+XCTest host (which skips application runtime startup) do not verify native
+speech startup. Acceptance on a new build must record the actual bundle
+path, identifier, version/build, commit and PID, then confirm the app reaches
+Speech authorization and Listening without a TCC abort. An `open` exit code
+alone is not acceptance evidence.
 
 ## Backend scope (W4-B)
 

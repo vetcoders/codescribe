@@ -4,16 +4,16 @@ import Foundation
 // ThreadStore via the UniFFI bridge (CodescribeThreads). Lists/searches thread
 // summaries for the rail, loads messages on demand, and forwards lightweight
 // thread mutations that already exist in the core.
-final class RealThreadsEngine: ChatThreadsProviding {
+final class RealThreadsEngine: BackgroundThreadListing {
   private let threads = CodescribeThreads()
 
-  func listThreads() -> [ChatThread] {
-    guard let list = try? threads.listThreads(filter: nil) else { return [] }
+  func listThreads() throws -> [ChatThread] {
+    let list = try threads.listThreads(filter: nil)
     return list.map(Self.thread)
   }
 
-  func searchThreads(query: String) -> [ChatThread] {
-    guard let list = try? threads.searchThreads(query: query) else { return [] }
+  func searchThreads(query: String) throws -> [ChatThread] {
+    let list = try threads.searchThreads(query: query)
     return list.map(Self.thread)
   }
 
@@ -23,8 +23,14 @@ final class RealThreadsEngine: ChatThreadsProviding {
 
   func loadMessages(backendId: String) -> [ChatMessage] {
     guard let thread = try? threads.loadThread(id: backendId) else { return [] }
+    return Self.restoredMessages(from: thread.messages)
+  }
+
+  /// Projects bridge records without opening storage; the restoration contract
+  /// can be checked with persisted-block fixtures by the integrator.
+  static func restoredMessages(from messages: [CsThreadMessage]) -> [ChatMessage] {
     var toolNamesById: [String: String] = [:]
-    return thread.messages.compactMap { message -> ChatMessage? in
+    return messages.compactMap { message -> ChatMessage? in
       let content = StoredMessageContent(rawJson: message.rawJson)
       for toolUse in content.toolUses { toolNamesById[toolUse.id] = toolUse.name }
 
@@ -80,10 +86,11 @@ final class RealThreadsEngine: ChatThreadsProviding {
     try? threads.exportThreadMarkdown(id: backendId, assistantOnly: assistantOnly)
   }
 
-  private static func thread(from summary: CsThreadSummary) -> ChatThread {
+  static func thread(from summary: CsThreadSummary) -> ChatThread {
     let updatedAt = Date(timeIntervalSince1970: Double(summary.updatedAtMs) / 1000.0)
     var thread = ChatThread(
-      title: summary.title.isEmpty ? "Untitled" : summary.title,
+      title: summary.title.isEmpty
+        ? String(localized: "Untitled", comment: "Thread that carries no title") : summary.title,
       meta: ThreadRailMeta.drawerSubtitle(
         model: summary.model,
         tokens: summary.totalTokens,
@@ -95,6 +102,8 @@ final class RealThreadsEngine: ChatThreadsProviding {
     thread.updatedAt = updatedAt
     thread.model = summary.model
     thread.totalTokens = summary.totalTokens
+    thread.mode = summary.mode
+    thread.tags = summary.tags
     return thread
   }
 
@@ -104,15 +113,32 @@ final class RealThreadsEngine: ChatThreadsProviding {
     timestampMs: Int64
   ) -> ChatMessage {
     let lines = results.map { result in
-      ToolLine(
-        verb: result.isError ? "failed" : "ran",
-        detail: toolNamesById[result.toolUseId] ?? "tool result"
+      let state: ToolLineState
+      let verb: String
+      switch result.isError {
+      case true?:
+        state = .failed
+        verb = "failed"
+      case false?:
+        state = .succeeded
+        verb = "ran"
+      case nil:
+        state = .unknown
+        verb = "ended"
+      }
+      return ToolLine(
+        callID: result.toolUseId,
+        verb: verb,
+        detail: result.toolUseId.flatMap { toolNamesById[$0] } ?? "tool result",
+        state: state
       )
     }
     var message = ChatMessage(
       role: .tool, timestamp: timeString(timestampMs: timestampMs), text: "")
     let n = lines.count
-    message.toolTitle = "What I checked · \(n) tool\(n == 1 ? "" : "s")"
+    message.toolTitle = String(
+      localized: "What I checked · \(n) tools",
+      comment: "Tool activity header: how many tool calls the model made")
     message.toolLines = lines
     return message
   }
@@ -148,15 +174,18 @@ private struct StoredMessageContent {
     toolUses = blocks.compactMap { block in
       guard block.type == "tool_use",
         let id = block.id,
-        let name = block.name
+        !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        let name = block.name,
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       else { return nil }
       return StoredToolUse(id: id, name: name)
     }
     toolResults = blocks.compactMap { block in
-      guard block.type == "tool_result",
-        let toolUseId = block.toolUseId
-      else { return nil }
-      return StoredToolResult(toolUseId: toolUseId, isError: block.isError ?? false)
+      guard block.type == "tool_result" else { return nil }
+      let toolUseId = block.toolUseId.flatMap {
+        $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
+      }
+      return StoredToolResult(toolUseId: toolUseId, isError: block.isError)
     }
   }
 }
@@ -167,6 +196,17 @@ private struct StoredContentBlock: Decodable {
   let name: String?
   let toolUseId: String?
   let isError: Bool?
+
+  init(from decoder: Decoder) throws {
+    // A malformed optional field must not erase readable sibling blocks or
+    // turn missing outcome evidence into a successful tool call.
+    let container = try? decoder.container(keyedBy: CodingKeys.self)
+    type = try? container?.decode(String.self, forKey: .type)
+    id = try? container?.decode(String.self, forKey: .id)
+    name = try? container?.decode(String.self, forKey: .name)
+    toolUseId = try? container?.decode(String.self, forKey: .toolUseId)
+    isError = try? container?.decode(Bool.self, forKey: .isError)
+  }
 
   enum CodingKeys: String, CodingKey {
     case type
@@ -183,6 +223,6 @@ private struct StoredToolUse {
 }
 
 private struct StoredToolResult {
-  let toolUseId: String
-  let isError: Bool
+  let toolUseId: String?
+  let isError: Bool?
 }

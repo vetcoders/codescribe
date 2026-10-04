@@ -96,17 +96,6 @@ impl StreamingTagParser {
         }
     }
 
-    /// Parser with a custom speak chunk window. Both bounds are clamped to at
-    /// least 1 so chunking can never stall on a zero-width window.
-    pub fn with_speak_chunking(min_chars: usize, max_chars: usize) -> Self {
-        Self {
-            buffer: String::new(),
-            state: ParserState::Text,
-            speak_min_chars: min_chars.max(1),
-            speak_max_chars: max_chars.max(1),
-        }
-    }
-
     /// Feed a new chunk and return parsed events.
     pub fn feed(&mut self, chunk: &str) -> Vec<DemuxEvent> {
         self.buffer.push_str(chunk);

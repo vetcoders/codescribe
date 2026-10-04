@@ -6,9 +6,10 @@
 //! - `final`   → phrase seal (multi-utterance freezed+append fuel)
 //! - closing `BridgeResponse` → summary after stdin EOF
 //!
-//! Product live path maps these onto `EngineEvent::{Preview,UtteranceFinal}`.
-//! The old one-shot `run_bridge_stream` (full buffer then wait) remains for
-//! scheduler commit slices and the A/B `wav` escape hatch.
+//! The Apple live session maps these onto
+//! `EngineEvent::{Preview,UtteranceFinal}` before ledger admission. The `wav`
+//! A/B alternative is an older Apple temp-WAV `transcribe_live` request
+//! transport, not a VAD/scheduler route.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -75,8 +76,9 @@ struct StreamSegmentLine {
     text: String,
     start_ts: f32,
     end_ts: f32,
+    /// `SFTranscriptionSegment.confidence` (0…1) on finals; 0.0 on partials
+    /// is Apple's "no metric" sentinel. Consumed by the A6 confidence lane.
     #[serde(default)]
-    #[allow(dead_code)]
     confidence: Option<f32>,
 }
 
@@ -130,7 +132,7 @@ impl LiveStreamSession {
             .take()
             .context("Apple STT bridge stdout unavailable")?;
 
-        let contextual_strings = crate::pipeline::stream_postprocess::apple_contextual_strings();
+        let contextual_strings: Option<Vec<String>> = None;
         let request = BridgeRequest {
             protocol_version: 1,
             command: "stream",
@@ -138,6 +140,7 @@ impl LiveStreamSession {
             audio_path: None,
             contextual_strings: contextual_strings.as_deref(),
             allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+            deadline_policy: None,
         };
         let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
         stdin
@@ -202,11 +205,6 @@ impl LiveStreamSession {
             }
         }
         out
-    }
-
-    /// Blocking wait for at least one event (or timeout).
-    pub fn recv_event_timeout(&mut self, timeout: Duration) -> Option<LiveStreamEvent> {
-        self.events_rx.recv_timeout(timeout).ok()
     }
 
     /// Close stdin (EOF), wait for reader + child, return remaining events incl. summary.
@@ -358,6 +356,10 @@ pub(crate) fn parse_stream_stdout_line(line: &str) -> Option<LiveStreamEvent> {
                             text,
                             start_ts: s.start_ts,
                             end_ts: s.end_ts,
+                            // Partials carry `confidence: 0.0` per Apple
+                            // semantics — that means "no metric", never "low"
+                            // (A6, d4). Only `final` rows below may carry one.
+                            confidence: None,
                         })
                     })
                     .collect();
@@ -378,10 +380,24 @@ pub(crate) fn parse_stream_stdout_line(line: &str) -> Option<LiveStreamEvent> {
                         {
                             return None;
                         }
+                        // A 0.0 confidence is Apple's "no metric" sentinel on
+                        // frozen partials emitted as finals; it is not a
+                        // measurement (A6, d4: never invent confidence).
+                        let confidence = s
+                            .confidence
+                            .filter(|value| value.is_finite() && *value > 0.0)
+                            .map(|value| {
+                                crate::pipeline::word_confidence::WordConfidence::new(
+                                    crate::pipeline::word_confidence::WordConfidenceSource::AppleSegmentConfidence,
+                                    value,
+                                    1,
+                                )
+                            });
                         Some(TranscriptSegment {
                             text: t,
                             start_ts: s.start_ts,
                             end_ts: s.end_ts,
+                            confidence,
                         })
                     })
                     .collect();
@@ -416,8 +432,13 @@ pub(crate) fn parse_stream_stdout_line(line: &str) -> Option<LiveStreamEvent> {
     None
 }
 
-/// Whether the product live path should use progressive stream multi-seal
-/// (default) vs the legacy VAD+per-window scheduler path.
+/// Compatibility accessor for the Apple bridge transport token.
+///
+/// `stream` selects progressive Apple AudioBuffer delivery; `wav` and
+/// `transcribe_live` name the older Apple temp-WAV request transport. A fresh
+/// Loctree 600-file structural census on 2026-08-25 found this definition and
+/// its re-export but no caller. That is a structural observation, not runtime
+/// proof, and this helper does not select or restore a VAD/scheduler pipeline.
 pub fn progressive_live_enabled() -> bool {
     let mode = std::env::var("CODESCRIBE_APPLE_STT_LIVE_MODE").unwrap_or_else(|_| "stream".into());
     !mode.eq_ignore_ascii_case("wav") && !mode.eq_ignore_ascii_case("transcribe_live")
@@ -468,6 +489,60 @@ mod tests {
                 assert_eq!(text, "cześć świecie");
             }
             other => panic!("expected Summary, got {other:?}"),
+        }
+    }
+
+    /// A6 (e): Apple confidence survives only real finals. Partials and the
+    /// 0.0 "no metric" sentinel become `None` — never low-confidence words.
+    #[test]
+    fn apple_confidence_only_counts_measured_finals() {
+        let partial = parse_stream_stdout_line(
+            r#"{"event":"partial","text":"cześć","segments":[{"text":"cześć","start_ts":0.0,"end_ts":0.4,"confidence":0.9}]}"#,
+        )
+        .expect("partial");
+        match partial {
+            LiveStreamEvent::Partial { segments, .. } => {
+                assert_eq!(segments[0].confidence, None);
+            }
+            other => panic!("expected Partial, got {other:?}"),
+        }
+
+        let frozen_final = parse_stream_stdout_line(
+            r#"{"event":"final","text":"cześć","segments":[{"text":"cześć","start_ts":0.0,"end_ts":0.4,"confidence":0.0}]}"#,
+        )
+        .expect("frozen final");
+        match frozen_final {
+            LiveStreamEvent::PhraseFinal { segments, .. } => {
+                assert_eq!(segments[0].confidence, None);
+            }
+            other => panic!("expected PhraseFinal, got {other:?}"),
+        }
+
+        let attributeless = parse_stream_stdout_line(
+            r#"{"event":"final","text":"cześć","segments":[{"text":"cześć","start_ts":0.0,"end_ts":0.4}]}"#,
+        )
+        .expect("attributeless final");
+        match attributeless {
+            LiveStreamEvent::PhraseFinal { segments, .. } => {
+                assert_eq!(segments[0].confidence, None);
+            }
+            other => panic!("expected PhraseFinal, got {other:?}"),
+        }
+
+        let measured = parse_stream_stdout_line(
+            r#"{"event":"final","text":"cześć","segments":[{"text":"cześć","start_ts":0.0,"end_ts":0.4,"confidence":0.42}]}"#,
+        )
+        .expect("measured final");
+        match measured {
+            LiveStreamEvent::PhraseFinal { segments, .. } => {
+                let confidence = segments[0].confidence.expect("final carries confidence");
+                assert_eq!(
+                    confidence.source,
+                    crate::pipeline::word_confidence::WordConfidenceSource::AppleSegmentConfidence
+                );
+                assert!((confidence.value() - 0.42).abs() < 0.001);
+            }
+            other => panic!("expected PhraseFinal, got {other:?}"),
         }
     }
 

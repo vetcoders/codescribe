@@ -10,95 +10,78 @@ import SwiftUI
 struct AgentStatusSection: View {
   @ObservedObject var model: SettingsViewModel
 
-  /// Collapsed by default: the per-server health probe is an informational
-  /// drill-down, not a readiness input, so it stays out of the way until asked.
-  @State private var probesExpanded = false
-
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       header
 
       // Agentic readiness verdict + per-prerequisite rows.
       statusCard(rows: model.agentReadiness.rows)
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
 
-      SettingsSectionLabel("Capability matrix")
-        .padding(.top, 22)
+      SettingsSectionLabel(String(localized: "Capability matrix"))
+        .padding(.top, CSSpace.section)
       Text("Native substrate vs enrichment providers (IntelliJ optional).")
         .font(CSFont.ui(11.5))
-        .foregroundStyle(CSColor.textFaint)
+        .foregroundStyle(Color.secondary)
         .padding(.top, 4)
       capabilityMatrixCard
         .padding(.top, 8)
 
-      SettingsSectionLabel("MCP servers")
-        .padding(.top, 22)
+      SettingsSectionLabel(String(localized: "MCP servers"))
+        .padding(.top, CSSpace.section)
       Text(model.mcpStatus.configPathDisplay)
         .font(CSFont.mono(10, .medium))
-        .foregroundStyle(CSColor.textFaint)
+        .foregroundStyle(Color.secondary)
         .lineLimit(1)
         .truncationMode(.middle)
         .padding(.top, 4)
       statusCard(rows: model.mcpStatus.rows)
         .padding(.top, 8)
 
-      // Collapsible per-server health probe. Reflects the cached Test /
-      // handshake result from the management section below; purely
-      // informational and never flips the readiness verdict above.
+      // Per-server health probe. Reflects the cached Test / handshake result
+      // from the MCP servers tab; purely informational and never flips the
+      // readiness verdict above. Shown whole — the Capabilities tab has room.
       if !model.mcpServers.isEmpty {
-        probeDisclosure
-          .padding(.top, 13)
+        HStack(spacing: 10) {
+          SettingsSectionLabel(String(localized: "Per-server probe"))
+          Spacer(minLength: 0)
+          Text("\(model.mcpServers.count) configured")
+            .font(CSFont.mono(10, .medium))
+            .foregroundStyle(Color.secondary)
+        }
+        .padding(.top, CSSpace.section)
+        .help("Cached initialize + tools/list result per configured server")
+        statusCard(rows: probeRows)
+          .padding(.top, 8)
       }
     }
   }
 
-  // MARK: Per-server probe (collapsible)
+  // MARK: Per-server probe
 
   /// One row per configured server: the cached probe status (ok / fail /
   /// testing / not tested) mapped to a tone the shared status card renders.
   private var probeRows: [CsMcpStatusRow] {
     model.mcpServers.map { server in
       if model.mcpTestPending.contains(server.name) {
-        return CsMcpStatusRow(label: server.name, value: "testing…", tone: .warn)
+        return CsMcpStatusRow(
+          label: server.name, value: String(localized: "testing…"), tone: .warn)
       }
       guard let result = model.mcpTestResults[server.name] else {
-        return CsMcpStatusRow(label: server.name, value: "not tested", tone: .neutral)
+        return CsMcpStatusRow(
+          label: server.name, value: String(localized: "not tested"), tone: .neutral)
       }
       if result.ok {
-        var value = "ok — \(result.toolCount) tool(s)"
+        var value = String(localized: "ok — \(Int(result.toolCount)) tools")
         if !result.serverVersion.isEmpty { value += " · v\(result.serverVersion)" }
         return CsMcpStatusRow(label: server.name, value: value, tone: .good)
       }
-      return CsMcpStatusRow(label: server.name, value: "fail: \(result.error)", tone: .bad)
-    }
-  }
-
-  private var probeDisclosure: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      Button {
-        withAnimation(.easeOut(duration: 0.18)) { probesExpanded.toggle() }
-      } label: {
-        HStack(spacing: 7) {
-          CSIconView(
-            icon: probesExpanded ? .chevronDown : .chevronRight,
-            size: 10, weight: .semibold, color: CSColor.textMuted
-          )
-          Text("Per-server probe")
-            .font(CSFont.mono(11, .semibold))
-            .foregroundStyle(CSColor.textMutedAlt)
-          Spacer(minLength: 0)
-          Text("\(model.mcpServers.count) configured")
-            .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textFaint)
-        }
-      }
-      .csFocusRing(cornerRadius: 8)
-      .help("Cached initialize + tools/list result per configured server")
-
-      if probesExpanded {
-        statusCard(rows: probeRows)
-          .padding(.top, 8)
-      }
+      return CsMcpStatusRow(
+        label: server.name,
+        value: String(
+          localized: "fail: \(result.error)",
+          comment: "The placeholder is an error message composed by the MCP probe"),
+        tone: .bad)
     }
   }
 
@@ -106,7 +89,7 @@ struct AgentStatusSection: View {
 
   private var header: some View {
     HStack(spacing: 10) {
-      SettingsSectionLabel("Agent readiness")
+      SettingsSectionLabel(String(localized: "Agent readiness"))
       readinessPill
       Spacer(minLength: 0)
       Button {
@@ -116,27 +99,28 @@ struct AgentStatusSection: View {
           CSIconView(icon: .refresh, size: 11, weight: .semibold)
           Text("Refresh").font(CSFont.mono(11, .semibold))
         }
-        .foregroundStyle(CSColor.textBodyAlt)
+        .foregroundStyle(Color.primary)
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .background(
           RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(CSColor.surfaceRaised(0.04))
+            .fill(Color.primary.opacity(0.08))
         )
         .overlay(
           RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
         )
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
     }
   }
 
   private var readinessPill: some View {
     let ready = model.agentReadiness.ready
     let accent = ready ? CSColor.olive : CSColor.terracotta
-    let accentLight = ready ? CSColor.oliveLight : CSColor.terracottaLight
-    return Text(ready ? "READY" : "NOT READY")
+    let accentLight = ready ? CSColor.oliveLight : CSColor.terracotta
+    return Text(ready ? "Ready" : "Not ready")
+      .textCase(.uppercase)
       .font(CSFont.mono(9, .semibold))
       .tracking(0.4)
       .foregroundStyle(accentLight)
@@ -160,23 +144,23 @@ struct AgentStatusSection: View {
         AgentStatusRow(
           row: CsMcpStatusRow(
             label: "matrix",
-            value: "no capability rows (refresh or start agent substrate)",
+            value: String(localized: "no capability rows (refresh or start agent substrate)"),
             tone: .neutral
           )
         )
       } else {
         ForEach(Array(model.capabilityMatrix.enumerated()), id: \.offset) { index, row in
           if index > 0 {
-            Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
+            Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
           }
           CapabilityMatrixRow(row: row)
         }
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 13, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 
@@ -187,15 +171,15 @@ struct AgentStatusSection: View {
     VStack(spacing: 0) {
       ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
         if index > 0 {
-          Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
+          Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
         }
         AgentStatusRow(row: row)
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 13, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 }
@@ -209,11 +193,11 @@ private struct AgentStatusRow: View {
     HStack(spacing: 12) {
       Text(row.label)
         .font(CSFont.mono(12, .medium))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .frame(width: 160, alignment: .leading)
       Text(row.value)
         .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(CSColor.textHigh)
+        .foregroundStyle(Color.primary)
         .lineLimit(2)
         .frame(maxWidth: .infinity, alignment: .leading)
       Circle().fill(row.tone.dotColor).frame(width: 7, height: 7)
@@ -232,7 +216,7 @@ private struct CapabilityMatrixRow: View {
     HStack(alignment: .top, spacing: 12) {
       Text(row.op)
         .font(CSFont.mono(12, .medium))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .frame(width: 120, alignment: .leading)
       Text(row.tier.uppercased())
         .font(CSFont.mono(10, .semibold))
@@ -252,17 +236,17 @@ private struct CapabilityMatrixRow: View {
       VStack(alignment: .leading, spacing: 2) {
         Text(row.reason.isEmpty ? row.provider : row.reason)
           .font(CSFont.ui(12.5, .semibold))
-          .foregroundStyle(CSColor.textHigh)
+          .foregroundStyle(Color.primary)
           .lineLimit(2)
         if !row.nativeTool.isEmpty {
-          Text("tool: \(row.nativeTool) · provider: \(row.provider)")
+          Text(verbatim: "tool: \(row.nativeTool) · provider: \(row.provider)")
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textFaint)
+            .foregroundStyle(Color.secondary)
             .lineLimit(1)
         } else if !row.provider.isEmpty {
-          Text("provider: \(row.provider)")
+          Text(verbatim: "provider: \(row.provider)")
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textFaint)
+            .foregroundStyle(Color.secondary)
             .lineLimit(1)
         }
       }
@@ -272,7 +256,7 @@ private struct CapabilityMatrixRow: View {
     .padding(.horizontal, 16)
     .padding(.vertical, 12)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(row.op), \(row.tier)")
+    .accessibilityLabel(Text(verbatim: "\(row.op), \(row.tier)"))
     .accessibilityValue(row.reason)
   }
 
@@ -280,8 +264,8 @@ private struct CapabilityMatrixRow: View {
     switch row.tier.lowercased() {
     case "native": return CSColor.oliveLight
     case "enhanced": return CSColor.amber
-    case "unavailable": return CSColor.terracottaLight
-    default: return CSColor.textFaint
+    case "unavailable": return CSColor.terracotta
+    default: return Color.secondary
     }
   }
 }
@@ -294,8 +278,8 @@ extension CsMcpRowTone {
     switch self {
     case .good: return CSColor.oliveLight
     case .warn: return CSColor.amber
-    case .bad: return CSColor.terracottaLight
-    case .neutral: return CSColor.textFaint
+    case .bad: return CSColor.terracotta
+    case .neutral: return Color.secondary
     }
   }
 }

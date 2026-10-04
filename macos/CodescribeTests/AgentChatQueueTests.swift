@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import os
 
 @testable import Codescribe
 
@@ -8,33 +9,36 @@ import XCTest
 /// survive an app death (restart replays what never reached a terminal).
 @MainActor
 final class AgentChatQueueTests: XCTestCase {
-  private final class GatedState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuations: [CheckedContinuation<String, Error>] = []
-    private var storedStarts: [(text: String, threadId: String)] = []
+  private final class GatedState: Sendable {
+    private struct Storage {
+      var continuations: [CheckedContinuation<String, Error>] = []
+      var starts: [(text: String, threadId: String)] = []
+    }
+
+    private let storage = OSAllocatedUnfairLock(initialState: Storage())
 
     var starts: [(text: String, threadId: String)] {
-      lock.withLock { storedStarts }
+      storage.withLock { $0.starts }
     }
 
     func recordStart(text: String, threadId: String) {
-      lock.withLock { storedStarts.append((text, threadId)) }
+      storage.withLock { $0.starts.append((text, threadId)) }
     }
 
     func suspend(_ continuation: CheckedContinuation<String, Error>) {
-      lock.withLock { continuations.append(continuation) }
+      storage.withLock { $0.continuations.append(continuation) }
     }
 
     func finishNext(_ result: String) {
-      let continuation = lock.withLock {
-        continuations.isEmpty ? nil : continuations.removeFirst()
+      let continuation = storage.withLock {
+        $0.continuations.isEmpty ? nil : $0.continuations.removeFirst()
       }
       continuation?.resume(returning: result)
     }
 
     func failNext(_ error: Error) {
-      let continuation = lock.withLock {
-        continuations.isEmpty ? nil : continuations.removeFirst()
+      let continuation = storage.withLock {
+        $0.continuations.isEmpty ? nil : $0.continuations.removeFirst()
       }
       continuation?.resume(throwing: error)
     }
@@ -42,12 +46,8 @@ final class AgentChatQueueTests: XCTestCase {
 
   /// Engine whose streams stay open until the test releases them, so a turn
   /// can be held "active" while more messages are accepted.
-  private final class GatedEngine: AgentChatEngine {
+  private final class GatedEngine: ChatEngineFixture {
     let state = GatedState()
-
-    func isAvailable() -> Bool { true }
-    func availabilityDetail() -> String? { nil }
-    func generateThreadTitle(_ text: String) async throws -> String? { nil }
 
     func streamReply(
       _ text: String,
@@ -67,24 +67,12 @@ final class AgentChatQueueTests: XCTestCase {
       return true
     }
 
-    func installToolApprovalHandler(
-      _ handler: @escaping @MainActor (PendingToolApproval) -> Void
-    ) {}
-
     func resolveToolApproval(
       _ request: PendingToolApproval, approved: Bool, remember: Bool
     ) -> Bool { true }
   }
 
-  private final class StubProvider: ChatThreadsProviding {
-    func listThreads() -> [ChatThread] { [] }
-    func searchThreads(query: String) -> [ChatThread] { [] }
-    func loadMessages(backendId: String) -> [ChatMessage] { [] }
-    func deleteThread(backendId: String) -> Bool { true }
-    func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
-    func renameThread(backendId: String, title: String) -> Bool { true }
-    func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
-    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
+  private final class StubProvider: ThreadsFixture {
     func generateThreadId() -> String { "t_\(UUID().uuidString)" }
   }
 

@@ -27,19 +27,30 @@ struct VoiceLabCorrectionRow: Identifiable, Equatable {
     }
   }
 
-  var confidenceSummary: String {
-    var parts: [String] = []
+  /// Whitespace-normalized text delta against the raw STT (mirror of the Rust
+  /// read-side rule in `QualityRecord::has_text_change`).
+  var hasTextChange: Bool {
+    let raw = normalizedCorrectionText(rawText)
+    return normalizedCorrectionText(variant) != raw || normalizedCorrectionText(editedText) != raw
+  }
+
+  var hasTelemetry: Bool {
+    avgLogprob != nil || speechPct != nil || !confidenceFlags.isEmpty
+  }
+
+  /// Telemetry chips for the card header; empty when nothing was recorded
+  /// (the list header carries that aggregate, not every card).
+  var telemetryChips: [String] {
+    var chips: [String] = []
     if let avgLogprob {
-      parts.append(String(format: "Whisper logprob %.2f", avgLogprob))
+      chips.append(String(format: "logprob %.2f", avgLogprob))
     }
     if let speechPct {
       let percent = speechPct <= 1 ? speechPct * 100 : speechPct
-      parts.append(String(format: "Silero/VAD speech %.0f%%", percent))
+      chips.append(String(format: "speech %.0f%%", percent))
     }
-    if !confidenceFlags.isEmpty {
-      parts.append(confidenceFlags.joined(separator: ", "))
-    }
-    return parts.isEmpty ? "No confidence telemetry was recorded" : parts.joined(separator: " · ")
+    chips.append(contentsOf: confidenceFlags)
+    return chips
   }
 }
 
@@ -65,9 +76,45 @@ struct VoiceLabLexiconRow: Identifiable, Equatable {
   let source: String
 }
 
+/// Whitespace runs collapse to single spaces so a rewrap is not a change.
+/// One definition, two enforcers: the Rust `recent_quality_listing` read is
+/// the storage-level throne; this mirror keeps the panel consistent with the
+/// headline count for previews and mocks.
+func normalizedCorrectionText(_ text: String) -> String {
+  text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+}
+
+/// A record is a correction only when the text changed after whitespace
+/// normalization (delivered/edited vs raw STT) or confidence telemetry was
+/// recorded. Takes with neither never enter the corrections list.
+func isQualityCorrection(
+  rawText: String,
+  deliveredText: String,
+  editedText: String,
+  avgLogprob: Float?,
+  speechPct: Float?,
+  confidenceFlags: [String]
+) -> Bool {
+  let raw = normalizedCorrectionText(rawText)
+  let changed =
+    normalizedCorrectionText(deliveredText) != raw
+    || normalizedCorrectionText(editedText) != raw
+  return changed || avgLogprob != nil || speechPct != nil || !confidenceFlags.isEmpty
+}
+
 func qualityCorrectionRows(_ records: [CsQualityRecord]) -> [VoiceLabCorrectionRow] {
-  records.map { record in
-    VoiceLabCorrectionRow(
+  records.compactMap { record in
+    guard
+      isQualityCorrection(
+        rawText: record.rawText,
+        deliveredText: record.variant,
+        editedText: record.editedText,
+        avgLogprob: record.avgLogprob,
+        speechPct: record.speechPct,
+        confidenceFlags: record.confidenceFlags
+      )
+    else { return nil }
+    return VoiceLabCorrectionRow(
       id: record.id,
       revision: record.revision,
       rawText: record.rawText,
@@ -80,6 +127,84 @@ func qualityCorrectionRows(_ records: [CsQualityRecord]) -> [VoiceLabCorrectionR
       confidenceFlags: record.confidenceFlags
     )
   }
+}
+
+/// Tiered word-level diff for one correction. Delegates to the Rust engine so
+/// Swift only renders; Polish diacritics compare as words, never bytes.
+func voiceLabDiffSpans(raw: String, edited: String) -> [CsDiffSpan] {
+  qualityDiffSpans(raw: raw, edited: edited)
+}
+
+extension CsDiffTier {
+  var isMajor: Bool {
+    switch self {
+    case .vocabulary, .insert, .delete: return true
+    case .casing, .punctuation: return false
+    }
+  }
+}
+
+/// Major tiers are real content changes; minor tiers (casing/punctuation) are
+/// collapsed in the correction card summary.
+func majorDiffSpans(_ spans: [CsDiffSpan]) -> [CsDiffSpan] {
+  spans.filter { $0.tier.isMajor }
+}
+
+func minorDiffSpans(_ spans: [CsDiffSpan]) -> [CsDiffSpan] {
+  spans.filter { !$0.tier.isMajor }
+}
+
+/// The Suggested rules section is shown only when the engine mined at least
+/// one candidate; at zero it disappears entirely instead of showing an empty box.
+func ruleCandidatesSectionVisible(_ candidates: [CsRuleCandidate]) -> Bool {
+  !candidates.isEmpty
+}
+
+/// One-line summary of collapsed minor (casing/punctuation) adjustments.
+func minorAdjustmentsSummary(_ minor: [CsDiffSpan]) -> String {
+  String(localized: "+\(minor.count) minor (punctuation, casing)")
+}
+
+/// One flowing line: context in secondary, removed words struck through,
+/// corrected words emphasized. Word wrapping comes free from Text.
+private func diffSpanText(_ span: CsDiffSpan) -> Text {
+  var result = Text(verbatim: "")
+  if !span.contextBefore.isEmpty {
+    result = result + Text(span.contextBefore + " ").foregroundStyle(Color.secondary)
+  }
+  if !span.raw.isEmpty {
+    result =
+      result
+      + Text(span.raw).strikethrough().foregroundStyle(CSColor.terracotta)
+      + Text(verbatim: " ")
+  }
+  if !span.edited.isEmpty {
+    if !span.raw.isEmpty {
+      result = result + Text(verbatim: "→ ").foregroundStyle(CSColor.chromeAccent)
+    }
+    result =
+      result
+      + Text(span.edited).fontWeight(.semibold).foregroundStyle(Color.primary)
+      + Text(verbatim: " ")
+  } else if !span.raw.isEmpty {
+    result =
+      result
+      + Text("(removed) ", comment: "Diff marker: the word was deleted")
+      .foregroundStyle(Color.secondary)
+  }
+  if !span.contextAfter.isEmpty {
+    result = result + Text(span.contextAfter).foregroundStyle(Color.secondary)
+  }
+  return result
+}
+
+/// One aggregate line replaces the old per-card "No confidence telemetry was
+/// recorded" (Founder report 2026-09-30): it belongs to the list, not a card.
+func missingTelemetryLine(rows: [VoiceLabCorrectionRow]) -> String? {
+  guard !rows.isEmpty else { return nil }
+  let missing = rows.filter { !$0.hasTelemetry }.count
+  guard missing > 0 else { return nil }
+  return String(localized: "No confidence telemetry in \(missing) of \(rows.count)")
 }
 
 func customLexiconRows(_ entries: [CsLexiconEntry]) -> [VoiceLabLexiconRow] {
@@ -150,9 +275,14 @@ func archivedAudioCandidates(from transcriptURL: URL) -> [URL] {
 
 /// Honest Dictionary headline.
 /// Every custom lexicon variant→canonical is a **live rule** the engine applies.
-/// Correction provenance is a subset, not the only “real” count.
-func dictionaryHeadline(correctionsRecorded: Int, rulesLearned: Int) -> String {
-  "\(correctionsRecorded) corrections recorded · \(rulesLearned) rules in dictionary"
+/// Corrections are real diffs; takes that changed nothing are counted apart.
+func dictionaryHeadline(
+  corrections: Int, vocabularyCorrections: Int, unchangedTakes: Int, rulesLearned: Int
+) -> String {
+  String(
+    localized:
+      "\(corrections) corrections (\(vocabularyCorrections) vocabulary) · \(unchangedTakes) unchanged takes · \(rulesLearned) rules in dictionary"
+  )
 }
 
 func dictionarySubtitle(
@@ -162,15 +292,21 @@ func dictionarySubtitle(
   totalEntries: Int
 ) -> String {
   if rulesLearned > 0 {
-    return
-      "\(rulesLearned) live rules (variant→canonical) · \(taughtFromCorrections) with correction provenance · \(totalEntries) store rows."
+    return String(
+      localized:
+        "\(rulesLearned) live rules (variant→canonical) · \(taughtFromCorrections) with correction provenance · \(totalEntries) store rows."
+    )
   }
   if correctionsRecorded > 0 {
-    return
-      "\(correctionsRecorded) corrections on disk · dictionary empty — press Teach to mine rules from the store."
+    return String(
+      localized:
+        "\(correctionsRecorded) corrections on disk · dictionary empty — Teach explicitly promotes eligible store pairs now."
+    )
   }
-  return
-    "Correction history and custom dictionary. Teach promotes corrections + proposed → live lexicon."
+  return String(
+    localized:
+      "Correction history and custom dictionary. Teach is explicit bulk promotion; automatic learning still needs 3 matching human corrections."
+  )
 }
 
 /// NSSound plays independently of the view that started it — playback used to
@@ -187,8 +323,11 @@ private final class VoiceLabPlaybackDelegate: NSObject, NSSoundDelegate {
 struct VoiceLabPanel: View {
   @ObservedObject var model: SettingsViewModel
   @State private var editor = VoiceLabEditorState()
+  @FocusState private var focusedCorrectionID: String?
   @State private var correctionIndex = 0
   @State private var lexiconIndex = 0
+  @State private var ruleCandidateIndex = 0
+  @State private var showFullText = false
   @State private var playbackSound: NSSound?
   @State private var playbackMessage: String?
   @State private var playingRowID: String?
@@ -215,32 +354,32 @@ struct VoiceLabPanel: View {
     corrections.count
   }
 
+  /// Corrections that contain at least one vocabulary-tier span.
+  private var vocabularyCorrectionsCount: Int {
+    corrections.lazy.filter { row in
+      voiceLabDiffSpans(raw: row.rawText, edited: row.editedText)
+        .contains { $0.tier == .vocabulary }
+    }.count
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(alignment: .top, spacing: 12) {
         VStack(alignment: .leading, spacing: 0) {
-          EyebrowLabel(text: "Settings · \(SettingsSection.voiceLab.title)")
-          Text(
+          SettingsPageHeader(
             dictionaryHeadline(
-              correctionsRecorded: correctionsRecordedCount,
+              corrections: correctionsRecordedCount,
+              vocabularyCorrections: vocabularyCorrectionsCount,
+              unchangedTakes: Int(clamping: model.unchangedQualityTakes),
               rulesLearned: rulesLearnedCount
-            )
-          )
-          .font(CSFont.ui(26, .bold))
-          .tracking(-0.5)
-          .foregroundStyle(CSColor.textHigh)
-          .padding(.top, 6)
-          Text(
-            dictionarySubtitle(
+            ),
+            blurb: dictionarySubtitle(
               correctionsRecorded: correctionsRecordedCount,
               rulesLearned: rulesLearnedCount,
               taughtFromCorrections: taughtFromCorrectionsCount,
               totalEntries: model.customLexiconEntries.count
             )
           )
-          .font(CSFont.ui(12.5))
-          .foregroundStyle(CSColor.textMutedAlt)
-          .padding(.top, 8)
           if let teachMsg = model.voiceLabTeachMessage {
             Text(teachMsg)
               .font(CSFont.mono(11, .medium))
@@ -255,7 +394,7 @@ struct VoiceLabPanel: View {
           }
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(CSColor.chromeAccent)
-          .csFocusRing(cornerRadius: 8)
+          .csFocusRing()
           .disabled(model.voiceLabTeachPending)
           .accessibilityLabel("Teach dictionary from corrections and proposed rules")
           Button("Refresh") {
@@ -263,27 +402,47 @@ struct VoiceLabPanel: View {
           }
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(CSColor.chromeAccent)
-          .csFocusRing(cornerRadius: 8)
+          .csFocusRing()
           .accessibilityLabel("Refresh \(SettingsSection.voiceLab.title) data")
         }
       }
 
-      SettingsSectionLabel("Recent corrections · \(corrections.count)")
-        .padding(.top, 24)
-      correctionsSection
-        .padding(.top, 11)
+      if ruleCandidatesSectionVisible(model.ruleCandidates) {
+        SettingsSectionLabel(
+          String(localized: "Suggested rules · \(model.ruleCandidates.count)")
+        )
+        .padding(.top, CSSpace.section)
+        ruleCandidatesSection
+          .padding(.top, CSSpace.control)
+      }
 
-      SettingsSectionLabel("Custom dictionary · \(model.customLexiconEntries.count)")
-        .padding(.top, 24)
+      SettingsSectionLabel(String(localized: "Recent corrections · \(corrections.count)"))
+        .padding(.top, CSSpace.section)
+      if let telemetryLine = missingTelemetryLine(rows: corrections) {
+        Text(telemetryLine)
+          .font(CSFont.mono(10.5, .medium))
+          .foregroundStyle(Color.secondary)
+          .padding(.top, 4)
+      }
+      correctionsSection
+        .padding(.top, CSSpace.control)
+
+      SettingsSectionLabel(
+        String(localized: "Custom dictionary · \(model.customLexiconEntries.count)")
+      )
+      .padding(.top, CSSpace.section)
       lexiconSection
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
     // The sound belongs to the visible row: navigating away from the row
     // or from the panel ends it. Without these, NSSound kept playing after
     // the Settings window was closed.
-    .onChange(of: correctionIndex) { stopPlayback() }
+    .onChange(of: correctionIndex) {
+      stopPlayback()
+      showFullText = false
+    }
     .onDisappear { stopPlayback() }
   }
 
@@ -299,25 +458,37 @@ struct VoiceLabPanel: View {
         let row = corrections[safeIndex]
         VStack(alignment: .leading, spacing: 12) {
           HStack(spacing: 8) {
-            Text("ORIGINAL STT")
-              .font(CSFont.mono(10.5, .semibold))
-              .foregroundStyle(row.isLowConfidence ? CSColor.terracottaLight : CSColor.oliveLight)
-            Text(row.isLowConfidence ? "LOW CONFIDENCE" : "CONFIDENCE DATA")
-              .font(CSFont.mono(9.5, .semibold))
-              .foregroundStyle(row.isLowConfidence ? CSColor.terracottaLight : CSColor.textFaintAlt)
-              .padding(.horizontal, 7)
-              .padding(.vertical, 3)
-              .background(
-                Capsule().fill(
-                  (row.isLowConfidence ? CSColor.terracottaLight : CSColor.oliveLight)
-                    .opacity(0.12)
-                )
-              )
+            Text(
+              String(
+                localized: "dictionary.correction.header", defaultValue: "Correction",
+                comment: "Dictionary: header of one correction card")
+            )
+            .textCase(.uppercase)
+            .font(CSFont.mono(10.5, .semibold))
+            .foregroundStyle(row.isLowConfidence ? CSColor.terracotta : CSColor.oliveLight)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityLabel(
+              "Heard \(row.variant). Current correction \(row.editedText). Revision \(row.revision)."
+            )
+            .accessibilityIdentifier("dictionary-correction-summary")
+            if row.isLowConfidence {
+              Text("Low confidence", comment: "Dictionary badge: the engine was unsure here")
+                .textCase(.uppercase)
+                .font(CSFont.mono(9.5, .semibold))
+                .foregroundStyle(CSColor.terracotta)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(CSColor.terracotta.opacity(0.12)))
+            }
             // Deferred-correction desk: sessions closed without an
             // overlay edit land here as UNREVIEWED, awaiting Edit.
             if row.action == "close-unreviewed" {
-              Text("UNREVIEWED")
-                .font(CSFont.mono(9.5, .semibold))
+              Text(
+                "Unreviewed",
+                comment: "Dictionary badge: the session closed before this take was reviewed"
+              )
+              .textCase(.uppercase)
+              .font(CSFont.mono(9.5, .semibold))
                 .foregroundStyle(CSColor.chromeAccent)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
@@ -361,27 +532,78 @@ struct VoiceLabPanel: View {
               .accessibilityLabel("Load helper text into the correction editor without saving")
             }
           }
-          Text(row.rawText)
-            .font(CSFont.ui(13, .medium))
-            .foregroundStyle(CSColor.textHigh)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(11)
-            .background(
-              RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .fill(
-                  (row.isLowConfidence ? CSColor.terracottaLight : CSColor.surfaceRaised(0.04))
-                    .opacity(row.isLowConfidence ? 0.12 : 1)
-                )
-            )
-          Text(row.confidenceSummary)
-            .font(CSFont.mono(10, .medium))
-            .foregroundStyle(row.isLowConfidence ? CSColor.terracottaLight : CSColor.textFaintAlt)
-            .textSelection(.enabled)
+          if row.hasTextChange {
+            let spans = voiceLabDiffSpans(raw: row.rawText, edited: row.editedText)
+            let major = majorDiffSpans(spans)
+            let minor = minorDiffSpans(spans)
+            VStack(alignment: .leading, spacing: 5) {
+              Text("Changed", comment: "Dictionary: header above the words the correction changed")
+                .textCase(.uppercase)
+                .font(CSFont.mono(10, .semibold))
+                .foregroundStyle(Color.secondary)
+              VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(major.enumerated()), id: \.offset) { index, span in
+                  diffSpanText(span)
+                    .font(CSFont.ui(13, .medium))
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("dictionary-major-diff-\(index)")
+                }
+                if !minor.isEmpty {
+                  DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 6) {
+                      ForEach(Array(minor.enumerated()), id: \.offset) { index, span in
+                        diffSpanText(span)
+                          .font(CSFont.ui(12, .medium))
+                          .foregroundStyle(Color.secondary)
+                          .textSelection(.enabled)
+                          .accessibilityIdentifier("dictionary-minor-diff-\(index)")
+                      }
+                    }
+                    .padding(.top, 4)
+                  } label: {
+                    Text(minorAdjustmentsSummary(minor))
+                      .font(CSFont.mono(10, .medium))
+                      .foregroundStyle(Color.secondary)
+                  }
+                  .accessibilityIdentifier("dictionary-minor-adjustments")
+                }
+              }
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(11)
+              .background(
+                RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                  .fill(
+                    (row.isLowConfidence ? CSColor.terracotta : Color.primary.opacity(0.08))
+                      .opacity(row.isLowConfidence ? 0.12 : 1)
+                  )
+              )
+            }
+          } else {
+            Text("No text change — kept for its confidence telemetry.")
+              .font(CSFont.ui(12, .medium))
+              .foregroundStyle(Color.secondary)
+          }
+          if !row.telemetryChips.isEmpty {
+            HStack(spacing: 6) {
+              ForEach(Array(row.telemetryChips.enumerated()), id: \.offset) { _, chip in
+                Text(chip)
+                  .font(CSFont.mono(9.5, .semibold))
+                  .foregroundStyle(row.isLowConfidence ? CSColor.terracotta : CSColor.oliveLight)
+                  .padding(.horizontal, 7)
+                  .padding(.vertical, 3)
+                  .background(
+                    Capsule().fill(
+                      (row.isLowConfidence ? CSColor.terracotta : CSColor.oliveLight)
+                        .opacity(0.12)
+                    )
+                  )
+              }
+            }
+          }
           if let playbackMessage {
             Text(playbackMessage)
               .font(CSFont.ui(10.5))
-              .foregroundStyle(CSColor.textMutedAlt)
+              .foregroundStyle(Color.secondary)
           }
           if let helperCompare {
             Text(helperCompare)
@@ -389,35 +611,63 @@ struct VoiceLabPanel: View {
               .foregroundStyle(CSColor.oliveLight)
               .textSelection(.enabled)
           }
-          VStack(alignment: .leading, spacing: 5) {
-            Text("DELIVERED AFTER FORMATTING")
-              .font(CSFont.mono(10, .semibold))
-              .foregroundStyle(CSColor.textFaintAlt)
-            Text(row.variant)
-              .font(CSFont.ui(12.5, .medium))
-              .foregroundStyle(CSColor.textMutedAlt)
-              .textSelection(.enabled)
-              .frame(maxWidth: .infinity, alignment: .leading)
+          Button {
+            showFullText.toggle()
+          } label: {
+            HStack(spacing: 6) {
+              Image(systemName: showFullText ? "chevron.down" : "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+              Text(
+                showFullText
+                  ? "Hide full transcript"
+                  : "Full transcript · raw \(row.rawText.count) chars · edited \(row.editedText.count) chars"
+              )
+              .font(CSFont.mono(10.5, .medium))
+            }
+            .foregroundStyle(CSColor.chromeAccent)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Toggle the full transcript for this correction")
+          .accessibilityValue(showFullText ? "Expanded" : "Collapsed")
+          .accessibilityIdentifier("dictionary-full-transcript-toggle")
+          if showFullText {
+            VStack(alignment: .leading, spacing: 10) {
+              fullTextBlock("Raw STT · \(row.rawText.count) characters", text: row.rawText)
+              fullTextBlock(
+                "Delivered after formatting · \(row.variant.count) characters", text: row.variant)
+              if normalizedCorrectionText(row.editedText) != normalizedCorrectionText(row.variant) {
+                fullTextBlock("Edited · \(row.editedText.count) characters", text: row.editedText)
+              }
+            }
           }
           if editor.correctionID == row.id {
             VStack(alignment: .leading, spacing: 8) {
-              Text("CORRECTED ORIGINAL")
-                .font(CSFont.mono(10, .semibold))
+              Text(
+                "Corrected original",
+                comment: "Dictionary: header above the editor holding the corrected text"
+              )
+              .textCase(.uppercase)
+              .font(CSFont.mono(10, .semibold))
                 .foregroundStyle(CSColor.chromeAccent)
               TextEditor(text: $editor.canonical)
+                .focused($focusedCorrectionID, equals: row.id)
                 .font(CSFont.ui(13))
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: 120, idealHeight: 180, maxHeight: 320)
                 .padding(8)
                 .background(
                   RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                    .fill(CSColor.surfaceRaised(0.04))
+                    .fill(Color.primary.opacity(0.08))
                 )
                 .overlay(
                   RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
                     .strokeBorder(CSColor.chromeAccent.opacity(0.32), lineWidth: 1)
                 )
                 .onExitCommand { editor.cancel() }
+                .overlay {
+                  CSFocusOutline(
+                    isFocused: focusedCorrectionID == row.id, cornerRadius: CSRadius.input)
+                }
                 .accessibilityLabel("Correct the original transcript")
               HStack {
                 Spacer()
@@ -430,14 +680,7 @@ struct VoiceLabPanel: View {
               }
             }
           } else {
-            HStack(spacing: 7) {
-              Text("→")
-                .font(CSFont.mono(11, .semibold))
-                .foregroundStyle(CSColor.chromeAccent)
-              Text(row.editedText)
-                .font(CSFont.ui(13, .semibold))
-                .foregroundStyle(CSColor.textBody)
-                .textSelection(.enabled)
+            HStack {
               Spacer(minLength: 0)
               Button("Edit") { editor.begin(row) }
                 .disabled(model.voiceLabEditPending.contains(row.id))
@@ -452,7 +695,7 @@ struct VoiceLabPanel: View {
           if let error = model.voiceLabEditErrors[row.id] {
             Text("Save failed: \(error)")
               .font(CSFont.ui(10.5))
-              .foregroundStyle(CSColor.terracottaLight)
+              .foregroundStyle(CSColor.terracotta)
           }
           if let note = model.voiceLabEditNotes[row.id] {
             Text(note)
@@ -463,28 +706,26 @@ struct VoiceLabPanel: View {
           HStack(spacing: 7) {
             Text(row.action)
               .foregroundStyle(CSColor.oliveLight)
-            Text("·")
+            Text(verbatim: "·")
             Text("revision \(row.revision)")
-            Text("·")
+            Text(verbatim: "·")
             Text(timestampLabel(row.timestampMs))
           }
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(Color.secondary)
         }
-        .padding(14)
-        .background(card)
-        .overlay(cardBorder)
+        .settingsGroupedInset()
+        // Keep controls and selectable text as children; the summary belongs
+        // to the static header, not to the mixed AppKit/SwiftUI container.
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(
-          "Heard \(row.variant). Current correction \(row.editedText). Revision \(row.revision)."
-        )
+        .accessibilityIdentifier("dictionary-correction-card")
         HStack {
           Button("Previous") { correctionIndex = max(0, safeIndex - 1) }
             .disabled(safeIndex == 0)
           Spacer()
           Text("\(safeIndex + 1) of \(corrections.count)")
             .font(CSFont.mono(10.5, .medium))
-            .foregroundStyle(CSColor.textFaintAlt)
+            .foregroundStyle(Color.secondary)
           Spacer()
           Button("Next") { correctionIndex = min(corrections.count - 1, safeIndex + 1) }
             .disabled(safeIndex == corrections.count - 1)
@@ -504,14 +745,17 @@ struct VoiceLabPanel: View {
     switch HelperFilePass.request(asrMode: model.asrModeId, archivedAudio: archived) {
     case .failure(.noHelper):
       helperText = nil
-      helperCompare = "No helper in Apple-only — pick Local power or Cloud."
+      helperCompare = String(localized: "No helper in Apple-only — pick Local power or Cloud.")
     case .failure(.noArchivedAudio):
       helperText = nil
-      helperCompare = "No archived audio for this row — will not fall back to last_session.wav."
+      helperCompare = String(
+        localized: "No archived audio for this row — will not fall back to last_session.wav.")
     case .success(let (pass, prefixed)):
       helperPending = true
       helperText = nil
-      helperCompare = "Running \(pass.visibleName) on archived audio…"
+      helperCompare = String(
+        localized: "Running \(pass.visibleName) on archived audio…",
+        comment: "The placeholder is the name of a speech-to-text pass")
       Task { @MainActor in
         defer { helperPending = false }
         do {
@@ -522,8 +766,9 @@ struct VoiceLabPanel: View {
           helperCompare = HelperFilePass.compare(daily: row.rawText, helper: next, pass: pass)
         } catch {
           helperText = nil
-          helperCompare =
-            "Helper \(pass.visibleName) failed: \(error.localizedDescription)"
+          helperCompare = String(
+            localized: "Helper \(pass.visibleName) failed: \(error.userFacingMessage)",
+            comment: "Placeholders: the pass name, then an error message")
         }
       }
     }
@@ -541,14 +786,17 @@ struct VoiceLabPanel: View {
       let sound = NSSound(contentsOf: url, byReference: true)
     else {
       playingRowID = nil
-      playbackMessage = "Original audio is unavailable for this legacy correction."
+      playbackMessage = String(
+        localized: "Original audio is not available for this correction.")
       return
     }
     playbackDelegate.onFinish = { stopPlayback() }
     sound.delegate = playbackDelegate
     playbackSound = sound
     playingRowID = row.id
-    playbackMessage = "Playing \(url.lastPathComponent)"
+    playbackMessage = String(
+      localized: "Playing \(url.lastPathComponent)",
+      comment: "The placeholder is an audio file name")
     sound.play()
   }
 
@@ -572,32 +820,32 @@ struct VoiceLabPanel: View {
         HStack(spacing: 10) {
           Text(row.variant)
             .font(CSFont.mono(11.5, .medium))
-            .foregroundStyle(CSColor.textMutedAlt)
+            .foregroundStyle(Color.secondary)
             .textSelection(.enabled)
-          Text("→")
+          Text(verbatim: "→")
             .font(CSFont.mono(11, .semibold))
             .foregroundStyle(CSColor.chromeAccent)
           Text(row.canonical)
             .font(CSFont.mono(11.5, .semibold))
-            .foregroundStyle(CSColor.textBody)
+            .foregroundStyle(Color.primary)
             .textSelection(.enabled)
           Spacer(minLength: 0)
           Text(row.source)
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textFaintAlt)
+            .foregroundStyle(Color.secondary)
+            .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.source)")
+            .accessibilityIdentifier("dictionary-lexicon-summary")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(card)
-        .overlay(cardBorder)
-        .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.source)")
+        .settingsGroupedInset()
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("dictionary-lexicon-card")
         HStack {
           Button("Previous") { lexiconIndex = max(0, safeIndex - 1) }
             .disabled(safeIndex == 0)
           Spacer()
           Text("\(safeIndex + 1) of \(model.customLexiconEntries.count)")
             .font(CSFont.mono(10.5, .medium))
-            .foregroundStyle(CSColor.textFaintAlt)
+            .foregroundStyle(Color.secondary)
           Spacer()
           Button("Next") {
             lexiconIndex = min(model.customLexiconEntries.count - 1, safeIndex + 1)
@@ -608,25 +856,84 @@ struct VoiceLabPanel: View {
     }
   }
 
-  private func emptyState(_ message: String) -> some View {
+  @ViewBuilder
+  private var ruleCandidatesSection: some View {
+    if let error = model.voiceLabReadError {
+      readError(error)
+    } else if !model.ruleCandidates.isEmpty {
+      VStack(spacing: 8) {
+        let safeIndex = min(ruleCandidateIndex, model.ruleCandidates.count - 1)
+        let candidate = model.ruleCandidates[safeIndex]
+        VStack(alignment: .leading, spacing: 10) {
+          HStack(spacing: 10) {
+            Text(candidate.target)
+              .font(CSFont.mono(11.5, .semibold))
+              .foregroundStyle(Color.primary)
+              .textSelection(.enabled)
+            Spacer(minLength: 0)
+            Text("\(candidate.occurrences) occurrences")
+              .font(CSFont.mono(10, .medium))
+              .foregroundStyle(Color.secondary)
+              .accessibilityAddTraits(.isHeader)
+              .accessibilityLabel(
+                "Suggested rule for \(candidate.target) from \(candidate.variants.count) variants. \(candidate.occurrences) occurrences."
+              )
+              .accessibilityIdentifier("dictionary-rule-summary")
+          }
+          VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(candidate.variants.enumerated()), id: \.offset) { _, variant in
+              HStack(spacing: 8) {
+                Text(variant)
+                  .font(CSFont.mono(11, .medium))
+                  .foregroundStyle(Color.secondary)
+                  .textSelection(.enabled)
+                Spacer(minLength: 0)
+                Button("Teach") {
+                  model.teachRuleCandidate(target: candidate.target, variant: variant)
+                }
+                .font(CSFont.mono(10.5, .semibold))
+                .controlSize(.small)
+                .disabled(model.voiceLabTeachPending)
+                .accessibilityLabel("Teach \(variant) as \(candidate.target)")
+              }
+            }
+          }
+        }
+        .settingsGroupedInset()
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("dictionary-rule-card")
+        HStack {
+          Button("Previous") { ruleCandidateIndex = max(0, safeIndex - 1) }
+            .disabled(safeIndex == 0)
+          Spacer()
+          Text("\(safeIndex + 1) of \(model.ruleCandidates.count)")
+            .font(CSFont.mono(10.5, .medium))
+            .foregroundStyle(Color.secondary)
+          Spacer()
+          Button("Next") {
+            ruleCandidateIndex = min(model.ruleCandidates.count - 1, safeIndex + 1)
+          }
+          .disabled(safeIndex == model.ruleCandidates.count - 1)
+        }
+      }
+    }
+  }
+
+  private func emptyState(_ message: LocalizedStringKey) -> some View {
     Text(message)
       .font(CSFont.ui(12.5))
       .lineSpacing(2)
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(Color.secondary)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(15)
-      .background(card)
-      .overlay(cardBorder)
+      .settingsGroupedInset()
   }
 
   private func readError(_ error: String) -> some View {
     Text("Live quality data is unavailable: \(error)")
       .font(CSFont.ui(12.5))
-      .foregroundStyle(CSColor.terracottaLight)
+      .foregroundStyle(CSColor.terracotta)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(15)
-      .background(card)
-      .overlay(cardBorder)
+      .settingsGroupedInset()
   }
 
   private func timestampLabel(_ timestampMs: UInt64) -> String {
@@ -634,14 +941,21 @@ struct VoiceLabPanel: View {
       .formatted(date: .abbreviated, time: .shortened)
   }
 
-  private var card: some ShapeStyle {
-    CSColor.surfaceRaised(0.025)
+  private func fullTextBlock(_ title: LocalizedStringKey, text: String) -> some View {
+    VStack(alignment: .leading, spacing: 5) {
+      Text(title)
+        .textCase(.uppercase)
+        .font(CSFont.mono(10, .semibold))
+        .foregroundStyle(Color.secondary)
+        .accessibilityAddTraits(.isHeader)
+      Text(text)
+        .font(CSFont.ui(12.5, .medium))
+        .foregroundStyle(Color.secondary)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
   }
 
-  private var cardBorder: some View {
-    RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-      .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
-  }
 }
 
 #if DEBUG

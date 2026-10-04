@@ -25,6 +25,8 @@ pub enum ThreadDeliverySource {
     VoiceAssistive,
     /// Typed turn sent from the chat composer.
     Composer,
+    /// A connected instruction-following Max formatting consultation.
+    MaxConsultation,
     /// Pre-gateway send path still routed here so nothing bypasses persistence.
     LegacyFallback,
     /// Resident run-monitor heartbeat re-entering an existing thread.
@@ -40,6 +42,7 @@ impl ThreadDeliverySource {
         match self {
             Self::VoiceAssistive => "voice-assistive",
             Self::Composer => "composer",
+            Self::MaxConsultation => "max-consultation",
             Self::LegacyFallback => "legacy-fallback",
             Self::Monitor => "run-monitor",
         }
@@ -87,6 +90,23 @@ pub struct ThreadDeliveryReceipt {
     pub title_eligible: bool,
 }
 
+/// Read-only retained input for a recovery UI. Not a new execution request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConsultationInputSnapshot {
+    pub turn_id: String,
+    pub input: Message,
+    pub provider_name: String,
+}
+
+/// One atomic journal read. A pending id does not prove process liveness:
+/// it may describe active work or effects interrupted by a crash.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConsultationRecoverySnapshot {
+    pub consultation_id: String,
+    pub pending_turn_id: Option<String>,
+    pub retained_inputs: Vec<ConsultationInputSnapshot>,
+}
+
 /// The single write path for completed agent turns.
 ///
 /// Every send path goes through here so thread identity, title/summary
@@ -99,6 +119,68 @@ pub struct ThreadDeliveryGateway {
 }
 
 impl ThreadDeliveryGateway {
+    /// Read the existing selection and its retained input, without selecting a
+    /// consultation on first use. Snapshot identity may cease to be selected
+    /// after the read; it is not an execution lease or a reset authorization.
+    pub fn inspect_selected_max_consultation(
+        &self,
+    ) -> Result<Option<ConsultationRecoverySnapshot>> {
+        super::thread_store::consultation::inspect_selected_max_consultation(&self.store)
+    }
+
+    /// Inspect without acquiring execution ownership, selecting a new thread,
+    /// creating journal directories, modifying history or invoking a provider.
+    pub fn inspect_consultation(&self, id: &str) -> Result<Option<ConsultationRecoverySnapshot>> {
+        super::thread_store::consultation::inspect_retained_input(&self.store, id)
+    }
+
+    /// Read the durable Max selection, minting an identity only on first use.
+    pub fn selected_max_consultation_id(&self) -> Result<String> {
+        super::thread_store::consultation::selected_id(&self.store)
+    }
+
+    /// Select a fresh conversation only for an explicit, non-stale reset.
+    pub fn begin_new_max_consultation(&self, expected: &str) -> Result<String> {
+        super::thread_store::consultation::begin_new(&self.store, expected)
+    }
+
+    /// Called only while holding the consultation lease. Never substitute an
+    /// empty history for a missing completed thread or an unreadable message.
+    pub(crate) fn restore_consultation(
+        &self,
+        id: &str,
+        history_required: bool,
+    ) -> Result<Vec<Message>> {
+        let path = self.store.thread_file_path(id)?;
+        if !path.try_exists()? {
+            anyhow::ensure!(
+                !history_required,
+                "Completed consultation history is missing"
+            );
+            return Ok(Vec::new());
+        }
+        let thread = self.store.load_thread(id)?;
+        anyhow::ensure!(
+            thread.id == id && thread.mode == "max",
+            "Consultation history identity or mode mismatch"
+        );
+        let messages = thread
+            .messages
+            .iter()
+            .map(ThreadMessage::try_to_message)
+            .collect::<Result<Vec<_>>>()?;
+        validate_consultation_tool_history(&messages)?;
+        Ok(messages)
+    }
+
+    /// Lock the same store's consultation admission state before executing tools.
+    pub(crate) fn open_consultation(
+        &self,
+        id: &str,
+    ) -> Result<super::thread_store::consultation::ConsultationJournal> {
+        super::thread_store::consultation::ConsultationJournal::open(&self.store, id)
+    }
+
     /// Open the gateway over the user's real threads directory.
     pub fn new() -> Result<Self> {
         Ok(Self {
@@ -346,6 +428,69 @@ fn strip_boilerplate_title(raw: &str) -> Option<String> {
     })
 }
 
+/// Completed consultation context must retain tool causality, not just valid JSON.
+/// Result payloads are data and may not introduce nested calls or results.
+fn validate_consultation_tool_history(messages: &[Message]) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    let mut pending = std::collections::HashSet::new();
+    for message in messages {
+        let has_results = message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
+        if has_results {
+            anyhow::ensure!(
+                message.role == Role::User,
+                "Consultation tool result has the wrong role"
+            );
+            for block in &message.content {
+                let ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } = block
+                else {
+                    anyhow::bail!("Consultation tool results are mixed with unrelated content");
+                };
+                anyhow::ensure!(
+                    pending.remove(tool_use_id),
+                    "Consultation tool result has no unmatched prior invocation"
+                );
+                anyhow::ensure!(
+                    content.iter().all(|child| !matches!(
+                        child,
+                        ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
+                    )),
+                    "Consultation tool payload contains nested control blocks"
+                );
+            }
+        } else {
+            anyhow::ensure!(
+                pending.is_empty(),
+                "Consultation continues before prior tool results are complete"
+            );
+            for block in &message.content {
+                if let ContentBlock::ToolUse { id, .. } = block {
+                    anyhow::ensure!(
+                        message.role == Role::Assistant,
+                        "Consultation tool invocation has the wrong role"
+                    );
+                    anyhow::ensure!(
+                        seen.insert(id.clone()),
+                        "Consultation reuses a tool invocation identity"
+                    );
+                    pending.insert(id.clone());
+                }
+            }
+        }
+    }
+    anyhow::ensure!(
+        pending.is_empty(),
+        "Completed consultation has unresolved tool calls"
+    );
+    Ok(())
+}
+
 /// Whether a line is preamble: a known prefix, or an all-caps header.
 fn is_boilerplate_line(line: &str) -> bool {
     let lower = line.to_lowercase();
@@ -385,6 +530,123 @@ mod tests {
 
     use super::*;
     use crate::agent::{ThreadIndex, ThreadIndexData, ThreadNote, TokenUsage};
+
+    #[test]
+    fn consultation_restore_checks_tool_causality_without_rewriting_history() -> Result<()> {
+        let dir = TempDir::new()?;
+        let gateway = ThreadDeliveryGateway::new_in(dir.path())?;
+        let call = |id: &str| ContentBlock::ToolUse {
+            id: id.into(),
+            name: "read_clipboard".into(),
+            input: json!({}),
+        };
+        let result = |id: &str| ContentBlock::ToolResult {
+            tool_use_id: id.into(),
+            content: vec![ContentBlock::Text("a.rs".into())],
+            is_error: false,
+        };
+        let valid = vec![
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text("prepare a command".into())],
+            ),
+            Message::new(Role::Assistant, vec![call("a"), call("b")]),
+            Message::new(Role::User, vec![result("a")]),
+            Message::new(Role::User, vec![result("b")]),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("git add -- a.rs".into())],
+            ),
+        ];
+        let mut cases = vec![(valid.clone(), true)];
+        let mut orphan = valid.clone();
+        orphan[2].content = vec![result("unknown")];
+        cases.push((orphan, false));
+        let mut duplicate_result = valid.clone();
+        duplicate_result[3].content = vec![result("a")];
+        cases.push((duplicate_result, false));
+        let mut duplicate_call = valid.clone();
+        duplicate_call[1].content = vec![call("a"), call("a")];
+        cases.push((duplicate_call, false));
+        let mut wrong_call_role = valid.clone();
+        wrong_call_role[1].role = Role::User;
+        cases.push((wrong_call_role, false));
+        let mut wrong_result_role = valid.clone();
+        wrong_result_role[2].role = Role::Assistant;
+        cases.push((wrong_result_role, false));
+        let mut missing = valid.clone();
+        missing.remove(3);
+        cases.push((missing, false));
+        cases.push((valid[..2].to_vec(), false));
+        let mut nested = valid.clone();
+        nested[2].content = vec![ContentBlock::ToolResult {
+            tool_use_id: "a".into(),
+            content: vec![call("nested")],
+            is_error: false,
+        }];
+        cases.push((nested, false));
+        let mut mixed = valid.clone();
+        mixed[2]
+            .content
+            .push(ContentBlock::Text("new instruction".into()));
+        cases.push((mixed, false));
+        let mut failed_tool = valid.clone();
+        if let ContentBlock::ToolResult { is_error, .. } = &mut failed_tool[2].content[0] {
+            *is_error = true;
+        }
+        cases.push((failed_tool, true));
+
+        for (index, (messages, accepted)) in cases.into_iter().enumerate() {
+            let id = format!("causality-{index}");
+            let mut delivery = input(
+                &id,
+                ThreadDeliverySource::MaxConsultation,
+                messages.iter().map(ThreadMessage::from).collect(),
+                timestamp(1),
+            );
+            delivery.mode = "max".into();
+            gateway.deliver(delivery)?;
+            let path = gateway.store.thread_file_path(&id)?;
+            let before = fs::read(&path)?;
+            assert_eq!(
+                gateway.restore_consultation(&id, true).is_ok(),
+                accepted,
+                "case {index}"
+            );
+            assert_eq!(
+                fs::read(path)?,
+                before,
+                "restore must not repair stored evidence"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn consultation_restore_requires_matching_history_and_mode() -> Result<()> {
+        let dir = TempDir::new()?;
+        let gateway = ThreadDeliveryGateway::new_in(dir.path())?;
+        assert!(gateway.restore_consultation("missing", true).is_err());
+        assert!(gateway.restore_consultation("fresh", false)?.is_empty());
+        let mut delivery = input(
+            "max-a",
+            ThreadDeliverySource::MaxConsultation,
+            vec![
+                message("user", "first", timestamp(1)),
+                message("assistant", "answer", timestamp(1)),
+            ],
+            timestamp(1),
+        );
+        delivery.mode = "max".into();
+        gateway.deliver(delivery.clone())?;
+        let history = gateway.restore_consultation("max-a", true)?;
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[1].role, Role::Assistant);
+        delivery.mode = "assistive".into();
+        gateway.deliver(delivery)?;
+        assert!(gateway.restore_consultation("max-a", true).is_err());
+        Ok(())
+    }
 
     /// Fixed UTC timestamp on 2026-07-19 at the given hour for deterministic tests.
     fn timestamp(hour: u32) -> DateTime<Utc> {

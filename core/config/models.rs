@@ -5,7 +5,9 @@
 //! model from here instead of re-implementing its own precedence rules.
 
 use anyhow::{Context, Result, anyhow};
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::hf_cache;
@@ -16,12 +18,6 @@ pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo";
 /// the Settings → Dictation download. fp16 weights: no q8→F32 dequantization
 /// on load, at the cost of a larger download than the q8 repo.
 pub const DEFAULT_WHISPER_REPO: &str = "mlx-community/whisper-large-v3-turbo";
-/// Former quantized model alias retained only for source compatibility.
-#[deprecated(note = "quantized Whisper is unsupported; no runtime fallback uses this alias")]
-pub const LEGACY_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
-/// Former quantized model repository retained only for source compatibility.
-#[deprecated(note = "quantized Whisper is unsupported; no runtime fallback uses this repository")]
-pub const LEGACY_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
 /// Official Transformers tokenizer paired with Whisper large-v3-turbo.
 pub(crate) const TOKENIZER_WHISPER_REPO: &str = "openai/whisper-large-v3-turbo";
 /// Pinned OpenAI Whisper asset. The checksum is asserted by the installer.
@@ -72,6 +68,180 @@ fn is_complete_whisper_model_dir(path: &Path) -> bool {
 /// dtype allowlist, byte sizes, contiguous offsets, and final file length.
 pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
     crate::whisper_weights::validate_whisper_model_bundle(path)
+}
+
+/// One child of the user's models directory. Status uses the loader's own
+/// validator, so a renamed quantized bundle is still refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelDirectoryInfo {
+    pub name: String,
+    pub bytes_on_disk: u64,
+    pub status: String,
+    pub detail: String,
+    pub duplicate_tokenizer_with: Option<String>,
+}
+
+fn disk_bytes(path: &Path) -> Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_dir() {
+        return Ok(metadata.blocks() * 512);
+    }
+    let mut bytes = metadata.blocks() * 512;
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- recursion starts at a child returned by read_dir under the configured models root; symlinks are not followed.
+    for child in fs::read_dir(path)? {
+        bytes += disk_bytes(&child?.path())?;
+    }
+    Ok(bytes)
+}
+
+fn tokenizer_hash(path: &Path) -> Result<(u64, [u8; 32])> {
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- callers pass only regular files returned by read_dir of one model directory.
+    let mut file = fs::File::open(path)?;
+    let size = file.metadata()?.len();
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok((size, digest.finalize().into()))
+}
+
+pub fn inspect_model_directories(
+    data_dir: &Path,
+    active_model: Option<&Path>,
+) -> Result<Vec<ModelDirectoryInfo>> {
+    let root = data_dir.join("models");
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- data_dir is the application's configured local data directory, never request input.
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let active = active_model.and_then(|path| path.canonicalize().ok());
+    let mut models = Vec::new();
+    let mut tokenizers = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_active = active
+            .as_ref()
+            .is_some_and(|selected| path.canonicalize().ok().as_ref() == Some(selected));
+        let verdict = if name == "moshiko-q8" || name == "moshika-q8" {
+            let mut config = if name == "moshiko-q8" {
+                crate::conversation::MoshiConfig::moshiko()
+            } else {
+                crate::conversation::MoshiConfig::moshika()
+            };
+            config.model_path = path.join("model.q8.gguf");
+            config.mimi_path = root.join("csm-1b/mimi.safetensors");
+            config.validate().map_err(anyhow::Error::msg)
+        } else if name == "csm-1b" {
+            if path.join("mimi.safetensors").is_file() {
+                Ok(())
+            } else {
+                Err(anyhow!("Mimi codec weights are missing"))
+            }
+        } else {
+            validate_whisper_model_bundle(&path)
+        };
+        let (status, detail) = if is_active {
+            ("active", "Selected by the runtime".to_string())
+        } else if verdict.is_ok() {
+            ("usable", "Runtime loader accepts this bundle".to_string())
+        } else {
+            let error = verdict.unwrap_err();
+            let refused_by_loader = error.chain().any(|cause| {
+                let message = cause.to_string();
+                message == "quantized Whisper config is unsupported"
+                    || message.starts_with("quantized Whisper companion tensor refused:")
+            });
+            let detail = format!("{error:#}");
+            if refused_by_loader {
+                ("refused", detail)
+            } else {
+                ("broken", detail)
+            }
+        };
+        let index = models.len();
+        if metadata.file_type().is_dir() {
+            for child in fs::read_dir(&path)? {
+                let child = child?;
+                if child.file_name().to_string_lossy().starts_with("tokenizer")
+                    && child.file_type()?.is_file()
+                {
+                    let (size, hash) = tokenizer_hash(&child.path())?;
+                    tokenizers.push((index, size, hash));
+                }
+            }
+        }
+        models.push(ModelDirectoryInfo {
+            name,
+            bytes_on_disk: disk_bytes(&path)?,
+            status: status.to_string(),
+            detail,
+            duplicate_tokenizer_with: None,
+        });
+    }
+    // Compare by content; matching names or file sizes alone do not prove
+    // that two tokenizer payloads can share physical blocks.
+    let names: Vec<String> = models.iter().map(|model| model.name.clone()).collect();
+    for (left, size, hash) in &tokenizers {
+        for (right, other_size, other_hash) in &tokenizers {
+            if left != right && size == other_size && hash == other_hash {
+                let left_name = &names[*left];
+                let right_name = &names[*right];
+                if let Some(model) = models.iter_mut().find(|model| &model.name == left_name) {
+                    model.duplicate_tokenizer_with = Some(right_name.clone());
+                }
+            }
+        }
+    }
+    models.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(models)
+}
+
+pub fn remove_model_directory(
+    data_dir: &Path,
+    name: &str,
+    active_model: Option<&Path>,
+) -> Result<()> {
+    anyhow::ensure!(
+        matches!(
+            Path::new(name).components().next(),
+            Some(std::path::Component::Normal(_))
+        ) && Path::new(name).components().count() == 1,
+        "model name must identify one directory"
+    );
+    let path = data_dir.join("models").join(name);
+    let metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("model directory {} is missing", path.display()))?;
+    anyhow::ensure!(
+        metadata.file_type().is_dir() || metadata.file_type().is_symlink(),
+        "model is not a directory"
+    );
+    let active = active_model.and_then(|path| path.canonicalize().ok());
+    anyhow::ensure!(
+        active
+            .as_ref()
+            .is_none_or(|selected| path.canonicalize().ok().as_ref() != Some(selected)),
+        "the active model cannot be removed"
+    );
+    if metadata.file_type().is_symlink() {
+        fs::remove_file(&path)?;
+    } else {
+        fs::remove_dir_all(&path)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -191,12 +361,12 @@ impl ModelManager {
         Ok(Self { models_dir })
     }
 
-    /// Locate the models directory, creating the user-level fallback if needed.
+    /// Locate the models directory. Resolution is read-only: nothing is created.
     ///
     /// Order: `CODESCRIBE_MODELS_DIR` override, bundled `Contents/Resources/models`,
     /// the development tree two levels above the executable, a repo-root-relative
-    /// `../../models`, and finally `~/.codescribe/models` (created on demand, so
-    /// this tier always succeeds).
+    /// `../../models`, and finally `~/.codescribe/models`, which is returned even
+    /// when it does not exist; callers treat a missing directory as no models.
     fn resolve_models_dir() -> Result<PathBuf> {
         // Environment override
         if let Ok(path) = std::env::var("CODESCRIBE_MODELS_DIR") {
@@ -238,9 +408,10 @@ impl ModelManager {
         }
 
         // 4. Fallback: ~/.codescribe/models/ (lowercase!)
+        // Anchored to HOME, not CODESCRIBE_DATA_DIR: an isolated data dir
+        // (read-only CLI decodes, parity) must still find the installed model.
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
         let user_models = PathBuf::from(&home).join(".codescribe/models");
-        fs::create_dir_all(&user_models).context("Failed to create user models directory")?;
         Ok(user_models)
     }
 
@@ -717,50 +888,71 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    /// Restores a single env var on drop; tests must run under `serial`.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<String>,
+    #[test]
+    fn inventory_reports_active_usable_refused_broken_and_duplicate_tokenizers() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("models");
+        let active = root.join("active");
+        let usable = root.join("usable");
+        let refused = root.join("renamed-quantized");
+        let broken = root.join("quantized-broken");
+        let moshiko = root.join("moshiko-q8");
+        let mimi = root.join("csm-1b");
+        create_complete_whisper_model(&active);
+        create_complete_whisper_model(&usable);
+        create_q8_whisper_model(&refused);
+        fs::create_dir_all(&broken).unwrap();
+        fs::create_dir_all(&moshiko).unwrap();
+        fs::create_dir_all(&mimi).unwrap();
+        fs::write(moshiko.join("model.q8.gguf"), b"fixture").unwrap();
+        fs::write(mimi.join("mimi.safetensors"), b"fixture").unwrap();
+        let rows = inspect_model_directories(temp.path(), Some(&active)).unwrap();
+        let status = |name: &str| {
+            rows.iter()
+                .find(|row| row.name == name)
+                .unwrap()
+                .status
+                .as_str()
+        };
+        assert_eq!(status("active"), "active");
+        assert_eq!(status("usable"), "usable");
+        assert_eq!(status("renamed-quantized"), "refused");
+        assert_eq!(status("quantized-broken"), "broken");
+        assert_eq!(status("moshiko-q8"), "usable");
+        assert_eq!(status("csm-1b"), "usable");
+        assert!(
+            rows.iter()
+                .find(|row| row.name == "active")
+                .unwrap()
+                .duplicate_tokenizer_with
+                .is_some()
+        );
     }
 
-    impl EnvGuard {
-        /// Set `key` to `value`, remembering the previous value for `Drop`.
-        fn set(key: &'static str, value: &Path) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: these tests run under `serial` and restore the prior env.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, prev }
-        }
-
-        /// Set `key` to a literal string, including shell-like path syntax.
-        fn set_str(key: &'static str, value: &str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: these tests run under `serial` and restore the prior env.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, prev }
-        }
-
-        /// Unset `key`, remembering the previous value for `Drop`.
-        fn unset(key: &'static str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: these tests run under `serial` and restore the prior env.
-            unsafe { std::env::remove_var(key) };
-            Self { key, prev }
-        }
+    #[test]
+    fn active_model_cannot_be_removed() {
+        let temp = TempDir::new().unwrap();
+        let active = temp.path().join("models/active");
+        create_complete_whisper_model(&active);
+        let error = remove_model_directory(temp.path(), "active", Some(&active)).unwrap_err();
+        assert!(error.to_string().contains("active model"));
+        assert!(active.is_dir());
     }
 
-    impl Drop for EnvGuard {
-        /// Restore the prior env value, or remove the key if it was unset.
-        fn drop(&mut self) {
-            if let Some(prev) = &self.prev {
-                // SAFETY: these tests run under `serial` and restore the prior env.
-                unsafe { std::env::set_var(self.key, prev) };
-            } else {
-                // SAFETY: these tests run under `serial` and restore the prior env.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
+    #[test]
+    fn removing_one_model_preserves_every_sibling() {
+        let temp = TempDir::new().unwrap();
+        let active = temp.path().join("models/active");
+        let spare = temp.path().join("models/spare");
+        create_complete_whisper_model(&active);
+        create_complete_whisper_model(&spare);
+        remove_model_directory(temp.path(), "spare", Some(&active)).unwrap();
+        assert!(active.is_dir());
+        assert!(!spare.exists());
+        assert!(remove_model_directory(temp.path(), "../active", Some(&active)).is_err());
     }
+
+    use crate::test_isolation::EnvGuard;
 
     /// Create a directory that passes `is_complete_whisper_model_dir`.
     fn create_complete_whisper_model(path: &Path) {
@@ -771,12 +963,14 @@ mod tests {
         )
         .unwrap();
         let mut tokenizer = tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
-        tokenizer.add_special_tokens(&[
-            tokenizers::AddedToken::from("<|startoftranscript|>", true),
-            tokenizers::AddedToken::from("<|endoftext|>", true),
-            tokenizers::AddedToken::from("<|transcribe|>", true),
-            tokenizers::AddedToken::from("<|pl|>", true),
-        ]);
+        tokenizer
+            .add_special_tokens([
+                tokenizers::AddedToken::from("<|startoftranscript|>", true),
+                tokenizers::AddedToken::from("<|endoftext|>", true),
+                tokenizers::AddedToken::from("<|transcribe|>", true),
+                tokenizers::AddedToken::from("<|pl|>", true),
+            ])
+            .expect("add fixture special tokens");
         tokenizer.save(path.join("tokenizer.json"), false).unwrap();
         fs::write(
             path.join("mel_filters.npz"),
@@ -882,6 +1076,28 @@ mod tests {
         }
     }
 
+    /// An isolated data dir isolates data, not the installed model: the
+    /// fallback tier stays under HOME and nothing is created in the data dir.
+    #[test]
+    #[serial]
+    fn isolated_data_dir_still_resolves_models_under_home() {
+        let temp_dir = TempDir::new().unwrap();
+        let home = temp_dir.path().join("home");
+        let data_dir = temp_dir.path().join("isolated-data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let installed = home.join(".codescribe/models");
+        create_complete_whisper_model(&installed.join(DEFAULT_MODEL));
+
+        let _home = EnvGuard::set("HOME", &home);
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &data_dir);
+        let _models_dir = EnvGuard::remove("CODESCRIBE_MODELS_DIR");
+
+        let manager = ModelManager::new().unwrap();
+        assert_eq!(manager.models_dir(), installed.as_path());
+        assert!(manager.check_model_exists(DEFAULT_MODEL));
+        assert!(!data_dir.join("models").exists());
+    }
+
     /// A leading `~/` in the supported models-root override resolves via HOME.
     #[test]
     #[serial]
@@ -892,7 +1108,7 @@ mod tests {
         create_complete_whisper_model(&models_dir.join(DEFAULT_MODEL));
 
         let _home = EnvGuard::set("HOME", &home);
-        let _models_dir = EnvGuard::set_str("CODESCRIBE_MODELS_DIR", "~/custom-models");
+        let _models_dir = EnvGuard::set("CODESCRIBE_MODELS_DIR", "~/custom-models");
 
         let manager = ModelManager::new().unwrap();
         assert_eq!(manager.models_dir(), models_dir.as_path());
@@ -1252,9 +1468,9 @@ mod tests {
 
         let _home = EnvGuard::set("HOME", &home);
         let _cache = EnvGuard::set("CODESCRIBE_HF_CACHE", &cache);
-        let _hf_home = EnvGuard::unset("HF_HOME");
-        let _hf_hub = EnvGuard::unset("HF_HUB_CACHE");
-        let _huggingface_hub = EnvGuard::unset("HUGGINGFACE_HUB_CACHE");
+        let _hf_home = EnvGuard::remove("HF_HOME");
+        let _hf_hub = EnvGuard::remove("HF_HUB_CACHE");
+        let _huggingface_hub = EnvGuard::remove("HUGGINGFACE_HUB_CACHE");
 
         let snapshot = |repo: &str, revision: &str| {
             cache
@@ -1287,10 +1503,12 @@ mod tests {
         create_complete_whisper_model(&newer_tokenizer);
         let mut incomplete_tokenizer =
             tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
-        incomplete_tokenizer.add_special_tokens(&[
-            tokenizers::AddedToken::from("<|startoftranscript|>", true),
-            tokenizers::AddedToken::from("<|endoftext|>", true),
-        ]);
+        incomplete_tokenizer
+            .add_special_tokens([
+                tokenizers::AddedToken::from("<|startoftranscript|>", true),
+                tokenizers::AddedToken::from("<|endoftext|>", true),
+            ])
+            .expect("add fixture special tokens");
         incomplete_tokenizer
             .save(newer_tokenizer.join("tokenizer.json"), false)
             .unwrap();
@@ -1337,9 +1555,9 @@ mod tests {
 
         let _home = EnvGuard::set("HOME", &home);
         let _cache = EnvGuard::set("CODESCRIBE_HF_CACHE", &cache);
-        let _hf_home = EnvGuard::unset("HF_HOME");
-        let _hf_hub = EnvGuard::unset("HF_HUB_CACHE");
-        let _huggingface_hub = EnvGuard::unset("HUGGINGFACE_HUB_CACHE");
+        let _hf_home = EnvGuard::remove("HF_HOME");
+        let _hf_hub = EnvGuard::remove("HF_HUB_CACHE");
+        let _huggingface_hub = EnvGuard::remove("HUGGINGFACE_HUB_CACHE");
 
         let config_before = fs::read(destination.join("config.json")).unwrap();
         let weights_before = fs::read(destination.join("model.safetensors")).unwrap();
@@ -1426,7 +1644,7 @@ mod tests {
 
         let _env_override = EnvGuard::set("CODESCRIBE_MODEL_PATH", &env_model);
         let _models_dir = EnvGuard::set("CODESCRIBE_MODELS_DIR", &models_dir);
-        let _hf_cache = EnvGuard::unset("CODESCRIBE_HF_CACHE");
+        let _hf_cache = EnvGuard::remove("CODESCRIBE_HF_CACHE");
 
         let resolved = resolve_runtime_whisper_model_path(Some(DEFAULT_MODEL)).unwrap();
         assert_eq!(resolved, canonicalize_or_self(env_model));
@@ -1449,7 +1667,7 @@ mod tests {
             "CODESCRIBE_MODELS_DIR",
             temp_dir.path().join("models").as_path(),
         );
-        let _env_override = EnvGuard::unset("CODESCRIBE_MODEL_PATH");
+        let _env_override = EnvGuard::remove("CODESCRIBE_MODEL_PATH");
         let _hf_cache = EnvGuard::set("CODESCRIBE_HF_CACHE", &hf_cache);
 
         let resolved =
@@ -1475,9 +1693,9 @@ mod tests {
         vec![
             EnvGuard::set("HOME", &fake_home),
             EnvGuard::set("CODESCRIBE_HF_CACHE", &empty_hf_cache),
-            EnvGuard::unset("HUGGINGFACE_HUB_CACHE"),
-            EnvGuard::unset("HF_HUB_CACHE"),
-            EnvGuard::unset("HF_HOME"),
+            EnvGuard::remove("HUGGINGFACE_HUB_CACHE"),
+            EnvGuard::remove("HF_HUB_CACHE"),
+            EnvGuard::remove("HF_HOME"),
         ]
     }
 
@@ -1513,7 +1731,7 @@ mod tests {
         std::fs::create_dir_all(&empty_models_dir).unwrap();
 
         let _hf_isolation = isolate_from_real_hf_cache(temp_dir.path());
-        let _env_override = EnvGuard::unset("CODESCRIBE_MODEL_PATH");
+        let _env_override = EnvGuard::remove("CODESCRIBE_MODEL_PATH");
         let _models_dir = EnvGuard::set("CODESCRIBE_MODELS_DIR", &empty_models_dir);
 
         let err = resolve_runtime_whisper_model_path(Some(DEFAULT_MODEL))

@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import os
 
 @testable import Codescribe
 
@@ -10,45 +11,48 @@ final class AgentChatCancellationTests: XCTestCase {
     case rustCancel(String)
   }
 
-  private final class LockedState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storedEvents: [CancellationEvent] = []
-    private var storedContinuation: CheckedContinuation<String, Error>?
-    private var storedCallCount = 0
+  private final class LockedState: Sendable {
+    private struct Storage {
+      var events: [CancellationEvent] = []
+      var continuation: CheckedContinuation<String, Error>?
+      var callCount = 0
+    }
+
+    private let storage = OSAllocatedUnfairLock(initialState: Storage())
 
     var events: [CancellationEvent] {
-      lock.withLock { storedEvents }
+      storage.withLock { $0.events }
     }
 
     var callCount: Int {
-      lock.withLock { storedCallCount }
+      storage.withLock { $0.callCount }
     }
 
     func nextCall() -> Int {
-      lock.withLock {
-        storedCallCount += 1
-        return storedCallCount
+      storage.withLock {
+        $0.callCount += 1
+        return $0.callCount
       }
     }
 
     func suspend(with continuation: CheckedContinuation<String, Error>) {
-      lock.withLock { storedContinuation = continuation }
+      storage.withLock { $0.continuation = continuation }
     }
 
     func record(_ event: CancellationEvent) {
-      lock.withLock { storedEvents.append(event) }
+      storage.withLock { $0.events.append(event) }
     }
 
     func cancelSuspendedCall() {
-      let continuation = lock.withLock { () -> CheckedContinuation<String, Error>? in
-        defer { storedContinuation = nil }
-        return storedContinuation
+      let continuation = storage.withLock { state -> CheckedContinuation<String, Error>? in
+        defer { state.continuation = nil }
+        return state.continuation
       }
       continuation?.resume(throwing: CancellationError())
     }
   }
 
-  private final class SpyEngine: AgentChatEngine {
+  private final class SpyEngine: ChatEngineFixture {
     let firstStreamStarted: XCTestExpectation
     let emitPartialAndTool: Bool
     let state = LockedState()
@@ -61,10 +65,6 @@ final class AgentChatCancellationTests: XCTestCase {
       self.emitPartialAndTool = emitPartialAndTool
     }
 
-    func isAvailable() -> Bool { true }
-    func availabilityDetail() -> String? { nil }
-    func generateThreadTitle(_ text: String) async throws -> String? { nil }
-
     func streamReply(
       _ text: String,
       threadId: String,
@@ -76,13 +76,13 @@ final class AgentChatCancellationTests: XCTestCase {
     ) async throws -> String {
       let call = state.nextCall()
       if call > 1 {
-        await onDelta("Recovered")
+        onDelta("Recovered")
         return "Recovered"
       }
 
       if emitPartialAndTool {
-        await onDelta("Partial answer")
-        await onToolExecuting("slow-side-effect", "call-1")
+        onDelta("Partial answer")
+        onToolExecuting("slow-side-effect", "call-1")
       }
 
       return try await withTaskCancellationHandler {
@@ -277,12 +277,7 @@ final class AgentChatCancellationTests: XCTestCase {
   }
 
   func testComposerSendUsesSystemCircleAndSharedControlGeometry() {
-    guard case .sf(let symbolName) = ComposerActionVisualState.send(enabled: true).icon.backend
-    else {
-      return XCTFail("Composer send action must use an SF Symbol")
-    }
-
-    XCTAssertEqual(symbolName, "arrow.up.circle.fill")
+    XCTAssertEqual(ComposerActionVisualState.send(enabled: true).icon.systemName, "arrow.up.circle.fill")
     XCTAssertEqual(ComposerControlMetrics.glyphSize, 15)
     XCTAssertEqual(ComposerControlMetrics.hitTargetSize, 22)
   }

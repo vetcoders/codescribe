@@ -8,21 +8,21 @@
 //! rzeczywiście gada codescribe na GUI"). This bin routes through the exact
 //! stages a GUI delivery does, in the same order:
 //!
-//!   Whisper file final  → lexicon post-process → Light+ → (optional AI format)
-//!   `transcribe_file_verdict`  `StreamPostProcessor`  `light_plus::apply`
+//!   Whisper file final → canonical transcript verdict
+//!   `transcribe_file_verdict`
 //!
 //! Two faces, matching the GUI's two faces:
 //! - default        = the DELIVERY: one shaped transcript on stdout.
 //! - `--stream` = the LIVE CANVAS view: per-segment text flushed to stdout
-//!   as decoding progresses through the file (lexicon applied per segment;
-//!   Light+ belongs to delivery, not the canvas).
-//! - `--raw` = the Ctrl-hold contract: literal words, no Light+.
-//! - `-f/--format` = the AI-formatted lane (same `ai_formatting` call and
-//!   lane config the GUI uses; requires a configured key).
-//! - `transcribe live` = follow the app-owned clean transcript bus and flush
-//!   newly created utterance drafts to stdout one line at a time. Revisions and
-//!   the final product seal remain explicit bus events. It never opens a
-//!   second microphone or reconstructs text from UI previews.
+//!   as decoding progresses through the file.
+//! - `transcribe live` = follow the app-owned clean transcript bus. The default
+//!   is the human canvas view: drafts append to the open line, a reducer
+//!   rewrite is marked `⟲ rev N`, and a terminal seal closes the take as a
+//!   permanent block. `--json` keeps the raw projection JSONL for machine
+//!   consumers. It never opens a second microphone or reconstructs text from
+//!   UI previews.
+//! - multiple FILES transcribe sequentially; per-file headers go to stderr so
+//!   stdout stays clean transcript text.
 //!
 //! Provenance goes to stderr, GUI-truth style, so stdout stays pipeable.
 //! The old `daemon` mode is gone on purpose: the SwiftUI app owns runtime.
@@ -42,24 +42,152 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Transcribe a file or follow the app-owned live transcript bus
+    /// Inspect per-PCM-pin decision history (engine hypotheses are diagnostic)
+    Trace {
+        /// Session ID, or an explicit .trail.jsonl file for offline inspection
+        session: String,
+        #[arg(long)]
+        word: Option<String>,
+    },
+    /// Transcribe files or follow the app-owned live transcript bus
+    ///
+    /// stdout carries the payload and nothing else: transcript text in file
+    /// mode, projection JSONL under --json. Headers, provenance and engine
+    /// warnings go to stderr, so `... 2>/dev/null` needs no further filtering.
     Transcribe {
-        /// Path to the audio file (omit when using `transcribe live`)
-        file: Option<std::path::PathBuf>,
+        /// Audio files to transcribe in order (omit when using `transcribe live`)
+        files: Vec<std::path::PathBuf>,
         /// File language; live accepts it for compatibility but app settings own capture
         #[arg(short, long, global = true)]
         language: Option<String>,
-        /// Live-canvas view: flush each decoded segment as it lands
+        /// Force Apple file recognition (no Whisper fallback; comparison lane)
+        #[arg(long, conflicts_with = "whisper")]
+        apple: bool,
+        /// Force the local Whisper file final-pass
+        #[arg(long, conflicts_with = "apple")]
+        whisper: bool,
+        /// Print admitted segments after each decode window, without repeating the final text
         #[arg(long)]
         stream: bool,
-        /// Literal words — skip the Light+ deterministic shaping (Ctrl-hold contract)
+        /// Print only; do not publish this verdict onto the transcript bus
+        #[arg(long)]
+        no_bus: bool,
+        /// Live: raw projection JSONL for machine consumers instead of the human view
+        #[arg(long, global = true)]
+        json: bool,
+        /// Literal words: skip the Light+ sentence shaping (the app's Ctrl-hold lane)
         #[arg(long)]
         raw: bool,
-        /// AI formatting via the configured formatting lane (same as the GUI)
-        #[arg(short, long)]
-        format: bool,
+        /// Print the take truth under one time axis: segments, the 32 ms Silero
+        /// row, log-mel energy, and PCM RMS/dBFS chart (stderr only)
+        #[arg(long, visible_aliases = ["sparkline", "power"])]
+        inspect: bool,
+        /// Do not write the <file>.truth.json observer sidecar beside the input
+        #[arg(long)]
+        no_truth: bool,
         #[command(subcommand)]
         mode: Option<TranscribeMode>,
+    },
+    /// Inspect and compact the clean transcript bus
+    ///
+    /// The bus carries two records with opposite retention needs: the delivery
+    /// transcript, which is small and worth keeping, and the acoustic evidence,
+    /// which is ~93% of the bytes and is consumed within days. `compact` drops
+    /// aged evidence and keeps every delivery row.
+    Bus {
+        #[command(subcommand)]
+        action: BusAction,
+    },
+    /// Inspect, replay and recover the custom pronunciation lexicon
+    ///
+    /// The lexicon is a PRE-LLM variant→canonical substitution table. It is
+    /// grown two ways: by hand, and by replaying human corrections through the
+    /// extractor. Only the second needs adjudicating, which is what `replay`
+    /// reports and `--apply` obeys.
+    Lexicon {
+        #[command(subcommand)]
+        action: LexiconAction,
+    },
+    /// Batch quality report over a corpus of WAV+TXT pairs
+    Report(codescribe::cli::report::ReportArgs),
+    /// Self-improving quality loop: report, regression analysis, tuning
+    Daemon(codescribe::cli::daemon::DaemonArgs),
+    /// Learning triangle: Apple-live × Whisper × human reference
+    Teach {
+        #[command(subcommand)]
+        cmd: codescribe::cli::teacher::TeacherCommand,
+    },
+    /// Private corpus census and production-overlay replay
+    Corpus {
+        #[command(subcommand)]
+        command: codescribe::cli::corpus::CorpusCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BusAction {
+    /// Size, composition and span of the bus
+    Status,
+    /// Drop evidence rows older than the retention window
+    ///
+    /// Refuses while a session may be open, and discards its own work rather
+    /// than overwrite rows appended during the rewrite.
+    Compact {
+        /// Evidence retention in days
+        #[arg(long, default_value_t = 14)]
+        evidence_older_than: u32,
+        /// Report what would be dropped without rewriting the bus
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum LexiconAction {
+    /// Summarise the live lexicon: rows, variants, provenance, recoverable backups
+    Show,
+    /// Replay corrections through the extractor and the admission gate
+    Replay {
+        /// corrections.jsonl to replay (default: <config>/quality/corrections.jsonl)
+        #[arg(long)]
+        corrections: Option<std::path::PathBuf>,
+        /// Where the three tier files and the report land (default: <config>)
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Write the accepted tier into the live lexicon; the others never land
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Remove a term, or one variant of it, from the live lexicon
+    ///
+    /// A lexicon that can only grow is a lexicon whose mistakes are permanent.
+    /// A rotation backup is taken before the write.
+    Remove {
+        /// Canonical term whose row to touch
+        term: String,
+        /// Remove only this misheard spelling; without it the whole row goes
+        #[arg(long)]
+        variant: Option<String>,
+    },
+    /// Merge a rotation backup back into the live lexicon
+    ///
+    /// Hand-curated rows return verbatim; rows the extractor wrote are
+    /// re-adjudicated through the same gate `replay` uses. The merge is a
+    /// union, so nothing the live file gained after the backup is lost.
+    Restore {
+        /// Backup to restore from (default: the richest recoverable one)
+        #[arg(long)]
+        from: Option<std::path::PathBuf>,
+        /// Report what would change without writing the lexicon
+        #[arg(long)]
+        dry_run: bool,
+        /// Also hold hand-written rows to the admission gate
+        ///
+        /// Hand-written does not mean correct: a curated row can list a term's
+        /// own inflections as mispronunciations (`Monika <- Moniki, Monikę`),
+        /// which rewrites correct speech and breaks the sentence.
+        #[arg(long)]
+        gate_curated: bool,
     },
 }
 
@@ -67,51 +195,499 @@ enum Command {
 enum TranscribeMode {
     /// Follow the app's transcript draft/seal bus; Ctrl-C closes the reader
     Live,
+    /// Print the last completed transcript from the bus; stdout carries the
+    /// words and nothing else, so a shell widget can insert it verbatim
+    Last,
 }
 
-fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+fn main() -> std::process::ExitCode {
+    // The corpus lane must be unable to reach the operator's Keychain, and the
+    // lock has to be in place before ANY parsing — so the decision is made
+    // from raw argv, exactly as the standalone binary made it from its first
+    // statement. See `cli::corpus` for why this cannot be a typed check.
+    //
+    // SAFETY: first executable statement of the process, before Clap, before
+    // the tracing subscriber, before any thread or runtime exists.
+    if codescribe::cli::corpus::corpus_argv_requested() {
+        unsafe {
+            std::env::set_var("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        }
+    }
+    // Rust starts with SIGPIPE ignored, so a `println!` into a closed pipe
+    // returns EPIPE and panics with a backtrace. `codescribe lexicon show |
+    // head` is an ordinary thing to type, and every other Unix tool just ends
+    // there. Restore the default disposition.
+    //
+    // SAFETY: still the process's first moments — no threads, no runtime, and
+    // no handler this replaces.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+    // Engine warnings (a refused long-file span, a degraded lane) are the
+    // CLI's only way to say "this transcript is missing something"; they go
+    // to stderr, so `transcribe last` stdout stays verbatim for the widget.
+    codescribe::logging::init_logging_with_default_filter("warn");
+    match dispatch(Cli::parse()) {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("codescribe: {error:#}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// Route a parsed command line to its job.
+///
+/// Returns the process exit code rather than `()` because the corpus lane
+/// distinguishes "ran and failed" (2) from "could not run" (1), and folding
+/// that into an anyhow error would erase the difference.
+fn dispatch(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
+    let success = std::process::ExitCode::SUCCESS;
     match cli.command {
         Command::Transcribe {
-            file,
+            files,
             language,
+            apple,
+            whisper,
             stream,
+            no_bus,
+            json,
             raw,
-            format,
+            inspect,
+            no_truth,
             mode,
         } => match mode {
             Some(TranscribeMode::Live) => {
                 anyhow::ensure!(
-                    file.is_none() && !stream && !raw && !format,
-                    "`transcribe live` does not accept a file, --stream, --raw, or --format"
+                    files.is_empty() && !stream && !raw && !inspect && !no_truth && !apple && !whisper,
+                    "`transcribe live` does not accept file engine/inspection flags (the app decides the lane)"
                 );
-                transcribe_live(language)
+                transcribe_live(language, json)
+            }
+            Some(TranscribeMode::Last) => {
+                anyhow::ensure!(
+                    files.is_empty() && !stream && !json && !raw && !inspect && !no_truth && !apple && !whisper,
+                    "`transcribe last` does not accept file engine/inspection flags or --json"
+                );
+                transcribe_last()
             }
             None => {
-                let file = file.ok_or_else(|| {
-                    anyhow::anyhow!("missing <FILE> (or use `codescribe transcribe live`)")
-                })?;
-                transcribe(&file, language.as_deref(), stream, raw, format)
+                anyhow::ensure!(
+                    !json,
+                    "--json belongs to `transcribe live`; file mode already prints plain text"
+                );
+                anyhow::ensure!(
+                    !files.is_empty(),
+                    "missing <FILES> (or use `codescribe transcribe live`)"
+                );
+                transcribe_batch(
+                    &files,
+                    FileTranscribeOptions {
+                        language: language.as_deref(),
+                        stream,
+                        publish_bus: !no_bus,
+                        raw,
+                        inspect,
+                        write_truth: !no_truth,
+                        engine: if apple {
+                            FileEngine::Apple
+                        } else if whisper {
+                            FileEngine::Whisper
+                        } else {
+                            FileEngine::Default
+                        },
+                    },
+                )
             }
-        },
+        }
+        .map(|()| success),
+        Command::Trace { session, word } => {
+            let path = if session.ends_with(".trail.jsonl") {
+                std::path::PathBuf::from(&session)
+            } else {
+                codescribe_core::pipeline::trail::trail_path(&codescribe_core::config::Config::config_dir(), &session)?
+            };
+            let records = codescribe_core::pipeline::trail::read_trail(&path)?;
+            print!("{}", codescribe_core::pipeline::trail::render_trace(&records, word.as_deref()));
+            Ok(success)
+        }
+        Command::Bus { action } => run_bus(action).map(|()| success),
+        Command::Lexicon { action } => run_lexicon(action).map(|()| success),
+        Command::Report(args) => {
+            blocking_runtime()?.block_on(codescribe::cli::report::run(args))?;
+            Ok(success)
+        }
+        Command::Daemon(args) => {
+            blocking_runtime()?.block_on(codescribe::cli::daemon::run(args))?;
+            Ok(success)
+        }
+        Command::Teach { cmd } => codescribe::cli::teacher::run(cmd).map(|()| success),
+        // `main_with` owns the corpus exit contract; the unified entry point
+        // adopts it rather than reinventing a second one.
+        Command::Corpus { command } => Ok(codescribe::cli::corpus::main_with(
+            command,
+            codescribe::cli::corpus::Invocation::subcommand("corpus"),
+        )),
     }
 }
 
-fn transcribe_live(language: Option<String>) -> anyhow::Result<()> {
-    use codescribe::presentation::transcript_bus::{CleanTranscriptEvent, transcript_bus_path};
+/// A Tokio runtime for the two async jobs.
+///
+/// Built on demand, not with `#[tokio::main]`: the transcribe lanes are
+/// synchronous and must stay that way, and the corpus lane spawns child
+/// processes before any runtime should exist.
+fn blocking_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Runtime::new().map_err(Into::into)
+}
+
+/// Transcript bus surface: what is in it, and how to get the space back.
+fn run_bus(action: BusAction) -> anyhow::Result<()> {
+    use codescribe::presentation::transcript_bus_maintenance::{bus_status, compact_bus};
+
+    let path = codescribe::presentation::transcript_bus::transcript_bus_path();
+    match action {
+        BusAction::Status => {
+            let status = bus_status(&path)?;
+            println!("bus: {}", status.path.display());
+            println!("size: {}", human_bytes(status.bytes));
+            println!(
+                "delivery rows: {} ({})",
+                status.delivery_rows,
+                human_bytes(status.delivery_bytes)
+            );
+            println!(
+                "evidence rows: {} ({})",
+                status.evidence_rows,
+                human_bytes(status.evidence_bytes)
+            );
+            if status.other_rows > 0 {
+                println!("other rows: {} (never compacted away)", status.other_rows);
+            }
+            if let (Some(first), Some(last)) = (&status.first_seen, &status.last_seen) {
+                println!("span: {first} .. {last}");
+            }
+            if !status.retention_preview.is_empty() {
+                println!("reclaimable by evidence retention window:");
+                for (days, bytes) in &status.retention_preview {
+                    println!("  {days:>3}d  {}", human_bytes(*bytes));
+                }
+            }
+            if status.wants_compaction() {
+                println!(
+                    "past the compaction threshold — pick a window and run \
+                     `codescribe bus compact --evidence-older-than <days>` \
+                     with Codescribe stopped"
+                );
+            }
+            Ok(())
+        }
+        BusAction::Compact {
+            evidence_older_than,
+            dry_run,
+        } => {
+            let report = compact_bus(&path, evidence_older_than, dry_run)?;
+            println!(
+                "rows: {} read, {} kept, {} aged-out evidence dropped",
+                report.rows_read, report.rows_kept, report.evidence_rows_dropped
+            );
+            println!(
+                "size: {} -> {} ({} reclaimed){}",
+                human_bytes(report.bytes_before),
+                human_bytes(report.bytes_after),
+                human_bytes(report.bytes_reclaimed()),
+                if report.applied {
+                    ""
+                } else {
+                    " — dry run, bus untouched"
+                }
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Byte count an operator can read at a glance.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Lexicon surface: summarise, replay, recover.
+fn run_lexicon(action: LexiconAction) -> anyhow::Result<()> {
+    use codescribe_core::config::Config;
+    use codescribe_core::quality::lexicon_replay::run_lexicon_replay;
+    use codescribe_core::quality::lexicon_restore::{
+        newest_recoverable_backup, restore_custom_lexicon_from_backup,
+    };
+
+    let config_dir = Config::config_dir();
+    match action {
+        LexiconAction::Show => {
+            let path = config_dir.join("lexicon.custom.jsonl");
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let mut rows = 0usize;
+            let mut variants = 0usize;
+            let mut curated = 0usize;
+            for line in text.lines().filter(|line| !line.trim().is_empty()) {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                rows += 1;
+                variants += value
+                    .get("mispronunciations")
+                    .and_then(|v| v.as_array())
+                    .map_or(0, |a| a.len());
+                if value.get("source").and_then(|v| v.as_str()) != Some("correction") {
+                    curated += 1;
+                }
+            }
+            println!("lexicon: {}", path.display());
+            println!("rows: {rows}  variants: {variants}");
+            println!("curated: {curated}  from corrections: {}", rows - curated);
+            match newest_recoverable_backup(&config_dir) {
+                // A richer backup than the live file means the live file lost
+                // rules. Saying so here is the whole point of `show`.
+                Some(backup) => println!(
+                    "recoverable backup holds MORE rows than the live file: {}\n\
+                     run `codescribe lexicon restore` to merge it back",
+                    backup.display()
+                ),
+                None => println!("no backup holds more than the live file"),
+            }
+            Ok(())
+        }
+        LexiconAction::Replay {
+            corrections,
+            out,
+            apply,
+        } => {
+            let source =
+                corrections.unwrap_or_else(|| config_dir.join("quality").join("corrections.jsonl"));
+            let out_dir = out.unwrap_or_else(|| config_dir.clone());
+            let outcome = run_lexicon_replay(&source, &out_dir, apply)?;
+            eprintln!(
+                "replay: {} candidate pair(s), {} accepted{}",
+                outcome.table.len(),
+                outcome.accepted(),
+                if apply { " and applied" } else { " (dry-run)" }
+            );
+            for (tier, count) in &outcome.tier_counts {
+                eprintln!("  {tier}: {count}");
+            }
+            eprintln!("accepted: {}", outcome.accepted_path.display());
+            eprintln!("review:   {}", outcome.review_path.display());
+            eprintln!("rejected: {}", outcome.rejected_path.display());
+            eprintln!("report:   {}", outcome.report_path.display());
+            Ok(())
+        }
+        LexiconAction::Remove { term, variant } => {
+            let report = codescribe_core::quality::lexicon_restore::remove_from_custom_lexicon(
+                &term,
+                variant.as_deref(),
+            )?;
+            println!(
+                "removed {} row(s) and {} variant(s); {} row(s) remain",
+                report.rows_removed, report.variants_removed, report.rows_after
+            );
+            if let Some(backup) = report.backup {
+                println!("backup: {}", backup.display());
+            }
+            Ok(())
+        }
+        LexiconAction::Restore {
+            from,
+            dry_run,
+            gate_curated,
+        } => {
+            let backup = match from {
+                Some(path) => path,
+                None => newest_recoverable_backup(&config_dir).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no backup in {} holds more rows than the live lexicon",
+                        config_dir.display()
+                    )
+                })?,
+            };
+            if dry_run {
+                // Reading is free; the caller asked not to write, so stop before
+                // the merge rather than writing and reporting after the fact.
+                println!("would restore from {}", backup.display());
+                println!("run without --dry-run to merge it into the live lexicon");
+                return Ok(());
+            }
+            let report = restore_custom_lexicon_from_backup(&backup, gate_curated)?;
+            println!("restored from {}", backup.display());
+            println!(
+                "backup rows: {}  curated restored: {}  auto examined: {}  auto pairs accepted: {}",
+                report.backup_rows,
+                report.curated_rows_restored,
+                report.auto_rows_examined,
+                report.auto_pairs_accepted
+            );
+            println!(
+                "live rows: {} -> {}  variants now: {}",
+                report.live_rows_before, report.live_rows_after, report.variants_after
+            );
+            Ok(())
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FileEngine {
+    Default,
+    Apple,
+    Whisper,
+}
+
+#[derive(Clone, Copy)]
+struct FileTranscribeOptions<'a> {
+    language: Option<&'a str>,
+    stream: bool,
+    publish_bus: bool,
+    raw: bool,
+    inspect: bool,
+    write_truth: bool,
+    engine: FileEngine,
+}
+
+/// Transcribe files in order, continuing on failure with a nonzero batch exit.
+fn transcribe_batch(
+    files: &[std::path::PathBuf],
+    options: FileTranscribeOptions<'_>,
+) -> anyhow::Result<()> {
+    let mut failures = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        if files.len() > 1 {
+            eprintln!(
+                "--- file {}/{}: {} ---",
+                index + 1,
+                files.len(),
+                file.display()
+            );
+            if index > 0 {
+                // Batch stdout stays parseable: one blank line between transcripts.
+                println!();
+            }
+        }
+        if let Err(error) = transcribe(file, options) {
+            eprintln!("FAILED {}: {error:#}", file.display());
+            failures.push(file.display().to_string());
+        }
+    }
+    anyhow::ensure!(
+        failures.is_empty(),
+        "{} of {} files failed: {}",
+        failures.len(),
+        files.len(),
+        failures.join(", ")
+    );
+    Ok(())
+}
+
+/// What the human view already has on the open terminal line, so the next
+/// projection can be rendered as a delta instead of a full reprint.
+#[derive(Debug, Default)]
+struct LiveHumanView {
+    /// Session and full rendered text of the line currently left open.
+    open_line: Option<(String, String)>,
+}
+
+impl LiveHumanView {
+    /// Exact bytes to write for one projection. Appends leave the line open;
+    /// a revision that is not a pure extension closes it and marks `⟲ rev N`;
+    /// a terminal seal closes the take as a permanent block. No cursor moves —
+    /// works identically in tmux, zellij, and a bare tty.
+    fn render(
+        &mut self,
+        projection: &codescribe::presentation::transcript_projection::TranscriptProjection,
+    ) -> String {
+        use codescribe::presentation::transcript_projection::TranscriptProjectionKind;
+
+        let session = projection.session_id.as_str();
+        let text = projection.rendered_text.as_str();
+        match projection.kind {
+            TranscriptProjectionKind::LiveRevision => match self.open_line.take() {
+                Some((open_session, previous)) if open_session == session => {
+                    if let Some(appended) = text.strip_prefix(previous.as_str()) {
+                        self.open_line = Some((open_session, text.to_string()));
+                        appended.to_string()
+                    } else {
+                        self.open_line = Some((open_session, text.to_string()));
+                        format!("\n⟲ rev {}: {text}", projection.reducer_revision)
+                    }
+                }
+                interrupted => {
+                    // None = fresh canvas; Some(other session) = close that line first.
+                    let prefix = if interrupted.is_some() { "\n" } else { "" };
+                    self.open_line = Some((session.to_string(), text.to_string()));
+                    format!("{prefix}{text}")
+                }
+            },
+            TranscriptProjectionKind::TerminalSeal => {
+                let newline = if self.open_line.take().is_some() {
+                    "\n"
+                } else {
+                    ""
+                };
+                format!(
+                    "{newline}⏺ sealed · session {} · rev {} · samples {}..{}\n{text}\n\n",
+                    &session[..8.min(session.len())],
+                    projection.reducer_revision,
+                    projection.sample_start,
+                    projection.sample_end,
+                )
+            }
+        }
+    }
+}
+
+fn transcribe_live(language: Option<String>, json: bool) -> anyhow::Result<()> {
+    use codescribe::presentation::transcript_bus::transcript_bus_path;
+    use codescribe::presentation::transcript_projection::{
+        TranscriptBusFileWake, TranscriptProjectionReader,
+    };
     use std::io::{Read, Seek, SeekFrom, Write as _};
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt as _;
 
     let path = transcript_bus_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut offset = std::fs::metadata(&path)
         .map(|metadata| metadata.len())
         .unwrap_or(0);
-    let mut pending = Vec::<u8>::new();
+    #[cfg(unix)]
+    let mut file_identity = std::fs::metadata(&path)
+        .ok()
+        .map(|metadata| (metadata.dev(), metadata.ino()));
+    let mut reader = TranscriptProjectionReader::new();
+    let mut wake = TranscriptBusFileWake::new(&path)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 
+    let mut human_view = (!json).then(LiveHumanView::default);
+
     runtime.block_on(async move {
-        eprintln!("codescribe live: app transcript bus -> live draft stdout");
+        if json {
+            eprintln!("codescribe live: app transcript bus -> full projection JSONL stdout");
+        } else {
+            eprintln!(
+                "codescribe live: canvas view (drafts append, ⟲ marks a rewrite, ⏺ seals a take); --json for raw projections"
+            );
+        }
         eprintln!("bus={} start=end stop=Ctrl-C", path.display());
         eprintln!(
             "language_hint={} owner=Codescribe.app",
@@ -119,13 +695,21 @@ fn transcribe_live(language: Option<String>) -> anyhow::Result<()> {
         );
 
         loop {
+            let wait = tokio::task::spawn_blocking(move || {
+                let result = wake.wait(std::time::Duration::from_secs(2));
+                (wake, result)
+            });
             tokio::select! {
                 signal = tokio::signal::ctrl_c() => {
                     signal?;
                     eprintln!("codescribe live: stopped");
                     return Ok(());
                 }
-                () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+                result = wait => {
+                    let (returned_wake, wait_result) = result?;
+                    wake = returned_wake;
+                    wait_result?;
+                }
             }
 
             let mut file = match std::fs::File::open(&path) {
@@ -133,155 +717,594 @@ fn transcribe_live(language: Option<String>) -> anyhow::Result<()> {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.into()),
             };
-            let file_len = file.metadata()?.len();
-            if file_len < offset {
+            let metadata = file.metadata()?;
+            let file_len = metadata.len();
+            #[cfg(unix)]
+            let identity_changed =
+                file_identity.is_some_and(|identity| identity != (metadata.dev(), metadata.ino()));
+            #[cfg(not(unix))]
+            let identity_changed = false;
+            if identity_changed || file_len < offset {
                 offset = 0;
-                pending.clear();
+                reader.reset_authority();
+                eprintln!("codescribe live: Bus rotation/truncation opened a new authority domain");
+            }
+            #[cfg(unix)]
+            {
+                file_identity = Some((metadata.dev(), metadata.ino()));
             }
             file.seek(SeekFrom::Start(offset))?;
             let mut chunk = Vec::new();
             file.read_to_end(&mut chunk)?;
             offset = offset.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-            pending.extend_from_slice(&chunk);
-
-            while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
-                let line: Vec<u8> = pending.drain(..=newline).collect();
-                let line = &line[..line.len().saturating_sub(1)];
-                if line.is_empty() {
-                    continue;
-                }
-                let event: CleanTranscriptEvent = match serde_json::from_slice(line) {
-                    Ok(event) => event,
-                    Err(error) => {
-                        eprintln!("codescribe live: invalid transcript event: {error}");
-                        continue;
+            if !chunk.is_empty() {
+                let (projections, errors) = live_projections(&mut reader, &chunk);
+                let stdout = std::io::stdout();
+                let mut out = stdout.lock();
+                match human_view.as_mut() {
+                    Some(view) => {
+                        for projection in &projections {
+                            write!(out, "{}", view.render(projection))?;
+                        }
                     }
-                };
-                if let Some(text) = live_event_text(&event.status, &event.text) {
-                    let stdout = std::io::stdout();
-                    let mut out = stdout.lock();
-                    writeln!(out, "{text}")?;
-                    out.flush()?;
-                } else if event.status == "utterance_revised" {
-                    eprintln!(
-                        "codescribe live: revision available session={} utterance={}",
-                        event.session_id,
-                        event
-                            .utterance_id
-                            .map(|id| id.to_string())
-                            .unwrap_or_else(|| "unknown".to_string())
-                    );
-                } else if event.status == "transcript_sealed" {
-                    eprintln!(
-                        "codescribe live: transcript sealed session={} chars={}",
-                        event.session_id,
-                        event.text.chars().count()
-                    );
+                    None => {
+                        for projection in &projections {
+                            writeln!(out, "{}", projection.normalized_json()?)?;
+                        }
+                    }
                 }
+                for error in errors {
+                    eprintln!("codescribe live: unreadable bus line: {error}");
+                }
+                out.flush()?;
             }
         }
     })
 }
 
-/// Plain stdout is intentionally append-only and therefore shows each new draft
-/// slot once. Revisions and the final seal remain machine-readable in the
-/// canonical NDJSON bus and are announced on stderr without transcript content.
-fn live_event_text<'a>(status: &str, text: &'a str) -> Option<&'a str> {
-    if status != "utterance_draft" {
-        return None;
+fn live_projections(
+    reader: &mut codescribe::presentation::transcript_projection::TranscriptProjectionReader,
+    bytes: &[u8],
+) -> (
+    Vec<codescribe::presentation::transcript_projection::TranscriptProjection>,
+    Vec<String>,
+) {
+    let mut projections = Vec::new();
+    let mut errors = Vec::new();
+    for result in reader.push_bytes(bytes) {
+        match result {
+            Ok(projection) => projections.push(projection),
+            Err(error) => errors.push(error.to_string()),
+        }
     }
-    let text = text.trim();
-    (!text.is_empty()).then_some(text)
+    (projections, errors)
 }
 
-fn transcribe(
-    file: &std::path::Path,
-    language: Option<&str>,
-    stream: bool,
-    raw: bool,
-    format: bool,
-) -> anyhow::Result<()> {
+#[cfg(test)]
+fn live_projection_lines(
+    reader: &mut codescribe::presentation::transcript_projection::TranscriptProjectionReader,
+    bytes: &[u8],
+) -> Result<(Vec<String>, Vec<String>), serde_json::Error> {
+    let (projections, errors) = live_projections(reader, bytes);
+    let lines = projections
+        .iter()
+        .map(|projection| projection.normalized_json())
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((lines, errors))
+}
+
+/// Read the bus once and hand the last completed transcript to stdout.
+///
+/// This is the CLI half of "paste straight into the terminal". It does not
+/// paste: a synthetic Cmd+V would target the frontmost app, which is the very
+/// terminal this process is holding — the delivery throne already refuses that
+/// case as `refuse_paste_into_self`. Emitting the text lets the shell's own
+/// line editor insert it under a key the operator presses, with no Accessibility
+/// grant and no synthetic event in the trust path.
+fn transcribe_last() -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use codescribe::presentation::transcript_bus::transcript_bus_path;
     use std::io::Write as _;
 
+    let path = transcript_bus_path();
+    let ndjson = std::fs::read_to_string(&path)
+        .with_context(|| format!("no transcript bus at {}", path.display()))?;
+    let tail = bus_tail(&ndjson).ok_or_else(|| {
+        anyhow::anyhow!(
+            "transcript bus at {} holds no completed transcript yet",
+            path.display()
+        )
+    })?;
+
+    // No trailing newline. Pasted into a shell prompt a newline is Enter, and
+    // this text is meant to land in a command line the operator still edits.
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    write!(out, "{}", tail.text)?;
+    out.flush()?;
+
+    eprintln!(
+        "codescribe last: session={} chars={} bus={}",
+        &tail.session_id[..8.min(tail.session_id.len())],
+        tail.text.chars().count(),
+        path.display()
+    );
+    Ok(())
+}
+
+/// The transcript `transcribe last` hands over, and whose session it came from.
+#[derive(Debug, PartialEq, Eq)]
+struct BusTail {
+    session_id: String,
+    text: String,
+}
+
+/// The transcript text one bus line contributes, if it carries any.
+///
+/// This allowlist is the whole guard. Lifecycle rows carry an EMPTY `text`
+/// field rather than omitting it, so emptiness — not absence — disqualifies
+/// them; and an unrecognised status is refused outright, so a future receipt
+/// row that happens to carry prose can never become what the operator pastes.
+fn tail_text(value: &serde_json::Value) -> Option<&str> {
+    let schema = value
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if schema == codescribe::presentation::transcript_projection::EVIDENCE_SCHEMA {
+        let text = value
+            .get("rendered_text")
+            .and_then(serde_json::Value::as_str)?
+            .trim();
+        return (!text.is_empty()).then_some(text);
+    }
+    let text = value
+        .get("text")
+        .and_then(serde_json::Value::as_str)?
+        .trim();
+    if text.is_empty() {
+        return None;
+    }
+    match value
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+    {
+        "transcript_sealed" | "utterance_draft" | "utterance_revised" => Some(text),
+        // session_started / session_ended and anything unrecognised: a reader
+        // that accepted every status would paste lifecycle noise.
+        _ => None,
+    }
+}
+
+/// Resolve the bus tail: the last row that carried transcript text, and the
+/// session it belonged to.
+///
+/// Both schemas restate the entire document on every later row — evidence rows
+/// in `rendered_text`, the clean lane in its seal — so the newest such row is
+/// also the completest, and nothing is accumulated here. The reducer owns that.
+///
+/// Deliberately NOT deduplicating. Real dictation repeats itself: deliberate
+/// rhyme, and sentences restarted mid-word. A client-side dedup would eat
+/// spoken content to paper over a ledger defect that belongs to the reducer.
+fn bus_tail(ndjson: &str) -> Option<BusTail> {
+    let mut tail: Option<BusTail> = None;
+    for line in ndjson.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(session_id) = value.get("session_id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(text) = tail_text(&value) else {
+            continue;
+        };
+        tail = Some(BusTail {
+            session_id: session_id.to_string(),
+            text: text.to_string(),
+        });
+    }
+    tail
+}
+
+fn transcribe(file: &std::path::Path, options: FileTranscribeOptions<'_>) -> anyhow::Result<()> {
+    use codescribe::presentation::cli_transcript_lane::CliTranscriptLane;
+    use codescribe::presentation::transcript_bus::{TranscriptMode, TranscriptSessionEndReason};
+    use codescribe_core::pipeline::take_truth::{TakeTruth, write_truth_sidecar};
+    use std::io::Write as _;
+
+    let FileTranscribeOptions {
+        language,
+        stream,
+        publish_bus,
+        raw,
+        inspect,
+        write_truth,
+        engine,
+    } = options;
+
     anyhow::ensure!(file.exists(), "file not found: {}", file.display());
+    // Pin aliases such as last_session.wav once. A newer take must not swap
+    // the audio between recognition, PCM inspection and the truth sidecar.
+    let source_path = file.canonicalize()?;
+    let file = source_path.as_path();
+
+    // The bus is an observer, never a gate: a transcription that cannot be
+    // published must still print. Every failure below is reported on stderr and
+    // then dropped.
+    let mut lane = if publish_bus {
+        CliTranscriptLane::open(uuid::Uuid::new_v4().to_string(), TranscriptMode::Dictation)
+    } else {
+        None
+    };
+    if publish_bus && lane.is_none() {
+        eprintln!("bus=unavailable (transcription continues; nothing published)");
+    }
+    if let Some(lane) = lane.as_mut() {
+        match lane.retain_source_reference(file) {
+            Ok(source) => eprintln!("source={}", source.display()),
+            Err(error) => eprintln!("session source reference failed: {error}"),
+        }
+    }
 
     let started = std::time::Instant::now();
-    // The one legal file route — identical to the GUI's stop-path final pass.
-    let verdict = codescribe_core::stt::transcribe_file_verdict(file, language)?;
-    let decode_secs = started.elapsed().as_secs_f64();
-
-    // Lexicon post-process: the same dictionary pass every GUI delivery gets,
-    // in every mode. Per segment in stream view (mirrors the live canvas
-    // receiving utterances), whole-text otherwise.
-    let mut post = codescribe_core::pipeline::stream_postprocess::StreamPostProcessor::new();
     let stdout = std::io::stdout();
-
-    let cleaned = if stream && !verdict.raw.segments.is_empty() {
-        let mut assembled: Vec<String> = Vec::new();
-        let mut out = stdout.lock();
-        for segment in &verdict.raw.segments {
-            if let Some(clean) = post.process_utterance(&segment.text) {
-                let clean = clean.trim().to_string();
-                if !clean.is_empty() {
-                    writeln!(out, "{clean}")?;
-                    out.flush()?;
-                    assembled.push(clean);
+    let mut streamed_text = String::new();
+    let mut observe = |segments: &[codescribe_core::pipeline::contracts::TranscriptSegment]| {
+        if stream {
+            let lines = match lane.as_mut() {
+                Some(lane) => lane.publish_segments(segments).unwrap_or_else(|error| {
+                    eprintln!("bus draft write failed: {error}");
+                    CliTranscriptLane::segment_texts(segments)
+                }),
+                None => CliTranscriptLane::segment_texts(segments),
+            };
+            let mut out = stdout.lock();
+            for line in lines {
+                writeln!(out, "{line}")?;
+                if !streamed_text.is_empty() {
+                    streamed_text.push(' ');
                 }
+                streamed_text.push_str(&line);
             }
+            out.flush()?;
         }
-        assembled.join(" ")
-    } else {
-        post.process_utterance(&verdict.text)
-            .unwrap_or_else(|| verdict.text.clone())
+        Ok(())
     };
-    let post_stats = post.stats();
-
-    // Light+ floor — every delivery gets it except the literal contract,
-    // mirroring the controller (`--raw` ≙ Ctrl-hold force_raw).
-    let shaped = if raw {
-        cleaned
+    let verdict = match engine {
+        // Whole-file selection is independent of the live engine and Apple readiness.
+        FileEngine::Default | FileEngine::Whisper => {
+            codescribe_core::stt::whisper::transcribe_file_verdict_observed(
+                file,
+                language,
+                Default::default(),
+                &mut observe,
+            )
+        }
+        FileEngine::Apple => (|| {
+            codescribe_core::stt::apple_stt::ensure_noninteractive_ready(language)?;
+            let verdict = codescribe_core::stt::apple_stt::transcribe_file_verdict(file, language)?;
+            observe(&verdict.raw.segments)?;
+            Ok(verdict)
+        })(),
+    };
+    let verdict = match verdict {
+        Ok(verdict) => verdict,
+        Err(error) => {
+            if let Some(lane) = lane.as_mut()
+                && let Err(bus_error) =
+                    lane.publish_ended(TranscriptSessionEndReason::TranscriptionFailed)
+            {
+                eprintln!("bus failure end write failed: {bus_error}");
+            }
+            return Err(error);
+        }
+    };
+    let decode_secs = started.elapsed().as_secs_f64();
+    let transcript_text = verdict.text.clone();
+    // L2: previews/drafts stay raw; seal and delivery take the custom lexicon,
+    // then the Light+ floor — deterministic sentence shape, the same pass the
+    // app mints at its terminal seal. Only `--raw` (≙ the Ctrl-hold literal
+    // lane) promises the words untouched.
+    let lexicon_text =
+        codescribe_core::quality::overlay_quality::apply_custom_lexicon(&transcript_text);
+    let delivered_text = if raw {
+        lexicon_text
     } else {
-        codescribe_core::pipeline::light_plus::apply(&cleaned)
+        codescribe_core::pipeline::light_plus::apply(&lexicon_text)
     };
 
-    // AI formatting — the same lane call the GUI formatted mode makes.
-    let (final_text, ai_status) = if format {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?;
-        let result = runtime.block_on(codescribe_core::ai_formatting::format_text_with_status(
-            &shaped, language, false, None,
-        ));
-        (result.text, Some(format!("{:?}", result.status)))
-    } else {
-        (shaped, None)
-    };
-
-    // Delivery on stdout (the stream view already printed the canvas; the
-    // delivery still follows it so scripts always end with the shaped text).
-    if stream {
-        eprintln!("--- delivery ---");
+    if let Some(lane) = lane.as_mut()
+        && let Err(error) = lane.publish_sealed(&delivered_text, &verdict.raw.segments)
+    {
+        eprintln!("bus seal write failed: {error}");
     }
-    println!("{final_text}");
+
+    // A stream already carries the transcript. Only an actual final correction
+    // (for example the custom lexicon) warrants a marked replacement.
+    if let Some(final_output) = final_stdout(stream, &streamed_text, &delivered_text) {
+        println!("{final_output}");
+    }
 
     // Provenance to stderr, GUI-truth style.
     eprintln!(
-        "engine={:?}/{:?} decode_secs={:.2} segments={} chars={} lexicon_rewrites={} avg_logprob={} light_plus={} ai_format={}",
+        "engine={:?}/{:?} decode_secs={:.2} segments={} chars={} avg_logprob={} light_plus={} transcript_authority=stt_verdict",
         verdict.engine.engine,
         verdict.engine.mode,
         decode_secs,
         verdict.raw.segments.len(),
-        final_text.chars().count(),
-        post_stats.lexicon_rewrites,
+        delivered_text.chars().count(),
         verdict
             .raw
             .avg_logprob
             .map(|v| std::format!("{v:.2}"))
             .unwrap_or_else(|| "n/a".into()),
-        if raw { "skipped(raw)" } else { "applied" },
-        ai_status.as_deref().unwrap_or("off"),
+        !raw,
     );
+
+    // Every take leaves its observer card beside the source
+    // (`docs/truth-contract.md`): `<file>.truth.json` records what really
+    // produced this transcript. It is an OBSERVER projection of the verdict —
+    // no delivery path reads it back. A write failure is a warning on stderr,
+    // never a failed transcription.
+    if write_truth {
+        let truth = TakeTruth::from_verdict(&verdict, "CLI • Transcript", TRUTH_ENERGY_BUCKETS);
+        if let Err(error) = write_truth_sidecar(file, &truth) {
+            eprintln!(
+                "truth sidecar write failed for {}: {error:#}",
+                file.display()
+            );
+        }
+    }
+
+    if inspect {
+        let width = std::env::var("COLUMNS")
+            .ok()
+            .and_then(|columns| columns.parse::<usize>().ok())
+            .unwrap_or(INSPECT_DEFAULT_WIDTH)
+            .clamp(20, 240);
+        eprint!("{}", render_inspect(&verdict, width));
+        match codescribe_core::audio::load_audio_file(file) {
+            Ok((pcm, rate)) => {
+                eprint!("{}", render_pcm_power(&pcm, rate, width));
+                if verdict.vad.is_none() {
+                    // Observation only: never trim or gate Apple's input/text.
+                    let (_, stats) = codescribe_core::vad::extract_speech(&pcm, rate);
+                    if !stats.fine_sparkline.is_empty() {
+                        eprintln!("Silero observer: {:.1}% speech", stats.speech_pct);
+                        eprintln!(
+                            "fine:   {}",
+                            resample_sparkline_max(&stats.fine_sparkline, width)
+                        );
+                    }
+                }
+            }
+            Err(error) => eprintln!("PCM power unavailable: {error:#}"),
+        }
+    }
+
+    if let Some(lane) = lane.as_mut() {
+        if let Err(error) = lane.publish_ended(TranscriptSessionEndReason::Completed) {
+            eprintln!("bus end write failed: {error}");
+        }
+        eprintln!(
+            "bus={} session={} source=cli_file_verdict",
+            lane.path().display(),
+            lane.session_id()
+        );
+    }
     Ok(())
+}
+
+fn final_stdout(stream: bool, streamed: &str, delivered: &str) -> Option<String> {
+    if !stream || streamed.is_empty() {
+        return Some(delivered.to_string());
+    }
+    if streamed.split_whitespace().eq(delivered.split_whitespace()) {
+        None
+    } else {
+        Some(format!("⟲ final: {delivered}"))
+    }
+}
+
+/// Terminal width for `--inspect` when `$COLUMNS` is unset or not a number.
+const INSPECT_DEFAULT_WIDTH: usize = 100;
+/// Energy sparkline width baked into CLI `.truth.json` sidecars.
+const TRUTH_ENERGY_BUCKETS: usize = 100;
+/// The shared octile bar alphabet (`▁` = floor, `█` = peak).
+const SPARKLINE_BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// Absolute PCM amplitude: 1.0 is full scale, not this file's loudest frame.
+fn rms_dbfs(samples: &[f32]) -> f64 {
+    if samples.is_empty() {
+        return f64::NEG_INFINITY;
+    }
+    let mean_square =
+        samples.iter().map(|&v| f64::from(v).powi(2)).sum::<f64>() / samples.len() as f64;
+    10.0 * mean_square.log10()
+}
+
+/// One RMS measurement per equal-duration bucket on the original file clock.
+/// Keep an absolute -90..0 dBFS scale so quiet files do not masquerade as loud.
+fn render_pcm_power(samples: &[f32], rate: u32, width: usize) -> String {
+    if samples.is_empty() || rate == 0 || samples.iter().any(|v| !v.is_finite()) {
+        return "PCM power: n/a (empty or invalid PCM)\n".into();
+    }
+    let width = width.clamp(20, 240);
+    let duration = samples.len() as f64 / f64::from(rate);
+    let buckets = (0..width)
+        .map(|column| {
+            let start = column * samples.len() / width;
+            let end = ((column + 1) * samples.len() / width)
+                .max(start + 1)
+                .min(samples.len());
+            rms_dbfs(&samples[start..end])
+        })
+        .collect::<Vec<_>>();
+    let peak = samples
+        .iter()
+        .map(|v| f64::from(v.abs()))
+        .fold(0.0_f64, f64::max);
+    let bars: String = buckets
+        .iter()
+        .map(|&db| {
+            let index = (((db.clamp(-90.0, 0.0) + 90.0) / 90.0) * 7.0).round() as usize;
+            SPARKLINE_BARS[index]
+        })
+        .collect();
+    let mut out = format!(
+        "PCM power: RMS={:.1} dBFS peak={:.1} dBFS duration={duration:.3}s\nRMS:    {bars}  [-90..0 dBFS]\n",
+        rms_dbfs(samples),
+        20.0 * peak.log10(),
+    );
+    for level in (0..=9).map(|step| -10 * step) {
+        let row: String = buckets
+            .iter()
+            .map(|&db| if db >= f64::from(level) { '█' } else { ' ' })
+            .collect();
+        out.push_str(&format!("{level:>3} dBFS |{row}|\n"));
+    }
+    let end_label = format!("{duration:.3}s");
+    out.push_str(&format!(
+        "          0s{:>end_width$}\n",
+        end_label,
+        end_width = width - 2
+    ));
+    out
+}
+
+/// Level of one sparkline bar in the octile alphabet. Glyphs outside it (a
+/// space, the 500 ms `█▓░` row's chars) read as the floor.
+fn sparkline_level(bar: char) -> usize {
+    SPARKLINE_BARS
+        .iter()
+        .position(|&candidate| candidate == bar)
+        .unwrap_or(0)
+}
+
+/// Resample a bar sparkline to `width` chars, keeping the MAX level per
+/// bucket: a 32 ms onset must survive aggregation, never average away.
+fn resample_sparkline_max(sparkline: &str, width: usize) -> String {
+    let chars: Vec<char> = sparkline.chars().collect();
+    let n = chars.len();
+    if n == 0 || width == 0 {
+        return String::new();
+    }
+    let mut out = String::with_capacity(width);
+    for bucket in 0..width {
+        let start = bucket * n / width;
+        let end = (bucket + 1) * n / width;
+        let level = if start >= end {
+            sparkline_level(chars[start.min(n - 1)])
+        } else {
+            chars[start..end]
+                .iter()
+                .map(|&bar| sparkline_level(bar))
+                .max()
+                .unwrap_or(0)
+        };
+        out.push(SPARKLINE_BARS[level]);
+    }
+    out
+}
+
+/// `mm:ss.s` for the segment block of `--inspect`.
+fn format_inspect_ts(ts: f32) -> String {
+    let minutes = (ts / 60.0).floor() as u64;
+    let seconds = ts - minutes as f32 * 60.0;
+    format!("{minutes:02}:{seconds:04.1}")
+}
+
+/// Render the take truth under one time axis: a 5 s tick line, the segment
+/// block, then the 32 ms Silero row and the energy row resampled to `width`.
+/// The two sparkline rows always carry identical char length. With no VAD
+/// verdict (the Apple path never runs file final, but the shape exists) the
+/// fine row reports `fine: n/a` instead of inventing a clock.
+fn render_inspect(
+    verdict: &codescribe_core::pipeline::contracts::TranscriptionVerdict,
+    width: usize,
+) -> String {
+    let width = width.max(20);
+    let segments = &verdict.raw.segments;
+    let vad = verdict.vad.as_ref();
+    let fine = vad
+        .map(|vad| vad.fine_sparkline.as_str())
+        .filter(|sparkline| !sparkline.is_empty());
+    let energy = verdict
+        .raw
+        .energy
+        .as_ref()
+        .filter(|timeline| !timeline.frames.is_empty());
+
+    // One time axis: the longest clock the take recorded.
+    let duration_secs = [
+        segments.last().map(|segment| f64::from(segment.end_ts)),
+        vad.map(|vad| {
+            vad.fine_sparkline.chars().count() as f64 * f64::from(vad.fine_hop_ms) / 1000.0
+        }),
+        energy.map(|timeline| timeline.frames.len() as f64 * f64::from(timeline.hop_ms) / 1000.0),
+    ]
+    .into_iter()
+    .flatten()
+    .fold(0.0_f64, f64::max);
+
+    // A tick every 5 s, always one at zero: ceil(duration / 5) + 1 marks.
+    let tick_count = (duration_secs / 5.0).ceil() as usize + 1;
+    let column = |t: f64| -> usize {
+        if duration_secs <= 0.0 {
+            return 0;
+        }
+        ((t / duration_secs) * (width - 1) as f64)
+            .round()
+            .min((width - 1) as f64) as usize
+    };
+    let mut labels = vec![' '; width];
+    let mut ticks = vec!['.'; width];
+    for tick in 0..tick_count {
+        let col = column(tick as f64 * 5.0);
+        ticks[col] = '|';
+        let label = format!("{}s", tick * 5);
+        // A label that would fall off the right edge shifts left instead of
+        // truncating; the tick column itself never moves.
+        let start = col.min(width - label.chars().count());
+        for (offset, ch) in label.chars().enumerate() {
+            labels[start + offset] = ch;
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str(labels.iter().collect::<String>().trim_end());
+    out.push('\n');
+    out.push_str(&ticks.iter().collect::<String>());
+    out.push('\n');
+    for segment in segments {
+        out.push_str(&format!(
+            "[{}–{}] {}\n",
+            format_inspect_ts(segment.start_ts),
+            format_inspect_ts(segment.end_ts),
+            segment.text
+        ));
+    }
+    // Equal-length labels keep the two sparkline rows at identical char length.
+    match fine {
+        Some(sparkline) => {
+            out.push_str("fine:   ");
+            out.push_str(&resample_sparkline_max(sparkline, width));
+            out.push('\n');
+        }
+        None => out.push_str("fine: n/a\n"),
+    }
+    match energy {
+        Some(timeline) => {
+            out.push_str("energy: ");
+            out.push_str(&codescribe_core::stt::whisper::energy::sparkline(
+                &timeline.frames,
+                width,
+            ));
+            out.push('\n');
+        }
+        None => out.push_str("energy: n/a\n"),
+    }
+    out
 }
 
 #[cfg(test)]
@@ -289,28 +1312,545 @@ mod tests {
     use super::*;
 
     #[test]
+    fn engine_flags_are_exclusive_and_inspection_aliases_work() {
+        assert!(
+            Cli::try_parse_from([
+                "codescribe",
+                "transcribe",
+                "take.wav",
+                "--apple",
+                "--whisper"
+            ])
+            .is_err()
+        );
+        for engine in ["--apple", "--whisper"] {
+            for view in ["--inspect", "--sparkline", "--power"] {
+                let cli = Cli::try_parse_from([
+                    "codescribe",
+                    "transcribe",
+                    "take.wav",
+                    engine,
+                    view,
+                    "--no-bus",
+                ])
+                .unwrap();
+                let Command::Transcribe {
+                    apple,
+                    whisper,
+                    inspect,
+                    no_bus,
+                    ..
+                } = cli.command
+                else {
+                    panic!("expected file transcription");
+                };
+                assert_eq!(apple, engine == "--apple");
+                assert_eq!(whisper, engine == "--whisper");
+                assert!(inspect && no_bus);
+            }
+        }
+    }
+
+    #[test]
+    fn file_engine_flags_cannot_override_live_or_last() {
+        for mode in ["live", "last"] {
+            for flag in ["--apple", "--whisper", "--power"] {
+                let cli = Cli::try_parse_from(["codescribe", "transcribe", flag, mode]).unwrap();
+                assert!(
+                    dispatch(cli).is_err(),
+                    "must refuse before opening the bus: {mode} {flag}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pcm_power_uses_absolute_dbfs_and_keeps_the_original_clock() {
+        assert!((rms_dbfs(&[0.5, -0.5]) + 6.0206).abs() < 1e-4);
+        let pcm = [vec![0.0; 10], vec![0.1; 10]].concat();
+        let view = render_pcm_power(&pcm, 10, 20);
+        assert!(view.contains("RMS=-23.0 dBFS peak=-20.0 dBFS duration=2.000s"));
+        assert!(view.contains("2.000s"));
+        let row = view
+            .lines()
+            .find(|line| line.starts_with("-20 dBFS"))
+            .unwrap();
+        assert!(row.contains("|          ██████████|"));
+        let low = render_pcm_power(&[0.001; 20], 10, 20);
+        assert!(low.contains("peak=-60.0 dBFS"));
+        let low_bars = low.lines().find(|line| line.starts_with("RMS:")).unwrap();
+        assert!(
+            !low_bars.contains('█'),
+            "a quiet file must not normalize to full scale"
+        );
+    }
+
+    #[test]
+    fn pcm_power_handles_silence_invalid_samples_and_subpixel_audio() {
+        let silence = render_pcm_power(&[0.0; 20], 10, 20);
+        assert!(silence.contains("RMS=-inf"));
+        assert!(!silence.contains('█'));
+        for samples in [&[][..], &[f32::NAN][..], &[f32::INFINITY][..]] {
+            assert!(render_pcm_power(samples, 10, 20).starts_with("PCM power: n/a"));
+        }
+        assert!(render_pcm_power(&[0.5], 0, 20).contains("n/a"));
+        assert!(render_pcm_power(&[0.5], 10, usize::MAX).contains("duration=0.100s"));
+    }
+
+    #[test]
+    fn stream_does_not_repeat_delivery_but_exposes_a_real_final_correction() {
+        assert_eq!(
+            final_stdout(true, "Pierwsze zdanie. Drugie.", "Pierwsze zdanie. Drugie."),
+            None
+        );
+        assert_eq!(
+            final_stdout(true, "raszt", "Rust"),
+            Some("⟲ final: Rust".into())
+        );
+        assert_eq!(
+            final_stdout(true, "", "Tekst bez segmentów"),
+            Some("Tekst bez segmentów".into())
+        );
+        assert_eq!(
+            final_stdout(false, "", "Pełny dokument"),
+            Some("Pełny dokument".into())
+        );
+    }
+
+    /// A file-mode verdict carrying both clocks: segments closing at 12.4 s,
+    /// a 32 ms fine row (388 chunks), and a 10 ms energy row (1240 frames).
+    fn inspect_verdict() -> codescribe_core::pipeline::contracts::TranscriptionVerdict {
+        use codescribe_core::pipeline::contracts::{
+            EnergyTimeline, RawTranscript, TranscriptSegment, TranscriptionEngineMode,
+            TranscriptionEngineVerdict, TranscriptionSource, TranscriptionVerdict, VadVerdict,
+        };
+        let fine_sparkline: String = (0..388).map(|chunk| SPARKLINE_BARS[chunk % 8]).collect();
+        TranscriptionVerdict::from_parts(
+            "pierwsze drugie".to_string(),
+            RawTranscript {
+                text: "pierwsze drugie".to_string(),
+                segments: vec![
+                    TranscriptSegment {
+                        text: "pierwsze".to_string(),
+                        start_ts: 0.0,
+                        end_ts: 2.4,
+                        confidence: None,
+                    },
+                    TranscriptSegment {
+                        text: "drugie".to_string(),
+                        start_ts: 2.4,
+                        end_ts: 12.4,
+                        confidence: None,
+                    },
+                ],
+                avg_logprob: Some(-0.2),
+                energy: Some(EnergyTimeline {
+                    hop_ms: 10,
+                    frames: (0..1240).map(|frame| -80.0 + (frame % 50) as f32).collect(),
+                    voice: Vec::new(),
+                }),
+                ..Default::default()
+            },
+            Some(VadVerdict {
+                speech_pct: 61.0,
+                speech_windows: 10,
+                total_windows: 25,
+                no_speech: false,
+                no_speech_reason: None,
+                sparkline: "░███".to_string(),
+                fine_sparkline,
+                fine_hop_ms: 32,
+            }),
+            TranscriptionSource::LocalFinalPass,
+            TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
+            None,
+        )
+    }
+
+    /// The 32 ms Silero row and the energy row render at identical char
+    /// length (label included), each sparkline body exactly `width` chars.
+    #[test]
+    fn inspect_sparkline_rows_have_identical_length() {
+        let rendered = render_inspect(&inspect_verdict(), 40);
+        let fine = rendered
+            .lines()
+            .find(|line| line.starts_with("fine:"))
+            .expect("fine row");
+        let energy = rendered
+            .lines()
+            .find(|line| line.starts_with("energy:"))
+            .expect("energy row");
+        assert_eq!(fine.chars().count(), energy.chars().count());
+        assert_eq!(
+            fine.strip_prefix("fine:   ")
+                .expect("label")
+                .chars()
+                .count(),
+            40
+        );
+        assert_eq!(
+            energy
+                .strip_prefix("energy: ")
+                .expect("label")
+                .chars()
+                .count(),
+            40
+        );
+    }
+
+    /// A 12.4 s take carries ceil(12.4 / 5) + 1 = 4 tick marks: 0s, 5s, 10s, 15s.
+    #[test]
+    fn inspect_tick_count_is_ceil_duration_over_five_plus_one() {
+        let rendered = render_inspect(&inspect_verdict(), 50);
+        assert_eq!(rendered.matches('|').count(), 4);
+        assert!(rendered.lines().next().expect("labels").contains("15s"));
+    }
+
+    /// No VAD verdict (the Apple shape) reports the fine row as n/a instead
+    /// of inventing a clock; the energy row still renders.
+    #[test]
+    fn inspect_without_vad_reports_fine_na() {
+        let mut verdict = inspect_verdict();
+        verdict.vad = None;
+        let rendered = render_inspect(&verdict, 40);
+        assert!(rendered.contains("fine: n/a"));
+        assert!(rendered.lines().any(|line| line.starts_with("energy: ")));
+    }
+
+    /// Max-per-bucket resampling: a lone peak survives aggregation, and an
+    /// upsampled row repeats its source chars instead of inventing data.
+    #[test]
+    fn resample_max_keeps_the_peak_of_each_bucket() {
+        assert_eq!(resample_sparkline_max("▁▁█▁", 2), "▁█");
+        assert_eq!(resample_sparkline_max("▂▄", 4), "▂▂▄▄");
+        assert_eq!(resample_sparkline_max("", 8), "");
+    }
+
+    /// `--inspect` and `--no-truth` parse as file-mode flags.
+    #[test]
+    fn inspect_and_no_truth_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "codescribe",
+            "transcribe",
+            "a.wav",
+            "--inspect",
+            "--no-truth",
+        ])
+        .expect("flags should parse");
+        let Command::Transcribe {
+            inspect,
+            no_truth,
+            files,
+            ..
+        } = cli.command
+        else {
+            panic!("`transcribe` must parse as the transcribe command");
+        };
+        assert!(inspect);
+        assert!(no_truth);
+        assert_eq!(files.len(), 1);
+    }
+
+    #[test]
     fn live_command_is_a_subcommand_not_a_file_named_live() {
         let cli = Cli::try_parse_from(["codescribe", "transcribe", "live", "--language", "pl"])
             .expect("live command should parse");
         let Command::Transcribe {
-            file,
+            files,
             language,
             mode,
             ..
-        } = cli.command;
-        assert!(file.is_none());
+        } = cli.command
+        else {
+            panic!("`transcribe live` must parse as the transcribe command");
+        };
+        assert!(files.is_empty());
         assert_eq!(language.as_deref(), Some("pl"));
         assert!(matches!(mode, Some(TranscribeMode::Live)));
     }
 
+    /// The trap this cut closes: `--json` used to be rejected after `live`,
+    /// because it was declared on the parent and was not global.
     #[test]
-    fn live_plain_text_emits_only_nonempty_new_drafts() {
-        assert_eq!(
-            live_event_text("utterance_draft", "  instrukcja  "),
-            Some("instrukcja")
+    fn json_parses_on_either_side_of_the_live_subcommand() {
+        for argv in [
+            ["codescribe", "transcribe", "live", "--json"],
+            ["codescribe", "transcribe", "--json", "live"],
+        ] {
+            let cli = Cli::try_parse_from(argv).expect("--json must parse in both positions");
+            let Command::Transcribe { json, mode, .. } = cli.command else {
+                panic!("`transcribe live` must parse as the transcribe command");
+            };
+            assert!(json, "{argv:?}");
+            assert!(matches!(mode, Some(TranscribeMode::Live)));
+        }
+    }
+
+    /// File-only flags stay local on purpose: `transcribe live --help` must not
+    /// advertise options that lane refuses.
+    #[test]
+    fn file_only_flags_are_refused_after_the_live_subcommand() {
+        assert!(
+            Cli::try_parse_from(["codescribe", "transcribe", "live", "--raw"]).is_err(),
+            "--raw belongs to file mode and must not parse under `live`"
         );
-        assert_eq!(live_event_text("utterance_draft", "  "), None);
-        assert_eq!(live_event_text("utterance_revised", "poprawka"), None);
-        assert_eq!(live_event_text("transcript_sealed", "całość"), None);
+    }
+
+    #[test]
+    fn lexicon_actions_parse() {
+        let cli = Cli::try_parse_from(["codescribe", "lexicon", "restore", "--dry-run"])
+            .expect("lexicon restore should parse");
+        let Command::Lexicon { action } = cli.command else {
+            panic!("`lexicon` must parse as the lexicon command");
+        };
+        assert!(matches!(
+            action,
+            LexiconAction::Restore { dry_run: true, .. }
+        ));
+    }
+
+    /// Founder 2026-09-05: "to też naturalne, że powinno przejść" — a batch of
+    /// wavs on the command line is the natural CLI shape, not an error.
+    #[test]
+    fn multiple_files_parse_as_a_batch_not_an_error() {
+        let cli = Cli::try_parse_from(["codescribe", "transcribe", "a.wav", "b.wav", "c.wav"])
+            .expect("multi-file should parse");
+        let Command::Transcribe { files, mode, .. } = cli.command else {
+            panic!("a wav batch must parse as the transcribe command");
+        };
+        assert_eq!(files.len(), 3);
+        assert!(mode.is_none());
+    }
+
+    fn projection(
+        kind: codescribe::presentation::transcript_projection::TranscriptProjectionKind,
+        session: &str,
+        revision: u64,
+        text: &str,
+    ) -> codescribe::presentation::transcript_projection::TranscriptProjection {
+        codescribe::presentation::transcript_projection::TranscriptProjection {
+            schema: codescribe::presentation::transcript_projection::PROJECTION_SCHEMA,
+            source: None,
+            kind,
+            session_id: session.to_string(),
+            sequence: revision,
+            reducer_revision: revision,
+            reducer_action: "apply_ledger_decision".into(),
+            occurrence_session_id: session.to_string(),
+            capture_epoch: 1,
+            sample_start: 100,
+            sample_end: 900,
+            document_index: 0,
+            rendered_text: text.to_string(),
+            phase: Default::default(),
+            can_paste: false,
+            can_insert: false,
+            can_copy: false,
+            can_retranscribe: false,
+            can_format: false,
+            can_send_to_agent: false,
+            terminal: false,
+        }
+    }
+
+    /// The human canvas prints only what changed: an extending revision appends
+    /// the suffix to the open line instead of reprinting the whole document.
+    #[test]
+    fn human_view_appends_only_the_delta_of_an_extending_revision() {
+        use codescribe::presentation::transcript_projection::TranscriptProjectionKind;
+        let mut view = LiveHumanView::default();
+        let first = view.render(&projection(
+            TranscriptProjectionKind::LiveRevision,
+            "sess-a",
+            1,
+            "alfa",
+        ));
+        let second = view.render(&projection(
+            TranscriptProjectionKind::LiveRevision,
+            "sess-a",
+            2,
+            "alfa beta",
+        ));
+        assert_eq!(first, "alfa");
+        assert_eq!(second, " beta");
+    }
+
+    /// A reducer rewrite is not an append: the canvas closes the stale line and
+    /// marks the replacement explicitly instead of printing a duplicate.
+    #[test]
+    fn human_view_marks_a_rewrite_instead_of_duplicating_text() {
+        use codescribe::presentation::transcript_projection::TranscriptProjectionKind;
+        let mut view = LiveHumanView::default();
+        view.render(&projection(
+            TranscriptProjectionKind::LiveRevision,
+            "sess-a",
+            1,
+            "alfa bety",
+        ));
+        let rewrite = view.render(&projection(
+            TranscriptProjectionKind::LiveRevision,
+            "sess-a",
+            2,
+            "alfa beta gamma",
+        ));
+        assert_eq!(rewrite, "\n⟲ rev 2: alfa beta gamma");
+    }
+
+    /// The seal closes the open draft line and prints a permanent block; a seal
+    /// with no open line does not start with a stray newline.
+    #[test]
+    fn human_view_seal_closes_the_take_as_a_permanent_block() {
+        use codescribe::presentation::transcript_projection::TranscriptProjectionKind;
+        let mut view = LiveHumanView::default();
+        view.render(&projection(
+            TranscriptProjectionKind::LiveRevision,
+            "sess-abcdef",
+            1,
+            "alfa",
+        ));
+        let sealed = view.render(&projection(
+            TranscriptProjectionKind::TerminalSeal,
+            "sess-abcdef",
+            3,
+            "alfa beta",
+        ));
+        assert_eq!(
+            sealed,
+            "\n⏺ sealed · session sess-abc · rev 3 · samples 100..900\nalfa beta\n\n"
+        );
+
+        let mut cold = LiveHumanView::default();
+        let cold_seal = cold.render(&projection(
+            TranscriptProjectionKind::TerminalSeal,
+            "sess-x",
+            1,
+            "solo",
+        ));
+        assert!(!cold_seal.starts_with('\n'));
+    }
+
+    #[test]
+    fn live_consumer_stdout_is_exact_full_snapshot_jsonl() {
+        use codescribe::presentation::transcript_projection::TranscriptProjectionReader;
+
+        let input = serde_json::json!({
+            "schema": "codescribe.transcript-evidence.v1",
+            "sequence": 9,
+            "session_id": "session-a",
+            "reducer_revision": 4,
+            "reducer_action": "apply_ledger_decision",
+            "occurrence_session_id": "session-a",
+            "capture_epoch": 2,
+            "sample_start": 100,
+            "sample_end": 200,
+            "document_index": 1,
+            "rendered_text": "całkowicie przepisany dokument"
+        })
+        .to_string()
+            + "\n";
+        let mut reader = TranscriptProjectionReader::new();
+        let (lines, errors) =
+            live_projection_lines(&mut reader, input.as_bytes()).expect("projection serialization");
+        assert!(errors.is_empty());
+        assert_eq!(lines.len(), 1);
+        let output: serde_json::Value =
+            serde_json::from_str(&lines[0]).expect("normalized projection JSON");
+        assert_eq!(output["kind"], "live_revision");
+        assert_eq!(output["reducer_revision"], 4);
+        assert_eq!(output["rendered_text"], "całkowicie przepisany dokument");
+    }
+
+    /// One evidence row as the app writes it. `session_ended` really does carry
+    /// an empty `text` field on this bus, which is why emptiness disqualifies.
+    fn evidence(session: &str, action: &str, rendered: &str) -> String {
+        format!(
+            r#"{{"schema":"codescribe.transcript-evidence.v1","session_id":"{session}","reducer_action":"{action}","rendered_text":"{rendered}"}}"#
+        )
+    }
+
+    fn clean(session: &str, status: &str, text: &str) -> String {
+        format!(
+            r#"{{"schema":"codescribe.transcript.v1","session_id":"{session}","status":"{status}","text":"{text}"}}"#
+        )
+    }
+
+    /// The witness is the TEXT handed to the shell, not which field it came
+    /// from: an app take ends on seven identical terminal seals followed by a
+    /// lifecycle row, and the shell must receive the transcript.
+    #[test]
+    fn an_app_take_hands_over_its_seal_and_never_the_lifecycle_row() {
+        let bus = [
+            clean("aaa", "session_started", ""),
+            evidence("aaa", "apply_ledger_decision", "alfa"),
+            evidence("aaa", "apply_ledger_decision", "alfa beta"),
+            evidence("aaa", "record_ledger_terminal_seal", "alfa beta gamma"),
+            evidence("aaa", "record_ledger_terminal_seal", "alfa beta gamma"),
+            clean("aaa", "session_ended", ""),
+        ]
+        .join("\n");
+
+        let tail = bus_tail(&bus).expect("an app take has a tail");
+        assert_eq!(tail.text, "alfa beta gamma");
+        assert_eq!(tail.session_id, "aaa");
+    }
+
+    /// The rows AFTER the seal are the trap. `session_ended` carries an empty
+    /// `text`, and a status this reader does not know may carry prose; taking
+    /// the last row, or the last row with a `text` key, hands over either an
+    /// empty insert or a receipt instead of the transcript.
+    #[test]
+    fn rows_after_the_seal_never_displace_the_transcript() {
+        let bus = [
+            clean("bbb", "session_started", ""),
+            clean("bbb", "utterance_draft", "alfa"),
+            clean("bbb", "transcript_sealed", "alfa beta"),
+            clean("bbb", "delivery_receipt", "wklejono do vc-terminal"),
+            clean("bbb", "session_ended", ""),
+        ]
+        .join("\n");
+
+        assert_eq!(bus_tail(&bus).expect("sealed session").text, "alfa beta");
+    }
+
+    /// Still speaking: no whole state exists, so the newest utterance is the
+    /// honest answer rather than nothing at all.
+    #[test]
+    fn a_session_still_speaking_hands_over_its_newest_utterance() {
+        let bus = [
+            clean("ccc", "session_started", ""),
+            clean("ccc", "utterance_draft", "alfa"),
+            clean("ccc", "utterance_draft", "beta"),
+        ]
+        .join("\n");
+
+        assert_eq!(bus_tail(&bus).expect("open session").text, "beta");
+    }
+
+    #[test]
+    fn the_newest_session_supersedes_the_one_before_it() {
+        let bus = [
+            evidence("aaa", "record_ledger_terminal_seal", "stara wypowiedz"),
+            clean("aaa", "session_ended", ""),
+            evidence("bbb", "record_ledger_terminal_seal", "nowa wypowiedz"),
+        ]
+        .join("\n");
+
+        let tail = bus_tail(&bus).expect("second session");
+        assert_eq!(tail.text, "nowa wypowiedz");
+        assert_eq!(tail.session_id, "bbb");
+    }
+
+    /// Nothing to paste must be nothing, not an empty insert: a widget that
+    /// received "" would silently do nothing while looking like it worked.
+    #[test]
+    fn a_bus_carrying_only_lifecycle_hands_over_nothing() {
+        let bus = [
+            clean("aaa", "session_started", ""),
+            clean("aaa", "session_ended", ""),
+            "{ this line is not json".to_string(),
+        ]
+        .join("\n");
+
+        assert_eq!(bus_tail(&bus), None);
     }
 }

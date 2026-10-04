@@ -7,26 +7,26 @@ import OSLog
 /// Production DMGs never spawn. The XCTest host never spawns. A live
 /// `:8765` is left alone. Missing `~/.codescribe/voice-lab/server.py`
 /// is a no-op (install-voice-lab never ran).
-enum VoiceLabRuntime {
-  static let consoleURL = URL(string: "http://127.0.0.1:8765/lab")!
+actor VoiceLabRuntime {
+  static let shared = VoiceLabRuntime()
+  nonisolated static let consoleURL = URL(string: "http://127.0.0.1:8765/lab")!
 
   private static let logger = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
     category: "voice-lab"
   )
-  private static let lock = NSLock()
-  private static var child: Process?
+  private var child: Process?
 
-  static var labRoot: URL {
+  nonisolated static var labRoot: URL {
     FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent(".codescribe/voice-lab", isDirectory: true)
   }
 
-  static var serverScript: URL {
+  nonisolated static var serverScript: URL {
     labRoot.appendingPathComponent("server.py")
   }
 
-  static func shouldSpawn(
+  nonisolated static func shouldSpawn(
     surfaceEnabled: Bool,
     runningTests: Bool,
     alreadyListening: Bool,
@@ -35,21 +35,21 @@ enum VoiceLabRuntime {
     surfaceEnabled && !runningTests && !alreadyListening && serverExists
   }
 
-  /// Fire-and-forget: bring `:8765` up if this is a CS bake and Lab is down.
-  static func ensureListening(
+  /// Bring `:8765` up if this is a CS bake and Lab is down. The actor owns the
+  /// child process; callers decide whether their UI task is fire-and-forget.
+  func ensureListening(
     surfaceEnabled: Bool? = nil,
     runningTests: Bool = QualityCaptureHost.isRunningTests
-  ) {
+  ) async {
     let cs = surfaceEnabled ?? DeveloperSurface.isEnabled()
-    if cs, !runningTests { writeLoopbackPointer() }
-    let server = serverScript
-    lock.lock()
+    if cs, !runningTests { Self.writeLoopbackPointer() }
+    let server = Self.serverScript
     let ownedRunning = child?.isRunning == true
-    lock.unlock()
-    let spawn = shouldSpawn(
+    let alreadyListening = ownedRunning ? true : await Self.isListening()
+    let spawn = Self.shouldSpawn(
       surfaceEnabled: surfaceEnabled ?? DeveloperSurface.isEnabled(),
       runningTests: runningTests,
-      alreadyListening: ownedRunning || isListening(),
+      alreadyListening: alreadyListening,
       serverExists: FileManager.default.isReadableFile(atPath: server.path)
     )
     guard spawn else { return }
@@ -57,41 +57,38 @@ enum VoiceLabRuntime {
   }
 
   /// CS tray/settings: ensure the process, then open the console.
-  static func openConsole() {
-    Task.detached(priority: .utility) {
-      ensureListening()
-      for _ in 0..<25 where !isListening() {
-        try? await Task.sleep(nanoseconds: 80_000_000)
-      }
-      await MainActor.run {
-        NSWorkspace.shared.open(consoleURL)
-      }
+  func openConsole() async {
+    await ensureListening()
+    for _ in 0..<25 where !(await Self.isListening()) {
+      try? await Task.sleep(nanoseconds: 80_000_000)
+    }
+    let opened = await MainActor.run {
+      NSWorkspace.shared.open(Self.consoleURL)
+    }
+    if !opened {
+      Self.logger.error("voice-lab console could not be opened")
     }
   }
 
-  static func stopOwnedProcess() {
-    lock.lock()
+  func stopOwnedProcess() {
     let process = child
     child = nil
-    lock.unlock()
     process?.terminate()
   }
 
-  static func isListening(timeout: TimeInterval = 0.2) -> Bool {
-    var request = URLRequest(url: consoleURL)
+  nonisolated static func isListening(timeout: TimeInterval = 0.2) async -> Bool {
+    var request = URLRequest(url: Self.consoleURL)
     request.httpMethod = "GET"
     request.timeoutInterval = timeout
-    let semaphore = DispatchSemaphore(value: 0)
-    var ok = false
-    URLSession.shared.dataTask(with: request) { _, response, _ in
-      ok = (response as? HTTPURLResponse)?.statusCode == 200
-      semaphore.signal()
-    }.resume()
-    _ = semaphore.wait(timeout: .now() + timeout + 0.05)
-    return ok
+    do {
+      let (_, response) = try await URLSession.shared.data(for: request)
+      return (response as? HTTPURLResponse)?.statusCode == 200
+    } catch {
+      return false
+    }
   }
 
-  static func writeLoopbackPointer() {
+  nonisolated static func writeLoopbackPointer() {
     let html = """
       <!doctype html>
       <html lang="en">
@@ -111,44 +108,37 @@ enum VoiceLabRuntime {
       </html>
       """
     do {
-      try FileManager.default.createDirectory(at: labRoot, withIntermediateDirectories: true)
+      try FileManager.default.createDirectory(at: Self.labRoot, withIntermediateDirectories: true)
       try html.write(
-        to: labRoot.appendingPathComponent("loopback.html"),
+        to: Self.labRoot.appendingPathComponent("loopback.html"),
         atomically: true,
         encoding: .utf8
       )
     } catch {
-      logger.error(
+      Self.logger.error(
         "loopback.html write failed: \(error.localizedDescription, privacy: .public)"
       )
     }
   }
 
-  private static func startChild(server: URL) {
-    lock.lock()
-    defer { lock.unlock() }
+  private func startChild(server: URL) {
     if let child, child.isRunning { return }
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
     process.arguments = [server.path]
-    process.currentDirectoryURL = labRoot
+    process.currentDirectoryURL = Self.labRoot
     var environment = ProcessInfo.processInfo.environment
     environment["VOICE_LAB_REMOTE_HOST"] = "off"
     process.environment = environment
     process.standardInput = FileHandle.nullDevice
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
-    process.terminationHandler = { _ in
-      lock.lock()
-      child = nil
-      lock.unlock()
-    }
     do {
       try process.run()
       child = process
-      logger.info("voice-lab spawned pid=\(process.processIdentifier, privacy: .public)")
+      Self.logger.info("voice-lab spawned pid=\(process.processIdentifier, privacy: .public)")
     } catch {
-      logger.error(
+      Self.logger.error(
         "voice-lab spawn failed: \(error.localizedDescription, privacy: .public)"
       )
     }

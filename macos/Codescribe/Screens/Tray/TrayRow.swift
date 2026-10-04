@@ -3,11 +3,11 @@ import SwiftUI
 // Row primitives for the tray dropdown. Geometry is taken straight from the
 // mock: rows are 9×12 padded, 9pt-radius, 11pt icon→label gap, 18pt icon column.
 
-/// Two mock-only tints not present in the locked token palette.
+/// The one tray tint that is not a fixed hex: the primary-row keycap follows
+/// the system accent. Secondary text uses the shared `CSColor`
+/// ramp (`textMuted` for child rows) so the tray cannot
+/// drift off the locked palette.
 private enum TrayLocal {
-  /// Submenu child + Quit label (#c7cabf) — slightly muted body text.
-  static let subnote = Color(hex: 0xC7CABF)
-  /// Primary-row keycap follows the operator's system accent.
   static var primaryShortcut: Color { CSColor.chromeAccent.opacity(0.78) }
 }
 
@@ -45,7 +45,7 @@ struct TrayRow: View {
 
   private var fillColor: Color {
     switch style {
-    case .primary: return CSColor.chromeAccent.opacity(0.13)
+    case .primary: return CSColor.accentWash.opacity(0.13)
     case .raised: return CSColor.surfaceRaised(0.04)
     case .plain: return hovering ? CSColor.surfaceRaised(0.05) : .clear
     }
@@ -56,37 +56,50 @@ struct TrayRow: View {
   }
 
   var body: some View {
-    HStack(spacing: 11) {
-      CSIconView(icon: icon, size: 13, color: iconColor ?? titleColor)
-        .frame(width: 18)
-      Text(title)
-        .font(CSFont.ui(13, titleWeight))
-        .foregroundStyle(titleColor)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      if let shortcut {
-        Text(shortcut)
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(shortcutColor)
+    Button(action: action) {
+      HStack(spacing: 11) {
+        CSIconView(icon: icon, size: 13, color: iconColor ?? titleColor)
+          .frame(width: 18)
+        Text(title)
+          .font(CSFont.ui(13, titleWeight))
+          .foregroundStyle(titleColor)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        if let shortcut {
+          Text(shortcut)
+            .font(CSFont.mono(10, .medium))
+            .foregroundStyle(shortcutColor)
+        }
+        if let expanded = disclosureExpanded {
+          CSIconView(icon: TrayDisclosureChevron.icon, size: 11, color: CSColor.textFaint)
+            .rotationEffect(
+              .degrees(TrayDisclosureChevron.rotationDegrees(expanded: expanded))
+            )
+        }
       }
-      if let expanded = disclosureExpanded {
-        CSIconView(icon: TrayDisclosureChevron.icon, size: 11, color: CSColor.textFaint)
-          .rotationEffect(
-            .degrees(TrayDisclosureChevron.rotationDegrees(expanded: expanded))
-          )
-      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
+      .background(
+        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous).fill(fillColor)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+          .strokeBorder(borderColor, lineWidth: 0.5)
+      )
+      .contentShape(Rectangle())
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 9)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous).fill(fillColor)
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-        .strokeBorder(borderColor, lineWidth: 1)
-    )
-    .contentShape(Rectangle())
-    .onTapGesture(perform: action)
+    .buttonStyle(.plain)
+    .csFocusOutline(cornerRadius: CSRadius.input)
+    .accessibilityLabel(title)
+    .accessibilityValue(accessibilityValue)
     .onHover { hovering = $0 }
+  }
+
+  /// Disclosure state when the row heads a group, otherwise the keycap.
+  private var accessibilityValue: String {
+    guard let expanded = disclosureExpanded else { return shortcut ?? "" }
+    return expanded
+      ? String(localized: "Expanded", comment: "Accessibility value: a disclosure row is open")
+      : String(localized: "Collapsed", comment: "Accessibility value: a disclosure row is closed")
   }
 }
 
@@ -94,15 +107,26 @@ struct TrayRow: View {
 struct TrayChildRow: View {
   let title: String
   var suffix: String? = nil
-  var action: () -> Void = {}
+  var action: (() -> Void)? = nil
 
   @State private var hovering = false
 
   var body: some View {
+    if let action {
+      Button(action: action) { label }
+        .buttonStyle(.plain)
+        .csFocusOutline()
+        .onHover { hovering = $0 }
+    } else {
+      label
+    }
+  }
+
+  private var label: some View {
     HStack(spacing: 5) {
       Text(title)
         .font(CSFont.ui(12, .medium))
-        .foregroundStyle(TrayLocal.subnote)
+        .foregroundStyle(CSColor.textMuted)
       if let suffix {
         Text(suffix)
           .font(CSFont.mono(10))
@@ -113,12 +137,10 @@ struct TrayChildRow: View {
     .padding(.horizontal, 11)
     .padding(.vertical, 7)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
         .fill(hovering ? CSColor.surfaceRaised(0.05) : .clear)
     )
     .contentShape(Rectangle())
-    .onTapGesture(perform: action)
-    .onHover { hovering = $0 }
   }
 }
 
@@ -150,8 +172,7 @@ struct TrayDisclosureChildren<Content: View>: View {
   }
 }
 
-/// Expose the mock-only palette so it shares the brand's hex initializer.
+/// The accent-derived keycap tint so it shares the brand's accent source.
 extension TrayRow {
-  static let subnoteColor = TrayLocal.subnote
   static let primaryShortcutColor = TrayLocal.primaryShortcut
 }

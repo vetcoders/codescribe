@@ -4,9 +4,14 @@ use std::{fs::OpenOptions, io::Write, path::Path};
 
 use chrono::SecondsFormat;
 
-use super::tuning::env_bool;
-
 // ── Logging ──────────────────────────────────────────────────────────────────
+
+/// Read a boolean stream-log flag; unset and malformed values are off.
+fn env_bool(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
 
 /// Resolve where the stream log should be written, or `None` when logging is
 /// off.

@@ -1,407 +1,289 @@
-# Streaming Pipeline: Microphone → Overlay
+# Streaming Pipeline: Microphone → Ledger → Projection
 
-> Complete data flow documentation for codescribe's real-time speech-to-text pipeline.
->
-> **Re-framed 2026-05-26** as the rendering surface for the
-> [Layered Incremental Transcription Pipeline (ADR)](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md).
-> The overlay is now a 5-layer incremental theatre — _NEVER rewrites from zero, always patches in place._
+> Current structural documentation (2026-08-25). `484095ce` was the last
+> executable-code cut before docs successor `d57196ab`; C11 is the next
+> structural executable cut and records its actual hash in its durable report.
+> Compiler and runtime are `NOT_ASSESSED`. The 2026-05-26
+> [five-layer ADR](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md) and
+> older Whisper-first scheduler diagrams are superseded historical snapshots;
+> they have no current runtime authority.
 >
 > Created by Vetcoders (c)2026
 
-## Layered rendering model (ADR 2026-05-26)
+## Authority in one sentence
 
-The overlay no longer renders a single linear stream of one engine's output. It renders the
-union of layer events, each mutating the same already-shown text buffer. The ADR specifies
-five layers; **the render path accepts all five event families, but only three producers
-exist today** — the `Status` column below is inventory, not intent:
-
-| Layer               | Engine                                                  | Event types                                                          | When                                      | Status                                                                             |
-| ------------------- | ------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------- |
-| **0 — Live**        | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | `Preview`, `Correction`, `UtteranceFinal`                            | While the user speaks — owns first commit | ✅ shipped, default                                                                |
-| **1 — Tail Patch**  | Whisper (Candle / mlx-audio / OpenAI / libraxis)        | `ReplaceRange { source: TailPatch }`                                 | at each sealed utterance boundary         | ✅ delivered, **opt-in** (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`, default off) |
-| **2 — Lexicon**     | Dictionary substitution (`apply_lexicon`)               | `ReplaceRange { source: Lexicon }`                                   | at seal time, after Layer 1               | ⚠️ delivered in a different shape than the ADR's debounced module                  |
-| **2 — LLM polish**  | Small inline LLM (Bielik-11B proposed)                  | `ReplaceRange { source: InlineLlm }`                                 | —                                         | ❌ no producer                                                                     |
-| **3 — Paralingual** | Silero classifier head                                  | `InsertAnnotation { HesitationPause \| Paralingual }`                | —                                         | ❌ no producer (transport exists end-to-end)                                       |
-| **4 — Final BAM**   | Session-end contextual pass                             | `ReplaceRange` (cross-utterance, within bounds) + `SessionFinalised` | On `stop()` / hold-release                | ❌ no producer; `SessionFinalised` _is_ emitted by the live paths                  |
-
-**Hard invariant:** every layer mutates the buffer only through bounded events
-(`Append`, `ReplaceRange`, `InsertAnnotation`, `Backspace`). No layer is allowed to wipe the
-buffer and retype. Since the UI moved to Swift the enforcement point is
-`macos/Codescribe/Screens/Overlay/OverlayState.swift` — `applyReplaceRange` delegates to
-`OverlayTranscriptSegment.replaceRange`, which returns `false` and drops the patch for any
-range that does not address the committed segment. See ADR §Hard invariants for the full
-contract and rationale.
+`RecordingController` owns the in-app microphone, `StreamingRecorder` owns the
+successful physical-open epoch, `AcousticLedger` alone admits and seals physical
+occurrences, and `PresentationEmitter` / `TranscriptReducer` alone commit the
+document projected to Transcript Bus and Swift.
 
 ```mermaid
 flowchart LR
-    L0[Layer 0<br/>Apple live deltas]
-    L1[Layer 1<br/>Whisper tail patch]
-    L2[Layer 2<br/>Lexicon + LLM polish]
-    L3[Layer 3<br/>Silero paralingual]
-    L4[Layer 4<br/>Final BAM]
-    BUF[(Already-shown buffer<br/>Overlay render target)]
+    INTENT[Explicit operator intent]
+    CONTROLLER[RecordingController<br/>only in-app microphone owner]
+    RECORDER[StreamingRecorder<br/>capture_epoch owner]
+    DISPATCH[transcription_session<br/>Apple-only dispatcher]
+    APPLE[apple_stream_transcription_session]
+    SILERO[Silero<br/>boundary / time / energy evidence]
+    WHISPER[Whisper<br/>L1 tail-provider observation<br/>on retained PCM]
+    LEXICON[Lexicon + Light+<br/>retained-text observation]
+    FORMATTER[Responses formatter<br/>retained-text observation]
+    LEDGER[(AcousticLedger<br/>only admit / seal authority)]
+    REDUCER[PresentationEmitter / TranscriptReducer<br/>document commit authority]
+    BUS[Transcript Bus<br/>committed projection]
+    SWIFT[Swift<br/>projection observer]
+    ROUTE[DeliveryRoute<br/>explicit destination]
 
-    L0 -- Preview / UtteranceFinal --> BUF
-    L1 -- ReplaceRange (bounded) --> BUF
-    L2 -- ReplaceRange (bounded) --> BUF
-    L3 -- InsertAnnotation --> BUF
-    L4 -- ReplaceRange (cross-utterance) + SessionFinalised --> BUF
+    INTENT --> CONTROLLER
+    CONTROLLER --> RECORDER
+    RECORDER --> DISPATCH
+    DISPATCH --> APPLE
+    SILERO -. evidence .-> APPLE
+    APPLE -- Apple observation --> LEDGER
+    WHISPER -- authorized observation --> LEDGER
+    LEXICON -- authorized relabel --> LEDGER
+    FORMATTER -- authorized relabel --> LEDGER
+    LEDGER -- LedgerMutation / LedgerSeal --> REDUCER
+    REDUCER --> BUS
+    BUS --> SWIFT
+    INTENT --> ROUTE
+    SWIFT --> ROUTE
 ```
 
-The legacy single-engine pipeline below describes **what powers Layer 0 + Layer 1's Whisper
-backend today**. It still works exactly as documented when Apple is unavailable (fallback mode).
-When Apple is the active Layer 0, the same chunker/VAD/Whisper machinery moves to background
-duty and emits Layer 1 `ReplaceRange` events instead of primary `Preview` events.
+This is one microphone, one capture clock, one occurrence ledger, and one Rust
+document reducer. No observer may create a second recorder, derive occurrence
+identity from text, or rebuild the transcript in Swift.
 
-## Pipeline Overview
+## Four machine observations
+
+| Layer                    | Role                                              | Authority boundary                                                           |
+| ------------------------ | ------------------------------------------------- | ---------------------------------------------------------------------------- |
+| L0 — Apple               | First live text observer inside the Apple session | May describe an occurrence; may not mint physical speech                     |
+| L1 — Whisper             | Tail-provider observation over retained PCM       | May correct the same authorized occurrence; never owns a parallel live route |
+| L2 — Lexicon + Light+    | Deterministic retained-text relabeling            | May relabel an authorized occurrence; equal strings are not identity         |
+| L3 — Responses formatter | Configured formatting observation                 | May format authorized text; may not add physical occurrences                 |
+
+These are the four machine layers. The Responses formatter is a proposal/repair
+observer constrained by occurrence-authenticated ledger admission; it cannot
+commit text directly or dispatch delivery. Silero is orthogonal to the
+text-layer stack. It supplies time, energy, pause, and boundary evidence to the
+Apple session and owns neither text nor a microphone. Final BAM is superseded
+and has no producer. `SessionFinalised` closes lifecycle only; it is neither a
+text layer nor arbitrary string finality.
+
+## Stage 1: operator intent and microphone ownership
+
+`RecordingController::handle_hotkey_event` routes the hotkey gesture to the
+current recording handler. `RecordingController` is the only in-app microphone
+owner. Dictation, Agent, and Assistive modes may choose different downstream
+delivery, but none may open another recorder.
+
+`StreamingRecorder::bind_session_authority` binds a new operator session to one
+`AcousticLedger` and resets its session-local capture counter. On physical open,
+`StreamingRecorder::start_event_session`:
+
+1. computes the next `capture_epoch` with checked arithmetic;
+2. attempts `recorder.start()`;
+3. assigns the new epoch only after that start succeeds; and
+4. passes the issued epoch into the live Apple session.
+
+The counter therefore identifies successful physical opens, not attempts.
+
+## Stage 2: the live Apple dispatcher
+
+`transcription_session` currently delegates only to
+`apple_stream_transcription_session`. The normal live route does not select a
+Whisper-first VAD/scheduler pipeline.
+
+The Apple session receives capture PCM and the recorder-issued session/epoch.
+Its two Apple bridge transports are an A/B seam inside the same Apple route:
+
+- `CODESCRIBE_APPLE_STT_LIVE_MODE=stream` uses live Apple AudioBuffer delivery;
+- `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` uses the older Apple `transcribe_live`
+  temp-WAV request transport.
+
+`wav` does not restore any deleted scheduler or create a second authority.
+
+## Stage 3: boundary evidence and retained-PCM observers
+
+The Apple session feeds one Silero observation path. `seal_sliced_by_silero`
+uses Silero boundary/time/energy evidence to describe PCM ranges on the same
+session clock. Each selected slice now admits its own slice-local Apple label
+and exact-range no-change Lexicon observation before any raw final telemetry.
+Callback-wide text is not copied into multiple ranges. Silero cannot author text
+and cannot seal a transcript by itself.
+
+Whisper may observe retained PCM as the Layer 1 tail provider. Apple, Whisper,
+Lexicon/Light+, and Responses formatting all offer observations about an
+already-identifiable occurrence. A later, higher-authority observation may
+relabel that occurrence; it cannot increase or decrease the number of physical
+speech events.
+
+Formatter staging itself does not dispatch. Only closure of the prior machine
+frontier may enqueue the exact occurrence-bound Responses request; its result
+must return through the ledger before the reducer can commit it.
+
+## Stage 4: occurrence admission and seal
+
+`AcousticLedger` is the only physical occurrence authority.
+
+```text
+OccurrenceIdentity = (session, capture_epoch, sample_start, sample_end)
+ObservationIdentity = (producer, request, generation, occurrence)
+```
+
+- Equal text never creates, merges, or erases an occurrence.
+- Equal text on disjoint PCM ranges represents distinct speech and survives.
+- Re-delivery of the same observation identity/range is refused structurally.
+- An unanchored observation may remain visible as evidence but has no mutation
+  authority.
+- `AcousticLedger::admit` records the observation decision.
+- `AcousticLedger::seal` closes the occurrence against later automatic mutation.
+
+In the Apple session, `admit_ledger_label` converts qualified Apple, Whisper,
+Lexicon, or formatting evidence into ledger admission. `seal_utterance_final`
+binds segment-less Apple callbacks to new session-clock PCM before offering
+Apple and Lexicon observations; it does not use canvas text as identity.
+
+## Stage 5: Rust reduction and Transcript Bus
+
+Accepted ledger decisions leave the ledger as
+`EngineEvent::LedgerMutation`; physical closure leaves as
+`EngineEvent::LedgerSeal`. `PresentationEmitter` / `TranscriptReducer` reduce
+those events into the canonical document.
+
+The Transcript Bus observes committed reducer revisions and publishes a
+complete rendered projection with acoustic receipts. Preview callbacks and raw
+engine strings are not bus truth. Preview uses a distinct overlay-only command
+that cannot write the delivery buffer. Raw final/correction/range-patch/
+annotation events are diagnostics only. The Bus exposes no draft or arbitrary
+text seal API; terminal ledger seal is the only automatic close of committed
+truth. The old raw-event-to-delta adapter no longer exists.
 
 ```mermaid
-flowchart TD
-    MIC[🎤 Microphone\n48kHz mono via cpal]
-    CPAL[cpal audio callback\ncore/audio/recorder.rs]
-    SR[StreamingRecorder\ncore/audio/streaming_recorder.rs]
-    RESAMPLE[Resample 48kHz → 16kHz\nvad::Resampler]
-    VAD[Silero VAD v6\ncore/vad/silero_ort.rs\nONNX Runtime · GRU neural net]
-    GATE{VAD Gate\nspeech_prob ≥ threshold?}
-    DROP[🗑️ Silence discarded]
-    PREROLL[Pre-roll buffer\n~64ms · catches consonant attacks]
-    SPEECH[SpeechSession\ncore/audio/chunker.rs\nSupervisor mode]
-    CHUNK[SpeechEvent::Utterance / UtteranceFinal\nclean speech audio segments]
-    WORKER[transcription_session\ncore/pipeline/streaming/session.rs\nunified pipeline]
-    WHISPER[Whisper Engine\ncore/stt/whisper/engine.rs\nMetal GPU · large-v3-turbo fp16]
-    POSTPROC[StreamPostProcessor\ncore/pipeline/stream_postprocess.rs\nlexicon + semantic gate]
-    EVENT[EngineEvent\ncore/pipeline/contracts.rs]
-    SINK{EventSink / DeltaSink}
-    ROUTER[ControllerEventRouter\napp/controller/helpers.rs]
-    EMITTER[PresentationEmitter\napp/presentation/emitter.rs]
-    CHECK{is_assistive_session?}
-    ASSIST[Agent Chat bubble\nScreens/AgentChat/MessageList.swift]
-    OVERLAY[Floating Overlay\nScreens/Overlay/OverlayState.swift]
+sequenceDiagram
+    participant O as Observer
+    participant L as AcousticLedger
+    participant R as PresentationEmitter / TranscriptReducer
+    participant B as Transcript Bus
+    participant S as Swift projection
 
-    MIC --> CPAL
-    CPAL --> SR
-    SR --> RESAMPLE
-    RESAMPLE --> VAD
-    VAD --> GATE
-    GATE -->|speech| PREROLL
-    GATE -->|silence < min_silence| PREROLL
-    GATE -->|silence ≥ min_silence| DROP
-    PREROLL --> SPEECH
-    SPEECH --> CHUNK
-    CHUNK --> WORKER
-    WORKER --> WHISPER
-    WHISPER --> POSTPROC
-    POSTPROC --> EVENT
-    EVENT --> SINK
-    SINK -->|event pipeline| ROUTER
-    SINK -->|legacy| EMITTER
-    ROUTER --> CHECK
-    CHECK -->|assistive| ASSIST
-    CHECK -->|non-assistive| OVERLAY
-
-    style DROP stroke:#c33,stroke-width:2px
-    style CHUNK stroke:#3a3,stroke-width:2px
-    style EVENT stroke:#33c,stroke-width:2px
-    style OVERLAY stroke:#c93,stroke-width:2px
-    style ASSIST stroke:#c93,stroke-width:2px
+    O->>L: admit observation with PCM identity
+    L-->>R: LedgerMutation receipt
+    R-->>B: committed reducer revision
+    B-->>S: complete transcript projection
+    O->>L: request physical seal
+    L-->>R: LedgerSeal receipt
+    R-->>B: committed sealed revision
+    B-->>S: immutable projected state
 ```
 
----
+## Stage 6: Swift projection and explicit delivery
 
-## Stage 1: Audio Capture
+Swift receives `CsTranscriptProjectionEvent` and applies it through
+`OverlayState.applyTranscriptProjection`. Swift is a projection observer: it
+does not replay Apple/Whisper events or run a second text reducer.
 
-| Component             | File                               | Details                               |
-| --------------------- | ---------------------------------- | ------------------------------------- |
-| **cpal**              | `core/audio/recorder.rs`           | macOS CoreAudio, typically 48kHz mono |
-| **Recorder**          | `core/audio/recorder.rs`           | Manages cpal stream lifecycle         |
-| **StreamingRecorder** | `core/audio/streaming_recorder.rs` | Orchestrates VAD + Whisper pipeline   |
+Delivery uses `DeliveryRoute` resolved from explicit operator intent. OS focus
+alone does not select the destination. Dictation, Agent, and Assistive modes
+share the same transcript authority even when their destinations differ.
 
-The microphone delivers raw PCM f32 samples at the device's native sample rate (usually 48kHz on macOS).
-`StreamingRecorder` owns the full pipeline from audio callback to delta delivery.
+### Overlay panel placement
 
----
+`OverlayController` is the sole placement writer. Choosing an anchor is an
+immediate positioning command: `OverlayState` persists the selection, exits
+Free motion, and invokes the controller. Selecting the already-selected anchor
+also exits Free motion and reapplies placement. The controller derives size
+and origin together and writes the frame synchronously, whether the panel is
+visible or hidden, inside `isApplyingFrame`. Placement does not use an animator
+proxy; its later frame writes would outlive that programmatic-move guard.
 
-## Stage 2: VAD Gate (Voice Activity Detection)
+An ordinary drag preserves the selected anchor and saves the drop point.
+Anchored placement is reapplied on every show. Explicit **Free motion** restores
+the saved drop point, clamped to the visible screen. Programmatic placement
+does not count as a user drag or overwrite that saved point. Size persistence
+and content resizing remain independent of the placement choice.
 
-| Component         | File                     | Details                               |
-| ----------------- | ------------------------ | ------------------------------------- |
-| **Resampler**     | `core/vad/silero_ort.rs` | Linear interpolation 48kHz → 16kHz    |
-| **SileroVad**     | `core/vad/silero_ort.rs` | ONNX Runtime, GRU neural network      |
-| **SpeechSession** | `core/audio/chunker.rs`  | State machine for speech segmentation |
+### Overlay failure feedback and take recovery
 
-### How it works
+The overlay remembers the controller's `recordingStarted` callback for the
+current capture generation. `recordingPreparing` expresses intent only. Stop
+and abort preserve that history; the next capture boundary clears it. A
+post-Stop error therefore describes a transcription that did not finish rather
+than a recording that never started. This history selects explanatory copy
+only: it never owns the microphone, transcript phase, finality or action bits.
 
-1. Raw audio is resampled to **16kHz** (Silero's native rate).
-2. Resampled audio is fed in **512-sample frames** (32ms) to Silero VAD v6.
-3. Each frame produces a **speech probability** (0.0–1.0).
-4. The VAD gate makes a decision per frame:
+Start failures, no-speech outcomes and interrupted transcription have distinct
+messages. A failure with projected text keeps those exact words and explains
+that they may be incomplete. No-speech copy describes the absent transcript,
+without claiming that no audio was captured. A short footer opens one
+scrollable detail panel; raw engine text is under **Diagnostic details**.
+Complete measured coverage with refused finality says **Completion unconfirmed**;
+it does not grant acceptance or certify a complete document.
 
-```
-speech_prob ≥ threshold (0.5)     → accumulate as speech
-speech_prob < neg_threshold (0.35) → start silence counter
-silence_counter ≥ min_silence      → END segment, discard silence
-silence_counter < min_silence      → keep buffering (might be mid-sentence pause)
-```
+**Transcribe this take again** targets the visible projection's `sessionId`.
+The engine resolves `sessionAudioPath(sessionId:)`, `transcribeTake` checks the
+audio identity, and the result returns through `commitRetranscribeRevision`.
+The overlay refreshes audio availability on lifecycle/projection events and
+when actions open, never while painting. Available audio is disclosed only
+after that exact take lookup succeeds. The producer's `canRetranscribe` bit
+still owns permission; absent identity or permission does not enable a retry.
+The local and configured cloud choices remain explicit user actions.
 
-### Key parameters (hardcoded)
+**Previous take** copies or discards retained text (including any unsaved edit)
+from an earlier take; it does not transcribe the current audio. **Transcription
+history** browses saved takes. Neither path silently substitutes an earlier
+recording for the current failed take.
 
-| Parameter                | Value  | Source                 |
-| ------------------------ | ------ | ---------------------- |
-| `threshold`              | 0.5    | Silero default profile |
-| `min_speech_duration`    | 0.064s | Silero Rust example    |
-| `min_silence_duration`   | 0.0s   | Silero Rust example    |
-| `max_utterance_duration` | ∞      | Silero Rust example    |
-| `speech_pad / pre_roll`  | 0.064s | Silero Rust example    |
+Source changes for this feedback require catalog synchronization by the
+integrator, lifecycle regression coverage (especially errors after Stop), and
+native acceptance of the details and same-take recovery path. Structural source
+inspection alone does not verify recovery success.
 
-### Pre-roll buffer
+## Normal live route versus explicit non-live work
 
-A 64ms circular buffer (~1024 samples at 16kHz) captures audio **before** speech onset. This catches the attack transients of plosive consonants (k, t, p, b) that would otherwise be clipped. When speech begins, the pre-roll is prepended to the speech segment.
+| Surface                              | Microphone / authority status                                                                                               |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| Normal live capture                  | The Apple-only dispatcher and the single ledger/reducer path described above                                                |
+| Explicit Retranscribe                | A new operator-authorized inference over a selected completed artifact; not a normal-stop continuation and not live capture |
+| Corpus, replay, or bench tooling     | Offline evidence surfaces; they do not prove or replace the normal live path                                                |
+| Historical W13 / five-layer diagrams | Dated archaeology only; no authority to restore deleted runtime surfaces                                                    |
 
-### Three gate modes
+## Transformation summary
 
-| Mode         | Description                                             | Output sample rate |
-| ------------ | ------------------------------------------------------- | ------------------ |
-| `Simple`     | Basic threshold + silence counter                       | 16kHz (VAD rate)   |
-| `Iter`       | State machine with min_speech/min_silence/max_utterance | 16kHz (VAD rate)   |
-| `Supervisor` | Same as Iter but preserves raw sample rate              | Original (48kHz)   |
-
-### Two Silero instances
-
-The application runs **two independent Silero VAD paths**:
-
-1. **Inline in SpeechSession** (`SileroVad` struct) — synchronous, called directly in the audio processing loop. This is the gate that filters audio before Whisper. Zero latency, blocking.
-
-2. **Singleton worker** (`vad::speech_probability()`) — async fire-and-forget via bounded channel (capacity=4). Used by the auto-stop monitor in `main.rs` to detect when the user stops speaking during toggle recording. Returns last computed probability (eventual consistency).
-
-### Flush fallback
-
-When recording stops but VAD never fired `Start` (e.g. speech was too quiet or short for the threshold), `SpeechSession::flush()` checks `max_speech_prob`. If it exceeds `FALLBACK_PROB` (0.25) and at least 0.5s of audio is available, the raw buffer is emitted as a degraded fallback. The engine reports this as `EngineEvent::VadFallback`.
-
----
-
-## Stage 3: Whisper Transcription
-
-| Component                 | File                                  | Details                           |
-| ------------------------- | ------------------------------------- | --------------------------------- |
-| **WhisperEngine**         | `core/stt/whisper/engine.rs`          | Candle + Metal GPU, singleton     |
-| **transcription_session** | `core/pipeline/streaming/session.rs`  | Unified pipeline (event-based)    |
-| **StreamPostProcessor**   | `core/pipeline/stream_postprocess.rs` | Lexicon + semantic gate + cleanup |
-
-### Streaming transcription
-
-Speech segments from the VAD gate arrive as `SpeechEvent::Utterance` (interim) or `SpeechEvent::UtteranceFinal` (boundary). The unified `transcription_session` function:
-
-1. Receives utterance audio from `SpeechSession`.
-2. Transcribes with Whisper (Metal GPU acceleration).
-3. Post-processes via `StreamPostProcessor` (lexicon correction, hallucination filter, semantic gate).
-4. Emits `EngineEvent::Preview` with accumulated text for the current utterance.
-5. Optionally runs Phase 2 correction (re-transcription of accumulated audio for better accuracy).
-
-### Anti-repetition
-
-Whisper uses `no_repeat_ngram_size = 5` to suppress the model's tendency to repeat phrases (a known Whisper artifact, especially with Polish).
-
----
-
-## Stage 4: Engine Events (Intent, not Presentation)
-
-| Component            | File                         | Details                      |
-| -------------------- | ---------------------------- | ---------------------------- |
-| **EngineEvent**      | `core/pipeline/contracts.rs` | Semantic event enum          |
-| **EventSink**        | `core/pipeline/contracts.rs` | Trait for event consumers    |
-| **DeltaSinkAdapter** | `core/pipeline/sinks.rs`     | EventSink → DeltaSink bridge |
-| **TranscriptDelta**  | `core/pipeline/contracts.rs` | Backspace-encoded delta      |
-
-### Event types
-
-The engine emits **semantic events** — it communicates what happened, not how to display it:
-
-| Event            | Meaning                                                     |
-| ---------------- | ----------------------------------------------------------- |
-| `VadStart`       | VAD detected speech start (with `speech_prob` and `ts_ms`)  |
-| `VadEnd`         | VAD detected speech end                                     |
-| `VadFallback`    | Flush path used (VAD never fired Start but speech detected) |
-| `Preview`        | Latest transcription of current utterance (full text)       |
-| `Correction`     | Re-transcription improved previous output                   |
-| `UtteranceFinal` | Complete utterance — VAD-bounded or flush                   |
-| `Drop`           | Content dropped (hallucination, semantic gate)              |
-| `Stats`          | Session-level statistics (emitted on stop/flush)            |
-| `Warning`        | Recoverable error — engine continues                        |
-
-### Preview semantics (contract)
-
-- `Preview.text` is **utterance-local**: full post-processed text for the current utterance only.
-- On each Whisper decode, `text` replaces the previous Preview (not appended). `rev` increments.
-- After `UtteranceFinal`, the engine resets internal state — next Preview starts fresh.
-- Presentation must keep **session structure**, not only a flat string:
-  - committed utterances that are already safe to keep
-  - one active preview/correction tail for the current utterance
-- Corrections may rewrite only the active tail. Previously committed utterances must stay append-only.
-- UI sinks still consume only backspace-encoded `TranscriptDelta` payloads; full preview snapshots must be diffed upstream before they reach overlay/chat APIs.
-
-### Delta generation (backspace magic)
-
-When Whisper processes overlapping audio chunks, later chunks may **correct** earlier transcription. The `TranscriptDelta::from_diff` function generates a minimal delta:
-
-```
-Previous: "Kubernetes wymaga konfiguracji po zgrze"
-Current:  "Kubernetes wymaga konfiguracji PostgreSQL"
-
-Delta: "\u{0008}\u{0008}\u{0008}\u{0008}\u{0008}\u{0008}\u{0008}\u{0008}PostgreSQL"
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-       8 backspaces to erase "po zgrze" + new text "PostgreSQL"
+```text
+explicit operator intent
+  → RecordingController
+  → StreamingRecorder(session, successful-open capture_epoch, retained PCM)
+  → transcription_session
+  → apple_stream_transcription_session
+      + Silero boundary/time/energy evidence
+      + Apple / Whisper / Lexicon-Light+ / Responses observations
+  → AcousticLedger::admit / AcousticLedger::seal
+  → EngineEvent::LedgerMutation / EngineEvent::LedgerSeal
+  → PresentationEmitter / TranscriptReducer
+  → Transcript Bus committed projection
+  → Swift projection observer
+  → DeliveryRoute chosen from explicit operator intent
 ```
 
-The `\u{0008}` character is ASCII backspace. The UI applies it character-by-character via `TranscriptDelta::apply()`.
+## Key source files
 
----
-
-## Stage 5: UI Routing
-
-| Component                     | File                          | Details                              |
-| ----------------------------- | ----------------------------- | ------------------------------------ |
-| **ControllerEventRouter**     | `app/controller/helpers.rs`   | Event pipeline: routes by mode       |
-| **PresentationEmitter**       | `app/presentation/emitter.rs` | Typing animation via BufferedEmitter |
-| **route_transcription_delta** | `app/controller/helpers.rs`   | Legacy: routes delta by mode         |
-
-### Runtime pipeline path
-
-App runtime uses a single path:
-
-- `start_event_session` → `transcription_session` (event pipeline only).
-- Preview/Correction → update session transcript state (`committed utterances + active preview`) → compute a new full session target → emit only the delta needed to reach that target.
-- UtteranceFinal → utterance callback → AI pipeline (skips user bubble re-write).
-
-Legacy worker path is kept only as deprecated compatibility/diagnostic code and is not used by app runtime.
-
-### Session modes
-
-The controller checks `is_assistive_session()`:
-
-- **Assistive** (Fn+Shift hold / toggle-assistive): deltas go to voice chat user bubble.
-- **Non-assistive** (Fn hold / toggle): deltas go to floating overlay.
-
-**Toggle nuance:** In toggle mode, each VAD silence boundary produces an `UtteranceFinal`. The utterance callback processes each utterance independently (AI formatting, clipboard). In the event pipeline, Preview streams into the user bubble, and the commit path finalizes without re-writing (`skip_user_bubble`). Recording continues until double-tap Option.
-
----
-
-## Stage 6: Overlay Display
-
-### Non-assistive mode (dictation)
-
-Delta arrives at the **Floating Overlay**:
-
-- Deltas reach Swift through the UniFFI listener; `OverlayState.applyPreview` /
-  `applyCorrection` / `applyFinal` fold them into the committed-segment buffer
-  (`macos/Codescribe/Screens/Overlay/OverlayState.swift`).
-- Updates the always-on-top transparent overlay window.
-- Auto-resizes to fit text content.
-- Auto-hides after 5 seconds of inactivity (with hover guard).
-
-### Assistive mode (AI chat)
-
-Delta arrives at the **Agent Tab**:
-
-- `AgentChatStore` folds the delta into the streaming user message
-  (`macos/Codescribe/Screens/AgentChat/AgentChatStore.swift`).
-- Updates the streaming user message bubble.
-- After utterance is complete, the transcribed text is sent to the LLM.
-- LLM response streams back via a separate `delta_callback` into assistant message bubbles.
-
-### Thread safety
-
-All UI updates are dispatched to the **main thread** via `Queue::main().exec_async()` (Grand Central Dispatch). The delta callback fires from the pipeline worker thread; the GCD dispatch ensures AppKit operations happen on the main thread.
-
----
-
-## Complete Timing Breakdown
-
-```
-Event                          Latency        Cumulative
-─────────────────────────────  ─────────────  ──────────
-Microphone capture             ~5ms           ~5ms
-Resample 48k→16k              <1ms           ~6ms
-Silero VAD (per 32ms frame)   ~2ms           ~8ms
-VAD gate decision             <1ms           ~9ms
-Whisper chunk accumulation    ~4000ms        ~4009ms
-Whisper inference (Metal GPU) ~2000-7000ms   ~6000-11000ms
-PostProcess + delta           <1ms           ~6001ms
-GCD dispatch to main thread   <1ms           ~6002ms
-AppKit text update            <1ms           ~6003ms
-─────────────────────────────────────────────────────────
-First visible text:           ~6s after speech starts
-Corrections (backspace):      ~4s after each new chunk
-```
-
----
-
-## Data Transformations Summary
-
-```
-Raw PCM f32 (48kHz)
-    │ resample
-    ▼
-PCM f32 (16kHz)
-    │ Silero VAD
-    ▼
-SpeechEvent (speech segments, silence removed)
-    │ transcription_session
-    ▼
-Whisper inference → raw transcript
-    │ StreamPostProcessor (lexicon + semantic gate)
-    ▼
-EngineEvent::Preview { text } (utterance-local)
-    │ EventSink / DeltaSinkAdapter
-    ▼
-TranscriptDelta (backspace-encoded diff)
-    │ apply to UI buffer
-    ▼
-Displayed text (String, visible in overlay/bubble)
-```
-
----
-
-## Key Source Files
-
-| File                                                      | Role                                                       |
-| --------------------------------------------------------- | ---------------------------------------------------------- |
-| `core/audio/recorder.rs`                                  | cpal audio capture, device management                      |
-| `core/audio/streaming_recorder.rs`                        | Pipeline orchestrator, connects recorder to engine         |
-| `core/audio/chunker.rs`                                   | SpeechSession, VAD gate, Supervisor mode, flush fallback   |
-| `core/vad/silero_ort.rs`                                  | Silero VAD v6 (ONNX), worker thread, resampler             |
-| `core/stt/whisper/engine.rs`                              | Whisper singleton, Metal GPU inference                     |
-| `core/pipeline/contracts.rs`                              | EngineEvent, EventSink, DeltaSink, TranscriptDelta         |
-| `core/pipeline/streaming/session.rs`                      | transcription_session (unified, VAD/scheduler path)        |
-| `core/pipeline/streaming/apple_live_session.rs`           | Apple progressive live session + Layer 1 seal hand-off     |
-| `core/stt/tail_patcher/mod.rs`                            | Layer 1 gate, job computation, bounded-patch decision      |
-| `core/pipeline/sinks.rs`                                  | DeltaSinkAdapter, CallbackSink, CollectorEventSink         |
-| `core/pipeline/stream_postprocess.rs`                     | Lexicon correction, semantic gate, hallucination filter    |
-| `app/controller/mod.rs`                                   | Recording state machine, Hold/Toggle orchestration         |
-| `app/controller/helpers.rs`                               | ControllerEventRouter, session mode routing                |
-| `app/presentation/emitter.rs`                             | PresentationEmitter (typing animation via BufferedEmitter) |
-| `macos/Codescribe/Screens/Overlay/OverlayState.swift`     | Floating overlay state + layered render enforcement        |
-| `macos/Codescribe/Screens/AgentChat/AgentChatStore.swift` | Agent chat state (threads, streaming bubbles)              |
-
----
-
-## Test Coverage
-
-| Test file                    | What it validates                                                                                   |
-| ---------------------------- | --------------------------------------------------------------------------------------------------- |
-| `tests/e2e_vad_flow.rs`      | VAD init, speech detection, resampling, real audio with canonical recordings                        |
-| `tests/e2e_vad_auto_stop.rs` | Atomic flag mechanism, cross-thread callbacks, monitor polling                                      |
-| `tests/e2e_full_pipeline.rs` | Full pipeline: Whisper × 4 canonical recordings, PostProcessor, Delta backspace, Unicode round-trip |
-| `tests/e2e_vad_gate_live.rs` | Live VAD gate integration with real audio files                                                     |
-
-### Canonical test recordings
-
-| File                                    | Duration | Content                             | Difficulty   |
-| --------------------------------------- | -------- | ----------------------------------- | ------------ |
-| `01_no-to-dobra.wav`                    | ~60s     | Casual Polish speech                | Easy         |
-| `02_kubernetes-wymaga-konfiguracji.wav` | ~55s     | Tech + veterinary terms             | Medium       |
-| `03_algorytm-ma-zlozonosc.wav`          | ~80s     | Algorithm complexity, medical terms | Medium-Hard  |
-| `04_runda-3-czyli.wav`                  | ~72s     | Intentional mispronunciations       | Hard         |
-| `VAD_voice_real_pauses.wav`             | ~59s     | Real speech with deliberate pauses  | VAD-specific |
+| File                                                  | Current role                                                               |
+| ----------------------------------------------------- | -------------------------------------------------------------------------- |
+| `app/controller/mod.rs`                               | `RecordingController`, hotkey handling, single in-app microphone ownership |
+| `app/controller/delivery_route.rs`                    | `DeliveryRoute` from explicit operator intent                              |
+| `core/audio/streaming_recorder.rs`                    | Session authority binding and successful-open `capture_epoch` allocation   |
+| `core/pipeline/streaming/session.rs`                  | `transcription_session`, currently an Apple-only dispatcher                |
+| `core/pipeline/streaming/apple_live_session.rs`       | Live Apple session, observer qualification, ledger admission and seal      |
+| `core/pipeline/streaming/silero_fusion.rs`            | Silero boundary/time/energy evidence for Apple-session slicing             |
+| `core/stt/apple_stt/mod.rs`                           | Apple AudioBuffer versus temp-WAV bridge transport selection               |
+| `core/stt/apple_stt/live_stream.rs`                   | Apple live bridge helpers and structurally uncalled compatibility accessor |
+| `core/pipeline/acoustic_ledger.rs`                    | Only occurrence admission/seal authority and immutable receipts            |
+| `core/pipeline/contracts.rs`                          | Ledger mutation/seal event contracts                                       |
+| `app/presentation/emitter.rs`                         | Canonical Rust transcript reducer                                          |
+| `app/presentation/transcript_bus.rs`                  | Committed projection observer and bus publication                          |
+| `macos/Codescribe/Screens/Overlay/OverlayState.swift` | Swift projection consumer                                                  |
 
 ---
 

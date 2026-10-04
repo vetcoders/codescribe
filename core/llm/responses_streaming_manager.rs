@@ -25,6 +25,7 @@ use tracing::{debug, info, warn};
 use crate::agent::event::AgentEvent;
 
 use super::ai_formatting::{AiReasoningCallback, AiStreamCallback};
+use super::responses_output::{ResponsesOutputItem, extract_output_channels};
 
 /// Whole-request ceiling handed to `reqwest`. Deliberately far longer than any
 /// realistic turn: the live guards are the initial-response and inter-chunk
@@ -39,6 +40,48 @@ const STREAM_DEADLINE: Duration = Duration::from_secs(10 * 60);
 /// Reasoning models can stay silent for minutes mid-thought, so the ordinary
 /// (much shorter) inter-chunk timeout would abort a healthy stream.
 const REASONING_INTER_CHUNK_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// One `data:` payload after the shared SSE framing step.
+struct SseData {
+    event: Option<String>,
+    data: String,
+}
+
+/// Pull the next `data:` payload out of `buffer`.
+///
+/// Returns `None` when no full line remains. Blank lines and `:` comments are
+/// dropped. An `event:` line updates `current_event` and is not returned.
+/// A line that is neither is ignored, matching the three stream loops this
+/// replaced. `data` is start-trimmed only.
+fn next_sse_data(buffer: &mut String, current_event: &mut Option<String>) -> Option<SseData> {
+    loop {
+        let newline_pos = buffer.find('\n')?;
+        let line = buffer[..newline_pos].trim().to_string();
+        *buffer = buffer[newline_pos + 1..].to_string();
+
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+
+        if let Some(event) = line
+            .strip_prefix("event: ")
+            .or_else(|| line.strip_prefix("event:"))
+        {
+            *current_event = Some(event.trim().to_string());
+            continue;
+        }
+
+        if let Some(data) = line
+            .strip_prefix("data: ")
+            .or_else(|| line.strip_prefix("data:"))
+        {
+            return Some(SseData {
+                event: current_event.take(),
+                data: data.trim_start().to_string(),
+            });
+        }
+    }
+}
 
 /// Accumulated result of one non-agent `/v1/responses` stream.
 #[derive(Debug, Clone)]
@@ -79,6 +122,9 @@ pub struct ResponsesStreamingManager<'a> {
     endpoint: &'a str,
     api_key: &'a str,
     auth_header_mode: AuthHeaderMode,
+    /// Lane-specific request headers beyond auth (e.g. the Codex backend's
+    /// `ChatGPT-Account-ID` and `originator`). Applied to every request.
+    extra_headers: Vec<(String, String)>,
     callbacks: StreamCallbacks,
     initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
@@ -103,6 +149,7 @@ impl<'a> ResponsesStreamingManager<'a> {
             endpoint,
             api_key,
             auth_header_mode: AuthHeaderMode::BearerAndApiKey,
+            extra_headers: Vec::new(),
             callbacks,
             initial_response_timeout,
             inter_chunk_timeout,
@@ -112,6 +159,12 @@ impl<'a> ResponsesStreamingManager<'a> {
     /// Override the auth header shape (builder style).
     pub fn with_auth_header_mode(mut self, auth_header_mode: AuthHeaderMode) -> Self {
         self.auth_header_mode = auth_header_mode;
+        self
+    }
+
+    /// Attach lane-specific headers to every request (builder style).
+    pub fn with_extra_headers(mut self, extra_headers: Vec<(String, String)>) -> Self {
+        self.extra_headers = extra_headers;
         self
     }
 
@@ -128,11 +181,14 @@ impl<'a> ResponsesStreamingManager<'a> {
     pub async fn stream<T: Serialize>(&self, request: &T) -> Result<ResponsesStreamOutput> {
         let endpoint_url =
             validated_endpoint_url(self.endpoint).context("Invalid Responses API endpoint URL")?;
-        let request_builder = apply_auth_headers(
-            // nosemgrep: rust.actix.ssrf.reqwest-taint.reqwest-taint -- URL is validated by `validated_endpoint_url`.
-            self.client.post(endpoint_url.clone()),
-            self.api_key,
-            self.auth_header_mode,
+        let request_builder = apply_extra_headers(
+            apply_auth_headers(
+                // nosemgrep: rust.actix.ssrf.reqwest-taint.reqwest-taint -- URL is validated by `validated_endpoint_url`.
+                self.client.post(endpoint_url.clone()),
+                self.api_key,
+                self.auth_header_mode,
+            ),
+            &self.extra_headers,
         )
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream")
@@ -268,118 +324,101 @@ impl<'a> ResponsesStreamingManager<'a> {
             let chunk = chunk_result.context("Stream read error")?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-            while let Some(newline_pos) = buffer.find('\n') {
-                let line = buffer[..newline_pos].trim().to_string();
-                buffer = buffer[newline_pos + 1..].to_string();
-
-                if line.is_empty() || line.starts_with(':') {
-                    continue;
+            while let Some(SseData {
+                event: data_event,
+                data,
+            }) = next_sse_data(&mut buffer, &mut current_event)
+            {
+                if data == "[DONE]" {
+                    saw_done = true;
+                    break;
                 }
 
-                if let Some(event) = line
-                    .strip_prefix("event: ")
-                    .or_else(|| line.strip_prefix("event:"))
-                {
-                    current_event = Some(event.trim().to_string());
-                    continue;
+                if data_event.as_deref() == Some("error") {
+                    let error = parse_sse_error_event(&data);
+                    anyhow::bail!("{}", format_sse_error("SSE", &error));
                 }
 
-                if let Some(data) = line
-                    .strip_prefix("data: ")
-                    .or_else(|| line.strip_prefix("data:"))
+                let chunk = match serde_json::from_str::<StreamChunk>(&data) {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        warn!("Skipping malformed SSE chunk: {}", error);
+                        continue;
+                    }
+                };
                 {
-                    let data = data.trim_start();
-                    let data_event = current_event.take();
-                    if data == "[DONE]" {
-                        saw_done = true;
-                        break;
+                    if let Some(seq) = chunk.sequence_number {
+                        last_sequence_number = Some(seq);
                     }
-
-                    if data_event.as_deref() == Some("error") {
-                        let error = parse_sse_error_event(data);
-                        anyhow::bail!("{}", format_sse_error("SSE", &error));
-                    }
-
-                    let chunk = match serde_json::from_str::<StreamChunk>(data) {
-                        Ok(parsed) => parsed,
-                        Err(error) => {
-                            warn!("Skipping malformed SSE chunk: {}", error);
-                            continue;
-                        }
-                    };
+                    if let Some(resp) = &chunk.response
+                        && !resp.id.is_empty()
                     {
-                        if let Some(seq) = chunk.sequence_number {
-                            last_sequence_number = Some(seq);
+                        response_id = Some(resp.id.clone());
+                    }
+                    match chunk.chunk_type.as_str() {
+                        "response.output_text.delta" => {
+                            if let Some(delta) = chunk.delta {
+                                if let Some(cb) = &self.callbacks.assistant {
+                                    cb(&delta);
+                                }
+                                assistant_text.push_str(&delta);
+                            }
                         }
-                        if let Some(resp) = &chunk.response
-                            && !resp.id.is_empty()
-                        {
-                            response_id = Some(resp.id.clone());
+                        "response.output_text.done" => {
+                            if let Some(text) = chunk.text {
+                                let text = text.trim().to_string();
+                                if !text.is_empty() {
+                                    if assistant_text.is_empty()
+                                        && let Some(cb) = &self.callbacks.assistant
+                                    {
+                                        cb(&text);
+                                    }
+                                    assistant_done = Some(text);
+                                }
+                            }
                         }
-                        match chunk.chunk_type.as_str() {
-                            "response.output_text.delta" => {
-                                if let Some(delta) = chunk.delta {
-                                    if let Some(cb) = &self.callbacks.assistant {
-                                        cb(&delta);
-                                    }
-                                    assistant_text.push_str(&delta);
+                        "response.reasoning_summary_text.delta" => {
+                            if let Some(delta) = chunk.delta {
+                                if let Some(cb) = &self.callbacks.reasoning {
+                                    cb(&delta);
                                 }
+                                reasoning_text.push_str(&delta);
                             }
-                            "response.output_text.done" => {
-                                if let Some(text) = chunk.text {
-                                    let text = text.trim().to_string();
-                                    if !text.is_empty() {
-                                        if assistant_text.is_empty()
-                                            && let Some(cb) = &self.callbacks.assistant
-                                        {
-                                            cb(&text);
-                                        }
-                                        assistant_done = Some(text);
-                                    }
-                                }
-                            }
-                            "response.reasoning_summary_text.delta" => {
-                                if let Some(delta) = chunk.delta {
-                                    if let Some(cb) = &self.callbacks.reasoning {
-                                        cb(&delta);
-                                    }
-                                    reasoning_text.push_str(&delta);
-                                }
-                            }
-                            "response.reasoning_summary_text.done" => {
-                                if let Some(text) = chunk.text {
-                                    let text = text.trim().to_string();
-                                    if !text.is_empty() {
-                                        if reasoning_text.is_empty()
-                                            && let Some(cb) = &self.callbacks.reasoning
-                                        {
-                                            cb(&text);
-                                        }
-                                        reasoning_done = Some(text);
-                                    }
-                                }
-                            }
-                            "response.output_item.added" | "response.output_item.done" => {
-                                log_sse_lifecycle_event("SSE", &chunk);
-                            }
-                            "response.content_part.added" | "response.content_part.done" => {
-                                log_sse_lifecycle_event("SSE", &chunk);
-                            }
-                            "response.completed" | "response.done" => {
-                                saw_completed = true;
-                                if let Some(resp) = &chunk.response {
-                                    let parsed = extract_output_channels(&resp.output);
-                                    if !parsed.0.is_empty() {
-                                        completed_output = Some(parsed);
-                                    } else {
-                                        warn!(
-                                            "SSE response.completed without parseable output_text payload; falling back to channel buffers"
-                                        );
-                                    }
-                                }
-                            }
-                            _ => {}
                         }
+                        "response.reasoning_summary_text.done" => {
+                            if let Some(text) = chunk.text {
+                                let text = text.trim().to_string();
+                                if !text.is_empty() {
+                                    if reasoning_text.is_empty()
+                                        && let Some(cb) = &self.callbacks.reasoning
+                                    {
+                                        cb(&text);
+                                    }
+                                    reasoning_done = Some(text);
+                                }
+                            }
+                        }
+                        "response.output_item.added" | "response.output_item.done" => {
+                            log_sse_lifecycle_event("SSE", &chunk);
+                        }
+                        "response.content_part.added" | "response.content_part.done" => {
+                            log_sse_lifecycle_event("SSE", &chunk);
+                        }
+                        "response.completed" | "response.done" => {
+                            saw_completed = true;
+                            if let Some(resp) = &chunk.response {
+                                let parsed = extract_output_channels(&resp.output);
+                                if !parsed.assistant_text.is_empty() {
+                                    completed_output =
+                                        Some((parsed.assistant_text, parsed.reasoning_text));
+                                } else {
+                                    warn!(
+                                        "SSE response.completed without parseable output_text payload; falling back to channel buffers"
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -452,27 +491,20 @@ impl<'a> ResponsesStreamingManager<'a> {
 
         let (tx, rx) = mpsc::channel(256);
 
-        let client = self.client.clone();
-        let endpoint = self.endpoint.to_string();
-        let api_key = self.api_key.to_string();
-        let auth_header_mode = self.auth_header_mode;
+        let transport = AgentStreamTransport {
+            client: self.client.clone(),
+            endpoint: self.endpoint.to_string(),
+            api_key: self.api_key.to_string(),
+            auth_header_mode: self.auth_header_mode,
+            extra_headers: self.extra_headers.clone(),
+            initial_response_timeout: self.initial_response_timeout,
+            inter_chunk_timeout: self.inter_chunk_timeout,
+        };
         let callbacks = self.callbacks.clone();
-        let initial_response_timeout = self.initial_response_timeout;
-        let inter_chunk_timeout = self.inter_chunk_timeout;
 
         tokio::spawn(async move {
-            if let Err(error) = run_agent_stream(
-                client,
-                endpoint,
-                api_key,
-                auth_header_mode,
-                callbacks,
-                initial_response_timeout,
-                inter_chunk_timeout,
-                request_payload,
-                tx.clone(),
-            )
-            .await
+            if let Err(error) =
+                run_agent_stream(transport, callbacks, request_payload, tx.clone()).await
             {
                 let _ = tx.send(AgentEvent::Error(error.to_string())).await;
             }
@@ -544,85 +576,67 @@ impl<'a> ResponsesStreamingManager<'a> {
             let chunk = chunk_result.context("Resume stream read error")?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-            while let Some(newline_pos) = buffer.find('\n') {
-                let line = buffer[..newline_pos].trim().to_string();
-                buffer = buffer[newline_pos + 1..].to_string();
-
-                if line.is_empty() || line.starts_with(':') {
-                    continue;
+            while let Some(SseData {
+                event: data_event,
+                data,
+            }) = next_sse_data(&mut buffer, &mut current_event)
+            {
+                if data == "[DONE]" {
+                    return Ok(ResponsesStreamOutput {
+                        assistant_text,
+                        reasoning_text: if reasoning_text.is_empty() {
+                            None
+                        } else {
+                            Some(reasoning_text)
+                        },
+                        response_id: Some(response_id.to_string()),
+                    });
                 }
 
-                if let Some(event) = line
-                    .strip_prefix("event: ")
-                    .or_else(|| line.strip_prefix("event:"))
-                {
-                    current_event = Some(event.trim().to_string());
-                    continue;
+                if data_event.as_deref() == Some("error") {
+                    let error = parse_sse_error_event(&data);
+                    anyhow::bail!("{}", format_sse_error("Resume SSE", &error));
                 }
 
-                if let Some(data) = line
-                    .strip_prefix("data: ")
-                    .or_else(|| line.strip_prefix("data:"))
+                let chunk = match serde_json::from_str::<StreamChunk>(&data) {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        warn!("Skipping malformed SSE chunk: {}", error);
+                        continue;
+                    }
+                };
                 {
-                    let data = data.trim_start();
-                    let data_event = current_event.take();
-                    if data == "[DONE]" {
-                        return Ok(ResponsesStreamOutput {
-                            assistant_text,
-                            reasoning_text: if reasoning_text.is_empty() {
-                                None
-                            } else {
-                                Some(reasoning_text)
-                            },
-                            response_id: Some(response_id.to_string()),
-                        });
-                    }
-
-                    if data_event.as_deref() == Some("error") {
-                        let error = parse_sse_error_event(data);
-                        anyhow::bail!("{}", format_sse_error("Resume SSE", &error));
-                    }
-
-                    let chunk = match serde_json::from_str::<StreamChunk>(data) {
-                        Ok(parsed) => parsed,
-                        Err(error) => {
-                            warn!("Skipping malformed SSE chunk: {}", error);
-                            continue;
-                        }
-                    };
-                    {
-                        match chunk.chunk_type.as_str() {
-                            "response.output_text.delta" => {
-                                if let Some(delta) = chunk.delta {
-                                    if let Some(cb) = &self.callbacks.assistant {
-                                        cb(&delta);
-                                    }
-                                    assistant_text.push_str(&delta);
+                    match chunk.chunk_type.as_str() {
+                        "response.output_text.delta" => {
+                            if let Some(delta) = chunk.delta {
+                                if let Some(cb) = &self.callbacks.assistant {
+                                    cb(&delta);
                                 }
+                                assistant_text.push_str(&delta);
                             }
-                            "response.reasoning_summary_text.delta" => {
-                                if let Some(delta) = chunk.delta {
-                                    if let Some(cb) = &self.callbacks.reasoning {
-                                        cb(&delta);
-                                    }
-                                    reasoning_text.push_str(&delta);
-                                }
-                            }
-                            "response.output_item.added" | "response.output_item.done" => {
-                                log_sse_lifecycle_event("Resume SSE", &chunk);
-                            }
-                            "response.content_part.added" | "response.content_part.done" => {
-                                log_sse_lifecycle_event("Resume SSE", &chunk);
-                            }
-                            "response.completed" | "response.done" => {
-                                debug!(
-                                    "Resume stream completed ({}B accumulated text)",
-                                    assistant_text.len()
-                                );
-                                break;
-                            }
-                            _ => {}
                         }
+                        "response.reasoning_summary_text.delta" => {
+                            if let Some(delta) = chunk.delta {
+                                if let Some(cb) = &self.callbacks.reasoning {
+                                    cb(&delta);
+                                }
+                                reasoning_text.push_str(&delta);
+                            }
+                        }
+                        "response.output_item.added" | "response.output_item.done" => {
+                            log_sse_lifecycle_event("Resume SSE", &chunk);
+                        }
+                        "response.content_part.added" | "response.content_part.done" => {
+                            log_sse_lifecycle_event("Resume SSE", &chunk);
+                        }
+                        "response.completed" | "response.done" => {
+                            debug!(
+                                "Resume stream completed ({}B accumulated text)",
+                                assistant_text.len()
+                            );
+                            break;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -640,6 +654,21 @@ impl<'a> ResponsesStreamingManager<'a> {
     }
 }
 
+/// Everything one spawned agent SSE turn owns about its transport.
+///
+/// Bundled because the task entry point took nine positional arguments; the
+/// six transport values always travel together and are moved into the task as
+/// a unit, so a struct is the honest shape.
+struct AgentStreamTransport {
+    client: Client,
+    endpoint: String,
+    api_key: String,
+    auth_header_mode: AuthHeaderMode,
+    extra_headers: Vec<(String, String)>,
+    initial_response_timeout: Duration,
+    inter_chunk_timeout: Duration,
+}
+
 /// Body of the task spawned by [`ResponsesStreamingManager::stream_agent`].
 ///
 /// Owns the socket for one agent turn: parses each SSE chunk into an
@@ -647,27 +676,31 @@ impl<'a> ResponsesStreamingManager<'a> {
 /// dirty terminal (failed / incomplete / cancelled) it emits
 /// `ResponseDone { clean: false }` so both chain-reset paths run — see
 /// `dirty_terminal_response_id`.
-// allow(too_many_arguments): task entry point for one agent SSE stream; all
-// eight values are owned moves into the spawned task.
-#[allow(clippy::too_many_arguments)]
 async fn run_agent_stream(
-    client: Client,
-    endpoint: String,
-    api_key: String,
-    auth_header_mode: AuthHeaderMode,
+    transport: AgentStreamTransport,
     callbacks: StreamCallbacks,
-    initial_response_timeout: Duration,
-    inter_chunk_timeout: Duration,
     request_payload: serde_json::Value,
     tx: mpsc::Sender<AgentEvent>,
 ) -> Result<()> {
+    let AgentStreamTransport {
+        client,
+        endpoint,
+        api_key,
+        auth_header_mode,
+        extra_headers,
+        initial_response_timeout,
+        inter_chunk_timeout,
+    } = transport;
     let endpoint_url =
         validated_endpoint_url(&endpoint).context("Invalid agent streaming endpoint URL")?;
-    let request_builder = apply_auth_headers(
-        // nosemgrep: rust.actix.ssrf.reqwest-taint.reqwest-taint -- URL is validated by `validated_endpoint_url`.
-        client.post(endpoint_url),
-        &api_key,
-        auth_header_mode,
+    let request_builder = apply_extra_headers(
+        apply_auth_headers(
+            // nosemgrep: rust.actix.ssrf.reqwest-taint.reqwest-taint -- URL is validated by `validated_endpoint_url`.
+            client.post(endpoint_url),
+            &api_key,
+            auth_header_mode,
+        ),
+        &extra_headers,
     )
     .header("Content-Type", "application/json")
     .header("Accept", "text/event-stream")
@@ -687,7 +720,7 @@ async fn run_agent_stream(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Agent SSE HTTP {} - {}", status, body);
+        anyhow::bail!("Agent SSE HTTP {}: {}", status, summarize_error_body(&body));
     }
 
     let mut tool_tracker = ToolCallTracker::default();
@@ -724,41 +757,22 @@ async fn run_agent_stream(
         let chunk = chunk_result.context("Agent SSE stream read error")?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-        while let Some(newline_pos) = buffer.find('\n') {
-            let line = buffer[..newline_pos].trim().to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
-
-            if line.is_empty() || line.starts_with(':') {
-                continue;
-            }
-
-            if let Some(event) = line
-                .strip_prefix("event: ")
-                .or_else(|| line.strip_prefix("event:"))
-            {
-                current_event = Some(event.trim().to_string());
-                continue;
-            }
-
-            let Some(data) = line
-                .strip_prefix("data: ")
-                .or_else(|| line.strip_prefix("data:"))
-            else {
-                continue;
-            };
-            let data = data.trim_start();
-            let data_event = current_event.take();
+        while let Some(SseData {
+            event: data_event,
+            data,
+        }) = next_sse_data(&mut buffer, &mut current_event)
+        {
             if data == "[DONE]" {
                 saw_done = true;
                 break;
             }
 
             if data_event.as_deref() == Some("error") {
-                let error = parse_sse_error_event(data);
+                let error = parse_sse_error_event(&data);
                 anyhow::bail!("{}", format_sse_error("Agent SSE", &error));
             }
 
-            let chunk = match serde_json::from_str::<StreamChunk>(data) {
+            let chunk = match serde_json::from_str::<StreamChunk>(&data) {
                 Ok(parsed) => parsed,
                 Err(error) => {
                     warn!("Skipping malformed SSE chunk: {}", error);
@@ -879,6 +893,18 @@ fn apply_auth_headers(
         AuthHeaderMode::BearerAndApiKey => builder.header("x-api-key", api_key),
         AuthHeaderMode::BearerOnly => builder,
     }
+}
+
+/// Lane-specific headers on top of auth; an empty list is a no-op.
+fn apply_extra_headers(
+    builder: reqwest::RequestBuilder,
+    extra_headers: &[(String, String)],
+) -> reqwest::RequestBuilder {
+    extra_headers
+        .iter()
+        .fold(builder, |builder, (name, value)| {
+            builder.header(name, value)
+        })
 }
 
 /// SSRF gate for every outgoing request in this module.
@@ -1562,7 +1588,7 @@ struct StreamResponse {
     #[serde(default)]
     id: String,
     #[serde(default)]
-    output: Vec<StreamOutputItem>,
+    output: Vec<ResponsesOutputItem>,
     /// Final response status reported by the Responses API. `response.done` is
     /// "always emitted, no matter the final state"; clients must inspect this
     /// to discriminate `completed` from `cancelled` / `failed` / `incomplete`.
@@ -1608,87 +1634,56 @@ struct StreamItem {
     name: Option<String>,
 }
 
-/// Item inside a terminal response's `output` array — `message` or `reasoning`,
-/// each holding content parts.
-#[derive(Debug, Deserialize)]
-struct StreamOutputItem {
-    #[serde(rename = "type")]
-    item_type: String,
-    #[serde(default)]
-    content: Option<Vec<StreamContentPart>>,
-}
-
-/// Leaf content part. Text lives in `text` or, for reasoning summaries, in
-/// `summary` — readers must accept either.
+/// Lifecycle diagnostics consume only the part kind; terminal text is read by
+/// `responses_output`.
 #[derive(Debug, Deserialize)]
 struct StreamContentPart {
     #[serde(rename = "type")]
     part_type: String,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    summary: Option<String>,
-}
-
-/// Split a terminal response's `output` array into
-/// `(assistant_text, reasoning_text)`.
-///
-/// Recovers the turn when deltas were missed or never sent: assistant text is
-/// taken only from `message` items, while reasoning summaries are accepted on
-/// either `message` or `reasoning` items. Blank and unrecognised parts are
-/// dropped; empty reasoning collapses to `None`.
-fn extract_output_channels(output: &[StreamOutputItem]) -> (String, Option<String>) {
-    let mut assistant_parts = Vec::new();
-    let mut reasoning_parts = Vec::new();
-
-    for item in output {
-        let Some(parts) = item.content.as_ref() else {
-            continue;
-        };
-        let is_message = item.item_type == "message";
-        let is_reasoning = item.item_type == "reasoning";
-
-        for part in parts {
-            let text = part
-                .text
-                .as_deref()
-                .or(part.summary.as_deref())
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            match part.part_type.as_str() {
-                "output_text" | "text" if is_message => {
-                    if let Some(text) = text {
-                        assistant_parts.push(text.to_string());
-                    }
-                }
-                "reasoning_summary_text" if is_message || is_reasoning => {
-                    if let Some(text) = text {
-                        reasoning_parts.push(text.to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let assistant_text = assistant_parts.join("").trim().to_string();
-    let reasoning_text = reasoning_parts.join("").trim().to_string();
-    let reasoning_text = if reasoning_text.is_empty() {
-        None
-    } else {
-        Some(reasoning_text)
-    };
-    (assistant_text, reasoning_text)
 }
 
 /// Unit and mockito SSE tests for auth, channel extraction, and agent events.
+/// The human line out of a provider's error body.
+///
+/// Vendors answer a refused request with `{"error":{"message":…,"type":…}}`;
+/// the operator reads the message and the type, never the escaped JSON with
+/// its `\n` and `null` fields (Founder 2026-09-09 16:15, a 401 rendered as
+/// a raw blob in the chat bubble). A body that is not that shape is passed
+/// through trimmed, and an empty body reads as the status alone.
+fn summarize_error_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed)
+        && let Some(message) = value
+            .pointer("/error/message")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+    {
+        let kind = value
+            .pointer("/error/type")
+            .or_else(|| value.pointer("/error/code"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|kind| !kind.is_empty());
+        return match kind {
+            Some(kind) => format!("{message} ({kind})"),
+            None => message.to_string(),
+        };
+    }
+    if trimmed.is_empty() {
+        "no response body".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::responses_output::{ResponsesOutputItem, extract_output_channels};
     use super::{
         AgentEvent, AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks, StreamChunk,
-        StreamOutputItem, ToolCallTracker, apply_auth_headers, dirty_terminal_response_id,
-        extract_output_channels, fallback_reasoning, parse_agent_event,
-        reasoning_content_available, validated_endpoint_url,
+        ToolCallTracker, apply_auth_headers, dirty_terminal_response_id, fallback_reasoning,
+        parse_agent_event, reasoning_content_available, validated_endpoint_url,
     };
     use reqwest::Client;
     use serde_json::json;
@@ -1771,6 +1766,49 @@ mod tests {
         assert_eq!(output.assistant_text, "Reasoned fallback");
         assert_eq!(output.reasoning_text.as_deref(), Some("Reasoned fallback"));
         assert_eq!(output.response_id.as_deref(), Some("resp_reasoning"));
+        mock.assert_async().await;
+    }
+
+    /// The Libraxis gateway emits extra `response.route.queued|waiting|terminal`
+    /// events and `event:` lines (live capture 2026-09-07, §B.3). The parser
+    /// must ignore them and still deliver the text, the response id, and a
+    /// clean completion — the fixture is the raw stream, byte for byte.
+    #[tokio::test]
+    async fn responses_stream_tolerates_libraxis_route_events() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(include_str!(
+                "vendors/fixtures/libraxis_responses_sse_live_2026-09-07.txt"
+            ))
+            .create_async()
+            .await;
+        let endpoint = format!("{}/v1/responses", server.url());
+        let client = Client::new();
+        let manager = ResponsesStreamingManager::new(
+            &client,
+            &endpoint,
+            "test-key",
+            StreamCallbacks {
+                assistant: None,
+                reasoning: None,
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+
+        let output = manager
+            .stream(&json!({"model": "buddy", "stream": true}))
+            .await
+            .expect("gateway route events must not break the stream");
+
+        assert_eq!(output.assistant_text, "pong");
+        assert_eq!(
+            output.response_id.as_deref(),
+            Some("resp_5e0ec282055e4cffb8c27b9c4a901550")
+        );
         mock.assert_async().await;
     }
 
@@ -1891,7 +1929,7 @@ mod tests {
     /// Message and reasoning items concatenate into assistant and summary channels.
     #[test]
     fn extract_output_channels_collects_assistant_and_reasoning() {
-        let output: Vec<StreamOutputItem> = serde_json::from_value(json!([
+        let output: Vec<ResponsesOutputItem> = serde_json::from_value(json!([
             {
                 "type": "message",
                 "content": [
@@ -1911,15 +1949,15 @@ mod tests {
         ]))
         .expect("valid stream output fixture");
 
-        let (assistant, reasoning) = extract_output_channels(&output);
-        assert_eq!(assistant, "foobar");
-        assert_eq!(reasoning.as_deref(), Some("r1r2r3"));
+        let parsed = extract_output_channels(&output);
+        assert_eq!(parsed.assistant_text, "foobar");
+        assert_eq!(parsed.reasoning_text.as_deref(), Some("r1r2r3"));
     }
 
     /// Blank or unknown content parts do not invent assistant or reasoning text.
     #[test]
     fn extract_output_channels_ignores_blank_and_unknown_parts() {
-        let output: Vec<StreamOutputItem> = serde_json::from_value(json!([
+        let output: Vec<ResponsesOutputItem> = serde_json::from_value(json!([
             {
                 "type": "message",
                 "content": [
@@ -1932,9 +1970,9 @@ mod tests {
         ]))
         .expect("valid stream output fixture");
 
-        let (assistant, reasoning) = extract_output_channels(&output);
-        assert!(assistant.is_empty());
-        assert_eq!(reasoning, None);
+        let parsed = extract_output_channels(&output);
+        assert!(parsed.assistant_text.is_empty());
+        assert_eq!(parsed.reasoning_text, None);
     }
 
     /// Function-call start → args delta → done becomes the tool-call agent events.
@@ -2387,6 +2425,37 @@ mod tests {
             private_https
                 .to_string()
                 .contains("Private/internal endpoint URLs are not allowed")
+        );
+    }
+
+    #[test]
+    fn summarize_error_body_reads_the_vendor_message_not_the_blob() {
+        let openai_401 = r#"{
+  "error": {
+    "message": "You have insufficient permissions for this operation. Missing scopes: api.responses.write.",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": null
+  }
+}"#;
+        assert_eq!(
+            super::summarize_error_body(openai_401),
+            "You have insufficient permissions for this operation. Missing scopes: api.responses.write. (invalid_request_error)"
+        );
+        assert_eq!(
+            super::summarize_error_body(
+                r#"{"error":{"message":"rate limited","code":"rate_limit"}}"#
+            ),
+            "rate limited (rate_limit)"
+        );
+        assert_eq!(
+            super::summarize_error_body("  upstream down  "),
+            "upstream down"
+        );
+        assert_eq!(super::summarize_error_body(""), "no response body");
+        assert_eq!(
+            super::summarize_error_body(r#"{"error":{"message":""}}"#),
+            r#"{"error":{"message":""}}"#
         );
     }
 }

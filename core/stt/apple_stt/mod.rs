@@ -1,4 +1,4 @@
-//! Apple on-device STT adapter (macOS 26+) via Swift bridge subprocess.
+//! Apple on-device STT (macOS 26+) via Swift bridge subprocess.
 //!
 //! Dual-backend probe/transcribe order (per locale):
 //! 1. **SpeechTranscriber** (`SpeechAnalyzer`) when the locale is supported+installed
@@ -16,8 +16,6 @@
 //! Optional `backend` field is additive.
 
 mod live_stream;
-#[cfg(test)]
-pub(crate) use live_stream::parse_stream_stdout_line;
 pub use live_stream::{LiveStreamEvent, LiveStreamSession, progressive_live_enabled};
 
 use std::fs;
@@ -32,8 +30,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::pipeline::contracts::{
-    RawTranscript, SpeechUtterance, TranscriptSegment, TranscriptionAdapter,
-    TranscriptionEngineMode, TranscriptionEngineVerdict, TranscriptionSource, TranscriptionVerdict,
+    RawTranscript, TranscriptSegment, TranscriptionEngineMode, TranscriptionEngineVerdict,
+    TranscriptionSource, TranscriptionVerdict,
 };
 
 /// Floor macOS major version for the Apple STT path (SpeechAnalyzer era).
@@ -67,35 +65,6 @@ const BRIDGE_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
 #[cfg(test)]
 const SF_SPEECH_RECOGNITION_DEADLINE_SECS: f64 = 2.5;
 
-/// Zero-sized adapter using Apple's SpeechAnalyzer via subprocess bridge.
-pub struct AppleSpeechAnalyzerAdapter;
-
-impl AppleSpeechAnalyzerAdapter {
-    /// Construct the adapter. Zero-sized: all state lives in the bridge child
-    /// process and the process-wide `OnceLock` caches below.
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for AppleSpeechAnalyzerAdapter {
-    /// Same as [`Self::new`]: zero-sized; runtime state lives in the bridge child.
-    fn default() -> Self {
-        Self
-    }
-}
-
-impl TranscriptionAdapter for AppleSpeechAnalyzerAdapter {
-    /// Transcribe one utterance via the Swift bridge (Apple on-device backends).
-    fn transcribe(
-        &self,
-        utterance: &SpeechUtterance,
-        language: Option<&str>,
-    ) -> Result<RawTranscript> {
-        transcribe_long_with_segments(&utterance.samples, utterance.sample_rate, language)
-    }
-}
-
 /// One protocol-v1 request line written to the bridge child's stdin.
 ///
 /// Borrows its strings from the caller so a request can be built without
@@ -113,6 +82,18 @@ struct BridgeRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     contextual_strings: Option<&'a [String]>,
     allow_download: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deadline_policy: Option<AppleDeadlinePolicy>,
+}
+
+/// Caller intent for URL recognition; file length only sizes the chosen budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppleDeadlinePolicy {
+    /// Interactive stop path: retain the short SFSpeech deadline and env override.
+    LiveFinal,
+    /// Offline recognition: collect every phrase until the task finishes.
+    WholeFile,
 }
 
 /// Apple bridge backend selected for a locale (matches Swift `AppleSttBackend`).
@@ -254,6 +235,11 @@ struct BridgeSegment {
     text: String,
     start_ts: f32,
     end_ts: f32,
+    /// `SFTranscriptionSegment.confidence` (0…1) when the bridge supplies it.
+    /// 0.0 is Apple's "no metric" sentinel; SpeechTranscriber results omit the
+    /// attribute entirely (A6, d4: never invented).
+    #[serde(default)]
+    confidence: Option<f32>,
 }
 
 /// Initialize Apple STT backend (platform + bridge + locale readiness).
@@ -427,15 +413,24 @@ pub(crate) fn try_transcribe_long_with_segments(
 
 /// Convenience helper for batch/offline file transcription.
 pub fn transcribe_file(path: &Path, language: Option<&str>) -> Result<RawTranscript> {
-    Ok(transcribe_file_with_backend(path, language)?.0)
+    Ok(transcribe_file_with_backend(path, language, AppleDeadlinePolicy::WholeFile)?.0)
 }
 
-/// File transcription with Apple backend provenance for final-pass adjudication.
+/// Whole-file transcription with Apple backend provenance.
 pub fn transcribe_file_verdict(
     path: &Path,
     language: Option<&str>,
 ) -> Result<TranscriptionVerdict> {
-    let (raw, backend) = transcribe_file_with_backend(path, language)?;
+    transcribe_file_verdict_with_policy(path, language, AppleDeadlinePolicy::WholeFile)
+}
+
+/// URL transcription with an explicit interactive or offline caller budget.
+pub fn transcribe_file_verdict_with_policy(
+    path: &Path,
+    language: Option<&str>,
+    policy: AppleDeadlinePolicy,
+) -> Result<TranscriptionVerdict> {
+    let (raw, backend) = transcribe_file_with_backend(path, language, policy)?;
     let mode = backend
         .map(AppleSttBackend::engine_mode)
         .unwrap_or(TranscriptionEngineMode::SfSpeechOnDevice);
@@ -450,10 +445,11 @@ pub fn transcribe_file_verdict(
     ))
 }
 
-/// Transcribe a path already on disk without re-encoding (preferred final-pass path).
+/// Transcribe a path already on disk with the caller's URL recognition policy.
 fn transcribe_file_with_backend(
     path: &Path,
     language: Option<&str>,
+    policy: AppleDeadlinePolicy,
 ) -> Result<(RawTranscript, Option<AppleSttBackend>)> {
     init()?;
     let locale = resolved_locale(language);
@@ -465,8 +461,19 @@ fn transcribe_file_with_backend(
         audio_path: Some(audio_path.as_str()),
         contextual_strings: None,
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+        deadline_policy: Some(policy),
     };
-    let response = run_bridge_with_timeout(&request, Some(BRIDGE_TRANSCRIBE_TIMEOUT))
+    let timeout = match policy {
+        AppleDeadlinePolicy::LiveFinal => BRIDGE_TRANSCRIBE_TIMEOUT,
+        AppleDeadlinePolicy::WholeFile => {
+            let (samples, rate) = crate::audio::load_audio_file(path)
+                .context("read whole-file Apple recognition duration")?;
+            let audio_seconds = samples.len() as f64 / f64::from(rate.max(1));
+            // Same recognition budget as Swift, plus process/setup margin.
+            Duration::from_secs_f64((audio_seconds + 25.0).max(20.0) + 30.0)
+        }
+    };
+    let response = run_bridge_with_timeout(&request, Some(timeout))
         .context("Apple STT bridge transcribe failed")?;
     let backend = response
         .backend
@@ -475,14 +482,14 @@ fn transcribe_file_with_backend(
     Ok((raw_transcript_from_bridge_response(response), backend))
 }
 
-/// Live-path entry point: transcribe in-memory PCM through the bridge.
+/// In-memory Apple bridge A/B entry point.
 ///
-/// Defaults to streaming v2 (one long-lived recognition request fed raw PCM,
-/// the system-dictation shape). The older per-request WAV window path measured
-/// 0.228 parity against system Apple live, which is why streaming exists; it
-/// stays reachable through `CODESCRIBE_APPLE_STT_LIVE_MODE` as an A/B escape
-/// hatch. The host timeout is sized from audio wall-clock plus the bridge's
-/// post-EOF settle grace, so a slow settle is not mistaken for a hang.
+/// `stream` feeds raw PCM to one Apple `SFSpeechAudioBufferRecognitionRequest`.
+/// `wav` writes a temporary WAV and sends one Apple `transcribe_live` bridge
+/// request. Both choices are Apple transport mechanics inside the same
+/// authority architecture; neither selects a VAD/scheduler pipeline. The host
+/// timeout is sized from audio wall-clock plus the bridge's post-EOF settle
+/// grace, so a slow settle is not mistaken for a hang.
 fn transcribe_via_bridge(
     audio: &[f32],
     sample_rate: u32,
@@ -494,11 +501,10 @@ fn transcribe_via_bridge(
 
     init()?;
 
-    // Live path = streaming v2: one long-lived SFSpeechAudioBuffer request fed
-    // raw PCM (system-dictation shape). The old `transcribe_live` WAV window
-    // path measured 0.228 parity against system Apple live — streaming exists
-    // to close that gap. Final-pass still uses `transcribe` → SFSpeechURL.
-    // Escape hatch for A/B: CODESCRIBE_APPLE_STT_LIVE_MODE=wav|stream (default stream).
+    // Apple transport A/B only: `stream` feeds raw PCM into one AudioBuffer
+    // recognition request; `wav` writes one temp WAV for an Apple
+    // `transcribe_live` bridge request. Neither branch changes occurrence or
+    // transcript authority. Final-pass still uses `transcribe` → SFSpeechURL.
     let live_mode =
         std::env::var("CODESCRIBE_APPLE_STT_LIVE_MODE").unwrap_or_else(|_| "stream".into());
     if live_mode.eq_ignore_ascii_case("wav") || live_mode.eq_ignore_ascii_case("transcribe_live") {
@@ -516,8 +522,9 @@ fn transcribe_via_bridge(
     Ok(raw_transcript_from_bridge_response(response))
 }
 
-/// Legacy live path: temp WAV + `transcribe_live` (per-request windowed engine).
-/// Kept as A/B escape hatch; product default is `stream`.
+/// Older Apple transport: one temp WAV + one `transcribe_live` bridge request.
+/// Kept only for transport A/B against the default live AudioBuffer stream; it
+/// is not a separate VAD/scheduler pipeline.
 fn transcribe_via_bridge_wav_live(
     audio: &[f32],
     sample_rate: u32,
@@ -526,7 +533,7 @@ fn transcribe_via_bridge_wav_live(
     let wav = TempWavFile::write(audio, sample_rate)?;
     let audio_path = wav.path().display().to_string();
     let locale = resolved_locale(language);
-    let contextual_strings = crate::pipeline::stream_postprocess::apple_contextual_strings();
+    let contextual_strings: Option<Vec<String>> = None;
     let request = BridgeRequest {
         protocol_version: 1,
         command: "transcribe_live",
@@ -534,6 +541,7 @@ fn transcribe_via_bridge_wav_live(
         audio_path: Some(audio_path.as_str()),
         contextual_strings: contextual_strings.as_deref(),
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+        deadline_policy: None,
     };
     let audio_secs = audio.len() as f64 / sample_rate.max(1) as f64;
     let timeout = Duration::from_secs_f64((audio_secs + 20.0).clamp(30.0, 180.0));
@@ -583,7 +591,7 @@ fn run_bridge_stream(
         // Swift host (see `util::pipes`).
         crate::util::pipes::disable_sigpipe(stdin);
 
-        let contextual_strings = crate::pipeline::stream_postprocess::apple_contextual_strings();
+        let contextual_strings: Option<Vec<String>> = None;
         let request = BridgeRequest {
             protocol_version: 1,
             command: "stream",
@@ -591,6 +599,7 @@ fn run_bridge_stream(
             audio_path: None,
             contextual_strings: contextual_strings.as_deref(),
             allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+            deadline_policy: None,
         };
         let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
         stdin
@@ -710,6 +719,16 @@ fn bridge_segment_to_transcript_segment(seg: BridgeSegment) -> Option<Transcript
         text,
         start_ts: seg.start_ts,
         end_ts: seg.end_ts,
+        confidence: seg
+            .confidence
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(|value| {
+                crate::pipeline::word_confidence::WordConfidence::new(
+                    crate::pipeline::word_confidence::WordConfidenceSource::AppleSegmentConfidence,
+                    value,
+                    1,
+                )
+            }),
     })
 }
 
@@ -901,6 +920,7 @@ fn probe_bridge(locale: &str, allow_download: bool) -> Result<ProbeResult> {
         audio_path: None,
         contextual_strings: None,
         allow_download,
+        deadline_policy: None,
     };
     let response = run_bridge_with_timeout(&request, Some(BRIDGE_PROBE_TIMEOUT))
         .context("Apple STT bridge probe failed")?;
@@ -918,6 +938,7 @@ fn request_speech_auth_bridge(locale: &str, allow_download: bool) -> Result<Brid
         audio_path: None,
         contextual_strings: None,
         allow_download,
+        deadline_policy: None,
     };
     // Dialog can wait on the user; reuse the generous probe budget.
     run_bridge_with_timeout(&request, Some(BRIDGE_PROBE_TIMEOUT))
@@ -1072,14 +1093,27 @@ fn bridge_binary() -> PathBuf {
 }
 
 /// Resolution order: explicit env override → bridge bundled beside the `.app`
-/// executable → bare command name left for `PATH` lookup at spawn time.
+/// executable → PATH → installed Codescribe.app (standalone CLI fallback).
 /// Testable seam: `current_exe` is injected rather than read from the process.
 fn bridge_binary_for_current_exe(current_exe: Option<&Path>) -> PathBuf {
+    bridge_binary_with_installed_app(
+        current_exe,
+        Path::new("/Applications/Codescribe.app/Contents/MacOS/Codescribe"),
+    )
+}
+
+fn bridge_binary_with_installed_app(current_exe: Option<&Path>, installed_exe: &Path) -> PathBuf {
     if let Some(override_bin) = bridge_override_binary() {
         return override_bin;
     }
-
-    bundled_bridge_binary_for_exe(current_exe).unwrap_or_else(|| PathBuf::from(DEFAULT_BRIDGE_BIN))
+    if let Some(bundled) = bundled_bridge_binary_for_exe(current_exe) {
+        return bundled;
+    }
+    if which_in_path(DEFAULT_BRIDGE_BIN).is_some() {
+        return PathBuf::from(DEFAULT_BRIDGE_BIN);
+    }
+    bundled_bridge_binary_for_exe(Some(installed_exe))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_BRIDGE_BIN))
 }
 
 /// The `CODESCRIBE_APPLE_STT_BRIDGE` override, if set to a non-blank value.
@@ -1116,10 +1150,8 @@ fn bundled_bridge_binary_for_exe(current_exe: Option<&Path>) -> Option<PathBuf> 
 /// Cheap, process-cached check that the Apple STT bridge binary can actually be
 /// launched: an explicit `CODESCRIBE_APPLE_STT_BRIDGE` path wins first, then a
 /// bridge bundled beside the current `.app` executable, then the default bare
-/// command name on `PATH`. AUTO engine selection gates on this so it never
-/// advertises Apple on a host where the bridge is absent (which wastes a probe
-/// and then silently falls back to Candle). Explicit `CODESCRIBE_STT_ENGINE=apple`
-/// bypasses this and still probes + fails loudly.
+/// command name on `PATH`, then the installed Codescribe.app. Automatic router
+/// selection gates on this so it never advertises Apple with no bridge.
 pub(crate) fn is_bridge_resolvable() -> bool {
     /// Cached answer to "can we launch the bridge binary" for AUTO engine selection.
     static RESOLVABLE: OnceLock<bool> = OnceLock::new();
@@ -1136,14 +1168,7 @@ fn bridge_binary_resolvable() -> bool {
 /// exist" instead of "what would we spawn". An explicit override is checked as
 /// a real file: a broken override must fail here rather than at spawn time.
 fn bridge_binary_resolvable_for_current_exe(current_exe: Option<&Path>) -> bool {
-    if let Some(override_bin) = bridge_override_binary() {
-        return bridge_candidate_resolvable(&override_bin);
-    }
-    if bundled_bridge_binary_for_exe(current_exe).is_some() {
-        return true;
-    }
-
-    which_in_path(DEFAULT_BRIDGE_BIN).is_some()
+    bridge_candidate_resolvable(&bridge_binary_for_current_exe(current_exe))
 }
 
 /// A path-like candidate must exist as a file; a bare command name is looked
@@ -1498,12 +1523,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Adapter must be Send+Sync so engine routers can share it across threads.
     #[test]
-    fn adapter_is_send_sync() {
-        /// Compile-time Send+Sync bound check (no runtime body).
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<AppleSpeechAnalyzerAdapter>();
+    #[serial]
+    fn standalone_cli_can_use_installed_bridge_without_overriding_a_broken_explicit_path() {
+        let _bridge = crate::test_isolation::EnvGuard::capture(ENV_STT_BRIDGE);
+        let _path = crate::test_isolation::EnvGuard::capture("PATH");
+        let root = tempfile::tempdir().unwrap();
+        let installed_exe = root.path().join("Codescribe.app/Contents/MacOS/Codescribe");
+        let installed_bridge = installed_exe.with_file_name(DEFAULT_BRIDGE_BIN);
+        std::fs::create_dir_all(installed_exe.parent().unwrap()).unwrap();
+        std::fs::write(&installed_bridge, b"bridge").unwrap();
+        // SAFETY: serialized; guards restore both variables.
+        unsafe {
+            std::env::remove_var(ENV_STT_BRIDGE);
+            std::env::set_var("PATH", root.path());
+        }
+        assert_eq!(
+            bridge_binary_with_installed_app(None, &installed_exe),
+            installed_bridge
+        );
+        let missing = root.path().join("explicit-missing");
+        unsafe { std::env::set_var(ENV_STT_BRIDGE, &missing) };
+        assert_eq!(
+            bridge_binary_with_installed_app(None, &installed_exe),
+            missing
+        );
+        assert!(!bridge_candidate_resolvable(&missing));
     }
 
     /// Short language codes expand to the product default region (pl→pl-PL, en→en-US).
@@ -1962,55 +2007,5 @@ mod tests {
             speech_auth_init_decision(Some(AppleSttBackend::SpeechTranscriber), Some("denied")),
             SpeechAuthInitDecision::NotRequired
         );
-    }
-
-    /// Bridge segments become RawTranscript spans and survive Silero tail-drop mapping.
-    #[test]
-    fn bridge_response_segments_flow_to_raw_transcript_and_silero_tail_drop() {
-        let response: BridgeResponse = serde_json::from_str(
-            r#"{
-                "ok": true,
-                "status": "ok",
-                "text": "To jest początek Dziękuję za uwagę",
-                "segments": [
-                    {"text": "To jest początek", "start_ts": 0.0, "end_ts": 0.4},
-                    {"text": "Dziękuję za uwagę", "start_ts": 2.0, "end_ts": 2.4}
-                ]
-            }"#,
-        )
-        .expect("fixture bridge response must parse");
-
-        let raw = raw_transcript_from_bridge_response(response);
-
-        assert_eq!(raw.segments.len(), 2);
-        assert!(
-            raw.segments
-                .windows(2)
-                .all(|pair| pair[0].end_ts <= pair[1].start_ts),
-            "Apple bridge segments must preserve a monotonic timeline"
-        );
-
-        let timeline = crate::vad::discriminator::VadTimeline {
-            classes: vec![
-                crate::pipeline::contracts::VadClass::Speech,
-                crate::pipeline::contracts::VadClass::Speech,
-                crate::pipeline::contracts::VadClass::TrailingSilence,
-                crate::pipeline::contracts::VadClass::TrailingSilence,
-                crate::pipeline::contracts::VadClass::TrailingSilence,
-            ],
-            window_sec: 0.5,
-        };
-        let vad_config = crate::vad::VadConfig {
-            tail_drop_enabled: true,
-            ..Default::default()
-        };
-        let outcome = crate::stt::whisper::map_whisper_segments_to_silero(
-            &raw.segments,
-            &timeline,
-            &vad_config,
-        );
-
-        assert_eq!(outcome.dropped_count, 1);
-        assert_eq!(outcome.text, "To jest początek");
     }
 }

@@ -6,7 +6,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -15,16 +15,14 @@ use tracing::info;
 use crate::ai_formatting;
 use crate::audio::load_audio_file;
 use crate::client;
-use crate::config::Config;
-use crate::llm::lane_truth;
-use crate::llm::provider::LlmMode;
+use crate::config::{Config, RuntimeSettingsSnapshot};
 use crate::pipeline::contracts::RawTranscript;
+use crate::pipeline::take_truth::{TakeTruth, read_truth_sidecar};
 use crate::safe_path::{
     safe_canonicalize_bounded, safe_copy_bounded, safe_prepare_path, safe_read_to_string_bounded,
     safe_symlink_or_copy_bounded, safe_write_bounded,
 };
 use crate::state::conversation::{AiMode, reset_conversation_for_mode};
-use crate::stream_postprocess::{StreamPostProcessStats, StreamPostProcessor};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
@@ -106,8 +104,8 @@ pub struct QualityReport {
 /// reports apart later. Only key *presence* is recorded, never key material.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReportEnvironment {
-    pub stt_endpoint: Option<String>,
-    pub stt_api_key_present: bool,
+    pub stt_file_endpoint: Option<String>,
+    pub stt_file_api_key_present: bool,
     pub llm_formatting_endpoint: Option<String>,
     pub llm_formatting_model: Option<String>,
     pub llm_formatting_key_present: bool,
@@ -132,12 +130,11 @@ pub struct ReportSummary {
     pub avg_ai_cer: Option<f32>,
     pub avg_cloud_cer: Option<f32>,
     pub raw_no_speech_detected: usize,
-    pub raw_quality_gate_dropped: usize,
     pub raw_text_committed: usize,
 }
 
-/// Why a raw transcript looks the way it does — the difference between "the
-/// engine heard nothing", "a gate rejected it", and "it broke".
+/// Why a raw transcript looks the way it does — the difference between measured
+/// no-speech, committed decoder text, and an unexplained empty observation.
 ///
 /// Without this distinction an empty transcript is indistinguishable from a
 /// silent failure, and the whole point of the report is attribution.
@@ -146,8 +143,6 @@ pub struct ReportSummary {
 pub enum ReportTranscriptState {
     /// Real text came out.
     TextCommitted,
-    /// Text existed but a quality gate rejected it.
-    QualityGateDropped,
     /// VAD found no speech in the audio at all.
     NoSpeechDetected,
     /// Empty with no reason on record — the state that warrants investigation.
@@ -159,7 +154,6 @@ impl std::fmt::Display for ReportTranscriptState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TextCommitted => write!(f, "text_committed"),
-            Self::QualityGateDropped => write!(f, "quality_gate_dropped"),
             Self::NoSpeechDetected => write!(f, "no_speech_detected"),
             Self::EmptyTranscript => write!(f, "empty_transcript"),
         }
@@ -188,8 +182,51 @@ pub struct ReportEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_semantics: Option<ReportTranscriptSemantics>,
     pub metrics: ReportMetrics,
-    pub postprocess_stats: Option<StreamPostProcessStats>,
     pub errors: Vec<String>,
+    /// TakeTruth v2 engine provisioning path, when a sidecar sits beside the pair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_mode: Option<String>,
+    /// TakeTruth `fallback_used` from the sidecar, when one was readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_used: Option<bool>,
+    /// Whether the sidecar carried a non-empty fine (32 ms) Silero sparkline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_fine_sparkline: Option<bool>,
+    /// Whether the sidecar carried a non-empty energy sparkline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_energy_sparkline: Option<bool>,
+}
+
+/// One paired stem's delta between a baseline archive sidecar and a fresh run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TruthDelta {
+    pub stem: String,
+    pub baseline_sidecar: String,
+    pub candidate_sidecar: String,
+    pub delta_avg_logprob: Option<f32>,
+    pub sparkline_levenshtein: Option<usize>,
+    pub fallback_used_flip: bool,
+    pub adjacent_duplicate_per_1000_baseline: Option<f32>,
+    pub adjacent_duplicate_per_1000_candidate: Option<f32>,
+    pub delta_adjacent_duplicate_per_1000: Option<f32>,
+}
+
+/// Aggregates over [`TruthComparison::rows`]: counts plus median Δ`avg_logprob`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TruthComparisonSummary {
+    pub paired: usize,
+    pub baseline_only: usize,
+    pub candidate_only: usize,
+    pub median_delta_avg_logprob: Option<f32>,
+    pub fallback_flips: usize,
+    pub median_sparkline_levenshtein: Option<f32>,
+}
+
+/// Directory-vs-directory TakeTruth comparison used by `--baseline-dir` / `--candidate-dir`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TruthComparison {
+    pub rows: Vec<TruthDelta>,
+    pub summary: TruthComparisonSummary,
 }
 
 /// The same utterance as seen by each stage. Every field is optional: a stage may
@@ -267,10 +304,8 @@ impl CloudJobSet {
 /// Explain an empty (or non-empty) raw transcript.
 ///
 /// Precedence is deliberate: non-empty text wins outright, then a VAD no-speech
-/// reason, then a quality-gate drop, and only an otherwise unexplained blank
-/// falls through to `EmptyTranscript`. Checking the gate first would mislabel
-/// genuine silence as a rejection. `None` means there was no transcript object at
-/// all — transcription itself failed, which is a different error.
+/// reason, and only an otherwise unexplained blank falls through to
+/// `EmptyTranscript`. `None` means there was no transcript object at all.
 fn classify_raw_semantics(
     transcript: Option<&RawTranscript>,
     no_speech_reason: Option<&str>,
@@ -289,13 +324,6 @@ fn classify_raw_semantics(
         return Some(ReportTranscriptSemantics {
             state: ReportTranscriptState::NoSpeechDetected,
             reason: Some(reason.to_string()),
-        });
-    }
-
-    if transcript.quality_gate_dropped {
-        return Some(ReportTranscriptSemantics {
-            state: ReportTranscriptState::QualityGateDropped,
-            reason: Some("quality_gate_dropped".to_string()),
         });
     }
 
@@ -318,7 +346,13 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     let now: DateTime<Local> = Local::now();
     let generated_at = now.to_rfc3339();
 
-    let env_snapshot = snapshot_environment(config.metrics_reference, config.local_transcription);
+    let runtime_settings = Config::load_runtime_snapshot()
+        .map_err(|error| anyhow!("runtime settings snapshot refused: {error:?}"))?;
+    let env_snapshot = snapshot_environment(
+        &runtime_settings,
+        config.metrics_reference,
+        config.local_transcription,
+    );
 
     let config_root = Config::config_dir();
     let input_root = resolve_input_root(&config.input_dir, &config_root)?;
@@ -379,18 +413,17 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     let mut entries = Vec::new();
     let mut totals = Totals::default();
     let mut cloud_jobs = prepare_cloud_jobs(&pairs, &config, &input_root);
+    let ctx = ProcessPairContext {
+        config: &config,
+        input_root: &input_root,
+        output_root: &output_root,
+        artifacts_dir: &artifacts_dir,
+        audio_dir: &audio_dir,
+        runtime_settings: &runtime_settings,
+    };
 
     for pair in &pairs {
-        let entry = process_pair(
-            pair,
-            &config,
-            &input_root,
-            &output_root,
-            &artifacts_dir,
-            &audio_dir,
-            &mut cloud_jobs,
-        )
-        .await?;
+        let entry = process_pair(pair, &ctx, &mut cloud_jobs).await?;
         totals.accumulate(&entry);
         entries.push(entry);
     }
@@ -425,7 +458,7 @@ fn prepare_cloud_jobs(
         Some(credentials) => credentials,
         _ => {
             return CloudJobSet::Skipped(
-                "Cloud transcription skipped: STT_ENDPOINT/STT_API_KEY missing".into(),
+                "Cloud transcription skipped: STT_FILE_ENDPOINT/STT_FILE_API_KEY missing".into(),
             );
         }
     };
@@ -470,18 +503,21 @@ fn prepare_cloud_jobs(
 /// absent. Loopback servers intentionally accept an empty key; remote owners
 /// still require one.
 fn cloud_reference_credentials(app_config: &Config) -> Option<(String, String)> {
-    let endpoint = app_config.stt_endpoint.as_deref()?.trim();
-    let api_key = app_config.stt_api_key.as_deref().unwrap_or_default().trim();
-
-    if endpoint.is_empty()
-        || (crate::stt::tail_provider::stt_auth_mode(endpoint)
-            != crate::stt::tail_provider::SttAuthMode::Unauthenticated
-            && api_key.is_empty())
-    {
+    let row = app_config.stt_lane(crate::stt::SttLane::File)?;
+    if row.key_missing() {
         return None;
     }
+    Some((row.endpoint, row.api_key.unwrap_or_default()))
+}
 
-    Some((endpoint.to_string(), api_key.to_string()))
+/// Typed context for pair processing to keep function argument counts bounded.
+struct ProcessPairContext<'a> {
+    config: &'a QualityReportConfig,
+    input_root: &'a Path,
+    output_root: &'a Path,
+    artifacts_dir: &'a Path,
+    audio_dir: &'a Path,
+    runtime_settings: &'a RuntimeSettingsSnapshot,
 }
 
 /// Carry one corpus pair through every stage and build its report entry.
@@ -497,22 +533,18 @@ fn cloud_reference_credentials(app_config: &Config) -> Option<(String, String)> 
 /// abort a long run.
 async fn process_pair(
     pair: &CorpusPair,
-    config: &QualityReportConfig,
-    input_root: &Path,
-    output_root: &Path,
-    artifacts_dir: &Path,
-    audio_dir: &Path,
+    ctx: &ProcessPairContext<'_>,
     cloud_jobs: &mut CloudJobSet,
 ) -> Result<ReportEntry> {
     let audio_path = pair.audio_path.clone();
     let reference_path = pair.reference_path.clone();
     let id = pair.id.clone();
 
-    let audio_canon = safe_canonicalize_bounded(&audio_path, input_root)
+    let audio_canon = safe_canonicalize_bounded(&audio_path, ctx.input_root)
         .with_context(|| format!("Audio path escapes input root: {}", audio_path.display()))?;
     let reference_canon = if reference_path.exists() {
         Some(
-            safe_canonicalize_bounded(&reference_path, input_root).with_context(|| {
+            safe_canonicalize_bounded(&reference_path, ctx.input_root).with_context(|| {
                 format!(
                     "Reference path escapes input root: {}",
                     reference_path.display()
@@ -525,16 +557,16 @@ async fn process_pair(
 
     let audio_rel_path = ensure_audio_asset(
         &audio_canon,
-        audio_dir,
+        ctx.audio_dir,
         &id,
-        input_root,
-        output_root,
-        config.copy_audio,
+        ctx.input_root,
+        ctx.output_root,
+        ctx.config.copy_audio,
     )?;
 
     let mut errors = Vec::new();
     let reference = if let Some(reference_canon) = reference_canon.as_ref() {
-        match safe_read_to_string_bounded(reference_canon, input_root) {
+        match safe_read_to_string_bounded(reference_canon, ctx.input_root) {
             Ok(content) => {
                 let trimmed = content.trim().to_string();
                 if trimmed.is_empty() {
@@ -560,7 +592,7 @@ async fn process_pair(
     let (_speech_only, vad_stats) = crate::vad::extract_speech(&samples, sample_rate);
 
     let raw_transcript =
-        transcribe_raw_for_report(&samples, sample_rate, config, &mut errors).await;
+        transcribe_raw_for_report(&samples, sample_rate, ctx.config, &mut errors).await;
     let raw_semantics = classify_raw_semantics(
         raw_transcript.as_ref(),
         vad_stats.no_speech_reason.as_deref(),
@@ -576,29 +608,25 @@ async fn process_pair(
         errors.push("Raw transcript is empty".into());
     }
 
-    // Post = raw + lexicon/cleanup (single pass through postprocessor)
-    let mut postprocessor = StreamPostProcessor::new();
-    let post = raw
-        .as_deref()
-        .and_then(|raw_text| postprocessor.process(raw_text));
-    if post
-        .as_ref()
-        .map(|text| text.trim().is_empty())
-        .unwrap_or(raw.is_some() && post.is_none())
-    {
-        errors.push("Postprocess transcript is empty".into());
-    }
+    // The retired transcript postprocessor no longer authors a second text.
+    let post = raw.clone();
 
-    let ai_formatted = if config.skip_formatting {
+    let ai_formatted = if ctx.config.skip_formatting {
         None
-    } else if !ai_formatting::is_formatting_available() {
+    } else if !ai_formatting::is_formatting_available(ctx.runtime_settings.llm_lanes().formatting())
+    {
         errors.push("AI formatting skipped: missing endpoint/model/key".into());
         None
     } else if let Some(post_text) = post.as_deref() {
         // Reset conversation chain — batch mode must NOT chain between files
         reset_conversation_for_mode(AiMode::Formatting);
-        let ai_result =
-            ai_formatting::format_text(post_text, config.language.as_deref(), false).await;
+        let ai_result = ai_formatting::format_text(
+            post_text,
+            ctx.config.language.as_deref(),
+            false,
+            ctx.runtime_settings,
+        )
+        .await;
         info!(
             "[AI_LOG] id={} input_len={} output_len={} input_preview={:?} output_preview={:?}",
             id,
@@ -612,31 +640,19 @@ async fn process_pair(
         None
     };
 
-    // Protected-vocabulary audit: flag operator/tool/agent names that survived
-    // the post-lexicon transcript but were dropped or mutated by the AI pass.
-    // This makes technical-name corruption visible to the operator instead of
-    // silently shipping "plausible prose" that lost the intended terms.
-    if let (Some(post_text), Some(ai_text)) = (post.as_deref(), ai_formatted.as_deref()) {
-        let lost = crate::stream_postprocess::protected_terms_lost(post_text, ai_text);
-        if !lost.is_empty() {
-            errors.push(format!(
-                "Protected terms lost in AI formatting: {}",
-                lost.join(", ")
-            ));
-        }
-    }
-
     let cloud = cloud_jobs.take_for(&id, &mut errors).await;
 
-    let metrics_reference = match config.metrics_reference {
+    let metrics_reference = match ctx.config.metrics_reference {
         MetricsReference::Corpus => reference.as_deref(),
         MetricsReference::Cloud => cloud.as_deref(),
         MetricsReference::AiFormatted => ai_formatted.as_deref(),
     };
-    if matches!(config.metrics_reference, MetricsReference::Cloud) && cloud.is_none() {
+    if matches!(ctx.config.metrics_reference, MetricsReference::Cloud) && cloud.is_none() {
         errors.push("Metrics reference missing: cloud transcript unavailable".into());
     }
-    if matches!(config.metrics_reference, MetricsReference::AiFormatted) && ai_formatted.is_none() {
+    if matches!(ctx.config.metrics_reference, MetricsReference::AiFormatted)
+        && ai_formatted.is_none()
+    {
         errors.push("Metrics reference missing: AI formatted transcript unavailable".into());
     }
     let metrics = compute_metrics(
@@ -655,7 +671,28 @@ async fn process_pair(
         reference: reference.clone(),
     };
 
-    write_artifacts(&id, artifacts_dir, output_root, &transcripts)?;
+    write_artifacts(&id, ctx.artifacts_dir, ctx.output_root, &transcripts)?;
+
+    let truth = reference_canon
+        .as_ref()
+        .and_then(|path| read_truth_sidecar(path).ok())
+        .or_else(|| read_truth_sidecar(&audio_canon).ok());
+    let engine_mode = truth
+        .as_ref()
+        .and_then(|sidecar| sidecar.engine_mode.clone());
+    let fallback_used = truth.as_ref().map(|sidecar| sidecar.fallback_used);
+    let has_fine_sparkline = truth.as_ref().map(|sidecar| {
+        sidecar
+            .fine_sparkline
+            .as_ref()
+            .is_some_and(|spark| !spark.is_empty())
+    });
+    let has_energy_sparkline = truth.as_ref().map(|sidecar| {
+        sidecar
+            .energy_sparkline
+            .as_ref()
+            .is_some_and(|spark| !spark.is_empty())
+    });
 
     Ok(ReportEntry {
         id,
@@ -668,8 +705,11 @@ async fn process_pair(
         transcripts,
         raw_semantics,
         metrics,
-        postprocess_stats: Some(postprocessor.stats()),
         errors,
+        engine_mode,
+        fallback_used,
+        has_fine_sparkline,
+        has_energy_sparkline,
     })
 }
 
@@ -837,13 +877,15 @@ fn render_markdown(report: &QualityReport) -> String {
         "Metrics reference: {}\n\n",
         report.environment.metrics_reference
     ));
-    out.push_str("| File | WER raw | WER post | WER ai | WER cloud | CER raw | CER post | CER ai | CER cloud |\n");
-    out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    out.push_str("| File | WER raw | WER post | WER ai | WER cloud | CER raw | CER post | CER ai | CER cloud | engine_mode | fallback | fine | energy |\n");
+    out.push_str(
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+    );
 
     for entry in &report.entries {
         let m = &entry.metrics;
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             entry.id,
             fmt_opt(m.raw_wer),
             fmt_opt(m.post_wer),
@@ -853,6 +895,19 @@ fn render_markdown(report: &QualityReport) -> String {
             fmt_opt(m.post_cer),
             fmt_opt(m.ai_cer),
             fmt_opt(m.cloud_cer),
+            entry.engine_mode.as_deref().unwrap_or("-"),
+            entry
+                .fallback_used
+                .map(|used| if used { "yes" } else { "no" })
+                .unwrap_or("-"),
+            entry
+                .has_fine_sparkline
+                .map(|present| if present { "yes" } else { "no" })
+                .unwrap_or("-"),
+            entry
+                .has_energy_sparkline
+                .map(|present| if present { "yes" } else { "no" })
+                .unwrap_or("-"),
         ));
     }
 
@@ -876,10 +931,8 @@ fn render_markdown(report: &QualityReport) -> String {
         fmt_opt(report.summary.avg_cloud_cer),
     ));
     out.push_str(&format!(
-        "- Raw transcript semantics: text_committed={}, quality_gate_dropped={}, no_speech_detected={}\n",
-        report.summary.raw_text_committed,
-        report.summary.raw_quality_gate_dropped,
-        report.summary.raw_no_speech_detected,
+        "- Raw transcript semantics: text_committed={}, no_speech_detected={}\n",
+        report.summary.raw_text_committed, report.summary.raw_no_speech_detected,
     ));
 
     out
@@ -903,12 +956,11 @@ pub fn render_html(report: &QualityReport, config: &QualityReportConfig) -> Stri
     let mut body = String::new();
 
     body.push_str(&format!(
-        "<h1>Codescribe Quality Report</h1>{}<p>Generated: {}</p><p>Metrics reference: {}</p><p>Raw semantics: text_committed={} • quality_gate_dropped={} • no_speech_detected={}</p>",
+        "<h1>Codescribe Quality Report</h1>{}<p>Generated: {}</p><p>Metrics reference: {}</p><p>Raw semantics: text_committed={} • no_speech_detected={}</p>",
         crate::quality::engine_contract::render_engine_contract_html(),
         html_escape(&report.generated_at),
         html_escape(&report.environment.metrics_reference),
         report.summary.raw_text_committed,
-        report.summary.raw_quality_gate_dropped,
         report.summary.raw_no_speech_detected
     ));
 
@@ -948,12 +1000,6 @@ pub fn render_html(report: &QualityReport, config: &QualityReportConfig) -> Stri
 
     for entry in &report.entries {
         let t = &entry.transcripts;
-        let stats_json = entry
-            .postprocess_stats
-            .as_ref()
-            .and_then(|s| serde_json::to_string(s).ok())
-            .unwrap_or_else(|| "{}".to_string());
-
         body.push_str(&format!(
             "<div class=\"entry\" data-entry=\"{}\" id=\"entry-{}\">",
             html_escape(&entry.id),
@@ -971,6 +1017,34 @@ pub fn render_html(report: &QualityReport, config: &QualityReportConfig) -> Stri
                 "<p class=\"meta\">Raw semantics: {} ({})</p>",
                 html_escape(&semantics.state.to_string()),
                 html_escape(reason)
+            ));
+        }
+        if entry.engine_mode.is_some()
+            || entry.fallback_used.is_some()
+            || entry.has_fine_sparkline.is_some()
+            || entry.has_energy_sparkline.is_some()
+        {
+            body.push_str(&format!(
+                "<p class=\"meta\">TakeTruth: engine_mode={} • fallback_used={} • fine={} • energy={}</p>",
+                html_escape(entry.engine_mode.as_deref().unwrap_or("-")),
+                html_escape(
+                    entry
+                        .fallback_used
+                        .map(|used| if used { "true" } else { "false" })
+                        .unwrap_or("-"),
+                ),
+                html_escape(
+                    entry
+                        .has_fine_sparkline
+                        .map(|present| if present { "yes" } else { "no" })
+                        .unwrap_or("-"),
+                ),
+                html_escape(
+                    entry
+                        .has_energy_sparkline
+                        .map(|present| if present { "yes" } else { "no" })
+                        .unwrap_or("-"),
+                ),
             ));
         }
         body.push_str(&format!(
@@ -1014,13 +1088,6 @@ pub fn render_html(report: &QualityReport, config: &QualityReportConfig) -> Stri
             "<button class=\"reveal\" type=\"button\" data-entry=\"{}\" {}>Reveal references</button>",
             html_escape(&entry.id),
             if debug { "" } else { "disabled" }
-        ));
-
-        body.push_str(&format!(
-            "<div class=\"stats\" data-entry=\"{}\" data-stats='{}'><strong>Postprocess stats</strong>: {}</div>",
-            html_escape(&entry.id),
-            html_escape(&stats_json),
-            html_escape(&stats_summary(entry.postprocess_stats.as_ref()))
         ));
 
         body.push_str("<div class=\"refs\">");
@@ -1471,25 +1538,6 @@ fn render_ref_section(body: &mut String, label: &str, text: Option<&str>, debug:
     }
 }
 
-/// One-line post-processing counter digest for the HTML entry, or `"n/a"` when
-/// the stage never ran.
-fn stats_summary(stats: Option<&StreamPostProcessStats>) -> String {
-    let Some(stats) = stats else {
-        return "n/a".to_string();
-    };
-
-    format!(
-        "in={}, out={}, drop={}, gate={}, lexicon={}, repeat={}, suspicious={}",
-        stats.input_chunks,
-        stats.output_chunks,
-        stats.dropped_chunks,
-        stats.gate_drops,
-        stats.lexicon_rewrites,
-        stats.repetition_cleanups,
-        stats.suspicious_chunks
-    )
-}
-
 /// Flatten the report into one JSONL row per (entry, stage) transcript, each
 /// tagged with its `source` and artifact path. Absent stages are skipped, so the
 /// stream carries only transcripts that actually exist.
@@ -1563,27 +1611,20 @@ async fn transcribe_raw_for_report(
 /// carrying an Anthropic path whenever formatting was not OpenAI. Keys are
 /// recorded as presence booleans only.
 fn snapshot_environment(
+    runtime_settings: &RuntimeSettingsSnapshot,
     metrics_reference: MetricsReference,
     local_transcription: LocalTranscriptionMode,
 ) -> ReportEnvironment {
-    let config = Config::load();
-    let (formatting_provider, formatting_model) = lane_truth::formatting_identity(&config);
-    // Ask the registry for the provider's own endpoint. The previous shape took
-    // the OpenAI lane endpoint and re-pathed it, which reported an OpenAI host
-    // carrying an Anthropic path whenever the formatting lane was not OpenAI.
-    let formatting_endpoint =
-        lane_truth::provider_endpoint(LlmMode::Formatting, formatting_provider, &config);
+    let config = runtime_settings.values();
+    let formatting = runtime_settings.llm_lanes().formatting();
+    let file = config.stt_lane(crate::stt::SttLane::File);
     ReportEnvironment {
-        stt_endpoint: config.stt_endpoint.clone(),
-        stt_api_key_present: config
-            .stt_api_key
-            .as_ref()
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false),
-        llm_formatting_endpoint: Some(formatting_endpoint),
-        llm_formatting_model: Some(formatting_model),
-        llm_formatting_key_present: lane_truth::secret("LLM_FORMATTING_API_KEY").is_some(),
-        local_model: Some(config.local_model),
+        stt_file_endpoint: file.as_ref().map(|row| row.endpoint.clone()),
+        stt_file_api_key_present: file.as_ref().is_some_and(|row| row.api_key.is_some()),
+        llm_formatting_endpoint: Some(formatting.endpoint().to_string()),
+        llm_formatting_model: Some(formatting.model().to_string()),
+        llm_formatting_key_present: formatting.credential().api_key().is_some(),
+        local_model: Some(config.local_model.clone()),
         whisper_language: Some(config.whisper_language.as_str().to_string()),
         metrics_reference: metrics_reference.as_str().to_string(),
         local_transcription: local_transcription.as_str().to_string(),
@@ -1817,6 +1858,256 @@ fn levenshtein<T: Eq>(a: &[T], b: &[T]) -> usize {
     prev[b.len()]
 }
 
+/// Pair every `<stem>.truth.json` present in both directories.
+///
+/// Historical archive files are `<stem>_raw.txt.truth.json`; a fresh CLI run
+/// writes `<stem>_raw.m4a.truth.json` (or `.wav`). The pairing key strips
+/// `.truth.json` and then the media/text suffix so those two names meet.
+pub fn compare_truth_dirs(baseline: &Path, candidate: &Path) -> Result<TruthComparison> {
+    let baseline_map = collect_truth_sidecars(baseline)?;
+    let candidate_map = collect_truth_sidecars(candidate)?;
+
+    let mut rows = Vec::new();
+    for (stem, baseline_sidecar) in &baseline_map {
+        let Some(candidate_sidecar) = candidate_map.get(stem) else {
+            continue;
+        };
+        let baseline_truth = load_take_truth(baseline_sidecar).with_context(|| {
+            format!(
+                "Failed to read baseline sidecar {}",
+                baseline_sidecar.display()
+            )
+        })?;
+        let candidate_truth = load_take_truth(candidate_sidecar).with_context(|| {
+            format!(
+                "Failed to read candidate sidecar {}",
+                candidate_sidecar.display()
+            )
+        })?;
+        let delta_avg_logprob =
+            delta_opt_f32(baseline_truth.avg_logprob, candidate_truth.avg_logprob);
+        let sparkline_levenshtein = Some(sparkline_distance(
+            &baseline_truth.sparkline,
+            &candidate_truth.sparkline,
+        ));
+        let fallback_used_flip = baseline_truth.fallback_used != candidate_truth.fallback_used;
+        let adjacent_duplicate_per_1000_baseline =
+            paired_txt_adjacent_duplicate(baseline_sidecar, stem);
+        let adjacent_duplicate_per_1000_candidate =
+            paired_txt_adjacent_duplicate(candidate_sidecar, stem);
+        let delta_adjacent_duplicate_per_1000 = delta_opt_f32(
+            adjacent_duplicate_per_1000_baseline,
+            adjacent_duplicate_per_1000_candidate,
+        );
+        rows.push(TruthDelta {
+            stem: stem.clone(),
+            baseline_sidecar: baseline_sidecar.to_string_lossy().into_owned(),
+            candidate_sidecar: candidate_sidecar.to_string_lossy().into_owned(),
+            delta_avg_logprob,
+            sparkline_levenshtein,
+            fallback_used_flip,
+            adjacent_duplicate_per_1000_baseline,
+            adjacent_duplicate_per_1000_candidate,
+            delta_adjacent_duplicate_per_1000,
+        });
+    }
+
+    let fallback_flips = rows.iter().filter(|row| row.fallback_used_flip).count();
+    let median_delta_avg_logprob = median_f32(
+        rows.iter()
+            .filter_map(|row| row.delta_avg_logprob)
+            .collect(),
+    );
+    let median_sparkline_levenshtein = median_f32(
+        rows.iter()
+            .filter_map(|row| row.sparkline_levenshtein)
+            .map(|distance| distance as f32)
+            .collect(),
+    );
+    let baseline_only = baseline_map
+        .keys()
+        .filter(|stem| !candidate_map.contains_key(*stem))
+        .count();
+    let candidate_only = candidate_map
+        .keys()
+        .filter(|stem| !baseline_map.contains_key(*stem))
+        .count();
+
+    Ok(TruthComparison {
+        summary: TruthComparisonSummary {
+            paired: rows.len(),
+            baseline_only,
+            candidate_only,
+            median_delta_avg_logprob,
+            fallback_flips,
+            median_sparkline_levenshtein,
+        },
+        rows,
+    })
+}
+
+/// Markdown table plus a median-Δ summary for a [`TruthComparison`].
+pub fn render_truth_comparison(comparison: &TruthComparison) -> String {
+    let mut out = String::new();
+    out.push_str("# TakeTruth comparison\n\n");
+    out.push_str("| stem | Δ avg_logprob | sparkline Lev | fallback flip | adj-dup/1000 base | adj-dup/1000 cand |\n");
+    out.push_str("| --- | --- | --- | --- | --- | --- |\n");
+    for row in &comparison.rows {
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} |\n",
+            row.stem,
+            fmt_opt(row.delta_avg_logprob),
+            row.sparkline_levenshtein
+                .map(|distance| distance.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            if row.fallback_used_flip { "yes" } else { "no" },
+            fmt_opt(row.adjacent_duplicate_per_1000_baseline),
+            fmt_opt(row.adjacent_duplicate_per_1000_candidate),
+        ));
+    }
+    out.push_str("\n## Summary\n\n");
+    out.push_str(&format!("- paired: {}\n", comparison.summary.paired));
+    out.push_str(&format!(
+        "- baseline only: {}\n",
+        comparison.summary.baseline_only
+    ));
+    out.push_str(&format!(
+        "- candidate only: {}\n",
+        comparison.summary.candidate_only
+    ));
+    out.push_str(&format!(
+        "- median Δ avg_logprob: {}\n",
+        fmt_opt(comparison.summary.median_delta_avg_logprob)
+    ));
+    out.push_str(&format!(
+        "- fallback flips: {}\n",
+        comparison.summary.fallback_flips
+    ));
+    out.push_str(&format!(
+        "- median sparkline Levenshtein: {}\n",
+        fmt_opt(comparison.summary.median_sparkline_levenshtein)
+    ));
+    out
+}
+
+/// Collect `*.truth.json` files under `root`, keyed by the pairing stem.
+fn collect_truth_sidecars(root: &Path) -> Result<BTreeMap<String, PathBuf>> {
+    let mut out = BTreeMap::new();
+    visit_truth_sidecars(root, &mut out)?;
+    Ok(out)
+}
+
+fn visit_truth_sidecars(dir: &Path, out: &mut BTreeMap<String, PathBuf>) -> Result<()> {
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- local regression CLI; dir is the operator's explicit --baseline-dir/--candidate-dir argument and the walk only reads *.truth.json sidecars.
+    let entries = fs::read_dir(dir)
+        .with_context(|| format!("Failed to read truth directory {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            visit_truth_sidecars(&path, out)?;
+            continue;
+        }
+        if let Some(stem) = truth_pair_stem(&name) {
+            out.entry(stem).or_insert(path);
+        }
+    }
+    Ok(())
+}
+
+/// `<stem>_raw.txt.truth.json` and `<stem>_raw.m4a.truth.json` share `<stem>_raw`.
+fn truth_pair_stem(file_name: &str) -> Option<String> {
+    let rest = file_name.strip_suffix(".truth.json")?;
+    let stem = rest
+        .strip_suffix(".txt")
+        .or_else(|| rest.strip_suffix(".m4a"))
+        .or_else(|| rest.strip_suffix(".wav"))
+        .or_else(|| rest.strip_suffix(".aac"))
+        .or_else(|| rest.strip_suffix(".mp3"))
+        .or_else(|| rest.strip_suffix(".flac"))
+        .unwrap_or(rest);
+    Some(stem.to_string())
+}
+
+fn artifact_path_for_sidecar(sidecar: &Path) -> Result<PathBuf> {
+    let name = sidecar
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("sidecar path has no file name: {}", sidecar.display()))?;
+    let artifact = name
+        .strip_suffix(".truth.json")
+        .ok_or_else(|| anyhow!("not a .truth.json sidecar: {}", sidecar.display()))?;
+    Ok(sidecar.with_file_name(artifact))
+}
+
+fn load_take_truth(sidecar: &Path) -> Result<TakeTruth> {
+    let artifact = artifact_path_for_sidecar(sidecar)?;
+    read_truth_sidecar(&artifact)
+}
+
+fn paired_txt_adjacent_duplicate(sidecar: &Path, stem: &str) -> Option<f32> {
+    let parent = sidecar.parent()?;
+    let txt = parent.join(format!("{stem}.txt"));
+    if !txt.is_file() {
+        return None;
+    }
+    let text = fs::read_to_string(&txt).ok()?;
+    Some(adjacent_duplicate_per_1000(&text))
+}
+
+/// Lowercase, strip `.,!?;:"'`, count `w[i]==w[i+1]` with `len>1`, per 1 000 words.
+fn adjacent_duplicate_per_1000(text: &str) -> f32 {
+    let mut cleaned = String::with_capacity(text.len());
+    for ch in text.to_lowercase().chars() {
+        if matches!(ch, '.' | ',' | '!' | '?' | ';' | ':' | '"' | '\'') {
+            continue;
+        }
+        cleaned.push(ch);
+    }
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
+    if words.is_empty() {
+        return 0.0;
+    }
+    let mut dups = 0usize;
+    for window in words.windows(2) {
+        if window[0] == window[1] && window[0].len() > 1 {
+            dups += 1;
+        }
+    }
+    (dups as f32) * 1000.0 / (words.len() as f32)
+}
+
+fn sparkline_distance(left: &str, right: &str) -> usize {
+    let left: Vec<char> = left.chars().collect();
+    let right: Vec<char> = right.chars().collect();
+    levenshtein(&left, &right)
+}
+
+fn delta_opt_f32(baseline: Option<f32>, candidate: Option<f32>) -> Option<f32> {
+    match (baseline, candidate) {
+        (Some(base), Some(cand)) => Some(cand - base),
+        _ => None,
+    }
+}
+
+fn median_f32(mut values: Vec<f32>) -> Option<f32> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = values.len() / 2;
+    if values.len() % 2 == 1 {
+        Some(values[mid])
+    } else {
+        Some((values[mid - 1] + values[mid]) / 2.0)
+    }
+}
+
 /// Escape the five HTML-significant characters. Every transcript, label, and path
 /// interpolated into the report page passes through here — the corpus is
 /// untrusted text and the report is a file the operator opens in a browser.
@@ -1856,7 +2147,6 @@ struct Totals {
     ai_cer: Vec<f32>,
     cloud_cer: Vec<f32>,
     raw_no_speech_detected: usize,
-    raw_quality_gate_dropped: usize,
     raw_text_committed: usize,
     processed: usize,
 }
@@ -1896,7 +2186,6 @@ impl Totals {
         if let Some(semantics) = entry.raw_semantics.as_ref() {
             match semantics.state {
                 ReportTranscriptState::NoSpeechDetected => self.raw_no_speech_detected += 1,
-                ReportTranscriptState::QualityGateDropped => self.raw_quality_gate_dropped += 1,
                 ReportTranscriptState::TextCommitted => self.raw_text_committed += 1,
                 ReportTranscriptState::EmptyTranscript => {}
             }
@@ -1919,7 +2208,6 @@ impl Totals {
             avg_ai_cer: avg(&self.ai_cer),
             avg_cloud_cer: avg(&self.cloud_cer),
             raw_no_speech_detected: self.raw_no_speech_detected,
-            raw_quality_gate_dropped: self.raw_quality_gate_dropped,
             raw_text_committed: self.raw_text_committed,
         }
     }
@@ -1940,9 +2228,9 @@ fn avg(values: &[f32]) -> Option<f32> {
 mod tests {
     use super::*;
 
-    /// Pins VAD-empty vs quality-gate-drop vs committed-text as distinct states.
+    /// Pins VAD-empty, unexplained empty, and committed text as distinct states.
     #[test]
-    fn classify_raw_semantics_distinguishes_no_speech_and_gate_drop() {
+    fn classify_raw_semantics_distinguishes_no_speech_empty_and_committed() {
         let no_speech = classify_raw_semantics(
             Some(&RawTranscript::default()),
             Some("vad_no_speech_detected"),
@@ -1951,19 +2239,9 @@ mod tests {
         assert_eq!(no_speech.state, ReportTranscriptState::NoSpeechDetected);
         assert_eq!(no_speech.reason.as_deref(), Some("vad_no_speech_detected"));
 
-        let quality_gate = classify_raw_semantics(
-            Some(&RawTranscript {
-                quality_gate_dropped: true,
-                ..Default::default()
-            }),
-            None,
-        )
-        .expect("semantics");
-        assert_eq!(
-            quality_gate.state,
-            ReportTranscriptState::QualityGateDropped
-        );
-        assert_eq!(quality_gate.reason.as_deref(), Some("quality_gate_dropped"));
+        let empty =
+            classify_raw_semantics(Some(&RawTranscript::default()), None).expect("semantics");
+        assert_eq!(empty.state, ReportTranscriptState::EmptyTranscript);
 
         let committed = classify_raw_semantics(
             Some(&RawTranscript {
@@ -1992,20 +2270,21 @@ mod tests {
                 reason: reason.map(str::to_string),
             }),
             metrics: ReportMetrics::default(),
-            postprocess_stats: None,
             errors: Vec::new(),
+            engine_mode: None,
+            fallback_used: None,
+            has_fine_sparkline: None,
+            has_energy_sparkline: None,
         };
 
         totals.accumulate(&mk_entry(ReportTranscriptState::TextCommitted, None));
-        totals.accumulate(&mk_entry(ReportTranscriptState::QualityGateDropped, None));
         totals.accumulate(&mk_entry(
             ReportTranscriptState::NoSpeechDetected,
             Some("vad_no_speech_detected"),
         ));
 
-        let summary = totals.finish(3);
+        let summary = totals.finish(2);
         assert_eq!(summary.raw_text_committed, 1);
-        assert_eq!(summary.raw_quality_gate_dropped, 1);
         assert_eq!(summary.raw_no_speech_detected, 1);
     }
 
@@ -2014,8 +2293,8 @@ mod tests {
     fn cloud_reference_credentials_ignore_local_committed_transcript_mode() {
         let mut config = Config {
             use_local_stt: true,
-            stt_endpoint: Some(" https://api.example.test/v1/audio/transcriptions ".into()),
-            stt_api_key: Some(" test-token ".into()),
+            stt_file_endpoint: Some(" https://api.example.test/v1/audio/transcriptions ".into()),
+            stt_file_api_key: Some(" test-token ".into()),
             ..Default::default()
         };
 
@@ -2027,10 +2306,10 @@ mod tests {
             ))
         );
 
-        config.stt_api_key = Some("   ".into());
+        config.stt_file_api_key = Some("   ".into());
         assert_eq!(cloud_reference_credentials(&config), None);
 
-        config.stt_endpoint = Some("http://127.0.0.1:8000/v1/audio/transcriptions".into());
+        config.stt_file_endpoint = Some("http://127.0.0.1:8000/v1/audio/transcriptions".into());
         assert_eq!(
             cloud_reference_credentials(&config),
             Some((
@@ -2055,5 +2334,150 @@ mod tests {
         let input = "<tag>&\"'";
         let escaped = html_escape(input);
         assert_eq!(escaped, "&lt;tag&gt;&amp;&quot;&#39;");
+    }
+
+    /// Adjacent-duplicate rate: one repeated word of length > 1 in three tokens.
+    #[test]
+    fn adjacent_duplicate_per_1000_counts_repeated_words() {
+        let rate = adjacent_duplicate_per_1000("Hello, hello world!");
+        assert!((rate - (1000.0 / 3.0)).abs() < 1e-4);
+        assert_eq!(adjacent_duplicate_per_1000("a a bb"), 0.0);
+    }
+
+    /// Historical `.txt.truth.json` and CLI `.m4a.truth.json` share one stem.
+    #[test]
+    fn truth_pair_stem_normalizes_archive_and_cli_names() {
+        assert_eq!(
+            truth_pair_stem("211316_plan_raw.txt.truth.json").as_deref(),
+            Some("211316_plan_raw")
+        );
+        assert_eq!(
+            truth_pair_stem("211316_plan_raw.m4a.truth.json").as_deref(),
+            Some("211316_plan_raw")
+        );
+        assert_eq!(truth_pair_stem("notes.txt"), None);
+    }
+
+    /// Three paired sidecars (v1 + v2, no audio) yield three rows and a median Δ.
+    #[test]
+    fn compare_truth_dirs_three_pairs_reports_median_delta() {
+        let baseline = tempfile::TempDir::new().expect("baseline tempdir");
+        let candidate = tempfile::TempDir::new().expect("candidate tempdir");
+
+        write_truth_sidecar(
+            &baseline.path().join("alpha_raw.txt.truth.json"),
+            v1_sidecar(-0.40, "░██", false),
+        );
+        write_truth_sidecar(
+            &candidate.path().join("alpha_raw.m4a.truth.json"),
+            v2_sidecar(-0.20, "░███", false, "embedded_default"),
+        );
+        fs::write(baseline.path().join("alpha_raw.txt"), "hello, hello world!").unwrap();
+
+        write_truth_sidecar(
+            &baseline.path().join("bravo_raw.txt.truth.json"),
+            v1_sidecar(-0.30, "░███", false),
+        );
+        write_truth_sidecar(
+            &candidate.path().join("bravo_raw.wav.truth.json"),
+            v2_sidecar(-0.30, "░███", true, "runtime_fallback"),
+        );
+
+        write_truth_sidecar(
+            &baseline.path().join("charlie_raw.txt.truth.json"),
+            v1_sidecar(-0.10, "░█", false),
+        );
+        write_truth_sidecar(
+            &candidate.path().join("charlie_raw.m4a.truth.json"),
+            v2_sidecar(-0.50, "░██", false, "embedded_default"),
+        );
+
+        let comparison =
+            compare_truth_dirs(baseline.path(), candidate.path()).expect("compare dirs");
+        assert_eq!(comparison.rows.len(), 3);
+        assert_eq!(comparison.summary.paired, 3);
+        assert_eq!(comparison.summary.baseline_only, 0);
+        assert_eq!(comparison.summary.candidate_only, 0);
+        assert_eq!(comparison.summary.fallback_flips, 1);
+        let median = comparison
+            .summary
+            .median_delta_avg_logprob
+            .expect("median Δ");
+        assert!((median - 0.0).abs() < 1e-5, "median Δ was {median}");
+
+        let alpha = comparison
+            .rows
+            .iter()
+            .find(|row| row.stem == "alpha_raw")
+            .expect("alpha row");
+        assert!((alpha.delta_avg_logprob.expect("alpha Δ") - 0.20).abs() < 1e-5);
+        assert_eq!(alpha.sparkline_levenshtein, Some(1));
+        assert!(!alpha.fallback_used_flip);
+        assert!(
+            (alpha
+                .adjacent_duplicate_per_1000_baseline
+                .expect("alpha adj")
+                - (1000.0 / 3.0))
+                .abs()
+                < 1e-4
+        );
+
+        let rendered = render_truth_comparison(&comparison);
+        assert!(rendered.contains("| alpha_raw |"));
+        assert!(rendered.contains("median Δ avg_logprob"));
+        assert!(rendered.contains("| stem |"));
+    }
+
+    fn write_truth_sidecar(path: &Path, body: impl AsRef<str>) {
+        fs::write(path, body.as_ref()).expect("write sidecar");
+    }
+
+    fn v1_sidecar(avg_logprob: f32, sparkline: &str, fallback_used: bool) -> String {
+        format!(
+            r#"{{
+  "source": "local_final_pass",
+  "engine": "local_whisper",
+  "mode": "raw",
+  "fallback_class": null,
+  "fallback_used": {fallback_used},
+  "vad_speech_pct": 50.0,
+  "no_speech_reason": null,
+  "avg_logprob": {avg_logprob},
+  "confidence_flags": [],
+  "sparkline": "{sparkline}",
+  "commit_trigger": null,
+  "display_status": null
+}}"#
+        )
+    }
+
+    fn v2_sidecar(
+        avg_logprob: f32,
+        sparkline: &str,
+        fallback_used: bool,
+        engine_mode: &str,
+    ) -> String {
+        format!(
+            r#"{{
+  "schema_version": 2,
+  "source": "local_final_pass",
+  "engine": "whisper",
+  "mode": "raw",
+  "fallback_class": null,
+  "fallback_used": {fallback_used},
+  "vad_speech_pct": 50.0,
+  "no_speech_reason": null,
+  "avg_logprob": {avg_logprob},
+  "confidence_flags": [],
+  "sparkline": "{sparkline}",
+  "commit_trigger": null,
+  "display_status": "CLI • Transcript",
+  "engine_mode": "{engine_mode}",
+  "fine_sparkline": "▁▃▅",
+  "fine_hop_ms": 32,
+  "energy_sparkline": "▂▅█",
+  "energy_hop_ms": 10
+}}"#
+        )
     }
 }

@@ -4,19 +4,23 @@
 //! `CGEventTap` listener used by the legacy daemon and dispatches emitted
 //! `HotkeyEvent`s into the existing `RecordingController` state machine.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::time::Duration;
 
-use codescribe::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State};
+use codescribe::controller::{
+    CaptureStopOutcome, HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State,
+    admission,
+};
 use codescribe::os::hold_badge::BadgeMode;
 use codescribe::os::hotkeys::{self, HoldAction, HoldMode, HotkeyEvent};
 use codescribe::os::permissions::{PermissionStatus, check_accessibility, check_input_monitoring};
 use codescribe::os::shortcut_registry::{detect_hotkey_conflicts, fn_tap_intercept_note};
 use codescribe::os::tray_status::{self, TrayStatus};
 use codescribe::os::{clipboard, notifications};
-use codescribe_core::config::{
-    Config, FormattingPolicy, ModeBinding, ShortcutBinding, UserSettings, WorkMode,
-};
+use codescribe::presentation::transcript_bus::{self, DocumentHistoryEntry};
+use codescribe_core::config::{Config, ModeBinding, ShortcutBinding, UserSettings, WorkMode};
 use codescribe_core::ipc::{EngineEventWire, IpcEventPayload};
 use crossbeam_channel::unbounded;
 use tokio::runtime::Handle;
@@ -26,9 +30,30 @@ use crate::agent_delivery::{
     CsAgentDeliveryListener, set_delivery_listener, spawn_delivery_forwarder,
 };
 use crate::recording::{
-    CsAnnotationKind, CsLayerSummary, CsTranscription, CsTranscriptionListener,
+    CsAdmissionReadiness, CsCaptureHandle, CsConditionalStop, CsEnergyCalibrationReport,
+    CsLayerSummary, CsPresentationStatusEvent, CsTranscriptProjectionEvent, CsTranscription,
+    CsTranscriptionListener,
 };
-use crate::{CsError, CsLanguage};
+use crate::{CsError, application_runtime};
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsDocumentHistoryEntry {
+    pub revision: u64,
+    pub rendered_text: String,
+    pub provenance: String,
+    pub emitted_at: String,
+}
+
+impl From<DocumentHistoryEntry> for CsDocumentHistoryEntry {
+    fn from(entry: DocumentHistoryEntry) -> Self {
+        Self {
+            revision: entry.revision,
+            rendered_text: entry.rendered_text,
+            provenance: entry.provenance,
+            emitted_at: entry.emitted_at,
+        }
+    }
+}
 
 /// Shared process-wide slot for the lazily-created `RecordingController`.
 /// Mutex so the first hotkey/FFI path wins construction; `Option` until first use.
@@ -47,6 +72,8 @@ type SharedAppActionListener = Arc<RwLock<Option<Arc<dyn CsAppActionListener>>>>
 pub trait CsAppActionListener: Send + Sync {
     /// Bring the Agent surface forward. UI-only — must not touch the mic.
     fn on_show_agent(&self);
+    /// Pending Max permission state changed; re-read its authoritative snapshot.
+    fn on_max_approvals_changed(&self);
 }
 
 /// Capture ownership sentinel: no lane currently owns the microphone.
@@ -56,6 +83,10 @@ const CAPTURE_OWNER_CONTROLLER: u8 = 1;
 /// Process-wide start gate. Every Dictation/Agent/Assistive gesture enters the
 /// same controller, so this protects one capture rather than mediating lanes.
 static CAPTURE_OWNER: AtomicU8 = AtomicU8::new(CAPTURE_OWNER_NONE);
+/// A quit request must not wait forever for provider/network work hidden in the
+/// recording stop path. The controller still owns best-effort cleanup after
+/// this bounded application-level wait expires.
+const RECORDING_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Whether this event would begin a NEW controller capture session, and therefore
 /// has to claim capture ownership first. Deliberately narrow: only the two
@@ -186,11 +217,35 @@ fn ensure_controller(
     handle: Handle,
 ) -> Arc<RecordingController> {
     let mut guard = controller_store.lock().unwrap_or_else(|e| e.into_inner());
-    Arc::clone(guard.get_or_insert_with(|| {
+    let controller = guard.get_or_insert_with(|| {
         let controller = Arc::new(RecordingController::new_without_keychain());
+        spawn_max_approval_forwarder(&controller, handle.clone());
+        #[cfg(not(test))]
+        controller.spawn_channel_guards(handle.clone());
         spawn_event_forwarder(Arc::clone(&controller), handle);
         controller
-    }))
+    });
+    if CAPTURE_SHUTDOWN.load(Ordering::SeqCst) {
+        controller.request_capture_shutdown();
+    }
+    Arc::clone(controller)
+}
+
+/// Forward coalesced state invalidations, not lossy token-stream events.
+fn spawn_max_approval_forwarder(controller: &RecordingController, handle: Handle) {
+    let mut changes = controller.subscribe_max_approval_changes();
+    handle.spawn(async move {
+        while changes.changed().await.is_ok() {
+            let listener = shared_app_action_listener()
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .map(Arc::clone);
+            if let Some(listener) = listener {
+                listener.on_max_approvals_changed();
+            }
+        }
+    });
 }
 
 /// Snapshot the shared controller WITHOUT creating one. Query surfaces use this
@@ -201,6 +256,68 @@ fn current_controller(controller_store: &SharedController) -> Option<Arc<Recordi
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .map(Arc::clone)
+}
+
+/// Process shutdown is irreversible here; retries settle the same closed root.
+static CAPTURE_SHUTDOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn release_capture_ownership_for_shutdown() {
+    CAPTURE_OWNER.store(CAPTURE_OWNER_NONE, Ordering::SeqCst);
+}
+
+async fn await_recording_shutdown<F>(future: F, timeout: Duration) -> Result<(), CsError>
+where
+    F: Future<Output = Result<(), CsError>>,
+{
+    tokio::time::timeout(timeout, future)
+        .await
+        .map_err(|_| CsError::Recording {
+            msg: format!(
+                "application shutdown timed out after {:.1}s while stopping recording",
+                timeout.as_secs_f64()
+            ),
+        })?
+}
+
+/// Shutdown observes the same Stop owner. Never remove the shared controller
+/// before settlement; failed/pending teardown must retain an address for retry.
+async fn settle_controller_for_shutdown(
+    controller: &Arc<RecordingController>,
+) -> Result<(), CsError> {
+    controller.request_capture_shutdown();
+    let outcome = controller.stop_current_capture().await;
+    require_shutdown_settlement(outcome, controller.capture_shutdown_settled())
+}
+
+fn require_shutdown_settlement(
+    outcome: anyhow::Result<CaptureStopOutcome>,
+    quiescent: bool,
+) -> Result<(), CsError> {
+    match outcome {
+        Ok(CaptureStopOutcome::Stopped | CaptureStopOutcome::NoLiveCapture) if quiescent => Ok(()),
+        Ok(outcome) => Err(CsError::Recording {
+            msg: format!("application shutdown refused: Stop remains {outcome:?}"),
+        }),
+        Err(error) => Err(CsError::Recording {
+            msg: format!("application shutdown could not settle recording: {error:#}"),
+        }),
+    }
+}
+
+pub(crate) fn shutdown_application_controller() -> Result<(), CsError> {
+    CAPTURE_SHUTDOWN.store(true, Ordering::SeqCst);
+    hotkeys::shutdown_global_hotkey_manager();
+    let controller = current_controller(&shared_controller());
+    if let Some(controller) = controller {
+        application_runtime::block_on(await_recording_shutdown(
+            async move { settle_controller_for_shutdown(&controller).await },
+            RECORDING_SHUTDOWN_TIMEOUT,
+        ))??;
+        // Retain the closed root until runtime teardown. Lazy construction must
+        // not reopen admission in the gap between settlement and runtime drop.
+    }
+    release_capture_ownership_for_shutdown();
+    Ok(())
 }
 
 /// Collapse a latched paste-target app name to `None` when it carries no
@@ -225,8 +342,12 @@ fn shared_runtime_handle() -> &'static OnceLock<Handle> {
 /// Push freshly-persisted settings into the live shared controller so a Settings
 /// write takes effect without an app restart (language, AI formatting, hold
 /// delays, …). No-op before the runtime/controller exist — a controller created
-/// later already loads fresh config on construction. Runs `set_config` on the
-/// hotkey runtime the controller lives on, mirroring how `start()` drives it.
+/// later already loads fresh config on construction.
+///
+/// Loads exactly one keychain-free `RuntimeSettingsSnapshot` and replaces both
+/// `config` and `runtime_settings` together when the controller is idle. An
+/// active take keeps its immutable generation; the write affects the next
+/// session only.
 pub(crate) fn refresh_live_controller_config() {
     let Some(handle) = shared_runtime_handle().get() else {
         return;
@@ -235,7 +356,15 @@ pub(crate) fn refresh_live_controller_config() {
         return;
     };
     handle.spawn(async move {
-        controller.set_config(Config::load_without_keychain()).await;
+        match controller.refresh_runtime_settings_from_disk().await {
+            Ok(true) => {}
+            Ok(false) => tracing::info!(
+                "settings refresh deferred: active take keeps its immutable snapshot generation"
+            ),
+            Err(error) => {
+                tracing::warn!("settings refresh pending: runtime snapshot refused: {error:#}")
+            }
+        }
     });
 }
 
@@ -245,8 +374,8 @@ pub(crate) fn refresh_live_controller_config() {
 ///
 /// The listener is resolved per event rather than captured, so a listener that
 /// registers after the forwarder starts still receives everything from that
-/// point on. Lag is survivable (keep forwarding); only a closed channel ends the
-/// task.
+/// point on. Lag is survivable by reconciling from controller truth; only a
+/// closed channel ends the task, after a terminal native reset.
 fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
     let listener_store = shared_listener();
     let mut events = controller.subscribe_events();
@@ -256,40 +385,91 @@ fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
                 Ok(event) => event,
                 // Lagged: the broadcast channel (cap 256) overflowed during a
                 // burst of dictation events and dropped `skipped` messages. That
-                // is recoverable — keep forwarding subsequent events instead of
-                // tearing the listener bridge down permanently.
+                // is recoverable only if we first repaint lifecycle state from
+                // the controller. Otherwise a dropped terminal `idle` leaves the
+                // Swift overlay recording forever even though capture ended.
                 Err(RecvError::Lagged(skipped)) => {
-                    eprintln!(
-                        "Hotkey event forwarder lagged; dropped {skipped} broadcast event(s)"
+                    let state = controller.current_state().await;
+                    tracing::warn!(
+                        skipped,
+                        authoritative_state = %state,
+                        "hotkey event forwarder lagged; reconciling listener lifecycle"
                     );
+                    release_controller_capture_owner_if_idle(state);
+                    if let Some(listener) = current_transcription_listener(&listener_store) {
+                        forward_controller_state_to_listener(state, listener);
+                    }
                     continue;
                 }
                 // Closed: the controller (sender) was dropped — nothing more will
-                // ever arrive, so end the forwarder task.
-                Err(RecvError::Closed) => break,
+                // ever arrive. Fail terminally so no native UI can retain stale
+                // capture ownership or a live-recording presentation.
+                Err(RecvError::Closed) => {
+                    release_controller_capture_owner_if_idle(State::Idle);
+                    if let Some(listener) = current_transcription_listener(&listener_store) {
+                        forward_controller_state_to_listener(State::Idle, listener);
+                    }
+                    break;
+                }
             };
             if matches!(
                 &event.payload,
                 IpcEventPayload::StateChange { to, .. } if to == "idle"
             ) {
-                let _ = CAPTURE_OWNER.compare_exchange(
-                    CAPTURE_OWNER_CONTROLLER,
-                    CAPTURE_OWNER_NONE,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                );
+                release_controller_capture_owner_if_idle(State::Idle);
             }
-            let listener = listener_store
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                .map(Arc::clone);
+            let listener = current_transcription_listener(&listener_store);
             let Some(listener) = listener else {
                 continue;
             };
             forward_event_to_listener(event.payload, listener);
         }
     });
+}
+
+/// Snapshot the current Swift transcription listener without holding the lock
+/// across a foreign callback.
+fn current_transcription_listener(
+    listener_store: &SharedListener,
+) -> Option<Arc<dyn CsTranscriptionListener>> {
+    listener_store
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(Arc::clone)
+}
+
+/// Release the process-wide microphone gate whenever controller truth is idle.
+fn release_controller_capture_owner_if_idle(state: State) {
+    if state == State::Idle {
+        let _ = CAPTURE_OWNER.compare_exchange(
+            CAPTURE_OWNER_CONTROLLER,
+            CAPTURE_OWNER_NONE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
+/// Repaint the native lifecycle from the controller's authoritative state.
+/// Used both by ordinary state broadcasts and loss recovery after `Lagged`.
+fn forward_controller_state_to_listener(state: State, listener: Arc<dyn CsTranscriptionListener>) {
+    match state {
+        State::RecHold | State::RecToggle | State::Conversation => {
+            PREPARING_PENDING.store(false, Ordering::Release);
+            tray_status::update_tray_status(TrayStatus::Listening);
+            listener.on_recording_started();
+        }
+        State::Busy => {
+            tray_status::update_tray_status(TrayStatus::Thinking);
+            listener.on_recording_finalising();
+        }
+        State::Idle => {
+            PREPARING_PENDING.store(false, Ordering::Release);
+            tray_status::update_tray_status(TrayStatus::Idle);
+            listener.on_recording_stopped();
+        }
+    }
 }
 
 /// Translate one IPC payload into the Swift listener's callback vocabulary and
@@ -301,47 +481,96 @@ fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
 fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTranscriptionListener>) {
     match payload {
         IpcEventPayload::StateChange { to, .. } => match to.as_str() {
-            "rec_hold" | "rec_toggle" | "conversation" => {
-                // A real state transition resolves any pending optimistic
-                // "preparing" overlay, so the post-dispatch compensator must not
-                // also fire a terminal stop for it.
-                PREPARING_PENDING.store(false, Ordering::Release);
-                tray_status::update_tray_status(TrayStatus::Listening);
-                listener.on_recording_started();
-            }
-            "busy" => {
-                // Capture ended; the controller is running the final transcription
-                // pass. Surface it as a distinct "finalising" beat BEFORE the
-                // terminal `idle`→stopped, so the native hold-release / toggle stop
-                // can show a "transcribing" phase instead of the still-pulsing
-                // live-capture UI. Does not touch PREPARING_PENDING — a real Rec
-                // state (rec_hold/rec_toggle) always precedes Busy and already
-                // cleared it.
-                tray_status::update_tray_status(TrayStatus::Thinking);
-                listener.on_recording_finalising();
-            }
-            "idle" => {
-                PREPARING_PENDING.store(false, Ordering::Release);
-                tray_status::update_tray_status(TrayStatus::Idle);
-                listener.on_recording_stopped();
-            }
+            "rec_hold" => forward_controller_state_to_listener(State::RecHold, listener),
+            "rec_toggle" => forward_controller_state_to_listener(State::RecToggle, listener),
+            "conversation" => forward_controller_state_to_listener(State::Conversation, listener),
+            "busy" => forward_controller_state_to_listener(State::Busy, listener),
+            "idle" => forward_controller_state_to_listener(State::Idle, listener),
             _ => {}
         },
-        IpcEventPayload::FinalTranscript { text } => listener.on_final_transcript_ready(text),
-        IpcEventPayload::ContextMarker { position, marker } => {
-            listener.on_context_marker(position, marker);
-        }
+        IpcEventPayload::ContextMarker { position, marker } => tracing::debug!(
+            position,
+            marker,
+            "legacy context-marker IPC telemetry is not product transcript truth"
+        ),
         IpcEventPayload::AudioLevel { rms } => listener.on_audio_level(rms),
+        IpcEventPayload::CompactProjection { json } => {
+            match serde_json::from_str::<codescribe::presentation::emitter::CompactProjection>(
+                &json,
+            ) {
+                Ok(event) => listener.on_compact_projection(event.into()),
+                Err(error) => {
+                    tracing::warn!(%error, "compact projection transport rejected invalid schema")
+                }
+            }
+        }
+        IpcEventPayload::TranscriptProjection { json } => {
+            match serde_json::from_str::<
+                codescribe::presentation::transcript_bus::TranscriptBusEvidenceEvent,
+            >(&json)
+            {
+                Ok(event) => listener
+                    .on_transcript_projection(CsTranscriptProjectionEvent::from_bus_event(&event)),
+                Err(error) => tracing::warn!(
+                    %error,
+                    "transcript projection transport rejected invalid Bus schema"
+                ),
+            }
+        }
+        IpcEventPayload::PresentationStatus { json } => {
+            match serde_json::from_str::<
+                codescribe::presentation::status_projection::PresentationStatusProjection,
+            >(&json)
+            {
+                Ok(event) => listener
+                    .on_presentation_status(CsPresentationStatusEvent::from_projection(&event)),
+                Err(error) => tracing::warn!(
+                    %error,
+                    "presentation status transport rejected invalid schema"
+                ),
+            }
+        }
         IpcEventPayload::Engine(event) => match event {
             EngineEventWire::VadStart { .. } => listener.on_vad_active(true),
             EngineEventWire::VadEnd { .. } => listener.on_vad_active(false),
-            EngineEventWire::NoSpeech { reason } => listener.on_no_speech(reason),
-            EngineEventWire::Preview { text, .. } => listener.on_preview(text),
+            EngineEventWire::SidebandEvidence { evidence } => {
+                // Content-free timing evidence reaches the app boundary for
+                // diagnostics, but there is deliberately no UI decoration or
+                // transcript callback in W2-02. L3 already consumes the
+                // permitted pause-only subset inside core.
+                tracing::debug!(
+                    sequence = evidence.sequence,
+                    session = %evidence.range.session,
+                    capture_epoch = evidence.range.capture_epoch,
+                    sample_start = evidence.range.sample_start,
+                    sample_end = evidence.range.sample_end,
+                    provenance = ?evidence.provenance,
+                    kind = ?evidence.evidence,
+                    "Silero sideband evidence (non-text)"
+                );
+            }
+            EngineEventWire::NoSpeech { reason } => {
+                tracing::debug!(%reason, "no-speech reason forwarded as sideband; projection owns terminal phase");
+                listener.on_no_speech(reason);
+            }
+            EngineEventWire::Preview { rev, text, pin } => tracing::debug!(
+                rev,
+                text_len = text.len(),
+                sample_start = pin.range.sample_start,
+                sample_end = pin.range.sample_end,
+                grain = ?pin.grain,
+                "raw preview observation (diagnostic only)"
+            ),
             EngineEventWire::Correction {
+                rev,
                 text,
                 previous_text,
-                ..
-            } => listener.on_correction(text, previous_text),
+            } => tracing::debug!(
+                rev,
+                text_len = text.len(),
+                previous_text_len = previous_text.len(),
+                "raw correction observation (diagnostic only)"
+            ),
             EngineEventWire::UtteranceFinal {
                 utterance_id,
                 text,
@@ -349,33 +578,39 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 vad_speech_pct,
                 confidence_flags,
                 ..
-            } => {
-                let flags: Vec<String> = confidence_flags.iter().map(ToString::to_string).collect();
-                listener.on_final(utterance_id, text, avg_logprob, vad_speech_pct, flags);
-            }
+            } => tracing::debug!(
+                utterance_id,
+                text_len = text.len(),
+                ?avg_logprob,
+                ?vad_speech_pct,
+                ?confidence_flags,
+                "raw utterance-final observation (diagnostic only)"
+            ),
             EngineEventWire::ReplaceRange {
                 utterance_id,
                 start,
                 end,
                 text,
                 source,
-            } => listener.on_replace_range(
+            } => tracing::debug!(
                 utterance_id,
-                start as u64,
-                end as u64,
-                text,
-                source.into(),
+                start,
+                end,
+                text_len = text.len(),
+                ?source,
+                "raw replace-range observation (diagnostic only)"
             ),
             EngineEventWire::InsertAnnotation {
                 utterance_id,
                 position,
                 text,
                 kind,
-            } => listener.on_insert_annotation(
+            } => tracing::debug!(
                 utterance_id,
-                position as u64,
-                text,
-                CsAnnotationKind::from(&kind),
+                position,
+                text_len = text.len(),
+                ?kind,
+                "raw annotation observation (diagnostic only)"
             ),
             EngineEventWire::SessionFinalised {
                 session_id,
@@ -442,6 +677,25 @@ async fn optimistically_show_overlay(event: &HotkeyEvent) {
     if !starts_redesign_overlay {
         return;
     }
+    let indicator_mode = match event {
+        HotkeyEvent::ToggleAssistive
+        | HotkeyEvent::Hold {
+            mode: HoldMode::Chat | HoldMode::Selection,
+            ..
+        } => BadgeMode::Assistive,
+        HotkeyEvent::ToggleNormal | HotkeyEvent::ToggleRaw => BadgeMode::Toggle,
+        _ => BadgeMode::Hold,
+    };
+    arm_preparing_overlay(indicator_mode).await;
+}
+
+/// Paint the optimistic "preparing" overlay for a gesture that is about to
+/// start a session, and arm the compensator that guarantees its terminal half.
+///
+/// Extracted so the Agent composer take — a UI gesture, not an OS hotkey —
+/// reaches exactly the same overlay contract as the assistive toggle instead of
+/// growing a second, drifting copy of it.
+async fn arm_preparing_overlay(indicator_mode: BadgeMode) {
     if let Some(existing) = current_controller(&shared_controller())
         && existing.current_state().await != State::Idle
     {
@@ -451,15 +705,6 @@ async fn optimistically_show_overlay(event: &HotkeyEvent) {
         // Arm the compensator BEFORE the direct call so the terminal guarantee
         // holds even if the dispatch that follows never transitions state.
         PREPARING_PENDING.store(true, Ordering::Release);
-        let indicator_mode = match event {
-            HotkeyEvent::ToggleAssistive
-            | HotkeyEvent::Hold {
-                mode: HoldMode::Chat | HoldMode::Selection,
-                ..
-            } => BadgeMode::Assistive,
-            HotkeyEvent::ToggleNormal | HotkeyEvent::ToggleRaw => BadgeMode::Toggle,
-            _ => BadgeMode::Hold,
-        };
         tray_status::set_tray_indicator_mode(indicator_mode);
         tray_status::update_tray_status(TrayStatus::Starting);
         listener.on_recording_preparing();
@@ -489,6 +734,59 @@ async fn compensate_orphaned_preparing(controller: &Arc<RecordingController>) {
     }
 }
 
+/// Read-only source instruction projection. Image bytes and provider options
+/// stay in the retained journal; this view grants no tool or replay permission.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct CsMaxRetainedInput {
+    pub turn_id: String,
+    pub text_blocks: Vec<String>,
+    pub image_count: u64,
+    pub provider_name: String,
+}
+
+/// Pending identifies potentially executed work, not a running process.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct CsMaxConsultationSnapshot {
+    pub consultation_id: String,
+    pub pending_turn_id: Option<String>,
+    pub retained_inputs: Vec<CsMaxRetainedInput>,
+}
+
+impl From<codescribe_core::agent::thread_delivery::ConsultationRecoverySnapshot>
+    for CsMaxConsultationSnapshot
+{
+    fn from(
+        snapshot: codescribe_core::agent::thread_delivery::ConsultationRecoverySnapshot,
+    ) -> Self {
+        use codescribe_core::agent::ContentBlock;
+        Self {
+            consultation_id: snapshot.consultation_id,
+            pending_turn_id: snapshot.pending_turn_id,
+            retained_inputs: snapshot
+                .retained_inputs
+                .into_iter()
+                .map(|entry| {
+                    let mut text_blocks = Vec::new();
+                    let mut image_count = 0;
+                    for block in entry.input.content {
+                        match block {
+                            ContentBlock::Text(text) => text_blocks.push(text),
+                            ContentBlock::Image { .. } => image_count += 1,
+                            _ => {}
+                        }
+                    }
+                    CsMaxRetainedInput {
+                        turn_id: entry.turn_id,
+                        text_blocks,
+                        image_count,
+                        provider_name: entry.provider_name,
+                    }
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Process-global hotkey runtime owner.
 ///
 /// `start()` installs the native listener but creates `RecordingController`
@@ -498,7 +796,7 @@ async fn compensate_orphaned_preparing(controller: &Arc<RecordingController>) {
 #[derive(uniffi::Object, Default)]
 pub struct CodescribeHotkeys {}
 
-#[uniffi::export(async_runtime = "tokio")]
+#[uniffi::export]
 impl CodescribeHotkeys {
     /// Construct the hotkey facade and initialise logging. Creates no listener,
     /// controller or tap — `start()` owns that.
@@ -510,78 +808,96 @@ impl CodescribeHotkeys {
 
     /// Start or replace the process-global hotkey listener.
     pub async fn start(&self) -> Result<(), CsError> {
-        // Install the process-wide macOS thermal observer once at runtime
-        // bootstrap so STT duty-cycle throttling (core/stt/scheduler.rs) sees
-        // real thermal pressure. Without this the scheduler always reads
-        // ThermalLevel::Nominal and never backs off during hot/long sessions.
-        // Idempotent: install_thermal_probe guards its own observer singleton.
-        codescribe::os::thermal::install_thermal_probe();
+        application_runtime::run(async move {
+            // Install the process-wide macOS thermal observer at runtime
+            // bootstrap so tray state and diagnostics reflect device pressure.
+            // Idempotent: install_thermal_probe guards its own observer singleton.
+            codescribe::os::thermal::install_thermal_probe();
 
-        // Seed the hotkey detector atomics from persisted config so the
-        // CGEventTap honours the user's saved mode bindings / cadence from
-        // launch. The atomics otherwise hold only compile-time defaults, so
-        // non-default bindings would never take effect. update_config re-applies
-        // this on every later settings change for live-reload without restart.
-        codescribe::os::hotkeys::apply_hotkey_config(
-            &codescribe_core::config::Config::load_without_keychain(),
-        );
+            // Seed the hotkey detector atomics from persisted config so the
+            // CGEventTap honours the user's saved mode bindings / cadence from
+            // launch. The atomics otherwise hold only compile-time defaults, so
+            // non-default bindings would never take effect. update_config re-applies
+            // this on every later settings change for live-reload without restart.
+            codescribe::os::hotkeys::apply_hotkey_config(
+                &codescribe_core::config::Config::load_without_keychain(),
+            );
 
-        let (tx, rx) = unbounded::<HotkeyEvent>();
-        let handle = tokio::runtime::Handle::current();
-        // Publish the runtime handle so sync config-write surfaces can push fresh
-        // settings into the live controller (refresh_live_controller_config).
-        let _ = shared_runtime_handle().set(handle.clone());
-        // Bridge the app-side voice-assistive delivery broadcast onto the Swift
-        // AgentChat listener. Idempotent — a repeated start() does not stack a
-        // second forwarder. The listener itself is registered separately via
-        // `set_agent_delivery_listener` and may arrive before or after this.
-        spawn_delivery_forwarder(handle.clone());
-        let controller_store = shared_controller();
+            let (tx, rx) = unbounded::<HotkeyEvent>();
+            let handle = tokio::runtime::Handle::current();
+            // Publish the runtime handle so sync config-write surfaces can push fresh
+            // settings into the live controller (refresh_live_controller_config).
+            let _ = shared_runtime_handle().set(handle.clone());
+            // Bridge the app-side voice-assistive delivery broadcast onto the Swift
+            // AgentChat listener. Idempotent — a repeated start() does not stack a
+            // second forwarder. The listener itself is registered separately via
+            // `set_agent_delivery_listener` and may arrive before or after this.
+            spawn_delivery_forwarder(handle.clone());
+            let controller_store = shared_controller();
 
-        // Spawn the event-dispatch thread BEFORE bringing up the tap. It drains
-        // `rx` for the lifetime of the retained sender, so it stays ready whether
-        // the CGEventTap comes up now (permissions already granted) or later via
-        // `rearm_after_permission_grant` after a first-run TCC grant. If it were
-        // spawned only after a successful `install_global_hotkey_manager`, a
-        // permission-less cold start would leave no consumer, and a later re-arm
-        // would build a live tap whose events pile up in the channel undispatched.
-        std::thread::spawn(move || {
-            for event in rx {
-                let spawn_handle = handle.clone();
-                let controller_handle = handle.clone();
-                let controller_store = Arc::clone(&controller_store);
-                route_hotkey_event(
-                    event,
-                    current_app_action_listener(),
-                    move |recording_event| {
-                        spawn_handle.spawn(async move {
-                            let controller =
-                                ensure_controller(&controller_store, controller_handle);
-                            let dispatch = dispatch_recording_with_capture_gate(
-                                recording_event,
-                                Arc::clone(&controller),
-                            )
-                            .await;
-                            if let Err(error) = dispatch {
+            // One consumer owns recording gesture order. Spawning one task per
+            // event lets a quick HoldUp observe Idle before HoldDown has armed
+            // the controller, then leaves the later Down without its release.
+            // The unbounded sender is appropriate here: the native hotkey
+            // channel is already unbounded and this queue holds tiny enums,
+            // while the single consumer gives Down/Up FIFO semantics.
+            let (recording_tx, mut recording_rx) =
+                tokio::sync::mpsc::unbounded_channel::<HotkeyEvent>();
+            let recording_controller_store = Arc::clone(&controller_store);
+            let recording_controller_handle = handle.clone();
+            handle.spawn(async move {
+                while let Some(recording_event) = recording_rx.recv().await {
+                    let controller = ensure_controller(
+                        &recording_controller_store,
+                        recording_controller_handle.clone(),
+                    );
+                    let dispatch =
+                        dispatch_recording_with_capture_gate(recording_event, controller).await;
+                    if let Err(error) = dispatch {
+                        tray_status::update_tray_status(TrayStatus::Error);
+                        notifications::notify("Codescribe", &error.to_string());
+                        tracing::error!(%error, "Hotkey event dispatch failed");
+                    }
+                }
+            });
+
+            // Spawn the event-dispatch thread BEFORE bringing up the tap. It drains
+            // `rx` for the lifetime of the retained sender, so it stays ready whether
+            // the CGEventTap comes up now (permissions already granted) or later via
+            // `rearm_after_permission_grant` after a first-run TCC grant. If it were
+            // spawned only after a successful `install_global_hotkey_manager`, a
+            // permission-less cold start would leave no consumer, and a later re-arm
+            // would build a live tap whose events pile up in the channel undispatched.
+            std::thread::spawn(move || {
+                for event in rx {
+                    let recording_tx = recording_tx.clone();
+                    route_hotkey_event(
+                        event,
+                        current_app_action_listener(),
+                        move |recording_event| {
+                            if recording_tx.send(recording_event).is_err() {
                                 tray_status::update_tray_status(TrayStatus::Error);
-                                notifications::notify("Codescribe", &error.to_string());
-                                eprintln!("Hotkey event error: {error}");
+                                notifications::notify(
+                                    "Codescribe",
+                                    "Hotkey recording dispatcher stopped",
+                                );
                             }
-                        });
-                    },
-                    deliver_deferred_insert_and_notify,
-                );
-            }
-        });
+                        },
+                        deliver_deferred_insert_and_notify,
+                    );
+                }
+            });
 
-        // Bring up the tap. On a permission-less first launch this returns an
-        // error, but the sender is retained inside the hotkey service so a later
-        // `rearm_after_permission_grant` can create the tap and feed the
-        // already-running dispatch thread — no app restart required.
-        hotkeys::install_global_hotkey_manager(tx.clone())
-            .map_err(|msg| CsError::Recording { msg })?;
+            // Bring up the tap. On a permission-less first launch this returns an
+            // error, but the sender is retained inside the hotkey service so a later
+            // `rearm_after_permission_grant` can create the tap and feed the
+            // already-running dispatch thread — no app restart required.
+            hotkeys::install_global_hotkey_manager(tx.clone())
+                .map_err(|msg| CsError::Recording { msg })?;
 
-        Ok(())
+            Ok(())
+        })
+        .await?
     }
 
     /// Register the Swift overlay listener for the shared controller event stream.
@@ -603,7 +919,10 @@ impl CodescribeHotkeys {
     pub fn set_app_action_listener(&self, listener: Arc<dyn CsAppActionListener>) {
         let store = shared_app_action_listener();
         let mut guard = store.write().unwrap_or_else(|e| e.into_inner());
-        *guard = Some(listener);
+        *guard = Some(Arc::clone(&listener));
+        drop(guard);
+        // Registration may happen after the last change notification.
+        listener.on_max_approvals_changed();
     }
 
     /// Prompt-free warmup for the shared recording controller.
@@ -612,39 +931,107 @@ impl CodescribeHotkeys {
     /// local recorder/model setup after app launch so the first user-triggered
     /// dictation does not sit in the overlay's `starting` state for seconds.
     pub async fn prewarm_recording(&self) -> Result<(), CsError> {
-        let _ = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-        // Warm the ACTIVE engine the router will actually use (Apple SpeechAnalyzer
-        // on macOS 26+, Candle on fallback/older macOS) — not a hardcoded Candle
-        // singleton. `prewarm_active_engine` also runs a synthetic warmup inference,
-        // so the first user dictation pays neither model-load nor Metal
-        // kernel-compilation latency. Idempotent; safe to race the controller's own
-        // background prewarm.
-        tokio::task::spawn_blocking(codescribe::stt::prewarm_active_engine)
-            .await
-            .map_err(|error| CsError::Recording {
-                msg: format!("STT prewarm task failed: {error}"),
-            })?
-            .map_err(|error| CsError::Recording {
-                msg: format!("STT prewarm failed: {error}"),
-            })?;
-        Ok(())
+        application_runtime::run(async move {
+            let _ = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            // Warm the ACTIVE engine the router will actually use (Apple SpeechAnalyzer
+            // on macOS 26+, Candle on fallback/older macOS) — not a hardcoded Candle
+            // singleton. `prewarm_active_engine` also runs a synthetic warmup inference,
+            // so the first user dictation pays neither model-load nor Metal
+            // kernel-compilation latency. Idempotent; safe to race the controller's own
+            // background prewarm.
+            tokio::task::spawn_blocking(codescribe::stt::prewarm_active_engine)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: format!("STT prewarm task failed: {error}"),
+                })?
+                .map_err(|error| CsError::Recording {
+                    msg: format!("STT prewarm failed: {error}"),
+                })?;
+            Ok(())
+        })
+        .await?
     }
 
     /// Start the same toggle recording flow used by the default hotkey.
     pub async fn start_recording(&self) -> Result<(), CsError> {
-        start_recording_with_event(HotkeyEvent::ToggleNormal).await
+        application_runtime::run(async move {
+            start_recording_with_event(HotkeyEvent::ToggleNormal).await
+        })
+        .await?
     }
 
-    /// Start the same toggle flow in the assistive lane. Overlay owns this
-    /// route — the Agent composer mic is a separate, UI-initiated capture.
+    /// Start the same toggle flow in the assistive lane.
+    ///
+    /// This is the hands-free assistive route: the overlay and the right-Option
+    /// double tap. It keeps utterance silence epochs. The Agent composer mic is
+    /// a separate, UI-initiated capture — see
+    /// [`Self::start_composer_turn_recording`].
     pub async fn start_assistive_recording(&self) -> Result<(), CsError> {
-        start_recording_with_event(HotkeyEvent::ToggleAssistive).await
+        application_runtime::run(async move {
+            start_recording_with_event(HotkeyEvent::ToggleAssistive).await
+        })
+        .await?
     }
 
-    /// Overlay Retranscribe: `hq:` / `cloud:` prefixes pick the pass.
-    /// Bare paths are a Full HQ file pass.
+    /// Start one explicit Agent-composer take: one gesture, one turn.
+    ///
+    /// Deliberately not a `HotkeyEvent`: no OS gesture produces this, the
+    /// composer button does. It reaches the same shared `RecordingController`,
+    /// the same capture-ownership gate and the same optimistic overlay as the
+    /// assistive toggle, and differs only in the per-take capture intent it
+    /// carries — the take stays open through silence until an explicit stop.
+    /// Returns the controller-admitted identity of the take this press opened.
+    /// Swift keeps it and hands it back to stop exactly that capture.
+    pub async fn start_composer_turn_recording(&self) -> Result<CsCaptureHandle, CsError> {
+        application_runtime::run(async move {
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            start_composer_turn_with_capture_gate(controller)
+                .await
+                .map(|capture_id| CsCaptureHandle { capture_id })
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
+    /// Stop one named capture, and refuse if a different take now owns the mic.
+    ///
+    /// This is the composer's only stop entry. `stop_recording` above stays the
+    /// unconditional surface for the hotkey and tray, which legitimately stop
+    /// whatever is live; a UI gesture may not, because between the moment the
+    /// user pressed and the moment this call lands the microphone can have
+    /// changed hands.
+    pub async fn stop_composer_turn_recording(
+        &self,
+        handle: CsCaptureHandle,
+    ) -> Result<CsConditionalStop, CsError> {
+        application_runtime::run(async move {
+            stop_composer_capture(&shared_controller(), handle).await
+        })
+        .await?
+    }
+
+    /// Explicit file consumers use `hq:` / `cloud:` prefixes to pick the pass.
+    /// Bare paths are a Full HQ file pass; daily Overlay never calls this API.
     pub async fn transcribe_file(&self, path: String) -> Result<CsTranscription, CsError> {
-        crate::recording::transcribe_session_file(path).await
+        application_runtime::run(
+            async move { crate::recording::transcribe_session_file(path).await },
+        )
+        .await?
+    }
+
+    /// A button pass is bound to the visible take, including CLI source references.
+    pub async fn transcribe_take(
+        &self,
+        session_id: String,
+        path: String,
+    ) -> Result<CsTranscription, CsError> {
+        application_runtime::run(async move {
+            crate::recording::transcribe_session_file_with_identity(path, Some(session_id)).await
+        })
+        .await?
     }
 
     /// Stable path of the last retained session WAV, if it exists.
@@ -652,17 +1039,286 @@ impl CodescribeHotkeys {
         crate::recording::last_session_audio_path()
     }
 
+    pub fn session_audio_path(&self, session_id: String) -> Option<String> {
+        crate::recording::session_audio_path(&session_id)
+    }
+
+    /// Export one word's PCM from the retained take audio as a temp WAV clip
+    /// with `pad_ms` of context on both sides (the overlay plays it back).
+    pub fn word_audio_clip(
+        &self,
+        session_id: String,
+        capture_epoch: u64,
+        sample_start: u64,
+        sample_end: u64,
+        pad_ms: u32,
+    ) -> Result<String, CsError> {
+        crate::recording::word_audio_clip(
+            &session_id,
+            capture_epoch,
+            sample_start,
+            sample_end,
+            pad_ms,
+        )
+    }
+
     /// Stop the active legacy-controller recording flow, if one is live.
     pub async fn stop_recording(&self) -> Result<(), CsError> {
-        let Some(controller) = current_controller(&shared_controller()) else {
-            return Ok(());
-        };
-        controller
-            .stop_recording_from_external_surface()
+        application_runtime::run(async move {
+            let controller = {
+                let store = shared_controller();
+                let slot = store.try_lock().map_err(|_| CsError::Recording {
+                    msg: "Stop admission unavailable: controller slot is occupied".to_string(),
+                })?;
+                slot.as_ref().map(Arc::clone)
+            };
+            let Some(controller) = controller else {
+                return Ok(());
+            };
+            controller
+                .stop_recording_from_external_surface()
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
+    /// Commit a terminal overlay draft as a Rust-authored document revision.
+    /// The returned value is acknowledgement only; Swift repaints exclusively
+    /// from the transcript projection callback emitted by the reducer.
+    pub async fn commit_user_revision(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        rendered_text: String,
+    ) -> Result<CsUserRevisionResult, CsError> {
+        application_runtime::run(async move {
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "no recording controller for transcript revision".to_string(),
+                })?;
+            controller
+                .apply_user_revision_from_overlay(session_id, source_revision, rendered_text)
+                .await
+                .map(CsUserRevisionResult::from)
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
+    /// List the persisted reducer/Bus revisions of one take. The Bus journal is
+    /// the source of historical text; Swift receives a read-only projection.
+    pub async fn document_history(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<CsDocumentHistoryEntry>, CsError> {
+        application_runtime::run(async move {
+            tokio::task::spawn_blocking(move || transcript_bus::document_history(&session_id))
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })?
+                .map(|entries| entries.into_iter().map(Into::into).collect())
+                .map_err(|error| CsError::Recording {
+                    msg: format!("Transcript history unavailable: {error}"),
+                })
+        })
+        .await?
+    }
+
+    /// Restore a selected journal version as a fresh ledger UserEdit revision.
+    /// The historical bytes are selected in Rust, then submitted through the
+    /// existing session/revision compare-and-swap corridor.
+    pub async fn restore_document_revision(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        restore_revision: u64,
+    ) -> Result<CsUserRevisionResult, CsError> {
+        application_runtime::run(async move {
+            let history_session_id = session_id.clone();
+            let selected = tokio::task::spawn_blocking(move || {
+                transcript_bus::document_history(&history_session_id)
+            })
             .await
             .map_err(|error| CsError::Recording {
                 msg: error.to_string(),
-            })
+            })?
+            .map_err(|error| CsError::Recording {
+                msg: format!("Transcript history unavailable: {error}"),
+            })?
+            .into_iter()
+            .find(|entry| entry.revision == restore_revision)
+            .ok_or_else(|| CsError::Recording {
+                msg: "Selected transcript revision is not in the Bus history".to_string(),
+            })?;
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "no recording controller for transcript restoration".to_string(),
+                })?;
+            controller
+                .apply_user_revision_from_overlay(
+                    session_id,
+                    source_revision,
+                    selected.rendered_text,
+                )
+                .await
+                .map(CsUserRevisionResult::from)
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
+    pub async fn commit_retranscribe_revision(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        rendered_text: String,
+    ) -> Result<CsUserRevisionResult, CsError> {
+        application_runtime::run(async move {
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "no recording controller for retranscription revision".to_string(),
+                })?;
+            controller
+                .apply_retranscribe_revision_from_overlay(
+                    session_id,
+                    source_revision,
+                    rendered_text,
+                )
+                .await
+                .map(CsUserRevisionResult::from)
+                .map_err(|error| {
+                    tracing::warn!(refusal = %error, "retranscription revision refused");
+                    CsError::Recording {
+                        msg: error.to_string(),
+                    }
+                })
+        })
+        .await?
+    }
+
+    /// Format one exact terminal reducer revision through the production Rust
+    /// formatter and commit the applied result as a provenance-bearing ledger
+    /// revision. Failure is returned to Swift without publishing any evidence.
+    pub async fn commit_formatter_revision(
+        &self,
+        session_id: String,
+        source_revision: u64,
+    ) -> Result<CsUserRevisionResult, CsError> {
+        self.commit_formatter_revision_at_level(session_id, source_revision, None)
+            .await
+    }
+
+    /// Request a terminal formatter revision with an optional one-shot level.
+    /// A missing level uses Settings. An unavailable level is refused, never
+    /// persisted or silently replaced with the configured level.
+    pub async fn commit_formatter_revision_at_level(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        level: Option<String>,
+    ) -> Result<CsUserRevisionResult, CsError> {
+        let level = level
+            .as_deref()
+            .map(codescribe_core::config::FormattingPolicy::parse)
+            .transpose()
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })?;
+        application_runtime::run(async move {
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "no recording controller for formatter revision".to_string(),
+                })?;
+            controller
+                .apply_formatter_revision_from_overlay(session_id, source_revision, level)
+                .await
+                .map(CsUserRevisionResult::from)
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
+    /// Inspect retained source input even when unresolved work prevents Max from
+    /// starting. No controller, microphone, provider or execution lease is opened.
+    pub async fn inspect_selected_max_consultation(
+        &self,
+    ) -> Result<Option<CsMaxConsultationSnapshot>, CsError> {
+        application_runtime::run(async move {
+            codescribe_core::agent::ThreadDeliveryGateway::new()
+                .and_then(|gateway| gateway.inspect_selected_max_consultation())
+                .map(|snapshot| snapshot.map(Into::into))
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
+    /// Snapshot current Max approval cards. No controller means no pending calls;
+    /// this read must never construct a recorder to populate a settings view.
+    pub async fn pending_max_tool_approvals(
+        &self,
+    ) -> Result<Vec<crate::agent::CsToolApprovalRequest>, CsError> {
+        application_runtime::run(async move {
+            let Some(controller) = current_controller(&shared_controller()) else {
+                return Vec::new();
+            };
+            controller
+                .pending_max_tool_approvals()
+                .await
+                .into_iter()
+                .map(Into::into)
+                .collect()
+        })
+        .await
+    }
+
+    /// Answer a Max card using the exact session, consultation and call identity.
+    pub async fn resolve_max_tool_approval(
+        &self,
+        session_id: String,
+        thread_id: String,
+        call_id: String,
+        approved: bool,
+        remember: bool,
+    ) -> Result<bool, CsError> {
+        application_runtime::run(async move {
+            let Some(controller) = current_controller(&shared_controller()) else {
+                return false;
+            };
+            controller
+                .resolve_max_tool_approval(&session_id, &thread_id, &call_id, approved, remember)
+                .await
+        })
+        .await
+    }
+
+    /// Explicitly start a fresh Max consultation without deleting old history.
+    /// The controller refuses while capture, processing or accepted work is active.
+    pub async fn begin_new_max_consultation(&self) -> Result<String, CsError> {
+        application_runtime::run(async move {
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "no recording controller for Max consultation reset".to_string(),
+                })?;
+            controller
+                .begin_new_max_consultation()
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
     }
 
     /// Forward a macOS sleep/wake boundary to the active recorder, if any.
@@ -671,141 +1327,139 @@ impl CodescribeHotkeys {
     /// notification callback can therefore remain a cheap no-op while idle and
     /// cannot surprise-load a model or start a provider.
     pub async fn note_sleep_wake(&self) -> bool {
-        let Some(controller) = current_controller(&shared_controller()) else {
-            return false;
-        };
-        controller.note_sleep_wake().await
+        match application_runtime::run(async move {
+            let Some(controller) = current_controller(&shared_controller()) else {
+                return false;
+            };
+            controller.note_sleep_wake().await
+        })
+        .await
+        {
+            Ok(reached) => reached,
+            Err(error) => {
+                tracing::error!(%error, "sleep/wake runtime dispatch failed");
+                false
+            }
+        }
     }
 
     /// True while the shared controller is in an active recording/conversation state.
     pub async fn is_recording(&self) -> bool {
-        let Some(controller) = current_controller(&shared_controller()) else {
-            return false;
-        };
-        matches!(
-            controller.current_state().await,
-            codescribe::controller::State::RecHold
-                | codescribe::controller::State::RecToggle
-                | codescribe::controller::State::Conversation
-        )
+        match application_runtime::run(async move {
+            let Some(controller) = current_controller(&shared_controller()) else {
+                return false;
+            };
+            matches!(
+                controller.current_state().await,
+                codescribe::controller::State::RecHold
+                    | codescribe::controller::State::RecToggle
+                    | codescribe::controller::State::Conversation
+            )
+        })
+        .await
+        {
+            Ok(recording) => recording,
+            Err(error) => {
+                tracing::error!(%error, "recording-state runtime dispatch failed");
+                false
+            }
+        }
     }
 
     /// True when the configured formatting provider can handle a user-triggered
     /// overlay format action.
     pub fn is_formatting_available(&self) -> bool {
-        codescribe::ai_formatting::is_formatting_available()
-    }
-
-    /// Format editable overlay text after recording stops.
-    pub async fn format_text(
-        &self,
-        text: String,
-        language: Option<CsLanguage>,
-    ) -> Result<String, CsError> {
-        let language = language.map(|l| l.as_code().to_string());
-        let result = codescribe::ai_formatting::format_text_with_status(
-            &text,
-            language.as_deref(),
-            false,
-            None,
-        )
-        .await;
-        if result.text.trim().is_empty() {
-            Ok(text)
-        } else {
-            Ok(result.text)
-        }
-    }
-
-    /// Format overlay text through an explicitly selected one-shot level
-    /// (`correction` / `smart` / `max`). Never reads or writes the persisted
-    /// Auto Format policy; `off` is rejected — a manual action must act.
-    pub async fn format_text_for_level(
-        &self,
-        text: String,
-        language: Option<CsLanguage>,
-        level: String,
-    ) -> Result<String, CsError> {
-        let policy = FormattingPolicy::parse(&level).map_err(|error| CsError::Config {
-            msg: error.to_string(),
-        })?;
-        if policy == FormattingPolicy::Off {
-            return Err(CsError::Config {
-                msg: "manual format level cannot be 'off'".to_string(),
-            });
-        }
-        let language = language.map(|l| l.as_code().to_string());
-        let result = codescribe::ai_formatting::format_text_with_status_for_policy(
-            &text,
-            language.as_deref(),
-            policy,
-        )
-        .await;
-        if result.text.trim().is_empty() {
-            Ok(text)
-        } else {
-            Ok(result.text)
-        }
+        Config::load_runtime_snapshot().is_ok_and(|runtime_settings| {
+            codescribe::ai_formatting::is_formatting_available(
+                runtime_settings.llm_lanes().formatting(),
+            )
+        })
     }
 
     /// Paste edited overlay text back into the app that was frontmost before the
     /// overlay. The result includes delivery truth and the app names observed
     /// at the exact delivery boundary so Swift can explain every degradation.
     pub async fn paste_text(&self, text: String) -> Result<CsPasteResult, CsError> {
-        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-        controller
-            .paste_text_from_overlay(text)
-            .await
-            .map(CsPasteResult::from)
-            .map_err(|error| CsError::Recording {
-                msg: error.to_string(),
-            })
+        application_runtime::run(async move {
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            controller
+                .paste_text_from_overlay(text)
+                .await
+                .map(CsPasteResult::from)
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
     }
 
     /// Arm an edited overlay transcript directly when Swift knows the caret is
     /// still inside Codescribe. The controller owns tagging and the W1-A copy
     /// fallback when Paste Here registration is unavailable.
     pub async fn defer_text(&self, text: String) -> Result<CsPasteResult, CsError> {
-        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-        controller
-            .defer_text_from_overlay(text)
-            .await
-            .map(CsPasteResult::from)
-            .map_err(|error| CsError::Recording {
-                msg: error.to_string(),
-            })
+        application_runtime::run(async move {
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            controller
+                .defer_text_from_overlay(text)
+                .await
+                .map(CsPasteResult::from)
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
     }
 
     /// Copy the tagged transcript to the clipboard without a synthetic paste.
     /// Swift calls this when the caret already sits inside Codescribe, where a
     /// synthetic Cmd+V would paste the transcript back into the overlay itself.
     pub async fn copy_text_tagged(&self, text: String) -> Result<(), CsError> {
-        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-        controller
-            .copy_text_from_overlay(text)
-            .await
-            .map_err(|error| CsError::Recording {
-                msg: error.to_string(),
-            })
+        application_runtime::run(async move {
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            controller
+                .copy_text_from_overlay(text)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
     }
 
     /// Name of the app latched for the current overlay session, if known.
     /// Read-only: the paste path keeps owning target activation and delivery.
     pub async fn paste_target_app_name(&self) -> Option<String> {
-        let controller = current_controller(&shared_controller())?;
-        normalize_paste_target_app_name(controller.paste_target_app_name().await)
+        match application_runtime::run(async move {
+            let controller = current_controller(&shared_controller())?;
+            normalize_paste_target_app_name(controller.paste_target_app_name().await)
+        })
+        .await
+        {
+            Ok(target) => target,
+            Err(error) => {
+                tracing::error!(%error, "paste-target runtime dispatch failed");
+                None
+            }
+        }
     }
 
     /// Deliver an assistive transcript from the editable overlay. The
     /// controller attaches the trigger-time selection and accepts this once.
     pub async fn send_assistive_transcript(&self, text: String) -> Result<bool, CsError> {
-        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-        controller
-            .deliver_pending_assistive_transcript(text)
-            .await
-            .map_err(|error| CsError::Recording {
-                msg: error.to_string(),
-            })
+        application_runtime::run(async move {
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            controller
+                .deliver_pending_assistive_transcript(text)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
     }
 
     /// Stop the global hotkey listener if it is active.
@@ -833,6 +1487,73 @@ impl CodescribeHotkeys {
     /// so the next assistive turn mints a fresh one.
     pub fn set_assistive_target_thread(&self, backend_id: Option<String>) {
         codescribe::controller::set_assistive_target_thread(backend_id);
+    }
+}
+
+/// One overlay roster row: per-digit channel state plus follower liveness
+/// from the session bridge. Closed bound digits appear with `open: false`.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsChannelRosterState {
+    pub channel: String,
+    pub audience: String,
+    pub open: bool,
+    pub loud: bool,
+    /// Milliseconds since the Unix epoch; `None` when no autoseal is armed.
+    pub autoseal_deadline_unix_ms: Option<i64>,
+    /// `None` = the snapshot made no liveness claim for this row.
+    pub follower_alive: Option<bool>,
+}
+
+#[uniffi::export]
+impl CodescribeHotkeys {
+    /// Toggle the per-digit agent channel — the exact engine entry ctrl+N
+    /// uses. A roster click is a channel toggle only: it never starts,
+    /// resumes, or resurrects an agent session (Founder veto, 2026-09-30).
+    pub async fn toggle_agent_channel(&self, digit: u8) -> Result<(), CsError> {
+        application_runtime::run(async move {
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "channel toggle unavailable: recording controller not started yet"
+                        .to_string(),
+                })?;
+            controller
+                .toggle_agent_channel(digit)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
+    /// Roster snapshot for the overlay popover: every bound digit, open or
+    /// closed, with follower liveness (fresh lease heartbeat). Display-only.
+    pub async fn channel_roster_snapshot(&self) -> Vec<CsChannelRosterState> {
+        application_runtime::run(async move {
+            let Some(controller) = current_controller(&shared_controller()) else {
+                return Vec::new();
+            };
+            controller
+                .channel_roster_states()
+                .await
+                .into_iter()
+                .map(|state| CsChannelRosterState {
+                    channel: state.channel,
+                    audience: state.audience,
+                    open: state.open,
+                    loud: state.loud,
+                    autoseal_deadline_unix_ms: state.autoseal_deadline.and_then(|deadline| {
+                        deadline
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|since| since.as_millis() as i64)
+                    }),
+                    follower_alive: state.follower_alive,
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
     }
 }
 
@@ -877,6 +1598,29 @@ pub struct CsPasteResult {
     pub frontmost_app_name: Option<String>,
     pub deferred_insert_shortcut: Option<String>,
     pub deferred_insert_failure: Option<String>,
+}
+
+/// Receipt returned to Swift after Rust has committed a user revision and
+/// synchronously emitted its projection callback.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsUserRevisionResult {
+    pub session_id: String,
+    pub source_revision: u64,
+    pub revision: u64,
+    pub rendered_text: String,
+    pub provenance_receipt: String,
+}
+
+impl From<codescribe::presentation::emitter::UserRevisionCommit> for CsUserRevisionResult {
+    fn from(value: codescribe::presentation::emitter::UserRevisionCommit) -> Self {
+        Self {
+            session_id: value.session_id,
+            source_revision: value.source_revision,
+            revision: value.revision,
+            rendered_text: value.rendered_text,
+            provenance_receipt: value.provenance_receipt,
+        }
+    }
 }
 
 impl From<codescribe::controller::OverlayPasteResult> for CsPasteResult {
@@ -929,6 +1673,47 @@ async fn dispatch_recording_with_capture_gate(
 
     optimistically_show_overlay(&event).await;
     let dispatch = dispatch_recording_hotkey_event(event, Arc::clone(&controller)).await;
+    compensate_orphaned_preparing(&controller).await;
+    if controller.current_state().await == State::Idle {
+        let _ = CAPTURE_OWNER.compare_exchange(
+            CAPTURE_OWNER_CONTROLLER,
+            CAPTURE_OWNER_NONE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+    dispatch
+}
+
+/// Run one composer take through the same one-controller capture lifecycle the
+/// hotkey dispatch uses: claim ownership before any controller work, paint the
+/// optimistic overlay, dispatch, compensate an orphaned "preparing", and release
+/// ownership once the controller is back at `Idle`.
+///
+/// A composer press only ever *starts* a take; stopping goes through
+/// `stop_composer_turn_recording`, which names the capture it intends to end.
+/// That split is why there is no stop branch here to get wrong.
+///
+/// Returns the controller-admitted capture identity of the take it opened.
+async fn start_composer_turn_with_capture_gate(
+    controller: Arc<RecordingController>,
+) -> anyhow::Result<String> {
+    if controller.current_state().await != State::Idle {
+        return Err(anyhow::anyhow!(
+            "Another transcription capture already owns the microphone"
+        ));
+    }
+    CAPTURE_OWNER
+        .compare_exchange(
+            CAPTURE_OWNER_NONE,
+            CAPTURE_OWNER_CONTROLLER,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map_err(|_| anyhow::anyhow!("Another transcription capture is already starting"))?;
+
+    arm_preparing_overlay(BadgeMode::Assistive).await;
+    let dispatch = controller.start_composer_turn_recording().await;
     compensate_orphaned_preparing(&controller).await;
     if controller.current_state().await == State::Idle {
         let _ = CAPTURE_OWNER.compare_exchange(
@@ -1017,6 +1802,9 @@ async fn dispatch_recording_hotkey_event(
             };
             controller.handle_hotkey_event(input).await?;
         }
+        HotkeyEvent::AgentChannel { digit } => {
+            controller.toggle_agent_channel(digit).await?;
+        }
         HotkeyEvent::DoubleTapBlocked { gesture, reason } => {
             // Detector is the single owner of the stable
             // `blocked_double_tap gesture=… reason=…` INFO line (W11-C).
@@ -1034,45 +1822,141 @@ async fn dispatch_recording_hotkey_event(
     Ok(())
 }
 
-/// One-shot manual format levels: unknown levels and `off` are rejected (a
-/// manual action must act), while legacy aliases still normalize through the
-/// same `FormattingPolicy` owner.
 #[cfg(test)]
-mod format_level_tests {
+mod max_consultation_inspection_tests {
+    use super::CsMaxConsultationSnapshot;
+    use codescribe_core::agent::thread_delivery::{
+        ConsultationInputSnapshot, ConsultationRecoverySnapshot,
+    };
+    use codescribe_core::agent::{ContentBlock, Message, Role};
+
+    #[test]
+    fn retained_projection_preserves_source_text_identity_and_attachment_count() {
+        let snapshot = CsMaxConsultationSnapshot::from(ConsultationRecoverySnapshot {
+            consultation_id: "selected-max".into(),
+            pending_turn_id: Some("uncertain-turn".into()),
+            retained_inputs: vec![ConsultationInputSnapshot {
+                turn_id: "uncertain-turn".into(),
+                provider_name: "formatting-provider".into(),
+                input: Message::new(
+                    Role::User,
+                    vec![
+                        ContentBlock::Text("Prepare git add; do not execute it.".into()),
+                        ContentBlock::Image {
+                            media_type: "image/png".into(),
+                            data: b"fixture".to_vec(),
+                        },
+                        ContentBlock::Text("Keep the exact clipboard paths.".into()),
+                    ],
+                ),
+            }],
+        });
+        assert_eq!(snapshot.consultation_id, "selected-max");
+        assert_eq!(snapshot.pending_turn_id.as_deref(), Some("uncertain-turn"));
+        assert_eq!(snapshot.retained_inputs.len(), 1);
+        let input = &snapshot.retained_inputs[0];
+        assert_eq!(input.turn_id, "uncertain-turn");
+        assert_eq!(input.provider_name, "formatting-provider");
+        assert_eq!(input.image_count, 1);
+        assert_eq!(
+            input.text_blocks,
+            vec![
+                "Prepare git add; do not execute it.",
+                "Keep the exact clipboard paths.",
+            ]
+        );
+    }
+}
+
+/// Dependency-mode fixture: app/core are normal dependencies, so cfg(test) in
+/// those crates cannot protect this path. Keep the real controller and Stop state.
+#[cfg(test)]
+fn fixture_controller() -> Arc<RecordingController> {
+    use codescribe::controller::ControllerStartupResources;
+    use codescribe_core::config::{CapturedRuntimeInputs, Config, StartupAcquisitionProbe};
+    let root = tempfile::tempdir().expect("isolated fixture root");
+    let probe = StartupAcquisitionProbe::forbid();
+    let snapshot = Config::runtime_snapshot_from_captured(CapturedRuntimeInputs::defaults_at(
+        root.path().to_path_buf(),
+        1_700_000_000_000,
+    ));
+    let controller = RecordingController::from_startup_inputs(
+        snapshot,
+        ControllerStartupResources::inert(),
+        root.path(),
+    );
+    assert!(
+        probe.attempts().is_empty(),
+        "fixture acquired host startup inputs"
+    );
+    // Context storage is lazy. These lifecycle fixtures never write context;
+    // the controller retains this explicit path after the scratch directory closes.
+    Arc::new(controller)
+}
+
+#[cfg(test)]
+mod application_shutdown_tests {
     use super::*;
+    use serial_test::serial;
 
-    /// Unknown level strings must fail config-side, not silently no-op.
-    #[tokio::test]
-    async fn format_text_for_level_rejects_unknown_level() {
-        let hotkeys = CodescribeHotkeys::default();
-        let result = hotkeys
-            .format_text_for_level("hello".to_string(), None, "mega".to_string())
-            .await;
-        assert!(matches!(result, Err(CsError::Config { .. })));
+    #[test]
+    #[serial]
+    fn shutdown_releases_controller_capture_ownership() {
+        CAPTURE_OWNER.store(CAPTURE_OWNER_CONTROLLER, Ordering::SeqCst);
+        release_capture_ownership_for_shutdown();
+        assert_eq!(
+            CAPTURE_OWNER.load(Ordering::SeqCst),
+            CAPTURE_OWNER_NONE,
+            "application shutdown must never leave microphone ownership latched"
+        );
     }
 
-    /// Manual format must act: `off` is rejected rather than a silent pass-through.
-    #[tokio::test]
-    async fn format_text_for_level_rejects_off() {
-        let hotkeys = CodescribeHotkeys::default();
-        let result = hotkeys
-            .format_text_for_level("hello".to_string(), None, "off".to_string())
-            .await;
-        assert!(matches!(result, Err(CsError::Config { .. })));
+    #[test]
+    fn shutdown_requires_terminal_outcome_and_resource_quiescence() {
+        for outcome in [
+            CaptureStopOutcome::Pending,
+            CaptureStopOutcome::AlreadyStopping,
+            CaptureStopOutcome::AdmissionUnavailable,
+            CaptureStopOutcome::ForeignCapture,
+        ] {
+            assert!(require_shutdown_settlement(Ok(outcome), false).is_err());
+            assert!(require_shutdown_settlement(Ok(outcome), true).is_err());
+        }
+        for outcome in [
+            CaptureStopOutcome::Stopped,
+            CaptureStopOutcome::NoLiveCapture,
+        ] {
+            assert!(require_shutdown_settlement(Ok(outcome), false).is_err());
+            assert!(require_shutdown_settlement(Ok(outcome), true).is_ok());
+        }
+        assert!(require_shutdown_settlement(Err(anyhow::anyhow!("archive failed")), true).is_err());
     }
 
-    /// Legacy aliases (e.g. `creative` → Max) still normalize via FormattingPolicy.
     #[tokio::test]
-    async fn format_text_for_level_accepts_legacy_alias_shape() {
-        // Aliases normalize through the same FormattingPolicy owner as C01;
-        // "creative" must map to Max, not fail. No provider is configured in
-        // tests, so the formatter falls back to returning usable text without
-        // any network call.
-        let hotkeys = CodescribeHotkeys::default();
-        let result = hotkeys
-            .format_text_for_level("hi".to_string(), None, "creative".to_string())
-            .await;
-        assert!(result.is_ok());
+    async fn idle_shutdown_helper_closes_same_controller_without_removing_it() {
+        let controller = fixture_controller();
+        let store = Arc::new(Mutex::new(Some(Arc::clone(&controller))));
+        settle_controller_for_shutdown(&controller).await.unwrap();
+        assert!(Arc::ptr_eq(
+            &current_controller(&store).unwrap(),
+            &controller
+        ));
+        assert!(controller.capture_shutdown_settled());
+        assert!(controller.start_composer_turn_recording().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn shutdown_recording_wait_is_bounded() {
+        let error = await_recording_shutdown(
+            std::future::pending::<Result<(), CsError>>(),
+            Duration::from_millis(5),
+        )
+        .await
+        .expect_err("pending stop must time out");
+        let CsError::Recording { msg } = error else {
+            panic!("shutdown timeout must be a recording error");
+        };
+        assert!(msg.contains("timed out"), "{msg}");
     }
 }
 
@@ -1089,7 +1973,7 @@ mod dispatch_tests {
     async fn blocked_double_tap_does_not_publish_tray_conflict() {
         tray_status::update_tray_status(TrayStatus::Idle);
 
-        let controller = Arc::new(RecordingController::new_without_keychain());
+        let controller = fixture_controller();
         dispatch_recording_hotkey_event(
             HotkeyEvent::DoubleTapBlocked {
                 gesture: DoubleTapGesture::LeftOption,
@@ -1117,6 +2001,7 @@ mod app_action_tests {
     }
 
     impl CsAppActionListener for CountingAppActionListener {
+        fn on_max_approvals_changed(&self) {}
         /// Count ShowAgent UI callbacks (no recording side effects).
         fn on_show_agent(&self) {
             self.show_agent_calls.fetch_add(1, Ordering::SeqCst);
@@ -1207,6 +2092,10 @@ mod app_action_tests {
     #[test]
     fn mid_hold_attach_does_not_target_agent_or_claim_capture() {
         assert!(!event_can_start_capture(&HotkeyEvent::AttachSelection));
+        assert!(
+            !event_can_start_capture(&HotkeyEvent::AgentChannel { digit: 0 }),
+            "Fn+digit must not take the dictation capture gate"
+        );
         assert!(!event_targets_agent_ui(&HotkeyEvent::AttachSelection));
         assert!(!event_targets_agent_ui(&HotkeyEvent::HoldUpdate {
             mode: HoldMode::Chat,
@@ -1430,6 +2319,317 @@ fn should_rearm_hotkey_tap(
     !already_active
         && accessibility == PermissionStatus::Granted
         && input_monitoring == PermissionStatus::Granted
+}
+
+#[uniffi::export]
+impl CodescribeHotkeys {
+    /// Admission readiness of the next product recording — the same verdict
+    /// the controller applies before opening a microphone. Uses the live
+    /// controller's settings generation when one exists, otherwise one fresh
+    /// keychain-free snapshot; never constructs a controller for a read.
+    /// Opens no stream. Also keeps the tray honest while idle.
+    pub async fn admission_readiness(&self) -> Result<CsAdmissionReadiness, CsError> {
+        application_runtime::run(async move {
+            let controller = current_controller(&shared_controller());
+            let snapshot = match &controller {
+                Some(controller) => controller.runtime_settings_arc().await,
+                None => Arc::new(Config::load_runtime_snapshot_without_keychain().map_err(
+                    |error| CsError::Config {
+                        msg: format!("runtime settings snapshot refused: {error}"),
+                    },
+                )?),
+            };
+            let probe_snapshot = Arc::clone(&snapshot);
+            let verdict = tokio::task::spawn_blocking(move || {
+                admission::evaluate_live_admission_arc(&probe_snapshot)
+            })
+            .await
+            .unwrap_or_else(|join| {
+                Err(admission::AdmissionBlocker::CaptureDeviceUnavailable {
+                    reason: format!("admission probe panicked: {join}"),
+                })
+            });
+            let idle = match &controller {
+                Some(controller) => controller.current_state().await == State::Idle,
+                None => true,
+            };
+            if idle {
+                tray_status::update_tray_status(if verdict.is_ok() {
+                    TrayStatus::Idle
+                } else {
+                    TrayStatus::Error
+                });
+            }
+            Ok(project_admission_readiness(&snapshot, verdict))
+        })
+        .await?
+    }
+
+    /// Guided acoustic calibration through the shared controller's recorder:
+    /// `seconds` (clamped 4..=30) of the operator speaking normally. Stores a
+    /// device profile beside `settings.json` and pushes the new settings
+    /// generation into the live controller so the next take uses it.
+    pub async fn calibrate_energy(
+        &self,
+        seconds: u32,
+    ) -> Result<CsEnergyCalibrationReport, CsError> {
+        application_runtime::run(async move {
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            let duration = Duration::from_secs(u64::from(seconds.clamp(4, 30)));
+            let report = controller
+                .capture_energy_calibration(duration)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })?;
+            Ok(CsEnergyCalibrationReport {
+                device_name: report.device_name,
+                sample_rate: report.sample_rate,
+                measured_seconds: report.measured_seconds,
+                active_speech_median_dbfs: report.active_speech_median_dbfs,
+                noise_floor_dbfs: report.noise_floor_dbfs,
+                peak_dbfs: report.peak_dbfs,
+                existence_threshold_dbfs: report.existence_threshold_dbfs,
+                version: report.version,
+                path: report.path.display().to_string(),
+            })
+        })
+        .await?
+    }
+}
+
+/// No controller construction or blocking global-lock preflight on named Stop.
+/// The runtime owns the bridge root; the controller owns terminal settlement.
+async fn stop_composer_capture(
+    controller_store: &SharedController,
+    handle: CsCaptureHandle,
+) -> Result<CsConditionalStop, CsError> {
+    let controller = {
+        let Ok(slot) = controller_store.try_lock() else {
+            return Ok(CsConditionalStop::AdmissionUnavailable);
+        };
+        slot.as_ref().map(Arc::clone)
+    };
+    let Some(controller) = controller else {
+        return Ok(CsConditionalStop::NoLiveCapture);
+    };
+    controller
+        .stop_capture_if_owned(&handle.capture_id)
+        .await
+        .map(CsConditionalStop::from)
+        .map_err(|error| CsError::Recording {
+            msg: error.to_string(),
+        })
+}
+
+impl From<CaptureStopOutcome> for CsConditionalStop {
+    fn from(outcome: CaptureStopOutcome) -> Self {
+        match outcome {
+            CaptureStopOutcome::Stopped => Self::Stopped,
+            CaptureStopOutcome::ForeignCapture => Self::ForeignCapture,
+            CaptureStopOutcome::NoLiveCapture => Self::NoLiveCapture,
+            CaptureStopOutcome::AlreadyStopping => Self::AlreadyStopping,
+            CaptureStopOutcome::Pending => Self::Pending,
+            CaptureStopOutcome::AdmissionUnavailable => Self::AdmissionUnavailable,
+        }
+    }
+}
+
+#[cfg(test)]
+mod composer_stop_bridge_tests {
+    use super::*;
+
+    #[test]
+    fn pending_and_unavailable_are_preserved_by_the_production_mapping() {
+        for (source, target) in [
+            (CaptureStopOutcome::Stopped, CsConditionalStop::Stopped),
+            (
+                CaptureStopOutcome::ForeignCapture,
+                CsConditionalStop::ForeignCapture,
+            ),
+            (
+                CaptureStopOutcome::NoLiveCapture,
+                CsConditionalStop::NoLiveCapture,
+            ),
+            (
+                CaptureStopOutcome::AlreadyStopping,
+                CsConditionalStop::AlreadyStopping,
+            ),
+            (CaptureStopOutcome::Pending, CsConditionalStop::Pending),
+            (
+                CaptureStopOutcome::AdmissionUnavailable,
+                CsConditionalStop::AdmissionUnavailable,
+            ),
+        ] {
+            assert_eq!(CsConditionalStop::from(source), target);
+        }
+    }
+
+    #[test]
+    fn held_controller_store_refuses_without_waiting_or_creating_a_controller() {
+        let store: SharedController = Arc::new(Mutex::new(None));
+        let held = store.lock().unwrap();
+        let mut call = Box::pin(stop_composer_capture(
+            &store,
+            CsCaptureHandle {
+                capture_id: "mine".to_string(),
+            },
+        ));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(result) = call.as_mut().poll(&mut context) else {
+            panic!("named bridge Stop must refuse before suspension on a held store");
+        };
+        assert_eq!(result.unwrap(), CsConditionalStop::AdmissionUnavailable);
+        assert!(held.is_none());
+    }
+
+    #[tokio::test]
+    async fn absent_controller_and_idle_real_controller_report_no_live_capture() {
+        let store: SharedController = Arc::new(Mutex::new(None));
+        assert_eq!(
+            stop_composer_capture(
+                &store,
+                CsCaptureHandle {
+                    capture_id: "mine".to_string()
+                }
+            )
+            .await
+            .unwrap(),
+            CsConditionalStop::NoLiveCapture
+        );
+        let controller = fixture_controller();
+        *store.lock().unwrap() = Some(Arc::clone(&controller));
+        for _ in 0..2 {
+            assert_eq!(
+                stop_composer_capture(
+                    &store,
+                    CsCaptureHandle {
+                        capture_id: "mine".to_string()
+                    }
+                )
+                .await
+                .unwrap(),
+                CsConditionalStop::NoLiveCapture
+            );
+            assert_eq!(controller.current_state().await, State::Idle);
+        }
+    }
+}
+
+/// Project one admission verdict plus the snapshot's calibration facts into
+/// the bridge record. Pure so the shape is testable without hardware.
+fn project_admission_readiness(
+    snapshot: &codescribe_core::config::RuntimeSettingsSnapshot,
+    verdict: Result<admission::AdmissionGrant, admission::AdmissionBlocker>,
+) -> CsAdmissionReadiness {
+    let calibration = admission::calibration_status_view(snapshot);
+    let base = CsAdmissionReadiness {
+        ready: false,
+        code: String::new(),
+        message: String::new(),
+        device_name: None,
+        sample_rate: None,
+        calibration_version: None,
+        calibration_status: calibration.code.to_string(),
+        calibration_path: calibration.path.display().to_string(),
+        calibrated_devices: calibration.devices,
+        seal_lane_armed: snapshot.seal_lane_armed(),
+        seal_lane_setting_armed: snapshot.seal_lane_setting_armed(),
+        seal_lane_source: snapshot.seal_lane_source().as_str().to_string(),
+        seal_lane_env: codescribe_core::pipeline::streaming::SILERO_FUSION_ENV.to_string(),
+    };
+    match verdict {
+        Ok(grant) => CsAdmissionReadiness {
+            ready: true,
+            code: "admission_granted".to_string(),
+            device_name: Some(grant.device_name),
+            sample_rate: Some(grant.sample_rate),
+            calibration_version: Some(grant.calibration_version),
+            ..base
+        },
+        Err(blocker) => CsAdmissionReadiness {
+            ready: false,
+            code: blocker.code().to_string(),
+            message: format!("{} — {}", blocker.explanation(), blocker.action()),
+            ..base
+        },
+    }
+}
+
+/// Product-owned seal-lane provenance as exposed by the admission bridge.
+#[cfg(test)]
+mod admission_readiness_source_tests {
+    use super::*;
+    use serial_test::serial;
+
+    use codescribe_core::test_isolation::EnvGuard;
+
+    /// Scratch product settings own the bridge source until process env
+    /// explicitly overrides the same immutable snapshot input.
+    #[test]
+    #[serial]
+    fn scratch_settings_and_env_override_project_honest_admission_source() {
+        const SEAL_LANE_ENV: &str = codescribe_core::pipeline::streaming::SILERO_FUSION_ENV;
+
+        let scratch = tempfile::tempdir().expect("create scratch settings root");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", scratch.path());
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let _seal_lane_override = EnvGuard::remove(SEAL_LANE_ENV);
+
+        UserSettings {
+            seal_lane_armed: Some(true),
+            ..Default::default()
+        }
+        .save()
+        .expect("write scratch product settings");
+
+        let settings_path = UserSettings::settings_path();
+        let settings_root = settings_path
+            .parent()
+            .expect("settings path has a parent")
+            .canonicalize()
+            .expect("canonical persisted settings root");
+        assert_eq!(
+            settings_root,
+            scratch
+                .path()
+                .canonicalize()
+                .expect("canonical scratch settings root"),
+            "settings write must remain inside the scratch data root"
+        );
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&settings_path).expect("read scratch settings.json"),
+        )
+        .expect("parse scratch settings.json");
+        assert_eq!(
+            persisted.pointer("/audio/seal_lane_armed"),
+            Some(&serde_json::Value::Bool(true))
+        );
+
+        let settings_snapshot = Config::load_runtime_snapshot_without_keychain()
+            .expect("load settings-owned runtime snapshot");
+        let settings_readiness = project_admission_readiness(
+            &settings_snapshot,
+            Err(admission::AdmissionBlocker::SealVadUnavailable),
+        );
+        assert!(settings_readiness.seal_lane_armed);
+        assert!(settings_readiness.seal_lane_setting_armed);
+        assert_eq!(settings_readiness.seal_lane_source, "settings");
+
+        // SAFETY: the test remains under the same global serial_test lock and
+        // `_seal_lane_override` restores the inherited value on every exit.
+        unsafe { std::env::set_var(SEAL_LANE_ENV, "0") };
+        let override_snapshot = Config::load_runtime_snapshot_without_keychain()
+            .expect("load env-overridden runtime snapshot");
+        let override_readiness = project_admission_readiness(
+            &override_snapshot,
+            Err(admission::AdmissionBlocker::SealVadUnavailable),
+        );
+        assert!(!override_readiness.seal_lane_armed);
+        assert!(override_readiness.seal_lane_setting_armed);
+        assert_eq!(override_readiness.seal_lane_source, "env_override");
+    }
 }
 
 #[uniffi::export]
@@ -1853,7 +3053,7 @@ mod preparing_compensation_tests {
         stopped: AtomicUsize,
         finalising: AtomicUsize,
         audio_levels: StdMutex<Vec<f32>>,
-        context_markers: StdMutex<Vec<(u64, String)>>,
+        compact_paints: StdMutex<Vec<crate::recording::CsCompactProjection>>,
     }
 
     impl RecordingLifecycleListener {
@@ -1880,16 +3080,16 @@ mod preparing_compensation_tests {
                 .unwrap_or_else(|e| e.into_inner())
                 .clone()
         }
-        /// Snapshot of context markers `(position, label)` the listener captured.
-        fn context_markers(&self) -> Vec<(u64, String)> {
-            self.context_markers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone()
-        }
     }
 
     impl CsTranscriptionListener for RecordingLifecycleListener {
+        /// No-op: transcript projections are not under test in this suite.
+        fn on_transcript_projection(&self, _event: CsTranscriptProjectionEvent) {}
+        /// No-op: passive presentation statuses are not under test in this suite.
+        fn on_presentation_status(&self, _event: CsPresentationStatusEvent) {}
+        fn on_compact_projection(&self, event: crate::recording::CsCompactProjection) {
+            self.compact_paints.lock().unwrap().push(event);
+        }
         /// Count preparing overlay shows for compensation assertions.
         fn on_recording_preparing(&self) {
             self.preparing.fetch_add(1, Ordering::SeqCst);
@@ -1906,50 +3106,8 @@ mod preparing_compensation_tests {
         fn on_recording_finalising(&self) {
             self.finalising.fetch_add(1, Ordering::SeqCst);
         }
-        /// No-op: preview text is not under test in this suite.
-        fn on_preview(&self, _text: String) {}
-        /// No-op: mid-stream corrections are not under test in this suite.
-        fn on_correction(&self, _text: String, _previous_text: String) {}
-        /// No-op: utterance finals are not under test in this suite.
-        fn on_final(
-            &self,
-            _utterance_id: u64,
-            _text: String,
-            _avg_logprob: Option<f32>,
-            _speech_pct: Option<f32>,
-            _confidence_flags: Vec<String>,
-        ) {
-        }
-        /// No-op: layered replace-range patches are not under test here.
-        fn on_replace_range(
-            &self,
-            _utterance_id: u64,
-            _start: u64,
-            _end: u64,
-            _text: String,
-            _source: crate::recording::CsLayerSource,
-        ) {
-        }
-        /// No-op: annotation inserts are not under test in this suite.
-        fn on_insert_annotation(
-            &self,
-            _utterance_id: u64,
-            _position: u64,
-            _text: String,
-            _kind: CsAnnotationKind,
-        ) {
-        }
-        /// Capture selection/context markers for forwarder assertions.
-        fn on_context_marker(&self, position: u64, marker: String) {
-            self.context_markers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push((position, marker));
-        }
         /// No-op: session finalisation summary is not under test here.
         fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
-        /// No-op: final transcript ready is not under test in this suite.
-        fn on_final_transcript_ready(&self, _text: String) {}
         /// No-op: VAD active toggles are not under test in this suite.
         fn on_vad_active(&self, _active: bool) {}
         /// Capture RMS samples so audio-level forwarding can be asserted.
@@ -1973,7 +3131,7 @@ mod preparing_compensation_tests {
         let listener = Arc::new(RecordingLifecycleListener::default());
         *shared_listener().write().unwrap_or_else(|e| e.into_inner()) =
             Some(Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>);
-        let controller = Arc::new(RecordingController::new_without_keychain());
+        let controller = fixture_controller();
         *shared_controller()
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&controller));
@@ -2002,7 +3160,42 @@ mod preparing_compensation_tests {
         assert!(current_controller(&shared_controller()).is_none());
     }
 
-    /// AudioLevel IPC payload forwards the RMS sample to the Swift listener.
+    /// The compact paint crosses IPC with its capture identity and its
+    /// read-only evidence intact; an invalid payload is rejected.
+    #[test]
+    fn compact_projection_transport_preserves_identity_and_rejects_invalid_json() {
+        let listener = Arc::new(RecordingLifecycleListener::default());
+        let paint = codescribe::presentation::emitter::CompactProjection {
+            session_id: "take".into(),
+            capture_epoch: 7,
+            sequence: 2,
+            text: "…".into(),
+            degraded: true,
+            evidence: vec![codescribe::presentation::emitter::UnanchoredEvidence {
+                sample_start: 16_000,
+                sample_end: 32_000,
+                text: "inna wersja".into(),
+                reason: "exclusive_tail_awaiting_whole_span".into(),
+            }],
+        };
+        forward_event_to_listener(
+            IpcEventPayload::CompactProjection {
+                json: serde_json::to_string(&paint).unwrap(),
+            },
+            listener.clone(),
+        );
+        forward_event_to_listener(
+            IpcEventPayload::CompactProjection { json: "{}".into() },
+            listener.clone(),
+        );
+        let received = listener.compact_paints.lock().unwrap().clone();
+        assert_eq!(received, vec![paint.into()]);
+        assert_eq!(received[0].evidence[0].text, "inna wersja");
+        assert_eq!(received[0].evidence[0].sample_end, 32_000);
+        assert_eq!(listener.started(), 0);
+        assert_eq!(listener.stopped(), 0);
+    }
+
     #[test]
     fn recording_audio_level_payload_forwards_rms() {
         let listener = Arc::new(RecordingLifecycleListener::default());
@@ -2011,23 +3204,6 @@ mod preparing_compensation_tests {
             Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>,
         );
         assert_eq!(listener.audio_levels(), vec![0.125]);
-    }
-
-    /// ContextMarker IPC payload forwards position + label to the listener.
-    #[test]
-    fn context_marker_payload_forwards_position_and_label() {
-        let listener = Arc::new(RecordingLifecycleListener::default());
-        forward_event_to_listener(
-            IpcEventPayload::ContextMarker {
-                position: 7,
-                marker: "{selection_3}".to_string(),
-            },
-            Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>,
-        );
-        assert_eq!(
-            listener.context_markers(),
-            vec![(7, "{selection_3}".to_string())]
-        );
     }
 
     /// Paths 1 & 2 (quick hold-release cancel, start-failure reset): preparing was
@@ -2168,6 +3344,51 @@ mod preparing_compensation_tests {
         );
         assert_eq!(listener.stopped(), 1, "idle → stopped");
         assert_eq!(listener.finalising(), 1, "idle must not re-fire finalising");
+        teardown();
+    }
+
+    /// A lag recovery does not replay dropped payloads. It snapshots controller
+    /// truth instead; when that truth is Idle, native capture ownership and the
+    /// overlay lifecycle must both end even if the original idle broadcast was
+    /// among the dropped messages.
+    #[tokio::test]
+    #[serial]
+    async fn authoritative_idle_reconciliation_releases_native_capture() {
+        let _guard = TEST_LOCK.lock().await;
+        let (listener, _controller) = install();
+        CAPTURE_OWNER.store(CAPTURE_OWNER_CONTROLLER, Ordering::SeqCst);
+
+        forward_controller_state_to_listener(
+            State::Idle,
+            Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>,
+        );
+        release_controller_capture_owner_if_idle(State::Idle);
+
+        assert_eq!(listener.stopped(), 1, "authoritative Idle must stop UI");
+        assert_eq!(
+            CAPTURE_OWNER.load(Ordering::SeqCst),
+            CAPTURE_OWNER_NONE,
+            "authoritative Idle must release the microphone gate"
+        );
+        teardown();
+    }
+
+    /// Reconciliation also preserves non-terminal controller truth instead of
+    /// flattening every loss event into a stop.
+    #[tokio::test]
+    #[serial]
+    async fn authoritative_busy_reconciliation_keeps_finalising_phase() {
+        let _guard = TEST_LOCK.lock().await;
+        let (listener, _controller) = install();
+
+        forward_controller_state_to_listener(
+            State::Busy,
+            Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>,
+        );
+
+        assert_eq!(listener.finalising(), 1);
+        assert_eq!(listener.stopped(), 0);
+        assert_eq!(listener.started(), 0);
         teardown();
     }
 

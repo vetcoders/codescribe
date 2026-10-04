@@ -21,28 +21,37 @@ APP_PATH="$ROOT_DIR/macos/build/Build/Products/Release/${APP_NAME}.app"
 SIGN=0
 NOTARIZE=0
 NO_EMBED=0
-# Public daily release keeps Silero in the dylib and packages MiniLM as a signed
-# runtime resource. Whisper resolves from cache / Settings download. Embed
-# Whisper only via --embed-whisper (curiosity / offline / experimental fat SKU).
+# Public daily release keeps Silero in the dylib. Whisper resolves from cache /
+# Settings download; embed it only via --embed-whisper (curiosity / offline /
+# experimental fat SKU). MiniLM is NOT bundled: no runtime path loads it, so the
+# 471 MB weight file left the public artifact — ask for it with
+# --bundle-embedder when a semantic gate actually needs it.
 EMBED_WHISPER=0
+BUNDLE_EMBEDDER=0
 EMBED_WHISPER_EXPLICIT=0
 DMG_SUFFIX=""
+RECEIPT=""
+RECEIPT_RUN=""
 
 usage() {
   cat <<EOF
 Usage: $0 [options]
 
-Builds the public user artifact by default: embedded Silero VAD plus MiniLM as
-a signed runtime resource (not compiled through Cargo).
+Builds the public user artifact by default: embedded Silero VAD only.
 Whisper is NOT baked into the standard DMG (~1GB saved); users download it
 from Settings → Dictation when they want local Candle Whisper.
+MiniLM is NOT bundled either (~471MB saved) because no runtime path loads it;
+pass --bundle-embedder to ship it as a signed app resource.
 
 Options:
+  --receipt <path>    Write invocation artifact data only after success
+  --receipt-run <id>  Required unique invocation ID with --receipt
   --sign              Codesign the .app (requires Developer ID)
   --notarize          Notarize the DMG (requires NOTARY_PROFILE)
   --identity <name>   Override codesign identity
   --entitlements <p>  Entitlements plist path (default: $ENTITLEMENTS)
   --embed-whisper     Fat SKU: also embed Whisper (pair with --dmg-suffix _full)
+  --bundle-embedder   Ship MiniLM as a signed app resource (+471MB; off by default)
   --dmg-suffix <s>    Append suffix before .dmg (for example: _full)
   --no-embed          DEV/RECOVERY only: disable all optional model embedding
                       (CODESCRIBE_NO_EMBED=1) — not the public product path
@@ -51,17 +60,28 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --receipt) RECEIPT="$2"; shift 2;;
+    --receipt-run) RECEIPT_RUN="$2"; shift 2;;
     --sign) SIGN=1; shift 1;;
     --notarize) NOTARIZE=1; shift 1;;
     --identity) IDENTITY="$2"; shift 2;;
     --entitlements) ENTITLEMENTS="$2"; shift 2;;
     --embed-whisper) EMBED_WHISPER=1; EMBED_WHISPER_EXPLICIT=1; shift 1;;
+    --bundle-embedder) BUNDLE_EMBEDDER=1; shift 1;;
     --dmg-suffix) DMG_SUFFIX="$2"; shift 2;;
     --no-embed) NO_EMBED=1; shift 1;;
     -h|--help) usage; exit 0;;
     *) echo "Unknown arg: $1" >&2; usage; exit 1;;
   esac
 done
+
+# A caller must allocate a fresh private receipt path for each invocation.
+if [[ -n "$RECEIPT" || -n "$RECEIPT_RUN" ]]; then
+  if [[ "$RECEIPT" != /* || ! "$RECEIPT_RUN" =~ ^[a-zA-Z0-9._-]+$ || -e "$RECEIPT" || -L "$RECEIPT" || "$NO_EMBED" -eq 1 ]]; then
+    echo "ERROR: receipt needs a fresh absolute path, invocation ID and public variant" >&2
+    exit 1
+  fi
+fi
 
 if [[ "$NO_EMBED" -eq 1 && "$EMBED_WHISPER_EXPLICIT" -eq 1 ]]; then
   echo "ERROR: --no-embed and --embed-whisper cannot be used together" >&2
@@ -88,16 +108,30 @@ BUILD_ENV=(env)
 # All `-u` (unset) flags MUST precede any name=value assignments: BSD/macOS
 # `env` stops parsing options at the first assignment (unlike GNU env), so an
 # interleaved `-u` would be treated as the utility name (env: -u: No such file).
+if [[ "$BUNDLE_EMBEDDER" -eq 1 ]]; then
+  EMBEDDER_LABEL="bundled as a signed app resource (--bundle-embedder)"
+else
+  EMBEDDER_LABEL="not bundled (no runtime consumer)"
+fi
+
 BUILD_ENV+=(-u CODESCRIBE_EMBED_TTS -u CODESCRIBE_EMBED_EMBEDDER -u CODESCRIBE_LOCAL_INSTALL)
 if [[ "$NO_EMBED" -eq 1 ]]; then
   BUILD_ENV+=(-u CODESCRIBE_EMBED_WHISPER CODESCRIBE_NO_EMBED=1)
 elif [[ "$EMBED_WHISPER" -eq 1 ]]; then
-  # Optional fat SKU: Silero + Whisper baked in; MiniLM stays a runtime resource.
+  # Optional fat SKU: Silero + Whisper baked in.
   BUILD_ENV+=(-u CODESCRIBE_NO_EMBED CODESCRIBE_EMBED_WHISPER=1)
 else
-  # Public slim default: Silero in dylib; MiniLM resource; Whisper runtime.
+  # Public slim default: Silero in dylib; Whisper runtime; no MiniLM.
   BUILD_ENV+=(-u CODESCRIBE_NO_EMBED -u CODESCRIBE_EMBED_WHISPER)
 fi
+
+# Assignments must come AFTER every `-u` (see the BSD env note above): once env
+# sees a NAME=VALUE pair it stops parsing options and treats a later `-u` as the
+# utility name. The assignments below are last on purpose.
+BUILD_ENV+=(CODESCRIBE_BUNDLE_EMBEDDER="$BUNDLE_EMBEDDER")
+# Every DMG is an install artifact: build-app.sh stamps
+# LSMultipleInstancesProhibited into its Info.plist before signing it.
+BUILD_ENV+=(CODESCRIBE_INSTALL_LANE=1)
 
 echo "=== Build DMG ==="
 echo "App: $APP_NAME"
@@ -106,9 +140,9 @@ echo "Version: $VERSION"
 if [[ "$NO_EMBED" -eq 1 ]]; then
   echo "Models: runtime assets only (CODESCRIBE_NO_EMBED=1) — dev/recovery build, not the public artifact"
 elif [[ "$EMBED_WHISPER" -eq 1 ]]; then
-  echo "Models: embedded Silero + Whisper; MiniLM signed runtime resource (fat SKU)"
+  echo "Models: embedded Silero + Whisper (fat SKU); MiniLM $EMBEDDER_LABEL"
 else
-  echo "Models: embedded Silero; MiniLM signed runtime resource; Whisper runtime/download (slim public default)"
+  echo "Models: embedded Silero; Whisper runtime/download (slim public default); MiniLM $EMBEDDER_LABEL"
 fi
 echo "DMG: $DMG_PATH"
 
@@ -166,4 +200,13 @@ echo "SHA-256: $(cat "$DMG_PATH.sha256")"
 if [[ "$NOTARIZE" -eq 1 ]]; then
   echo "Notarizing DMG with profile: $NOTARY_PROFILE"
   NOTARY_PROFILE="$NOTARY_PROFILE" "$ROOT_DIR/scripts/notarize.sh" "$DMG_PATH" "$APP_PATH"
+fi
+
+# These are the producer's frozen source version/path, never a late HEAD lookup
+# or a rewritten bundle stamp. The payload verifier still checks bundle version.
+if [[ -n "$RECEIPT" ]]; then
+  VARIANT=slim
+  if [[ "$EMBED_WHISPER" -eq 1 ]]; then VARIANT=full; fi
+  bash "$ROOT_DIR/scripts/lib/release-artifact-receipt.sh" write \
+    "$RECEIPT" "$RECEIPT_RUN" "$VARIANT" "$VERSION" "$DMG_PATH"
 fi

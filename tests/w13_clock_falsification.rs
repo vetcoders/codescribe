@@ -125,7 +125,7 @@ fn sha256_file(path: &Path) -> String {
     let bytes = fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 fn load_wav_mono(path: &Path) -> (Vec<f32>, u32) {

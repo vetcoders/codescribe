@@ -270,13 +270,12 @@ fn ensure_supported_audio_extension(path: &Path) -> Result<()> {
     }
 }
 
-/// Confine reads to `~/.codescribe` or the agent assets directory.
+/// Confine reads to the configured Codescribe data directory or agent assets.
 ///
 /// Both roots are canonicalized before comparison so the two sides of the
 /// prefix test are in the same form. Expects an already-canonical `path`.
 fn ensure_allowed_audio_path(path: &Path) -> Result<()> {
-    let home_var = std::env::var("HOME").context("HOME environment variable is not set")?;
-    let codescribe_dir = canonical_or_original(PathBuf::from(home_var).join(".codescribe"));
+    let codescribe_dir = canonical_or_original(codescribe_core::config::Config::config_dir());
     let assets_dir = canonical_or_original(AgentAssetStore::assets_dir());
 
     if is_path_allowed(path, &codescribe_dir, &assets_dir) {
@@ -430,6 +429,10 @@ mod tests {
     #[test]
     #[serial]
     fn transcribes_allowed_audio_path_with_mock_engine() {
+        let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         let assets_dir = AgentAssetStore::assets_dir();
         std::fs::create_dir_all(&assets_dir).expect("create assets dir");
         let audio_path = assets_dir.join(format!(
@@ -452,7 +455,6 @@ mod tests {
         assert_eq!(parsed.language_source, "detected");
         assert!(parsed.duration_seconds > 0.0);
         assert!(parsed.speech_duration_seconds > 0.0);
-        std::fs::remove_file(audio_path).ok();
     }
 
     /// Paths outside `~/.codescribe` / assets roots are rejected before decode.

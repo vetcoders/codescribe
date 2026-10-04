@@ -40,27 +40,19 @@ fn generate_silence(duration_sec: f32, sample_rate: u32) -> Vec<f32> {
     vec![0.0001; num_samples] // Near-zero but not exactly zero
 }
 
-/// Check if VAD model is available (skip tests if not)
-fn vad_model_available() -> bool {
-    vad::default_model_path().exists()
+/// Create AccumulatingVad at 16kHz on the embedded Silero model.
+///
+/// Silero is compiled into `codescribe-core` (core/build.rs: non-negotiable),
+/// so construction is zero-I/O and a failure here is a real defect, not a
+/// missing download. No skip path on purpose.
+fn create_vad_16k() -> AccumulatingVad {
+    create_vad(16000)
 }
 
-/// Create AccumulatingVad at 16kHz (or skip if model missing)
-fn create_vad_16k() -> Option<AccumulatingVad> {
-    if !vad_model_available() {
-        eprintln!("Skipping: VAD model not found");
-        return None;
-    }
-    AccumulatingVad::new(16000).ok()
-}
-
-/// Create AccumulatingVad at custom sample rate (or skip if model missing)
-fn create_vad(sample_rate: u32) -> Option<AccumulatingVad> {
-    if !vad_model_available() {
-        eprintln!("Skipping: VAD model not found");
-        return None;
-    }
-    AccumulatingVad::new(sample_rate).ok()
+/// Create AccumulatingVad at a custom sample rate on the embedded Silero model.
+fn create_vad(sample_rate: u32) -> AccumulatingVad {
+    AccumulatingVad::new(sample_rate)
+        .unwrap_or_else(|e| panic!("embedded Silero VAD failed to load at {sample_rate}Hz: {e}"))
 }
 
 #[test]
@@ -106,15 +98,8 @@ fn test_vad_creation_without_model_returns_error() {
 }
 
 #[test]
-#[ignore] // Requires Silero VAD model
 fn test_vad_creation_success() {
     let vad = create_vad_16k();
-    assert!(
-        vad.is_some(),
-        "should create AccumulatingVad with valid model"
-    );
-
-    let vad = vad.unwrap();
     // Initial probability must be 0.0 (the critical fix — was 1.0 in VadWorker)
     assert_eq!(
         vad.probability(),
@@ -124,18 +109,10 @@ fn test_vad_creation_success() {
 }
 
 #[test]
-#[ignore] // Requires Silero VAD model
 fn test_vad_multiple_instances_independent() {
     // No singleton — each instance is independent
-    let vad1 = create_vad_16k();
+    let mut vad1 = create_vad_16k();
     let vad2 = create_vad_16k();
-    assert!(
-        vad1.is_some() && vad2.is_some(),
-        "should create multiple instances"
-    );
-
-    let mut vad1 = vad1.unwrap();
-    let vad2 = vad2.unwrap();
 
     // Feed speech to vad1 only
     let speech = generate_speech_audio(0.5, 16000);
@@ -154,11 +131,8 @@ fn test_vad_multiple_instances_independent() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // Requires Silero VAD model
 fn test_feed_returns_probability_synchronously() {
-    let Some(mut vad) = create_vad_16k() else {
-        return;
-    };
+    let mut vad = create_vad_16k();
 
     let speech = generate_speech_audio(0.5, 16000);
 
@@ -178,11 +152,8 @@ fn test_feed_returns_probability_synchronously() {
 }
 
 #[test]
-#[ignore] // Requires Silero VAD model
 fn test_silence_probability_low() {
-    let Some(mut vad) = create_vad_16k() else {
-        return;
-    };
+    let mut vad = create_vad_16k();
 
     let silence = generate_silence(0.5, 16000);
     let prob = vad.feed(&silence);
@@ -197,11 +168,8 @@ fn test_silence_probability_low() {
 }
 
 #[test]
-#[ignore] // Requires Silero VAD model
 fn test_speech_then_silence_transition() {
-    let Some(mut vad) = create_vad_16k() else {
-        return;
-    };
+    let mut vad = create_vad_16k();
 
     // Feed speech first
     let speech = generate_speech_audio(1.0, 16000);
@@ -226,11 +194,8 @@ fn test_speech_then_silence_transition() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // Requires Silero VAD model
 fn test_48k_resampling_detects_speech() {
-    let Some(mut vad) = create_vad(48000) else {
-        return;
-    };
+    let mut vad = create_vad(48000);
 
     // Audio at 48kHz — AccumulatingVad should resample to 16kHz internally
     let speech = generate_speech_audio(0.5, 48000);
@@ -248,12 +213,9 @@ fn test_48k_resampling_detects_speech() {
 }
 
 #[test]
-#[ignore] // Requires Silero VAD model
 fn test_44100_resampling_detects_speech() {
     // 44100Hz is the common macOS native sample rate
-    let Some(mut vad) = create_vad(44100) else {
-        return;
-    };
+    let mut vad = create_vad(44100);
 
     let speech = generate_speech_audio(0.5, 44100);
     let prob = vad.feed(&speech);
@@ -273,11 +235,8 @@ fn test_44100_resampling_detects_speech() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // Requires Silero VAD model
 fn test_small_chunks_accumulate_correctly() {
-    let Some(mut vad) = create_vad_16k() else {
-        return;
-    };
+    let mut vad = create_vad_16k();
 
     // Feed sub-chunk-size pieces (< 512 samples)
     // This is what cpal delivers: ~1024 @ 44100Hz → ~371 @ 16kHz after resampling
@@ -301,11 +260,8 @@ fn test_small_chunks_accumulate_correctly() {
 }
 
 #[test]
-#[ignore] // Requires Silero VAD model
 fn test_single_sample_chunks_still_work() {
-    let Some(mut vad) = create_vad_16k() else {
-        return;
-    };
+    let mut vad = create_vad_16k();
 
     // Extreme case: one sample at a time (should still accumulate)
     let speech = generate_speech_audio(0.1, 16000); // 1600 samples
@@ -379,11 +335,8 @@ fn test_vad_config_presets() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // Requires Silero VAD model
 fn test_reset_clears_state() {
-    let Some(mut vad) = create_vad_16k() else {
-        return;
-    };
+    let mut vad = create_vad_16k();
 
     // Build up state with speech
     let speech = generate_speech_audio(1.0, 16000);
@@ -411,22 +364,16 @@ fn test_reset_clears_state() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // Requires Silero VAD model
 fn test_empty_samples() {
-    let Some(mut vad) = create_vad_16k() else {
-        return;
-    };
+    let mut vad = create_vad_16k();
 
     let prob = vad.feed(&[]);
     assert_eq!(prob, 0.0, "empty feed should return 0.0 (initial)");
 }
 
 #[test]
-#[ignore] // Requires Silero VAD model
 fn test_very_short_samples() {
-    let Some(mut vad) = create_vad_16k() else {
-        return;
-    };
+    let mut vad = create_vad_16k();
 
     // < 512 samples — should accumulate without panic
     let short = vec![0.5f32; 10];
@@ -443,11 +390,8 @@ fn test_very_short_samples() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // Requires Silero VAD model
 fn test_feed_performance() {
-    let Some(mut vad) = create_vad_16k() else {
-        return;
-    };
+    let mut vad = create_vad_16k();
 
     let speech = generate_speech_audio(0.032, 16000); // 512 samples = 1 chunk
 
@@ -474,11 +418,8 @@ fn test_feed_performance() {
 }
 
 #[test]
-#[ignore] // Requires Silero VAD model, takes time
 fn test_sustained_alternating_speech_silence() {
-    let Some(mut vad) = create_vad(48000) else {
-        return;
-    };
+    let mut vad = create_vad(48000);
 
     let speech = generate_speech_audio(0.1, 48000);
     let silence = generate_silence(0.1, 48000);
@@ -514,7 +455,7 @@ fn test_sustained_alternating_speech_silence() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Real Audio Tests — canonical recordings from tests/assets/data_assets/
+// Real Audio Tests — committed TTS fixture + private operator corpus
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Load WAV file as f32 samples + sample rate
@@ -551,28 +492,99 @@ fn load_wav(path: &std::path::Path) -> (Vec<f32>, u32) {
     }
 }
 
-/// Find canonical test assets directory
+/// Committed fixture: 10.8 s of TTS speech, mono 16 kHz s16.
+fn committed_tts_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/synthetic_speech_tts.wav")
+}
+
+/// Private STT fixtures live OUTSIDE the repo (real operator speech —
+/// deprivatized twice). Resolution: `CODESCRIBE_DATA_ASSETS` →
+/// `~/.codescribe/data_assets` → the gitignored in-repo drop dir. Same order
+/// as `tests/e2e_full_pipeline.rs` and `scripts/lib/data-assets.sh`; this file
+/// used to hardcode tier 3, which is exactly the bug
+/// `tests/assets/data_assets/README.md` warns about.
 fn assets_dir() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let dir = manifest.join("tests/assets/data_assets");
-    assert!(dir.exists(), "Test assets not found at {}", dir.display());
-    dir
+    if let Ok(dir) = std::env::var("CODESCRIBE_DATA_ASSETS") {
+        return PathBuf::from(dir);
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let local = PathBuf::from(home).join(".codescribe/data_assets");
+        if local.is_dir() {
+            return local;
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/data_assets")
+}
+
+/// Selecting an ignored corpus test requires its input. Missing input is a
+/// failure, never an early return that the test runner would report as a pass.
+fn private_clip(filename: &str) -> PathBuf {
+    let path = assets_dir().join(filename);
+    let hint = "resolution: CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets → tests/assets/data_assets; see tests/assets/data_assets/README.md";
+    assert!(
+        path.is_file(),
+        "private corpus clip is not a regular file: {} ({hint})",
+        path.display()
+    );
+    path
+}
+
+#[test]
+fn test_private_clip_requires_regular_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let missing = directory.path().join("missing.wav");
+    assert!(std::panic::catch_unwind(|| private_clip(missing.to_str().unwrap())).is_err());
+    assert!(std::panic::catch_unwind(|| private_clip(directory.path().to_str().unwrap())).is_err());
+    std::fs::write(&missing, b"fixture presence witness, not audio").unwrap();
+    assert_eq!(private_clip(missing.to_str().unwrap()), missing);
+}
+
+/// Smoke test on the COMMITTED fixture: real (TTS) speech → embedded Silero
+/// must detect it. Hermetic — no corpus, no download, runs in plain `cargo test`.
+#[test]
+fn test_vad_committed_tts_fixture_detects_speech() {
+    let (samples, sample_rate) = load_wav(&committed_tts_fixture());
+    eprintln!("  Loaded {} samples at {}Hz", samples.len(), sample_rate);
+
+    let mut vad = create_vad(sample_rate);
+
+    // 500ms windows, reset between for independent measurement
+    let window_size = sample_rate as usize / 2;
+    let mut max_prob = 0.0f32;
+    let mut speech_windows = 0u32;
+    let mut windows = 0u32;
+    for window in samples.chunks(window_size) {
+        if window.len() < window_size {
+            break;
+        }
+        vad.reset();
+        let prob = vad.feed(window);
+        max_prob = max_prob.max(prob);
+        if prob >= 0.5 {
+            speech_windows += 1;
+        }
+        windows += 1;
+    }
+    eprintln!(
+        "  [tts fixture] windows={windows} speech_windows={speech_windows} max_prob={max_prob:.3}"
+    );
+
+    assert!(
+        max_prob > 0.5,
+        "embedded Silero did not detect speech in the committed TTS fixture (max_prob={max_prob:.3})"
+    );
 }
 
 /// Smoke test: real audio → AccumulatingVad must detect speech
 #[test]
-#[ignore] // Requires Silero VAD model + test audio assets
+#[ignore = "needs the private data_assets corpus (NN_slug.wav; CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets) — run: make test-e2e-roundtrip"]
 fn test_vad_real_audio_smoke() {
-    if !vad_model_available() {
-        return;
-    }
-
-    let wav_path = assets_dir().join("01_no-to-dobra.wav");
+    let wav_path = private_clip("01_no-to-dobra.wav");
     let (samples, sample_rate) = load_wav(&wav_path);
     eprintln!("  Loaded {} samples at {}Hz", samples.len(), sample_rate);
 
     // Create VAD at the file's native sample rate
-    let mut vad = AccumulatingVad::new(sample_rate).expect("VAD creation should succeed");
+    let mut vad = create_vad(sample_rate);
 
     // Feed 1 second from the middle (should be speech)
     let one_sec = sample_rate as usize;
@@ -591,9 +603,8 @@ fn test_vad_real_audio_smoke() {
 
 /// Test AccumulatingVad on real Polish speech — should detect speech regions
 #[test]
-#[ignore] // Requires Silero VAD model + test audio assets
+#[ignore = "needs the private data_assets corpus (NN_slug.wav; CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets) — run: make test-e2e-roundtrip"]
 fn test_vad_real_audio_speech_detection() {
-    let assets = assets_dir();
     let recordings = [
         ("01_no-to-dobra.wav", "casual Polish"),
         ("02_kubernetes-wymaga-konfiguracji.wav", "tech + vet terms"),
@@ -602,20 +613,9 @@ fn test_vad_real_audio_speech_detection() {
     ];
 
     for (filename, label) in &recordings {
-        let wav_path = assets.join(filename);
-        if !wav_path.exists() {
-            eprintln!("Skipping {}: file not found", filename);
-            continue;
-        }
-
+        let wav_path = private_clip(filename);
         let (samples, sample_rate) = load_wav(&wav_path);
-        let mut vad = match AccumulatingVad::new(sample_rate) {
-            Ok(v) => v,
-            Err(_) => {
-                eprintln!("Skipping: VAD model not available");
-                return;
-            }
-        };
+        let mut vad = create_vad(sample_rate);
 
         // Sample 5 one-second windows spread across the recording
         let one_sec = sample_rate as usize;
@@ -650,22 +650,11 @@ fn test_vad_real_audio_speech_detection() {
 
 /// Test VAD detects silence gaps between sentences in real audio
 #[test]
-#[ignore] // Requires Silero VAD model + test audio assets
+#[ignore = "needs the private data_assets corpus (NN_slug.wav; CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets) — run: make test-e2e-roundtrip"]
 fn test_vad_real_audio_silence_gaps() {
-    let wav_path = assets_dir().join("02_kubernetes-wymaga-konfiguracji.wav");
-    if !wav_path.exists() {
-        eprintln!("Skipping: test asset not found");
-        return;
-    }
-
+    let wav_path = private_clip("02_kubernetes-wymaga-konfiguracji.wav");
     let (samples, sample_rate) = load_wav(&wav_path);
-    let mut vad = match AccumulatingVad::new(sample_rate) {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("Skipping: VAD model not available");
-            return;
-        }
-    };
+    let mut vad = create_vad(sample_rate);
 
     // 500ms windows
     let window_size = sample_rate as usize / 2;
@@ -705,14 +694,9 @@ fn test_vad_real_audio_silence_gaps() {
 
 /// Test VAD on dedicated pause recording (59s with intentional silence gaps)
 #[test]
-#[ignore] // Requires Silero VAD model + test audio assets
+#[ignore = "needs the private data_assets corpus (VAD_voice_real_pauses.wav; CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets) — run: make test-e2e-roundtrip"]
 fn test_vad_real_pauses_recording() {
-    let wav_path = assets_dir().join("VAD_voice_real_pauses.wav");
-    if !wav_path.exists() {
-        eprintln!("Skipping: VAD_voice_real_pauses.wav not found");
-        return;
-    }
-
+    let wav_path = private_clip("VAD_voice_real_pauses.wav");
     let (samples, sample_rate) = load_wav(&wav_path);
     let duration_sec = samples.len() as f32 / sample_rate as f32;
     eprintln!(
@@ -722,13 +706,7 @@ fn test_vad_real_pauses_recording() {
         duration_sec
     );
 
-    let mut vad = match AccumulatingVad::new(sample_rate) {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("Skipping: VAD model not available");
-            return;
-        }
-    };
+    let mut vad = create_vad(sample_rate);
 
     // 500ms windows — reset between for independent measurement
     let window_size = sample_rate as usize / 2;

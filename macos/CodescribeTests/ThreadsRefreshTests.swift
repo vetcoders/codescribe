@@ -15,18 +15,20 @@ import XCTest
 /// not polling and not an accident of some unrelated refresh.
 @MainActor
 final class ThreadsRefreshTests: XCTestCase {
-  private final class StubThreadsProvider: ChatThreadsProviding {
+  private final class StubThreadsProvider: ThreadsFixture {
     /// (backendId, title) rows returned newest-first, mirroring the
     /// ThreadStore index order ("index top" = most recently updated).
     var stubbed: [(id: String, title: String)]
     private(set) var listCalls = 0
+    var listError: Error?
 
     init(_ stubbed: [(id: String, title: String)]) {
       self.stubbed = stubbed
     }
 
-    func listThreads() -> [ChatThread] {
+    func listThreads() throws -> [ChatThread] {
       listCalls += 1
+      if let listError { throw listError }
       return stubbed.map { entry in
         var thread = ChatThread(title: entry.title, meta: "now")
         thread.backendId = entry.id
@@ -36,29 +38,18 @@ final class ThreadsRefreshTests: XCTestCase {
       }
     }
 
-    func searchThreads(query: String) -> [ChatThread] { listThreads() }
-    func loadMessages(backendId: String) -> [ChatMessage] { [] }
-    func deleteThread(backendId: String) -> Bool { true }
-    func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
-    func renameThread(backendId: String, title: String) -> Bool { true }
-    func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
-    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
-    func generateThreadId() -> String { "t_generated" }
   }
 
   private func backendIds(_ store: AgentChatStore) -> [String] {
     store.threads.compactMap(\.backendId)
   }
 
-  /// Refresh triggers coalesce onto the next main-queue tick (so a popover
-  /// close / window-ordering storm never runs disk re-reads inside the
-  /// notification callout — sample 2026-08-07 10:43, main thread 93/93 in
-  /// `_NSPopoverCloseAndAnimate → refreshThreadsFromExternalChange`).
-  /// Tests drain that tick before asserting.
-  private func drainMainQueue() {
-    let drained = expectation(description: "main queue drained")
-    DispatchQueue.main.async { drained.fulfill() }
-    wait(for: [drained], timeout: 2)
+  private func postWindowActivation() {
+    // AppKit observers require the notification object to be an NSWindow.
+    // A nil stand-in can crash NSRemoteView before the store assertions run.
+    let window = NSWindow(
+      contentRect: .zero, styleMask: [], backing: .buffered, defer: true)
+    NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
   }
 
   // MARK: C1 — refresh on window activation, and ONLY on a trigger
@@ -79,7 +70,7 @@ final class ThreadsRefreshTests: XCTestCase {
 
     // Window activation → the rail re-reads disk truth on the next
     // main-queue tick (coalesced out of the notification callout).
-    NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: nil)
+    postWindowActivation()
     drainMainQueue()
     XCTAssertTrue(
       backendIds(store).contains("t_overlay"),
@@ -113,7 +104,7 @@ final class ThreadsRefreshTests: XCTestCase {
     store.ingestVoiceTurn(threadId: "t_voice", userText: "hello")
     provider.stubbed.insert(("t_other", "Other"), at: 0)
 
-    NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: nil)
+    postWindowActivation()
     drainMainQueue()
     XCTAssertFalse(
       backendIds(store).contains("t_other"),
@@ -159,7 +150,7 @@ final class ThreadsRefreshTests: XCTestCase {
     XCTAssertEqual(store.currentThread?.backendId, "t_old")
 
     provider.stubbed.insert(("t_fresh", "Fresh overlay reply"), at: 0)
-    NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: nil)
+    postWindowActivation()
     drainMainQueue()
 
     XCTAssertEqual(
@@ -185,7 +176,7 @@ final class ThreadsRefreshTests: XCTestCase {
     let baseline = provider.listCalls
 
     for _ in 0..<10 {
-      NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: nil)
+      postWindowActivation()
     }
     drainMainQueue()
 
@@ -211,13 +202,48 @@ final class ThreadsRefreshTests: XCTestCase {
     let subscription = store.objectWillChange.sink { _ in publishes += 1 }
     defer { subscription.cancel() }
 
-    NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: nil)
+    postWindowActivation()
     drainMainQueue()
 
     XCTAssertEqual(
       publishes, 0,
       "a refresh that re-reads identical rail rows must not publish objectWillChange"
     )
+  }
+
+  func testRefreshPublishesOnlyErrorAppearanceAndClear() {
+    let provider = StubThreadsProvider([("t_old", "Old thread")])
+    let store = AgentChatStore(threadsProvider: provider)
+    drainMainQueue()
+    let selection = store.selectedThreadID
+    store.draft = "unsent words"
+    var publishes = 0
+    var errors: [String?] = []
+    let subscription = store.objectWillChange.sink { _ in publishes += 1 }
+    let errorSubscription = store.$threadSearchError.dropFirst().sink { errors.append($0) }
+    defer {
+      subscription.cancel()
+      errorSubscription.cancel()
+    }
+
+    provider.listError = NSError(domain: "ThreadsRefreshTests", code: 1)
+    store.refreshThreads()
+    let message = "Could not refresh threads. The previous list is still shown."
+    XCTAssertEqual(store.threadSearchError, message)
+    XCTAssertEqual(publishes, 1, "new failure must be visible even when the rows are unchanged")
+    store.refreshThreads()
+    XCTAssertEqual(publishes, 1, "the same failure must not rebuild the window")
+
+    provider.listError = nil
+    store.refreshThreads()
+    XCTAssertNil(store.threadSearchError)
+    XCTAssertEqual(publishes, 2, "successful unchanged rows must still clear the old error")
+    store.refreshThreads()
+    XCTAssertEqual(publishes, 2, "nil-to-nil must publish nothing")
+    XCTAssertEqual(errors, [message, nil])
+    XCTAssertEqual(backendIds(store), ["t_old"])
+    XCTAssertEqual(store.selectedThreadID, selection)
+    XCTAssertEqual(store.draft, "unsent words")
   }
 
   // MARK: C3 — code-shape: the mechanism is event-driven, no timers

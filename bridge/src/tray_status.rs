@@ -63,8 +63,6 @@ pub struct CsTrayStatusPayload {
     pub tone: CsTrayStatusTone,
     pub indicator_mode: CsIndicatorMode,
     pub assistive: bool,
-    pub tooltip: String,
-    pub menu_label: String,
     pub generation: u64,
 }
 
@@ -176,8 +174,6 @@ fn payload_from_status(snapshot: TrayStatusSnapshot, generation: u64) -> CsTrayS
         tone,
         indicator_mode: snapshot.indicator_mode.into(),
         assistive: snapshot.is_assistive_visible(),
-        tooltip: snapshot.tooltip(),
-        menu_label: snapshot.menu_label().to_string(),
         generation,
     }
 }
@@ -268,7 +264,7 @@ mod tests {
         generation_counter().store(0, Ordering::SeqCst);
     }
 
-    /// Thinking maps to Processing with non-assistive copy and fixed generation.
+    /// Thinking maps to Processing, non-assistive, with the given generation.
     #[test]
     fn maps_core_status_to_bridge_payload() {
         let payload = payload_from_status(TrayStatusSnapshot::new(TrayStatus::Thinking, false), 42);
@@ -277,12 +273,10 @@ mod tests {
         assert_eq!(payload.tone, CsTrayStatusTone::Active);
         assert_eq!(payload.indicator_mode, CsIndicatorMode::Processing);
         assert!(!payload.assistive);
-        assert_eq!(payload.tooltip, "Codescribe - Processing...");
-        assert_eq!(payload.menu_label, "Status: Processing...");
         assert_eq!(payload.generation, 42);
     }
 
-    /// Assistive Listening uses Agent-listening tooltip/label and Assistive mode.
+    /// Assistive Listening carries the assistive flag and Assistive mode.
     #[test]
     fn maps_assistive_status_to_agent_payload_copy() {
         let payload = payload_from_status(TrayStatusSnapshot::new(TrayStatus::Listening, true), 43);
@@ -291,8 +285,6 @@ mod tests {
         assert_eq!(payload.tone, CsTrayStatusTone::Active);
         assert_eq!(payload.indicator_mode, CsIndicatorMode::Assistive);
         assert!(payload.assistive);
-        assert_eq!(payload.tooltip, "Codescribe - Agent listening...");
-        assert_eq!(payload.menu_label, "Status: Agent listening...");
         assert_eq!(payload.generation, 43);
     }
 

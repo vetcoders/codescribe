@@ -45,6 +45,17 @@ pub mod workspace;
 
 use codescribe_core::agent::ToolRegistry;
 
+/// One production registry setup for chat, voice Agent and Max. Permissions
+/// are refreshed by the existing decision owner before every tool execution.
+pub fn configured_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    register_all_tools(&mut registry);
+    registry.set_policy(codescribe_core::agent::AgentPermissions::load());
+    registry.set_granted(codescribe_core::agent::tool_grants::load_granted());
+    registry.enable_policy_hot_reload();
+    registry
+}
+
 /// Install the complete tool surface: every native tool plus the MCP bridge.
 pub fn register_all_tools(registry: &mut ToolRegistry) {
     register_native_tools(registry);

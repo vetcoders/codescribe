@@ -6,41 +6,27 @@
 //! produce **bounded** [`EngineEvent::ReplaceRange`] patches that fill in /
 //! correct only the tokens that differ.
 //!
-//! # Relationship to Smart final-pass (`FINAL_PASS_MODE`)
+//! # Product mode and diagnostic override
 //!
-//! **Orthogonal toggles — no silent coupling.**
+//! Local Power arms live refinement by default. The optional env-only
+//! `CODESCRIBE_LAYERED_TRANSCRIPTION` override can explicitly degrade that lane.
+//! Settings writes only ASR mode. Normal stop does not run a whole-file pass;
+//! Retranscribe remains an explicit file action.
 //!
-//! | Control | Env | Default | What it does |
-//! | --- | --- | --- | --- |
-//! | Final pass | `FINAL_PASS_MODE` | `smart` | Stop-path only: whether to run a full WAV Whisper re-pass after release |
-//! | Layered / Layer 1 | `CODESCRIBE_LAYERED_TRANSCRIPTION` | **phase1** | During-hold gap-fill: Whisper tail patches on sealed utterances. Unset → phase1; explicit `off`/`0`/`false` disarms. |
+//! Product intent and runtime now agree on the Apple path: live patching is a
+//! required part of Local Power, while unfenced routes fail closed.
 //!
-//! - **Smart** = skip full stop re-pass when streaming completeness is
-//!   adjudicated Complete. It does **not** enable layered transcription.
-//! - **Off** = never full stop re-pass. It does **not** force Whisper at stop.
-//! - Layered phase ≥ 1 may run under any final-pass mode when the live session
-//!   path actually wires Layer 1 (see below).
+//! # Where Layer 1 may mutate today
 //!
-//! Product intent: Smart *works with* layered (completeness skip + live
-//! gap-fill). Phase 1 is the stock live default; W13 fusion / idempotence /
-//! highlight flags remain the operator-flip surface, not this gate.
+//! Only the Apple progressive path owns the required pending-span fence. Its
+//! in-process, sidecar, and remote tail providers all return the same exact
+//! request/range identity. Outcomes are applied to the byte-identical baseline
+//! before `UtteranceFinal`; the event itself already contains the corrected
+//! text. Replays and completions after seal are typed refusals.
 //!
-//! # Where Layer 1 is wired today
-//!
-//! Both live paths are wired; gate is [`layered_phase`] ≥ 1 on each.
-//!
-//! - **VAD/scheduler:** `core/pipeline/streaming/session.rs` →
-//!   `vad_transcription_session` (Whisper engine, or Apple with
-//!   `CODESCRIBE_APPLE_STT_LIVE_MODE=wav`). Attaches FINAL audio per work item,
-//!   spawns Whisper re-transcribe + [`compute_tail_patch`], emits
-//!   `ReplaceRange { source: TailPatch }`, counts in `SessionFinalised.layer_summary`.
-//! - **Apple progressive live:** `core/pipeline/streaming/apple_live_session.rs`
-//!   → `apple_stream_transcription_session` (W2-A). Each sealed `UtteranceFinal`
-//!   resolves to its retained PCM window and is handed to the async Layer 1
-//!   lane, at most one job in flight so Whisper never sits on the event-drain
-//!   loop. A boundary that cannot address retained audio is never patched; a
-//!   full queue drops the request rather than stalling capture; the bounded
-//!   backlog left when capture stops is settled before `SessionFinalised`.
+//! The legacy VAD/scheduler path has no pending-span owner. Explicit Phase 1
+//! therefore fails closed there with `tail_patch_route_unbound`; it may not
+//! revive the old post-final `ReplaceRange` channel.
 //!
 //! # Invariants (from the ADR "Hard invariants")
 //!
@@ -94,25 +80,14 @@
 //! `UtteranceFinal.text` and is already trimmed by the emitter (single trim
 //! owner: `final_text` at the session.rs emit site).
 
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::pipeline::contracts::{EngineEvent, LayerSource};
 
-/// Env flag gating the layered transcription pipeline.
-///
-/// `CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}` — **defaults to phase1**.
-/// The live tail patch is a core element of the triangulation, not an opt-in
-/// (operator directive 2026-08-09: "korekcje na żywo to live tail patch, który
-/// MUSI być podstawowym elementem"). Explicit `off`/`0`/`false` disables;
-/// explicit `phaseN` selects a phase.
-///
-/// **Not** `FINAL_PASS_MODE`: Smart final-pass never writes this flag. Kept
-/// here (not in the config hub) so this cut stays isolated; the orchestrator
-/// can promote it to a typed config field when it lands.
+/// Diagnostic env override for local refinement.
+/// Local Power + unset is armed; explicit off or malformed input is degraded.
+/// This key is never persisted by Settings and has no effect on Cloud admission.
 pub const LAYERED_TRANSCRIPTION_ENV: &str = "CODESCRIBE_LAYERED_TRANSCRIPTION";
-
-/// Phase served when the flag is unset — Layer 1 live tail patch on.
-const LAYERED_DEFAULT_PHASE: u8 = 1;
 
 /// Env override for [`TailPatchConfig::max_change_ratio`].
 pub const TAIL_PATCH_MAX_CHANGE_RATIO_ENV: &str = "CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO";
@@ -221,21 +196,20 @@ pub fn parse_layered_phase_value(raw: &str) -> Option<u8> {
     }
 }
 
-/// Active layered-transcription phase. Unset → the default phase (live tail
-/// patch on); an explicit `off`/`0`/`false` — or unparseable garbage — is the
-/// only way to `None`.
+/// Active layered-transcription phase. Unset, explicit `off`/`0`/`false`, and
+/// unparseable garbage all fail closed to `None`.
 ///
-/// Independent of `FINAL_PASS_MODE` / Smart completeness skip.
+/// Product-mode bootstrap owns the default when no override is supplied.
 pub fn layered_phase() -> Option<u8> {
     let raw = std::env::var(LAYERED_TRANSCRIPTION_ENV).ok();
     layered_phase_from_raw(raw.as_deref())
 }
 
 /// Resolve the layered phase from an optional raw override without touching
-/// process-global environment state. `None` carries the production default.
+/// process-global environment state. `None` means no diagnostic override;
+/// recording bootstrap resolves the product-mode default.
 pub fn layered_phase_from_raw(raw: Option<&str>) -> Option<u8> {
-    raw.map(parse_layered_phase_value)
-        .unwrap_or(Some(LAYERED_DEFAULT_PHASE))
+    raw.and_then(parse_layered_phase_value)
 }
 
 /// Env override for [`TailPatchConfig::small_edit_token_floor`].
@@ -307,7 +281,6 @@ pub enum SkipReasonCode {
     ChangeRatio,
     HeadGarbage,
     NoTimeOverlap,
-    LowConfidence,
     UnresolvedAlternative,
     SealedFence,
     Divergence,
@@ -323,7 +296,6 @@ impl SkipReasonCode {
             Self::ChangeRatio => "change_ratio",
             Self::HeadGarbage => "head_garbage",
             Self::NoTimeOverlap => "no_time_overlap",
-            Self::LowConfidence => "low_confidence",
             Self::UnresolvedAlternative => "unresolved_alternative",
             Self::SealedFence => "sealed_fence",
             Self::Divergence => "divergence",
@@ -415,15 +387,6 @@ impl TailPatchOutcome {
             Self::Patches(events) => events,
             Self::UnderCommit(under) => &under.appends,
             Self::NoChange | Self::Skipped { .. } => &[],
-        }
-    }
-
-    /// Same events, owned, for sinks that consume the outcome.
-    pub fn into_events(self) -> Vec<EngineEvent> {
-        match self {
-            Self::Patches(events) => events,
-            Self::UnderCommit(under) => under.appends,
-            Self::NoChange | Self::Skipped { .. } => Vec::new(),
         }
     }
 
@@ -527,21 +490,6 @@ fn alignment_key(token: &str) -> String {
 /// zrobienie" (3) recurs naturally, "która pozwoli nam na" (4) does not.
 pub const DUPLICATE_RUN_TOKENS: usize = 4;
 
-/// Whether `canvas` already carries the words in `candidate`.
-///
-/// Public seam for the presentation layer, which applies a patch against the
-/// canvas as it stands NOW — not the canvas the patch was computed against.
-/// Measured 2026-08-14: Layer 1 computed an append for a 15-character canvas
-/// while SFSpeech went on to restate the SAME utterance at 47 characters,
-/// already delivering the words the append recovered; the append landed on the
-/// restatement and duplicated the phrase.
-pub fn text_already_carries(canvas: &str, candidate: &str) -> bool {
-    let canvas_tokens = tokenize(canvas);
-    let candidate_tokens = tokenize(candidate);
-    let refs: Vec<&Token> = candidate_tokens.iter().collect();
-    canvas_already_carries(&canvas_tokens, &refs)
-}
-
 /// Whether the canvas already carries this recovered run of words.
 ///
 /// Compared on [`alignment_key`] — the same key the aligner matches on — so a
@@ -614,12 +562,9 @@ fn lcs_matches(committed: &[Token], retranscribed: &[Token]) -> Vec<(usize, usiz
     matches
 }
 
-/// One INFO receipt for a tail-patch outcome that put nothing on the canvas.
-///
-/// Counts and reason only. The transcript is the user's speech and never enters
-/// a log line; the counts are what makes a starved session diagnosable, which
-/// is exactly what was missing when `Skipped` was a `debug!` and the recovered
-/// text vanished without trace.
+/// Diagnostic for the historical character-diff verdict. This decision has no
+/// authority over occurrence admission; the returned payload is forwarded.
+/// Counts and reason only: transcript text never enters the log.
 fn log_skipped_receipt(
     utterance_id: u64,
     reason: &str,
@@ -628,14 +573,14 @@ fn log_skipped_receipt(
     committed_tokens: usize,
     retranscribed_tokens: usize,
 ) {
-    info!(
+    debug!(
         utterance_id,
         reason,
         committed_chars = committed.trim().chars().count(),
         retranscribed_chars = retranscribed.trim().chars().count(),
         committed_tokens,
         retranscribed_tokens,
-        "tail_patch_skipped"
+        "legacy_char_diff"
     );
 }
 
@@ -1861,7 +1806,7 @@ mod tests {
     #[test]
     fn layered_phase_parses_phase_prefix() {
         // Pure parse — no process env (suite stays deterministic under parallel exec).
-        assert_eq!(layered_phase_from_raw(None), Some(LAYERED_DEFAULT_PHASE));
+        assert_eq!(layered_phase_from_raw(None), None);
         assert_eq!(layered_phase_from_raw(Some("off")), None);
         assert_eq!(parse_layered_phase_value("phase1"), Some(1));
         assert_eq!(parse_layered_phase_value("phase2"), Some(2));
@@ -1873,11 +1818,11 @@ mod tests {
         assert_eq!(parse_layered_phase_value("0"), None);
     }
 
-    /// FINAL_PASS_MODE vocabulary must never parse as a layered phase.
+    /// Unrelated mode vocabulary must never parse as a layered phase.
     #[test]
-    fn layered_phase_rejects_final_pass_mode_tokens() {
-        // Orthogonality: FINAL_PASS_MODE vocabulary must never enable Layer 1.
-        // If an operator (or a bug) copies smart/always/off into
+    fn layered_phase_rejects_unrelated_mode_tokens() {
+        // Unrelated mode vocabulary must never enable Layer 1.
+        // If a diagnostic env file copies smart/always/off into
         // CODESCRIBE_LAYERED_TRANSCRIPTION, treat as off — not as a phase.
         for token in ["smart", "always", "off", "auto", "on", "true", "yes"] {
             assert_eq!(

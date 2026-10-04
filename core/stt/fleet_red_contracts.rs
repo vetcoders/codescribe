@@ -38,16 +38,18 @@ struct HelperExitOutcome {
 #[test]
 fn fleet_red_asr_session_events_are_typed_and_monotonic() {
     use crate::asr_session::{
-        AsrErrorKind, AsrSessionEvent, ErrorEvent, EventIdentity, IngestVerdict, SessionId,
-        SessionIngest, TranscriptEvent,
+        AsrErrorKind, AsrSessionEvent, ErrorEvent, IngestVerdict, SessionId, SessionIngest,
+        TranscriptEvent,
     };
 
     let session = SessionId::new("session-a").expect("non-blank session id");
-    let id = |sequence_id| EventIdentity::new(session.clone(), 7, sequence_id);
     let transcript = |sequence_id, text: &str| TranscriptEvent {
-        identity: id(sequence_id),
+        session_id: session.clone(),
+        utterance_id: 7,
+        sequence_id,
         text: text.to_string(),
         range: None,
+        commit: None,
     };
 
     let inputs = vec![
@@ -56,7 +58,9 @@ fn fleet_red_asr_session_events_are_typed_and_monotonic() {
         AsrSessionEvent::Final(transcript(2, "pacjent ma goraczke")), // duplicate: idempotent
         AsrSessionEvent::Final(transcript(1, "pacjent")),             // out of order: rejected
         AsrSessionEvent::Error(ErrorEvent {
-            identity: id(3),
+            session_id: session.clone(),
+            utterance_id: 7,
+            sequence_id: 3,
             kind: AsrErrorKind::Transport,
         }),
     ];
@@ -86,7 +90,7 @@ fn fleet_red_asr_session_events_are_typed_and_monotonic() {
     let accepted: Vec<(&str, u64)> = ingest
         .accepted()
         .iter()
-        .map(|event| (event.as_token(), event.identity().sequence_id()))
+        .map(|event| (event.as_token(), event.sequence_id()))
         .collect();
     assert_eq!(accepted, vec![("partial", 1), ("final", 2), ("error", 3)]);
     assert_eq!(
@@ -142,7 +146,9 @@ fn fleet_red_cloud_backpressure_degrades_to_apple_only() {
         locale: Some("pl-PL".to_string()),
         sample_rate: 16_000,
     };
-    let frame = [0.1f32; 320];
+    // Each offer exceeds the 500 ms hold-back at 16 kHz, so pressure reaches
+    // the provider through aged-audio release without an explicit flush.
+    let frame = [0.1f32; 8_320];
 
     // Arm 1 — sustained overflow. Every offer must return without surfacing an
     // error to capture, and the lane must degrade instead of blocking.
@@ -219,9 +225,6 @@ fn fleet_red_cloud_backpressure_degrades_to_apple_only() {
 /// that the refusal never reaches for local weights.
 #[test]
 fn fleet_red_cloud_requires_explicit_consent() {
-    use crate::asr_session::bootstrap::{
-        GatewaySessionAvailability, layer1_decision_for_recording,
-    };
     use crate::asr_session::cloud::{
         CloudGatewayTransport, CloudSessionLimits, GatewayPcmFrame, GatewaySessionConfig,
         GatewayTransportPoll, LiveCloudAsrSession,
@@ -229,7 +232,6 @@ fn fleet_red_cloud_requires_explicit_consent() {
     use crate::asr_session::consent::{CloudSessionError, authorize_cloud_egress, refiner_for};
     use crate::asr_session::events::AsrErrorKind;
     use crate::asr_session::provider::RefinerMode;
-    use crate::config::UserSettings;
     use crate::config::cloud_asr::{
         AsrProductMode, AudioEgressConsent, ModeDerivation, resolve_asr_product_mode,
     };
@@ -249,7 +251,7 @@ fn fleet_red_cloud_requires_explicit_consent() {
             GatewayTransportPoll::Pending
         }
 
-        fn begin_end(&mut self) -> Result<(), AsrErrorKind> {
+        fn begin_end(&mut self, _commit_id: Option<&str>) -> Result<(), AsrErrorKind> {
             Ok(())
         }
 
@@ -294,37 +296,6 @@ fn fleet_red_cloud_requires_explicit_consent() {
     let consented = resolve_asr_product_mode(Some("cloud"), Some("granted"), None);
     assert!(construct(&consented.consent).is_ok());
     assert_eq!(refiner_for(&consented), RefinerMode::CloudSession);
-
-    // I3 integration witness: the same settings/consent truth now feeds the
-    // decision consumed by StreamingRecorder. No connection means offline
-    // Apple + lexicon; a validated minted session can arm only with consent.
-    let settings = |consent: Option<&str>| UserSettings {
-        asr_mode: Some("cloud".to_string()),
-        cloud_consent: consent.map(str::to_string),
-        ..UserSettings::default()
-    };
-    let ready = || {
-        GatewaySessionAvailability::Ready(
-            crate::asr_session::GatewayConnection::new(
-                "wss://gateway.invalid/v1/stt/live",
-                "short-lived-token",
-            )
-            .expect("normalized connection fixture"),
-        )
-    };
-    assert!(!layer1_decision_for_recording(&settings(None), ready()).is_armed());
-    assert!(!layer1_decision_for_recording(&settings(Some("denied")), ready()).is_armed());
-    assert!(
-        !layer1_decision_for_recording(
-            &settings(Some("granted")),
-            GatewaySessionAvailability::Unavailable,
-        )
-        .is_armed()
-    );
-    assert!(
-        layer1_decision_for_recording(&settings(Some("granted")), ready()).is_armed(),
-        "the recorder decision may arm only with consent plus a validated mint"
-    );
 }
 
 #[test]

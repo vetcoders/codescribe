@@ -8,10 +8,9 @@
 //! failure ends up silently changing what the user sees being typed, and how a
 //! refiner choice ends up loading local weights nobody asked for.
 //!
-//! The canvas axis already has an owner — the STT router's
-//! `CODESCRIBE_STT_ENGINE` policy. [`LayerSelection::for_active_canvas`] reads
-//! that decision rather than restating it, so this module can never become a
-//! second, disagreeing source of truth about the canvas.
+//! The recording owner injects the canvas axis explicitly through
+//! [`LayerSelection::new`]. This module never reloads settings or reconstructs
+//! the live route, so it cannot become a second source of canvas truth.
 //!
 //! The trait stays independent of transport and consent policy. The cloud
 //! implementation in [`super::cloud`] supplies a normalized gateway transport
@@ -89,21 +88,6 @@ impl LayerSelection {
         Self { canvas, refiner }
     }
 
-    /// Pair the router's *live* canvas decision with an independent refiner.
-    ///
-    /// Reads `stt::active_engine_is_apple`, the same selector the live lane
-    /// uses, so the canvas reported here is the canvas that will actually draw.
-    /// The refiner argument is untouched by that read — that independence is
-    /// the whole point and is pinned by test.
-    pub fn for_active_canvas(refiner: RefinerMode) -> Self {
-        let canvas = if crate::stt::active_engine_is_apple() {
-            CanvasEngine::AppleSpeech
-        } else {
-            CanvasEngine::LocalWhisper
-        };
-        Self::new(canvas, refiner)
-    }
-
     /// Layer 0 engine.
     pub fn canvas(&self) -> CanvasEngine {
         self.canvas
@@ -169,4 +153,14 @@ pub trait AsrSessionProvider {
     /// Close the session. Trailing events remain available via
     /// [`drain`](Self::drain).
     fn close(&mut self) -> Result<(), AsrErrorKind>;
+
+    /// Commit captured audio through `commit_sample` on the capture clock.
+    ///
+    /// `commit_sample` is the exclusive end, in samples at the native rate
+    /// passed to [`open`](Self::open). The default records nothing, so a
+    /// provider that does not segment on client commits stays usable.
+    fn commit(&mut self, commit_sample: u64) -> Result<(), AsrErrorKind> {
+        let _ = commit_sample;
+        Ok(())
+    }
 }

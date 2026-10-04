@@ -1,7 +1,12 @@
 # ADR 2026-08-14 — Provider credential topology (keys and endpoints live together)
 
-Status: ACCEPTED (operator directive, 2026-08-14, verbatim shape below)
-Owner: operator; implementation pending as a dedicated cut (W14 candidate)
+Status: ACCEPTED, IMPLEMENTED — wave 1 landed 2026-09-07 (plan provider-registry-v2: core registry vendor|custom, bridge catalog, Settings › Providers + Agent › Request lanes; Libraxis as a first-class vendor, first in the picker on a live witness). Open: composer model picker, vc-prune of the wave.
+Owner: product contract; implementation remains a dedicated cut (W14 candidate)
+
+The current Settings/config model still exposes lane-specific endpoint/key
+slots and compatibility environment variables. No provider-registry-v2 type or
+atomic provider reference owns all lanes yet. This ADR therefore constrains the
+next implementation; it must not be cited as shipped behavior.
 
 ## Problem — the drift maker
 
@@ -107,4 +112,4 @@ Implementation. This ADR freezes the shape so no agent re-derives a
 different one. Anti-pattern to reject on sight: "add one more key slot" or
 "add an endpoint override field" — both re-open the drift maker.
 
-𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI
+𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI

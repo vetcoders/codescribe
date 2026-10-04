@@ -11,28 +11,7 @@ import XCTest
 /// `ingestVoiceTurn` and the completion refresh in `replaceThreads`.
 @MainActor
 final class AgentThreadContinuityTests: XCTestCase {
-  private final class SpyRoutingEngine: AgentChatEngine {
-    private(set) var assistiveTargets: [String?] = []
-
-    func isAvailable() -> Bool { true }
-    func availabilityDetail() -> String? { nil }
-    func generateThreadTitle(_ text: String) async throws -> String? { nil }
-    func streamReply(
-      _ text: String,
-      threadId: String,
-      attachmentPaths: [String],
-      onDelta: @escaping @MainActor (String) -> Void,
-      onReasoning: @escaping @MainActor (String) -> Void,
-      onToolExecuting: @escaping @MainActor (String, String) -> Void,
-      onToolResult: @escaping @MainActor (String, String, Bool, String) -> Void
-    ) async throws -> String { "" }
-    func cancelReply(threadId: String) -> Bool { false }
-    func setAssistiveTargetThread(backendId: String?) {
-      assistiveTargets.append(backendId)
-    }
-  }
-
-  private final class StubThreadsProvider: ChatThreadsProviding {
+  private final class StubThreadsProvider: ThreadsFixture {
     var rows: [(id: String, title: String)]
 
     init(_ rows: [(id: String, title: String)]) {
@@ -51,24 +30,10 @@ final class AgentThreadContinuityTests: XCTestCase {
       }
     }
 
-    func searchThreads(query: String) -> [ChatThread] { listThreads() }
-    func loadMessages(backendId: String) -> [ChatMessage] { [] }
-    func deleteThread(backendId: String) -> Bool { true }
-    func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
-    func renameThread(backendId: String, title: String) -> Bool { true }
-    func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
-    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
-    func generateThreadId() -> String { "t_generated" }
   }
 
   private func thread(_ backendID: String, in store: AgentChatStore) -> ChatThread? {
     store.threads.first { $0.backendId == backendID }
-  }
-
-  private func drainMainQueue() {
-    let drained = expectation(description: "main queue drained")
-    DispatchQueue.main.async { drained.fulfill() }
-    wait(for: [drained], timeout: 2)
   }
 
   func testActivationAppendsToCurrentlyOpenMatchingThreadWithoutChangingSelection() {
@@ -134,7 +99,8 @@ final class AgentThreadContinuityTests: XCTestCase {
         message.role == .you && message.text.contains("Ze względu")
       } == true)
     XCTAssertEqual(store.currentThread?.messages.last?.text, "odpowiedź")
-    XCTAssertNotEqual(store.currentThread?.title, "New thread", "adopted draft takes a real title")
+    XCTAssertNotEqual(
+      store.currentThread?.title, AgentChatStore.newThreadTitle, "adopted draft takes a real title")
   }
 
   func testCaptureOwnerSurvivesDoneQueuedRefreshAndSummonUntilExplicitSelection() {
@@ -142,7 +108,7 @@ final class AgentThreadContinuityTests: XCTestCase {
       ("t_history", "History"),
       ("t_other", "Other"),
     ])
-    let engine = SpyRoutingEngine()
+    let engine = AssistiveTargetLogEngine()
     let store = AgentChatStore(engine: engine, threadsProvider: provider)
     XCTAssertEqual(engine.assistiveTargets.compactMap { $0 }.last, "t_history")
 
@@ -261,6 +227,6 @@ final class AgentThreadContinuityTests: XCTestCase {
 
     XCTAssertNotEqual(store.selectedThreadID, secondID)
     XCTAssertNil(store.currentThread?.backendId)
-    XCTAssertEqual(store.currentThread?.title, "New thread")
+    XCTAssertEqual(store.currentThread?.title, AgentChatStore.newThreadTitle)
   }
 }

@@ -1,10 +1,12 @@
 use std::net::SocketAddr;
+#[cfg(debug_assertions)]
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
+#[cfg(debug_assertions)]
+use codescribe_core::stt::tail_provider::{FakeTailProvider, TailProviderPayload};
 use codescribe_core::stt::tail_provider::{
-    FakeTailProvider, InProcessTailProvider, STT_SIDECAR_TOKEN_ENV, TailProvider,
-    TailProviderPayload, serve_sidecar,
+    InProcessTailProvider, STT_SIDECAR_TOKEN_ENV, TailProvider, serve_sidecar,
 };
 
 struct Args {

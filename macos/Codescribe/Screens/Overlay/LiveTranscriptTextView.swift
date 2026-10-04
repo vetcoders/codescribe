@@ -20,15 +20,122 @@ enum LiveTranscriptSelectionPolicy {
   }
 }
 
-/// Read-only AppKit transcript surface used while recording.
+struct LiveTranscriptScrollFollowState: Equatable {
+  enum Mode: Equatable {
+    case followingTail
+    case manualScroll
+    case detached
+  }
+
+  private(set) var mode: Mode = .followingTail
+  private(set) var revealRevision = 0
+
+  var followsTail: Bool { mode == .followingTail }
+  var isManualScrollActive: Bool { mode == .manualScroll }
+
+  mutating func userScrollBegan() {
+    transition(to: .manualScroll)
+  }
+
+  mutating func userScrollMoved(isAtLiveEdge: Bool, hasSelection: Bool) {
+    guard !isManualScrollActive else { return }
+    settle(isAtLiveEdge: isAtLiveEdge, hasSelection: hasSelection)
+  }
+
+  mutating func userScrollEnded(isAtLiveEdge: Bool, hasSelection: Bool) {
+    settle(isAtLiveEdge: isAtLiveEdge, hasSelection: hasSelection)
+  }
+
+  mutating func selectionChanged(
+    _ selection: NSRange,
+    textLength: Int,
+    isAtLiveEdge: Bool
+  ) {
+    guard !isManualScrollActive else { return }
+    guard LiveTranscriptSelectionPolicy.followsTail(selection: selection, textLength: textLength)
+    else {
+      transition(to: .detached)
+      return
+    }
+    guard isAtLiveEdge else { return }
+    transition(to: .followingTail)
+  }
+
+  func allowsTailReveal(revision: Int) -> Bool {
+    revision == revealRevision && followsTail
+  }
+
+  private mutating func settle(isAtLiveEdge: Bool, hasSelection: Bool) {
+    transition(to: isAtLiveEdge && !hasSelection ? .followingTail : .detached)
+  }
+
+  private mutating func transition(to next: Mode) {
+    guard mode != next else { return }
+    mode = next
+    revealRevision &+= 1
+  }
+}
+
+/// The one AppKit transcript surface: read-only while recording, an editor for
+/// the formatted take.
 ///
 /// `Text` plus SwiftUI's selection overlay loses its selection whenever the
 /// rapidly-changing value is rebuilt. A real `NSTextView` owns the responder
 /// chain instead: drag selection, Cmd-C, Select All and the standard context
 /// menu keep working while the recording and transcript updates continue.
+///
+/// In the editable phase the same view carries the local revision draft:
+/// keystrokes flow out through `onTextChange`, focus transitions through
+/// `onEditingChanged` (the panel becomes key only inside that window), and
+/// Escape through `onCancelEdit`. Bytes still arrive from the caller — the
+/// view never invents transcript truth.
 struct LiveTranscriptTextView: NSViewRepresentable {
-  let runs: [OverlayCanvasRun]
+  let text: String
+  /// SwiftUI diffs `String` by canonical equivalence, so "é" and "e\u{301}"
+  /// look like no change and `updateNSView` is skipped. The engine owns its
+  /// bytes; this identity makes every byte-level revision reach the canvas.
+  private let utf8Identity: [UInt8]
+  /// A6 uncertain (or lexicon-rewritten) words to paint. Ranges are UTF-16
+  /// into `text`, already clamped and edge-trimmed by `OverlayState`.
+  let uncertainWords: [OverlayUncertainWord]
+  let isEditable: Bool
+  let appearance: OverlayAppearance
+  /// Power-mode diagnostics: the popover shows the raw source-scale value.
+  let showsDiagnostics: Bool
+  let contentInsets: NSEdgeInsets
+  let onEditingChanged: ((Bool) -> Void)?
+  let onTextChange: ((String) -> Void)?
+  let onCancelEdit: (() -> Void)?
+  let onPlayUncertainWord: ((OverlayUncertainWord) -> Void)?
+  let onTeachUncertainWord: ((OverlayUncertainWord, String) -> Void)?
   @Environment(\.csTextScale) private var textScale
+
+  init(
+    text: String,
+    uncertainWords: [OverlayUncertainWord] = [],
+    isEditable: Bool = false,
+    appearance: OverlayAppearance,
+    showsDiagnostics: Bool = false,
+    contentInsets: NSEdgeInsets = NSEdgeInsetsZero,
+    onEditingChanged: ((Bool) -> Void)? = nil,
+    onTextChange: ((String) -> Void)? = nil,
+    onCancelEdit: (() -> Void)? = nil,
+    onPlayUncertainWord: ((OverlayUncertainWord) -> Void)? = nil,
+    onTeachUncertainWord: ((OverlayUncertainWord, String) -> Void)? = nil
+  ) {
+    self.text = text
+    self.utf8Identity = Array(text.utf8)
+    self.uncertainWords = uncertainWords
+    self.isEditable = isEditable
+    self.appearance = appearance
+    self.showsDiagnostics = showsDiagnostics
+    self.contentInsets = contentInsets
+    self.onEditingChanged = onEditingChanged
+    self.onTextChange = onTextChange
+    self.onCancelEdit = onCancelEdit
+    self.onPlayUncertainWord = onPlayUncertainWord
+    self.onTeachUncertainWord = onTeachUncertainWord
+  }
 
   func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -36,7 +143,12 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     let textView = Self.makeTextView()
     textView.delegate = context.coordinator
 
-    let scrollView = NSScrollView()
+    let scrollView = LiveTranscriptScrollView()
+    scrollView.followCoordinator = context.coordinator
+    scrollView.automaticallyAdjustsContentInsets = false
+    scrollView.contentInsets = NSEdgeInsetsZero
+    scrollView.contentView.automaticallyAdjustsContentInsets = false
+    scrollView.contentView.contentInsets = contentInsets
     scrollView.borderType = .noBorder
     scrollView.drawsBackground = false
     scrollView.hasHorizontalScroller = false
@@ -44,18 +156,37 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     scrollView.autohidesScrollers = true
     scrollView.horizontalScrollElasticity = .none
     scrollView.documentView = textView
+    context.coordinator.attach(to: scrollView)
 
     update(textView, coordinator: context.coordinator)
     return scrollView
   }
 
+  static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+    coordinator.detach()
+  }
+
   func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    context.coordinator.attach(to: scrollView)
+    let oldInsets = scrollView.contentView.contentInsets
+    let insetsChanged =
+      oldInsets.top != contentInsets.top || oldInsets.bottom != contentInsets.bottom
+      || oldInsets.left != contentInsets.left || oldInsets.right != contentInsets.right
+    scrollView.contentView.contentInsets = contentInsets
     guard let textView = scrollView.documentView as? LiveTranscriptNativeTextView else { return }
     update(textView, coordinator: context.coordinator)
+    if insetsChanged {
+      context.coordinator.scheduleTailReveal(for: textView)
+    }
   }
 
   static func makeTextView() -> LiveTranscriptNativeTextView {
     let textView = LiveTranscriptNativeTextView(usingTextLayoutManager: true)
+    // Build 1487 crashed in NSWritingToolsEditTracker when proofreading raced
+    // a live transcript revision; the reducer alone owns these text changes.
+    if #available(macOS 15.0, *) {
+      textView.writingToolsBehavior = .none
+    }
     textView.isEditable = false
     textView.isSelectable = true
     textView.isRichText = true
@@ -73,23 +204,82 @@ struct LiveTranscriptTextView: NSViewRepresentable {
       height: CGFloat.greatestFiniteMagnitude
     )
     textView.setAccessibilityIdentifier("overlay-transcript-live")
-    textView.setAccessibilityLabel("Live transcript")
+    textView.setAccessibilityLabel(String(localized: "Live transcript"))
     return textView
   }
 
-  private func update(
+  func update(
     _ textView: LiveTranscriptNativeTextView,
     coordinator: Coordinator
   ) {
-    let rendered = attributedTranscript()
-    guard textView.attributedString() != rendered else { return }
+    coordinator.onEditingChanged = onEditingChanged
+    coordinator.onTextChange = onTextChange
+    coordinator.onCancelEdit = onCancelEdit
+    coordinator.uncertainWords = uncertainWords
+    coordinator.showsDiagnostics = showsDiagnostics
+    coordinator.onPlayUncertainWord = onPlayUncertainWord
+    coordinator.onTeachUncertainWord = onTeachUncertainWord
+    coordinator.popoverPalette = OverlayAppearancePalette.resolve(appearance)
+    let attributes = transcriptAttributes()
+    textView.isEditable = isEditable
+    textView.allowsUndo = isEditable
+    textView.typingAttributes = attributes
+    textView.insertionPointColor = OverlayAppearancePalette.resolve(appearance).bodyText.nsColor
+
+    let sameBytes = textView.string.utf8.elementsEqual(text.utf8)
+    let sameAttributes =
+      coordinator.renderedAttributes.map {
+        NSDictionary(dictionary: $0).isEqual(to: attributes)
+      } ?? false
+    // The uncertain-word signature is part of the attribute diff: a range
+    // change with identical bytes must never leave stale paint behind.
+    let sameUncertain = coordinator.renderedUncertainWords == uncertainWords
+    // While the caret is in the canvas the bytes we are handed are the bytes
+    // the user just typed; repainting storage would throw the caret away.
+    if sameBytes, coordinator.isEditing { return }
+    guard !sameBytes || !sameAttributes || !sameUncertain else { return }
 
     let previousSelection = textView.selectedRange()
     let wasFollowingTail = coordinator.followsTail
+    let previousOrigin = textView.enclosingScrollView?.contentView.bounds.origin
     coordinator.applyingUpdate = true
-    textView.textStorage?.setAttributedString(rendered)
+    let previous = textView.string as NSString
+    let incoming = text as NSString
+    let palette = OverlayAppearancePalette.resolve(appearance)
+    if sameAttributes, sameUncertain {
+      // Preserve the recorded prefix in TextKit. Replacing the whole storage
+      // invalidates every paragraph on each live append or open-tail revision.
+      // Compare UTF-16 units, not Characters: canonical Unicode equivalence
+      // must never hide a byte-level revision from the engine.
+      var prefix = 0
+      let sharedLength = min(previous.length, incoming.length)
+      while prefix < sharedLength, previous.character(at: prefix) == incoming.character(at: prefix)
+      {
+        prefix += 1
+      }
+      if prefix > 0, prefix < incoming.length,
+        (0xDC00...0xDFFF).contains(incoming.character(at: prefix))
+      {
+        prefix -= 1  // Do not split a surrogate pair at the changed boundary.
+      }
+      let tail = NSAttributedString(
+        string: incoming.substring(from: prefix), attributes: attributes)
+      textView.textStorage?.replaceCharacters(
+        in: NSRange(location: prefix, length: previous.length - prefix), with: tail)
+      // The replaced tail carried base attributes only; re-apply the uncertain
+      // ranges that intersect it. Ranges before the prefix kept their paint.
+      applyUncertainAttributes(to: textView, palette: palette, tailStart: prefix)
+    } else {
+      // Base attributes or the uncertain ranges themselves changed: repaint
+      // the whole storage so stale uncertainty paint cannot survive a revision.
+      textView.textStorage?.setAttributedString(
+        NSAttributedString(string: text, attributes: attributes))
+      applyUncertainAttributes(to: textView, palette: palette, tailStart: nil)
+    }
+    coordinator.renderedAttributes = attributes
+    coordinator.renderedUncertainWords = uncertainWords
 
-    let updatedLength = rendered.length
+    let updatedLength = incoming.length
     if previousSelection.length > 0 || !wasFollowingTail {
       textView.setSelectedRange(
         LiveTranscriptSelectionPolicy.preservedRange(
@@ -100,70 +290,304 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     } else {
       let tail = NSRange(location: updatedLength, length: 0)
       textView.setSelectedRange(tail)
-      DispatchQueue.main.async { [weak textView, weak coordinator] in
-        guard let textView, coordinator?.followsTail == true else { return }
-        textView.scrollRangeToVisible(tail)
-      }
+      coordinator.scheduleTailReveal(for: textView, expectedLength: tail.location)
+    }
+    if !wasFollowingTail, !coordinator.isEditing, let previousOrigin,
+      let scroll = textView.enclosingScrollView
+    {
+      textView.layoutSubtreeIfNeeded()
+      scroll.contentView.scroll(to: previousOrigin)
+      scroll.reflectScrolledClipView(scroll.contentView)
     }
     coordinator.applyingUpdate = false
   }
 
-  private func attributedTranscript() -> NSAttributedString {
+  private func transcriptAttributes() -> [NSAttributedString.Key: Any] {
     let size = 15 * textScale
-    let descriptor = NSFontDescriptor(fontAttributes: [
-      .family: FontLoader.spaceGrotesk,
-      .traits: [NSFontDescriptor.TraitKey.weight: NSFont.Weight.medium.rawValue],
-    ])
-    let font =
-      NSFont(descriptor: descriptor, size: size)
-      ?? .systemFont(ofSize: size, weight: .medium)
+    let font = NSFont.systemFont(ofSize: size, weight: .regular)
     let paragraph = NSMutableParagraphStyle()
     paragraph.lineSpacing = 5
-    let result = NSMutableAttributedString()
+    return [
+      .font: font,
+      .foregroundColor: OverlayAppearancePalette.resolve(appearance).bodyText.nsColor,
+      .paragraphStyle: paragraph,
+    ]
+  }
 
-    for run in runs {
-      let text: String
-      let color: NSColor
-      var extra: [NSAttributedString.Key: Any] = [:]
-      switch run {
-      case .text(let value):
-        text = value
-        color = NSColor(CSColor.textBody)
-      case .highlight(let highlight):
-        text = highlight.after
-        switch highlight.kind {
-        case .lexiconCorrected:
-          color = NSColor(highlight.taught ? CSColor.oliveLight : CSColor.terracottaLight)
-        case .speechGap:
-          color = NSColor(CSColor.amber)
-          extra[.underlineStyle] = NSUnderlineStyle.single.rawValue
-          extra[.underlineColor] = NSColor(CSColor.amber)
-        }
-      }
-      var attributes: [NSAttributedString.Key: Any] = [
-        .font: font,
-        .foregroundColor: color,
-        .paragraphStyle: paragraph,
+  /// Uncertain words get the uncertainty orange plus a dotted underline and a
+  /// VoiceOver custom-text marker (d8: color alone is never the only signal).
+  /// `surface_rewritten` words belong to the dictionary (d5): steel-blue
+  /// lexicon style, never orange. The custom-text attribute is the documented
+  /// string-array form of `NSAccessibilityCustomTextAttribute`.
+  static func uncertainAttributes(
+    for word: OverlayUncertainWord,
+    palette: OverlayAppearancePalette
+  ) -> [NSAttributedString.Key: Any] {
+    if word.surfaceRewritten {
+      return [
+        .foregroundColor: palette.lexiconMarker.nsColor,
+        .underlineStyle: NSUnderlineStyle.single.rawValue,
+        .underlineColor: palette.lexiconMarker.nsColor,
+        .accessibilityCustomText: [
+          String(
+            localized: "rewritten by your dictionary",
+            comment: "VoiceOver marker spoken on a word the user's dictionary replaced")
+        ],
       ]
-      attributes.merge(extra) { _, replacement in replacement }
-      result.append(NSAttributedString(string: text, attributes: attributes))
     }
-    return result
+    return [
+      .foregroundColor: palette.uncertainWord.nsColor,
+      .underlineStyle: NSUnderlineStyle([.single, .patternDot]).rawValue,
+      .underlineColor: palette.uncertainWord.nsColor,
+      .accessibilityCustomText: [
+        String(
+          localized: "uncertain",
+          comment: "VoiceOver marker spoken on a word the engine was unsure of")
+      ],
+    ]
+  }
+
+  private func applyUncertainAttributes(
+    to textView: LiveTranscriptNativeTextView,
+    palette: OverlayAppearancePalette,
+    tailStart: Int?
+  ) {
+    guard let storage = textView.textStorage else { return }
+    let length = storage.length
+    for word in uncertainWords {
+      if let tailStart, NSMaxRange(word.range) <= tailStart { continue }
+      let start = min(word.range.location, length)
+      let end = min(NSMaxRange(word.range), length)
+      guard end > start else { continue }
+      storage.addAttributes(
+        Self.uncertainAttributes(for: word, palette: palette),
+        range: NSRange(location: start, length: end - start)
+      )
+    }
   }
 
   @MainActor
   final class Coordinator: NSObject, NSTextViewDelegate {
-    var followsTail = true
+    private(set) var scrollFollowState = LiveTranscriptScrollFollowState()
+    var followsTail: Bool { scrollFollowState.followsTail }
     var applyingUpdate = false
+    var isEditing = false
+    var renderedAttributes: [NSAttributedString.Key: Any]?
+    var renderedUncertainWords: [OverlayUncertainWord]?
+    var uncertainWords: [OverlayUncertainWord] = []
+    var showsDiagnostics = false
+    var popoverPalette = OverlayAppearancePalette.dark
+    var onEditingChanged: ((Bool) -> Void)?
+    var onTextChange: ((String) -> Void)?
+    var onCancelEdit: (() -> Void)?
+    var onPlayUncertainWord: ((OverlayUncertainWord) -> Void)?
+    var onTeachUncertainWord: ((OverlayUncertainWord, String) -> Void)?
+    let uncertainWordPopover = UncertainWordPopoverPresenter()
+    private weak var observedScrollView: NSScrollView?
+    private var scrollObservers: [NSObjectProtocol] = []
+
+    func attach(to scrollView: NSScrollView) {
+      guard observedScrollView !== scrollView else { return }
+      detach()
+      observedScrollView = scrollView
+      let center = NotificationCenter.default
+      scrollObservers = [
+        center.addObserver(
+          forName: NSScrollView.willStartLiveScrollNotification,
+          object: scrollView,
+          queue: nil
+        ) { [weak self] _ in
+          MainActor.assumeIsolated {
+            self?.userScrollBegan()
+          }
+        },
+        center.addObserver(
+          forName: NSScrollView.didLiveScrollNotification,
+          object: scrollView,
+          queue: nil
+        ) { [weak self] _ in
+          MainActor.assumeIsolated {
+            self?.reportScrollMovement()
+          }
+        },
+        center.addObserver(
+          forName: NSScrollView.didEndLiveScrollNotification,
+          object: scrollView,
+          queue: nil
+        ) { [weak self] _ in
+          MainActor.assumeIsolated {
+            self?.reportScrollEnd()
+          }
+        },
+      ]
+    }
+
+    func detach() {
+      for observer in scrollObservers { NotificationCenter.default.removeObserver(observer) }
+      scrollObservers.removeAll()
+      observedScrollView = nil
+    }
+
+    func userScrollBegan() {
+      scrollFollowState.userScrollBegan()
+    }
+
+    func userScrollMoved(isAtLiveEdge: Bool, hasSelection: Bool) {
+      scrollFollowState.userScrollMoved(
+        isAtLiveEdge: isAtLiveEdge,
+        hasSelection: hasSelection
+      )
+    }
+
+    func userScrollEnded(isAtLiveEdge: Bool, hasSelection: Bool) {
+      scrollFollowState.userScrollEnded(
+        isAtLiveEdge: isAtLiveEdge,
+        hasSelection: hasSelection
+      )
+    }
+
+    func reportScrollMovement(in scrollView: NSScrollView? = nil) {
+      guard let scrollView = scrollView ?? observedScrollView,
+        let documentView = scrollView.documentView,
+        let textView = documentView as? NSTextView
+      else { return }
+      userScrollMoved(
+        isAtLiveEdge: isAtLiveEdge(documentView: documentView, in: scrollView),
+        hasSelection: textView.selectedRange().length > 0
+      )
+    }
+
+    func reportScrollEnd(in scrollView: NSScrollView? = nil) {
+      guard let scrollView = scrollView ?? observedScrollView,
+        let documentView = scrollView.documentView,
+        let textView = documentView as? NSTextView
+      else { return }
+      userScrollEnded(
+        isAtLiveEdge: isAtLiveEdge(documentView: documentView, in: scrollView),
+        hasSelection: textView.selectedRange().length > 0
+      )
+    }
+
+    private func isAtLiveEdge(documentView: NSView, in scrollView: NSScrollView) -> Bool {
+      let clip = scrollView.contentView
+      let liveBottomOrigin = LiveTranscriptNativeTextView.liveBottomScrollOrigin(
+        documentMaxY: documentView.bounds.maxY,
+        clipHeight: clip.bounds.height,
+        contentInsets: clip.contentInsets
+      )
+      return clip.bounds.origin.y >= liveBottomOrigin - 2
+    }
+
+    func scheduleTailReveal(
+      for textView: LiveTranscriptNativeTextView,
+      expectedLength: Int? = nil
+    ) {
+      guard scrollFollowState.followsTail else { return }
+      let revision = scrollFollowState.revealRevision
+      DispatchQueue.main.async { [weak self, weak textView] in
+        guard let self, let textView,
+          self.scrollFollowState.allowsTailReveal(revision: revision),
+          !self.isEditing,
+          textView.selectedRange().length == 0,
+          expectedLength == nil || (textView.string as NSString).length == expectedLength
+        else { return }
+        textView.revealTranscriptTail()
+      }
+    }
 
     func textViewDidChangeSelection(_ notification: Notification) {
       guard !applyingUpdate,
         let textView = notification.object as? NSTextView
       else { return }
-      followsTail = LiveTranscriptSelectionPolicy.followsTail(
-        selection: textView.selectedRange(),
-        textLength: (textView.string as NSString).length
+      let scrollView = textView.enclosingScrollView
+      let viewportAtLiveEdge =
+        scrollView.flatMap { scrollView in
+          scrollView.documentView.map { isAtLiveEdge(documentView: $0, in: scrollView) }
+        } ?? false
+      scrollFollowState.selectionChanged(
+        textView.selectedRange(),
+        textLength: (textView.string as NSString).length,
+        isAtLiveEdge: viewportAtLiveEdge
       )
+    }
+
+    func textDidChange(_ notification: Notification) {
+      guard !applyingUpdate, let textView = notification.object as? NSTextView else { return }
+      // Native edits (including rich paste) can change attributes independently
+      // of the projection. Reapply the transcript style when editing finishes.
+      renderedAttributes = nil
+      renderedUncertainWords = nil
+      onTextChange?(textView.string)
+    }
+
+    /// Click on a painted word opens its explainer popover; a click anywhere
+    /// else dismisses it.
+    func presentUncertainWordPopoverIfNeeded(
+      characterIndex: Int,
+      in textView: LiveTranscriptNativeTextView
+    ) {
+      guard
+        let word = OverlayUncertainWordProjection.hit(
+          at: characterIndex, in: uncertainWords)
+      else {
+        uncertainWordPopover.dismiss()
+        return
+      }
+      uncertainWordPopover.present(
+        word: word,
+        in: textView,
+        palette: popoverPalette,
+        showsDiagnostics: showsDiagnostics,
+        onPlay: onPlayUncertainWord.map { play in { play(word) } },
+        onTeach: onTeachUncertainWord.map { teach in { canonical in teach(word, canonical) } }
+      )
+    }
+
+    func textView(
+      _ textView: NSTextView, doCommandBy commandSelector: Selector
+    ) -> Bool {
+      let isScrollCommand =
+        commandSelector == #selector(NSResponder.scrollPageUp(_:))
+        || commandSelector == #selector(NSResponder.scrollPageDown(_:))
+        || commandSelector == #selector(NSResponder.scrollLineUp(_:))
+        || commandSelector == #selector(NSResponder.scrollLineDown(_:))
+        || commandSelector == #selector(NSResponder.scrollToBeginningOfDocument(_:))
+        || commandSelector == #selector(NSResponder.scrollToEndOfDocument(_:))
+      if isScrollCommand, let scrollView = textView.enclosingScrollView {
+        userScrollBegan()
+        DispatchQueue.main.async { [weak self, weak scrollView] in
+          guard let self, let scrollView else { return }
+          self.reportScrollEnd(in: scrollView)
+        }
+        return false
+      }
+      // Escape: NSTextView routes it as `cancelOperation:` first and falls
+      // back to `complete:` (word completion) — both mean "drop the draft".
+      let isEscape =
+        commandSelector == #selector(NSResponder.cancelOperation(_:))
+        || commandSelector == #selector(NSTextView.complete(_:))
+      guard isEscape else { return false }
+      onCancelEdit?()
+      textView.window?.makeFirstResponder(nil)
+      return true
+    }
+  }
+}
+
+/// Wheel input owns the viewport before AppKit delivers any bounds changes.
+final class LiveTranscriptScrollView: NSScrollView {
+  weak var followCoordinator: LiveTranscriptTextView.Coordinator?
+
+  override func scrollWheel(with event: NSEvent) {
+    followCoordinator?.userScrollBegan()
+    super.scrollWheel(with: event)
+    let phaseEnded = event.phase.contains(.ended) || event.phase.contains(.cancelled)
+    let momentumEnded =
+      event.momentumPhase.contains(.ended) || event.momentumPhase.contains(.cancelled)
+    if (event.phase.isEmpty && event.momentumPhase.isEmpty)
+      || momentumEnded || (phaseEnded && event.momentumPhase.isEmpty)
+    {
+      followCoordinator?.reportScrollEnd(in: self)
     }
   }
 }
@@ -171,6 +595,115 @@ struct LiveTranscriptTextView: NSViewRepresentable {
 /// First-click selection is important because the overlay is deliberately a
 /// non-activating panel: it must not steal focus merely by appearing, but an
 /// explicit click in the transcript must immediately begin a drag selection.
+///
+/// When editable, gaining first responder is what makes the hosting
+/// `FloatingOverlayPanel` key; resigning gives the keyboard back.
 final class LiveTranscriptNativeTextView: NSTextView {
+  static func liveBottomScrollOrigin(
+    documentMaxY: CGFloat,
+    clipHeight: CGFloat,
+    contentInsets: NSEdgeInsets
+  ) -> CGFloat {
+    max(-contentInsets.top, documentMaxY + contentInsets.bottom - clipHeight)
+  }
+
+  func revealTranscriptTail() {
+    let length = (string as NSString).length
+    let range = NSRange(location: max(0, length - 1), length: min(1, length))
+    scrollRangeToVisible(range)
+    guard let scroll = enclosingScrollView else { return }
+    // A transcript ending in a newline has an empty insertion line after its
+    // final glyph. Revealing only that glyph can leave the viewport one line
+    // short of the document's live edge, so place the document extent at the
+    // viewport bottom after TextKit has laid out the requested tail range.
+    // TextKit 2 lays that trailing line out only once the viewport reaches it,
+    // so the document grows after the scroll that uncovered it. Lay the new
+    // viewport out and re-place the bottom while the extent still moves; the
+    // growth is the uncovered tail, so the second pass settles.
+    for _ in 0..<3 {
+      let documentMaxY = bounds.maxY
+      var origin = scroll.contentView.bounds.origin
+      origin.y = Self.liveBottomScrollOrigin(
+        documentMaxY: documentMaxY,
+        clipHeight: scroll.contentView.bounds.height,
+        contentInsets: scroll.contentView.contentInsets
+      )
+      scroll.contentView.scroll(to: origin)
+      scroll.reflectScrolledClipView(scroll.contentView)
+      textLayoutManager?.textViewportLayoutController.layoutViewport()
+      if bounds.maxY == documentMaxY { return }
+    }
+  }
+
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+  private var editCoordinator: LiveTranscriptTextView.Coordinator? {
+    delegate as? LiveTranscriptTextView.Coordinator
+  }
+
+  func beginEditingIfNeeded() {
+    guard isEditable, let coordinator = editCoordinator, !coordinator.isEditing else { return }
+    (window as? FloatingOverlayPanel)?.takeKeyForEdit()
+    coordinator.isEditing = true
+    coordinator.onEditingChanged?(true)
+  }
+
+  override func becomeFirstResponder() -> Bool {
+    guard super.becomeFirstResponder() else { return false }
+    beginEditingIfNeeded()
+    return true
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    mouseDownCharacterIndex = characterIndex(for: event)
+    super.mouseDown(with: event)
+    // AppKit can preselect this view while the take is still read-only. An
+    // explicit later click must open the edit gate even if responder identity
+    // does not change and becomeFirstResponder is therefore not called again.
+    if window?.firstResponder === self { beginEditingIfNeeded() }
+  }
+
+  override func mouseUp(with event: NSEvent) {
+    super.mouseUp(with: event)
+    defer { mouseDownCharacterIndex = nil }
+    guard event.clickCount == 1,
+      selectedRange().length == 0,
+      let downIndex = mouseDownCharacterIndex,
+      let upIndex = characterIndex(for: event),
+      upIndex == downIndex
+    else { return }
+    editCoordinator?.presentUncertainWordPopoverIfNeeded(characterIndex: upIndex, in: self)
+  }
+
+  private var mouseDownCharacterIndex: Int?
+
+  private func characterIndex(for event: NSEvent) -> Int? {
+    let point = convert(event.locationInWindow, from: nil)
+    let index = characterIndexForInsertion(at: point)
+    return index == NSNotFound ? nil : index
+  }
+
+  override func resignFirstResponder() -> Bool {
+    guard super.resignFirstResponder() else { return false }
+    if let coordinator = editCoordinator, coordinator.isEditing {
+      coordinator.isEditing = false
+      coordinator.onEditingChanged?(false)
+      (window as? FloatingOverlayPanel)?.releaseKeyAfterEdit()
+    }
+    return true
+  }
+
+  @discardableResult
+  func copySelection(to pasteboard: NSPasteboard) -> Bool {
+    let selection = selectedRange()
+    let source = string as NSString
+    guard selection.length > 0, NSMaxRange(selection) <= source.length else { return false }
+
+    pasteboard.clearContents()
+    return pasteboard.setString(source.substring(with: selection), forType: .string)
+  }
+
+  override func copy(_ sender: Any?) {
+    _ = copySelection(to: .general)
+  }
 }

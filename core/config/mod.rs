@@ -21,10 +21,22 @@
 pub mod cloud_asr;
 /// Serde default helpers and default model/endpoint constants.
 mod defaults;
-/// Stop-path final-pass routing mode shared by controller and bridge lanes.
-pub mod final_pass;
+pub use defaults::{
+    DEFAULT_CLOUD_REFINE_ENDPOINT, default_cloud_refine_endpoint,
+    default_whisper_context_window_sec, normalize_whisper_context_window_sec,
+};
+pub use defaults::{
+    default_light_plus_sentence_pause_sec, normalize_light_plus_sentence_pause_sec,
+};
+/// Measured, versioned acoustic calibration artifact (the `EnergyCalibration`
+/// source of the runtime settings throne).
+pub mod energy_calibration;
+/// Process/install interlock preventing runtime and bundle replacement overlap.
+mod install_interlock;
 /// macOS Keychain storage for API keys (not plaintext `.env`).
 pub mod keychain;
+/// One-shot legacy LLM lane fields → provider registry shape.
+mod llm_migration;
 /// Load/save: defaults, settings.json, optional `.env`, process env overrides.
 mod loader;
 /// One-time legacy `.env` import into settings.json + Keychain.
@@ -36,41 +48,64 @@ pub mod portable;
 /// On-disk prompt files (formatting, smart formatting, assistive): built-in
 /// defaults, user overrides, snapshots, and restore-to-default.
 pub mod prompts;
+/// Backup-first launch repair and its diagnostic receipt.
+pub mod repair;
+/// Explicit state and credential ownership for an embedding application.
+pub mod runtime_host;
 /// GUI-managed user settings JSON (regular-user tier).
 pub mod settings;
 /// Process-wide app-data I/O fence used by destructive reset.
 pub mod storage_reset;
+/// One-shot STT transport and credential migration.
+pub mod stt_migration;
 /// Config enums and the main `Config` struct definitions.
 mod types;
 
-pub use defaults::{
-    DEFAULT_ASSISTIVE_MODEL, DEFAULT_FORMATTING_MODEL, DEFAULT_LLM_MODEL,
-    DEFAULT_OPENAI_RESPONSES_ENDPOINT, default_assistive_model, default_formatting_model,
-    default_llm_endpoint, default_llm_endpoint_option, default_llm_model,
+pub use loader::{
+    CapturedLaneCredential, CapturedRuntimeInputs, StartupAcquisitionProbe,
+    note_startup_acquisition,
 };
+pub use prompts::{CapturedPrompt, CapturedRuntimePrompts};
+
 // Re-export types
 pub use types::{
-    Config, DeferredInsertShortcut, HoldArmModifier, ModeBinding, OverlayPositionMode,
-    ShortcutBinding, TranscriptSendMode, WorkMode,
+    ChannelModifier, Config, DeferredInsertShortcut, HoldArmModifier, ModeBinding,
+    OverlayPositionMode, PasteMode, ShortcutBinding, TranscriptSendMode, WorkMode,
 };
 // Language re-exported for external consumers (GUI apps)
 pub use cloud_asr::{
-    AsrProductMode, AudioEgressConsent, ConsentSource, GatewayMintError, GatewaySessionMint,
-    ModeDerivation, ResolvedAsrMode, resolve_asr_product_mode,
+    AsrProductMode, AudioEgressConsent, CloudRefineAdmission, ConsentSource, GatewayMintError,
+    GatewaySessionMint, ModeDerivation, ResolvedAsrMode, resolve_asr_product_mode,
 };
-pub use final_pass::{FinalPassRoutingMode, final_pass_routing_mode};
+pub use energy_calibration::{
+    ENERGY_CALIBRATION_FILE_NAME, ENERGY_CALIBRATION_SCHEMA, EnergyCalibrationArtifact,
+    EnergyCalibrationProfile, EnergyCalibrationRefusal, EnergyCalibrationStatus,
+    SealedEnergyCalibration, energy_calibration_path,
+};
+pub use install_interlock::{
+    AGENT_TURN_LEASE_FILE_NAME, AgentTurnLease, AppRuntimeInstallLease,
+    INSTALL_INTERLOCK_FILE_NAME, acquire_agent_turn_lease, acquire_agent_turn_lease_at,
+    acquire_app_runtime_install_lease, acquire_app_runtime_install_lease_at, agent_turn_lease_path,
+    install_interlock_path,
+};
 pub use portable::{
     ImportPlan, PortableProfile, export_portable, import_portable_apply, import_portable_dry_run,
     write_portable_export,
 };
-pub use settings::{FormattingPolicy, UserSettings};
+pub use settings::{
+    FormattingPolicy, PromptSource, RemovedCustomProvider, RuntimeAiExecution,
+    RuntimeAiRequestTiming, RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane,
+    RuntimeLlmLaneKind, RuntimeLlmLanes, RuntimeSealedPrompt, RuntimeSettingsSnapshot,
+    SettingsLoaderInput, SettingsSnapshotDigest, SettingsSnapshotProvenance,
+    SettingsSnapshotValidation, SettingsSnapshotValidationError, UserSettings,
+};
 pub use storage_reset::{AppDataResetGuard, begin_app_data_reset};
 pub use types::Language;
 
 // Re-export prompts API (public API for GUI apps)
 pub use prompts::{
     DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, DEFAULT_MAX_FORMATTING_PROMPT,
-    DEFAULT_SMART_FORMATTING_PROMPT, PromptKind, PromptSnapshot, PromptSource, PromptWriteReason,
+    DEFAULT_SMART_FORMATTING_PROMPT, PromptKind, PromptSnapshot, PromptWriteReason,
     get_assistive_prompt, get_assistive_prompt_path, get_formatting_prompt,
     get_formatting_prompt_for_policy, get_formatting_prompt_path,
     get_formatting_prompt_path_for_policy, open_prompt_file, open_prompts_folder, prompt_snapshot,
@@ -94,6 +129,7 @@ mod tests {
         assert!(!config.transcript_tagging_enabled);
         assert_eq!(config.double_tap_interval_ms, 200);
         assert_eq!(config.toggle_silence_sec, 5.0);
+        assert_eq!(config.whisper_context_window_sec, 8.0);
         assert!(config.show_dock_icon);
         assert_eq!(config.local_model, models::DEFAULT_MODEL);
     }
@@ -183,18 +219,44 @@ mod tests {
         assert_eq!(config.sound_volume, 0.0);
     }
 
-    /// `config_dir` respects `CODESCRIBE_DATA_DIR` or falls under `.codescribe`.
+    /// `config_dir` respects `CODESCRIBE_DATA_DIR`; in test builds it otherwise
+    /// defaults to the per-process temporary root, never the account's real
+    /// `$HOME/.codescribe` — even when `HOME` points at a hostile directory.
     #[test]
     #[serial]
     fn test_config_dir() {
-        // #[serial]: reads the global CODESCRIBE_DATA_DIR env var, which the
-        // setup_isolated_data_dir() tests mutate — without serialization this races
-        // and flakes (config_dir() vs env::var() observing different values).
+        // #[serial]: reads the global CODESCRIBE_DATA_DIR/HOME env vars, which
+        // other tests mutate — without serialization this races and flakes.
+        let previous_home = std::env::var_os("HOME");
+        let hostile = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(hostile.path().join(".codescribe")).unwrap();
+        std::fs::write(
+            hostile.path().join(".codescribe/settings.json"),
+            r#"{"schema_version":3}"#,
+        )
+        .unwrap();
+        // SAFETY: #[serial]; restored before the test returns.
+        unsafe { std::env::set_var("HOME", hostile.path()) };
+
         let dir = Config::config_dir();
+
+        // SAFETY: same serialized scope as the set above.
+        unsafe {
+            match &previous_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
         if let Ok(custom) = std::env::var("CODESCRIBE_DATA_DIR") {
             assert_eq!(dir, std::path::PathBuf::from(custom));
         } else {
-            assert!(dir.to_string_lossy().contains(".codescribe"));
+            assert_eq!(dir, crate::test_isolation::test_process_config_root());
+            let home = crate::test_isolation::account_home().expect("account home");
+            assert!(
+                !dir.starts_with(&home),
+                "test default config_dir must not resolve under the account home"
+            );
         }
     }
 

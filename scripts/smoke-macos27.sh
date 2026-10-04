@@ -19,7 +19,7 @@
 # ---------------------
 # Post synthetic events, raise a TCC dialog, read pasteboard content, or touch
 # operator state. Rows that need any of those are operator-gated by design —
-# see AGENT_BUS.md § OPERATOR_AWAY.
+# see the install cadence and safety boundaries in AGENTS.md.
 #
 # USAGE
 #   scripts/smoke-macos27.sh [--out FILE] [--with-inference] [--clipboard-content]
@@ -157,8 +157,8 @@ if [[ ! -f "$ALLOW_FILE" ]]; then
   record "appkit-observer-census" "FAIL" "missing pin file $ALLOW_FILE"
 else
   # Live census: AppKit notifications are Apple-namespaced (NSWindow., NSApp.,
-  # NSScrollView., ...); our own buses are ConfigChangeBus./ThreadsChangeBus.,
-  # so the NS-prefix is a clean discriminator. Tests are out of scope: they do
+  # NSScrollView., ...); application notifications use product-owned names, so
+  # the NS-prefix is a clean discriminator. Tests are out of scope: they do
   # not run inside a user's window server session.
   grep -rn --include='*.swift' 'forName:[[:space:]]*NS[A-Za-z]*\.' macos/Codescribe \
     | sed -E 's/^([^:]+):[0-9]+:.*forName:[[:space:]]*(NS[A-Za-z]+\.[A-Za-z]+).*/\1 | \2/' \
@@ -252,11 +252,9 @@ else
   #    checked-in development license verifier. The literal `release` profile
   #    fails closed without the operator-owned licence key, which is a
   #    distribution contract, not something a latency probe should satisfy.
-  #  * `CODESCRIBE_STT_ENGINE=candle` — ~/.codescribe/.env is loaded by every
-  #    process that boots core, so without pinning, an operator's power-user
-  #    setting would silently decide which lane this row measures.
+  # The example calls the Whisper file-verdict path directly.
   elif env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
-        CODESCRIBE_LOCAL_INSTALL=1 CODESCRIBE_STT_ENGINE=candle \
+        CODESCRIBE_LOCAL_INSTALL=1 \
         cargo run --profile local-release --quiet \
         --example final_pass_latency_baseline -- \
         "$FIXTURE" "$FIXTURE" > "$TMP_DIR/latency.log" 2>"$TMP_DIR/latency.err"; then

@@ -119,7 +119,9 @@
 
 .lab-frame {
   display: grid;
-  grid-template-columns: var(--lab-sidebar-w) minmax(0, 1fr) var(--lab-toolbox-w);
+  grid-template-columns: var(--lab-sidebar-w) minmax(0, 1fr) var(
+      --lab-toolbox-w
+    );
   min-height: 0;
 }
 
