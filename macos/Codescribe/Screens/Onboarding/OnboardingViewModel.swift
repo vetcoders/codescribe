@@ -135,6 +135,13 @@ final class OnboardingViewModel: ObservableObject {
 
   // API-key step state.
   @Published private(set) var providers: [CsProviderOption] = []
+  @Published private(set) var providerAccessPending = false
+  @Published private(set) var providerMutationPending = false
+  @Published private(set) var providerAccessResolved = false
+  @Published private(set) var providerAccessError: String?
+  @Published private(set) var providerAccountErrors: [String: String] = [:]
+  private var providerAccessGeneration: UInt64 = 0
+  private var providerRefreshRequested = false
   @Published var selectedProviderId: String
   @Published var apiKeyDraft: String = ""
 
@@ -176,7 +183,6 @@ final class OnboardingViewModel: ObservableObject {
     self.agentBridgeError = nil
     self.selectedProviderId =
       engine.assistiveProvider()
-      ?? engine.availableProviders().first?.id
       ?? "openai-responses"
   }
 
@@ -205,7 +211,7 @@ final class OnboardingViewModel: ObservableObject {
   }
 
   var selectedProvider: CsProviderOption? {
-    providers.first { $0.id == selectedProviderId } ?? providers.first
+    providers.first { $0.id == selectedProviderId }
   }
 
   var agentBridgeTitle: String {
@@ -238,7 +244,7 @@ final class OnboardingViewModel: ObservableObject {
   /// after each transition so permission rows and key presence stay current
   /// without a manual poll.
   func refreshForCurrentStep() {
-    loadProvidersIfNeeded()
+    if step != .agenticReadiness { refreshProviders() }
     switch step {
     case .permission:
       reprobePermissions()
@@ -265,6 +271,17 @@ final class OnboardingViewModel: ObservableObject {
   /// Re-probe the agentic-lane readiness verdict + MCP server status. Called on
   /// the readiness step's appear and by its "Refresh" button. Read-only.
   func refreshReadiness() {
+    refreshProviders()
+    keyStatus = engine.keyStatus()
+    refreshReadinessState()
+  }
+
+  private func refreshReadinessState() {
+    guard providerAccessResolved else { return }
+    if selectedProviderAccountError != nil, !selectedProviderKeySet {
+      readiness = nil
+      return
+    }
     readiness = agentStatus.agenticReadiness()
     mcpStatus = agentStatus.mcpStatus()
     agentBridgeStatus = agentBridge.status()
@@ -296,11 +313,46 @@ final class OnboardingViewModel: ObservableObject {
     SettingsDeepLink.shared.present(tab: .agentMcp)
   }
 
-  private func loadProvidersIfNeeded() {
-    guard providers.isEmpty else { return }
-    providers = engine.availableProviders()
-    if selectedProvider == nil, let first = providers.first {
-      selectedProviderId = first.id
+  func prepareProviderSettingsDeepLink() {
+    SettingsDeepLink.shared.present(.keys)
+  }
+
+  private func refreshProviders() {
+    if providerMutationPending { providerRefreshRequested = true; return }
+    guard !providerAccessPending else { return }
+    // This read consumes the queued request; later mutations may queue another.
+    providerRefreshRequested = false
+    providerAccessPending = true
+    let generation = providerAccessGeneration
+    Task { @MainActor [self] in
+      defer {
+        providerAccessPending = false
+        if providerRefreshRequested {
+          providerRefreshRequested = false
+          refreshProviders()
+        }
+      }
+      do {
+        let snapshot = try await engine.providerAccessSnapshot()
+        guard generation == providerAccessGeneration,
+          snapshot.revision == engine.providerAccessRevision()
+        else { providerRefreshRequested = true; return }
+        providers = snapshot.providers
+        providerAccountErrors = snapshot.accountErrors
+        keyStatus = snapshot.keyStatus
+        providerAccessResolved = true
+        providerAccessError = nil
+        if step == .agenticReadiness { refreshReadinessState() }
+        if selectedProvider == nil, let first = providers.first {
+          selectedProviderId = first.id
+        }
+      } catch {
+        guard generation == providerAccessGeneration else {
+          providerRefreshRequested = true
+          return
+        }
+        providerAccessError = error.userFacingMessage
+      }
     }
   }
 
@@ -312,7 +364,18 @@ final class OnboardingViewModel: ObservableObject {
   /// The Agentic Readiness step is skipped in the Basic lane. Advancing off the
   /// end is treated as finishing so we never index past the flow.
   func advance() {
+    guard !providerMutationPending else { return }
+    if step == .apiKey, apiKeySaveAvailable,
+      !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
+      saveApiKey(advanceOnSuccess: true)
+      return
+    }
     commitCurrentChoice()
+    advanceAfterCommit()
+  }
+
+  private func advanceAfterCommit() {
     guard let next = nextVisibleIndex(after: stepIndex) else {
       finish()
       return
@@ -323,6 +386,7 @@ final class OnboardingViewModel: ObservableObject {
   }
 
   func back() {
+    guard !providerMutationPending else { return }
     guard let prev = prevVisibleIndex(before: stepIndex) else { return }
     stepIndex = prev
     persistProgress()
@@ -367,12 +431,6 @@ final class OnboardingViewModel: ObservableObject {
     case .mode: persistMode()
     case .language: persistLanguage()
     case .hotkeyMode: persistHotkeyMode()
-    case .apiKey:
-      // Continue with a pasted-but-unsaved key would drop it; commit the draft
-      // so the key persists (saveApiKey no-ops on an empty draft).
-      if !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        saveApiKey()
-      }
     default: break
     }
   }
@@ -387,6 +445,7 @@ final class OnboardingViewModel: ObservableObject {
   }
 
   func finish() {
+    guard !providerMutationPending else { return }
     engine.markOnboardingDone()
     onFinished?()
   }
@@ -480,6 +539,7 @@ final class OnboardingViewModel: ObservableObject {
   // MARK: - API-key step actions
 
   func selectProvider(_ id: String) {
+    guard !providerMutationPending else { return }
     selectedProviderId = id
     do {
       try engine.updateConfig(key: "LLM_ASSISTIVE_PROVIDER", value: id)
@@ -490,19 +550,103 @@ final class OnboardingViewModel: ObservableObject {
 
   /// True when the currently selected provider's key is present in the Keychain.
   var selectedProviderKeySet: Bool {
-    guard let account = selectedProvider?.apiKeyAccount else { return false }
-    return keyStatus.isSet(account: account)
+    selectedProvider?.apiKeySet == true
   }
 
-  func saveApiKey() {
-    let trimmed = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty, let account = selectedProvider?.apiKeyAccount else { return }
-    do {
-      try engine.setApiKey(account: account, secret: trimmed)
-      apiKeyDraft = ""
-      keyStatus = engine.keyStatus()
-    } catch {
-      lastError = error.userFacingMessage
+  var apiKeySaveAvailable: Bool {
+    providerAccessResolved && providerAccessError == nil
+      && selectedProvider?.apiKeyAccount.isEmpty == false
+  }
+
+  var selectedProviderAccountError: String? { providerAccountErrors[selectedProviderId] }
+
+  var selectedProviderAccountConnected: Bool {
+    selectedProvider?.accountSignedIn == true
+  }
+
+  var selectedProviderHasAccountAccess: Bool {
+    selectedProvider?.accountLoginEnabled == true || selectedProviderAccountConnected
+  }
+
+  func refreshProviderAccess() {
+    refreshProviders()
+    keyStatus = engine.keyStatus()
+  }
+
+  /// Credential presence is presented separately from the core capability verdict.
+  /// Account sign-in does not promise a Formatting credential or a model catalog.
+  var providerAccessDescription: String {
+    if let error = providerAccessError {
+      return String(localized: "Provider access is unavailable. Retry to check account and API key status.") + " " + error
+    }
+    if !providerAccessResolved {
+      return String(localized: "Checking provider access… You can continue with Basic dictation.")
+    }
+
+    if selectedProviderAccountError != nil {
+      return String(localized: "Provider account access is unavailable. Remove the stored account in Settings › Providers, then sign in again.")
+    }
+    if selectedProviderAccountConnected && selectedProviderKeySet {
+      return String(
+        localized:
+          "Account connected and API key configured. Supported Assistive requests can use the account; Formatting and model discovery use the provider API key."
+      )
+    }
+    if selectedProviderAccountConnected {
+      return String(
+        localized:
+          "Account connected for supported Assistive requests. No API key is configured. You can continue without adding one; cloud Formatting and model discovery require a provider API key."
+      )
+    }
+    if selectedProviderKeySet {
+      return String(
+        localized:
+          "API key configured. Supported Assistive requests, cloud Formatting and model discovery can use this provider's key. No account is connected."
+      )
+    }
+    if selectedProvider?.keyRequired == false {
+      return String(
+        localized:
+          "This provider does not require an API key. Choose a model in Settings › Agent › LLM lanes."
+      )
+    }
+    if selectedProviderHasAccountAccess {
+      return String(
+        localized:
+          "No account or API key is configured for this provider. Connect a supported account for Assistive, or add an API key in Settings › Providers. You can skip this step for dictation."
+      )
+    }
+    return String(
+      localized:
+        "No API key is configured for this provider. Add one in Settings › Providers, choose another provider, or skip this step for dictation."
+    )
+  }
+
+  func saveApiKey(advanceOnSuccess: Bool = false) {
+    let submitted = apiKeyDraft
+    let providerId = selectedProviderId
+    let trimmed = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard apiKeySaveAvailable, !trimmed.isEmpty, let account = selectedProvider?.apiKeyAccount,
+      !providerMutationPending
+    else { return }
+    providerMutationPending = true
+    providerAccessGeneration &+= 1
+    Task { @MainActor [self] in
+      defer {
+        providerMutationPending = false
+        if providerAccessPending { providerRefreshRequested = true }
+        else { refreshProviders() }
+      }
+      do {
+        try await engine.setApiKeyAsync(account: account, secret: trimmed)
+        let stillCurrent = apiKeyDraft == submitted
+          && selectedProviderId == providerId
+          && selectedProvider?.apiKeyAccount == account
+        if stillCurrent { apiKeyDraft = "" }
+        lastError = nil
+        if advanceOnSuccess, stillCurrent, step == .apiKey { advanceAfterCommit() }
+      } catch { lastError = error.userFacingMessage }
     }
   }
+
 }

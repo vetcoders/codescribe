@@ -5,9 +5,8 @@ import Foundation
 // object directly — it talks to this protocol so the view-model can be seeded
 // with mock data for #Preview, while the live app injects `RealSettingsEngine`.
 //
-// All CodescribeConfig methods are synchronous and read/write on-disk truth
-// (settings.json / .env / Keychain), so there are no Rust callbacks to hop onto
-// the main actor here — the adapter just forwards.
+// Credential acquisition and mutations run on the shared serial executor.
+// Synchronous registry/presence methods project only the existing core cache.
 //
 // Config-write contract (router env keys, sourced from core/config/loader.rs):
 //   WHISPER_LANGUAGE      "pl" | "en"
@@ -20,6 +19,23 @@ import Foundation
 // Keychain accounts (CsKeyStatus, core/config/keychain.rs::KEYCHAIN_ACCOUNTS): one per vendor
 //   (LLM_<VENDOR>_API_KEY), STT_FILE_API_KEY, STT_LIVE_API_KEY, GITHUB_TOKEN; custom rows carry
 //   LLM_CUSTOM_<ID>_API_KEY
+
+/// One physical executor for Settings and Setup credential operations. A view
+/// cancelling its task does not cancel or free a synchronous Security call.
+enum ProviderCredentialIO {
+  private static let queue = DispatchQueue(label: "codescribe.provider-credentials", qos: .userInitiated)
+
+  static func perform<T: Sendable>(
+    _ operation: @escaping @Sendable () throws -> T
+  ) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+      queue.async {
+        do { continuation.resume(returning: try operation()) }
+        catch { continuation.resume(throwing: error) }
+      }
+    }
+  }
+}
 
 /// Subset of the codescribe config surface the Settings screen consumes.
 @MainActor
@@ -77,6 +93,16 @@ protocol SettingsEngine {
 
   // Provider registry (vendors + custom rows), lane binding, model discovery.
   func availableProviders() -> [CsProviderOption]
+  func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot
+  func providerAccessRevision() -> UInt64
+  /// Metadata + credential revision only; nil means freshness cannot be certified.
+  func composerModelCacheStamp() -> String?
+  func setApiKeyAsync(account: String, secret: String) async throws
+  func clearApiKeyAsync(account: String) async throws
+  func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption
+  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws -> CsProviderOption
+  func removeCustomProviderAsync(id: String) async throws -> CsCustomProviderRemoval
+  func signOutAccountAsync(providerId: String) async throws
   func addCustomProvider(draft: CsCustomProviderDraft) throws -> CsProviderOption
   func updateCustomProvider(id: String, draft: CsCustomProviderDraft) throws -> CsProviderOption
   func removeCustomProvider(id: String) throws -> CsCustomProviderRemoval
@@ -118,6 +144,18 @@ protocol SettingsEngine {
 }
 
 extension SettingsEngine {
+  func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
+    CsProviderAccessSnapshot(providers: availableProviders(), accountErrors: [:], keyStatus: keyStatus(), sttLanes: sttLanes(), revision: 0)
+  }
+  func providerAccessRevision() -> UInt64 { 0 }
+  func composerModelCacheStamp() -> String? { nil }
+  func setApiKeyAsync(account: String, secret: String) async throws { try setApiKey(account: account, secret: secret) }
+  func clearApiKeyAsync(account: String) async throws { try clearApiKey(account: account) }
+  func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption { try addCustomProvider(draft: draft) }
+  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws -> CsProviderOption { try updateCustomProvider(id: id, draft: draft) }
+  func removeCustomProviderAsync(id: String) async throws -> CsCustomProviderRemoval { try removeCustomProvider(id: id) }
+  func signOutAccountAsync(providerId: String) async throws { try signOutAccount(providerId: providerId) }
+
   func teachDictionaryFromStoreAsync() async throws -> CsDictionaryTeachResult {
     try teachDictionaryFromStore()
   }
@@ -238,6 +276,29 @@ final class RealSettingsEngine: SettingsEngine {
     }.value
   }
 
+  func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().providerAccessSnapshot() }
+  }
+  func providerAccessRevision() -> UInt64 { config.providerAccessRevision() }
+  func composerModelCacheStamp() -> String? { config.composerModelCacheStamp() }
+  func setApiKeyAsync(account: String, secret: String) async throws {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().setApiKey(account: account, secret: secret) }
+  }
+  func clearApiKeyAsync(account: String) async throws {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().clearApiKey(account: account) }
+  }
+  func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().addCustomProvider(draft: draft) }
+  }
+  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws -> CsProviderOption {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().updateCustomProvider(id: id, draft: draft) }
+  }
+  func removeCustomProviderAsync(id: String) async throws -> CsCustomProviderRemoval {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().removeCustomProvider(id: id) }
+  }
+  func signOutAccountAsync(providerId: String) async throws {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().signOutAccount(providerId: providerId) }
+  }
   func availableProviders() -> [CsProviderOption] { config.availableProviders() }
   func addCustomProvider(draft: CsCustomProviderDraft) throws -> CsProviderOption {
     try config.addCustomProvider(draft: draft)
@@ -362,6 +423,11 @@ struct MockSettingsEngine: SettingsEngine {
   var ruleCandidates: [CsRuleCandidate] = []
   var ruleCandidatesLoader: (() throws -> [CsRuleCandidate])?
   var teachSpanObserver: ((String, String, String) throws -> CsQualityCommitResult)?
+  /// Controlled acquisition for previews and integrator ordering witnesses.
+  var providerAccessSnapshotLoader: (() async throws -> CsProviderAccessSnapshot)?
+  var composerStampProvider: (() -> String?)?
+  var providersReader: (() -> [CsProviderOption])?
+  var discoveryLoader: ((String) -> CsModelDiscovery)?
   // Keep the long-standing config observer last so existing trailing-closure
   // call sites continue to bind to config writes, not Voice Lab edits.
   var updateConfigObserver: ((String, String) throws -> Void)?
@@ -475,6 +541,13 @@ struct MockSettingsEngine: SettingsEngine {
     )
   }
 
+  func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
+    if let providerAccessSnapshotLoader { return try await providerAccessSnapshotLoader() }
+    return CsProviderAccessSnapshot(
+      providers: availableProviders(), accountErrors: [:], keyStatus: keyStatus(),
+      sttLanes: sttLanes(), revision: 0)
+  }
+  func composerModelCacheStamp() -> String? { composerStampProvider?() }
   func keyStatus() -> CsKeyStatus { status }
   func serviceKeyAccounts() -> [String] { ["GITHUB_TOKEN"] }
   /// Two sample lanes whose endpoint and key presence follow the mock's
@@ -496,7 +569,7 @@ struct MockSettingsEngine: SettingsEngine {
   }
 
   func availableProviders() -> [CsProviderOption] {
-    CsProviderOption.sampleProviders + providerStore.custom
+    providersReader?() ?? (CsProviderOption.sampleProviders + providerStore.custom)
   }
   func addCustomProvider(draft: CsCustomProviderDraft) throws -> CsProviderOption {
     try providerStore.add(draft)
@@ -511,7 +584,7 @@ struct MockSettingsEngine: SettingsEngine {
     try providerStore.setLane(lane, providerId: providerId, known: availableProviders())
   }
   func discoverModels(providerId: String) -> CsModelDiscovery {
-    CsModelDiscovery.sample(for: providerId)
+    discoveryLoader?(providerId) ?? CsModelDiscovery.sample(for: providerId)
   }
   func startAccountLogin(providerId: String) throws -> CsAccountLoginResult {
     CsAccountLoginResult(

@@ -123,17 +123,26 @@ protocol ComposerPaletteSourcing {
 /// Live palette source over the settings + MCP-admin bridges.
 ///
 /// Model discovery hits the provider API with the operator's key, so its result
-/// is cached for the window's lifetime and refreshed only when the palette is
-/// reopened after a change — a per-keystroke network call while filtering would
-/// be both slow and rude to the provider.
+/// is briefly cached for filtering. The stamp shares the runtime cache's
+/// settings mtime, invalidation generation and credential revision, so changes
+/// invalidate before full context reads, including settings writes outside the app.
 final class RealComposerPaletteSource: ComposerPaletteSourcing {
   private let settings: SettingsEngine
   private let mcpAdmin: MCPAdminEngine
+  private let runtimeLaneProvider: () -> CsRuntimeLlmLane
   private var cachedModels: [ComposerPaletteEntry]?
+  private var cachedModelStamp: String?
+  private var cachedModelsAt: Date?
 
-  init(settings: SettingsEngine, mcpAdmin: MCPAdminEngine) {
+  init(
+    settings: SettingsEngine, mcpAdmin: MCPAdminEngine,
+    runtimeLaneProvider: @escaping () -> CsRuntimeLlmLane = {
+      runtimeLlmLane(lane: .assistive)
+    }
+  ) {
     self.settings = settings
     self.mcpAdmin = mcpAdmin
+    self.runtimeLaneProvider = runtimeLaneProvider
   }
 
   func entries(for command: ComposerPaletteCommand) -> [ComposerPaletteEntry] {
@@ -144,8 +153,11 @@ final class RealComposerPaletteSource: ComposerPaletteSourcing {
   }
 
   func apply(_ entry: ComposerPaletteEntry, for command: ComposerPaletteCommand) throws {
+    // Status rows have no model/grant identity and must never write config.
+    guard !entry.id.isEmpty else { return }
     switch command {
     case .model:
+      guard entry.id != runtimeLaneProvider().model else { return }
       try settings.updateConfig(key: "LLM_ASSISTIVE_MODEL", value: entry.id)
       cachedModels = nil
     case .grants:
@@ -154,21 +166,46 @@ final class RealComposerPaletteSource: ComposerPaletteSourcing {
   }
 
   private func models() -> [ComposerPaletteEntry] {
-    if let cachedModels { return cachedModels }
+    // Capture before rebuilding: a mutation during discovery must not label
+    // entries from the earlier generation with the newer generation's stamp.
+    let stamp = settings.composerModelCacheStamp()
+    if let stamp, let cachedModels, cachedModelStamp == stamp, let cachedModelsAt,
+      Date().timeIntervalSince(cachedModelsAt) < 30
+    {
+      return cachedModels
+    }
     let snapshot = settings.loadSettings()
-    let current = snapshot.llmAssistiveModel
-    let providerID = snapshot.llmAssistiveProvider ?? "openai-responses"
-    let discovery = settings.discoverModels(providerId: providerID)
-    let entries: [ComposerPaletteEntry] = discovery.models.map { model in
+    let runtime = runtimeLaneProvider()
+    let provider = settings.availableProviders().first { $0.id == runtime.providerId }
+    let discovery = settings.discoverModels(providerId: runtime.providerId)
+    let lane = LLMLaneModel(
+      lane: .assistive, runtime: runtime, provider: provider,
+      configuredModel: snapshot.llmAssistiveModel ?? "", discovery: discovery
+    )
+    var entries: [ComposerPaletteEntry] = lane.modelOptions.map { model in
       let subtitle: String? = model.id == model.displayName ? nil : model.id
       return ComposerPaletteEntry(
         id: model.id,
         title: model.displayName,
         subtitle: subtitle,
-        isCurrent: model.id == current
+        isCurrent: model.id == runtime.model
       )
     }
+    if entries.isEmpty {
+      // The configured model is still usable with an account even when the
+      // provider's API-key-only catalog cannot be queried. Do not invent a list.
+      entries = [
+        ComposerPaletteEntry(
+          id: runtime.available ? runtime.model : "",
+          title: runtime.available ? runtime.model : String(localized: "Models unavailable"),
+          subtitle: lane.discoveryDescription,
+          isCurrent: runtime.available
+        )
+      ]
+    }
     cachedModels = entries
+    cachedModelStamp = stamp
+    cachedModelsAt = Date()
     return entries
   }
 
