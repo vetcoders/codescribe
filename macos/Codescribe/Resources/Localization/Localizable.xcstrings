@@ -1420,7 +1420,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "24 h"
           }
         }
@@ -1430,7 +1430,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "30 dni"
           }
         }
@@ -1440,7 +1440,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "7 dni"
           }
         }
@@ -1768,7 +1768,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Dodaj klucz API tego dostawcy w Ustawieniach › Dostawcy, aby pobrać listę modeli, albo wpisz ID modelu w Ustawieniach › Agent › Ścieżki modeli AI."
           }
         }
@@ -2462,7 +2462,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Dźwięk tego nagrania jest dostępny, ale ponowna transkrypcja nie jest tutaj możliwa."
           }
         }
@@ -2472,7 +2472,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Dźwięk tego nagrania jest dostępny. Użyj opcji „Transkrybuj to nagranie ponownie” w menu „Więcej działań”."
           }
         }
@@ -3108,7 +3108,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Sprawdzanie licencji…"
           }
         }
@@ -3178,7 +3178,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Wybierz „Zatrzymaj nagrywanie” albo użyj skrótu nagrywania, aby zakończyć to nagranie."
           }
         }
@@ -4253,7 +4253,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Nie udało się dokończyć transkrypcji"
           }
         }
@@ -4358,7 +4358,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Nie udało się ponownie transkrybować tego nagrania"
           }
         }
@@ -4742,7 +4742,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Szczegóły diagnostyczne"
           }
         }
@@ -5213,7 +5213,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Wpisz adres URL HTTP lub HTTPS z nazwą hosta, np. https://api.example.com."
           }
         }
@@ -5286,7 +5286,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Eksport nie powiódł się"
           }
         }
@@ -5307,7 +5307,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Wyeksportowano do Markdown"
           }
         }
@@ -5441,7 +5441,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Kończenie nagrywania"
           }
         }
@@ -5451,7 +5451,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Kończenie nagrywania…"
           }
         }
@@ -5496,7 +5496,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Bezterminowo"
           }
         }
@@ -6004,7 +6004,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "W użyciu"
           }
         }
@@ -6201,7 +6201,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Zachowuj ukończone nagrania"
           }
         }
@@ -6977,7 +6977,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Nie udało się pobrać listy modeli. Sprawdź Ustawienia › Dostawcy, a następnie odśwież modele w Ustawieniach › Agent › Ścieżki modeli AI."
           }
         }
@@ -6988,7 +6988,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Nie udało się pobrać listy modeli: %@. Sprawdź Ustawienia › Dostawcy, a następnie odśwież modele w Ustawieniach › Agent › Ścieżki modeli AI."
           }
         }
@@ -6998,7 +6998,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Modele niedostępne"
           }
         }
@@ -7359,7 +7359,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Dla tego dostawcy nie skonfigurowano klucza API. Dodaj go w Ustawieniach › Dostawcy, wybierz innego dostawcę albo pomiń ten krok, jeśli chcesz tylko dyktować."
           }
         }
@@ -7556,7 +7556,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Dla tego nagrania nie powstała nowa transkrypcja."
           }
         }
@@ -7658,7 +7658,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Dla tego nagrania nie powstała transkrypcja."
           }
         }
@@ -8085,7 +8085,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Otwiera ten wątek"
           }
         }
@@ -8746,7 +8746,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Klucz API dostawcy"
           }
         }
@@ -8806,7 +8806,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Konto dostawcy"
           }
         }
@@ -9188,7 +9188,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Nagrywanie nie powiodło się"
           }
         }
@@ -9220,7 +9220,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Trwa nagrywanie"
           }
         }
@@ -9260,7 +9260,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Nagrywanie się rozpoczęło, ale transkrypcja nie została ukończona."
           }
         }
@@ -9985,7 +9985,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Ponowna transkrypcja nie powiodła się"
           }
         }
@@ -10348,7 +10348,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Zapisano · zacznie obowiązywać po zakończeniu bieżącego nagrania"
           }
         }
@@ -11024,7 +11024,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Wyloguj %@"
           }
         }
@@ -11504,7 +11504,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Rozpoczynanie nagrywania…"
           }
         }
@@ -11733,7 +11733,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Zatrzymuje bieżące nagranie"
           }
         }
@@ -12192,7 +12192,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Niepełna weryfikacja tekstu"
           }
         }
@@ -12569,7 +12569,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Ten dostawca nie wymaga klucza API. Wybierz model w Ustawieniach › Agent › Ścieżki modeli AI."
           }
         }
@@ -12788,7 +12788,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Transkrybuj to nagranie ponownie"
           }
         }
@@ -12960,7 +12960,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Transkrypcja niekompletna"
           }
         }
@@ -12970,7 +12970,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Transkrypcja przerwana"
           }
         }
@@ -13063,7 +13063,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Niedostępny"
           }
         }
@@ -13455,7 +13455,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Oczekiwanie na gotowość nagrywania."
           }
         }
@@ -13781,7 +13781,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Model Whisper"
           }
         }
@@ -14344,7 +14344,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "połączono"
           }
         }
@@ -15318,7 +15318,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "nie połączono"
           }
         }
