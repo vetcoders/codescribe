@@ -445,12 +445,14 @@ l10n-sync:
 	@./scripts/l10n-sync.sh
 
 # make l10n-sheet L10N_LANG=pl            -> export a worksheet to macos/build/l10n
-# make l10n-sheet L10N_LANG=pl CSV='...'  -> fold filled worksheets back in
+# make l10n-sheet L10N_LANG=pl PENDING=1  -> only the keys still owed a translator (drafts + untranslated)
+# make l10n-sheet L10N_LANG=pl CSV='...'  -> fold filled worksheets back in (reviewed)
+# make l10n-sheet L10N_LANG=pl CSV='...' DRAFT=1 -> fold them in as drafts (needs_review)
 # (not LANG: that is the shell locale and would leak in)
 l10n-sheet:
 	@if [ -z "$(L10N_LANG)" ]; then echo "l10n-sheet: set L10N_LANG=<code> (e.g. make l10n-sheet L10N_LANG=pl)" >&2; exit 2; fi
-	@if [ -n "$(CSV)" ]; then python3 scripts/l10n-sheet.py import $(L10N_LANG) $(CSV); \
-	else python3 scripts/l10n-sheet.py export $(L10N_LANG) macos/build/l10n; fi
+	@if [ -n "$(CSV)" ]; then python3 scripts/l10n-sheet.py import $(L10N_LANG) $(CSV) $(if $(DRAFT),--draft); \
+	else python3 scripts/l10n-sheet.py export $(L10N_LANG) macos/build/l10n $(if $(PENDING),--pending); fi
 
 verify-l10n-sync:
 	@./scripts/l10n-sync.sh --check
@@ -1287,7 +1289,7 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'hooks' 'Install pre-commit + pre-push + commit-msg hooks'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-catalog' 'String Catalog lint (part of check): stale keys, arguments, plurals, coverage'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'l10n-sync' 'Fold strings extracted by the last Debug build into the String Catalog'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'l10n-sheet' 'Translator worksheet: L10N_LANG=pl exports CSV, CSV=... imports it'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'l10n-sheet' 'Translator worksheet: L10N_LANG=pl exports CSV (PENDING=1: owed rows only), CSV=... imports it (DRAFT=1: as needs_review)'
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'QUALITY — BENCH INSTRUMENTS (this host only, never a merge gate)'
 	@printf '%s\n' '  Full classification: make -s gate-ledger'

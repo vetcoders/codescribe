@@ -14767,7 +14767,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Wyłączony"
           }
         }
@@ -14785,7 +14785,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Dwukrotnie Ctrl"
           }
         }
@@ -14803,7 +14803,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Dwukrotnie lewy Option"
           }
         }
@@ -14821,7 +14821,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Dwukrotnie prawy Option"
           }
         }
@@ -14839,7 +14839,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Przytrzymaj Ctrl"
           }
         }
@@ -14857,7 +14857,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Przytrzymaj Ctrl+Command"
           }
         }
@@ -14875,7 +14875,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Przytrzymaj Ctrl+Option"
           }
         }
@@ -14893,7 +14893,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Przytrzymaj Ctrl+Shift"
           }
         }
@@ -14911,7 +14911,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Przytrzymaj Fn/Globe"
           }
         }
@@ -14929,7 +14929,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Agent"
           }
         }
@@ -14947,7 +14947,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Wysyła Twój głos do Agenta zamiast wklejać tekst."
           }
         }
@@ -14965,7 +14965,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Dyktowanie"
           }
         }
@@ -14983,7 +14983,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Zamienia Twój głos na tekst i wkleja go."
           }
         }
@@ -15001,7 +15001,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Formatowanie"
           }
         }
@@ -15019,7 +15019,7 @@
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Nagrywa dyktowanie i formatuje je przed wklejeniem."
           }
         }

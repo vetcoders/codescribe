@@ -5,7 +5,7 @@ A String Catalog is JSON a translator cannot work in. This tool turns the two
 catalogs into one flat worksheet per language (one row per string a person has
 to write) and folds the filled worksheet back into the catalogs.
 
-  scripts/l10n-sheet.py export <lang> <out-dir>
+  scripts/l10n-sheet.py export <lang> <out-dir> [--pending]
       Writes codescribe-<lang>-Localizable.csv and codescribe-<lang>-InfoPlist.csv.
       A plural key becomes one row per plural form the language owes (CLDR);
       a sentence with several counts becomes its main row plus one row per form
@@ -14,9 +14,13 @@ to write) and folds the filled worksheet back into the catalogs.
       each row names the screens that use the key. Translations the catalog
       already holds are written into the translation column, so the worksheet
       of a translated language is a revision sheet and new copy shows up as
-      the empty rows.
+      the empty rows. `--pending` writes only the keys that still need the
+      translator: untranslated ones and drafts (state `needs_review`, see
+      import --draft); the context column of a draft row starts with
+      "Draft —". That is the worksheet the automation hands over after every
+      build, so the translator never reads the whole catalog again.
 
-  scripts/l10n-sheet.py import <lang> <csv>... [--check]
+  scripts/l10n-sheet.py import <lang> <csv>... [--check] [--draft]
       Reads the rows back (each row says which catalog it belongs to), builds
       the language's localization for every key whose rows are all filled, and
       writes both catalogs in the byte layout `xcstringstool` uses, so a sync
@@ -25,7 +29,11 @@ to write) and folds the filled worksheet back into the catalogs.
       - and its key left untouched - when its text does not read the arguments
       the English reads (the same rule l10n-lint.py applies to the catalog), or
       when it carries a spelling the product does not use. `--check` reports
-      and writes nothing.
+      and writes nothing. `--draft` stores the rows as `needs_review`: a first
+      translation written by an agent or a developer with the cut that added
+      the English, good enough to ship and to pass the coverage gate, still
+      owed a reviewer. A plain import of the same keys later marks them
+      `translated` — that is how a review round closes.
 
       Exit status is 1 whenever anything was refused or left untranslated, so
       a partial import is never mistaken for a complete one. The completeness
@@ -97,6 +105,7 @@ EXAMPLES = {
     "other": "1.5 (fractions)",
 }
 SUBSTITUTION_HINT = "The %#@…@ markers stay as they are; their forms are the rows below."
+DRAFT_HINT = "Draft — written with the code, not reviewed yet"
 MEMBER_HINT = "Form of %#@{name}@ in the sentence above; %arg is the count."
 
 
@@ -145,12 +154,14 @@ def translated_slots(entry: dict, lang: str) -> dict[tuple[str, str], str]:
     return values
 
 
-def build_localization(entry: dict, values: dict[tuple[str, str], str]) -> dict:
+def build_localization(
+    entry: dict, values: dict[tuple[str, str], str], state: str = "translated"
+) -> dict:
     """The language's localization for one key, from {(member, form): text}."""
     english = entry.get("localizations", {}).get(SOURCE)
 
     def unit(text: str) -> dict:
-        return {"stringUnit": {"state": "translated", "value": text}}
+        return {"stringUnit": {"state": state, "value": text}}
 
     if english is None or "stringUnit" in english and not english.get("substitutions"):
         return unit(values[("", "")])
@@ -232,7 +243,24 @@ def build_locations(derived: Path) -> dict[str, list[tuple[str, int, str]]]:
     return where
 
 
-def export_rows(catalog: str, key: str, entry: dict, forms, where, lang: str) -> list[list[str]]:
+def review_state(entry: dict, lang: str, forms: tuple[str, ...]) -> str:
+    """'missing' (no complete translation), 'draft' (some unit is not yet
+    `translated`, i.e. `needs_review`) or 'done' for one key in `lang`."""
+    localization = entry.get("localizations", {}).get(lang)
+    if not localization:
+        return "missing"
+    held = translated_slots(entry, lang)
+    if any((m, f) not in held for m, f, _ in source_slots("", entry, forms)):
+        return "missing"
+    states = [unit.get("state") for _, unit in lint.leaf_units(localization)]
+    for rule in localization.get("substitutions", {}).values():
+        states += [unit.get("state") for _, unit in lint.leaf_units(rule)]
+    return "done" if all(state == "translated" for state in states) else "draft"
+
+
+def export_rows(
+    catalog: str, key: str, entry: dict, forms, where, lang: str, draft: bool = False
+) -> list[list[str]]:
     spots = where.get(key, [])
     screens = list(dict.fromkeys(screen for screen, _, _ in spots))
     place = ", ".join(screens[:3]) + (" …" if len(screens) > 3 else "")
@@ -245,6 +273,8 @@ def export_rows(catalog: str, key: str, entry: dict, forms, where, lang: str) ->
     rows = []
     for member, form, text in slots:
         note = context
+        if draft:
+            note = " — ".join(filter(None, [DRAFT_HINT, note]))
         if member:
             note = " — ".join(filter(None, [note, MEMBER_HINT.format(name=member)]))
         elif form == "" and len(slots) > 1:
@@ -254,7 +284,7 @@ def export_rows(catalog: str, key: str, entry: dict, forms, where, lang: str) ->
     return rows
 
 
-def export(lang: str, out_dir: Path) -> int:
+def export(lang: str, out_dir: Path, pending: bool = False) -> int:
     forms = plural_forms(lang)
     derived = Path(os.environ.get("L10N_DERIVED", REPO / "macos" / "build"))
     where = build_locations(derived)
@@ -273,9 +303,13 @@ def export(lang: str, out_dir: Path) -> int:
         for key, entry in strings.items():
             if not entry.get("shouldTranslate", True):
                 continue
+            state = review_state(entry, lang, forms)
+            if pending and state == "done":
+                continue
             spots = where.get(key, []) if catalog == "Localizable" else []
             order = (spots[0][0], spots[0][1]) if spots else ("~", 0)
-            groups.append((order, key, export_rows(catalog, key, entry, forms, where, lang)))
+            rows = export_rows(catalog, key, entry, forms, where, lang, draft=state == "draft")
+            groups.append((order, key, rows))
         groups.sort(key=lambda g: (g[0], g[1]))
         path = out_dir / f"codescribe-{lang}-{catalog}.csv"
         with path.open("w", newline="", encoding="utf-8") as handle:
@@ -286,7 +320,8 @@ def export(lang: str, out_dir: Path) -> int:
         total = sum(len(rows) for _, _, rows in groups)
         unplaced = sum(1 for order, _, _ in groups if order[0] == "~")
         print(f"l10n-sheet: {path.relative_to(Path.cwd()) if path.is_relative_to(Path.cwd()) else path}: "
-              f"{len(groups)} keys -> {total} rows" + (f"; {unplaced} without a source location" if where else ""))
+              f"{len(groups)} {'pending ' if pending else ''}keys -> {total} rows"
+              + (f"; {unplaced} without a source location" if where else ""))
     return 0
 
 
@@ -334,7 +369,7 @@ def forbidden_spelling(text: str) -> str | None:
     return None
 
 
-def import_rows(lang: str, paths: list[Path], write: bool) -> int:
+def import_rows(lang: str, paths: list[Path], write: bool, draft: bool = False) -> int:
     forms = plural_forms(lang)
     rows = read_rows(paths)
     by_key: dict[tuple[str, str], list[Row]] = OrderedDict()
@@ -396,7 +431,7 @@ def import_rows(lang: str, paths: list[Path], write: bool) -> int:
             if bad:
                 refused.append(f"{catalog}: {key!r}: " + "; ".join(bad))
                 continue
-            localization = build_localization(entry, values)
+            localization = build_localization(entry, values, "needs_review" if draft else "translated")
             candidate = json.loads(json.dumps(entry))
             candidate.setdefault("localizations", {})[lang] = localization
             complaints: list[str] = []
@@ -430,7 +465,8 @@ def import_rows(lang: str, paths: list[Path], write: bool) -> int:
                 )
 
     for catalog in CATALOGS:
-        print(f"l10n-sheet: {catalog}: {imported[catalog]} key(s) {'imported' if write else 'importable'} for '{lang}'")
+        verb = "importable" if not write else "imported as drafts" if draft else "imported"
+        print(f"l10n-sheet: {catalog}: {imported[catalog]} key(s) {verb} for '{lang}'")
     for line in notices:
         print(f"l10n-sheet: note: {line}")
     for line in untranslated:
@@ -452,23 +488,29 @@ def import_rows(lang: str, paths: list[Path], write: bool) -> int:
 # ── entry point ─────────────────────────────────────────────────────────────
 
 
-USAGE = "usage: scripts/l10n-sheet.py export <lang> <out-dir> | import <lang> <csv>... [--check]"
+USAGE = (
+    "usage: scripts/l10n-sheet.py export <lang> <out-dir> [--pending]"
+    " | import <lang> <csv>... [--check] [--draft]"
+)
 
 
 def main(argv: list[str]) -> int:
     args = argv[1:]
     if len(args) >= 3 and args[0] == "export":
-        if len(args) != 3:
+        pending = "--pending" in args
+        rest = [a for a in args[1:] if a != "--pending"]
+        if len(rest) != 2:
             print(USAGE, file=sys.stderr)
             return 2
-        return export(args[1], Path(args[2]))
+        return export(rest[0], Path(rest[1]), pending=pending)
     if len(args) >= 3 and args[0] == "import":
         check = "--check" in args
-        paths = [Path(a) for a in args[2:] if a != "--check"]
+        draft = "--draft" in args
+        paths = [Path(a) for a in args[2:] if a not in ("--check", "--draft")]
         if not paths:
             print(USAGE, file=sys.stderr)
             return 2
-        return import_rows(args[1], paths, write=not check)
+        return import_rows(args[1], paths, write=not check, draft=draft)
     print(USAGE, file=sys.stderr)
     return 2
 

@@ -25,7 +25,10 @@ wrong or missing string:
      either catalog must translate every translatable key of both, because a
      bundle that claims a language it only partly carries gives a mixed
      interface. `--allow-partial` turns that into a report while a translation
-     is being built up in the tree; the default is the gate a release needs;
+     is being built up in the tree; the default is the gate a release needs.
+     A unit in state `needs_review` (a draft written with the code, owed a
+     reviewer — scripts/l10n-sheet.py import --draft) counts as present here
+     and is reported as awaiting review;
   6. no string, in any language, spells the product other than `Codescribe`;
   7. the permission prompts in InfoPlist.xcstrings match macos/project.yml word
      for word, so the catalog cannot drift from the plist it overrides.
@@ -58,6 +61,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 CATALOG_DIR = REPO / "macos" / "Codescribe" / "Resources" / "Localization"
+# States that satisfy coverage: a reviewed translation, and a draft that ships
+# while it waits for its reviewer (worksheet `--pending` lists the drafts).
+COVERED_STATES = ("translated", "needs_review")
 PROJECT_SPEC = REPO / "macos" / "project.yml"
 SOURCE_LANGUAGE = "en"
 
@@ -326,6 +332,7 @@ def lint_catalog(
     translatable = 0
     translated = Counter()
     untranslated: dict[str, list[str]] = {}
+    reviewing: dict[str, list[str]] = {}
     if languages is None:
         languages = {
             language for entry in strings.values() for language in entry.get("localizations", {})
@@ -381,13 +388,15 @@ def lint_catalog(
                 if absent:
                     complain(language, where, f"plural forms missing ({', '.join(absent)})")
             if language != SOURCE_LANGUAGE:
-                if units and all(unit.get("state") == "translated" for _, unit in units):
+                if units and all(unit.get("state") in COVERED_STATES for _, unit in units):
                     translated[language] += 1
+                    if any(unit.get("state") == "needs_review" for _, unit in units):
+                        reviewing.setdefault(language, []).append(key)
 
         for language in languages:
             localization = localizations.get(language)
             units = leaf_units(localization) if localization else []
-            if not units or any(unit.get("state") != "translated" for _, unit in units):
+            if not units or any(unit.get("state") not in COVERED_STATES for _, unit in units):
                 untranslated.setdefault(language, []).append(key)
 
     for language in sorted(unruled):
@@ -408,9 +417,15 @@ def lint_catalog(
                 f"({done}/{translatable}); a language the bundle carries must be complete "
                 "(scripts/l10n-sheet.py import, or --allow-partial while it is being built up)"
             )
-        report.append(f"{name}: {language}: {done}/{translatable} translated")
+        drafts = len(reviewing.get(language, []))
+        report.append(
+            f"{name}: {language}: {done}/{translatable} translated"
+            + (f", {drafts} awaiting review" if drafts else "")
+        )
         for key in sorted(untranslated.get(language, [])):
             report.append(f"  untranslated ({language}): {key!r}")
+        for key in sorted(reviewing.get(language, [])):
+            report.append(f"  awaiting review ({language}): {key!r}")
     report.append(f"{name}: {len(strings)} keys, {translatable} translatable")
     for key in sorted(plural_candidates):
         report.append(f"  count without plural variations: {key!r}")

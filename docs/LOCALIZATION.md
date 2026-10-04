@@ -317,6 +317,26 @@ After the import the catalog is the source of the translation; the worksheet is
 transport. New English copy added later shows up as untranslated rows in the
 next export, and until they are translated `make check` fails on coverage.
 
+### Drafts and review rounds
+
+Coverage is a gate on every cut, so the cut that adds English copy also adds
+its translation — written by the developer or the agent, not by the reviewer.
+Such a translation is imported with `scripts/l10n-sheet.py import <lang> <csv> --draft` (`make l10n-sheet L10N_LANG=pl CSV=… DRAFT=1`) and stored in state
+`needs_review`. The lint counts `needs_review` as covered and reports it
+("N awaiting review"; `--report` lists the keys), so the build is green and the
+app ships the draft until a reviewer has seen it.
+
+The reviewer never reads the whole catalog again. `scripts/l10n-sheet.py export <lang> <dir> --pending` (`make l10n-sheet L10N_LANG=pl PENDING=1`) writes only
+the keys still owed: untranslated ones (empty translation cell) and drafts
+(translation filled in, context starting with "Draft —"). The reviewer corrects
+or confirms the rows and the file is imported without `--draft`: every key it
+holds becomes `translated`, and the next pending export is empty. That closes
+a review round; keys the reviewer did not touch are confirmed by the import,
+so a round is closed only when the whole pending sheet has been read.
+
+Editing the catalog JSON by hand with `"state": "translated"` skips the review;
+drafts written by hand or by a script should carry `"state": "needs_review"`.
+
 The tooling names no language but the English source, so none of it changes
 when a language is added. The plural forms a language owes are read from
 `scripts/data/cldr/plurals.json`, the cardinal rules Unicode CLDR publishes for

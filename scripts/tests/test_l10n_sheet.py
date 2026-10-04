@@ -107,9 +107,10 @@ class WorksheetCase(unittest.TestCase):
     def read_catalog(self, name: str) -> dict:
         return json.loads((self.catalogs / f"{name}.xcstrings").read_text(encoding="utf-8"))
 
-    def export(self) -> list[Path]:
+    def export(self, pending: bool = False) -> list[Path]:
+        args = ["l10n-sheet", "export", "pl", str(self.out)] + (["--pending"] if pending else [])
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            self.assertEqual(sheet.main(["l10n-sheet", "export", "pl", str(self.out)]), 0)
+            self.assertEqual(sheet.main(args), 0)
         return sorted(self.out.glob("*.csv"))
 
     def fill(self, paths: list[Path], translations: dict, edit=None) -> None:
@@ -124,22 +125,32 @@ class WorksheetCase(unittest.TestCase):
             with path.open("w", newline="", encoding="utf-8") as handle:
                 csv.writer(handle).writerows(rows)
 
-    def import_(self, paths: list[Path], check: bool = False) -> tuple[int, str, str]:
+    def import_(self, paths: list[Path], check: bool = False, draft: bool = False) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
-        args = ["l10n-sheet", "import", "pl", *map(str, paths)] + (["--check"] if check else [])
+        args = ["l10n-sheet", "import", "pl", *map(str, paths)]
+        args += ["--check"] if check else []
+        args += ["--draft"] if draft else []
         with redirect_stdout(out), redirect_stderr(err):
             status = sheet.main(args)
         return status, out.getvalue(), err.getvalue()
 
     def lint_errors(self) -> list[str]:
+        return self.lint()[0]
+
+    def lint(self) -> tuple[list[str], list[str]]:
         errors: list[str] = []
+        report: list[str] = []
         paths = sorted(self.catalogs.glob("*.xcstrings"))
         languages = set()
         for path in paths:
             languages |= lint.catalog_languages(path)
         for path in paths:
-            lint.lint_catalog(path, errors, [], languages)
-        return errors
+            lint.lint_catalog(path, errors, report, languages)
+        return errors, report
+
+    def rows(self, path: Path) -> list[list[str]]:
+        with path.open(encoding="utf-8") as handle:
+            return list(csv.reader(handle))[1:]
 
 
 class RoundTripTests(WorksheetCase):
@@ -210,6 +221,69 @@ class RoundTripTests(WorksheetCase):
         self.assertIn("5 key(s) importable", out)
         after = {p.name: p.read_text(encoding="utf-8") for p in self.catalogs.glob("*.xcstrings")}
         self.assertEqual(before, after)
+
+
+class ReviewRoundTests(WorksheetCase):
+    """A draft written with the code ships, passes coverage, and is the only
+    thing the next pending worksheet asks the translator to look at."""
+
+    def test_a_draft_import_ships_as_needs_review_and_is_reported_not_refused(self):
+        paths = self.export()
+        self.fill(paths, POLISH)
+        status, out, err = self.import_(paths, draft=True)
+        self.assertEqual(status, 0, err)
+        self.assertIn("Localizable: 5 key(s) imported as drafts", out)
+        strings = self.read_catalog("Localizable")["strings"]
+        self.assertEqual(strings["Save"]["localizations"]["pl"], unit("Zapisz", "needs_review"))
+        self.assertEqual(
+            strings["%lld files"]["localizations"]["pl"]["variations"]["plural"]["few"],
+            unit("%lld pliki", "needs_review"),
+        )
+        errors, report = self.lint()
+        self.assertEqual(errors, [])
+        self.assertIn("Localizable.xcstrings: pl: 5/5 translated, 5 awaiting review", report)
+        self.assertIn("  awaiting review (pl): 'Save'", report)
+
+    def test_the_pending_worksheet_holds_drafts_and_untranslated_keys_only(self):
+        paths = self.export()
+        drafts = {k: v for k, v in POLISH.items() if k[1] in ("Save", "%lld files")}
+        self.fill(paths, drafts)
+        self.import_(paths, draft=True)  # two drafts; the rest stays untranslated (exit 1)
+        reviewed = {k: v for k, v in POLISH.items() if k[1] == "Commit: %@"}
+        self.fill(paths, reviewed)
+        self.import_(paths)  # one reviewed key
+        pending = self.export(pending=True)
+        rows = self.rows(pending[1])
+        keys = {r[1] for r in rows}
+        self.assertNotIn("Commit: %@", keys)
+        self.assertEqual(keys, {"Save", "%lld files", "%@\nEndpoint: %@", "%@, %lld tools"})
+        by_key = {(r[1], r[3]): r for r in rows}
+        self.assertTrue(by_key[("Save", "")][6].startswith(sheet.DRAFT_HINT))
+        self.assertEqual(by_key[("Save", "")][8], "Zapisz")
+        self.assertTrue(by_key[("%lld files", "few")][6].startswith(sheet.DRAFT_HINT))
+        self.assertFalse(by_key[("%@\nEndpoint: %@", "")][6].startswith(sheet.DRAFT_HINT))
+        self.assertEqual(by_key[("%@\nEndpoint: %@", "")][8], "")
+        full = self.export()
+        self.assertGreater(len(self.rows(full[1])), len(rows))
+
+    def test_a_plain_import_of_the_pending_worksheet_closes_the_review(self):
+        paths = self.export()
+        self.fill(paths, POLISH)
+        self.import_(paths, draft=True)
+        pending = self.export(pending=True)
+        self.assertEqual(len(self.rows(pending[1])), 1 + 1 + 1 + 4 + 5)
+        status, out, err = self.import_(pending)
+        self.assertEqual(status, 0, err)
+        self.assertIn("Localizable: 5 key(s) imported for 'pl'", out)
+        strings = self.read_catalog("Localizable")["strings"]
+        self.assertEqual(strings["Save"]["localizations"]["pl"], unit("Zapisz"))
+        errors, report = self.lint()
+        self.assertEqual(errors, [])
+        self.assertIn("Localizable.xcstrings: pl: 5/5 translated", report)
+        self.assertNotIn("awaiting review", " ".join(report))
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            sheet.main(["l10n-sheet", "export", "pl", str(self.out), "--pending"])
+        self.assertEqual(self.rows(sorted(self.out.glob("*.csv"))[1]), [])
 
 
 class RefusalTests(WorksheetCase):
