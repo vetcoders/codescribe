@@ -17,8 +17,7 @@ to write) and folds the filled worksheet back into the catalogs.
       the empty rows. `--pending` writes only the keys that still need the
       translator: untranslated ones and drafts (state `needs_review`, see
       import --draft); the context column of a draft row starts with
-      "Draft —". That is the worksheet the automation hands over after every
-      build, so the translator never reads the whole catalog again.
+      "Draft —", so a reviewer never has to read the whole catalog again.
 
   scripts/l10n-sheet.py import <lang> <csv>... [--check] [--draft]
       Reads the rows back (each row says which catalog it belongs to), builds
