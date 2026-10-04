@@ -187,12 +187,17 @@ struct KeyRow: View {
   var optional: Bool = false
   let probeResult: CsApiKeyProbeResult?
   let probePending: Bool
-  let onSave: (String) -> Void
-  let onClear: () -> Void
+  var mutationPending = false
+  let onSave: (String) async throws -> Void
+  let onClear: () async throws -> Void
   let onTest: () -> Void
 
   @State private var draft: String = ""
+  @State private var operationPending = false
+  @State private var operationError: String?
   @FocusState private var isFocused: Bool
+
+  private var isUpdating: Bool { mutationPending || operationPending }
 
   private var accent: Color {
     isSet ? CSColor.olive : (optional ? Color.secondary : CSColor.terracotta)
@@ -224,10 +229,10 @@ struct KeyRow: View {
           .onSubmit(save)
           .accessibilityLabel("\(label) secret")
 
-        SettingsSaveButton(enabled: !draft.isEmpty, action: save)
+        SettingsSaveButton(enabled: !isUpdating && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, action: save)
           .accessibilityLabel("Save \(label)")
 
-        SettingsChipButton(enabled: isSet && !probePending, action: onTest) {
+        SettingsChipButton(enabled: isSet && !probePending && !isUpdating, action: onTest) {
           Group {
             if probePending {
               ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 20, height: 14)
@@ -242,7 +247,7 @@ struct KeyRow: View {
         .help(isSet ? "Test this key" : "Save a key first to test it")
         .accessibilityLabel("Test \(label)")
 
-        SettingsChipButton(enabled: isSet, action: onClear) {
+        SettingsChipButton(enabled: isSet && !isUpdating, action: clear) {
           CSIconView(
             icon: .delete, size: 12, weight: .semibold,
             color: isSet ? CSColor.terracotta : Color.secondary
@@ -251,6 +256,18 @@ struct KeyRow: View {
         }
         .help("Remove this key from the Keychain")
         .accessibilityLabel("Clear \(label)")
+      }
+      if operationPending {
+        HStack {
+          ProgressView().controlSize(.small)
+          Text("Updating provider access…").font(CSFont.ui(11.5))
+        }
+      }
+      if let operationError {
+        Text(operationError)
+          .font(CSFont.ui(11.5))
+          .foregroundStyle(CSColor.danger)
+          .textSelection(.enabled)
       }
     }
     // Presence-tinted card: green when set, red (required) / grey (optional) when not.
@@ -267,9 +284,28 @@ struct KeyRow: View {
   }
 
   private func save() {
-    guard !draft.isEmpty else { return }
-    onSave(draft)
-    draft = ""
+    guard !isUpdating, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    let submitted = draft
+    operationPending = true
+    operationError = nil
+    Task { @MainActor in
+      defer { operationPending = false }
+      do {
+        try await onSave(submitted)
+        if draft == submitted { draft = "" }
+      } catch { operationError = error.userFacingMessage }
+    }
+  }
+
+  private func clear() {
+    guard !isUpdating else { return }
+    operationPending = true
+    operationError = nil
+    Task { @MainActor in
+      defer { operationPending = false }
+      do { try await onClear() }
+      catch { operationError = error.userFacingMessage }
+    }
   }
 }
 
@@ -282,8 +318,9 @@ extension KeyRow {
       account: account, label: label, isSet: isSet, optional: optional,
       probeResult: model.keyProbeResults[account],
       probePending: model.keyProbePending.contains(account),
-      onSave: { model.saveKey(account: account, secret: $0) },
-      onClear: { model.clearKey(account: account) },
+      mutationPending: model.providerMutationPending,
+      onSave: { try await model.saveKey(account: account, secret: $0) },
+      onClear: { try await model.clearKey(account: account) },
       onTest: { model.testKey(account: account) })
   }
 }

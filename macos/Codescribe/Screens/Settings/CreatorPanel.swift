@@ -26,7 +26,7 @@ struct CreatorPanel: View {
           PermissionChecklistRow(
             kind: kind,
             state: model.permissions.state(kind),
-            onStateChanged: { model.refresh() }
+            onStateChanged: { model.refreshPermissions() }
           )
         }
       }
