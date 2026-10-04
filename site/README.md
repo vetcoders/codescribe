@@ -13,27 +13,31 @@ render is `reference/site-a-cinematic.html`.
 ```bash
 cd site
 npm ci            # install exact deps from package-lock.json
-npm run dev       # local dev server (http://localhost:4321/codescribe)
+npm run dev       # local dev server (http://localhost:4321)
 npm run build     # static output → site/dist
 npm run preview   # serve the built dist locally
 npm run check     # astro check (TypeScript / template diagnostics)
 ```
 
-> The site is configured with `base: '/codescribe'`, so in dev **and** preview
-> the site lives under `/codescribe` (e.g. `http://localhost:4321/codescribe`),
+> The site is configured with `base: '/'`, so in dev **and** preview
+> the site lives at `/` (e.g. `http://localhost:4321`),
 > matching production.
 
 ## Deploy
 
-GitHub Pages **project site** at `https://vetcoders.github.io/codescribe`.
+Production is `https://codescribe.vetcoders.io`, served by Caddy from
+`/srv/codescribe-landing` on `libraxis-vm`. This host also serves the signed
+`/appcast.xml` used by the installed application. Use the site redeploy commands
+in [the deployment contract](../services/license-issuer/README.md#deployment-ops-vps-same-box-as-pensievevetcodersio).
 
-- `astro.config.mjs` sets `site: 'https://vetcoders.github.io'` and
-  `base: '/codescribe'`.
-- `.github/workflows/pages.yml` (repo root) builds `site/` and deploys
-  `site/dist` on every push to `main` that touches `site/**`. No manual step.
+- `astro.config.mjs` sets `site: 'https://codescribe.vetcoders.io'` and `base: '/'`.
+- `.github/workflows/pages.yml` publishes a separate copy at
+  `https://vetcoders.github.io/codescribe/`. A successful Pages run does not
+  update the production domain or its Sparkle feed.
+- After production deployment, verify all download links and the signed
+  enclosure at the canonical domain against the published GitHub release.
 
-Because of the base path, **never** hardcode `/shots/...` or `/icon.png`. Route
-every `public/` asset through the helper in `src/lib/asset.ts`:
+Route every `public/` asset through `src/lib/asset.ts`:
 
 ```astro
 ---
@@ -42,8 +46,8 @@ import { asset } from '../lib/asset';
 <img src={asset('shots/overlay-final-transparent.webp')} … />
 ```
 
-`asset()` prefixes `import.meta.env.BASE_URL` so paths resolve under `/codescribe`
-in production. A hardcoded absolute path would 404 on Pages.
+`asset()` prefixes `import.meta.env.BASE_URL`, keeping assets aligned with the
+configured site root.
 
 ## Where the design tokens live
 
@@ -58,7 +62,7 @@ Component styles are scoped `<style>` blocks that reference the tokens via
 
 ```
 site/
-├── astro.config.mjs        # site + base (/codescribe), static output
+├── astro.config.mjs        # canonical site + base (/), static output
 ├── public/
 │   ├── icon.png            # brand mark
 │   ├── shots/*.webp        # product screenshots (transparent variants)
