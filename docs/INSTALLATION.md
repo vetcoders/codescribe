@@ -56,6 +56,53 @@ Production DMGs do not bake the developer surface.
 
 The single-instance flag (`LSMultipleInstancesProhibited`) is stamped at install time — by `make install-app` (and so `make install-if-idle`) and every DMG lane, before codesign — never in `macos/project.yml`, so the XCTest host and dev builds still launch while the installed app runs.
 
+### Supported native launch context
+
+From the repository root, launch the intended bundle through LaunchServices:
+
+```bash
+# Installed app
+/usr/bin/open "/Applications/Codescribe.app"
+
+# Already-built Debug app (separate dev identity)
+/usr/bin/open "$PWD/macos/build/Build/Products/Debug/Codescribe.app"
+```
+
+Direct execution of `Codescribe.app/Contents/MacOS/Codescribe` from a shell or
+agent host is **unsupported** for native app startup and speech acceptance.
+The launching host can remain responsible for the privacy request even when
+the bundle has the required usage description. See
+[Speech Recognition TCC](./SPEECH_RECOGNITION_TCC.md#supported-native-launch-context)
+for attribution, the dated #93 observation and acceptance evidence.
+
+Normal daily startup uses the existing defaults: runtime `.env`, Transcript Bus
+and agent-bridge state under `~/.codescribe`, with `settings.json` under
+`~/Library/Application Support/Codescribe`. `CODESCRIBE_DATA_DIR` redirects both
+owners to one supplied root. Do not infer the runtime root from the location of
+`settings.json` or pass that directory as a daily-launch override: existing
+followers may remain attached to the default bus. A deliberate disposable root
+must be named as such in its acceptance receipt; a default-profile result needs
+startup without the override and verification of the actual runtime log/bus path.
+
+For a disposable manual dev/test profile, pass variables with `open --env`.
+Use this only when the intended Debug app is not already running:
+
+```bash
+codescribe_test_data="$(mktemp -d /private/tmp/codescribe-launch.XXXXXX)" || exit 1
+/usr/bin/open "$PWD/macos/build/Build/Products/Debug/Codescribe.app" \
+  --env "CODESCRIBE_DATA_DIR=$codescribe_test_data" \
+  --env "RUST_LOG=info"
+```
+
+Shell exports alone are not a reliable way to supply a LaunchServices app's
+environment. `--env` applies to a newly launched process; opening an already
+running app activates it without replacing its environment. Do not use `-n`
+to bypass instance ownership or quit/restart the Founder's installed app for
+this test. Verify the actual PID/path and loaded data directory before using
+the disposable profile. The data directory does not isolate TCC grants,
+Keychain services or every application resource; Debug and Release permission
+identities are described below. Retain the profile for evidence as needed.
+
 ### Agent launch and test-host identity
 
 `macos/project.yml` assigns Debug (including the XCTest host) the bundle ID
@@ -71,6 +118,35 @@ registered URL schemes, or bundle-ID-based LaunchAgents in this app target.
 The explicit Keychain service names (`com.vetcoders.codescribe` for core secrets,
 `com.vetcoders.codescribe.license` for licenses) remain shared; existing item
 access controls still apply and may prompt for a manually launched Debug build.
+Settings and Setup acquire provider and license credentials in the background.
+A manually launched Debug build can still wait for item authorization; pending
+and retry UI must stay interactive during that wait. This scheduling does not
+bypass Keychain protection. Native acceptance must exercise the real signed
+application with actual Keychain access; a harness that disables Keychain cannot
+prove responsiveness or authorization behavior. Check cold access, denied access,
+focus changes during a pending call, and save/remove completion without changing
+existing item ACLs or services as part of that check. Also keep a real store
+write/import paused while opening Settings, account metadata and the palette:
+passive reads must not inherit a wait through config/settings transaction locks.
+Check an edited STT endpoint against an older delayed snapshot and confirm that
+one malformed account leaves its Sign out and other credential controls usable.
+Include capability matrix connector health while a credential write is paused.
+For an installation with only `.env`, save an ordinary setting before provider
+access, then acquire credentials: imported settings, the user's edit and pending
+imports must survive. Repeat with concurrent initial acquisition and first write.
+Before the first write, the passive snapshot must show imported promoted choices
+without creating the settings document. After the first production bootstrap,
+new credentials must resolve from cache without another process-env seed.
+Exercise this ordering with the core using its production bootstrap lifetime;
+the unit harness intentionally keeps its per-case env permission open. Repair fixtures
+must call an admitted startup writer before requiring repair actions or backups.
+Separately, Keychain-free startup snapshots must refuse schema 99, malformed JSON
+and an unreadable existing settings document: require a non-empty unrepairable
+receipt, an unarmed seal, unchanged source bytes and no backup/reset/persistence
+or credential acquisition. Keep the negative credential-lease witness active.
+Known-field normalization may occur in memory; verify that it leaves the source
+untouched and does not claim executed repair actions.
+
 Filesystem configuration is also shared by ordinary app launches; the test
 runner supplies an isolated data directory. A distinct bundle ID does not
 isolate every application resource.

@@ -269,19 +269,19 @@ STT_BRIDGE_BIN="$TARGET_DIR/codescribe-stt-bridge"
 STT_SIDECAR_BIN="$TARGET_DIR/codescribe-stt-sidecar"
 
 # ── Build provenance (Pensieve-style) ───────────────────────────────────────
-# Stamp MUST be computed BEFORE cargo/uniffi/xcodegen. Those steps rewrite
-# generated Bridge Swift and can leave local noise (DMG .sha256, scratch files).
+# Stamp MUST be computed BEFORE cargo/uniffi/xcodegen. Those steps can replace
+# generated Bridge Swift and leave local noise (DMG .sha256, scratch files).
 # About panel must show the commit that was checked out — not "-dirty" because a
 # later stage regenerated UniFFI or an untracked artifact sat in the tree.
 #
 # Dirty rule (honest product truth):
 #   - only TRACKED files (ignore untracked operator junk)
-#   - exclude UniFFI-generated Bridge (rewritten every build, then normalized)
+#   - exclude UniFFI-generated Bridge (normalized, installed only on byte changes)
 #   - if remaining porcelain is non-empty → append -dirty
 STAMP_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -1)"
 if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   STAMP_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=9 HEAD)"
-  # Tracked-only; drop Bridge paths (UniFFI rewrite mid-build). Untracked junk
+  # Tracked-only; drop Bridge paths (UniFFI generation mid-build). Untracked junk
   # (local *.dmg.sha256, scratch files) is ignored on purpose.
   if git -C "$REPO_ROOT" status --porcelain --untracked-files=no --ignore-submodules=none \
     | grep -Ev 'macos/Codescribe/Bridge/|Codescribe/Bridge/' \
@@ -345,24 +345,9 @@ echo "==> [2/7] Rewriting dylib install_name to @rpath (relocatable bundle)"
 install_name_tool -id @rpath/libcodescribe_ffi.dylib "$DYLIB"
 
 echo "==> [3/7] Generating Swift bindings via uniffi-bindgen"
-mkdir -p "$BRIDGE_DIR"
-"$BINDGEN" generate --library "$DYLIB" --language swift --out-dir "$BRIDGE_DIR"
-# uniffi-bindgen emits trailing whitespace and often drops the final newline;
-# normalize Swift and C headers so regeneration stays identical when tracked.
-find "$BRIDGE_DIR" \( -name '*.swift' -o -name '*.h' \) \
-  -exec sed -i '' -E 's/[[:space:]]+$//' {} +
-# Collapse generator-added blank EOF lines to one POSIX newline so repeated
-# full builds do not dirty the tracked bridge files.
-python3 - <<'PY'
-from pathlib import Path
-root = Path("macos/Codescribe/Bridge")
-if root.is_dir():
-    for pattern in ("*.swift", "*.h"):
-        for p in root.glob(pattern):
-            data = p.read_bytes()
-            if data:
-                p.write_bytes(data.rstrip(b"\n") + b"\n")
-PY
+# Keep source timestamps tied to byte changes so Xcode can reuse unchanged
+# objects/extraction data without l10n-sync mistaking regeneration for an edit.
+bash "$REPO_ROOT/scripts/lib/generate-swift-bindings.sh" "$BINDGEN" "$DYLIB" "$BRIDGE_DIR"
 
 echo "==> [4/7] Generating Xcode project (xcodegen)"
 ( cd macos && xcodegen generate )

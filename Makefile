@@ -1120,6 +1120,7 @@ verify:
 	bash scripts/validate-envs.sh; \
 	echo "=== Verify (String Catalog lint instrument) ==="; \
 	python3 -m unittest scripts/tests/test_l10n_lint.py; \
+	python3 -m unittest scripts/tests/test_generate_swift_bindings.py; \
 	echo "=== Verify (install-lane single-instance stamp) ==="; \
 	bash scripts/tests/single-instance-stamp-test.sh; \
 	echo "=== Verify (gate ledger) ==="; \

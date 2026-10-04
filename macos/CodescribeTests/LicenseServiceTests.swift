@@ -2,11 +2,48 @@ import XCTest
 
 @testable import Codescribe
 
-private final class MemoryLicenseKeychain: LicenseKeychainStoring {
-  var data: Data?
-  func load() throws -> Data? { data }
-  func save(_ data: Data) throws { self.data = data }
-  func delete() throws { data = nil }
+// Mutable fixture state is protected because production storage uses a queue.
+private final class MemoryLicenseKeychain: LicenseKeychainStoring, @unchecked Sendable {
+  private let lock = NSLock()
+  private var payload: Data?
+  private var failingRead = false
+  private var failingSave = false
+  private var failingDelete = false
+  private var blockedLoad: DispatchSemaphore?
+  private var loads = 0
+  enum Failure: Error { case storage }
+  var data: Data? { lock.withLock { payload } }
+  var loadCount: Int { lock.withLock { loads } }
+  func failReads(_ value: Bool) { lock.withLock { failingRead = value } }
+  func failSaves(_ value: Bool) { lock.withLock { failingSave = value } }
+  func failDeletes(_ value: Bool) { lock.withLock { failingDelete = value } }
+  func blockNextLoad(_ gate: DispatchSemaphore) { lock.withLock { blockedLoad = gate } }
+  func replaceData(_ data: Data?) { lock.withLock { payload = data } }
+  func load() throws -> Data? {
+    let gate = lock.withLock { () -> DispatchSemaphore? in
+      loads += 1
+      let gate = blockedLoad
+      blockedLoad = nil
+      return gate
+    }
+    gate?.wait()
+    return try lock.withLock {
+      if failingRead { throw Failure.storage }
+      return payload
+    }
+  }
+  func save(_ data: Data) throws {
+    try lock.withLock {
+      if failingSave { throw Failure.storage }
+      payload = data
+    }
+  }
+  func delete() throws {
+    try lock.withLock {
+      if failingDelete { throw Failure.storage }
+      payload = nil
+    }
+  }
 }
 
 enum LicenseTestFixture {
@@ -41,7 +78,7 @@ final class LicenseServiceTests: XCTestCase {
     XCTAssertTrue(licenseKeychainDisabledByEnvironment(["XCTestBundlePath": "tests.xctest"]))
   }
 
-  func testDevKeyPersistsAcrossServiceRestartAndRemovalReturnsUnlicensed() {
+  func testDevKeyPersistsAcrossServiceRestartAndRemovalReturnsUnlicensed() async {
     let keychain = MemoryLicenseKeychain()
     let activationDate = Date(timeIntervalSince1970: 1_775_304_000)
     let first = LicenseService(
@@ -49,7 +86,8 @@ final class LicenseServiceTests: XCTestCase {
       autoload: false,
       now: { activationDate }
     )
-    XCTAssertTrue(first.activate(LicenseTestFixture.devKey))
+    let activated = await first.activate(LicenseTestFixture.devKey)
+    XCTAssertTrue(activated)
     XCTAssertEqual(first.status.state, .active)
     XCTAssertTrue(first.canUseAgentic)
 
@@ -58,17 +96,18 @@ final class LicenseServiceTests: XCTestCase {
       autoload: true,
       now: { activationDate.addingTimeInterval(24 * 60 * 60) }
     )
+    await awaitCondition { !restarted.isBusy }
     XCTAssertEqual(restarted.status.state, .graceOffline)
     XCTAssertEqual(restarted.status.daysLeft, 29)
     XCTAssertTrue(restarted.canUseAgentic)
 
-    restarted.removeLicense()
+    await restarted.removeLicense()
     XCTAssertEqual(restarted.status.state, .unlicensed)
     XCTAssertFalse(restarted.canUseAgentic)
     XCTAssertNil(keychain.data)
   }
 
-  func testExpiredUpdatesClosesTheAgenticGate() {
+  func testExpiredUpdatesClosesTheAgenticGate() async {
     // Past the fixture's updates_until (2027-08-04): the key still verifies
     // (claims present, SKU entitled) but the entitlement is not current, so
     // the gate must close instead of treating the SKU as a lifetime unlock.
@@ -78,17 +117,19 @@ final class LicenseServiceTests: XCTestCase {
       autoload: false,
       now: { afterExpiry }
     )
-    XCTAssertTrue(service.activate(LicenseTestFixture.devKey))
+    let activated = await service.activate(LicenseTestFixture.devKey)
+    XCTAssertTrue(activated)
     XCTAssertEqual(service.status.state, .expiredUpdates)
     XCTAssertTrue(service.status.agenticEntitled, "SKU stays entitled — state is what expires")
     XCTAssertFalse(service.canUseAgentic)
     XCTAssertTrue(service.agenticBlockMessage.contains("ended"))
   }
 
-  func testInvalidKeyFailsClosedWithoutPersisting() {
+  func testInvalidKeyFailsClosedWithoutPersisting() async {
     let keychain = MemoryLicenseKeychain()
     let service = LicenseService(keychain: keychain, autoload: false)
-    XCTAssertFalse(service.activate("CSK1.invalid.invalid"))
+    let activated = await service.activate("CSK1.invalid.invalid")
+    XCTAssertFalse(activated)
     XCTAssertEqual(service.status.state, .unlicensed)
     XCTAssertNil(keychain.data)
   }
@@ -106,4 +147,97 @@ final class LicenseServiceTests: XCTestCase {
     try restarted.delete()
     XCTAssertNil(try restarted.load())
   }
+  func testSlowColdLoadKeepsMainActorResponsiveAndCoalescesRefresh() async {
+    let storage = MemoryLicenseKeychain()
+    let gate = DispatchSemaphore(value: 0)
+    storage.blockNextLoad(gate)
+    let service = LicenseService(keychain: storage, autoload: true)
+    defer { gate.signal() }
+    await awaitCondition { storage.loadCount == 1 }
+    XCTAssertTrue(service.isBusy)
+    XCTAssertEqual(service.readState, .loading)
+    XCTAssertFalse(service.canUseAgentic)
+    for _ in 0..<20 { service.refresh() }
+    let mutation = await service.activate(LicenseTestFixture.devKey)
+    XCTAssertFalse(mutation, "pending physical read owns the slot")
+    await Task.yield()
+    XCTAssertEqual(storage.loadCount, 1)
+    gate.signal()
+    await awaitCondition { !service.isBusy }
+    XCTAssertEqual(service.readState, .available)
+  }
+
+  func testColdDeniedReadIsUnavailableRatherThanConfirmedAbsence() async {
+    let storage = MemoryLicenseKeychain()
+    storage.failReads(true)
+    let service = LicenseService(keychain: storage, autoload: true)
+    await awaitCondition { !service.isBusy }
+    XCTAssertEqual(service.readState, .unavailable)
+    XCTAssertFalse(service.canUseAgentic)
+    XCTAssertNotNil(service.lastError)
+    storage.failReads(false)
+    service.refresh()
+    await awaitCondition { !service.isBusy }
+    XCTAssertEqual(service.readState, .available)
+    XCTAssertNil(service.lastError)
+  }
+
+  func testReadErrorRetainsVerifiedPayloadButDoesNotExtendGraceOrExpiry() async {
+    let storage = MemoryLicenseKeychain()
+    let activatedAt = Date(timeIntervalSince1970: 1_775_304_000)
+    var clock = activatedAt
+    let service = LicenseService(keychain: storage, autoload: false, now: { clock })
+    let activated = await service.activate(LicenseTestFixture.devKey)
+    XCTAssertTrue(activated)
+    let durable = storage.data
+    storage.failReads(true)
+    service.refresh()
+    await awaitCondition { !service.isBusy }
+    XCTAssertEqual(service.readState, .unavailable)
+    XCTAssertTrue(service.canUseAgentic)
+    XCTAssertEqual(storage.data, durable)
+    clock = activatedAt.addingTimeInterval(31 * 24 * 60 * 60)
+    XCTAssertFalse(service.canUseAgentic, "read errors cannot renew offline grace")
+    clock = Date(timeIntervalSince1970: 1_827_600_000)
+    XCTAssertEqual(service.status.state, .expiredUpdates)
+    XCTAssertFalse(service.canUseAgentic)
+  }
+
+  func testFailedReplacementAndDeletePreserveExistingLicense() async {
+    let storage = MemoryLicenseKeychain()
+    let service = LicenseService(
+      keychain: storage, autoload: false,
+      now: { Date(timeIntervalSince1970: 1_775_304_000) })
+    let activated = await service.activate(LicenseTestFixture.devKey)
+    XCTAssertTrue(activated)
+    let durable = storage.data
+    storage.failSaves(true)
+    let replacement = await service.activate(LicenseTestFixture.devKey)
+    XCTAssertFalse(replacement)
+    XCTAssertEqual(storage.data, durable)
+    XCTAssertTrue(service.canUseAgentic)
+    storage.failDeletes(true)
+    await service.removeLicense()
+    XCTAssertEqual(storage.data, durable)
+    XCTAssertTrue(service.canUseAgentic)
+    storage.failDeletes(false)
+    await service.removeLicense()
+    XCTAssertNil(storage.data)
+    XCTAssertFalse(service.canUseAgentic)
+  }
+
+  func testMalformedStoredPayloadFailsClosedAfterSuccessfulRead() async {
+    let storage = MemoryLicenseKeychain()
+    let service = LicenseService(
+      keychain: storage, autoload: false,
+      now: { Date(timeIntervalSince1970: 1_775_304_000) })
+    let activated = await service.activate(LicenseTestFixture.devKey)
+    XCTAssertTrue(activated)
+    storage.replaceData(Data("malformed".utf8))
+    service.refresh()
+    await awaitCondition { !service.isBusy }
+    XCTAssertEqual(service.readState, .unavailable)
+    XCTAssertFalse(service.canUseAgentic)
+  }
+
 }
