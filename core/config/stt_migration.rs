@@ -1,9 +1,9 @@
-//! Legacy URL inversion exists only at this one-shot migration boundary.
+//! Retired URL inversion exists only at this one-shot migration boundary.
 use super::settings::UserSettings;
 use crate::stt::{SttLane, validate_stt_endpoint};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SttV2Legacy {
+pub struct SttImportFields {
     pub cloud_transcription_endpoint: Option<String>,
     file_transcription_endpoint: Option<String>,
     live_transcription_endpoint: Option<String>,
@@ -19,7 +19,7 @@ fn optional_json_str(raw: &serde_json::Value, pointers: &[&str]) -> Option<Strin
         .map(str::to_owned)
 }
 
-impl SttV2Legacy {
+impl SttImportFields {
     pub fn from_json(raw: &serde_json::Value) -> Self {
         Self {
             cloud_transcription_endpoint: optional_json_str(
@@ -45,7 +45,7 @@ impl SttV2Legacy {
             ..Self::default()
         }
     }
-    /// True only when the legacy URL is still present *and* at least one
+    /// True only when the retired URL is still present *and* at least one
     /// destination lane would be written. Presence of the retired key after
     /// file/live rows already exist is not a migration: launch repair can
     /// re-seed `cloud_transcription_endpoint` from the operator pack, and
@@ -56,7 +56,7 @@ impl SttV2Legacy {
             stt_live_endpoint: self.live_transcription_endpoint.clone(),
             ..UserSettings::default()
         };
-        !migrate_legacy_stt_lanes(self, &mut probe).0.is_empty()
+        !migrate_stt_lanes(self, &mut probe).0.is_empty()
     }
 }
 pub struct SttMigrationStep {
@@ -87,19 +87,19 @@ fn invert_live_to_file(raw: &str) -> Option<String> {
     validate_stt_endpoint(SttLane::File, url.as_str()).ok()
 }
 
-/// R1–R4, without I/O. Existing explicit rows win over a legacy fallback.
-pub fn migrate_legacy_stt_lanes(
-    legacy: &SttV2Legacy,
+/// R1–R4, without I/O. Existing explicit rows win over a retired endpoint.
+pub fn migrate_stt_lanes(
+    imported: &SttImportFields,
     settings: &mut UserSettings,
 ) -> (Vec<SttMigrationStep>, Vec<&'static str>) {
     let mut steps = Vec::new();
-    if let Some(raw) = legacy.cloud_transcription_endpoint.as_deref() {
+    if let Some(raw) = imported.cloud_transcription_endpoint.as_deref() {
         let (file, live) = if let Ok(live) = validate_stt_endpoint(SttLane::Live, raw) {
             (invert_live_to_file(&live), Some(live))
         } else if let Ok(file) = validate_stt_endpoint(SttLane::File, raw) {
             (Some(file), None)
         } else {
-            tracing::warn!("Legacy STT endpoint is invalid; no lane synthesized");
+            tracing::warn!("Retired STT endpoint is invalid; no lane synthesized");
             (None, None)
         };
         for (lane, target, value) in [
@@ -141,22 +141,22 @@ pub(crate) fn split_retired_stt_endpoint(raw: &str) -> (Option<String>, Option<S
         )
     });
     let mut settings = UserSettings::default();
-    migrate_legacy_stt_lanes(&SttV2Legacy::from_endpoint(raw), &mut settings);
+    migrate_stt_lanes(&SttImportFields::from_endpoint(raw), &mut settings);
     (settings.stt_file_endpoint, settings.stt_live_endpoint)
 }
 
-/// Called with the settings transaction lock held, before legacy fields are serialized away.
-pub fn migrate_legacy_stt_lanes_once(settings: &mut UserSettings) {
+/// Called with the settings transaction lock held, before retired fields are serialized away.
+pub fn migrate_stt_lanes_once(settings: &mut UserSettings) {
     let raw = std::fs::read(UserSettings::settings_path())
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or(serde_json::Value::Null);
-    let legacy = SttV2Legacy::from_json(&raw);
-    let (steps, _) = migrate_legacy_stt_lanes(&legacy, settings);
+    let imported = SttImportFields::from_json(&raw);
+    let (steps, _) = migrate_stt_lanes(&imported, settings);
     if steps.is_empty() {
         // A write here would serialize SettingsV2 (no cloud key) and let the
         // next load's pack-seed repair put the key back — the 2026-09-08
-        // `Saved settings` / `Migrated legacy STT lanes rows=0` storm.
+        // `Saved settings` / `Migrated retired STT lanes rows=0` storm.
         return;
     }
     // Settings projection never acquires credentials. The source account stays
@@ -164,7 +164,7 @@ pub fn migrate_legacy_stt_lanes_once(settings: &mut UserSettings) {
     match settings.save_unlocked() {
         Ok(()) => {
             *settings = UserSettings::from_v2(settings.to_v2());
-            tracing::info!(rows = steps.len(), "Migrated legacy STT lanes");
+            tracing::info!(rows = steps.len(), "Migrated retired STT lanes");
         }
         Err(error) => tracing::warn!(%error, "Failed to persist STT lane migration"),
     }

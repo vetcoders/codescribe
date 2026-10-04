@@ -2189,7 +2189,8 @@ impl UserSettings {
         Self::settings_dir().join("settings.json")
     }
 
-    /// Loads settings from disk. Returns `Default` on any error.
+    /// Writer-capable settings load, including first file import preparation.
+    /// This persists intent without acquiring credentials; passive UI uses `load_projection`.
     pub fn load() -> Self {
         super::loader::note_startup_acquisition("user settings file");
         let _data_io = match super::storage_reset::begin_app_data_io() {
@@ -2203,16 +2204,105 @@ impl UserSettings {
         Self::load_unlocked()
     }
 
+    /// Read the committed atomic document without entering credential transactions.
+    /// This uses the same parser and in-memory normalization as the write owner.
+    /// Repairs and migration persistence belong to the admitted writer, not a UI read.
+    pub fn load_projection() -> Self {
+        let _data_io = match super::storage_reset::begin_app_data_io() {
+            Ok(guard) => guard,
+            Err(error) => {
+                warn!(%error, "Settings projection unavailable during app-data reset");
+                return Self::default();
+            }
+        };
+        Self::load_document(false)
+    }
+
+    /// Prepare the first import under the same lease as ordinary document writes.
+    /// A failed initial persistence returns the candidate for the acquiring loader.
+    pub(super) fn prepare_initial_env_import(
+        file_env: Option<&std::collections::HashMap<String, String>>,
+    ) -> Option<Self> {
+        let _data_io = match super::storage_reset::begin_app_data_io() {
+            Ok(guard) => guard,
+            Err(error) => {
+                warn!(%error, "Initial settings import unavailable during app-data reset");
+                return None;
+            }
+        };
+        let _settings_io = settings_io_lock();
+        if Self::settings_path().exists() {
+            return None;
+        }
+        let settings = super::migrate::prepare_env_import(file_env)?;
+        if let Err(error) = settings.save_unlocked() {
+            warn!(%error, "Initial settings import remains uncommitted");
+            return Some(settings);
+        }
+        info!("Imported settings and recorded credential migration intent");
+        None
+    }
+
+    /// Read the canonical source only while preparing a first writer transaction.
+    /// Secret values stay in the local file snapshot, never in settings.json.
+    fn first_env_import_candidate() -> anyhow::Result<Option<Self>> {
+        let env_path = super::Config::env_path();
+        crate::test_isolation::assert_test_read_allowed(&env_path);
+        let values = match super::Config::parse_env_file(&env_path) {
+            Ok(values) => values,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(super::migrate::prepare_env_import(Some(&values)))
+    }
+
+    /// Promoted config edits must prepare the first import before creating a file.
+    /// Source/read/persistence failures refuse the edit instead of losing import intent.
+    pub(super) fn load_for_edit() -> anyhow::Result<Self> {
+        let _data_io = super::storage_reset::begin_app_data_io()?;
+        let _settings_io = settings_io_lock();
+        if Self::read_persisted_settings()?.is_none()
+            && let Some(settings) = Self::first_env_import_candidate()?
+        {
+            settings.save_unlocked()?;
+        }
+        Ok(Self::load_document(true))
+    }
+
     /// Load while the settings transaction lock and app-data admission are held.
     fn load_unlocked() -> Self {
+        if !Self::settings_path().exists() {
+            match Self::first_env_import_candidate() {
+                Ok(Some(settings)) => {
+                    if let Err(error) = settings.save_unlocked() {
+                        warn!(%error, "Initial settings import remains uncommitted");
+                        return Self::from_v2(settings.to_v2());
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => warn!(%error, "Initial settings import unavailable"),
+            }
+        }
+        Self::load_document(true)
+    }
+
+    fn load_document(persist_migrations: bool) -> Self {
         let path = Self::settings_path();
         crate::test_isolation::assert_test_read_allowed(&path);
-        super::repair::record(super::repair::repair_settings(
-            &path,
-            super::repair::operator_pack().as_deref(),
-        ));
+        if persist_migrations {
+            super::repair::record(super::repair::repair_settings(
+                &path,
+                super::repair::operator_pack().as_deref(),
+            ));
+        }
         match fs::read_to_string(&path) {
-            Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
+            Ok(contents) => match super::repair::project_settings(&path, contents.as_bytes()) {
                 Ok(value) => {
                     let retired_paste_mode = Self::retired_auto_paste(&value);
                     let value_for_legacy = value.clone();
@@ -2229,19 +2319,24 @@ impl UserSettings {
                                     // One-shot: the saved V2 shape carries only
                                     // `paste_mode`, so the next load finds nothing.
                                     settings.paste_mode.get_or_insert(mode);
-                                    match settings.save_unlocked() {
-                                        Ok(()) => info!(
-                                            paste_mode = ?settings.paste_mode,
-                                            "Migrated auto_paste_enabled to paste_mode"
-                                        ),
-                                        Err(error) => {
-                                            warn!("Failed to persist migrated paste_mode: {error}")
+                                    if persist_migrations {
+                                        match settings.save_unlocked() {
+                                            Ok(()) => info!(
+                                                paste_mode = ?settings.paste_mode,
+                                                "Migrated auto_paste_enabled to paste_mode"
+                                            ),
+                                            Err(error) => {
+                                                warn!(
+                                                    "Failed to persist migrated paste_mode: {error}"
+                                                )
+                                            }
                                         }
                                     }
                                 }
-                                Self::migrate_legacy_llm_lanes_once(
+                                Self::migrate_retired_llm_lanes_once(
                                     &value_for_legacy,
                                     &mut settings,
+                                    persist_migrations,
                                 );
                                 settings
                             }
@@ -2254,12 +2349,14 @@ impl UserSettings {
                         match serde_json::from_str::<Self>(&contents) {
                             Ok(v1) => {
                                 let backup_path = Self::settings_dir().join("settings.v1.bak.json");
-                                crate::test_isolation::assert_test_write_allowed(&backup_path);
-                                if let Err(e) = fs::write(&backup_path, &contents) {
-                                    warn!(
-                                        "Failed to write V1 backup {}: {e}",
-                                        backup_path.display()
-                                    );
+                                if persist_migrations {
+                                    crate::test_isolation::assert_test_write_allowed(&backup_path);
+                                    if let Err(e) = fs::write(&backup_path, &contents) {
+                                        warn!(
+                                            "Failed to write V1 backup {}: {e}",
+                                            backup_path.display()
+                                        );
+                                    }
                                 }
                                 let mut settings = Self::from_v2(v1.to_v2());
                                 if let Some(mode) = retired_paste_mode {
@@ -2267,17 +2364,20 @@ impl UserSettings {
                                 }
                                 // Keep the legacy endpoint mapping until its durable key
                                 // relocation intent is part of the first V2 write.
-                                Self::migrate_legacy_llm_lanes_once(
+                                Self::migrate_retired_llm_lanes_once(
                                     &value_for_legacy,
                                     &mut settings,
+                                    persist_migrations,
                                 );
-                                if let Err(e) = settings.save_unlocked() {
-                                    warn!("Failed hard-migrating settings V1 -> V2: {e}");
-                                } else {
-                                    info!(
-                                        "Migrated settings V1 to V2 and wrote backup {}",
-                                        backup_path.display()
-                                    );
+                                if persist_migrations {
+                                    if let Err(e) = settings.save_unlocked() {
+                                        warn!("Failed hard-migrating settings V1 -> V2: {e}");
+                                    } else {
+                                        info!(
+                                            "Migrated settings V1 to V2 and wrote backup {}",
+                                            backup_path.display()
+                                        );
+                                    }
                                 }
                                 settings
                             }
@@ -2294,13 +2394,23 @@ impl UserSettings {
                 }
             },
             Err(e) => {
-                debug!(
-                    "No settings file at {} ({e}), using defaults",
-                    path.display()
-                );
+                debug!("Settings document unavailable at {} ({e})", path.display());
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    super::repair::record_projection_refusal(&path);
+                }
                 let mut settings = Self::default();
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    super::stt_migration::migrate_legacy_stt_lanes_once(&mut settings);
+                    if persist_migrations {
+                        super::stt_migration::migrate_stt_lanes_once(&mut settings);
+                    } else {
+                        // Project the same first-import values without admitting a writer.
+                        // Pending rows in this value remain uncommitted until a writer load.
+                        match Self::first_env_import_candidate() {
+                            Ok(Some(candidate)) => return Self::from_v2(candidate.to_v2()),
+                            Ok(None) => {}
+                            Err(error) => warn!(%error, "Initial settings projection unavailable"),
+                        }
+                    }
                 }
                 settings
             }
@@ -2323,7 +2433,11 @@ impl UserSettings {
     /// carries endpoint fields and persist the new shape with pending key moves
     /// for the loader's Keychain step. Idempotent: the saved file has no legacy
     /// fields, so the next load finds nothing to migrate.
-    fn migrate_legacy_llm_lanes_once(raw: &serde_json::Value, settings: &mut Self) {
+    fn migrate_retired_llm_lanes_once(
+        raw: &serde_json::Value,
+        settings: &mut Self,
+        persist_migrations: bool,
+    ) {
         let legacy = super::llm_migration::SpeechV2Legacy::from_json(raw);
         // Prepare both migrations before either serializer can discard the other
         // domain's legacy fields. A crash between saves must not lose LLM intent.
@@ -2332,11 +2446,23 @@ impl UserSettings {
         } else {
             Vec::new()
         };
-        super::stt_migration::migrate_legacy_stt_lanes_once(settings);
+        if persist_migrations {
+            super::stt_migration::migrate_stt_lanes_once(settings);
+        } else {
+            let stt = super::stt_migration::SttImportFields::from_json(raw);
+            let (steps, _) = super::stt_migration::migrate_stt_lanes(&stt, settings);
+            if !steps.is_empty() {
+                *settings = Self::from_v2(settings.to_v2());
+            }
+        }
         if !legacy.needs_migration() {
             return;
         }
         settings.pending_key_moves.extend(moves);
+        if !persist_migrations {
+            *settings = Self::from_v2(settings.to_v2());
+            return;
+        }
         match settings.save_unlocked() {
             // Hand back exactly what the next load will read: `to_v2` normalizes
             // on the way out (mode bindings and friends), so the first post-migration
@@ -2387,8 +2513,16 @@ impl UserSettings {
     ) -> anyhow::Result<T> {
         let _data_io = super::storage_reset::begin_app_data_io()?;
         let _settings_io = settings_io_lock();
-        let mut latest = Self::read_persisted_settings()?.unwrap_or_default();
-        if latest.cancel_pending_credential_imports(account) {
+        let durable = Self::read_persisted_settings()?;
+        let initial_import = if durable.is_none() {
+            Self::first_env_import_candidate()?
+        } else {
+            None
+        };
+        let initial_import_prepared = initial_import.is_some();
+        let mut latest = durable.or(initial_import).unwrap_or_default();
+        let cancelled = latest.cancel_pending_credential_imports(account);
+        if initial_import_prepared || cancelled {
             // Cancellation is durable even if the following explicit store
             // action fails. A failed cancellation forbids that store action.
             persist(&latest)?;
