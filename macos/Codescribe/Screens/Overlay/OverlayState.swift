@@ -378,6 +378,13 @@ final class OverlayState {
   var transcribing: Bool = false
   var toast: String?  // transient error notice
   var errorMessage: String?
+  /// Engine failure text is secondary detail, never the primary footer copy.
+  private(set) var errorDiagnosticDetail: String?
+  private(set) var errorFooterSummary = String(localized: "Transcription failed")
+  /// History of the controller's started callback for this capture generation.
+  /// Preparing is intent only; Stop and abort must not erase a confirmed start.
+  private(set) var captureDidStart = false
+  private(set) var currentTakeAudioAvailable = false
   private(set) var presentationStatus: OverlayPresentationStatus?
   private(set) var compactProjection: CsCompactProjection?
   private(set) var errorLifecycleDetail =
@@ -1018,6 +1025,23 @@ final class OverlayState {
       localized: "No seal was recorded for this take, so nothing here is certified complete.")
   }
 
+  /// Availability is refreshed at events and action opening, never during paint.
+  /// It grants no command: the reducer's action bits still own permission.
+  var currentTakeRecoveryDetail: String {
+    if currentTakeAudioAvailable {
+      if terminal && canRetranscribe && !isRevisionDraftDirty {
+        return String(
+          localized:
+            "Audio for this take is available. Use Transcribe this take again in More actions.")
+      }
+      return String(
+        localized: "Audio for this take is available, but retranscription is not available here.")
+    }
+    return String(
+      localized:
+        "Audio availability for this take could not be confirmed here. You can start a new take.")
+  }
+
   var audioLevelAccessibilityValue: String {
     guard let gain = levelMeter.gain else {
       return String(localized: "Waiting for measured level")
@@ -1294,6 +1318,7 @@ final class OverlayState {
       return
     }
     let prefixedPath = "\(pass.pathPrefix)\(path)"
+    let generation = captureGeneration
 
     cancelAutoHide()
     let passEngine =
@@ -1308,10 +1333,13 @@ final class OverlayState {
     engineChipLatched = true
     showFooterNotice(running, persists: true)
     Task { @MainActor [weak self] in
-      guard let self else { return }
+      guard let self, generation == self.captureGeneration else { return }
       do {
         let result = try await engine.transcribeTake(
           sessionId: projection.sessionId, path: prefixedPath)
+        guard generation == self.captureGeneration,
+          self.latestTranscriptProjection?.sessionId == projection.sessionId
+        else { return }
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
           self.engineChip = previousChip
@@ -1334,6 +1362,9 @@ final class OverlayState {
               sourceRevision: projection.reducerRevision,
               renderedText: text
             )
+            guard generation == self.captureGeneration,
+              self.latestTranscriptProjection?.sessionId == projection.sessionId
+            else { return }
             if replaced != text,
               !replaced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             {
@@ -1352,21 +1383,29 @@ final class OverlayState {
           }
         }
         self.engineChip = passEngine
+        self.errorMessage = nil
+        self.errorDiagnosticDetail = nil
         self.showFooterNotice(
           self.retranscribeRollback == nil
             ? String(localized: "retranscribed")
             : String(localized: "retranscribed — Back keeps the old text"))
         self.restartAutoHideCountdown()
       } catch {
+        guard generation == self.captureGeneration,
+          self.latestTranscriptProjection?.sessionId == projection.sessionId
+        else { return }
         self.engineChip = previousChip
         let described = String(describing: error)
         self.presentActionFailure(
-          String(
-            localized: "Couldn't retranscribe recording: \(described)",
-            comment: "The placeholder is the engine's own failure text"),
-          notice: String(
-            localized: "retranscribe refused · \(described)",
-            comment: "The placeholder is the engine's own failure text"))
+          String(localized: "Couldn't transcribe this take again"),
+          notice: String(localized: "Retranscription failed"))
+        self.errorDiagnosticDetail = described
+        self.errorFooterSummary = String(localized: "Retranscription failed")
+        self.errorLifecycleDetail =
+          self.activeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          ? String(localized: "No new transcript was produced for this take.")
+          : String(localized: "The existing transcript is still here.")
+        self.refreshRetranscriptionAvailability()
         self.restartAutoHideCountdown()
       }
     }
@@ -1507,6 +1546,10 @@ final class OverlayState {
 
   func refreshRetranscriptionAvailability() {
     cloudRetranscribeConfigured = engine?.cloudRetranscribeConfigured() ?? false
+    currentTakeAudioAvailable =
+      latestTranscriptProjection.map {
+        engine?.sessionAudioPath(sessionId: $0.sessionId) != nil
+      } ?? false
   }
 
   private func refreshOverlayPolicyTruth() {
@@ -1857,6 +1900,7 @@ final class OverlayState {
       beginCaptureClock()
     }
     recording = true
+    captureDidStart = true
     refreshOverlayPolicyTruth()
     refreshEngineChip(reset: false)
     onRecordingStarted?()
@@ -2164,10 +2208,17 @@ final class OverlayState {
       // before abort wipes capture identity — same throne as a clean stop.
       admitComposerDelivery(projection)
       abortRecordingSession()
-      showToast(String(localized: "Dictation failed — transcript kept"))
+      errorMessage = String(localized: "Transcription interrupted")
+      errorDiagnosticDetail = message
+      errorFooterSummary = String(localized: "Transcription incomplete")
+      errorLifecycleDetail = String(
+        localized: "The text received so far is still here. It may be incomplete.")
+      refreshRetranscriptionAvailability()
+      showToast(errorFooterSummary)
       return
     }
-    presentTerminalError(message: message, toast: message)
+    presentTerminalError(
+      message: message, toast: String(localized: "Couldn't start recording"))
   }
 
   /// User-facing rewrite for Speech Recognition TCC failures. The engine
@@ -2196,21 +2247,28 @@ final class OverlayState {
   }
 
   private func presentTerminalError(message: String, toast: String) {
+    let captureHadStarted = captureDidStart
     let speechNotice = OverlayState.speechAuthNotice(from: message)
-    let captureHadStarted = recording
-    let message = speechNotice ?? message
-    let toast = speechNotice ?? toast
+    let headline =
+      speechNotice
+      ?? (captureHadStarted
+        ? String(localized: "Couldn't finish transcription") : toast)
     abortRecordingSession()
     pendingNoSpeechMessage = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
     isFinalPass = false
-    errorMessage = message
+    errorMessage = headline
+    errorDiagnosticDetail = message
+    errorFooterSummary =
+      captureHadStarted
+      ? String(localized: "Transcription failed") : String(localized: "Recording failed")
     errorLifecycleDetail =
       captureHadStarted
-      ? String(localized: "No transcript was delivered.")
+      ? String(localized: "Recording started, but transcription did not finish.")
       : String(localized: "Recording did not start.")
     finalized = true
-    showToast(toast)
+    refreshRetranscriptionAvailability()
+    showToast(errorFooterSummary)
   }
 
   // MARK: Listener-driven mutations (called on the main actor by DictationListener)
@@ -2538,6 +2596,7 @@ final class OverlayState {
     canFormat = projection.canFormat
     canSendToAgent = projection.canSendToAgent
     terminal = projection.terminal
+    if projection.terminal { refreshRetranscriptionAvailability() }
     // A document observation cannot consume a stopped callback or reopen capture.
     if isLifecycleTerminal { finalized = true }
 
@@ -2997,6 +3056,8 @@ final class OverlayState {
     // empty projection and misclassify a clean draft as unsaved work.
     let draftWasDirty = isRevisionDraftDirty
     captureGeneration &+= 1
+    captureDidStart = false
+    currentTakeAudioAvailable = false
     // A scheduled focus-exit commit belongs to the take being superseded.
     // Letting it fire across the boundary would send an FFI revision for a
     // closed session while a new capture is live, so the bytes are preserved
@@ -3060,6 +3121,7 @@ final class OverlayState {
     toastTask = nil
     toast = nil
     presentationStatus = nil
+    errorDiagnosticDetail = nil
     errorLifecycleDetail = String(localized: "No transcript was delivered.")
     finalized = false
     agentFinalTranscriptAppeared = false

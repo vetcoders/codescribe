@@ -211,7 +211,9 @@ struct OverlayCoverageStatus: View {
           Text(diagnosticDetail).font(CSFont.mono(10, .medium))
         }
         if canRetranscribe {
-          Text("Transcribe again")
+          Text(String(localized: "Transcribe this take again"))
+          Text(String(localized: "Uses audio from the take currently shown in the overlay."))
+            .fixedSize(horizontal: false, vertical: true)
           HStack {
             Button(OverlayRetranscribeCopy.local) {
               close()

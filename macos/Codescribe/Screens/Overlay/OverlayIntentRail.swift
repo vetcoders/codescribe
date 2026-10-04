@@ -200,18 +200,23 @@ struct OverlayIntentRail: View {
               .controlSize(.small)
               .font(CSFont.ui(11, .medium))
             } else if intent == .retranscribe {
-              HStack(spacing: 10) {
-                Button(OverlayRetranscribeCopy.local) {
-                  close()
-                  retranscribe(.fullHq)
-                }
-                .accessibilityIdentifier("overlay-retranscribe-hq")
-                if cloudRetranscribeConfigured {
-                  Button(OverlayRetranscribeCopy.cloud) {
+              VStack(alignment: .leading, spacing: 8) {
+                Text(String(localized: "Transcribe this take again"))
+                Text(String(localized: "Uses audio from the take currently shown in the overlay."))
+                  .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                  Button(OverlayRetranscribeCopy.local) {
                     close()
-                    retranscribe(.cloud)
+                    retranscribe(.fullHq)
                   }
-                  .accessibilityIdentifier("overlay-retranscribe-cloud")
+                  .accessibilityIdentifier("overlay-retranscribe-hq")
+                  if cloudRetranscribeConfigured {
+                    Button(OverlayRetranscribeCopy.cloud) {
+                      close()
+                      retranscribe(.cloud)
+                    }
+                    .accessibilityIdentifier("overlay-retranscribe-cloud")
+                  }
                 }
               }
               .buttonStyle(.borderless)
@@ -355,7 +360,7 @@ extension OverlayIntent {
     case .discardRevision: String(localized: "Discard transcript draft")
     case .copy: String(localized: "Copy transcript")
     case .insertPaste: String(localized: "Insert transcript")
-    case .retranscribe: String(localized: "Retranscribe recording")
+    case .retranscribe: String(localized: "Transcribe this take again")
     case .undoRetranscribe: String(localized: "Undo retranscribe")
     case .format: String(localized: "Format transcript")
     case .sendToAgent: String(localized: "Send transcript to Agent")
@@ -410,7 +415,7 @@ extension OverlayIntent {
   var helpText: String { accessibilityLabel }
 }
 
-/// Engine buttons under "Transcribe again", shared by the intent rail and the
+/// Engine buttons under "Transcribe this take again", shared by the intent rail and the
 /// coverage popover. They have their own keys: here the word answers "where
 /// should it run", while `Cloud` elsewhere names an engine.
 enum OverlayRetranscribeCopy {
