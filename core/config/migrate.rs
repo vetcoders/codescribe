@@ -33,14 +33,23 @@ pub fn migrate_if_needed(
     file_env: Option<&HashMap<String, String>>,
     acquire_credentials: bool,
 ) -> Option<UserSettings> {
-    let path = UserSettings::settings_path();
-    if path.exists() {
-        if acquire_credentials && let Err(error) = UserSettings::settle_pending_env_key_imports() {
-            tracing::warn!(%error, "Credential import remains pending");
-        }
-        return None;
+    if let Some(settings) = UserSettings::prepare_initial_env_import(file_env) {
+        return Some(settings);
     }
+    if acquire_credentials
+        && UserSettings::settings_path().exists()
+        && let Err(error) = UserSettings::settle_pending_env_key_imports()
+    {
+        tracing::warn!(%error, "Credential import remains pending");
+    }
+    None
+}
 
+/// Build the first settings document and secret-free import intent from one file snapshot.
+/// The settings transaction owner performs the absence check and persistence.
+pub(super) fn prepare_env_import(
+    file_env: Option<&HashMap<String, String>>,
+) -> Option<UserSettings> {
     let Some(file_env) = file_env else {
         debug!("No .env snapshot present, skipping migration");
         return None;
@@ -103,8 +112,8 @@ pub fn migrate_if_needed(
         }
     }
     if let Some(v) = migrated_value(file_env, "STT_ENDPOINT") {
-        super::stt_migration::migrate_legacy_stt_lanes(
-            &super::stt_migration::SttV2Legacy::from_endpoint(&v),
+        super::stt_migration::migrate_stt_lanes(
+            &super::stt_migration::SttImportFields::from_endpoint(&v),
             &mut settings,
         );
     }
@@ -266,16 +275,7 @@ pub fn migrate_if_needed(
         }
     }
 
-    if let Err(e) = settings.save() {
-        tracing::warn!("Migration: failed to save settings.json: {e}");
-        return Some(settings);
-    }
-
-    if acquire_credentials && let Err(error) = UserSettings::settle_pending_env_key_imports() {
-        tracing::warn!(%error, "Credential import remains pending");
-    }
-    info!("Imported settings and recorded credential migration intent");
-    None
+    Some(settings)
 }
 
 /// Backfill the workspace roots from the legacy `.env` store even when an

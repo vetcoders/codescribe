@@ -9,7 +9,8 @@ use security_framework::passwords::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::sync::{Once, OnceLock, RwLock};
+use std::sync::{Mutex, MutexGuard, Once, OnceLock, RwLock};
+use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
 use crate::llm::provider::is_custom_key_account;
@@ -127,13 +128,8 @@ pub fn apply_key_moves(moves: &[KeyMove]) -> Result<usize> {
         !is_test_env(),
         "Keychain disabled; relocation must remain pending"
     );
-    // Do not collapse denial/corruption into an empty bundle: that would erase
-    // the durable retry intent. -25300 is Security.framework errSecItemNotFound.
-    let mut bundle = match get_generic_password(credential_service(), BUNDLE_ACCOUNT) {
-        Ok(bytes) => decode_bundle(&bytes).context("Keychain bundle cannot be decoded")?,
-        Err(error) if error.code() == -25300 => KeychainBundle::default(),
-        Err(error) => return Err(error).context("Keychain relocation read failed"),
-    };
+    let _io = bundle_io();
+    let mut bundle = read_bundle_locked(false)?.unwrap_or_default();
     let changed = relocate_bundle_keys(&mut bundle, moves);
     if changed > 0 {
         save_bundle(&bundle)?;
@@ -183,10 +179,11 @@ pub fn fan_out_key(from: &str, targets: &[&str]) -> usize {
     if targets.is_empty() || targets.contains(&from) {
         return 0;
     }
+    let _io = bundle_io();
     let bundle = if is_test_env() {
         read_bundle_cache()
     } else {
-        load_bundle()
+        read_bundle_locked(false).ok().flatten()
     };
     let Some(bundle) = bundle else {
         return 0;
@@ -245,19 +242,33 @@ impl Default for KeychainBundle {
     }
 }
 
-/// Process-wide decoded Keychain bundle cache; `None` means unloaded or deleted.
-static BUNDLE_CACHE: OnceLock<RwLock<Option<KeychainBundle>>> = OnceLock::new();
+/// One cache for the bundled item, including confirmed absence and read failure.
+#[derive(Default)]
+struct BundleCache {
+    bundle: Option<KeychainBundle>,
+    checked: bool,
+    checked_at: Option<Instant>,
+    unavailable: Option<(String, Instant)>,
+    revision: u64,
+}
+
+static BUNDLE_CACHE: OnceLock<RwLock<BundleCache>> = OnceLock::new();
+// Serialize the entire read/modify/persist sequence, not just cache assignment.
+// The cache lock is never held while Security.framework waits for a response.
+static BUNDLE_IO: Mutex<()> = Mutex::new(());
 /// Ledger of env values this process seeded from Keychain (not user-exported).
 static PROCESS_ENV_SEEDS: OnceLock<RwLock<BTreeMap<String, String>>> = OnceLock::new();
 /// Ensures `populate_env_from_keychain` mutates process env at most once.
 static POPULATE_ONCE: Once = Once::new();
 
-/// Process-wide cache of the decoded bundle, created on first use.
-///
-/// `None` inside the lock means "not loaded or deleted", which is distinct from
-/// the lock not existing yet.
-fn bundle_cache() -> &'static RwLock<Option<KeychainBundle>> {
-    BUNDLE_CACHE.get_or_init(|| RwLock::new(None))
+fn bundle_io() -> MutexGuard<'static, ()> {
+    BUNDLE_IO
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn bundle_cache() -> &'static RwLock<BundleCache> {
+    BUNDLE_CACHE.get_or_init(|| RwLock::new(BundleCache::default()))
 }
 
 /// Read the cached bundle, recovering from a poisoned lock.
@@ -265,22 +276,68 @@ fn bundle_cache() -> &'static RwLock<Option<KeychainBundle>> {
 /// A panic elsewhere must not turn every later secret lookup into a panic; the
 /// cached bytes are still valid, so the guard is taken via `into_inner()`.
 fn read_bundle_cache() -> Option<KeychainBundle> {
-    match bundle_cache().read() {
-        Ok(guard) => guard.clone(),
-        Err(poisoned) => poisoned.into_inner().clone(),
-    }
+    bundle_cache()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .bundle
+        .clone()
 }
 
-/// Replace the cached bundle, recovering from a poisoned lock. `None` clears it.
+/// Replace the cached bundle, recovering from a poisoned lock.
 fn write_bundle_cache(bundle: Option<KeychainBundle>) {
-    match bundle_cache().write() {
-        Ok(mut guard) => {
-            *guard = bundle;
-        }
-        Err(poisoned) => {
-            *poisoned.into_inner() = bundle;
-        }
+    let mut cache = bundle_cache().write().unwrap_or_else(|e| e.into_inner());
+    cache.bundle = bundle;
+    cache.checked = cache.bundle.is_some();
+    cache.unavailable = None;
+    cache.checked_at = Some(Instant::now());
+    cache.revision = cache.revision.wrapping_add(1);
+}
+
+fn cache_missing_bundle() {
+    write_bundle_cache(None);
+    bundle_cache()
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .checked = true;
+}
+
+/// A projection can reject results captured before a later credential mutation.
+pub fn bundle_revision() -> u64 {
+    bundle_cache()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .revision
+}
+
+/// Mark a successful provider-config or explicit env-token mutation as newer
+/// than any captured UI projection. This does not acquire credential storage.
+pub fn advance_bundle_revision() {
+    let mut cache = bundle_cache().write().unwrap_or_else(|e| e.into_inner());
+    cache.revision = cache.revision.wrapping_add(1);
+}
+
+/// Demand acquisition reuses a completed positive bundle without taking I/O.
+/// Cold reads belong off the main thread and retain failures for bounded retry.
+/// Explicit UI refresh uses `refresh_bundle` to report current storage failures.
+pub fn ensure_bundle_loaded() -> Result<()> {
+    note_credential_acquisition("ensure bundle");
+    if is_test_env() || read_bundle_cache().is_some() {
+        return Ok(());
     }
+    let _io = bundle_io();
+    read_bundle_locked(false).map(|_| ())
+}
+
+/// Explicit UI refresh may re-read a previously loaded item. A recent read or
+/// successful write is reused for five seconds to coalesce focus/readiness noise.
+/// This is the same cache and physical I/O lease as runtime secret acquisition.
+pub fn refresh_bundle() -> Result<()> {
+    note_credential_acquisition("refresh bundle");
+    if is_test_env() {
+        return Ok(());
+    }
+    let _io = bundle_io();
+    read_bundle_locked(true).map(|_| ())
 }
 
 /// Origin ledger for env vars this process set from Keychain during bootstrap.
@@ -348,29 +405,61 @@ fn decode_bundle(bytes: &[u8]) -> Option<KeychainBundle> {
 ///
 /// A miss can raise a macOS authorization prompt, so this belongs only on paths
 /// where a prompt is acceptable — see [`cached_runtime_key`] for the silent one.
-/// A successful read populates the cache; a decode failure does not.
+/// A successful read populates the cache; a decode failure retains its error for retry.
 fn load_bundle() -> Option<KeychainBundle> {
     note_credential_acquisition("read bundle");
+    // Runtime consumers keep using the last completed bundle during another I/O.
+    // Explicit refresh still owns acquisition and reports its storage failures.
     if let Some(bundle) = read_bundle_cache() {
         return Some(bundle);
     }
-    match get_generic_password(credential_service(), BUNDLE_ACCOUNT) {
-        Ok(bytes) => {
-            let bundle = decode_bundle(&bytes);
-            if bundle.is_some() {
-                write_bundle_cache(bundle.clone());
-            }
-            bundle
-        }
-        Err(e) => {
-            // INFO on purpose: an unreadable bundle (absent OR ACL-denied
-            // after a re-signed install) silently strips every lane of its
-            // credential — at debug level that was invisible in the 2026-09-04
-            // agent-chat 401 boot log.
-            info!("Keychain bundle unreadable (absent or access denied): {e}");
+    let _io = bundle_io();
+    match read_bundle_locked(false) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            info!("Keychain bundle unavailable: {error}");
             None
         }
     }
+}
+
+// Called only while the I/O lease is held. All acquisition uses this read.
+fn read_bundle_locked(refresh: bool) -> Result<Option<KeychainBundle>> {
+    {
+        let cache = bundle_cache().read().unwrap_or_else(|e| e.into_inner());
+        if let Some((message, retry_after)) = &cache.unavailable {
+            if Instant::now() < *retry_after {
+                anyhow::bail!("{message}");
+            }
+        } else if cache.checked
+            && ((!refresh && cache.bundle.is_some())
+                || cache
+                    .checked_at
+                    .is_some_and(|at| at.elapsed() < Duration::from_secs(5)))
+        {
+            return Ok(cache.bundle.clone());
+        }
+    }
+    let result = match get_generic_password(credential_service(), BUNDLE_ACCOUNT) {
+        Ok(bytes) => decode_bundle(&bytes)
+            .context("Keychain bundle cannot be decoded")
+            .map(Some),
+        Err(error) if error.code() == -25300 => Ok(None),
+        Err(error) => Err(error).context("Keychain bundle access is unavailable"),
+    };
+    match &result {
+        Ok(Some(bundle)) => write_bundle_cache(Some(bundle.clone())),
+        Ok(None) => cache_missing_bundle(),
+        Err(error) => {
+            let mut cache = bundle_cache().write().unwrap_or_else(|e| e.into_inner());
+            cache.unavailable = Some((
+                format!("{error:#}"),
+                Instant::now() + Duration::from_secs(5),
+            ));
+            cache.revision = cache.revision.wrapping_add(1);
+        }
+    }
+    result
 }
 
 /// Write the bundle to the Keychain and refresh the cache on success.
@@ -490,6 +579,7 @@ fn is_xctest_host_by_signals(config_file: bool, session_id: bool, bundle_path: b
 /// custom-provider account (never read from env) goes into the bundle cache.
 pub fn save_key(account: &str, secret: &str) -> Result<()> {
     note_credential_acquisition("save");
+    let _io = bundle_io();
     if is_test_env() {
         debug!("Test env: skipping Keychain save for {account}");
         if is_custom_key_account(account) {
@@ -499,9 +589,10 @@ pub fn save_key(account: &str, secret: &str) -> Result<()> {
         } else {
             unsafe { std::env::set_var(account, secret) };
         }
+        advance_bundle_revision();
         return Ok(());
     }
-    let mut bundle = load_bundle().unwrap_or_default();
+    let mut bundle = read_bundle_locked(false)?.unwrap_or_default();
     bundle.keys.insert(account.to_string(), secret.to_string());
     save_bundle(&bundle)?;
     info!("Saved {account} to Keychain bundle");
@@ -642,6 +733,7 @@ fn non_empty_secret(value: Option<String>) -> Option<String> {
 /// Deletes a secret from the macOS Keychain. Ignores "not found" errors.
 pub fn delete_key(account: &str) -> Result<()> {
     note_credential_acquisition("delete");
+    let _io = bundle_io();
     if is_test_env() {
         debug!("Test env: skipping Keychain delete for {account}");
         if is_custom_key_account(account)
@@ -650,21 +742,22 @@ pub fn delete_key(account: &str) -> Result<()> {
             bundle.keys.remove(account);
             write_bundle_cache(Some(bundle));
         }
+        advance_bundle_revision();
         return Ok(());
     }
-    let mut bundle = load_bundle().unwrap_or_default();
+    let mut bundle = read_bundle_locked(false)?.unwrap_or_default();
     if bundle.keys.remove(account).is_some() {
         if bundle.keys.is_empty() {
             match delete_generic_password(credential_service(), BUNDLE_ACCOUNT) {
                 Ok(()) => {
-                    write_bundle_cache(None);
+                    cache_missing_bundle();
                     info!("Deleted Keychain bundle (last key removed)");
                     Ok(())
                 }
                 Err(e) => {
                     let desc = format!("{e}");
                     if desc.contains("not found") || desc.contains("-25300") {
-                        write_bundle_cache(None);
+                        cache_missing_bundle();
                         debug!("Keychain bundle not found, nothing to delete");
                         Ok(())
                     } else {
@@ -688,6 +781,9 @@ pub fn delete_key(account: &str) -> Result<()> {
 /// bundle is already open, so no settings load ever has to.
 pub(crate) fn retry_stt_key_fan_out() -> usize {
     use crate::stt::SttLane;
+    if cached_bundle_secret("STT_API_KEY").is_none() {
+        return 0;
+    }
     fan_out_key(
         "STT_API_KEY",
         &[SttLane::File.key_account(), SttLane::Live.key_account()],
@@ -715,6 +811,14 @@ pub fn populate_env_from_keychain(seed_process_env: bool) {
     seed_bundle_env(&bundle, seed_process_env);
 }
 
+/// Mirror only an already completed bundle while the config bootstrap owns env.
+/// This never acquires the physical credential I/O lease.
+pub(crate) fn seed_cached_bundle_env(seed_process_env: bool) {
+    if let Some(bundle) = read_bundle_cache() {
+        seed_bundle_env(&bundle, seed_process_env);
+    }
+}
+
 fn seed_bundle_env(bundle: &KeychainBundle, seed_process_env: bool) {
     if !seed_process_env {
         return;
@@ -738,6 +842,39 @@ fn seed_bundle_env(bundle: &KeychainBundle, seed_process_env: bool) {
 /// Keychain bypass and runtime-key priority regressions (no live Keychain I/O).
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[serial_test::serial]
+    fn credential_projection_warm_bundle_and_empty_stt_move_do_not_wait_on_io() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let _cache =
+            super::test_support::install_bundle(&[("LLM_OPENAI_API_KEY", "synthetic-warm-key")]);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let io_owner = std::thread::spawn(move || {
+            let _io = super::bundle_io();
+            entered_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        let entered = entered_rx.recv_timeout(Duration::from_secs(2));
+        let (read_tx, read_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let bundle = super::load_bundle().unwrap();
+            let unchanged = super::retry_stt_key_fan_out();
+            read_tx
+                .send((bundle.keys.get("LLM_OPENAI_API_KEY").cloned(), unchanged))
+                .unwrap();
+        });
+        let read = read_rx.recv_timeout(Duration::from_secs(1));
+        release_tx.send(()).unwrap();
+        io_owner.join().unwrap();
+        reader.join().unwrap();
+        entered.unwrap();
+        let (key, unchanged) =
+            read.expect("warm cache read must complete before physical I/O returns");
+        assert_eq!(key.as_deref(), Some("synthetic-warm-key"));
+        assert_eq!(unchanged, 0);
+    }
     #[test]
     fn cargo_test_binaries_are_recognised_whatever_the_target_dir_is_called() {
         use std::path::Path;
