@@ -19,7 +19,7 @@ struct DictationPermissionsTab: View {
         PermissionMatrixCell(
           kind: kind,
           state: model.permissions.state(kind),
-          onStateChanged: { model.refresh() }
+          onStateChanged: { model.refreshPermissions() }
         )
       }
     }

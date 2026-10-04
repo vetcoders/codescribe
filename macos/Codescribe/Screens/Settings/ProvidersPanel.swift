@@ -29,27 +29,54 @@ struct ProvidersPanel: View {
           .padding(.top, 12)
       }
 
-      SettingsSectionLabel(String(localized: "Vendors"))
-        .padding(.top, CSSpace.section)
-      VStack(spacing: 8) {
-        ForEach(model.vendorProviders, id: \.id) { provider in
-          ProviderCard(model: model, provider: provider)
-        }
+      if model.providerAccessPending || model.providerMutationPending {
+        ProgressView()
+          .controlSize(.small)
+          .padding(.top, 12)
+        Text(model.providerMutationPending
+          ? String(localized: "Updating provider access…")
+          : String(localized: "Checking provider access…"))
+          .font(CSFont.ui(11.5))
       }
-      .padding(.top, CSSpace.control)
+      if let error = model.providerAccessError {
+        Text(model.providerAccessResolved
+          ? String(localized: "Provider access is unavailable. The last checked values are shown below.")
+          : String(localized: "Provider access is unavailable. No credential status has been confirmed."))
+          .font(CSFont.ui(11.5))
+          .padding(.top, 12)
+        Text(error).font(CSFont.mono(10.5)).textSelection(.enabled)
+      }
+      Button("Refresh provider access") { model.refreshProviderAccess() }
+        .disabled(model.providerAccessPending || model.providerMutationPending)
+        .padding(.top, 12)
+      if model.providerAccessResolved {
+        SettingsSectionLabel(String(localized: "Vendors"))
+          .padding(.top, CSSpace.section)
+        VStack(spacing: 8) {
+          ForEach(model.vendorProviders, id: \.id) { provider in
+            ProviderCard(model: model, provider: provider)
+          }
+        }
+        .padding(.top, CSSpace.control)
+        .disabled(model.providerMutationPending)
 
-      CustomProvidersSection(
-        model: model,
-        onAdd: { formTarget = .add },
-        onEdit: { formTarget = .edit($0) }
-      )
-      .padding(.top, CSSpace.section)
-
-      SpeechToTextSection(model: model)
+        CustomProvidersSection(
+          model: model,
+          onAdd: { formTarget = .add },
+          onEdit: { formTarget = .edit($0) }
+        )
         .padding(.top, CSSpace.section)
+        .disabled(model.providerMutationPending)
 
-      ServiceKeysSection(model: model)
-        .padding(.top, CSSpace.section)
+        SpeechToTextSection(model: model)
+          .padding(.top, CSSpace.section)
+          .disabled(model.providerMutationPending)
+
+        ServiceKeysSection(model: model)
+          .padding(.top, CSSpace.section)
+          .disabled(model.providerMutationPending)
+
+      }
 
       HStack(spacing: 8) {
         Text(verbatim: "●").font(CSFont.mono(11, .medium)).foregroundStyle(CSColor.olive)
@@ -158,7 +185,15 @@ struct ProviderCard: View {
       KeyRow(
         model: model, account: provider.apiKeyAccount, label: String(localized: "API key"),
         isSet: provider.apiKeySet, optional: !provider.keyRequired)
-      if !isCustom, provider.accountLoginEnabled || provider.accountSignedIn {
+      if let error = model.providerAccountErrors[provider.id] {
+        Text("Account access unavailable")
+          .font(CSFont.ui(12, .semibold))
+        Text(error).font(CSFont.ui(11.5)).textSelection(.enabled)
+        SettingsChipButton("Sign out", tint: CSColor.terracotta) {
+          model.signOutAccount(providerId: provider.id)
+        }
+        .accessibilityLabel("Sign out \(provider.displayName)")
+      } else if !isCustom, provider.accountLoginEnabled || provider.accountSignedIn {
         AccountLoginRow(
           provider: provider,
           loginPending: model.accountLoginPending.contains(provider.id),
@@ -252,6 +287,7 @@ struct CustomProviderForm: View {
   @State private var apiKey = ""
   @State private var error: String?
   @State private var endpointError: String?
+  @State private var saving = false
   @FocusState private var focus: Field?
 
   private enum Field { case name, endpoint, key }
@@ -270,7 +306,8 @@ struct CustomProviderForm: View {
   }
 
   private var canSave: Bool {
-    !name.trimmingCharacters(in: .whitespaces).isEmpty
+    !saving && !model.providerMutationPending
+      && !name.trimmingCharacters(in: .whitespaces).isEmpty
       && !endpoint.trimmingCharacters(in: .whitespaces).isEmpty
   }
 
@@ -332,9 +369,14 @@ struct CustomProviderForm: View {
           .accessibilityIdentifier("custom-provider-form-error")
       }
 
+      if saving {
+        ProgressView("Saving provider…")
+          .controlSize(.small)
+      }
       HStack(spacing: 10) {
         Spacer()
         Button("Cancel") { dismiss() }
+          .disabled(saving)
           .keyboardShortcut(.cancelAction)
           .csFocusRing()
         SettingsSaveButton(
@@ -346,6 +388,7 @@ struct CustomProviderForm: View {
     }
     .padding(24)
     .frame(width: 480)
+    .interactiveDismissDisabled(saving)
     .onAppear {
       if case .edit(let provider) = target {
         name = provider.displayName
@@ -377,29 +420,33 @@ struct CustomProviderForm: View {
       endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines),
       apiKey: apiKey.isEmpty ? nil : apiKey
     )
-    do {
-      switch target {
-      case .add:
-        try model.addCustomProvider(draft)
-      case .edit(let provider):
-        try model.updateCustomProvider(id: provider.id, draft)
-      }
-      dismiss()
-    } catch {
-      Self.log.error("Custom provider save failed: \(String(reflecting: error), privacy: .private)")
-      // The bridge currently carries ProviderError's Display sentence in Config.
-      // Match its endpoint reason, never revalidate the URL with a second parser.
-      if let bridgeError = error as? CsError,
-        case .Config(let message) = bridgeError,
-        message.hasPrefix("endpoint '"),
-        message.hasSuffix("' needs an http(s) scheme and a host")
-      {
-        endpointError = String(
-          localized: "Enter an HTTP or HTTPS URL with a host, such as https://api.example.com."
-        )
-        focus = .endpoint
-      } else {
-        self.error = error.userFacingMessage
+    saving = true
+    Task { @MainActor in
+      defer { saving = false }
+      do {
+        switch target {
+        case .add:
+          try await model.addCustomProvider(draft)
+        case .edit(let provider):
+          try await model.updateCustomProvider(id: provider.id, draft)
+        }
+        dismiss()
+      } catch {
+        Self.log.error("Custom provider save failed: \(String(reflecting: error), privacy: .private)")
+        // The bridge currently carries ProviderError's Display sentence in Config.
+        // Match its endpoint reason, never revalidate the URL with a second parser.
+        if let bridgeError = error as? CsError,
+          case .Config(let message) = bridgeError,
+          message.hasPrefix("endpoint '"),
+          message.hasSuffix("' needs an http(s) scheme and a host")
+        {
+          endpointError = String(
+            localized: "Enter an HTTP or HTTPS URL with a host, such as https://api.example.com."
+          )
+          focus = .endpoint
+        } else {
+          self.error = error.userFacingMessage
+        }
       }
     }
   }

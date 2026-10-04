@@ -626,6 +626,9 @@
     "Account" : {
       "comment" : "Sidebar group of settings sections"
     },
+    "Account access unavailable" : {
+
+    },
     "Account connected and API key configured. Supported Assistive requests can use the account; Formatting and model discovery use the provider API key." : {
 
     },
@@ -1076,6 +1079,18 @@
     "Checking calibration…" : {
 
     },
+    "Checking license…" : {
+
+    },
+    "Checking license… Basic dictation remains free." : {
+
+    },
+    "Checking provider access…" : {
+
+    },
+    "Checking provider access… You can continue with Basic dictation." : {
+
+    },
     "Checking recording activity…" : {
 
     },
@@ -1171,6 +1186,9 @@
     },
     "Codescribe could not confirm that this transcription is complete." : {
 
+    },
+    "Codescribe couldn't write the Markdown file for “%@”. Check the Transcripts folder shown under Settings › User › Local data, then try again." : {
+      "comment" : "The placeholder is the thread title"
     },
     "Codescribe detected speech that no recognizer turned into words; its timing is unavailable for this take." : {
 
@@ -1742,8 +1760,17 @@
     "Export assistant replies only" : {
 
     },
+    "Export failed" : {
+      "comment" : "Alert title when a thread export wrote nothing"
+    },
     "Export to Markdown" : {
 
+    },
+    "Exported to Markdown" : {
+      "comment" : "Alert title after a successful thread export"
+    },
+    "Exports save to the Transcripts folder" : {
+      "comment" : "Menu section header above the Markdown export actions"
     },
     "External MCP servers the agent can call, and their transports." : {
 
@@ -2070,6 +2097,15 @@
     },
     "License" : {
       "comment" : "Settings section"
+    },
+    "License access is unavailable. Retry in Settings › License. Basic dictation remains free." : {
+
+    },
+    "License access is unavailable. The last verified license still follows its original expiry." : {
+
+    },
+    "License access unavailable" : {
+
     },
     "License status" : {
 
@@ -2594,6 +2630,9 @@
     "OpenAI API key" : {
       "comment" : "OpenAI is a company name"
     },
+    "Opens this thread" : {
+      "comment" : "Accessibility hint on a history row"
+    },
     "Operating lane" : {
       "comment" : "Setup step eyebrow"
     },
@@ -2783,7 +2822,25 @@
     "Provider API key" : {
       "comment" : "Summary row: whether an API key is stored for the chosen AI provider"
     },
+    "Provider access is still being updated." : {
+
+    },
+    "Provider access is unavailable. No credential status has been confirmed." : {
+
+    },
+    "Provider access is unavailable. Retry to check account and API key status." : {
+
+    },
+    "Provider access is unavailable. The last checked values are shown below." : {
+
+    },
+    "Provider access unavailable" : {
+
+    },
     "Provider account" : {
+
+    },
+    "Provider account access is unavailable. Remove the stored account in Settings › Providers, then sign in again." : {
 
     },
     "Provider and model per request path. Endpoints and keys live on Providers; the resolved runtime truth is below the editors." : {
@@ -2960,6 +3017,9 @@
 
     },
     "Refresh pending requests" : {
+
+    },
+    "Refresh provider access" : {
 
     },
     "Refresh status" : {
@@ -3143,6 +3203,12 @@
     "Retranscription needs the recording engine" : {
 
     },
+    "Retry license access" : {
+
+    },
+    "Retry provider access" : {
+
+    },
     "Reveal in Finder" : {
 
     },
@@ -3215,6 +3281,28 @@
     "Saved in settings.json; runtime falls back safely if it disappears" : {
 
     },
+    "Saved the assistant replies as %@ in %@." : {
+      "comment" : "Placeholders: file name, then folder path",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Saved the assistant replies as %1$@ in %2$@."
+          }
+        }
+      }
+    },
+    "Saved the whole thread as %@ in %@." : {
+      "comment" : "Placeholders: file name, then folder path",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Saved the whole thread as %1$@ in %2$@."
+          }
+        }
+      }
+    },
     "Saved to daily note" : {
       "comment" : "Tray banner: the text was appended to today's note"
     },
@@ -3257,6 +3345,9 @@
 
     },
     "Saving correction" : {
+
+    },
+    "Saving provider…" : {
 
     },
     "Screen Recording" : {
@@ -3426,6 +3517,9 @@
 
     },
     "Sign out" : {
+
+    },
+    "Sign out %@" : {
 
     },
     "Sign out of %@" : {
@@ -3905,6 +3999,9 @@
     "This connection is optional. You can continue and set it up later." : {
       "comment" : "Setup step footnote on the agent-readiness step"
     },
+    "This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available." : {
+
+    },
     "This is retained text from an earlier take, including any unsaved edit. It is separate from the current take's audio." : {
 
     },
@@ -3914,8 +4011,8 @@
     "This provider does not require an API key. Choose a model in Settings › Agent › LLM lanes." : {
 
     },
-    "This removes the persisted conversation from the thread store." : {
-
+    "This removes “%@” and its saved conversation. There is no undo." : {
+      "comment" : "The placeholder is the thread title"
     },
     "This response has no text to speak." : {
 
@@ -4101,6 +4198,9 @@
 
     },
     "Updates through" : {
+
+    },
+    "Updating provider access…" : {
 
     },
     "Use %@ or choose Start recording." : {

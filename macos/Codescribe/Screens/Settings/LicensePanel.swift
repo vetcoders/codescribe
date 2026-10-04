@@ -65,11 +65,14 @@ struct LicensePanel: View {
 
       HStack(spacing: 12) {
         Button("Activate / Restore") {
-          if model.activateLicense(key) { key = "" }
+          let submitted = key
+          Task { @MainActor in
+            if await model.activateLicense(submitted), key == submitted { key = "" }
+          }
         }
         .buttonStyle(.borderedProminent)
         .tint(CSColor.chromeAccent)
-        .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .disabled(model.licenseBusy || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
         // Self-service issuance: codescribe.vetcoders.io/license/ mints a
         // signed key for an email on the spot (open beta). Without this
@@ -86,13 +89,25 @@ struct LicensePanel: View {
 
         if model.licenseStatus.state != .unlicensed {
           Button("Remove license", role: .destructive) {
-            model.removeLicense()
+            Task { @MainActor in await model.removeLicense() }
           }
           .csFocusRing()
           .foregroundStyle(CSColor.danger)
+          .disabled(model.licenseBusy)
         }
       }
       .padding(.top, 12)
+
+      if model.licenseReadState != .available {
+        Text(model.licenseReadState == .loading
+          ? String(localized: "Checking license…")
+          : String(localized: "License access is unavailable. The last verified license still follows its original expiry."))
+          .font(CSFont.ui(11.5))
+          .padding(.top, 10)
+      }
+      Button("Retry license access") { model.refreshLicense() }
+        .disabled(model.licenseBusy)
+        .padding(.top, 10)
 
       if let error = model.licenseError {
         Text(error)
@@ -115,6 +130,11 @@ struct LicensePanel: View {
   }
 
   private var stateLabel: String {
+    if model.licenseStatus.state == .unlicensed, model.licenseReadState != .available {
+      return model.licenseReadState == .loading
+        ? String(localized: "Checking license…")
+        : String(localized: "License access unavailable")
+    }
     switch model.licenseStatus.state {
     case .unlicensed: return String(localized: "Unlicensed · Basic")
     case .active: return String(localized: "Active · Agentic unlocked")

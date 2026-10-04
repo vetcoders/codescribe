@@ -357,8 +357,7 @@ func audioInputDisplayState(_ snapshot: CsAudioInputSnapshot) -> AudioInputDispl
 
 struct AudioPanel: View {
   @ObservedObject var model: SettingsViewModel
-  @State private var recordingState: OverlayState?
-  @State private var stopRequested = false
+  @State private var recordingControls: (state: OverlayState, tray: TrayViewModel)?
 
   private static let systemDefaultChoice = "__codescribe_system_default__"
 
@@ -394,7 +393,7 @@ struct AudioPanel: View {
       admissionSection
         .padding(.top, CSSpace.control)
         .task {
-          recordingState = model.audioRecordingState()
+          recordingControls = model.audioRecordingControls()
           await model.refreshAdmission()
         }
 
@@ -405,12 +404,6 @@ struct AudioPanel: View {
     }
     .padding(.horizontal, CSSpace.xl)
     .padding(.vertical, CSSpace.section)
-    .onChange(of: recordingState?.recording) { _, recording in
-      if recording == false { stopRequested = false }
-    }
-    .onChange(of: recordingState?.transcribing) { _, processing in
-      if processing == false { stopRequested = false }
-    }
   }
 
   private var inputDeviceSection: some View {
@@ -461,7 +454,15 @@ struct AudioPanel: View {
   /// recorder path. No value is ever invented here.
   private var admissionSection: some View {
     VStack(alignment: .leading, spacing: 14) {
-      readinessCockpit
+      if let recordingControls {
+        AudioReadinessObserver(
+          recordingState: recordingControls.state, tray: recordingControls.tray
+        ) { state, tray, stopRequested in
+          readinessCockpit(recordingState: state, tray: tray, stopRequested: stopRequested)
+        }
+      } else {
+        readinessCockpit(recordingState: nil, tray: nil, stopRequested: .constant(false))
+      }
 
       if let notice = model.calibrationNotice {
         Text(notice)
@@ -473,7 +474,9 @@ struct AudioPanel: View {
     .settingsGroupedInset()
   }
 
-  private var readinessCockpit: some View {
+  private func readinessCockpit(
+    recordingState: OverlayState?, tray: TrayViewModel?, stopRequested: Binding<Bool>
+  ) -> some View {
     VStack(alignment: .leading, spacing: 0) {
       if let error = model.admissionReadError {
         statusRow(
@@ -492,10 +495,12 @@ struct AudioPanel: View {
           dictationShortcut: dictationShortcutLabel,
           recording: recordingState?.recording,
           preparing: recordingState?.warmingUp == true,
-          processing: recordingProcessing
+          processing: recordingProcessing(recordingState)
         )
       ) { step in
-        readinessStep(step)
+        readinessStep(
+          step, recordingState: recordingState, tray: tray, stopRequested: stopRequested
+        )
         if step.id != .recording {
           Divider().overlay(Color.primary.opacity(0.12))
         }
@@ -508,7 +513,10 @@ struct AudioPanel: View {
     .accessibilityLabel("Recording readiness")
   }
 
-  private func readinessStep(_ step: AudioReadinessStep) -> some View {
+  private func readinessStep(
+    _ step: AudioReadinessStep,
+    recordingState: OverlayState?, tray: TrayViewModel?, stopRequested: Binding<Bool>
+  ) -> some View {
     HStack(alignment: .top, spacing: 10) {
       ZStack {
         Circle()
@@ -538,14 +546,19 @@ struct AudioPanel: View {
       .accessibilityElement(children: .ignore)
       .accessibilityLabel("Step \(step.id.rawValue + 1), \(step.title)")
       .accessibilityValue(step.detail)
-      readinessControl(for: step)
+      readinessControl(
+        for: step, recordingState: recordingState, tray: tray, stopRequested: stopRequested
+      )
     }
     .padding(.vertical, 9)
     .accessibilityElement(children: .contain)
   }
 
   @ViewBuilder
-  private func readinessControl(for step: AudioReadinessStep) -> some View {
+  private func readinessControl(
+    for step: AudioReadinessStep,
+    recordingState: OverlayState?, tray: TrayViewModel?, stopRequested: Binding<Bool>
+  ) -> some View {
     switch step.id {
     case .microphone:
       if model.permissions.microphone != .granted {
@@ -577,18 +590,11 @@ struct AudioPanel: View {
           .accessibilityLabel("Calibration capture progress")
         }
         Button(model.calibrationPending ? "Measuring…" : "Calibrate") {
-          Task { await model.runCalibration() }
+          Task { await calibrateMicrophone(recordingState, tray: tray) }
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .disabled(
-          model.calibrationPending
-            || recordingState == nil
-            || recordingState?.recording == true
-            || recordingProcessing
-            || model.permissions.microphone != .granted
-            || model.audioInput.runtimeDevice == nil
-        )
+        .disabled(!canCalibrateMicrophone(recordingState, tray: tray))
         .accessibilityLabel("Calibrate microphone")
         .accessibilityHint("Measures about ten seconds of normal speech; audio is not kept")
       }
@@ -607,49 +613,74 @@ struct AudioPanel: View {
             : sealLane.detail
         )
     case .recording:
-      if recordingProcessing {
+      if recordingProcessing(recordingState) {
         ProgressView()
           .controlSize(.small)
           .accessibilityLabel("Finishing recording")
       } else if recordingState?.recording == true {
         Button("Stop recording") {
-          guard !stopRequested else { return }
-          stopRequested = true
+          guard !stopRequested.wrappedValue else { return }
+          stopRequested.wrappedValue = true
           recordingState?.stop()
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.small)
         .tint(CSColor.chromeAccent)
         .disabled(
-          stopRequested || recordingState?.warmingUp == true
+          stopRequested.wrappedValue || recordingState?.warmingUp == true
             || recordingState?.transcribing == true || model.calibrationPending
         )
         .accessibilityHint("Stops the active take in the shared recorder")
         .accessibilityIdentifier("audio-readiness-stop-recording")
       } else {
         Button("Start recording") {
-          guard canStartRecording else { return }
-          recordingState?.start()
+          startRecording(recordingState, tray: tray)
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.small)
         .tint(CSColor.chromeAccent)
-        .disabled(!canStartRecording)
+        .disabled(!canStartRecording(recordingState, tray: tray))
         .accessibilityHint("Starts a real dictation session in the shared recorder")
         .accessibilityIdentifier("audio-readiness-start-recording")
       }
     }
   }
 
-  private var canStartRecording: Bool {
+  /// Same admission for the real calibration button and its action.
+  func canCalibrateMicrophone(
+    _ recordingState: OverlayState?, tray: TrayViewModel?
+  ) -> Bool {
+    !model.calibrationPending && recordingState?.recording == false
+      && tray?.isRecording == false && tray?.isStartingDictation == false
+      && !recordingProcessing(recordingState)
+      && model.permissions.microphone == .granted && model.audioInput.runtimeDevice != nil
+  }
+
+  func calibrateMicrophone(_ recordingState: OverlayState?, tray: TrayViewModel?) async {
+    guard canCalibrateMicrophone(recordingState, tray: tray) else { return }
+    await model.runCalibration()
+  }
+
+  /// Same action for the real button and integrator interaction witnesses.
+  func startRecording(_ recordingState: OverlayState?, tray: TrayViewModel?) {
+    guard canStartRecording(recordingState, tray: tray) else { return }
+    // The tray admits the next capture before starting the shared controller.
+    tray?.toggleDictation()
+  }
+
+  func canStartRecording(
+    _ recordingState: OverlayState?, tray: TrayViewModel?
+  ) -> Bool {
     model.permissions.microphone == .granted && model.admission?.ready == true
       && model.admissionReadError == nil && !model.calibrationPending
       && recordingState?.recording == false && recordingState?.warmingUp == false
-      && !recordingProcessing
+      && tray?.isRecording == false && tray?.isStartingDictation == false
+      && !recordingProcessing(recordingState)
   }
 
-  private var recordingProcessing: Bool {
+  func recordingProcessing(_ recordingState: OverlayState?) -> Bool {
     recordingState?.transcribing == true
+      || recordingState?.isFinalPass == true
       || (recordingState?.mode == .finalizing && recordingState?.terminal == false)
   }
 
@@ -802,6 +833,25 @@ struct AudioPanel: View {
     }
   }
 
+}
+
+/// Observe lifecycle and command admission in the same readiness consumer.
+/// The latch only suppresses repeated Stop clicks; both capture owners are borrowed.
+struct AudioReadinessObserver<Content: View>: View {
+  @Bindable var recordingState: OverlayState
+  @ObservedObject var tray: TrayViewModel
+  @State private var stopRequested = false
+  let content: (OverlayState, TrayViewModel, Binding<Bool>) -> Content
+
+  var body: some View {
+    content(recordingState, tray, $stopRequested)
+      .onChange(of: recordingState.recording) { _, recording in
+        if !recording { stopRequested = false }
+      }
+      .onChange(of: recordingState.transcribing) { _, processing in
+        if !processing { stopRequested = false }
+      }
+  }
 }
 
 #if DEBUG

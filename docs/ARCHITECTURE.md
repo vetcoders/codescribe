@@ -226,6 +226,45 @@ Codescribe/
 
 ## Key Components
 
+### Native credential I/O ownership
+
+`LicenseService` remains the license authority on MainActor; its serial storage
+queue performs SecItem reads/writes/deletes. It publishes a verified signed
+payload only after a successful read or durable activation. A storage failure
+retains an already verified payload, while every entitlement read reevaluates
+its original timestamps at the current clock. Cold pending/unavailable access
+never grants Agentic. Malformed signed data fails closed.
+
+`ProviderCredentialIO` serializes Settings and Setup credential operations off
+MainActor. `provider_access_snapshot` acquires through the existing Rust bundle
+cache and I/O mutex; passive settings, provider, lane and readiness projections
+use files/env/cache. The returned revision and each view model's generation
+prevent an earlier read from overwriting a later mutation. Refresh requests
+coalesce per model and share a five-second physical-read window across models.
+Permission refreshes do not start credential acquisition. See
+[Provider registry](providers/README.md#credential-acquisition-and-ui-projections)
+for cache states and retry ownership, and [Settings](guide/settings.md) for the
+pending/error UI contract.
+
+Settings projections parse the committed atomic document through the existing
+`UserSettings` authority without its credential transaction lease. With no
+settings document, the same import builder supplies an in-memory `.env`
+projection; that preview neither prepares a durable import nor performs repair.
+Projection and repair share one analysis grammar. An existing malformed,
+unsupported or unreadable document records a refusal before capture, keeping
+the runtime seal disarmed. Safe known-field normalization is in-memory only;
+projection never reports a backup or completed repair. The writer
+retains serialization of cancellation, import settlement and persistence; a
+passive UI read does not become a waiting writer. Capability matrix also uses
+committed settings for workspace roots through the shared root resolver. First
+settings writer loads and acquiring imports serialize initial `.env` preparation
+under the same transaction lease before publishing the document. Promoted
+settings and secret-free pending rows survive an edit before credential access.
+The config bootstrap mutex
+covers env publication and cache-based capture only, after all credential work.
+Individual OAuth record errors travel as provider-indexed snapshot metadata,
+leaving independent registry and recovery controls usable.
+
 ### Controller State Machine
 
 ```rust
@@ -383,6 +422,29 @@ MiniLM resolution: `CODESCRIBE_EMBEDDER_PATH`, then
 `Codescribe.app/Contents/Resources/models/embedder`, then the configured/default
 Hugging Face cache snapshot. `CODESCRIBE_EMBED_EMBEDDER=1` is the explicit
 binary-embed escape hatch.
+
+## Composer model filtering and Audio observation
+
+`RealComposerPaletteSource` checks a metadata-only stamp before settings, runtime
+lane, provider-registry and catalog reads. Its warm hit still performs one stat
+of the canonical settings file plus existing in-memory locks; it does not parse
+JSON or acquire credentials. The stamp uses that mtime, credential-bundle revision
+and the generation inside the existing last-good runtime snapshot cache. Missing
+metadata refuses palette reuse. A mutation during discovery cannot label earlier
+entries with a newer stamp, and a runtime loader begun before invalidation cannot
+repopulate the cleared cache. No separate settings owner or revision store is
+introduced. Mtime detection retains its existing limit: restoring the same file
+timestamp can conceal an external change.
+
+The Audio readiness consumer observes both existing owners: `OverlayState`
+through Observation and `TrayViewModel` through its published flags. A single
+injected tuple keeps them paired; fake and preview settings engines stay detached
+unless owners are supplied. The real provider resolves AppModel only when Audio
+appears. Start uses the tray's canonical admission callback before its existing
+controller start; final-pass work remains processing. The shared view action and
+consumer are internal seams for integrator tests, not another recording path.
+Unresolved credential status uses semantic secondary ink in Settings, preserving
+the native light/dark appearance contract until availability is established.
 
 ## Related Documentation
 

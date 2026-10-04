@@ -10,6 +10,16 @@ make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/OverlayStateTests
 The target lives in the root `Makefile`; read its comment block before invoking
 `xcodebuild` by hand, because two of the traps below cost this plan a stage.
 
+## Credential operation fixtures
+
+License storage fixtures are Sendable and lock-protected because production
+storage now runs on a background queue. Assertions await physical completion;
+controllable read/write continuations distinguish pending, durable success,
+denial and stale revisions. The fixtures verify cold loading, preserved license
+payload without extending grace/expiry, failed save/delete, provider draft and
+step retention, and snapshot coalescing. Every injected permission probe stays
+synthetic; no real credential is used by these unit fixtures.
+
 ## Invocation traps
 
 1. **`CODE_SIGN_IDENTITY="-" xcodebuild …` does nothing.** xcodebuild reads
@@ -193,3 +203,42 @@ Open, and named rather than fixed:
   that every gate this plan built is host-local and operator-run.
 
 _𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI_
+
+The provider snapshot ordering witnesses hold a controlled acquisition open
+while Settings persists a newer STT endpoint. An older completion must request
+one follow-up and keep the committed endpoint visible. Per-account errors keep
+the registry, independent API keys and STT controls available; a successful
+read clears the account error. The existing preview engine exposes one optional
+async snapshot loader for these deterministic tests.
+
+Credential projection witnesses also live in the Rust settings, Keychain,
+account-auth and agent-status unit suites. They pause a real credential
+transaction lease while calling the production passive readers, warm bundle
+reader and capability matrix. Initial import is exercised before and after a
+first config write, concurrently with it, and through failed persistence and
+explicit account cancellation. Malformed account metadata must preserve
+independent API/STT keys without exposing the stored payload. These tests
+prove ordering and lease boundaries; they do not reproduce SecurityServer
+latency or replace signed native acceptance.
+
+Review follow-up witnesses: `ComposerPaletteSourceTests` verifies that warm model
+queries skip every context reader and discovery, that unknown/changed stamps
+refuse reuse, and that a mutation during discovery cannot certify earlier entries
+with a newer stamp. Rust runtime-cache witnesses exercise the real metadata,
+credential revision and invalidator; a test-only one-shot hook places invalidation
+between the actual loader and cache publication. `ThreadRailNavigationTests`
+checks visible order, both boundaries, unknown/empty input and reordering.
+
+`AudioRecordingControlTests` exercises the actual view action/admission and hosts
+the real observation consumer. It covers late final-pass evidence, retry after a
+failed capture, busy-tray refusal, paired fake injection and rerender from tray-only
+or overlay-only changes. Calibration also checks tray-only starting/recording
+and rechecks admission at action time. `ProviderAccessOrderingTests` exercises
+Continue during cold or denied provider access, preservation of an unsaved draft
+when going Back, refusal of premature key writes, and durable resolved saves.
+SwiftUI does not expose these Button nodes through the
+AppKit AX child graph under XCTest (the same boundary documented by
+`OverlayChromeFounderCutTests`). Those child-graph probes are not kept as product
+assertions. Real Audio button activation, stop/final-pass presentation, calibration
+blocking and accessibility still require a separate signed native acceptance;
+these unit witnesses do not claim that acceptance.

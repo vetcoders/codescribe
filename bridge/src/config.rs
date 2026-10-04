@@ -458,6 +458,16 @@ pub struct CsProviderOption {
     pub oauth_client_id: Option<String>,
 }
 
+/// Secret-free credential projection captured at one cache revision.
+#[derive(uniffi::Record)]
+pub struct CsProviderAccessSnapshot {
+    pub providers: Vec<CsProviderOption>,
+    pub account_errors: std::collections::HashMap<String, String>,
+    pub key_status: CsKeyStatus,
+    pub stt_lanes: Vec<CsSttLane>,
+    pub revision: u64,
+}
+
 /// One STT endpoint and its credential presence; secrets never leave Keychain.
 #[derive(uniffi::Record)]
 pub struct CsSttLane {
@@ -545,16 +555,31 @@ impl From<&RuntimeLlmLane> for CsRuntimeLlmLane {
     }
 }
 
-type CachedRuntimeSnapshot = Option<(Option<std::time::SystemTime>, RuntimeSettingsSnapshot)>;
+#[derive(Default)]
+struct CachedRuntimeSnapshot {
+    value: Option<(Option<std::time::SystemTime>, RuntimeSettingsSnapshot)>,
+    generation: u64,
+}
+
+/// Metadata-only fingerprint shared by the runtime lane cache and its UI consumers.
+fn runtime_settings_modified_at() -> Option<std::time::SystemTime> {
+    fs::metadata(UserSettings::settings_path())
+        .and_then(|metadata| metadata.modified())
+        .ok()
+}
 
 fn last_good_runtime_snapshot() -> &'static Mutex<CachedRuntimeSnapshot> {
     static LAST_GOOD: OnceLock<Mutex<CachedRuntimeSnapshot>> = OnceLock::new();
-    LAST_GOOD.get_or_init(|| Mutex::new(None))
+    LAST_GOOD.get_or_init(|| Mutex::new(CachedRuntimeSnapshot::default()))
 }
 
 #[cfg(test)]
 static RUNTIME_SNAPSHOT_BUILDS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+static INVALIDATE_AFTER_RUNTIME_LOAD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Drop the last-good lane snapshot. Credential mutations (Keychain / OAuth)
 /// never touch `settings.json`, so mtime is not a sufficient cache key.
@@ -562,39 +587,49 @@ pub(crate) fn invalidate_runtime_snapshot_cache() {
     let mut guard = last_good_runtime_snapshot()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *guard = None;
+    guard.value = None;
+    guard.generation = guard.generation.wrapping_add(1);
 }
 
 /// One loader snapshot for lane projection: reuse the last good value when the
 /// file mtime is unchanged, and never panic the UI if a transient read fails.
 fn load_runtime_snapshot_for_lane() -> RuntimeSettingsSnapshot {
-    let path = UserSettings::settings_path();
-    let mtime = fs::metadata(&path).and_then(|m| m.modified()).ok();
-    {
+    let mtime = runtime_settings_modified_at();
+    let generation = {
         let guard = last_good_runtime_snapshot()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some((cached_mtime, snapshot)) = guard.as_ref()
+        if let Some((cached_mtime, snapshot)) = guard.value.as_ref()
             && *cached_mtime == mtime
         {
             return snapshot.clone();
         }
-    }
+        guard.generation
+    };
     #[cfg(test)]
     RUNTIME_SNAPSHOT_BUILDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let snapshot = match Config::load_runtime_snapshot() {
+    let snapshot = match Config::load_runtime_snapshot_without_keychain() {
         Ok(snapshot) => snapshot,
         Err(_) => last_good_runtime_snapshot()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .value
             .as_ref()
             .map(|(_, snapshot)| snapshot.clone())
             .unwrap_or_else(|| Config::load_startup_runtime_snapshot(false)),
     };
+    #[cfg(test)]
+    if INVALIDATE_AFTER_RUNTIME_LOAD.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        invalidate_runtime_snapshot_cache();
+    }
     let mut guard = last_good_runtime_snapshot()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *guard = Some((mtime, snapshot.clone()));
+    // A credential mutation may invalidate while this loader is working.
+    // Its earlier projection must not repopulate the cleared cache.
+    if guard.generation == generation {
+        guard.value = Some((mtime, snapshot.clone()));
+    }
     snapshot
 }
 
@@ -737,7 +772,7 @@ impl CodescribeConfig {
     /// that instance — never a second `Config::load` + `UserSettings::load` +
     /// env-file reconstruct.
     pub fn load_settings(&self) -> CsSettings {
-        let runtime = Config::load_runtime_snapshot()
+        let runtime = Config::load_runtime_snapshot_without_keychain()
             .expect("canonical runtime settings must load for Settings UI projection");
         CsSettings::from_runtime_snapshot(&runtime)
     }
@@ -847,8 +882,8 @@ impl CodescribeConfig {
         Ok(self.tray_toggles())
     }
 
-    /// Lightweight tray-only settings read. Unlike `load_settings`, this never
-    /// populates the Keychain, so it never prompts just because the user opened
+    /// Lightweight tray-only settings read uses files, env and cached credentials.
+    /// It never prompts just because the user opened
     /// the menu. Projects from one keychain-free runtime snapshot.
     pub fn tray_toggles(&self) -> CsTrayToggles {
         let runtime = Config::load_runtime_snapshot_without_keychain()
@@ -876,7 +911,7 @@ impl CodescribeConfig {
     /// instead of mutating the process env.
     pub fn update_config(&self, key: String, value: String) -> Result<(), CsError> {
         validate_provider_setting(&key, &value)?;
-        Config::load()
+        Config::load_without_keychain()
             .save_to_env(&key, &value)
             .map_err(|error| CsError::Config {
                 msg: error.to_string(),
@@ -929,7 +964,7 @@ impl CodescribeConfig {
             .iter()
             .map(|entry| (entry.key.as_str(), entry.value.as_str()))
             .collect();
-        Config::load()
+        Config::load_without_keychain()
             .save_to_env_many(&pairs)
             .map_err(|error| CsError::Config {
                 msg: error.to_string(),
@@ -972,8 +1007,63 @@ impl CodescribeConfig {
         Ok(probe_api_key_liveness(&account, provider.as_ref()).into())
     }
 
+    /// Explicit credential acquisition. Swift executes this off MainActor.
+    pub fn provider_access_snapshot(&self) -> Result<CsProviderAccessSnapshot, CsError> {
+        let previous_revision = keychain::bundle_revision();
+        keychain::refresh_bundle().map_err(provider_error)?;
+        // Authorized background refresh also completes pending credential imports
+        // through the existing loader; passive UI projections leave them pending.
+        let _ = Config::load_runtime_snapshot().map_err(provider_error)?;
+        let revision = keychain::bundle_revision();
+        if revision != previous_revision {
+            invalidate_runtime_snapshot_cache();
+        }
+        let registry = ProviderRegistry::from_settings(&UserSettings::load());
+        let mut providers = Vec::new();
+        let mut account_errors = std::collections::HashMap::new();
+        for provider in registry.all() {
+            let account_unavailable = provider
+                .oauth_vendor
+                .is_some_and(|vendor| account_auth::account_status_snapshot(vendor).is_err());
+            let option = provider_option(provider);
+            if account_unavailable {
+                // Never expose token JSON or its decoder details in public UI metadata.
+                account_errors.insert(option.id.clone(), option.account_status_message.clone());
+            }
+            providers.push(option);
+        }
+        Ok(CsProviderAccessSnapshot {
+            providers,
+            account_errors,
+            key_status: self.key_status(),
+            stt_lanes: self.stt_lanes(),
+            revision,
+        })
+    }
+
+    /// Cache-only revision check; it never waits for credential I/O.
+    pub fn provider_access_revision(&self) -> u64 {
+        keychain::bundle_revision()
+    }
+
+    /// Opaque palette cache stamp over the runtime cache's canonical settings
+    /// mtime, invalidation generation and the existing credential revision.
+    /// One metadata lookup and cache-only locks, no
+    /// settings parsing, lane projection, provider registry or credential I/O.
+    /// Missing/unreadable metadata refuses cache reuse rather than certifying
+    /// that a previous projection is still current.
+    pub fn composer_model_cache_stamp(&self) -> Option<String> {
+        runtime_settings_modified_at().map(|mtime| {
+            let generation = last_good_runtime_snapshot()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .generation;
+            format!("{}:{generation}:{mtime:?}", keychain::bundle_revision())
+        })
+    }
+
     pub fn available_providers(&self) -> Vec<CsProviderOption> {
-        ProviderRegistry::from_settings(&UserSettings::load())
+        ProviderRegistry::from_settings(&UserSettings::load_projection())
             .all()
             .into_iter()
             .map(provider_option)
@@ -1018,6 +1108,7 @@ impl CodescribeConfig {
             Ok(removed)
         })
         .map_err(provider_error)?;
+        keychain::advance_bundle_revision();
         crate::hotkeys::refresh_live_controller_config();
         Ok(CsCustomProviderRemoval {
             id: removed.provider.id,
@@ -1286,11 +1377,11 @@ impl CodescribeConfig {
 
     /// Availability of the same file lane used by explicit cloud retranscription.
     pub fn cloud_file_retranscription_available(&self) -> bool {
-        crate::recording::cloud_file_lane(&Config::load()).is_ok()
+        crate::recording::cloud_file_lane(&Config::load_without_keychain()).is_ok()
     }
 
     pub fn stt_lanes(&self) -> Vec<CsSttLane> {
-        let settings = UserSettings::load();
+        let settings = UserSettings::load_projection();
         SttLane::ALL
             .into_iter()
             .map(|lane| CsSttLane {
@@ -1471,7 +1562,7 @@ impl CodescribeConfig {
     /// First-run operating lane chosen during onboarding (`"basic"` /
     /// `"agentic"`), or `None` when not yet chosen.
     pub fn onboarding_mode(&self) -> Option<String> {
-        UserSettings::load().onboarding_mode
+        UserSettings::load_projection().onboarding_mode
     }
 
     /// Persist the onboarding operating lane. Routes to settings.json via the
@@ -2467,7 +2558,9 @@ fn resolve_catalog_provider(
 }
 
 fn provider_option(provider: ResolvedProvider) -> CsProviderOption {
-    let status = provider.oauth_vendor.map(account_auth::account_status);
+    let status = provider
+        .oauth_vendor
+        .map(account_auth::cached_account_status);
     CsProviderOption {
         id: provider.reference.as_string(),
         kind: if provider.reference.custom_id().is_some() {
@@ -2500,6 +2593,7 @@ fn persist_custom_provider(
 ) -> Result<CsProviderOption, CsError> {
     // Persist the addressable row first; failed key writes can be retried through set_api_key.
     settings.save().map_err(provider_error)?;
+    keychain::advance_bundle_revision();
     let result = secret
         .map(|secret| {
             UserSettings::with_credential_edit(&row.key_account(), |_| {
@@ -2528,7 +2622,7 @@ fn validate_provider_setting(key: &str, value: &str) -> Result<(), CsError> {
         return Err(provider_error("removed: models live on lanes"));
     }
     if matches!(key, "LLM_FORMATTING_PROVIDER" | "LLM_ASSISTIVE_PROVIDER") {
-        resolve_catalog_provider(&UserSettings::load(), value)?;
+        resolve_catalog_provider(&UserSettings::load_projection(), value)?;
     }
     Ok(())
 }
@@ -4202,6 +4296,93 @@ mod runtime_snapshot_cache_tests {
             mtime,
             fs::metadata(&path).unwrap().modified().unwrap(),
             "repeated lane projection must not rewrite settings.json"
+        );
+    }
+    #[test]
+    #[serial]
+    fn composer_cache_stamp_is_metadata_only_and_missing_metadata_refuses_reuse() {
+        let isolated = IsolatedSettings::new();
+        let config = CodescribeConfig::new();
+        let probe = codescribe_core::config::keychain::CredentialAcquisitionProbe::forbid();
+        assert!(config.composer_model_cache_stamp().is_none());
+        fs::write(isolated.path(), settled_settings_json().to_string()).unwrap();
+        let first = config.composer_model_cache_stamp().unwrap();
+        assert_eq!(
+            config.composer_model_cache_stamp().as_deref(),
+            Some(first.as_str())
+        );
+        assert!(
+            super::last_good_runtime_snapshot()
+                .lock()
+                .unwrap()
+                .value
+                .is_none()
+        );
+        fs::remove_file(isolated.path()).unwrap();
+        assert!(config.composer_model_cache_stamp().is_none());
+        assert!(probe.attempts().is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn composer_cache_stamp_changes_for_raw_metadata_credentials_and_runtime_invalidation() {
+        let isolated = IsolatedSettings::new();
+        fs::write(isolated.path(), settled_settings_json().to_string()).unwrap();
+        let config = CodescribeConfig::new();
+        let probe = codescribe_core::config::keychain::CredentialAcquisitionProbe::forbid();
+        let first = config.composer_model_cache_stamp().unwrap();
+        // An external writer can preserve bytes while publishing a new mtime.
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(isolated.path())
+            .unwrap();
+        let newer = fs::metadata(isolated.path()).unwrap().modified().unwrap()
+            + std::time::Duration::from_secs(1);
+        file.set_times(fs::FileTimes::new().set_modified(newer))
+            .unwrap();
+        let external = config.composer_model_cache_stamp().unwrap();
+        assert_ne!(external, first);
+        let _keys = codescribe_core::config::keychain::test_support::install_bundle(&[(
+            "LLM_OPENAI_API_KEY",
+            "synthetic-cache-stamp-key",
+        )]);
+        let credentials = config.composer_model_cache_stamp().unwrap();
+        assert_ne!(credentials, external);
+        super::invalidate_runtime_snapshot_cache();
+        assert_ne!(config.composer_model_cache_stamp().unwrap(), credentials);
+        assert!(probe.attempts().is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn runtime_invalidation_during_a_load_cannot_repopulate_earlier_generation() {
+        let isolated = IsolatedSettings::new();
+        fs::write(isolated.path(), settled_settings_json().to_string()).unwrap();
+        struct ResetHook;
+        impl Drop for ResetHook {
+            fn drop(&mut self) {
+                super::INVALIDATE_AFTER_RUNTIME_LOAD
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _reset = ResetHook;
+        super::INVALIDATE_AFTER_RUNTIME_LOAD.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _first = super::load_runtime_snapshot_for_lane();
+        assert!(
+            super::last_good_runtime_snapshot()
+                .lock()
+                .unwrap()
+                .value
+                .is_none(),
+            "a loader begun before invalidation must not restore its old snapshot"
+        );
+        let _fresh = super::load_runtime_snapshot_for_lane();
+        assert!(
+            super::last_good_runtime_snapshot()
+                .lock()
+                .unwrap()
+                .value
+                .is_some()
         );
     }
 }

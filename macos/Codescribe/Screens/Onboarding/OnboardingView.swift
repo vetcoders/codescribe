@@ -11,6 +11,8 @@ struct OnboardingView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
+  @State private var hostWindow: NSWindow?
+
   var body: some View {
     content
       .frame(minWidth: 680, minHeight: 560)
@@ -28,9 +30,11 @@ struct OnboardingView: View {
       }
       .csFocusPolicy()
       .controlSize(.regular)
+      .background(OnboardingWindowReader { hostWindow = $0 })
       .onAppear { model.refreshForCurrentStep() }
       .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) {
-        _ in
+        notification in
+        guard let window = notification.object as? NSWindow, window === hostWindow else { return }
         model.refreshProviderAccess()
       }
   }
@@ -159,6 +163,7 @@ struct OnboardingView: View {
         model.primaryAction()
       }.csAction(prominent: true)
     }
+    .disabled(model.providerMutationPending)
     .padding(.horizontal, CSSpace.page)
     .padding(.vertical, 18)
   }
@@ -255,3 +260,27 @@ struct OnboardingView: View {
     .preferredColorScheme(.dark)
   }
 #endif
+
+/// Bind focus notifications to this wizard's actual native window.
+private struct OnboardingWindowReader: NSViewRepresentable {
+  let onWindow: (NSWindow?) -> Void
+
+  func makeNSView(context: Context) -> WindowView {
+    let view = WindowView()
+    view.onWindow = onWindow
+    return view
+  }
+
+  func updateNSView(_ view: WindowView, context: Context) { view.onWindow = onWindow }
+
+  final class WindowView: NSView {
+    var onWindow: ((NSWindow?) -> Void)?
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        self.onWindow?(self.window)
+      }
+    }
+  }
+}

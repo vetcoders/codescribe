@@ -168,17 +168,16 @@ fn reset(value: &mut Value, pointer: &str, replacement: Value, receipt: &mut Rep
     }
 }
 
-/// Called with settings I/O lock held. No write happens until the entire candidate validates.
-pub(super) fn repair_settings(path: &Path, pack: Option<&Path>) -> RepairReceipt {
+/// The one settings analysis grammar, shared by projection and repair.
+/// Only the writer supplies pack acquisition; analysis itself never persists.
+fn analyze_settings(
+    original: Option<&[u8]>,
+    load_pack: impl FnOnce() -> anyhow::Result<Option<Value>>,
+) -> anyhow::Result<(Value, RepairReceipt)> {
     let mut receipt = RepairReceipt::default();
-    let outcome = (|| -> anyhow::Result<()> {
-        let original = match fs::read(path) {
-            Ok(bytes) => Some(bytes),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(e.into()),
-        };
+    let value = (|| -> anyhow::Result<Value> {
         let defaults = serde_json::to_value(UserSettings::default().to_v2())?;
-        let mut value = match original.as_deref().map(serde_json::from_slice::<Value>) {
+        let mut value = match original.map(serde_json::from_slice::<Value>) {
             Some(Ok(value)) => value,
             Some(Err(_)) => {
                 receipt.actions.push(RepairAction::FileRecreated {
@@ -190,9 +189,9 @@ pub(super) fn repair_settings(path: &Path, pack: Option<&Path>) -> RepairReceipt
         };
         // V1 belongs to the existing migration; future schemas must not be downgraded.
         if value.get("schema_version").is_none() {
-            serde_json::from_value::<UserSettings>(value)
+            serde_json::from_value::<UserSettings>(value.clone())
                 .map_err(|_| anyhow::anyhow!("invalid legacy settings; source left untouched"))?;
-            return Ok(());
+            return Ok(value);
         }
         if !matches!(value["schema_version"].as_u64(), Some(2 | 3)) {
             anyhow::bail!("unsupported settings schema; source left untouched");
@@ -230,8 +229,7 @@ pub(super) fn repair_settings(path: &Path, pack: Option<&Path>) -> RepairReceipt
                 &mut receipt,
             );
         }
-        if let Some(pack) = pack {
-            let seed: Value = serde_json::from_slice(&fs::read(pack)?)?;
+        if let Some(seed) = load_pack()? {
             for key in ["cloud_transcription_endpoint", "asr_mode"] {
                 let pointer = format!("/speech/engine/{key}");
                 let Some(wanted) = seed
@@ -294,6 +292,61 @@ pub(super) fn repair_settings(path: &Path, pack: Option<&Path>) -> RepairReceipt
         let candidate: SettingsV2 = serde_json::from_value(value.clone())
             .map_err(|_| anyhow::anyhow!("invalid settings field type; source left untouched"))?;
         UserSettings::validate_v2(&candidate)?;
+        Ok(value)
+    })()?;
+    Ok((value, receipt))
+}
+
+/// Read-only projection uses normalized known fields but cannot recreate a file.
+/// Refusals enter the existing launch receipt before runtime capture/sealing.
+pub(super) fn project_settings(path: &Path, bytes: &[u8]) -> anyhow::Result<Value> {
+    let result = analyze_settings(Some(bytes), || Ok(None)).and_then(|(value, plan)| {
+        anyhow::ensure!(
+            !plan
+                .actions
+                .iter()
+                .any(|action| matches!(action, RepairAction::FileRecreated { .. })),
+            "invalid JSON requires admitted writer repair; source left untouched"
+        );
+        Ok(value)
+    });
+    if result.is_err() {
+        record_projection_refusal(path);
+    }
+    result
+}
+
+/// A non-NotFound file read failure is a refusal, never an initial import.
+pub(super) fn record_projection_refusal(path: &Path) {
+    record(refusal_receipt(path));
+}
+
+fn refusal_receipt(path: &Path) -> RepairReceipt {
+    RepairReceipt {
+        unrepairable: vec![ConfigUnrepairable {
+            path: path.into(),
+            reason:
+                "settings admission refused; inspect file schema, field types and filesystem access"
+                    .into(),
+        }],
+        ..RepairReceipt::default()
+    }
+}
+
+/// Called with settings I/O lock held. No write happens until the entire candidate validates.
+pub(super) fn repair_settings(path: &Path, pack: Option<&Path>) -> RepairReceipt {
+    let mut receipt = RepairReceipt::default();
+    let outcome = (|| -> anyhow::Result<()> {
+        let original = match fs::read(path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        };
+        let (value, analysis) = analyze_settings(original.as_deref(), || match pack {
+            Some(path) => Ok(Some(serde_json::from_slice(&fs::read(path)?)?)),
+            None => Ok(None),
+        })?;
+        receipt = analysis;
         if receipt.actions.is_empty() {
             return Ok(());
         }
@@ -310,12 +363,9 @@ pub(super) fn repair_settings(path: &Path, pack: Option<&Path>) -> RepairReceipt
     })();
     if outcome.is_err() {
         receipt.actions.clear();
-        receipt.unrepairable.push(ConfigUnrepairable {
-            path: path.into(),
-            reason:
-                "settings repair refused; inspect file schema, field types and filesystem access"
-                    .into(),
-        });
+        receipt
+            .unrepairable
+            .extend(refusal_receipt(path).unrepairable);
     }
     receipt
 }

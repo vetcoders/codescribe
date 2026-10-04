@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::config::UserSettings;
-use crate::config::keychain::{delete_key, load_key, save_key};
+use crate::config::keychain::{cached_runtime_key, delete_key, ensure_bundle_loaded, save_key};
 use crate::llm::provider::ProviderKind;
 
 /// Device-code OAuth grant for providers that cannot do loopback redirects.
@@ -406,8 +406,40 @@ pub struct AccountAuthStatus {
 /// "not signed in" as the message. Never fails — an unsupported provider simply
 /// reads as not configured, not signed in.
 pub fn account_status(provider: ProviderKind) -> AccountAuthStatus {
+    project_account_status(provider, load_account_tokens(provider).ok())
+}
+
+/// Passive UI metadata: this never opens the credential store.
+pub fn cached_account_status(provider: ProviderKind) -> AccountAuthStatus {
+    match account_status_snapshot(provider) {
+        Ok(status) => status,
+        Err(_) => AccountAuthStatus {
+            provider,
+            signed_in: false,
+            client_id_configured: client_id_for_provider(provider).is_ok(),
+            message: "Account access unavailable. Remove the stored account and sign in again."
+                .into(),
+        },
+    }
+}
+
+/// Strict UI refresh preserves storage/corruption errors rather than sign-out.
+pub fn account_status_snapshot(
+    provider: ProviderKind,
+) -> Result<AccountAuthStatus, AccountAuthError> {
+    let tokens = match cached_account_tokens(provider) {
+        Ok(tokens) => Some(tokens),
+        Err(AccountAuthError::NotSignedIn(_)) => None,
+        Err(error) => return Err(error),
+    };
+    Ok(project_account_status(provider, tokens))
+}
+
+fn project_account_status(
+    provider: ProviderKind,
+    tokens: Option<AccountTokens>,
+) -> AccountAuthStatus {
     let client_id_configured = client_id_for_provider(provider).is_ok();
-    let tokens = load_account_tokens(provider).ok();
     let signed_in = tokens.is_some();
     let message = if !client_id_configured {
         NO_CLIENT_ID_MESSAGE.to_string()
@@ -448,7 +480,7 @@ pub fn client_id_for_provider(provider: ProviderKind) -> Result<String, AccountA
 /// today OpenAI's Codex CLI app id and xAI's Grok CLI id (both disclosed in
 /// `NOTICE`). Anthropic stays gated on the operator pasting their own.
 fn configured_client_id_for(config: ProviderOAuthConfig) -> Option<String> {
-    let settings = UserSettings::load();
+    let settings = UserSettings::load_projection();
     (config.client_id_from_settings)(&settings)
         .and_then(non_empty_trimmed)
         .or_else(|| {
@@ -646,10 +678,19 @@ async fn verify_responses_write_access_at(
 pub fn load_account_tokens(provider: ProviderKind) -> Result<AccountTokens, AccountAuthError> {
     ensure_provider_supported(provider)?;
     let account = token_account(provider)?;
-    let payload = std::env::var(account)
+    if std::env::var(account)
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| load_key(account))
+        .is_none()
+    {
+        ensure_bundle_loaded().map_err(|error| AccountAuthError::Storage(format!("{error:#}")))?;
+    }
+    cached_account_tokens(provider)
+}
+
+fn cached_account_tokens(provider: ProviderKind) -> Result<AccountTokens, AccountAuthError> {
+    ensure_provider_supported(provider)?;
+    let payload = cached_runtime_key(token_account(provider)?)
         .ok_or_else(|| AccountAuthError::NotSignedIn(provider.as_str().to_string()))?;
     serde_json::from_str(&payload).map_err(|error| AccountAuthError::Storage(error.to_string()))
 }
@@ -667,6 +708,7 @@ pub fn clear_account_tokens(provider: ProviderKind) -> Result<(), AccountAuthErr
     // undone by a stale override. Sign-out is a single user-driven action,
     // not a hot concurrent path.
     unsafe { std::env::remove_var(account) };
+    crate::config::keychain::advance_bundle_revision();
     Ok(())
 }
 
@@ -833,6 +875,35 @@ fn now_unix() -> i64 {
 /// Unit tests for client-id resolution, keychain isolation, and registry shape.
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[serial]
+    fn credential_projection_malformed_account_is_unknown_and_preserves_other_credentials() {
+        let (_settings_guard, _directory) = isolated_settings_dir("credential_projection");
+        let _key = EnvGuard::remove("LLM_OPENAI_API_KEY");
+        let _stt = EnvGuard::remove("STT_FILE_API_KEY");
+        let _tokens = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _cache = crate::config::keychain::test_support::install_bundle(&[
+            (
+                OPENAI_ACCOUNT_TOKENS_ACCOUNT,
+                "{synthetic-private-token-json",
+            ),
+            ("LLM_OPENAI_API_KEY", "synthetic-independent-api-key"),
+            ("STT_FILE_API_KEY", "synthetic-independent-stt-key"),
+        ]);
+        let probe = crate::config::keychain::CredentialAcquisitionProbe::forbid();
+        let strict = account_status_snapshot(ProviderKind::OpenAiResponses);
+        assert!(matches!(strict, Err(AccountAuthError::Storage(_))));
+        let display = cached_account_status(ProviderKind::OpenAiResponses);
+        assert!(!display.signed_in);
+        assert_eq!(
+            display.message,
+            "Account access unavailable. Remove the stored account and sign in again."
+        );
+        assert!(!display.message.contains("synthetic-private-token-json"));
+        assert!(crate::config::keychain::key_present("LLM_OPENAI_API_KEY"));
+        assert!(crate::config::keychain::key_present("STT_FILE_API_KEY"));
+        assert!(probe.attempts().is_empty());
+    }
     use super::*;
     use serial_test::serial;
 

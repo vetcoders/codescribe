@@ -33,7 +33,7 @@ private struct CredentialTestBridgeInstaller: AgentBridgeInstalling {
 
 @MainActor
 final class CredentialPresentationTests: XCTestCase {
-  func testSetupKeepsAccountAndProviderKeyPresenceSeparate() {
+  func testSetupKeepsAccountAndProviderKeyPresenceSeparate() async {
     for (account, key) in [(true, false), (false, true), (true, true), (false, false)] {
       var provider = CsProviderOption.sampleProviders[1]
       provider.accountSignedIn = account
@@ -43,6 +43,7 @@ final class CredentialPresentationTests: XCTestCase {
         engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
         agentBridge: CredentialTestBridgeInstaller(), probe: MockPermissionProbe(.allGranted))
       model.refreshProviderAccess()
+      await awaitCondition { !model.providerAccessPending }
 
       XCTAssertEqual(model.selectedProviderAccountConnected, account)
       XCTAssertEqual(
@@ -56,13 +57,14 @@ final class CredentialPresentationTests: XCTestCase {
       engine.provider.accountSignedIn = !account
       engine.provider.apiKeySet = !key
       model.refreshProviderAccess()
+      await awaitCondition { !model.providerAccessPending }
       XCTAssertEqual(model.selectedProviderAccountConnected, !account)
       XCTAssertEqual(model.selectedProviderKeySet, !key)
       XCTAssertEqual(engine.keyWrites, 0, "a passive refresh never creates a credential")
     }
   }
 
-  func testCustomProviderKeyUsesRegistryInsteadOfVendorKeyStatusFlags() {
+  func testCustomProviderKeyUsesRegistryInsteadOfVendorKeyStatusFlags() async {
     var provider = CsProviderOption.row(
       id: "custom:credential-test", kind: "custom", name: "Test Host", wire: "responses",
       endpoint: "http://localhost:8080/v1/responses", account: "LLM_CUSTOM_CREDENTIAL_TEST_API_KEY")
@@ -72,9 +74,11 @@ final class CredentialPresentationTests: XCTestCase {
       engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
       agentBridge: CredentialTestBridgeInstaller(), probe: MockPermissionProbe(.allGranted))
     model.refreshProviderAccess()
+      await awaitCondition { !model.providerAccessPending }
     XCTAssertTrue(model.selectedProviderKeySet)
     engine.provider.apiKeySet = false
     model.refreshProviderAccess()
+      await awaitCondition { !model.providerAccessPending }
     XCTAssertFalse(model.selectedProviderKeySet)
     XCTAssertTrue(model.providerAccessDescription.contains("does not require an API key"))
   }

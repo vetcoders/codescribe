@@ -20,21 +20,25 @@ final class ProvidersPanelTests: XCTestCase {
   private func makeModel(
     store: MockProviderStore = MockProviderStore(),
     configWrites: (((String, String)) -> Void)? = nil
-  ) -> SettingsViewModel {
+  ) async -> SettingsViewModel {
     let engine = MockSettingsEngine(
       providerStore: store,
       updateConfigObserver: { configWrites?(($0, $1)) }
     )
-    return SettingsViewModel(
+    let model = SettingsViewModel(
       engine: engine, permissionProbe: MockPermissionProbe(),
       runtimeLlmLaneProvider: { store.runtimeLane($0) })
+    model.refreshProviderAccess()
+    await awaitCondition { !model.providerAccessPending }
+    return model
   }
 
-  func testAddCustomProviderAppearsInLanePicker() throws {
-    let model = makeModel()
+  func testAddCustomProviderAppearsInLanePicker() async throws {
+    let model = await makeModel()
     XCTAssertEqual(model.customProviders.map(\.id), [])
 
-    try model.addCustomProvider(Self.localDraft)
+    try await model.addCustomProvider(Self.localDraft)
+    await awaitCondition { !model.providerAccessPending }
 
     // The lane editor's Provider menu iterates `providers`: vendors first,
     // then custom rows in insertion order.
@@ -53,15 +57,18 @@ final class ProvidersPanelTests: XCTestCase {
     XCTAssertTrue(lane.runtime.available, "no key required → available without a key")
   }
 
-  func testRemoveCustomProviderInUseResetsLane() throws {
+  func testRemoveCustomProviderInUseResetsLane() async throws {
     let store = MockProviderStore()
-    let model = makeModel(store: store)
-    try model.addCustomProvider(Self.localDraft)
+    let model = await makeModel(store: store)
+    try await model.addCustomProvider(Self.localDraft)
+    await awaitCondition { !model.providerAccessPending }
     model.setLaneProvider("custom:my-local", for: .assistive)
     XCTAssertEqual(model.llmLane(.assistive).providerId, "custom:my-local")
     XCTAssertNil(model.laneResetNotice)
 
     model.removeCustomProvider(id: "custom:my-local")
+    await Task.yield()
+    await awaitCondition { !model.providerMutationPending && !model.providerAccessPending }
 
     XCTAssertEqual(model.customProviders.map(\.id), [])
     XCTAssertEqual(
@@ -78,9 +85,9 @@ final class ProvidersPanelTests: XCTestCase {
     XCTAssertNil(model.laneResetNotice, "the next lane edit clears the note")
   }
 
-  func testVendorEndpointHasNoSetter() throws {
+  func testVendorEndpointHasNoSetter() async throws {
     var writes: [(key: String, value: String)] = []
-    let model = makeModel { writes.append((key: $0.0, value: $0.1)) }
+    let model = await makeModel { writes.append((key: $0.0, value: $0.1)) }
 
     // Vendor set is the contract (§B.3 adds Libraxis); ORDER is the registry's
     // and the UI must not re-sort it — first place is I1's call, not this test's.
@@ -102,15 +109,19 @@ final class ProvidersPanelTests: XCTestCase {
         "the lane's endpoint IS the vendor's factory endpoint")
     }
 
-    try model.addCustomProvider(Self.localDraft)
-    try model.updateCustomProvider(
+    try await model.addCustomProvider(Self.localDraft)
+    await awaitCondition { !model.providerAccessPending }
+    try await model.updateCustomProvider(
       id: "custom:my-local",
       CsCustomProviderDraft(
         name: "My Local", wire: "messages", endpoint: "http://localhost:9090/v1/messages",
         apiKey: nil)
     )
+    await awaitCondition { !model.providerAccessPending }
     XCTAssertEqual(model.customProviders.first?.endpoint, "http://localhost:9090/v1/messages")
     model.removeCustomProvider(id: "custom:my-local")
+    await Task.yield()
+    await awaitCondition { !model.providerMutationPending && !model.providerAccessPending }
 
     XCTAssertFalse(
       writes.contains { $0.key.contains("ENDPOINT") },
@@ -118,28 +129,26 @@ final class ProvidersPanelTests: XCTestCase {
     XCTAssertEqual(Set(writes.map(\.key)), ["LLM_ASSISTIVE_MODEL"])
   }
 
-  func testCustomProviderFormSurfacesBridgeValidationError() {
-    let model = makeModel()
+  func testCustomProviderFormSurfacesBridgeValidationError() async {
+    let model = await makeModel()
 
-    XCTAssertThrowsError(
-      try model.addCustomProvider(
+    do {
+      try await model.addCustomProvider(
         CsCustomProviderDraft(name: "   ", wire: "responses", endpoint: "https://x", apiKey: nil))
-    ) { error in
-      XCTAssertEqual(error as? MockProviderStore.Failure, .emptyName)
-    }
-    XCTAssertThrowsError(
-      try model.addCustomProvider(
-        CsCustomProviderDraft(
-          name: "Relay", wire: "messages", endpoint: "relay.local", apiKey: nil))
-    ) { error in
-      XCTAssertEqual(error as? MockProviderStore.Failure, .invalidEndpoint("relay.local"))
-    }
+      XCTFail("empty name must be rejected")
+    } catch { XCTAssertEqual(error as? MockProviderStore.Failure, .emptyName) }
+    do {
+      try await model.addCustomProvider(
+        CsCustomProviderDraft(name: "Relay", wire: "messages", endpoint: "relay.local", apiKey: nil))
+      XCTFail("invalid endpoint must be rejected")
+    } catch { XCTAssertEqual(error as? MockProviderStore.Failure, .invalidEndpoint("relay.local")) }
+    await awaitCondition { !model.providerAccessPending }
 
     XCTAssertNil(model.lastError, "the form owns the message; no modal error")
     XCTAssertEqual(model.customProviders.count, 0)
   }
 
-  func testKeyStatusMapsContractAccountsOnly() {
+  func testKeyStatusMapsContractAccountsOnly() async {
     let status = CsKeyStatus(
       llmLibraxisApiKeySet: true,
       llmOpenaiApiKeySet: false,
@@ -162,7 +171,8 @@ final class ProvidersPanelTests: XCTestCase {
       XCTAssertFalse(
         status.isSet(account: legacy), "\(legacy): retired account (D3 / stt-lanes-v1)")
     }
-    XCTAssertEqual(makeModel().serviceKeyAccounts, ["GITHUB_TOKEN"])
+    let model = await makeModel()
+    XCTAssertEqual(model.serviceKeyAccounts, ["GITHUB_TOKEN"])
     XCTAssertEqual(SettingsViewModel.keyLabel(for: "LLM_LIBRAXIS_API_KEY"), "Libraxis API key")
     XCTAssertEqual(SettingsViewModel.keyLabel(for: "STT_FILE_API_KEY"), "File transcription key")
     XCTAssertEqual(SettingsViewModel.keyLabel(for: "STT_LIVE_API_KEY"), "Live transcript key")
@@ -170,9 +180,9 @@ final class ProvidersPanelTests: XCTestCase {
 
   /// stt-lanes-v1 §F.7: Providers renders File then Live, each lane one atomic
   /// endpoint + key row, and a lane save writes ONLY that lane's wire key.
-  func testSpeechToTextSectionRendersFileThenLiveAsAtomicRows() {
+  func testSpeechToTextSectionRendersFileThenLiveAsAtomicRows() async {
     var writes: [(key: String, value: String)] = []
-    let model = makeModel { writes.append((key: $0.0, value: $0.1)) }
+    let model = await makeModel { writes.append((key: $0.0, value: $0.1)) }
     _ = SpeechToTextSection(model: model)
 
     XCTAssertEqual(
@@ -198,7 +208,7 @@ final class ProvidersPanelTests: XCTestCase {
   }
 
   /// LLMLaneEditor.body reads `llmLane` per menu item; the FFI loader must not.
-  func testLlmLaneHitsRuntimeProviderOncePerLanePerRefresh() {
+  func testLlmLaneHitsRuntimeProviderOncePerLanePerRefresh() async {
     var assistiveHits = 0
     var formattingHits = 0
     let store = MockProviderStore()
