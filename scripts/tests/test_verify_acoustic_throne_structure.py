@@ -2327,6 +2327,29 @@ class NeutralAstTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "dependency/build"):
                 VERIFIER.ast_tool_digest(repo)
 
+    def test_inherited_json_dependency_admits_exact_float_roundtrip_only(self):
+        import shutil
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            shutil.copytree(self.repo / "tools/structural-ast", repo / "tools/structural-ast")
+            for name in ("Cargo.toml", "Cargo.lock"):
+                shutil.copyfile(self.repo / name, repo / name)
+            self.assertTrue(VERIFIER.ast_tool_digest(repo))
+            manifest = repo / "Cargo.toml"
+            original = manifest.read_text()
+            declaration = 'serde_json = { version = "1", features = ["float_roundtrip"] }'
+            self.assertEqual(original.count(declaration), 1)
+            for replacement in (
+                'serde_json = "1"',
+                'serde_json = { version = "1", features = ["float_roundtrip", "arbitrary_precision"] }',
+                'serde_json = { version = "2", features = ["float_roundtrip"] }',
+            ):
+                with self.subTest(declaration=replacement):
+                    manifest.write_text(original.replace(declaration, replacement))
+                    with self.assertRaisesRegex(RuntimeError, "inherited dependencies changed"):
+                        VERIFIER.ast_tool_digest(repo)
+
     def test_compiler_overrides_are_removed_and_receipt_policy_is_exact(self):
         from unittest.mock import patch
         from subprocess import CompletedProcess

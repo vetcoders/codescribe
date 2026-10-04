@@ -604,7 +604,25 @@ fn transcribe_apple_file_windows(
         crate::vad::VadConfig::default().threshold,
         samples.len() as f32 / rate as f32,
     );
-    let windows = plan_apple_file_windows(samples.len(), rate, &silences, &stats.probabilities);
+    transcribe_apple_file_windows_from_pcm(
+        &samples,
+        rate,
+        &silences,
+        &stats.probabilities,
+        language,
+        run_bridge_exchange,
+    )
+}
+
+fn transcribe_apple_file_windows_from_pcm(
+    samples: &[f32],
+    rate: u32,
+    silences: &[(f32, f32)],
+    probabilities: &[f32],
+    language: Option<&str>,
+    mut exchange: impl FnMut(&BridgeRequest<'_>, Option<Duration>) -> Result<BridgeResponse>,
+) -> Result<(RawTranscript, Option<AppleSttBackend>)> {
+    let windows = plan_apple_file_windows(samples.len(), rate, silences, probabilities);
     eprintln!(
         "INFO apple_file: windows={} pause_seconds={} maximum_window_seconds={}",
         windows.len(),
@@ -636,7 +654,9 @@ fn transcribe_apple_file_windows(
                 .write_sample(sample)
                 .context("write Apple speech window PCM")?;
         }
-        writer.finalize().context("finish Apple speech window WAV")?;
+        writer
+            .finalize()
+            .context("finish Apple speech window WAV")?;
         let audio_path = window_path
             .to_str()
             .context("Apple window path is not UTF-8")?;
@@ -650,10 +670,7 @@ fn transcribe_apple_file_windows(
             deadline_policy: Some(AppleDeadlinePolicy::WholeFile),
         };
         let window_seconds = (end - start) as f64 / f64::from(rate);
-        let mut response = match run_bridge_exchange(
-            &request,
-            Some(whole_file_host_timeout(window_seconds)),
-        ) {
+        let mut response = match exchange(&request, Some(whole_file_host_timeout(window_seconds))) {
             Ok(response) => response,
             Err(error) => {
                 let detail = format!("{error:#}");
@@ -1677,6 +1694,86 @@ impl Drop for TempWavFile {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn apple_file_windows_keep_five_physical_repetitions_and_refused_text() {
+        let rate = 16_000;
+        let samples = vec![0.125_f32; 80_000];
+        let silences = (0..5)
+            .map(|i| (i as f32 + 0.5, i as f32 + 1.0))
+            .collect::<Vec<_>>();
+        let probabilities = [0.9, 0.0].repeat(5);
+        for refuse_middle in [false, true] {
+            let mut calls = 0;
+            let result = transcribe_apple_file_windows_from_pcm(
+                &samples,
+                rate,
+                &silences,
+                &probabilities,
+                Some("pl-PL"),
+                |request, timeout| {
+                    let mut wav = hound::WavReader::open(request.audio_path.unwrap()).unwrap();
+                    assert_eq!(wav.spec().sample_format, hound::SampleFormat::Float);
+                    assert_eq!(wav.spec().sample_rate, rate);
+                    assert_eq!(
+                        wav.samples::<f32>().collect::<Result<Vec<_>, _>>().unwrap(),
+                        samples[..8_000]
+                    );
+                    assert_eq!(
+                        request.deadline_policy,
+                        Some(AppleDeadlinePolicy::WholeFile)
+                    );
+                    assert_eq!(timeout, Some(whole_file_host_timeout(0.5)));
+                    calls += 1;
+                    let accepted = !(refuse_middle && calls == 3);
+                    Ok(serde_json::from_value(serde_json::json!({
+                        "ok":accepted, "status":if accepted {"ok"} else {"error"},
+                        "text":"Iwo", "segments":[], "backend":"speech_transcriber",
+                        "error":if accepted {None} else {Some("refused synthetic coverage")}
+                    }))
+                    .unwrap())
+                },
+            );
+            assert_eq!(calls, 5, "a refused window must not drop later windows");
+            let raw = if refuse_middle {
+                let error = result.unwrap_err().to_string();
+                let receipt: serde_json::Value =
+                    serde_json::from_str(error.strip_prefix("recognition_incomplete: ").unwrap())
+                        .unwrap();
+                assert_eq!(receipt["complete"], false);
+                assert_eq!(receipt["gaps"].as_array().unwrap().len(), 1);
+                assert_eq!(receipt["gaps"][0]["start_seconds"], 2.0);
+                serde_json::from_value::<RawTranscript>(receipt["raw"].clone()).unwrap()
+            } else {
+                let (raw, backend) = result.unwrap();
+                assert_eq!(backend, Some(AppleSttBackend::SpeechTranscriber));
+                raw
+            };
+            assert_eq!(raw.text, "Iwo Iwo Iwo Iwo Iwo");
+            assert_eq!(raw.segments.len(), 5);
+            for (i, segment) in raw.segments.iter().enumerate() {
+                assert_eq!(segment.text, "Iwo");
+                assert_eq!(segment.start_ts, i as f32);
+                assert_eq!(segment.end_ts, i as f32 + 0.5);
+            }
+        }
+    }
+
+    #[test]
+    fn apple_file_window_plan_bounds_continuous_speech_and_excludes_certified_silence() {
+        let rate = 16_000;
+        let end = 80 * rate as usize;
+        let windows = plan_apple_file_windows(end, rate, &[], &vec![0.9; 160]);
+        assert_eq!(windows.first().unwrap().0, 0);
+        assert_eq!(windows.last().unwrap().1, end);
+        for window in &windows {
+            assert!(window.1 > window.0 && window.1 - window.0 <= 20 * rate as usize);
+        }
+        for pair in windows.windows(2) {
+            assert_eq!(pair[0].1, pair[1].0);
+        }
+        assert!(plan_apple_file_windows(end, rate, &[(0.0, 80.0)], &vec![0.0; 160]).is_empty());
+    }
 
     /// The shipped product state: DT PoC lane not armed.
     const DT_LANE_CLOSED: DictationLane = DictationLane {

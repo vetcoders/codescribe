@@ -2128,6 +2128,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn terminal_tool_item_preserves_arguments_and_updates_name() {
+        for terminal_arguments in [None, Some(r#"{"path":"terminal.md"}"#)] {
+            let mut tracker = ToolCallTracker::default();
+            for payload in [
+                json!({
+                    "type": "response.output_item.added",
+                    "item": {"type":"function_call", "id":"item_1", "call_id":"call_1", "name":"pending_name"}
+                }),
+                json!({
+                    "type":"response.function_call_arguments.done", "item_id":"item_1",
+                    "arguments":r#"{"path":"received.md"}"#
+                }),
+            ] {
+                let chunk: StreamChunk = serde_json::from_value(payload).unwrap();
+                assert!(parse_agent_event(&chunk, &mut tracker, None).is_some());
+            }
+            let terminal: StreamChunk = serde_json::from_value(json!({
+                "type":"response.output_item.done",
+                "item":{"type":"function_call", "id":"item_1", "call_id":"call_1",
+                        "name":"document_open", "arguments":terminal_arguments}
+            }))
+            .unwrap();
+            let expected_path = if terminal_arguments.is_some() {
+                "terminal.md"
+            } else {
+                "received.md"
+            };
+            assert_eq!(
+                parse_agent_event(&terminal, &mut tracker, None),
+                Some(AgentEvent::ToolCallReady {
+                    id: "call_1".into(),
+                    name: "document_open".into(),
+                    arguments: json!({"path":expected_path})
+                })
+            );
+        }
+    }
+
     /// P1.6: a `response.completed` (or `response.done` with status=completed)
     /// is a CLEAN terminal and yields `ResponseDone { clean: true }`.
     #[test]

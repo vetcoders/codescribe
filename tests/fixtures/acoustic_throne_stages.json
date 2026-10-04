@@ -1081,7 +1081,18 @@
                 "let Some(revision) = revision else",
                 "if let Some(bus) = &self.transcript_bus",
                 "let events = bus.publish_revision(&revision, &ledger)",
-                "callback(event)"
+                "self.emit_overlay_events(&events)"
+              ]
+            },
+            {
+              "symbol": "emit_overlay_events",
+              "file": "app/presentation/emitter.rs",
+              "required_code": [
+                "let Some(callback) = &self.projection_callback else",
+                "if let Some(snapshot) = coalesced_overlay_document(events)",
+                "self.with_active_presentation(|| callback(&snapshot))",
+                "for event in events",
+                "self.with_active_presentation(|| callback(event))"
               ]
             },
             {
@@ -1430,6 +1441,13 @@
               "callee": "execute_clipboard_paste",
               "callee_file": "app/controller/mod.rs",
               "minimum_count": 1
+            },
+            {
+              "callee": "emit_overlay_events",
+              "callee_file": "app/presentation/emitter.rs",
+              "caller": "on_event",
+              "caller_file": "app/presentation/emitter.rs",
+              "minimum_count": 1
             }
           ]
         },
@@ -1474,7 +1492,18 @@
                 "apply_ledger_seal(receipt)",
                 "apply_occurrence_label_proposal(&mut ledger, proposal)",
                 "bus.publish_revision(&revision, &ledger)",
-                "callback(event)"
+                "self.emit_overlay_events(&events)"
+              ]
+            },
+            {
+              "symbol": "emit_overlay_events",
+              "file": "app/presentation/emitter.rs",
+              "required_code": [
+                "let Some(callback) = &self.projection_callback else",
+                "if let Some(snapshot) = coalesced_overlay_document(events)",
+                "self.with_active_presentation(|| callback(&snapshot))",
+                "for event in events",
+                "self.with_active_presentation(|| callback(event))"
               ]
             },
             {
@@ -1541,6 +1570,13 @@
               "callee_file": "app/presentation/transcript_bus.rs",
               "caller": "publish_revision",
               "caller_file": "app/presentation/transcript_bus.rs"
+            },
+            {
+              "callee": "emit_overlay_events",
+              "callee_file": "app/presentation/emitter.rs",
+              "caller": "on_event",
+              "caller_file": "app/presentation/emitter.rs",
+              "minimum_count": 1
             }
           ]
         },

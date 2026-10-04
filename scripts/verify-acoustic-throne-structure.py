@@ -145,7 +145,9 @@ def ast_tool_digest(repo: Path) -> str:
     } or any(path.is_symlink() or not path.is_file() for path in files):
         raise RuntimeError("neutral AST source inventory changed")
     workspace = tomllib.loads((repo / "Cargo.toml").read_text())["workspace"]["dependencies"]
-    if workspace["serde"] != {"version": "1", "features": ["derive"]} or workspace["serde_json"] != "1":
+    if workspace["serde"] != {"version": "1", "features": ["derive"]} or workspace["serde_json"] != {
+        "version": "1", "features": ["float_roundtrip"],
+    }:
         raise RuntimeError("neutral AST inherited dependencies changed")
     digest = hashlib.sha256()
     for path in [repo / "Cargo.toml", repo / "Cargo.lock", *files]:

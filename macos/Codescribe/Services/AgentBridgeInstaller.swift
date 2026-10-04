@@ -510,6 +510,17 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       try requireSynchronizationOwnership(expectedReceipt)
     }
     let managedID = previousReceipt?.managedID ?? UUID().uuidString.lowercased()
+    // Capture existing ownership before replacing skill markers or the receipt.
+    // A lost receipt can be recovered from this root's validated client markers.
+    var ownedCommandIDs = Set(
+      AgentBridgeClient.allCases.compactMap { client in
+        managedMarker(destination: client.skillDirectory(home: homeDirectory), client: client)?
+          .managedID
+      }.filter { !$0.isEmpty }
+    )
+    if let previousReceipt, !previousReceipt.managedID.isEmpty {
+      ownedCommandIDs.insert(previousReceipt.managedID)
+    }
     let previouslySelected = Set(previousReceipt?.selectedClients ?? [])
     // Adoption is additive, including clients committed before we got the lease.
     let effectiveSelection =
@@ -518,7 +529,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     let deselected = previouslySelected.subtracting(effectiveSelection)
 
     // Conflict discovery is deliberately complete before the first rename.
-    try requireCommandOwnership(manifest: manifest)
+    try requireCommandOwnership(manifest: manifest, ownedCommandIDs: ownedCommandIDs)
     if let adopting {
       try requireManualSkill(client: adopting)
     }
@@ -673,7 +684,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         preservedEntries: preservedEntries
       )
       try stageCommands(
-        manifest: manifest, managedID: managedID, transactionID: transactionID, records: &records)
+        manifest: manifest, managedID: managedID, ownedCommandIDs: ownedCommandIDs,
+        transactionID: transactionID, records: &records)
       try writeJSON(receipt, to: receiptURL)
       for follower in oldHelperFollowers where follower.isAlive {
         Self.logger.warning(
@@ -1082,7 +1094,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     return metadata["managed_id"] as? String
   }
 
-  private func requireCommandOwnership(manifest: AgentBridgeBundleManifest) throws {
+  private func requireCommandOwnership(
+    manifest: AgentBridgeBundleManifest, ownedCommandIDs: Set<String>
+  ) throws {
     let directory = homeDirectory.appendingPathComponent(".local/bin")
     let expected = homeDirectory.resolvingSymlinksInPath().appendingPathComponent(".local/bin")
     guard directory.resolvingSymlinksInPath().standardizedFileURL == expected.standardizedFileURL
@@ -1097,8 +1111,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         let ownedLink = link == runtimeDirectory.appendingPathComponent("bin/" + name).path
         let ownedFile =
           link == nil
-          && validReceipt().map {
-            managedCommandID(destination) == $0.managedID
+          && managedCommandID(destination).map {
+            ownedCommandIDs.contains($0)
           } == true
         guard ownedLink || ownedFile else {
           throw AgentBridgeInstallationError.conflict(
@@ -1109,10 +1123,11 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   }
 
   private func stageCommands(
-    manifest: AgentBridgeBundleManifest, managedID: String, transactionID: String,
+    manifest: AgentBridgeBundleManifest, managedID: String, ownedCommandIDs: Set<String>,
+    transactionID: String,
     records: inout [ReplacementRecord]
   ) throws {
-    try requireCommandOwnership(manifest: manifest)
+    try requireCommandOwnership(manifest: manifest, ownedCommandIDs: ownedCommandIDs)
     for name in commandNames(manifest: manifest) {
       let destination = commandURL(name)
       // cs-bus receives the complete verified helper, so neither entrypoint
@@ -1165,7 +1180,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       }
       try requireSynchronizationOwnership(receipt)
       try stageCommands(
-        manifest: manifest, managedID: receipt.managedID,
+        manifest: manifest, managedID: receipt.managedID, ownedCommandIDs: [receipt.managedID],
         transactionID: UUID().uuidString, records: &records)
       for record in records {
         if let backup = record.backup { try? fileManager.removeItem(at: backup) }

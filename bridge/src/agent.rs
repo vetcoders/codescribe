@@ -1537,6 +1537,84 @@ mod tests {
         assert_eq!(listener.done_count.load(Ordering::SeqCst), 1);
     }
 
+    #[tokio::test]
+    async fn workspace_agent_routes_discovery_tail_reads_and_edits_to_one_host() {
+        struct Host(std::sync::Mutex<Vec<(String, serde_json::Value)>>);
+        impl CsDocumentToolHost for Host {
+            fn is_active(&self) -> bool {
+                true
+            }
+            fn execute(&self, name: String, arguments: String) -> Result<String, CsError> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((name, serde_json::from_str(&arguments).unwrap()));
+                Ok(r#"{"receipt":"host-owned","revision":"r1"}"#.into())
+            }
+        }
+        let host = Arc::new(Host(std::sync::Mutex::new(Vec::new())));
+        let registry = workspace_tool_registry(host.clone()).unwrap();
+        let calls = [
+            (
+                "workspace_search",
+                serde_json::json!({"query":"decision","limit":5}),
+            ),
+            (
+                "workspace_read",
+                serde_json::json!({"path":"note.md","offset":0,"limit":100}),
+            ),
+            ("document_open", serde_json::json!({"path":"note.md"})),
+            (
+                "document_search",
+                serde_json::json!({"query":"decision","offset":10,"limit":3}),
+            ),
+            (
+                "document_read",
+                serde_json::json!({"offset":0,"limit":100,"from_end":true}),
+            ),
+            (
+                "document_replace",
+                serde_json::json!({"revision":"r1","old_text":"decision","new_text":"result"}),
+            ),
+        ];
+        let mut scripts = calls
+            .iter()
+            .enumerate()
+            .map(|(i, (name, args))| {
+                vec![
+                    AgentEvent::ToolCallReady {
+                        id: format!("call-{i}"),
+                        name: (*name).into(),
+                        arguments: args.clone(),
+                    },
+                    AgentEvent::ResponseDone {
+                        response_id: None,
+                        clean: true,
+                    },
+                ]
+            })
+            .collect::<Vec<_>>();
+        scripts.push(text_turn_script("Edited the selected document").remove(0));
+        let listener = Arc::new(RecordingListener::default());
+        let (reply, _) = drive_turn(
+            scripted_turn(scripts, registry, "Edit the workspace decision"),
+            listener.clone(),
+            Arc::default(),
+            "workspace-session".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply, "Edited the selected document");
+        assert_eq!(
+            *host.0.lock().unwrap(),
+            calls
+                .iter()
+                .map(|(name, args)| (name.to_string(), args.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(listener.done_count.load(Ordering::SeqCst), 1);
+    }
+
     /// Poll `flag` until set or `timeout` elapses, returning its final value.
     /// Lets a test synchronise on the tool actually running instead of sleeping
     /// a guessed interval.

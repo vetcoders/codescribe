@@ -265,6 +265,32 @@ final class AgentBridgeInstallerTests: XCTestCase {
     }
   }
 
+  func testMissingReceiptDoesNotAdmitACommandWithAnotherManagedIdentity() throws {
+    let home = scratch.appendingPathComponent("mismatched-command-identity")
+    let root = home.appendingPathComponent(".codescribe/agent-bridge")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: try makePayload(), homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let receiptURL = root.appendingPathComponent("receipt.json")
+    let managedID = try XCTUnwrap(try jsonObject(receiptURL)["managed_id"] as? String)
+    let command = home.appendingPathComponent(".local/bin/cs-bus")
+    let foreignBytes = Data(
+      try String(contentsOf: command, encoding: .utf8)
+        .replacingOccurrences(of: managedID, with: "another-installation").utf8)
+    try foreignBytes.write(to: command)
+    try FileManager.default.removeItem(at: receiptURL)
+    let marker = home.appendingPathComponent(".codex/skills/codescribe/.codescribe-managed.json")
+    let markerBytes = try Data(contentsOf: marker)
+    let helper = root.appendingPathComponent("runtime/bin/bus-demux.py")
+    let helperBytes = try Data(contentsOf: helper)
+
+    XCTAssertThrowsError(try installer.install(selectedClients: [.codex]))
+    XCTAssertEqual(try Data(contentsOf: command), foreignBytes)
+    XCTAssertEqual(try Data(contentsOf: marker), markerBytes)
+    XCTAssertEqual(try Data(contentsOf: helper), helperBytes)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: receiptURL.path))
+  }
+
   func testReceiptEvidenceSurvivesMissingFoldersAndUpdateRestoresThem() throws {
     let payload = try makePayload()
     let home = scratch.appendingPathComponent("receipt-only")

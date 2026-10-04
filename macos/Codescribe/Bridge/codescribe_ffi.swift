@@ -697,6 +697,17 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
     func streamDocument(text: String, threadId: String, document: CsDocumentToolHost, provider: CsDocumentProvider?, listener: CsAgentListener) async throws  -> String
 
     /**
+     * The document-scoped loop with composer image attachments forwarded as
+     * real vision input. Attachments reuse the single composer validation
+     * (`validate_composer_attachments` over core's `load_image_for_vision`),
+     * all-or-nothing and gated on the vision capability of the provider this
+     * session will actually use — a readable error, never a silent drop. The
+     * tool registry stays the exact document registry: an attachment is
+     * message input, never a filesystem or desktop capability.
+     */
+    func streamDocumentWithAttachments(text: String, threadId: String, attachments: [CsAttachment], document: CsDocumentToolHost, provider: CsDocumentProvider?, listener: CsAgentListener) async throws  -> String
+
+    /**
      * Stream one agent reply for `text` on the conversation identified by
      * `thread_id`, forwarding token/reasoning/tool events to `listener` as they
      * arrive. Returns the final assembled assistant text.
@@ -728,6 +739,22 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
      * - more than 16 images ⇒ readable error.
      */
     func streamReplyWithAttachments(text: String, threadId: String, attachments: [CsAttachment], listener: CsAgentListener) async throws  -> String
+
+    /**
+     * Run the same agent loop against the embedding app's workspace.
+     * Workspace discovery and explicit document opening use the same host
+     * callback and standard live-buffer tools as [`Self::stream_document`].
+     * The host owns membership, tab routing, revisions and undo.
+     */
+    func streamWorkspace(text: String, threadId: String, workspace: CsDocumentToolHost, provider: CsDocumentProvider?, listener: CsAgentListener) async throws  -> String
+
+    /**
+     * The workspace-scoped loop with composer image attachments forwarded as
+     * real vision input. Same attachment contract as
+     * [`Self::stream_document_with_attachments`]; the registry stays the exact
+     * workspace registry (workspace discovery + live-buffer document tools).
+     */
+    func streamWorkspaceWithAttachments(text: String, threadId: String, attachments: [CsAttachment], workspace: CsDocumentToolHost, provider: CsDocumentProvider?, listener: CsAgentListener) async throws  -> String
 
 }
 /**
@@ -943,6 +970,32 @@ open func streamDocument(text: String, threadId: String, document: CsDocumentToo
 }
 
     /**
+     * The document-scoped loop with composer image attachments forwarded as
+     * real vision input. Attachments reuse the single composer validation
+     * (`validate_composer_attachments` over core's `load_image_for_vision`),
+     * all-or-nothing and gated on the vision capability of the provider this
+     * session will actually use — a readable error, never a silent drop. The
+     * tool registry stays the exact document registry: an attachment is
+     * message input, never a filesystem or desktop capability.
+     */
+open func streamDocumentWithAttachments(text: String, threadId: String, attachments: [CsAttachment], document: CsDocumentToolHost, provider: CsDocumentProvider?, listener: CsAgentListener)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribeagent_stream_document_with_attachments(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(text),FfiConverterString.lower(threadId),FfiConverterSequenceTypeCsAttachment.lower(attachments),FfiConverterTypeCsDocumentToolHost_lower(document),FfiConverterOptionTypeCsDocumentProvider.lower(provider),FfiConverterTypeCsAgentListener_lower(listener)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
      * Stream one agent reply for `text` on the conversation identified by
      * `thread_id`, forwarding token/reasoning/tool events to `listener` as they
      * arrive. Returns the final assembled assistant text.
@@ -995,6 +1048,52 @@ open func streamReplyWithAttachments(text: String, threadId: String, attachments
                 uniffi_codescribe_ffi_fn_method_codescribeagent_stream_reply_with_attachments(
                     self.uniffiCloneHandle(),
                     FfiConverterString.lower(text),FfiConverterString.lower(threadId),FfiConverterSequenceTypeCsAttachment.lower(attachments),FfiConverterTypeCsAgentListener_lower(listener)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * Run the same agent loop against the embedding app's workspace.
+     * Workspace discovery and explicit document opening use the same host
+     * callback and standard live-buffer tools as [`Self::stream_document`].
+     * The host owns membership, tab routing, revisions and undo.
+     */
+open func streamWorkspace(text: String, threadId: String, workspace: CsDocumentToolHost, provider: CsDocumentProvider?, listener: CsAgentListener)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribeagent_stream_workspace(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(text),FfiConverterString.lower(threadId),FfiConverterTypeCsDocumentToolHost_lower(workspace),FfiConverterOptionTypeCsDocumentProvider.lower(provider),FfiConverterTypeCsAgentListener_lower(listener)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * The workspace-scoped loop with composer image attachments forwarded as
+     * real vision input. Same attachment contract as
+     * [`Self::stream_document_with_attachments`]; the registry stays the exact
+     * workspace registry (workspace discovery + live-buffer document tools).
+     */
+open func streamWorkspaceWithAttachments(text: String, threadId: String, attachments: [CsAttachment], workspace: CsDocumentToolHost, provider: CsDocumentProvider?, listener: CsAgentListener)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribeagent_stream_workspace_with_attachments(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(text),FfiConverterString.lower(threadId),FfiConverterSequenceTypeCsAttachment.lower(attachments),FfiConverterTypeCsDocumentToolHost_lower(workspace),FfiConverterOptionTypeCsDocumentProvider.lower(provider),FfiConverterTypeCsAgentListener_lower(listener)
                 )
             },
             pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
@@ -14369,6 +14468,220 @@ public func FfiConverterTypeCsVoiceLabSaveResult_lower(_ value: CsVoiceLabSaveRe
 
 
 /**
+ * The local-Whisper selection surface for Settings: the option catalog plus
+ * the saved preference, the runtime resolution, and the resident-engine truth.
+ */
+public struct CsWhisperModelCatalog: Equatable, Hashable {
+    public var options: [CsWhisperModelOption]
+    /**
+     * Effective configured reference (env → settings.json → env file → default).
+     */
+    public var configured: String
+    /**
+     * What the next engine load will use; nil when resolution currently fails.
+     */
+    public var resolvedPath: String?
+    /**
+     * `embedded` or the on-disk path of the resident weights; nil while
+     * unloaded (idle reaper or a just-applied switch).
+     */
+    public var loaded: String?
+    /**
+     * `embedded` | `env_model_path` | `env_local_model` when an authority
+     * above the picker shadows the saved selection; nil otherwise.
+     */
+    public var overrideKind: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(options: [CsWhisperModelOption],
+        /**
+         * Effective configured reference (env → settings.json → env file → default).
+         */configured: String,
+        /**
+         * What the next engine load will use; nil when resolution currently fails.
+         */resolvedPath: String?,
+        /**
+         * `embedded` or the on-disk path of the resident weights; nil while
+         * unloaded (idle reaper or a just-applied switch).
+         */loaded: String?,
+        /**
+         * `embedded` | `env_model_path` | `env_local_model` when an authority
+         * above the picker shadows the saved selection; nil otherwise.
+         */overrideKind: String?) {
+        self.options = options
+        self.configured = configured
+        self.resolvedPath = resolvedPath
+        self.loaded = loaded
+        self.overrideKind = overrideKind
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsWhisperModelCatalog: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsWhisperModelCatalog: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsWhisperModelCatalog {
+        return
+            try CsWhisperModelCatalog(
+                options: FfiConverterSequenceTypeCsWhisperModelOption.read(from: &buf),
+                configured: FfiConverterString.read(from: &buf),
+                resolvedPath: FfiConverterOptionString.read(from: &buf),
+                loaded: FfiConverterOptionString.read(from: &buf),
+                overrideKind: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsWhisperModelCatalog, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeCsWhisperModelOption.write(value.options, into: &buf)
+        FfiConverterString.write(value.configured, into: &buf)
+        FfiConverterOptionString.write(value.resolvedPath, into: &buf)
+        FfiConverterOptionString.write(value.loaded, into: &buf)
+        FfiConverterOptionString.write(value.overrideKind, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsWhisperModelCatalog_lift(_ buf: RustBuffer) throws -> CsWhisperModelCatalog {
+    return try FfiConverterTypeCsWhisperModelCatalog.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsWhisperModelCatalog_lower(_ value: CsWhisperModelCatalog) -> RustBuffer {
+    return FfiConverterTypeCsWhisperModelCatalog.lower(value)
+}
+
+
+/**
+ * One row of the canonical local-Whisper catalog (selectable or visibly
+ * refused). Mirrors `codescribe_core::config::models::WhisperModelOption`.
+ */
+public struct CsWhisperModelOption: Equatable, Hashable {
+    /**
+     * Value persisted as `LOCAL_MODEL` (alias, HF repo id, or path).
+     */
+    public var id: String
+    /**
+     * Human label, e.g. `Large v3 Turbo · FP16`.
+     */
+    public var label: String
+    /**
+     * Resolved on-disk directory this option loads from.
+     */
+    public var path: String
+    /**
+     * `models_dir` | `hf_cache` | `configured_path` | `env_override`.
+     */
+    public var source: String
+    /**
+     * The runtime loader accepts this bundle.
+     */
+    public var usable: Bool
+    /**
+     * Short refusal/incompleteness reason when not selectable.
+     */
+    public var reason: String?
+    /**
+     * The current runtime resolution lands on this row.
+     */
+    public var active: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Value persisted as `LOCAL_MODEL` (alias, HF repo id, or path).
+         */id: String,
+        /**
+         * Human label, e.g. `Large v3 Turbo · FP16`.
+         */label: String,
+        /**
+         * Resolved on-disk directory this option loads from.
+         */path: String,
+        /**
+         * `models_dir` | `hf_cache` | `configured_path` | `env_override`.
+         */source: String,
+        /**
+         * The runtime loader accepts this bundle.
+         */usable: Bool,
+        /**
+         * Short refusal/incompleteness reason when not selectable.
+         */reason: String?,
+        /**
+         * The current runtime resolution lands on this row.
+         */active: Bool) {
+        self.id = id
+        self.label = label
+        self.path = path
+        self.source = source
+        self.usable = usable
+        self.reason = reason
+        self.active = active
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsWhisperModelOption: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsWhisperModelOption: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsWhisperModelOption {
+        return
+            try CsWhisperModelOption(
+                id: FfiConverterString.read(from: &buf),
+                label: FfiConverterString.read(from: &buf),
+                path: FfiConverterString.read(from: &buf),
+                source: FfiConverterString.read(from: &buf),
+                usable: FfiConverterBool.read(from: &buf),
+                reason: FfiConverterOptionString.read(from: &buf),
+                active: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsWhisperModelOption, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.label, into: &buf)
+        FfiConverterString.write(value.path, into: &buf)
+        FfiConverterString.write(value.source, into: &buf)
+        FfiConverterBool.write(value.usable, into: &buf)
+        FfiConverterOptionString.write(value.reason, into: &buf)
+        FfiConverterBool.write(value.active, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsWhisperModelOption_lift(_ buf: RustBuffer) throws -> CsWhisperModelOption {
+    return try FfiConverterTypeCsWhisperModelOption.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsWhisperModelOption_lower(_ value: CsWhisperModelOption) -> RustBuffer {
+    return FfiConverterTypeCsWhisperModelOption.lower(value)
+}
+
+
+/**
  * Whether local Whisper weights are ready (embedded or on-disk). Used by
  * Settings → Dictation so users can download the model without a fat DMG.
  */
@@ -14437,6 +14750,75 @@ public func FfiConverterTypeCsWhisperModelStatus_lift(_ buf: RustBuffer) throws 
 #endif
 public func FfiConverterTypeCsWhisperModelStatus_lower(_ value: CsWhisperModelStatus) -> RustBuffer {
     return FfiConverterTypeCsWhisperModelStatus.lower(value)
+}
+
+
+/**
+ * Outcome of one picker selection.
+ */
+public struct CsWhisperModelSwitch: Equatable, Hashable {
+    /**
+     * Selection persisted and the running process follows it (resident engine
+     * dropped or already matching; the next take uses the new model).
+     */
+    public var applied: Bool
+    /**
+     * A take owns the engine; the switch lands when recording returns to idle.
+     */
+    public var pending: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Selection persisted and the running process follows it (resident engine
+         * dropped or already matching; the next take uses the new model).
+         */applied: Bool,
+        /**
+         * A take owns the engine; the switch lands when recording returns to idle.
+         */pending: Bool) {
+        self.applied = applied
+        self.pending = pending
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsWhisperModelSwitch: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsWhisperModelSwitch: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsWhisperModelSwitch {
+        return
+            try CsWhisperModelSwitch(
+                applied: FfiConverterBool.read(from: &buf),
+                pending: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsWhisperModelSwitch, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.applied, into: &buf)
+        FfiConverterBool.write(value.pending, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsWhisperModelSwitch_lift(_ buf: RustBuffer) throws -> CsWhisperModelSwitch {
+    return try FfiConverterTypeCsWhisperModelSwitch.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsWhisperModelSwitch_lower(_ value: CsWhisperModelSwitch) -> RustBuffer {
+    return FfiConverterTypeCsWhisperModelSwitch.lower(value)
 }
 
 // Note that we don't yet support `indirect` for enums.
@@ -17847,6 +18229,31 @@ fileprivate struct FfiConverterSequenceTypeCsUncertainSpan: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCsWhisperModelOption: FfiConverterRustBuffer {
+    typealias SwiftType = [CsWhisperModelOption]
+
+    public static func write(_ value: [CsWhisperModelOption], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsWhisperModelOption.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsWhisperModelOption] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsWhisperModelOption]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsWhisperModelOption.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCsLlmLane: FfiConverterRustBuffer {
     typealias SwiftType = [CsLlmLane]
 
@@ -18157,6 +18564,30 @@ public func runtimeLlmLane(lane: CsLlmLane) -> CsRuntimeLlmLane  {
 })
 }
 /**
+ * Persist a picker selection and switch the running process to it.
+ *
+ * Validation happens before persistence: an unknown or unusable reference is
+ * refused with the real validator reason and neither settings.json nor the
+ * resident engine changes. Persistence goes through the canonical config
+ * router (`LOCAL_MODEL` → settings.json). While a take owns the engine the
+ * switch is deferred to the recording-idle hook; an env/embedded override is
+ * reported via the catalog, never silently removed.
+ */
+public func setLocalWhisperModel(reference: String)async throws  -> CsWhisperModelSwitch  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_func_set_local_whisper_model(FfiConverterString.lower(reference)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsWhisperModelSwitch_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+/**
  * Stop controller/account activity first, then tear down every runtime worker.
  */
 public func shutdownApplicationRuntime()throws  -> CsApplicationRuntimeSnapshot  {
@@ -18208,6 +18639,15 @@ public func stopSpeaking()  {try! rustCall() {
     uniffi_codescribe_ffi_fn_func_stop_speaking($0
     )
 }
+}
+/**
+ * Snapshot the canonical local-Whisper catalog for Settings → Dictation.
+ */
+public func whisperModelCatalog() -> CsWhisperModelCatalog  {
+    return try!  FfiConverterTypeCsWhisperModelCatalog_lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_whisper_model_catalog($0
+    )
+})
 }
 /**
  * Snapshot Whisper availability without constructing a dictation session.
@@ -18303,6 +18743,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_runtime_llm_lane() != 23153) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_set_local_whisper_model() != 36491) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_shutdown_application_runtime() != 56989) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -18316,6 +18759,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_stop_speaking() != 21833) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_whisper_model_catalog() != 28456) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_whisper_model_status() != 33505) {
@@ -18345,10 +18791,19 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_document() != 12706) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_document_with_attachments() != 58150) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_reply() != 57150) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_reply_with_attachments() != 7965) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_workspace() != 7808) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_workspace_with_attachments() != 44225) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_agentic_readiness() != 27253) {

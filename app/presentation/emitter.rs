@@ -1884,14 +1884,16 @@ impl TranscriptReducer {
         sentence_break_before: bool,
         sentence_pause_bits: u32,
     ) -> bool {
-        self.shaping_evaluations.get(occurrence).is_some_and(|memo| {
-            memo.occurrence == *occurrence
-                && memo.source_label == source_label
-                && memo.left_context_sha256 == left_context_sha256
-                && memo.sentence_break_before == sentence_break_before
-                && memo.sentence_pause_bits == sentence_pause_bits
-                && memo.shaped_text == source_label
-        })
+        self.shaping_evaluations
+            .get(occurrence)
+            .is_some_and(|memo| {
+                memo.occurrence == *occurrence
+                    && memo.source_label == source_label
+                    && memo.left_context_sha256 == left_context_sha256
+                    && memo.sentence_break_before == sentence_break_before
+                    && memo.sentence_pause_bits == sentence_pause_bits
+                    && memo.shaped_text == source_label
+            })
     }
 
     /// Whether this owner can be skipped without rebuilding its left context.
@@ -1907,6 +1909,8 @@ impl TranscriptReducer {
         sentence_pause_sec: f32,
         ledger: &AcousticLedger,
     ) -> bool {
+        #[cfg(test)]
+        tests::record_shaping_work(&occurrence.session, |counts| counts.stable_checks += 1);
         let Some(entry) = self.document_by_occurrence.get(occurrence) else {
             return false;
         };
@@ -1961,8 +1965,7 @@ impl TranscriptReducer {
             .iter()
             .filter(|occurrence| self.document_by_occurrence.contains_key(*occurrence))
         {
-            let needs_work =
-                !self.owner_shaping_stable(occurrence, sentence_pause_sec, ledger);
+            let needs_work = !self.owner_shaping_stable(occurrence, sentence_pause_sec, ledger);
             if !needs_work {
                 continue;
             }
@@ -2080,6 +2083,8 @@ impl TranscriptReducer {
         occurrence: &OccurrenceIdentity,
         sentence_pause_sec: f32,
     ) -> Result<TranscriptRevision, IncrementalShapingRefusal> {
+        #[cfg(test)]
+        tests::record_shaping_work(&occurrence.session, |counts| counts.owner_visits += 1);
         // A whole-document revision (user edit or terminal Light+)
         // already owns every visible byte. A per-occurrence shape must not
         // fight it for the same document.
@@ -2126,6 +2131,13 @@ impl TranscriptReducer {
             sentence_pause_bits,
         ) {
             return Err(IncrementalShapingRefusal::Unchanged);
+        }
+        #[cfg(test)]
+        {
+            tests::record_shaping_work(&occurrence.session, |counts| {
+                counts.shape_calls += 1;
+                counts.context_bytes += left_context.len();
+            });
         }
         let shaped = codescribe_core::pipeline::light_plus::apply_live_span(
             &left_context,
@@ -5304,6 +5316,374 @@ mod tests {
         assert!(bus_text.contains(&paste.text));
     }
 
+    // Counters observe real reducer work without changing production behavior.
+    // Registration is per synthetic session, so parallel tests cannot affect it.
+    #[derive(Clone, Copy, Default)]
+    pub(super) struct WorkCounts {
+        pub(super) shape_calls: usize,
+        pub(super) context_bytes: usize,
+        pub(super) owner_visits: usize,
+        pub(super) stable_checks: usize,
+    }
+    static SHAPING_WORK: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::BTreeMap<String, WorkCounts>>,
+    > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+    struct WorkCounter(String);
+    impl WorkCounter {
+        fn register(session: &str) -> Self {
+            assert!(
+                SHAPING_WORK
+                    .lock()
+                    .unwrap()
+                    .insert(session.into(), WorkCounts::default())
+                    .is_none(),
+                "unique test session"
+            );
+            Self(session.into())
+        }
+        fn snapshot(&self) -> WorkCounts {
+            *SHAPING_WORK.lock().unwrap().get(&self.0).unwrap()
+        }
+    }
+    impl Drop for WorkCounter {
+        fn drop(&mut self) {
+            SHAPING_WORK.lock().unwrap().remove(&self.0);
+        }
+    }
+    pub(super) fn record_shaping_work(session: &str, update: impl FnOnce(&mut WorkCounts)) {
+        if let Some(counts) = SHAPING_WORK.lock().unwrap().get_mut(session) {
+            update(counts);
+        }
+    }
+
+    #[tokio::test]
+    async fn light_plus_stable_seal_has_no_repeat_shaping() {
+        let count = 32_u64;
+        let work = WorkCounter::register("light-plus-work-seal");
+        let fixture = BusFixture::new("light-plus-work-seal", true, "synthetic.jsonl", "");
+        fixture.bus.publish_started();
+        let mut emitter = fixture.emitter(None, None);
+        emitter.on_capture_opened("light-plus-work-seal", 7);
+        let initial_before = work.snapshot().shape_calls;
+        let mut owners = Vec::new();
+        let mut labels = Vec::new();
+        for i in 0..count {
+            let owner =
+                OccurrenceIdentity::new("light-plus-work-seal", 7, i * 16_000, (i + 1) * 16_000);
+            let label = format!("słowo{i}");
+            let event = admitted_mutation(
+                &mut fixture.ledger.lock().unwrap(),
+                owner.clone(),
+                i + 1,
+                &label,
+            );
+            emitter.on_event(&event);
+            owners.push(owner);
+            labels.push(label);
+        }
+        let initial_calls = work.snapshot().shape_calls - initial_before;
+        assert!(
+            initial_calls >= count as usize,
+            "real normal admissions evaluated every source"
+        );
+        let before = work.snapshot().shape_calls;
+        let context_before = work.snapshot().context_bytes;
+        let owner = owners.last().unwrap();
+        let receipt = {
+            let mut ledger = fixture.ledger.lock().unwrap();
+            ledger.schedule_frontier(owner.clone(), [ObservationProducer::Apple]);
+            assert!(ledger.note_frontier_return(owner, ObservationProducer::Apple));
+            ledger.seal(owner).expect("actual occurrence seal").clone()
+        };
+        assert!(receipt.is_occurrence_seal());
+        emitter.on_event(&EngineEvent::LedgerSeal { receipt });
+        let repeat = work.snapshot().shape_calls - before;
+        let context_bytes = work.snapshot().context_bytes - context_before;
+        let expected = format!("Słowo0 {}", labels[1..].join(" "));
+        assert_eq!(emitter.visible_canvas_snapshot().unwrap().text, expected);
+        {
+            let ledger = fixture.ledger.lock().unwrap();
+            for (owner, label) in owners.iter().zip(&labels) {
+                assert_eq!(ledger.text_of(owner), Some(label.as_str()));
+            }
+            assert!(ledger.word_deletions().is_empty());
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+        emitter.finish().await;
+        assert_eq!(*fixture.delivery.lock().await, expected);
+        eprintln!(
+            "LIGHT_PLUS_WORK_JSON {}",
+            serde_json::json!({"owners":count,"initial_calls":initial_calls,"repeated_calls_after_unchanged_seal":repeat,"repeated_left_context_bytes":context_bytes,"actual_capture_or_asr":false})
+        );
+        assert_eq!(
+            repeat, 0,
+            "unchanged labels and left context must not rerun already evaluated Light+"
+        );
+    }
+
+    #[tokio::test]
+    async fn light_plus_noop_context_recomputes_after_real_human_predecessor_change() {
+        let mut take = live_take("light-plus-human-context");
+        take.emitter
+            .on_capture_opened("light-plus-human-context", 3);
+        let head = OccurrenceIdentity::new("light-plus-human-context", 3, 0, 16_000);
+        let tail = OccurrenceIdentity::new("light-plus-human-context", 3, 16_000, 32_000);
+        take.admit(&head, 1, "Iwo");
+        take.admit(&tail, 2, "dalej");
+        assert_eq!(
+            take.emitter.visible_canvas_snapshot().unwrap().text,
+            "Iwo dalej"
+        );
+        take.seal(&tail);
+        let event = {
+            let mut ledger = take.ledger.lock().unwrap();
+            let observation =
+                ObservationIdentity::new(ObservationProducer::ManualHuman, 9, 0, head.clone());
+            let receipt = ledger.admit(&observation, "Iwo.");
+            assert!(receipt.grants_mutation());
+            EngineEvent::LedgerMutation {
+                observation,
+                label: "Iwo.".into(),
+                receipt,
+            }
+        };
+        take.emitter.on_event(&event);
+        assert_eq!(
+            take.emitter.visible_canvas_snapshot().unwrap().text,
+            "Iwo. Dalej"
+        );
+        {
+            let ledger = take.ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&head), Some("Iwo."));
+            assert_eq!(ledger.text_of(&tail), Some("dalej"));
+            assert_eq!(ledger.len(), 2);
+            assert!(ledger.word_deletions().is_empty());
+            assert_eq!(ledger.conservation().residue(), 0);
+            assert!(
+                ledger
+                    .incremental_shapings()
+                    .iter()
+                    .any(|s| s.occurrence == tail
+                        && s.left_context == "Iwo."
+                        && s.shaped_text == "Dalej")
+            );
+        }
+        take.emitter.finish().await;
+        assert_eq!(*take.delivery.lock().await, "Iwo. Dalej");
+    }
+    #[tokio::test]
+    async fn light_plus_late_gap_fill_invalidates_presentation_without_rewriting_history() {
+        let mut take = live_take("light-plus-gap-context");
+        take.emitter.on_capture_opened("light-plus-gap-context", 3);
+        let head = OccurrenceIdentity::new("light-plus-gap-context", 3, 0, 16_000);
+        let tail = OccurrenceIdentity::new("light-plus-gap-context", 3, 48_000, 64_000);
+        let middle = OccurrenceIdentity::new("light-plus-gap-context", 3, 16_000, 48_000);
+        take.admit(&head, 1, "Iwo");
+        take.admit(&tail, 3, "dalej");
+        assert_eq!(
+            take.emitter.visible_canvas_snapshot().unwrap().text,
+            "Iwo. Dalej"
+        );
+        let history = take.shapings();
+        assert_eq!(history.len(), 1);
+        assert!(history[0].sentence_break_before);
+        take.admit(&middle, 2, "i mowa trwa");
+        assert_eq!(
+            take.emitter.visible_canvas_snapshot().unwrap().text,
+            "Iwo i mowa trwa dalej"
+        );
+        assert_eq!(
+            &take.shapings()[..history.len()],
+            history.as_slice(),
+            "immutable old shaping receipts remain inspectable"
+        );
+        {
+            let ledger = take.ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&head), Some("Iwo"));
+            assert_eq!(ledger.text_of(&middle), Some("i mowa trwa"));
+            assert_eq!(ledger.text_of(&tail), Some("dalej"));
+            assert_eq!(ledger.len(), 3);
+            assert!(ledger.word_deletions().is_empty());
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+        take.emitter.finish().await;
+        assert_eq!(*take.delivery.lock().await, "Iwo i mowa trwa dalej");
+    }
+
+    #[tokio::test]
+    async fn light_plus_stable_last_seal_visits_only_its_bounded_owner() {
+        let count = 32_u64;
+        let work = WorkCounter::register("light-plus-work-owner");
+        let fixture = BusFixture::new("light-plus-work-owner", true, "synthetic.jsonl", "");
+        fixture.bus.publish_started();
+        let mut emitter = fixture.emitter(None, None);
+        emitter.on_capture_opened("light-plus-work-owner", 7);
+        let initial_before = work.snapshot().shape_calls;
+        let mut owners = Vec::new();
+        let mut labels = Vec::new();
+        for i in 0..count {
+            let owner =
+                OccurrenceIdentity::new("light-plus-work-owner", 7, i * 16_000, (i + 1) * 16_000);
+            let label = format!("słowo{i}");
+            let event = admitted_mutation(
+                &mut fixture.ledger.lock().unwrap(),
+                owner.clone(),
+                i + 1,
+                &label,
+            );
+            emitter.on_event(&event);
+            owners.push(owner);
+            labels.push(label);
+        }
+        let initial_calls = work.snapshot().shape_calls - initial_before;
+        assert!(
+            initial_calls >= count as usize,
+            "real normal admissions evaluated every source"
+        );
+        let before = work.snapshot().owner_visits;
+        let stable_before = work.snapshot().stable_checks;
+        let context_before = work.snapshot().context_bytes;
+        let owner = owners.last().unwrap();
+        let receipt = {
+            let mut ledger = fixture.ledger.lock().unwrap();
+            ledger.schedule_frontier(owner.clone(), [ObservationProducer::Apple]);
+            assert!(ledger.note_frontier_return(owner, ObservationProducer::Apple));
+            ledger.seal(owner).expect("actual occurrence seal").clone()
+        };
+        assert!(receipt.is_occurrence_seal());
+        emitter.on_event(&EngineEvent::LedgerSeal { receipt });
+        let repeat = work.snapshot().owner_visits - before;
+        let context_bytes = work.snapshot().context_bytes - context_before;
+        let expected = format!("Słowo0 {}", labels[1..].join(" "));
+        assert_eq!(emitter.visible_canvas_snapshot().unwrap().text, expected);
+        {
+            let ledger = fixture.ledger.lock().unwrap();
+            for (owner, label) in owners.iter().zip(&labels) {
+                assert_eq!(ledger.text_of(owner), Some(label.as_str()));
+            }
+            assert!(ledger.word_deletions().is_empty());
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+        emitter.finish().await;
+        assert_eq!(*fixture.delivery.lock().await, expected);
+        eprintln!(
+            "LIGHT_PLUS_WORK_JSON {}",
+            serde_json::json!({"owners":count,"initial_calls":initial_calls,"repeated_calls_after_unchanged_seal":repeat,"repeated_left_context_bytes":context_bytes,"actual_capture_or_asr":false})
+        );
+        let stable_checks = work.snapshot().stable_checks - stable_before;
+        eprintln!("LIGHT_PLUS_STABILITY_CHECKS {stable_checks}");
+        assert!(
+            stable_checks <= 1,
+            "bounded seal must not scan stable owners: {stable_checks}"
+        );
+        assert!(
+            repeat <= 1,
+            "unchanged last-occurrence seal must not visit all previous owners: {repeat}"
+        );
+    }
+
+    #[tokio::test]
+    async fn light_plus_equal_raw_revision_keeps_both_derived_updates() {
+        let mut take = live_take("light-plus-derived");
+        take.emitter.on_capture_opened("light-plus-derived", 3);
+        let owner = OccurrenceIdentity::new("light-plus-derived", 3, 0, 16_000);
+        take.admit(&owner, 1, "Iwo yyy plan");
+        take.seal(&owner);
+        take.emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: owner.session.clone(),
+            layer_summary: LayerSummary::default(),
+        });
+        let source = take.emitter.terminal_formatter_request().unwrap();
+        let first_sequence = take.projected.lock().unwrap().last().unwrap().sequence;
+        for text in ["Smart first", "Smart second"] {
+            take.emitter
+                .apply_formatter_revision(
+                    source.session_id.clone(),
+                    source.source_revision,
+                    FormattingPolicy::Smart,
+                    AiFormatResult {
+                        text: text.into(),
+                        reasoning_text: None,
+                        status: AiFormatStatus::Applied,
+                    },
+                )
+                .unwrap();
+        }
+        {
+            let events = take.projected.lock().unwrap();
+            let derived = events
+                .iter()
+                .filter(|e| e.reducer_action == "derived_projection")
+                .collect::<Vec<_>>();
+            assert_eq!(
+                derived.len(),
+                2,
+                "derived updates are not duplicate Raw paints"
+            );
+            assert!(
+                derived
+                    .iter()
+                    .all(|e| e.reducer_revision == source.source_revision
+                        && e.rendered_text == source.source_text
+                        && !e.lifecycle_terminal)
+            );
+            assert_eq!(derived[0].delivery_text.as_deref(), Some("Smart first"));
+            assert_eq!(derived[1].delivery_text.as_deref(), Some("Smart second"));
+            assert!(
+                derived[0].sequence > first_sequence && derived[1].sequence > derived[0].sequence
+            );
+        }
+        assert_eq!(take.emitter.terminal_formatter_request().unwrap(), source);
+        assert_eq!(
+            take.ledger.lock().unwrap().text_of(&owner),
+            Some("Iwo yyy plan")
+        );
+        take.emitter.finish().await;
+        assert_eq!(*take.delivery.lock().await, source.source_text);
+    }
+
+    #[tokio::test]
+    async fn light_plus_noop_evaluation_recomputes_when_sentence_pause_changes() {
+        let mut take = live_take("light-plus-pause");
+        take.emitter.on_capture_opened("light-plus-pause", 3);
+        let head = OccurrenceIdentity::new("light-plus-pause", 3, 0, 16_000);
+        let tail = OccurrenceIdentity::new("light-plus-pause", 3, 24_000, 40_000);
+        take.admit(&head, 1, "Iwo");
+        take.admit(&tail, 2, "dalej");
+        assert_eq!(
+            take.emitter.visible_canvas_snapshot().unwrap().text,
+            "Iwo dalej"
+        );
+        take.seal(&tail);
+        assert_eq!(
+            take.emitter.visible_canvas_snapshot().unwrap().text,
+            "Iwo dalej"
+        );
+        take.emitter = take.emitter.with_sentence_pause_sec(0.3);
+        let next = OccurrenceIdentity::new("light-plus-pause", 3, 40_000, 56_000);
+        take.admit(&next, 3, "tak");
+        assert_eq!(
+            take.emitter.visible_canvas_snapshot().unwrap().text,
+            "Iwo. Dalej tak",
+            "a new authenticated admission evaluates changed pause threshold"
+        );
+        {
+            let ledger = take.ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&head), Some("Iwo"));
+            assert_eq!(ledger.text_of(&tail), Some("dalej"));
+            assert!(ledger.word_deletions().is_empty());
+            assert_eq!(ledger.conservation().residue(), 0);
+            assert!(
+                ledger
+                    .incremental_shapings()
+                    .iter()
+                    .any(|s| s.occurrence == tail && s.sentence_break_before)
+            );
+        }
+        take.emitter.finish().await;
+        assert_eq!(*take.delivery.lock().await, "Iwo. Dalej tak");
+    }
+
     #[tokio::test]
     async fn late_mutation_after_frozen_paste_remains_a_bus_revision() {
         let fixture = BusFixture::new("late-paste", true, "late.jsonl", "");
@@ -7270,7 +7650,11 @@ mod tests {
         {
             let mut state = emitter.session_state.lock().unwrap();
             state.document_by_occurrence.remove(&members[1].occurrence);
-            state.invalidate_stale_shapes();
+            state.invalidate_for_document_edit(
+                &members[1].occurrence,
+                true,
+                &ledger.lock().unwrap(),
+            );
         }
         emitter.send_committed_paint("old words".into());
         let removed = emitter.visible_canvas_snapshot().unwrap();
@@ -8523,11 +8907,46 @@ mod tests {
             .expect("light-plus revision projection callback");
         assert_eq!(light_plus_projection.rendered_text, shaped);
         assert_eq!(light_plus_projection.label, tail_words);
-        assert!(
-            projected.iter().any(
-                |event| event.reducer_action == "apply_manual_edit" && event.label == raw_words
-            ),
-            "every occurrence keeps its own spoken label in the revision"
+        assert_eq!(light_plus_projection.acoustic_receipts.len(), 2);
+        for owner in [&occurrence, &tail_occurrence] {
+            assert!(
+                light_plus_projection
+                    .acoustic_receipts
+                    .iter()
+                    .any(|receipt| {
+                        receipt.sample_start == owner.sample_start
+                            && receipt.sample_end == owner.sample_end
+                    }),
+                "the coalesced projection preserves each physical source receipt"
+            );
+        }
+        let mut storage =
+            crate::presentation::transcript_bus_maintenance::generation::Decoder::default();
+        let mut decoded = Vec::new();
+        for line in std::fs::read_to_string(&bus_path).unwrap().lines() {
+            let value = serde_json::from_str::<serde_json::Value>(line).unwrap();
+            for value in storage.push(value).unwrap() {
+                decoded.extend(
+                    crate::presentation::transcript_bus_maintenance::generation::rows(value)
+                        .unwrap(),
+                );
+            }
+        }
+        assert!(!storage.incomplete(), "every stored revision is complete");
+        let evidence_rows = decoded
+            .into_iter()
+            .filter(|row| {
+                row["schema"] == "codescribe.transcript-evidence.v1"
+                    && row["reducer_action"] == "apply_manual_edit"
+                    && row["reducer_revision"].as_u64()
+                        == Some(light_plus_projection.reducer_revision)
+            })
+            .map(|row| row["label"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            evidence_rows,
+            vec![raw_words, tail_words],
+            "every occurrence keeps its own spoken label in the durable revision"
         );
         assert!(light_plus_projection.terminal);
         assert!(
@@ -9463,12 +9882,12 @@ mod tests {
             .unwrap()
             .iter()
             .rev()
-            .find(|event| {
-                event.reducer_revision == open_projection.reducer_revision
-                    && event.document_index == 0
+            .filter(|event| event.reducer_revision == open_projection.reducer_revision)
+            .flat_map(|event| event.acoustic_receipts.iter())
+            .find(|receipt| {
+                receipt.sample_start == first.sample_start && receipt.sample_end == first.sample_end
             })
             .unwrap()
-            .acoustic_receipts[0]
             .presentation_receipt
             .clone()
             .unwrap();
@@ -9476,7 +9895,12 @@ mod tests {
         assert_eq!(retained.source_revision, after_first[0].source_revision);
         assert_eq!(retained.shaped_text, after_first[0].shaped_text);
         assert!(
-            open_projection.acoustic_receipts[0]
+            open_projection
+                .acoustic_receipts
+                .iter()
+                .find(|receipt| receipt.sample_start == second.sample_start
+                    && receipt.sample_end == second.sample_end)
+                .expect("open physical suffix remains present")
                 .presentation_receipt
                 .is_none()
         );
@@ -10204,7 +10628,16 @@ mod tests {
         take.admit(&first, 1, "pierwsze zdanie");
         let revision = take.projected.lock().unwrap().last().unwrap().clone();
         assert_eq!(revision.rendered_text, "Pierwsze zdanie drugie zdanie");
-        assert!(revision.acoustic_receipts[0].presentation_receipt.is_none());
+        assert!(
+            revision
+                .acoustic_receipts
+                .iter()
+                .find(|receipt| receipt.sample_start == second.sample_start
+                    && receipt.sample_end == second.sample_end)
+                .expect("the invalidated successor is not dropped")
+                .presentation_receipt
+                .is_none()
+        );
         take.seal(&first);
         take.emitter.finish().await;
         assert_eq!(

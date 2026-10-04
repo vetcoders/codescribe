@@ -984,6 +984,36 @@ mod tests {
 
     use codescribe_core::test_isolation::ScopedEnv;
 
+    #[tokio::test]
+    async fn public_responses_chain_requests_storage_before_resuming() {
+        let mut server = mockito::Server::new_async().await;
+        let chain = Arc::new(Mutex::new(Some("resp_previous".to_string())));
+        let mut provider = chained_test_provider(Arc::clone(&chain));
+        provider.endpoint = format!("{}/v1/responses", server.url());
+        let endpoint = server.mock("POST", "/v1/responses")
+            .match_body(mockito::Matcher::PartialJson(json!({"store":true,"previous_response_id":"resp_previous"})))
+            .expect(1).with_status(200).with_header("content-type", "text/event-stream")
+            .with_body("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_current\",\"status\":\"completed\"}}\n\ndata: [DONE]\n\n")
+            .create_async().await;
+        let messages = [Message::new(
+            Role::User,
+            vec![ContentBlock::Text("continue".into())],
+        )];
+        let mut events = provider
+            .stream(&messages, &[], &StreamOptions::default())
+            .await
+            .unwrap();
+        let mut completed = false;
+        while let Some(event) = events.recv().await {
+            if matches!(event, AgentEvent::ResponseDone { clean: true, .. }) {
+                completed = true;
+            }
+        }
+        endpoint.assert_async().await;
+        assert!(completed);
+        assert_eq!(chain.lock().await.as_deref(), Some("resp_current"));
+    }
+
     /// Reasoning summary requests apply only to reasoning-capable model families.
     #[test]
     fn requests_public_reasoning_summaries_only_for_reasoning_models() {

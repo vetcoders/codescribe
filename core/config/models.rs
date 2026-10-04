@@ -641,11 +641,8 @@ fn whisper_display_label(reference: &str, usable: bool) -> String {
         if token.is_empty() {
             continue;
         }
-        let is_version = token.starts_with('v')
-            && token
-                .chars()
-                .nth(1)
-                .is_some_and(|ch| ch.is_ascii_digit());
+        let is_version =
+            token.starts_with('v') && token.chars().nth(1).is_some_and(|ch| ch.is_ascii_digit());
         if is_version || token.chars().all(|ch| ch.is_ascii_digit()) {
             words.push(token.to_string());
         } else {
@@ -735,13 +732,27 @@ pub fn whisper_model_options(configured: Option<&str>) -> Vec<WhisperModelOption
             if !is_complete_whisper_model_dir(&path) && !is_whisper_family_dir(&path, &name) {
                 continue;
             }
-            push_whisper_option(name, path, "models_dir", active.as_ref(), &mut options, &mut seen);
+            push_whisper_option(
+                name,
+                path,
+                "models_dir",
+                active.as_ref(),
+                &mut options,
+                &mut seen,
+            );
         }
     }
 
     // 2. Newest weight-bearing snapshot per whisper repo in the known caches.
     for (repo, snapshot) in crate::hf_cache::whisper_cache_snapshots() {
-        push_whisper_option(repo, snapshot, "hf_cache", active.as_ref(), &mut options, &mut seen);
+        push_whisper_option(
+            repo,
+            snapshot,
+            "hf_cache",
+            active.as_ref(),
+            &mut options,
+            &mut seen,
+        );
     }
 
     // 3. The configured reference when it resolves outside the rows above.

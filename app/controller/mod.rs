@@ -9366,6 +9366,276 @@ mod refusal_recovery_tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn light_plus_controller_one_document_paint_per_revision() {
+        let count = 5_u64;
+        let session = "overlay-one-document";
+        let dir = tempfile::tempdir().unwrap();
+        let bus = Arc::new(
+            TranscriptBus::open_at(
+                TranscriptSession {
+                    session_id: session.into(),
+                    mode: TranscriptMode::Dictation,
+                    has_latched_target: true,
+                    latched_target_is_self: false,
+                    audience: None,
+                    badge_only: false,
+                },
+                dir.path().join("synthetic.jsonl"),
+                None,
+            )
+            .unwrap(),
+        );
+        bus.publish_started();
+        let ledger = Arc::new(std::sync::Mutex::new(AcousticLedger::new()));
+        let buffer = Arc::new(Mutex::new(String::new()));
+        let (sender, mut receiver) = broadcast::channel(256);
+        let pipeline = RecordingController::build_recording_event_sink(
+            Arc::clone(&buffer),
+            RecordingEventSinkOptions {
+                preview_deltas_enabled: false,
+                sentence_pause_sec: 0.7,
+            },
+            sender,
+            Some(Arc::clone(&bus)),
+            Some(Arc::clone(&ledger)),
+            Arc::default(),
+        );
+        pipeline.event_sink.on_capture_opened(session, 7);
+        pipeline.presentation.set_literal_delivery(true);
+        while receiver.try_recv().is_ok() {}
+        let mut owners = Vec::new();
+        for i in 0..count {
+            let owner = OccurrenceIdentity::new(session, 7, i * 16_000, (i + 1) * 16_000);
+            let calibration = EnergyCalibration {
+                version: "synthetic-qualification".into(),
+                min_energy_integral: 1.0,
+                min_valley_samples: 1,
+            };
+            let evidence = AcousticEvidence {
+                occurrence: owner.clone(),
+                duration_ms: 1000.0,
+                energy_integral: 10.0,
+                mean_rms_dbfs: -12.0,
+                peak_dbfs: -3.0,
+                vad_open_sample: Some(owner.sample_start),
+                vad_close_sample: Some(owner.sample_end),
+                evidence_calibration_version: calibration.version.clone(),
+            };
+            let event = {
+                let mut ledger = ledger.lock().unwrap();
+                assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+                let observation =
+                    ObservationIdentity::new(ObservationProducer::Apple, i + 1, 0, owner.clone());
+                let receipt = ledger.admit(&observation, "Iwo");
+                EngineEvent::LedgerMutation {
+                    observation,
+                    label: "Iwo".into(),
+                    receipt,
+                }
+            };
+            pipeline.event_sink.on_event(&event);
+            owners.push(owner);
+        }
+        assert!(pipeline.presentation.wait_paint_published().await);
+        let expected = vec!["Iwo"; count as usize].join(" ");
+        assert_eq!(*buffer.lock().await, expected);
+        {
+            let ledger = ledger.lock().unwrap();
+            assert_eq!(ledger.len(), count as usize);
+            for owner in &owners {
+                assert_eq!(ledger.text_of(owner), Some("Iwo"));
+            }
+            assert!(ledger.word_deletions().is_empty());
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+        let mut rows = std::collections::BTreeMap::<u64, Vec<TranscriptBusEvidenceEvent>>::new();
+        while let Ok(event) = receiver.try_recv() {
+            if let IpcEventPayload::TranscriptProjection { json } = event.payload {
+                let row: TranscriptBusEvidenceEvent = serde_json::from_str(&json).unwrap();
+                assert!(!row.lifecycle_terminal);
+                rows.entry(row.reducer_revision).or_default().push(row);
+            }
+        }
+        assert_eq!(rows.len(), count as usize);
+        let multiplicities = rows.values().map(Vec::len).collect::<Vec<_>>();
+        for (index, group) in rows.values().enumerate() {
+            assert!(
+                group
+                    .iter()
+                    .all(|row| row.rendered_text == group[0].rendered_text)
+            );
+            let receipts = group
+                .iter()
+                .flat_map(|row| row.acoustic_receipts.iter())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                receipts.len(),
+                index + 1,
+                "every authentic owner survives, exactly once per revision"
+            );
+            for (i, receipt) in receipts.iter().enumerate() {
+                assert_eq!(receipt.session_id, session);
+                assert_eq!(receipt.capture_epoch, 7);
+                assert_eq!(receipt.sample_start, i as u64 * 16_000);
+                assert_eq!(receipt.sample_end, (i as u64 + 1) * 16_000);
+                assert!(!receipt.acoustic_serial.is_empty());
+                assert!(!receipt.layer_decision_receipts.is_empty());
+            }
+        }
+        assert_eq!(rows.values().last().unwrap()[0].rendered_text, expected);
+        eprintln!(
+            "LIGHT_PLUS_IPC_JSON {}",
+            serde_json::json!({"owners":count,"full_document_projections_per_revision":multiplicities,"actual_capture_or_gui":false})
+        );
+        assert!(
+            multiplicities.iter().all(|n| *n == 1),
+            "one overlay document revision must not be resent once per occurrence; occurrence evidence must remain available without repeating the full paint"
+        );
+    }
+
+    #[tokio::test]
+    async fn light_plus_equal_raw_revision_keeps_terminal_delivery() {
+        let count = 5_u64;
+        let session = "overlay-terminal-delivery";
+        let dir = tempfile::tempdir().unwrap();
+        let bus = Arc::new(
+            TranscriptBus::open_at(
+                TranscriptSession {
+                    session_id: session.into(),
+                    mode: TranscriptMode::Dictation,
+                    has_latched_target: true,
+                    latched_target_is_self: false,
+                    audience: None,
+                    badge_only: false,
+                },
+                dir.path().join("synthetic.jsonl"),
+                None,
+            )
+            .unwrap(),
+        );
+        bus.publish_started();
+        let ledger = Arc::new(std::sync::Mutex::new(AcousticLedger::new()));
+        let buffer = Arc::new(Mutex::new(String::new()));
+        let (sender, mut receiver) = broadcast::channel(256);
+        let pipeline = RecordingController::build_recording_event_sink(
+            Arc::clone(&buffer),
+            RecordingEventSinkOptions {
+                preview_deltas_enabled: false,
+                sentence_pause_sec: 0.7,
+            },
+            sender.clone(),
+            Some(Arc::clone(&bus)),
+            Some(Arc::clone(&ledger)),
+            Arc::default(),
+        );
+        pipeline.event_sink.on_capture_opened(session, 7);
+        pipeline.presentation.set_literal_delivery(true);
+        while receiver.try_recv().is_ok() {}
+        let mut owners = Vec::new();
+        for i in 0..count {
+            let owner = OccurrenceIdentity::new(session, 7, i * 16_000, (i + 1) * 16_000);
+            let calibration = EnergyCalibration {
+                version: "synthetic-qualification".into(),
+                min_energy_integral: 1.0,
+                min_valley_samples: 1,
+            };
+            let evidence = AcousticEvidence {
+                occurrence: owner.clone(),
+                duration_ms: 1000.0,
+                energy_integral: 10.0,
+                mean_rms_dbfs: -12.0,
+                peak_dbfs: -3.0,
+                vad_open_sample: Some(owner.sample_start),
+                vad_close_sample: Some(owner.sample_end),
+                evidence_calibration_version: calibration.version.clone(),
+            };
+            let event = {
+                let mut ledger = ledger.lock().unwrap();
+                assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+                let observation =
+                    ObservationIdentity::new(ObservationProducer::Apple, i + 1, 0, owner.clone());
+                let receipt = ledger.admit(&observation, "Iwo");
+                EngineEvent::LedgerMutation {
+                    observation,
+                    label: "Iwo".into(),
+                    receipt,
+                }
+            };
+            pipeline.event_sink.on_event(&event);
+            owners.push(owner);
+        }
+        assert!(pipeline.presentation.wait_paint_published().await);
+        let expected = vec!["Iwo"; count as usize].join(" ");
+        assert_eq!(*buffer.lock().await, expected);
+        {
+            let ledger = ledger.lock().unwrap();
+            assert_eq!(ledger.len(), count as usize);
+            for owner in &owners {
+                assert_eq!(ledger.text_of(owner), Some("Iwo"));
+            }
+            assert!(ledger.word_deletions().is_empty());
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+
+        let mut last = None;
+        while let Ok(event) = receiver.try_recv() {
+            if let IpcEventPayload::TranscriptProjection { json } = event.payload {
+                let row: TranscriptBusEvidenceEvent = serde_json::from_str(&json).unwrap();
+                assert!(!row.lifecycle_terminal);
+                last = Some(row);
+            }
+        }
+        let previous = last.expect("real document projection");
+        let slot = RwLock::new(Some(Arc::clone(&bus)));
+        RecordingController::end_transcript_bus(
+            &slot,
+            TranscriptSessionEndReason::Completed,
+            true,
+            TranscriptDelivery::SinkAccepted,
+            Some("selected delivery text".into()),
+            Some(&sender),
+        )
+        .await;
+        let mut ended = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            if let IpcEventPayload::TranscriptProjection { json } = event.payload {
+                ended.push(serde_json::from_str::<TranscriptBusEvidenceEvent>(&json).unwrap());
+            }
+        }
+        assert_eq!(
+            ended.len(),
+            1,
+            "terminal lifecycle must arrive exactly once even without a new Raw revision"
+        );
+        let ended = &ended[0];
+        assert_eq!(ended.reducer_revision, previous.reducer_revision);
+        assert!(ended.sequence > previous.sequence);
+        assert!(ended.lifecycle_terminal);
+        assert!(ended.terminal);
+        assert_eq!(ended.delivery, TranscriptDelivery::SinkAccepted);
+        assert_eq!(ended.rendered_text, expected);
+        assert_eq!(
+            ended.delivery_text.as_deref(),
+            Some("selected delivery text")
+        );
+        assert!(ended.can_copy && ended.can_retranscribe);
+        assert!(slot.read().await.is_none());
+        RecordingController::end_transcript_bus(
+            &slot,
+            TranscriptSessionEndReason::Completed,
+            true,
+            TranscriptDelivery::SinkAccepted,
+            None,
+            Some(&sender),
+        )
+        .await;
+        assert!(
+            receiver.try_recv().is_err(),
+            "repeated closure cannot issue a second delivery"
+        );
+    }
 }
 
 /// W2 contracts: UNRUN until the integrator closes the joined structure.
