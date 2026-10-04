@@ -15,21 +15,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version  | Repository milestone | Public distribution status                                                       |
 | -------- | -------------------- | -------------------------------------------------------------------------------- |
-| `0.13.3` | 2026-08-13           | **Latest published GitHub Release** (`v0.13.3`), signed, notarized, and stapled. |
+| `0.13.3` | 2026-08-13           | Earlier published GitHub Release (`v0.13.3`), signed, notarized, and stapled.    |
 | `0.14.0` | 2026-08-17           | Source/daily-build milestone only; no Git tag or GitHub Release was published.   |
 | `0.14.1` | 2026-08-18 onward    | Earlier source/release-candidate milestone.                                      |
 | `0.15.1` | 2026-09-13           | Earlier source/daily-build milestone.                                            |
-| `0.15.2` | 2026-10-04           | Integrated release candidate; signed distribution publication is pending.        |
+| `0.15.2` | 2026-10-04           | **Latest published GitHub Release** (`v0.15.2`), signed, notarized, and stapled. |
 
 The sections below distinguish code milestones from public releases. A version
 number in `Cargo.toml` is not evidence that a DMG, tag, appcast, or GitHub
 Release exists.
 
-## [0.15.2] - 2026-10-04 (release candidate)
+## [0.15.2] - 2026-10-04
 
-This candidate combines the current dictation/agent stack and PR #117. The
-September 30 candidate has been superseded. Publication and installed-process
-acceptance are recorded separately from source checks.
+This release combines the current dictation/agent stack and PR #117. The
+September 30 candidate has been superseded. The public standard DMG uses source `d183dced3`, build 1838;
+publication and installed-process receipts
+are recorded separately from source checks.
 
 ### Integrated in this cut
 

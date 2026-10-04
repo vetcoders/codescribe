@@ -2,10 +2,9 @@
 
 This document describes the installation methods, configuration paths, and how the application locates its resources.
 
-> **Published/source split:** GitHub currently publishes `v0.13.3` as Latest.
-> The repository version is `0.15.2`, but a source version is not a public
-> release until the signed/notarized/stapled DMG, tag, appcast, and GitHub
-> Release have been cut and verified.
+> **Published release:** GitHub Latest is [`v0.15.2`](https://github.com/vetcoders/codescribe/releases/tag/v0.15.2).
+> The standard DMG is signed, notarized and stapled. The website and signed
+> Sparkle feed point to this release.
 
 ## Installation Methods
 
