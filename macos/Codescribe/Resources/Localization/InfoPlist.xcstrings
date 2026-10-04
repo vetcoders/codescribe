@@ -10,6 +10,12 @@
             "state" : "translated",
             "value" : "Codescribe uses Apple Events to bring apps forward and deliver transcribed text into the app you are working in."
           }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe używa Apple Events, aby przełączać się do odpowiednich aplikacji i wstawiać transkrybowany tekst tam, gdzie pracujesz."
+          }
         }
       }
     },
@@ -21,6 +27,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codescribe transcribes your speech locally with on-device Whisper."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe transkrybuje Twoją mowę lokalnie za pomocą modelu Whisper działającego na tym Macu."
           }
         }
       }
@@ -34,6 +46,12 @@
             "state" : "translated",
             "value" : "Codescribe captures the screen when you ask the assistant to look at what is currently on screen."
           }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe przechwytuje obraz ekranu tylko wtedy, gdy poprosisz Agenta, aby sprawdził, co jest na ekranie."
+          }
         }
       }
     },
@@ -45,6 +63,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codescribe uses on-device speech recognition (including Polish) to turn your dictation into text without sending audio to the cloud."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe korzysta z rozpoznawania mowy na urządzeniu, także w języku polskim, aby zamieniać dyktowanie na tekst bez wysyłania nagrań do chmury."
           }
         }
       }

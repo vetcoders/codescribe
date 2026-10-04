@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-- Add the localization foundation for the macOS app: String Catalogs with English as the source language, catalog sync and lint tooling, and interface copy prepared for further languages (`docs/LOCALIZATION.md`). No translation ships yet. Tray status wording is now authored in the app; the Rust tray payload carries state only.
+- Add the localization foundation for the macOS app: String Catalogs with English as the source language, catalog sync and lint tooling, and interface copy prepared for further languages (`docs/LOCALIZATION.md`). Tray status wording is now authored in the app; the Rust tray payload carries state only.
+- Polish interface. The app follows the macOS language; every interface string and permission prompt has a Polish translation. Text that Rust produces (status rows, error causes, notifications, thread export) stays English in this cut (`docs/LOCALIZATION_LEDGER.md` §4).
+- Translator worksheet (`scripts/l10n-sheet.py`, `make l10n-sheet`): exports a CSV per catalog and language and folds it back, refusing rows that drop an argument or misspell the product. The catalog lint now requires every language the bundle carries to be complete.
 - Turning the transcription overlay off closes an overlay already on screen (a take being corrected stays until its draft is committed or discarded), and a status card shown with the overlay off no longer stays up when "Keep visible between takes" is pinned.
 - A second click on the menu bar icon closes the menu; it no longer closes and reopens it within the same click.
 
