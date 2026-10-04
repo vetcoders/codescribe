@@ -195,7 +195,7 @@ install-bus:
 	@./scripts/install-bus.sh
 
 install-if-idle:
-	@./scripts/install-if-idle.sh
+	@./scripts/install-if-idle.sh $(if $(INSTALL_APP_SOURCE),--from-app "$(INSTALL_APP_SOURCE)")
 
 install-app: install-voice-lab
 	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, optimized local profile) via scripts/build-app.sh ..."
