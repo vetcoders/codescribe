@@ -298,7 +298,7 @@ bump:
 		sed -i '' "s/badge\/version-$$current-/badge\/version-$$new-/" README.md; \
 		sed -i '' "s/current source version is \`$$current\`/current source version is \`$$new\`/" README.md; \
 	fi; \
-	echo "Bumped: v$$current -> v$$new (Cargo.toml + README). Update CHANGELOG by hand. Do not bump site/src/lib/release.ts here."
+	echo "Bumped: v$$current -> v$$new (Cargo.toml + README). Update CHANGELOG by hand. Website download metadata comes from GitHub Releases."
 
 bump-patch:
 	@$(MAKE) bump TYPE=patch
@@ -1400,9 +1400,9 @@ install-app-release:
 	fi
 
 # Everyday stable cut: the slim public DMG and the same stapled .app in
-# /Applications. Does not bake Lab. Does not touch SITE_VERSION / tags / GitHub.
+# /Applications. Does not bake Lab. Does not touch release tags / GitHub.
 release-stable: release-standard install-app-release
-	@echo "Everyday stable is local (slim DMG + /Applications). Tag, push, gh release, and SITE_VERSION stay the operator button."
+	@echo "Everyday stable is local (slim DMG + /Applications). Tag, push, and gh release stay the operator button."
 
 # Optional fat SKU: bake Whisper (~1GB+) into the app. Not the daily path.
 # Ends with the fail-closed payload gate (full = Silero + Whisper embedded,

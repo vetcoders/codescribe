@@ -9,7 +9,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "check": "astro check",
-    "test:teacher": "node --experimental-strip-types --test src/lib/teacher/teach.test.ts"
+    "test:teacher": "node --experimental-strip-types --test src/lib/teacher/teach.test.ts",
+    "test:release": "node --experimental-strip-types --test src/lib/github-release.test.ts"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.1.0",

@@ -23,6 +23,13 @@ npm run check     # astro check (TypeScript / template diagnostics)
 > the site lives at `/` (e.g. `http://localhost:4321`),
 > matching production.
 
+Download links, displayed version and DMG size are resolved together from
+GitHub's latest published stable release during the build. The build requires
+outbound access to GitHub and checks that the uploaded `Codescribe.dmg` is
+reachable; missing metadata or assets stop publication rather than retaining a
+stale version. Run `npm run test:release` for the hermetic release contract tests.
+All download buttons share this build snapshot, including without JavaScript.
+
 ## Deploy
 
 Production is `https://codescribe.vetcoders.io`, served by Caddy from
@@ -36,6 +43,9 @@ in [the deployment contract](../services/license-issuer/README.md#deployment-ops
   update the production domain or its Sparkle feed.
 - After production deployment, verify all download links and the signed
   enclosure at the canonical domain against the published GitHub release.
+- A published GitHub release also triggers the Pages rebuild using current
+  `main` website source. This updates the GitHub Pages copy; the canonical Caddy
+  site still requires the production redeploy described above.
 
 Route every `public/` asset through `src/lib/asset.ts`:
 
