@@ -65,7 +65,7 @@ final class TrayViewModelTests: XCTestCase {
       }
     )
     let tray = TrayViewModel(engine: trayEngine)
-    let settings = SettingsViewModel(engine: settingsEngine)
+    let settings = SettingsViewModel(engine: settingsEngine, permissionProbe: MockPermissionProbe())
     tray.refreshStatus()
     settings.refresh()
 

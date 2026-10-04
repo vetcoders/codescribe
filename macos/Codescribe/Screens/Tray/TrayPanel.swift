@@ -54,7 +54,7 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
     reposition()
     makeKeyAndOrderFront(nil)
     makeFirstResponder(nil)
-    button.highlight(true)
+    highlightAnchor(button)
     clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) {
       [weak self] event in
       if let self, event.window !== self, event.window !== anchor?.window,
@@ -92,7 +92,7 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
     if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor) }
     clickMonitor = nil
     outsideClickMonitor = nil
-    anchor?.highlight(false)
+    anchor?.layer?.backgroundColor = nil
     anchor = nil
     orderOut(nil)
     contentViewController = nil
@@ -108,6 +108,23 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
     if anchorClickInFlight { return }
     if let key = NSApp.keyWindow, key.parent === self { return }
     dismiss()
+  }
+
+  /// AppKit paints the status button's pill only while it tracks a menu, not
+  /// for a window the button opened, so the menu paints the same pill itself
+  /// for as long as it is open: a capsule in the menu bar's own tint.
+  private func highlightAnchor(_ button: NSButton) {
+    button.wantsLayer = true
+    guard let layer = button.layer else { return }
+    layer.cornerRadius = button.bounds.height / 2
+    let tint = NSColor(name: nil) { appearance in
+      appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        ? NSColor.white.withAlphaComponent(0.15)
+        : NSColor.black.withAlphaComponent(0.10)
+    }
+    button.effectiveAppearance.performAsCurrentDrawingAppearance {
+      layer.backgroundColor = tint.cgColor
+    }
   }
 
   private var anchorRect: NSRect? {

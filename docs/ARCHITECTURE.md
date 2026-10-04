@@ -310,10 +310,66 @@ The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `
 | `MessageList.swift`                 | 1535 | Message rendering, streaming assistant bubbles  |
 | `ChatComponents.swift`              | 1008 | Shared bubble / attachment / tool components    |
 | `Composer.swift`                    | 823  | Input composer (dictation, attachments, send)   |
-| `ThreadRail.swift`                  | 498  | Thread list rail                                |
-| `AgentChatView.swift`               | 473  | Screen composition                              |
+| `ThreadRail.swift`                  | 659  | Thread list rail                                |
+| `AgentChatView.swift`               | 679  | Screen composition                              |
 | `ComposerTextView.swift`            | 370  | NSTextView bridge for the composer              |
 | `AssistivePromptPresentation.swift` | 346  | Assistive-lane prompt presentation              |
+
+### Thread history interactions
+
+The rail (`ThreadRail.swift`) and the detail toolbar menu (`AgentChatView.swift`)
+share three contracts:
+
+- **Selection is one action with three entry points.** A pointer click, the
+  row's Accessibility activation and the keyboard all call the same `select`
+  path in `ThreadRail`. To Accessibility a row is a single button labelled
+  with the thread title, with the `selected` trait on the open thread and
+  Rename / Favorite / Delete as named actions; while a title is being renamed
+  the row exposes its children so the text field stays reachable. Rows are
+  keyboard focus targets: Return or Space opens the focused row, Up / Down
+  opens the neighbouring row in visible order (`ThreadRailNavigation`,
+  no wrap-around). Rows join the Tab order under macOS keyboard navigation,
+  like the app's other custom buttons.
+- **Deletion always confirms.** Both the rail's context menu and the toolbar
+  menu present the same `ThreadDeleteConfirmation`; the dialog names the
+  thread and Cancel keeps it. There is no undo path, and the copy says so.
+- **Markdown export reports its outcome.** The toolbar menu names the fixed
+  destination (the Transcripts folder from Settings › User › Local data) in a
+  section header; there is no file chooser. After the write, an alert shows
+  the file name and folder with "Reveal in Finder" and "Open" buttons, or an
+  "Export failed" alert naming the thread and the folder to check. Finder is
+  never opened as a side effect of the menu action. `ThreadExportOutcome`
+  carries the result; `RealThreadsEngine` still collapses the bridge error
+  into `nil`, so the failure alert cannot quote the underlying reason.
+
+### Restored tool inspector metadata
+
+`RealThreadsEngine` projects persisted messages from `CodescribeThreads` into
+the existing `ToolLine` presentation. `ThreadStore` saves `tool_use` blocks with
+`id`, `name` and `input`, and `tool_result` blocks with `tool_use_id`, nested
+`content` and `is_error`. The bridge serializes these stored content blocks
+unchanged into `CsThreadMessage.rawJson`; this is the storage block format,
+not the runtime `ContentBlock` serialization with its `payload` envelope.
+
+Restoration retains a nonblank `tool_use_id` as `ToolLine.callID`, making the
+existing inspector available even without a summary or timing. The name comes
+only from a preceding or same-message `tool_use` with that exact ID; an
+uncorrelated result keeps the existing generic `tool result` detail. Explicit
+`is_error: true` maps to `failed` / `.failed`, and `false` to `ran` /
+`.succeeded`. Missing, null or incorrectly typed outcome evidence maps to
+`ended` / `.unknown`. A result with a missing, blank or incorrectly typed ID
+remains a tool row without a call ID. Incorrectly typed optional fields and
+non-object blocks do not discard readable sibling blocks. Undecodable JSON
+retains the existing flattened-message path.
+
+`reason` stays absent: live UI summaries are redacted and truncated by
+`summarize_tool_result` in `core/agent/session.rs` before being sent as UI
+events, and that summary field is not persisted. Nested result `content` is
+stored, but is not promoted to an inspector summary. `startedAt` and
+`durationMs` are UI-only and remain absent after restoration; message
+timestamps do not establish tool duration. No storage schema or persistence
+authority changes. The internal `restoredMessages(from:)` seam runs the same
+projection over bridge records for integrator-owned hermetic fixtures.
 
 ### Whisper Engine
 

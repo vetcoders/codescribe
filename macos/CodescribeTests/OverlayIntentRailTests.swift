@@ -496,7 +496,7 @@ final class OverlayIntentRailTests: XCTestCase {
         "Discard transcript draft",
         "Copy transcript",
         "Insert transcript",
-        "Retranscribe recording",
+        "Transcribe this take again",
         "Format transcript",
         "Copy previous take to clipboard",
         "Discard previous take",

@@ -608,6 +608,9 @@
     "API key (optional)" : {
 
     },
+    "API key configured. Supported Assistive requests, cloud Formatting and model discovery can use this provider's key. No account is connected." : {
+
+    },
     "API keys will also be removed from Keychain and are not recoverable from Trash." : {
 
     },
@@ -627,6 +630,18 @@
       "comment" : "Sidebar group of settings sections"
     },
     "Account access unavailable" : {
+
+    },
+    "Account connected and API key configured. Supported Assistive requests can use the account; Formatting and model discovery use the provider API key." : {
+
+    },
+    "Account connected for supported Assistive requests. No API key is configured. You can continue without adding one; cloud Formatting and model discovery require a provider API key." : {
+
+    },
+    "Account sign-in and API keys are separate ways to connect. Account sign-in supports Assistive; cloud Formatting and model discovery use an API key. Keys are stored in the macOS Keychain and never shown back. You can skip this step and configure access later in Settings › Providers." : {
+
+    },
+    "Account sign-in supports Assistive requests, but model discovery requires a provider API key. Keep the current model or enter a Model ID in Settings › Agent › LLM lanes." : {
 
     },
     "Acoustic coverage was measured as complete, but this transcript has no current terminal seal." : {
@@ -665,6 +680,9 @@
     "Add server" : {
       "comment" : "MCP servers: header of the form that adds a server"
     },
+    "Add this provider's API key in Settings › Providers to discover models, or enter a Model ID in Settings › Agent › LLM lanes." : {
+
+    },
     "Advanced" : {
 
     },
@@ -682,6 +700,12 @@
     },
     "Agent bridge installation could not be completed atomically: %@" : {
       "comment" : "The placeholder is a technical diagnostic produced by the installer"
+    },
+    "Agent capabilities not ready" : {
+
+    },
+    "Agent capabilities ready" : {
+
     },
     "Agent channel" : {
 
@@ -711,6 +735,9 @@
 
     },
     "Agent readiness" : {
+
+    },
+    "Agent readiness covers Assistive access and native tools. Cloud Formatting is configured separately in Settings › Agent › LLM lanes." : {
 
     },
     "Agent transcript tagging" : {
@@ -804,6 +831,9 @@
     "Apple on-device (experimental)" : {
       "shouldTranslate" : false
     },
+    "Apple on-device formatting is selected. Cloud requests still require this lane's credentials. %@" : {
+      "comment" : "The placeholder is the resolved cloud lane availability"
+    },
     "Apple only" : {
       "comment" : "Dictation lane: on-device Apple Speech"
     },
@@ -860,6 +890,15 @@
     },
     "Audio" : {
       "comment" : "Settings section"
+    },
+    "Audio availability for this take could not be confirmed here. You can start a new take." : {
+
+    },
+    "Audio for this take is available, but retranscription is not available here." : {
+
+    },
+    "Audio for this take is available. Use Transcribe this take again in More actions." : {
+
     },
     "Audio input device" : {
 
@@ -925,6 +964,9 @@
       "comment" : "Overlay screen anchor"
     },
     "Bring your words into the apps you already use. We’ll connect your microphone, choose your language and shortcuts, and optionally add an AI assistant. Every choice can be changed later in Settings." : {
+
+    },
+    "Browse saved takes; this does not retry the current take" : {
 
     },
     "Buffer delay" : {
@@ -1055,10 +1097,16 @@
     "Checking provider access… You can continue with Basic dictation." : {
 
     },
+    "Checking recording activity…" : {
+
+    },
     "Checking recording readiness…" : {
 
     },
     "Checking seal lane…" : {
+
+    },
+    "Choose Stop recording or use your recording shortcut to finish this take." : {
 
     },
     "Choose a screen anchor or allow free dragging" : {
@@ -1389,6 +1437,9 @@
     "Couldn't finalize transcript: %@" : {
       "comment" : "The placeholder is the engine's own failure text"
     },
+    "Couldn't finish transcription" : {
+
+    },
     "Couldn't format transcript: %@" : {
       "comment" : "The placeholder is the engine's own failure text"
     },
@@ -1418,6 +1469,9 @@
     },
     "Couldn't start recording: %@" : {
       "comment" : "The placeholder is the engine's own failure text"
+    },
+    "Couldn't transcribe this take again" : {
+
     },
     "Couldn't undo retranscribe: %@" : {
       "comment" : "The placeholder is the engine's own failure text"
@@ -1540,6 +1594,9 @@
       "comment" : "Why the app asks for the Input Monitoring scope"
     },
     "Device choice and sound feedback use the live recorder config." : {
+
+    },
+    "Diagnostic details" : {
 
     },
     "Diagnostics" : {
@@ -1688,6 +1745,9 @@
     "Enter a CSK1 license key." : {
       "comment" : "CSK1 is the license-key prefix — keep it verbatim"
     },
+    "Enter an HTTP or HTTPS URL with a host, such as https://api.example.com." : {
+
+    },
     "Enter license" : {
 
     },
@@ -1751,6 +1811,12 @@
     "Finish the current turn before changing the thread search." : {
 
     },
+    "Finishing recording" : {
+
+    },
+    "Finishing recording…" : {
+
+    },
     "Finishing…" : {
       "comment" : "Overlay cap while the take is transcribed"
     },
@@ -1771,6 +1837,12 @@
     },
     "Formatting" : {
       "comment" : "Request lane: transcript cleanup"
+    },
+    "Formatting is disabled. This lane is not required for readiness." : {
+
+    },
+    "Formatting requires this provider's API key; an Assistive account does not authorize it. Add the key in Settings › Providers." : {
+
     },
     "Formatting revision…" : {
 
@@ -2125,6 +2197,9 @@
     "Manage MCP servers" : {
 
     },
+    "Manage provider access…" : {
+
+    },
     "Master switch. The Off level below always skips the LLM." : {
 
     },
@@ -2204,6 +2279,15 @@
       "comment" : "{text} is a template token the user types — keep it verbatim"
     },
     "Model" : {
+
+    },
+    "Model discovery failed. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes." : {
+
+    },
+    "Model discovery failed: %@. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes." : {
+      "comment" : "The placeholder is a status message from the core"
+    },
+    "Models unavailable" : {
 
     },
     "More actions" : {
@@ -2328,6 +2412,9 @@
     "Next" : {
 
     },
+    "No API key is configured for this provider. Add one in Settings › Providers, choose another provider, or skip this step for dictation." : {
+
+    },
     "No Agent provider or MCP connector secrets are currently stored." : {
 
     },
@@ -2338,6 +2425,9 @@
       "comment" : "The placeholder is a provider identifier"
     },
     "No account is required. Your configuration and transcript history stay on this Mac." : {
+
+    },
+    "No account or API key is configured for this provider. Connect a supported account for Assistive, or add an API key in Settings › Providers. You can skip this step for dictation." : {
 
     },
     "No archived audio for this row — will not fall back to last_session.wav." : {
@@ -2383,6 +2473,12 @@
     "No matches" : {
 
     },
+    "No models returned. Enter a Model ID in Settings › Agent › LLM lanes." : {
+
+    },
+    "No new transcript was produced for this take." : {
+
+    },
     "No result summary was stored for this call." : {
 
     },
@@ -2408,6 +2504,9 @@
       "comment" : "Tray banner: there is no recent transcript to append to the daily note"
     },
     "No transcript was delivered." : {
+
+    },
+    "No transcript was produced for this take." : {
 
     },
     "No transcripts yet" : {
@@ -2735,6 +2834,9 @@
     "Provider" : {
 
     },
+    "Provider API key" : {
+      "comment" : "Summary row: whether an API key is stored for the chosen AI provider"
+    },
     "Provider access is still being updated." : {
 
     },
@@ -2748,6 +2850,9 @@
 
     },
     "Provider access unavailable" : {
+
+    },
+    "Provider account" : {
 
     },
     "Provider account access is unavailable. Remove the stored account in Settings › Providers, then sign in again." : {
@@ -2866,11 +2971,17 @@
     "Recording did not start." : {
 
     },
+    "Recording failed" : {
+
+    },
     "Recording for the agent" : {
       "comment" : "Recording light state"
     },
     "Recording hands-free" : {
       "comment" : "Recording light state"
+    },
+    "Recording in progress" : {
+
     },
     "Recording readiness" : {
 
@@ -2879,6 +2990,9 @@
 
     },
     "Recording start sound volume" : {
+
+    },
+    "Recording started, but transcription did not finish." : {
 
     },
     "Recording stays disabled until step 1 is complete." : {
@@ -3102,6 +3216,9 @@
 
     },
     "Retranscribe this take on the helper engine" : {
+
+    },
+    "Retranscription failed" : {
 
     },
     "Retranscription needs the recording engine" : {
@@ -3567,6 +3684,9 @@
     "Starting download…" : {
 
     },
+    "Starting recording…" : {
+
+    },
     "Starting..." : {
       "comment" : "Tray status: the runtime is still booting"
     },
@@ -3640,6 +3760,9 @@
 
     },
     "Stops capture and requests the final projection" : {
+
+    },
+    "Stops the active take in the shared recorder" : {
 
     },
     "Stored calibration cannot be used" : {
@@ -3843,6 +3966,9 @@
     "The engine heard speech it has not transcribed yet and is running a recovery pass; this is the engine catching up, not your microphone." : {
 
     },
+    "The existing transcript is still here." : {
+
+    },
     "The handover came back. These words are retained here — recover them before the next take." : {
 
     },
@@ -3864,7 +3990,16 @@
     "The retranscribed take is no longer current" : {
 
     },
+    "The shared recorder is preparing this take." : {
+
+    },
+    "The shared recorder is processing this take. Wait before starting another." : {
+
+    },
     "The signed app does not contain the agent bridge payload." : {
+
+    },
+    "The text received so far is still here. It may be incomplete." : {
 
     },
     "The transcriber was unsure of this word" : {
@@ -3894,7 +4029,13 @@
     "This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available." : {
 
     },
+    "This is retained text from an earlier take, including any unsaved edit. It is separate from the current take's audio." : {
+
+    },
     "This permission request is no longer active." : {
+
+    },
+    "This provider does not require an API key. Choose a model in Settings › Agent › LLM lanes." : {
 
     },
     "This removes “%@” and its saved conversation. There is no undo." : {
@@ -3960,6 +4101,9 @@
     "Transcribe again" : {
 
     },
+    "Transcribe this take again" : {
+
+    },
     "Transcribe your voice into text. Audio is processed locally on your Mac." : {
       "comment" : "Why the app asks for the Microphone scope"
     },
@@ -4006,6 +4150,12 @@
 
     },
     "Transcription history" : {
+
+    },
+    "Transcription incomplete" : {
+
+    },
+    "Transcription interrupted" : {
 
     },
     "Transcripts" : {
@@ -4095,6 +4245,12 @@
     "User" : {
       "comment" : "Settings section: account profile"
     },
+    "Uses audio from the take currently shown in the overlay" : {
+
+    },
+    "Uses audio from the take currently shown in the overlay." : {
+
+    },
     "Using system fallback: %@" : {
       "comment" : "The placeholder is an input device name"
     },
@@ -4142,6 +4298,9 @@
 
     },
     "Waiting for the controller's admission verdict." : {
+
+    },
+    "Waiting for the shared recorder's lifecycle." : {
 
     },
     "Welcome" : {
@@ -4372,6 +4531,9 @@
     "args, space-separated (e.g. mcp)" : {
 
     },
+    "assistive lane: credential missing" : {
+      "comment" : "Settings health footer, lower case: no supported account or API key"
+    },
     "assistive lane: no key" : {
       "comment" : "Settings health footer, lower case: no API key for the assistive lane"
     },
@@ -4469,6 +4631,9 @@
       "comment" : "Retranscribe pass: the cloud engine"
     },
     "command (e.g. prview)" : {
+
+    },
+    "connected" : {
 
     },
     "connected — %lld tools" : {
@@ -4589,6 +4754,9 @@
     "formatted" : {
 
     },
+    "formatting lane: unavailable" : {
+      "comment" : "Settings health footer"
+    },
     "formatting…" : {
 
     },
@@ -4686,6 +4854,9 @@
 
     },
     "no speech" : {
+
+    },
+    "not connected" : {
 
     },
     "not determined" : {
@@ -5163,8 +5334,14 @@
         }
       }
     },
+    "speech and assistive setup ready · cloud formatting not required" : {
+      "comment" : "Settings health footer"
+    },
     "speech engine: unavailable" : {
       "comment" : "Settings health footer, lower case"
+    },
+    "speech, assistive and formatting setup ready" : {
+      "comment" : "Settings health footer"
     },
     "status" : {
       "comment" : "Tool inspect field"

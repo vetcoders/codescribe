@@ -98,6 +98,10 @@ private struct LLMLaneEditor: View {
         Text(lane.subtitle)
           .font(CSFont.ui(11.5))
           .foregroundStyle(Color.secondary)
+        Text(model.laneUsageDescription(lane))
+          .font(CSFont.ui(11.5))
+          .foregroundStyle(laneModel.availabilityTint)
+          .fixedSize(horizontal: false, vertical: true)
       }
 
       SettingsControlRow(title: String(localized: "Provider"), subtitle: lane.providerKey) {
@@ -106,7 +110,7 @@ private struct LLMLaneEditor: View {
             Button {
               model.setLaneProvider(provider.id, for: lane)
             } label: {
-              // Availability dot: key or account present, or key-optional host.
+              // Account credentials are available to Assistive only.
               Label {
                 Text(providerMenuLabel(provider))
               } icon: {
@@ -114,7 +118,7 @@ private struct LLMLaneEditor: View {
                   systemName: provider.id == laneModel.providerId
                     ? "checkmark.circle.fill" : "circle.fill"
                 )
-                .foregroundStyle(SettingsViewModel.availabilityTint(for: provider))
+                .foregroundStyle(SettingsViewModel.availabilityTint(for: provider, lane: lane))
               }
             }
           }
@@ -187,7 +191,7 @@ private struct LLMLaneEditor: View {
         Text(laneModel.discoveryDescription)
           .font(CSFont.mono(10.5, .medium))
           .foregroundStyle(Color.secondary)
-          .lineLimit(2)
+          .fixedSize(horizontal: false, vertical: true)
         Spacer(minLength: 0)
         Button("Refresh") {
           model.refreshModelDiscovery(providerId: laneModel.providerId)

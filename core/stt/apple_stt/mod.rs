@@ -478,7 +478,17 @@ fn transcribe_file_with_backend(
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
         deadline_policy: Some(policy),
     };
-    let response = run_bridge_with_timeout(&request, Some(BRIDGE_TRANSCRIBE_TIMEOUT))
+    let timeout = match policy {
+        AppleDeadlinePolicy::LiveFinal => BRIDGE_TRANSCRIBE_TIMEOUT,
+        AppleDeadlinePolicy::WholeFile => {
+            let (samples, rate) = crate::audio::load_audio_file(path)
+                .context("read whole-file Apple recognition duration")?;
+            let audio_seconds = samples.len() as f64 / f64::from(rate.max(1));
+            // Same recognition budget as Swift, plus process/setup margin.
+            Duration::from_secs_f64((audio_seconds + 25.0).max(20.0) + 30.0)
+        }
+    };
+    let response = run_bridge_with_timeout(&request, Some(timeout))
         .context("Apple STT bridge transcribe failed")?;
     let backend = response
         .backend

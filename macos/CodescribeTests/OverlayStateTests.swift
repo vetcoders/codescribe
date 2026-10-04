@@ -221,13 +221,17 @@ private final class OverlayStateTestEngine: DictationEngine {
   var requestedAudioSessionIds: [String] = []
   var audioPathsBySession: [String: String] = [:]
   var transcriptionText = ""
+  var transcribedPaths: [String] = []
+  var transcriptionHandler: ((String) async throws -> CsTranscription)?
   func lastSessionAudioPath() -> String? { lastSessionAudioPathValue }
   func sessionAudioPath(sessionId: String) -> String? {
     requestedAudioSessionIds.append(sessionId)
     return audioPathsBySession[sessionId] ?? lastSessionAudioPathValue
   }
-  func transcribeFile(path _: String) async throws -> CsTranscription {
-    CsTranscription(text: transcriptionText, language: "pl")
+  func transcribeFile(path: String) async throws -> CsTranscription {
+    transcribedPaths.append(path)
+    if let transcriptionHandler { return try await transcriptionHandler(path) }
+    return CsTranscription(text: transcriptionText, language: "pl")
   }
 }
 
@@ -2950,6 +2954,46 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), [.close])
   }
 
+  func testPostStopFailureDoesNotClaimRecordingNeverStarted() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.handleRecordingFinalising()
+    state.finishControllerRecording()
+    state.handleError(message: "transcription_failed: controlled failure")
+
+    XCTAssertFalse(state.recording)
+    XCTAssertEqual(
+      state.errorLifecycleDetail, "Recording started, but transcription did not finish.")
+    XCTAssertEqual(state.errorMessage, "Couldn't finish transcription")
+    XCTAssertEqual(state.errorDiagnosticDetail, "transcription_failed: controlled failure")
+  }
+
+  func testNewCaptureDoesNotInheritPreviousSuccessfulStart() {
+    let state = OverlayState()
+    state.handleRecordingStarted()
+    state.finishControllerRecording()
+    state.handleRecordingPreparing()
+    state.handleError(message: "capture_start_failed: controlled failure")
+
+    XCTAssertEqual(state.errorLifecycleDetail, "Recording did not start.")
+    XCTAssertEqual(state.errorFooterSummary, "Recording failed")
+    XCTAssertFalse(state.captureDidStart)
+  }
+
+  func testDuplicatePreparingDoesNotEraseConfirmedStartHistory() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.handleRecordingPreparing()
+    state.finishControllerRecording()
+    state.handleError(message: "transcription_failed: controlled failure")
+
+    XCTAssertTrue(state.captureDidStart)
+    XCTAssertEqual(
+      state.errorLifecycleDetail, "Recording started, but transcription did not finish.")
+  }
+
   func testHandleErrorSurfacesFriendlySpeechAuthToast() {
     let state = OverlayState()
     state.handleError(
@@ -2995,7 +3039,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.statusText, "listening")
     XCTAssertTrue(stopped, "stop parity must fire — no zombie Recording pill")
     XCTAssertEqual(state.activeText, "zdanie pierwsze")
-    XCTAssertEqual(state.toast, "Dictation failed — transcript kept")
+    XCTAssertEqual(state.toast, "Transcription incomplete")
   }
 
   /// A worse retranscription must never be a one-way door (operator,
@@ -3043,6 +3087,41 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.canUndoRetranscribe, "the slot is consumed by a landed restore")
   }
 
+  func testLateRetranscriptionCannotCommitOverANewCapture() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    engine.audioPathsBySession["old-take"] = "/tmp/old-take.wav"
+    state.engine = engine
+    projectText(
+      "old words", to: state, canRetranscribe: true, terminal: true,
+      sessionId: "old-take", reducerRevision: 4)
+    var completion: CheckedContinuation<CsTranscription, Error>?
+    let entered = expectation(description: "old inference entered")
+    let finished = expectation(description: "old inference returned")
+    engine.transcriptionHandler = { _ in
+      let result = try await withCheckedThrowingContinuation {
+        (continuation: CheckedContinuation<CsTranscription, Error>) in
+        completion = continuation
+        entered.fulfill()
+      }
+      finished.fulfill()
+      return result
+    }
+    state.retranscribe(pass: .fullHq)
+    await fulfillment(of: [entered], timeout: 2)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText("new words", to: state, sessionId: "new-take", reducerRevision: 1)
+    completion?.resume(returning: CsTranscription(text: "late old result", language: "pl"))
+    await fulfillment(of: [finished], timeout: 2)
+    await Task.yield()
+
+    XCTAssertTrue(engine.revisionRequests.isEmpty, "superseded inference must not issue a revision")
+    XCTAssertEqual(state.activeText, "new words")
+    XCTAssertTrue(state.recording)
+    XCTAssertNil(state.errorDiagnosticDetail)
+  }
+
   func testRetranscribeUsesVisibleTakeAfterLaterQuietTake() async {
     let state = OverlayState()
     let engine = OverlayStateTestEngine()
@@ -3057,7 +3136,8 @@ final class OverlayStateTests: XCTestCase {
     engine.onRevision = { committed.fulfill() }
     state.retranscribe(pass: .cloud)
     await fulfillment(of: [committed], timeout: 2)
-    XCTAssertEqual(engine.requestedAudioSessionIds, ["spoken-a"])
+    XCTAssertEqual(Set(engine.requestedAudioSessionIds), ["spoken-a"])
+    XCTAssertEqual(engine.transcribedPaths, ["cloud:/tmp/spoken-a.wav"])
     XCTAssertEqual(engine.revisionRequests.first?.sessionId, "spoken-a")
     XCTAssertEqual(state.engineChip, "cloud")
   }
@@ -3105,7 +3185,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(delivered.count, 1, "the failed take must reach the composer join")
     XCTAssertEqual(delivered.first?.text, "zdanie pierwsze")
     XCTAssertEqual(delivered.first?.sessionId, "failed-take-join")
-    XCTAssertEqual(state.toast, "Dictation failed — transcript kept")
+    XCTAssertEqual(state.toast, "Transcription incomplete")
 
     state.handleError(message: "transcription_failed: engine gave up mid-take")
     XCTAssertEqual(delivered.count, 1, "a duplicate terminal must not insert a second copy")
@@ -3115,7 +3195,8 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     state.handleError(message: "layer1_lane_degraded: Layer 1 lane fell back")
     XCTAssertEqual(state.mode, .listening)
-    XCTAssertEqual(state.errorMessage, "layer1_lane_degraded: Layer 1 lane fell back")
+    XCTAssertEqual(state.errorDiagnosticDetail, "layer1_lane_degraded: Layer 1 lane fell back")
+    XCTAssertEqual(state.errorMessage, "Couldn't start recording")
   }
 
   @MainActor
@@ -4547,7 +4628,7 @@ final class OverlayStateTests: XCTestCase {
       state.footerWarning?.owner, .coverage, "a refused seal reports an observation, not a culprit")
     XCTAssertEqual(
       state.coverageRefusalDetail,
-      "No seal was recorded for this take, so nothing here is certified complete.")
+      "Codescribe could not confirm that this transcription is complete.")
     XCTAssertEqual(successes, 0, "a refused seal fired the success callback")
     XCTAssertNil(state.errorMessage, "refusal is not an error message")
     XCTAssertTrue(state.isTranscriptEditable, "review is possible even when a seal was refused")
@@ -4702,14 +4783,14 @@ final class OverlayStateTests: XCTestCase {
         terminal: true, sealCoverage: receipt)
 
       XCTAssertEqual(state.mode, .coverageRefused)
-      XCTAssertEqual(state.statusText, "unsealed transcript")
+      XCTAssertEqual(state.statusText, "Completion unconfirmed")
       XCTAssertEqual(
         state.coverageRefusalNotice,
         "Speech coverage was measured as complete, but this take has no terminal seal."
       )
       XCTAssertEqual(
         state.coverageRefusalDetail,
-        "Acoustic coverage was measured as complete, but this transcript has no current terminal seal."
+        "All measured speech has words, but Codescribe could not confirm that this transcription finished."
       )
       XCTAssertEqual(Array(state.activeText.utf8), Array(words.utf8))
       XCTAssertEqual(state.canCopy, copyAllowed, "measurement must not grant copy permission")

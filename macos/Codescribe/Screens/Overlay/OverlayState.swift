@@ -2268,7 +2268,7 @@ final class OverlayState {
       : String(localized: "Recording did not start.")
     finalized = true
     refreshRetranscriptionAvailability()
-    showToast(errorFooterSummary)
+    showToast(speechNotice ?? errorFooterSummary)
   }
 
   // MARK: Listener-driven mutations (called on the main actor by DictationListener)

@@ -4,6 +4,23 @@ Codescribe binds each request lane to a provider and model. Vendor endpoints
 are fixed by the vendor contracts in this directory. Custom providers retain
 their own endpoint, wire protocol, and Keychain account.
 
+## Custom provider form validation
+
+Adding or editing a custom provider uses the bridge's validation and endpoint
+normalization. An endpoint rejected for its scheme or missing host is not saved.
+The form shows a localized explanation below Endpoint: enter an HTTP or HTTPS
+URL with a host. Focus returns to Endpoint, and editing the address clears its
+old validation message. A new save attempt clears previous form errors.
+
+Other save errors use the shared `Error.userFacingMessage` presentation, without
+the Rust/FFI enum representation. The detailed error is recorded only in the
+`custom-provider-form` diagnostic log with private visibility; the form does
+not display that representation. Since the bridge currently carries the
+endpoint failure as a `CsError.Config` message, the form recognizes its existing
+endpoint-reason sentence. The bridge remains the sole validation authority.
+
+## Settings migration
+
 Legacy settings migrate on load. Identical normalized custom endpoints on the
 same wire share a provider row. Different ports, paths, or wire protocols retain
 separate rows, even when the hostname is the same. Colliding host-derived IDs

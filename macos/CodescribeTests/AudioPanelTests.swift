@@ -107,6 +107,23 @@ final class AudioPanelTests: XCTestCase {
     )
   }
 
+  func testRecordingRowTracksActivePreparingAndFinishingDespiteAdmissionChange() {
+    let cases: [(Bool?, Bool, Bool, String)] = [
+      (true, false, false, "Recording in progress"),
+      (true, true, false, "Starting recording…"),
+      (true, false, true, "Finishing recording…"),
+      (nil, false, false, "Checking recording activity…"),
+    ]
+    for (recording, preparing, processing, expected) in cases {
+      let rows = audioReadinessSteps(
+        input: .sample, microphonePermission: .denied, admission: nil,
+        dictationShortcut: "Hold Fn/Globe", recording: recording,
+        preparing: preparing, processing: processing)
+      XCTAssertEqual(rows.last?.title, expected)
+      XCTAssertNotEqual(rows.last?.title, "Ready to record")
+    }
+  }
+
   func testReadinessCockpitShowsEveryPrerequisiteAtOnce() {
     let ready = audioReadinessSteps(
       input: .sample,

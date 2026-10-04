@@ -235,7 +235,7 @@ final class OverlayController: ObservableObject {
       AppModel.shared.tray.onIntent(.revealChat)
       self?.hide()
     }
-    state.onPlacementChanged = { [weak self] in self?.applyPlacement(animated: true) }
+    state.onPlacementChanged = { [weak self] in self?.applyPlacement() }
     state.attach()
   }
 
@@ -309,7 +309,7 @@ final class OverlayController: ObservableObject {
     }
     // A pending fade-out must not leave a freshly shown panel invisible.
     panel.alphaValue = 1
-    applyPlacement(animated: false)
+    applyPlacement()
     orderPanelFront(panel)
     resizeForProjectedContent()
   }
@@ -322,7 +322,9 @@ final class OverlayController: ObservableObject {
   /// restores the last dragged origin, anchored derives from the anchor —
   /// in ONE setFrame so there is no transient mismatched frame. Clamping the
   /// size here covers programmatic sizing, which AppKit's minSize does not.
-  private func applyPlacement(animated: Bool) {
+  /// Placement commands land synchronously, including on a visible panel;
+  /// all frame writes stay inside the programmatic-move guard.
+  private func applyPlacement() {
     guard let panel else { return }
     Self.isApplyingFrame = true
     defer { Self.isApplyingFrame = false }
@@ -344,11 +346,7 @@ final class OverlayController: ObservableObject {
       return
     }
     let frame = NSRect(origin: origin, size: size)
-    if animated, panel.isVisible {
-      panel.animator().setFrame(frame, display: true)
-    } else {
-      panel.setFrame(frame, display: false)
-    }
+    panel.setFrame(frame, display: false)
   }
 
   /// Grow only: short projections keep the user's/restored resting size, long
