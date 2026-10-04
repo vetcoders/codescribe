@@ -877,5 +877,122 @@ class LifecycleForensicsTests(unittest.TestCase):
 
 
 
+class InstallCheckpointTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        fixture = Path(temporary.name).resolve()
+        self.root = fixture / "agent-bridge"
+        self.root.mkdir()
+        self.bus = fixture / "events.jsonl"
+        self.bus.touch()
+
+    def append(self, status, session="app", **fields):
+        with self.bus.open("a") as handle:
+            handle.write(json.dumps({"status": status, "session_id": session, **fields}) + "\n")
+
+    def checkpoint(self):
+        cursor = {}
+        DEMUX.installation_idle(
+            self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.root
+        )
+        self.assertTrue(cursor["caught_up"])
+        DEMUX._save_lifecycle_cursor(self.bus, self.root, cursor)
+        return cursor
+
+    def idle(self):
+        return DEMUX.installation_idle_with_checkpoint(self.bus, bridge_root=self.root)
+
+    def test_managed_rollover_reuses_verified_prefix_and_reads_new_lifecycle(self):
+        for _ in range(100):
+            self.append("revision", text="retained words " * 40)
+        cursor = self.checkpoint()
+        original = self.bus.read_bytes()
+        metadata = self.bus.stat()
+        closed = self.bus.parent / "events" / "undated" / "closed.jsonl"
+        closed.parent.mkdir(parents=True)
+        os.link(self.bus, closed)
+        self.bus.unlink()
+        self.bus.touch()
+        active = self.bus.stat()
+        segment = {
+            "id": "closed", "path": str(closed), "start": 0,
+            "length": len(original), "dev": metadata.st_dev, "ino": metadata.st_ino,
+            "day": None, "compressed": False, "sha256": None, "superseded": None,
+        }
+        hot = {
+            **segment, "id": "active", "path": str(self.bus), "start": len(original),
+            "length": 0, "dev": active.st_dev, "ino": active.st_ino, "day": "2026_1004",
+        }
+        Path(str(self.bus) + ".generations.json").write_text(json.dumps({
+            "schema": "codescribe.bus-generations.v1", "root": str(self.bus),
+            "stream_id": "stream", "stream_inode": metadata.st_ino,
+            "stream_dev": metadata.st_dev,
+            "stream_birthtime": getattr(metadata, "st_birthtime", None),
+            "segments": [segment], "active": hot, "pending": None,
+        }))
+        self.append("session_started")
+        self.append("session_ended")
+        read = DEMUX.GenerationFile.read
+
+        def forbid_prefix_replay(reader, width):
+            if width > 256 and reader.tell() < cursor["offset"]:
+                raise AssertionError("installer reread the verified historical payload")
+            return read(reader, width)
+
+        with patch.object(DEMUX.GenerationFile, "read", forbid_prefix_replay):
+            self.assertTrue(self.idle())
+        self.assertEqual(closed.read_bytes(), original)
+
+    def test_current_capture_stays_busy_through_seal_until_its_own_end(self):
+        self.checkpoint()
+        self.append("session_started")
+        self.append(DEMUX.SEALED)
+        self.assertFalse(self.idle())
+        self.append("session_ended", session="other")
+        self.assertFalse(self.idle())
+        self.append("session_ended")
+        self.assertTrue(self.idle())
+
+    def test_independent_cli_without_timestamp_is_not_erased_by_app_end(self):
+        self.append("session_started", session="cli", source=DEMUX.CLI_FILE_VERDICT_SOURCE)
+        self.checkpoint()
+        self.append("session_started")
+        self.append("session_ended")
+        self.assertFalse(self.idle())
+        self.append("session_ended", session="cli", source=DEMUX.CLI_FILE_VERDICT_SOURCE)
+        self.assertTrue(self.idle())
+
+    def test_missing_known_channel_does_not_clear_its_open_identity(self):
+        channel = self.root / "buses" / "channel-1.jsonl"
+        channel.parent.mkdir()
+        channel.write_text(json.dumps({
+            "schema": DEMUX.CHANNEL_SESSION_SCHEMA, "session_id": "channel-take",
+            "channel": "1", "state": "open",
+        }) + "\n")
+        self.checkpoint()
+        channel.unlink()
+        self.assertFalse(self.idle())
+
+    def test_replaced_journal_cannot_reuse_old_idle_for_a_new_capture(self):
+        self.append("revision")
+        self.checkpoint()
+        self.bus.rename(self.bus.with_suffix(".previous"))
+        self.append("session_started", session="new-capture")
+        self.assertFalse(self.idle())
+
+    def test_invalid_checkpoint_still_requires_the_canonical_current_take(self):
+        self.checkpoint()
+        checkpoint = DEMUX._lifecycle_checkpoint(self.bus, self.root)
+        checkpoint.write_text('{"schema":"unknown"}')
+        self.append("session_started")
+        self.assertFalse(self.idle())
+
+    def test_uncached_probe_preserves_existing_sealed_terminal_rule(self):
+        self.append("session_started")
+        self.append(DEMUX.SEALED)
+        self.assertTrue(self.idle())
+
+
 if __name__ == "__main__":
     unittest.main()

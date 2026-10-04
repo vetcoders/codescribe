@@ -2708,6 +2708,24 @@ def _save_lifecycle_cursor(bus: Path, root: Path, cursor: dict[str, Any]) -> Non
         pass
 
 
+def installation_idle_with_checkpoint(bus: Path, *, bridge_root: Path) -> bool:
+    """Reuse the existing lifecycle observer, then verify its current suffix.
+
+    Its session-ended predicate is sufficient for installation. A busy or
+    incomplete retained cursor grants nothing; keep its open identities.
+    """
+    deadline = time.monotonic() + TAKE_WAIT_SECONDS
+    cursor = _load_lifecycle_cursor(bus, bridge_root, deadline)
+    if cursor:
+        idle = installation_idle(
+            bus, sealed_is_idle=False, cursor=cursor, bridge_root=bridge_root,
+            deadline=deadline,
+        )
+        _save_lifecycle_cursor(bus, bridge_root, cursor)
+        return idle
+    return installation_idle(bus, bridge_root=bridge_root)
+
+
 def _wait_for_take_end(
     bus: Path, cursor: dict[str, Any], *, bridge_root: Path | None = None
 ) -> bool:
@@ -3632,7 +3650,7 @@ def main() -> int:
     if args.bridge_home is None:
         args.bridge_home = bridge_home()
     if args.assert_install_idle:
-        return 0 if installation_idle(args.bus, bridge_root=args.bridge_home) else 2
+        return 0 if installation_idle_with_checkpoint(args.bus, bridge_root=args.bridge_home) else 2
     if args.provider and not args.session:
         args.session = provider_session_from_env(args.provider)
     if bool(args.provider) != bool(args.session):
