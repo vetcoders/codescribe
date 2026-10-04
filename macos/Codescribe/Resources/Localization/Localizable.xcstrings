@@ -2248,7 +2248,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dyktowanie Apple wymaga dostępu do Rozpoznawania mowy — przyznaj go w Ustawieniach › Dyktowanie albo w Ustawieniach systemowych › Prywatność i ochrona › Rozpoznawanie mowy"
+            "value" : "Dyktowanie Apple wymaga uprawnienia „Rozpoznanie mowy” — włącz je w Ustawieniach › Dyktowanie albo w Ustawieniach systemowych › Prywatność i ochrona › Rozpoznanie mowy"
           }
         }
       }
@@ -10811,7 +10811,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Skróty wymagają uprawnień „Monitorowanie wprowadzania” i „Dostępność”."
+            "value" : "Aby skróty działały, włącz uprawnienia „Monitorowanie wprowadzania” i „Dostępność”"
           }
         }
       }
@@ -11229,7 +11229,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Rozpoznawanie mowy"
+            "value" : "Rozpoznanie mowy"
           }
         }
       }
@@ -11240,7 +11240,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Rozpoznawanie mowy"
+            "value" : "Rozpoznanie mowy"
           }
         }
       }
@@ -11250,7 +11250,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dostęp do Rozpoznawania mowy jest niedostępny — sprawdź Ustawienia systemowe › Prywatność i ochrona › Rozpoznawanie mowy"
+            "value" : "Uprawnienie „Rozpoznanie mowy” jest niedostępne — sprawdź Ustawienia systemowe › Prywatność i ochrona › Rozpoznanie mowy"
           }
         }
       }
@@ -11260,7 +11260,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Rozpoznawanie mowy jest wyłączone dla Codescribe — włącz je w Ustawieniach systemowych › Prywatność i ochrona › Rozpoznawanie mowy"
+            "value" : "Codescribe nie ma uprawnienia „Rozpoznanie mowy” — włącz je w Ustawieniach systemowych › Prywatność i ochrona › Rozpoznanie mowy"
           }
         }
       }
