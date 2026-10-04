@@ -24,7 +24,8 @@ npm run check     # astro check (TypeScript / template diagnostics)
 > matching production.
 
 Download links, displayed version and DMG size are resolved together from
-GitHub's latest published stable release during the build. The build requires
+GitHub's most recently published stable release during the build, selected by
+`published_at` across the paginated release list, regardless of commit age. The build requires
 outbound access to GitHub and checks that the uploaded `Codescribe.dmg` is
 reachable; missing metadata or assets stop publication rather than retaining a
 stale version. Run `npm run test:release` for the hermetic release contract tests.
@@ -37,9 +38,11 @@ Production is `https://codescribe.vetcoders.io`, served by Caddy from
 `/appcast.xml` used by the installed application. Use the site redeploy commands
 in [the deployment contract](../services/license-issuer/README.md#deployment-ops-vps-same-box-as-pensievevetcodersio).
 
-- `astro.config.mjs` sets `site: 'https://codescribe.vetcoders.io'` and `base: '/'`.
+- `astro.config.mjs` defaults to `site: 'https://codescribe.vetcoders.io'` and `base: '/'`.
 - `.github/workflows/pages.yml` publishes a separate copy at
-  `https://vetcoders.github.io/codescribe/`. A successful Pages run does not
+  `https://vetcoders.github.io/codescribe/`, setting `PAGES_DEPLOYMENT=true` so
+  assets and navigation use `/codescribe/`. To verify this build locally, run
+  `PAGES_DEPLOYMENT=true npm run build`. A successful Pages run does not
   update the production domain or its Sparkle feed.
 - After production deployment, verify all download links and the signed
   enclosure at the canonical domain against the published GitHub release.

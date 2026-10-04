@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loadLatestRelease, parseLatestRelease } from "./github-release.ts";
+import {
+  loadLatestRelease,
+  parseLatestRelease,
+  selectNewestPublishedRelease,
+} from "./github-release.ts";
 
 function publishedRelease() {
   return {
     tag_name: "v0.16.0",
     draft: false,
     prerelease: false,
+    published_at: "2026-10-04T12:00:00Z",
     assets: [
       {
         name: "appcast.xml",
@@ -89,12 +94,12 @@ test("latest release is queried and its exact DMG is checked before advertising"
     calls.push({ url, options });
     return options?.method === "HEAD"
       ? new Response(null, { status: 200 })
-      : Response.json(publishedRelease());
+      : Response.json([publishedRelease()]);
   });
   assert.equal(calls.length, 2);
   assert.equal(
     calls[0].url,
-    "https://api.github.com/repos/vetcoders/codescribe/releases/latest"
+    "https://api.github.com/repos/vetcoders/codescribe/releases?per_page=100&page=1"
   );
   assert.equal(calls[1].url, release.url);
   assert.equal(calls[1].options?.method, "HEAD");
@@ -113,8 +118,88 @@ test("missing published asset refuses the build", async () => {
     loadLatestRelease(async (_url, options) =>
       options?.method === "HEAD"
         ? new Response(null, { status: 404 })
-        : Response.json(publishedRelease())
+        : Response.json([publishedRelease()])
     ),
     /DMG is unavailable: HTTP 404/
+  );
+});
+
+test("publication time wins over commit age, API order and version number", () => {
+  const newest = {
+    ...publishedRelease(),
+    created_at: "2026-07-01T00:00:00Z",
+  };
+  const older = {
+    ...publishedRelease(),
+    tag_name: "v0.17.0",
+    created_at: "2026-10-03T00:00:00Z",
+    published_at: "2026-10-03T12:00:00Z",
+  };
+  const prerelease = {
+    ...publishedRelease(),
+    prerelease: true,
+    published_at: "2026-10-05T12:00:00Z",
+  };
+  const draft = { ...prerelease, prerelease: false, draft: true };
+  assert.equal(
+    selectNewestPublishedRelease([older, draft, newest, prerelease]),
+    newest
+  );
+});
+
+test("empty or invalid stable publication metadata refuses selection", () => {
+  assert.throws(() => selectNewestPublishedRelease([]), /no published stable/);
+  for (const published_at of [null, "not a date"]) {
+    assert.throws(
+      () =>
+        selectNewestPublishedRelease([{ ...publishedRelease(), published_at }]),
+      /publication time/
+    );
+  }
+});
+
+test("a later page can contain the newest publication", async () => {
+  const calls: string[] = [];
+  const older = {
+    ...publishedRelease(),
+    published_at: "2026-10-01T12:00:00Z",
+  };
+  await loadLatestRelease(async (url, options) => {
+    calls.push(url);
+    if (options?.method === "HEAD") return new Response(null, { status: 200 });
+    return Response.json(
+      url.endsWith("page=1") ? Array(100).fill(older) : [publishedRelease()]
+    );
+  });
+  assert.equal(calls.length, 3);
+  assert.ok(calls[1].endsWith("page=2"));
+});
+
+test("a broken newest DMG cannot silently advertise an older publication", async () => {
+  const newest = publishedRelease();
+  newest.assets.pop();
+  await assert.rejects(
+    loadLatestRelease(async () =>
+      Response.json([
+        { ...publishedRelease(), published_at: "2026-10-01T12:00:00Z" },
+        newest,
+      ])
+    ),
+    /valid uploaded/
+  );
+});
+
+test("malformed list and failed later pages refuse publication", async () => {
+  await assert.rejects(
+    loadLatestRelease(async () => Response.json(publishedRelease())),
+    /release list/
+  );
+  await assert.rejects(
+    loadLatestRelease(async (url) =>
+      url.endsWith("page=1")
+        ? Response.json(Array(100).fill(publishedRelease()))
+        : new Response(null, { status: 503 })
+    ),
+    /GitHub HTTP 503/
   );
 });

@@ -1,6 +1,6 @@
 const REPOSITORY_URL = "https://github.com/vetcoders/codescribe";
-const LATEST_RELEASE_API =
-  "https://api.github.com/repos/vetcoders/codescribe/releases/latest";
+const RELEASES_API =
+  "https://api.github.com/repos/vetcoders/codescribe/releases";
 
 export interface ReleaseDownload {
   version: string;
@@ -56,23 +56,68 @@ export function parseLatestRelease(value: unknown): ReleaseDownload {
 
 type FetchRelease = (url: string, options?: RequestInit) => Promise<Response>;
 
+export function selectNewestPublishedRelease(values: unknown[]): unknown {
+  let newest: unknown;
+  let newestTime = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    if (
+      !isRecord(value) ||
+      value.draft !== false ||
+      value.prerelease !== false
+    ) {
+      continue;
+    }
+    const publishedTime =
+      typeof value.published_at === "string"
+        ? Date.parse(value.published_at)
+        : Number.NaN;
+    if (!Number.isFinite(publishedTime)) {
+      throw new Error(
+        "Stable Codescribe release has no valid publication time"
+      );
+    }
+    if (publishedTime > newestTime) {
+      newest = value;
+      newestTime = publishedTime;
+    }
+  }
+  if (newest === undefined) {
+    throw new Error("GitHub returned no published stable Codescribe release");
+  }
+  return newest;
+}
+
 export async function loadLatestRelease(
   request: FetchRelease = fetch
 ): Promise<ReleaseDownload> {
-  const response = await request(LATEST_RELEASE_API, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "codescribe-website",
-    },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!response.ok) {
-    throw new Error(
-      `Cannot resolve latest Codescribe release: GitHub HTTP ${response.status}`
+  const releases: unknown[] = [];
+  for (let page = 1; ; page++) {
+    const response = await request(
+      `${RELEASES_API}?per_page=100&page=${page}`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "codescribe-website",
+        },
+        signal: AbortSignal.timeout(15_000),
+      }
     );
+    if (!response.ok) {
+      throw new Error(
+        `Cannot resolve latest Codescribe release: GitHub HTTP ${response.status}`
+      );
+    }
+    const values: unknown = await response.json();
+    if (!Array.isArray(values)) {
+      throw new Error("GitHub did not return a release list");
+    }
+    releases.push(...values);
+    if (values.length < 100) break;
   }
-  const release = parseLatestRelease(await response.json());
+  // A newly published release may refer to an older commit. Never select by
+  // commit creation time or silently return an older DMG when this one is bad.
+  const release = parseLatestRelease(selectNewestPublishedRelease(releases));
   const asset = await request(release.url, {
     method: "HEAD",
     redirect: "follow",
