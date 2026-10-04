@@ -7,7 +7,7 @@
 import Layout from '../layouts/Layout.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
-import { page } from '../lib/asset';
+import { asset, page } from '../lib/asset';
 ---
 
 <Layout
@@ -71,6 +71,58 @@ import { page } from '../lib/asset';
           <pre><code>{`{ "kind": "seal", "delivery_id": "c82f5d03…",
   "text": "…this belongs on the codescribe site." }`}</code></pre>
           <div class="tape__caption">The page you are reading is that delivery, acknowledged.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PRODUCT SCREENS ============ -->
+    <section class="section screens" aria-labelledby="screens-title">
+      <div class="container">
+        <p class="eyebrow">YOUR FLEET, ON SCREEN</p>
+        <h2 id="screens-title">Choose a channel. Keep talking.</h2>
+        <p class="sub">
+          One overlay for your words and your agent channels. Choose who you
+          want to talk to, then use the shortcuts that suit your hands.
+        </p>
+        <div class="screen-row">
+          <div class="screen-copy">
+            <h3>Your agents, by name.</h3>
+            <p>
+              Open the channel list to see who's assigned to each number,
+              whether anyone is listening, and whether your last message
+              was acknowledged. Switch channels with Ctrl + a number,
+              or choose Fn in Settings.
+            </p>
+          </div>
+          <figure>
+            <a class="screen-link" href={asset('shots/fleet-channels.webp')}
+              aria-label="View the agent channel screenshot at full size">
+              <img src={asset('shots/fleet-channels.webp')} width="744" height="472"
+                loading="lazy" decoding="async"
+                alt="Codescribe channel list showing jozek, lena, astra and adam, with separate acknowledgement and listener statuses" />
+            </a>
+            <figcaption>A captured channel roster. Receipt and listener status are shown separately.</figcaption>
+          </figure>
+        </div>
+        <div class="screen-row">
+          <div class="screen-copy">
+            <h3>Make it feel like yours.</h3>
+            <p>
+              Dictate, format, or talk to the built-in Agent. Set your channel
+              modifier, attach a selection while speaking, and choose whether
+              text is pasted automatically or kept on the overlay for later.
+              The controls live together in Hotkeys.
+            </p>
+          </div>
+          <figure>
+            <a class="screen-link" href={asset('shots/fleet-hotkeys.webp')}
+              aria-label="View the Hotkeys settings screenshot at full size">
+              <img src={asset('shots/fleet-hotkeys.webp')} width="2366" height="1796"
+                loading="lazy" decoding="async"
+                alt="Codescribe Hotkeys settings with Dictation, Formatting, Assistive, Attach selection, Ctrl or Fn agent channels, and automatic paste options" />
+            </a>
+            <figcaption>Actual macOS settings. Open either screenshot to inspect it at full size.</figcaption>
+          </figure>
         </div>
       </div>
     </section>
@@ -226,6 +278,25 @@ import { page } from '../lib/asset';
     color: var(--ink-2); font-style: italic; }
   .reply__who { display: block; font: 500 11px var(--font-mono); color: var(--muted-2);
     font-style: normal; margin-bottom: 4px; }
+
+  /* product screenshots */
+  .screens .container { max-width: 1080px; }
+  .screen-row { display: grid; grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr);
+    align-items: center; gap: 48px; margin-top: 48px; text-align: left; }
+  .screen-copy h3 { font: 700 clamp(22px, 3vw, 28px) / 1.15 var(--font-display);
+    color: var(--ink); letter-spacing: -0.02em; margin: 0 0 16px; }
+  .screen-copy p { font: 400 16px / 1.65 var(--font-display); color: var(--muted-2); margin: 0; }
+  .screen-row figure { min-width: 0; margin: 0; }
+  .screen-link { display: block; border: 1px solid var(--stroke);
+    border-radius: var(--radius-card); background: var(--bg-card); overflow: hidden; }
+  .screen-link:hover { border-color: var(--terracotta); }
+  .screen-link img { display: block; width: 100%; height: auto; }
+  .screen-row figcaption { margin-top: 12px; font: 400 12px / 1.6 var(--font-display);
+    color: var(--muted-2); }
+
+  @media (max-width: 800px) {
+    .screen-row { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  }
 
   /* circuit steps */
   .circuit .container { max-width: 720px; }
