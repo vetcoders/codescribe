@@ -347,7 +347,7 @@ bump-major:
 # not a second recipe that resembles it. Everything below class=operator is a
 # bench instrument: real proof, host-local, never a merge gate.
 #
-# gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates, l10n-lint; executes ZERO tests
+# gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates, l10n-lint, l10n-bridge-census; executes ZERO tests
 # gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace + verify-swift-format; no tests
 # gate: semgrep class=static ci=no -- semgrep scan --config auto --config .semgrep.yaml (semgrep.yml runs semgrep directly, not this target)
 # gate: verify class=hermetic ci=yes -- structural verifier, Bus-path/install guard, workspace tests and doctests under sandbox HOME with a Codescribe write leak check, separate ship-shaped artifact fence check, model-promotion regression, env registry, String Catalog lint tests and ledger harness; rust.yml runs it. The live throne rows (loct context/occurrences) require the Loctree CLI: where `loct` is not on PATH (GitHub-hosted runners) they skip loudly and the pure AST/manifest rows keep their teeth; operator hosts run the full surface.
@@ -356,6 +356,7 @@ bump-major:
 # gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
 # gate: verify-swift-format class=static ci=no -- swift-format lint --strict over macos/Codescribe + macos/CodescribeTests; skips the generated UniFFI binding; no Swift tests (that is test-swift)
 # gate: verify-l10n-catalog class=static ci=no -- scripts/l10n-lint.py over the String Catalogs: stale keys, argument number and type parity with the English source, plural completeness per language against the CLDR rules in scripts/data/cldr, full coverage of every language either catalog carries (--allow-partial downgrades that to a report while a language is being built up), the product spelling in every string, InfoPlist.xcstrings vs project.yml; reads the JSON only and says nothing about whether the catalog matches the Swift sources (that is verify-l10n-sync)
+# gate: verify-l10n-bridge class=static ci=no -- scripts/l10n-bridge-census.py: every String field crossing the UniFFI bridge (macos/Codescribe/Bridge/codescribe_ffi.swift) is classified data|prose in scripts/data/l10n-bridge-fields.txt; an unclassified or vanished field fails, so English prose composed in Rust cannot grow unnoticed (LOCALIZATION_LEDGER.md §4 burn-down)
 # gate: verify-l10n-sync class=operator ci=no -- scripts/l10n-sync.sh --check: Localizable.xcstrings vs the strings the Swift compiler extracted in the last Debug build under macos/build; needs Xcode and a build at least as new as every Swift source, and exits 2 rather than judging an older one
 # gate: smoke-canaries class=operator ci=no -- verify-canaries + host rows: dist inputs, appcast feed, live-store purity, Sparkle key parity, keychain domain cleanliness (scripts/canaries.sh --host)
 # gate: test-keychain-session class=hermetic ci=no -- ephemeral signing-keychain contract (scripts/tests/keychain-session-test.sh) against a FAKE security binary and a temp HOME; touches no real keychain
@@ -440,7 +441,7 @@ format-swift:
 # targets are the gates: one reads the catalog JSON alone, the other compares
 # the catalog with a real build. `l10n-sheet` is the translator's round trip
 # (catalog -> CSV -> catalog); it is a tool as well, not a gate.
-.PHONY: l10n-sync verify-l10n-sync verify-l10n-catalog l10n-sheet
+.PHONY: l10n-sync verify-l10n-sync verify-l10n-catalog verify-l10n-bridge l10n-sheet
 l10n-sync:
 	@./scripts/l10n-sync.sh
 
@@ -459,6 +460,9 @@ verify-l10n-sync:
 
 verify-l10n-catalog:
 	@python3 scripts/l10n-lint.py
+
+verify-l10n-bridge:
+	@python3 scripts/l10n-bridge-census.py
 
 TEST_LOG := /tmp/codescribe-tests.log
 SWIFT_TEST_LOG := /tmp/codescribe-swift-tests.log
@@ -1071,8 +1075,10 @@ check:
 	@bash scripts/validate-gates.sh
 	@echo "=== Localization catalogs ==="
 	@python3 scripts/l10n-lint.py
+	@echo "=== Localization bridge census ==="
+	@python3 scripts/l10n-bridge-census.py
 	@echo ""
-	@echo "check: static gate passed — format, lint, security, env registry, gate ledger, localization catalogs."
+	@echo "check: static gate passed — format, lint, security, env registry, gate ledger, localization catalogs, bridge census."
 	@echo "check: NO tests were executed. Run 'make verify' for the test gate."
 
 # The hermetic gate — and the one CI runs, by name (.github/workflows/rust.yml).
@@ -1133,6 +1139,7 @@ verify:
 	echo "=== Verify (String Catalog lint instrument) ==="; \
 	python3 -m unittest scripts/tests/test_l10n_lint.py; \
 	python3 -m unittest scripts/tests/test_l10n_sheet.py; \
+	python3 -m unittest scripts/tests/test_l10n_bridge_census.py; \
 	python3 -m unittest scripts/tests/test_generate_swift_bindings.py; \
 	echo "=== Verify (install-lane single-instance stamp) ==="; \
 	bash scripts/tests/single-instance-stamp-test.sh; \
@@ -1288,6 +1295,7 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'semgrep' 'Run release security scan'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'hooks' 'Install pre-commit + pre-push + commit-msg hooks'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-catalog' 'String Catalog lint (part of check): stale keys, arguments, plurals, coverage'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-bridge' 'Bridge census (part of check): every String crossing UniFFI is classified data|prose'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'l10n-sync' 'Fold strings extracted by the last Debug build into the String Catalog'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'l10n-sheet' 'Translator worksheet: L10N_LANG=pl exports CSV (PENDING=1: owed rows only), CSV=... imports it (DRAFT=1: as needs_review)'
 	@printf '\n'

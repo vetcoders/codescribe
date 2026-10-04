@@ -23,16 +23,18 @@ docs, the CLI and model prompts are separate surfaces with their own rules.
 
 ### Files
 
-| File                                                            | Role                                                                   |
-| --------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `macos/Codescribe/Resources/Localization/Localizable.xcstrings` | The one table for all interface copy. Keys are extracted from Swift.   |
-| `macos/Codescribe/Resources/Localization/InfoPlist.xcstrings`   | System permission prompts (`NS…UsageDescription`). Keys are hand-kept. |
-| `macos/project.yml`                                             | `developmentLanguage: en`, extraction build settings, test language.   |
-| `scripts/l10n-sync.sh`                                          | Folds compiler-extracted strings into `Localizable.xcstrings`.         |
-| `scripts/l10n-lint.py`                                          | Static catalog checks (no build needed).                               |
-| `scripts/l10n-sheet.py`                                         | Translator worksheet: catalog → CSV per language → catalog.            |
-| `scripts/data/cldr/plurals.json`                                | Unicode CLDR plural rules: the plural forms each language owes.        |
-| `docs/LOCALIZATION_LEDGER.md`                                   | Inventory: classes of copy, where they live, open decisions.           |
+| File                                                            | Role                                                                      |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `macos/Codescribe/Resources/Localization/Localizable.xcstrings` | The one table for all interface copy. Keys are extracted from Swift.      |
+| `macos/Codescribe/Resources/Localization/InfoPlist.xcstrings`   | System permission prompts (`NS…UsageDescription`). Keys are hand-kept.    |
+| `macos/project.yml`                                             | `developmentLanguage: en`, extraction build settings, test language.      |
+| `scripts/l10n-sync.sh`                                          | Folds compiler-extracted strings into `Localizable.xcstrings`.            |
+| `scripts/l10n-lint.py`                                          | Static catalog checks (no build needed).                                  |
+| `scripts/l10n-sheet.py`                                         | Translator worksheet: catalog → CSV per language → catalog.               |
+| `scripts/l10n-bridge-census.py`                                 | Gate: every `String` crossing the UniFFI bridge is classified data/prose. |
+| `scripts/data/l10n-bridge-fields.txt`                           | That classification; the `prose` lines are the seams still in Rust.       |
+| `scripts/data/cldr/plurals.json`                                | Unicode CLDR plural rules: the plural forms each language owes.           |
+| `docs/LOCALIZATION_LEDGER.md`                                   | Inventory: classes of copy, where they live, open decisions.              |
 
 One table on purpose. Splitting copy across tables forces `tableName:` onto
 every call site and buys nothing at this size.
@@ -60,6 +62,7 @@ make app                 # or any Debug build: emits .stringsdata into macos/bui
 make l10n-sync           # fold extracted keys into Localizable.xcstrings
 make verify-l10n-sync    # fail if the catalog differs from what the build extracted
 make verify-l10n-catalog # static catalog lint; part of `make check`
+make verify-l10n-bridge  # bridge census: no unclassified String crosses UniFFI; part of `make check`
 make l10n-sheet L10N_LANG=pl   # export the translator worksheet (CSV=... imports it back)
 ```
 
@@ -76,6 +79,22 @@ source mtime, so Xcode can reuse objects and extraction data without a false
 freshness refusal. New or changed output receives a new mtime and still requires
 compilation before `l10n-sync` accepts it. A generator or normalization failure
 publishes no staged files; the temporary directory is cleaned on exit.
+
+### What the catalog cannot see
+
+The catalog lists the strings the Swift compiler extracts. Copy that Rust
+composes and hands across the bridge as a finished `String` (ledger §4) is
+invisible to it, so it is invisible to the worksheet and ships in English in
+every language. `make verify-l10n-bridge` (`scripts/l10n-bridge-census.py`)
+keeps that set from growing: every `String` field of a `Cs*` record and every
+`String` payload of a `Cs*` enum case in the generated bindings must be
+classified in `scripts/data/l10n-bridge-fields.txt` as `data` (identifier,
+path, wire value, vendor or model name, transcript or thread content, a code
+Swift switches on) or `prose` (a sentence a person reads as it arrives). A new
+field fails the gate until the cut that adds it classifies it; a `prose` line is
+a conscious decision to add debt. A line the bindings dropped fails too, so the
+`prose` lines stay the true burn-down list. The rule for new work is the
+ledger's: Rust sends a code and arguments, Swift owns the sentence.
 
 After changing interface copy: build, `make l10n-sync`, commit the catalog with
 the code. A key that disappears from code is dropped from the catalog when it
