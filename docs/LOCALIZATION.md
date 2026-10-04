@@ -30,6 +30,7 @@ docs, the CLI and model prompts are separate surfaces with their own rules.
 | `macos/project.yml`                                             | `developmentLanguage: en`, extraction build settings, test language.   |
 | `scripts/l10n-sync.sh`                                          | Folds compiler-extracted strings into `Localizable.xcstrings`.         |
 | `scripts/l10n-lint.py`                                          | Static catalog checks (no build needed).                               |
+| `scripts/l10n-sheet.py`                                         | Translator worksheet: catalog → CSV per language → catalog.            |
 | `scripts/data/cldr/plurals.json`                                | Unicode CLDR plural rules: the plural forms each language owes.        |
 | `docs/LOCALIZATION_LEDGER.md`                                   | Inventory: classes of copy, where they live, open decisions.           |
 
@@ -59,6 +60,7 @@ make app                 # or any Debug build: emits .stringsdata into macos/bui
 make l10n-sync           # fold extracted keys into Localizable.xcstrings
 make verify-l10n-sync    # fail if the catalog differs from what the build extracted
 make verify-l10n-catalog # static catalog lint; part of `make check`
+make l10n-sheet L10N_LANG=pl   # export the translator worksheet (CSV=... imports it back)
 ```
 
 The catalog tracks the **Debug** build. Debug is a superset of Release (it also
@@ -287,15 +289,33 @@ the sentence.**
 
 ## 6. Adding a language
 
-1. Add the language to both catalogs (open them in Xcode and press `+`, or add
-   the language code under each key's `localizations`).
-2. Translate. `make verify-l10n-catalog` reports untranslated keys per language
-   and checks that every string reads the arguments of the English source by
-   number and type (R4).
-3. Build. The bundle gains `<lang>.lproj`; Sparkle's own translation for that
+1. Export the worksheet: `scripts/l10n-sheet.py export <lang> <dir>` writes one
+   CSV per catalog with a row for every string a person has to write — a plural
+   key becomes one row per form the language owes, a sentence with several
+   counts its main row plus one row per form of every substitution. Keys marked
+   `shouldTranslate: false` are left out. With a Debug build present the
+   `where` column names the screens that use each key. Translations the
+   catalog already holds are filled in, so the worksheet of a translated
+   language is a revision sheet in which new copy is the empty rows.
+2. Translate in the CSV (a spreadsheet is fine; export it back as CSV). Only
+   the translation column and `notes` are the translator's.
+3. Import: `scripts/l10n-sheet.py import <lang> <csv>...`. A key is imported
+   whole or not at all; a row that does not read the arguments of the English
+   source (R4) or spells the product `CodeScribe` is refused and its key left
+   untouched. `--check` reports without writing. Exit status 1 means something
+   was refused or is still untranslated. The catalogs are written in the byte
+   layout `xcstringstool` uses, so a later `l10n-sync` shows no spurious diff.
+4. `make verify-l10n-catalog`. The lint requires every language either catalog
+   carries to be complete in both; `--allow-partial` turns that into a report
+   while a language is being built up on a branch.
+5. Build. The bundle gains `<lang>.lproj`; Sparkle's own translation for that
    language activates with it.
-4. Run the app under that language without changing the system setting:
+6. Run the app under that language without changing the system setting:
    `open -a Codescribe --args -AppleLanguages '(pl)'`.
+
+After the import the catalog is the source of the translation; the worksheet is
+transport. New English copy added later shows up as untranslated rows in the
+next export, and until they are translated `make check` fails on coverage.
 
 The tooling names no language but the English source, so none of it changes
 when a language is added. The plural forms a language owes are read from
@@ -313,11 +333,11 @@ A language is declared by having translations. Do not add an empty language: a
 bundle that claims a language it does not carry gives a mixed interface (system
 dialogs and Sparkle switch, app copy stays English).
 
-The lint refuses a language with no translations and only reports one that is
-partly translated, so a translation can be built up in the tree. A partly
-translated language must not ship: before the first release that carries a
-language, add a gate that requires full coverage of every declared language
-(`docs/LOCALIZATION_LEDGER.md` §5.3). That gate does not exist yet.
+The lint refuses a language with no translations and a language that is partly
+translated, in either catalog: a bundle that carries a language carries all of
+it, so a translated interface never shows English in some rows. The only way to
+hold a partial translation in the tree is `scripts/l10n-lint.py --allow-partial`,
+which reports the coverage instead; `make check` never passes that flag.
 
 ---
 
@@ -340,8 +360,17 @@ argument types, an argument dropped or added in a plural form, mixed numbering
 and a substitution without plural forms are refused; a valid reordering and the
 shipped catalogs pass. Languages the app does not carry yet are held to their
 own plural forms (Arabic, Japanese, French, Russian, Czech, Hebrew), a regional
-code to those of its language, and an unknown code is refused. It runs in
-`make verify`.
+code to those of its language, and an unknown code is refused. A language the
+bundle carries must be complete in both catalogs; `CodeScribe` is refused in
+any string. It runs in `make verify`.
+
+`scripts/tests/test_l10n_sheet.py` holds the worksheet to its word: an export
+writes one row per plural form and per substitution form, an import of a filled
+worksheet passes the lint, `--check` writes nothing, a plural with one empty
+form stays untranslated, a dropped argument, a substitution form written with
+`%@` and the spelling `CodeScribe` are refused, rows for a key that left the
+catalog are ignored with a note, and the written catalogs match the shipped
+layout byte for byte. It runs in `make verify`.
 
 Tests that assert interface copy assert the English a person reads, including
 plural forms and grouped numbers. Tests that scan Swift source for a literal

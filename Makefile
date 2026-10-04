@@ -355,7 +355,7 @@ bump-major:
 # gate: test-transcript-bus-path class=hermetic ci=no -- shell/Python path-precedence and install-guard fail-closed tests in an isolated HOME; never installs the app
 # gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
 # gate: verify-swift-format class=static ci=no -- swift-format lint --strict over macos/Codescribe + macos/CodescribeTests; skips the generated UniFFI binding; no Swift tests (that is test-swift)
-# gate: verify-l10n-catalog class=static ci=no -- scripts/l10n-lint.py over the String Catalogs: stale keys, argument number and type parity with the English source, plural completeness per language against the CLDR rules in scripts/data/cldr, languages declared without translations, InfoPlist.xcstrings vs project.yml; reads the JSON only and says nothing about whether the catalog matches the Swift sources (that is verify-l10n-sync)
+# gate: verify-l10n-catalog class=static ci=no -- scripts/l10n-lint.py over the String Catalogs: stale keys, argument number and type parity with the English source, plural completeness per language against the CLDR rules in scripts/data/cldr, full coverage of every language either catalog carries (--allow-partial downgrades that to a report while a language is being built up), the product spelling in every string, InfoPlist.xcstrings vs project.yml; reads the JSON only and says nothing about whether the catalog matches the Swift sources (that is verify-l10n-sync)
 # gate: verify-l10n-sync class=operator ci=no -- scripts/l10n-sync.sh --check: Localizable.xcstrings vs the strings the Swift compiler extracted in the last Debug build under macos/build; needs Xcode and a build at least as new as every Swift source, and exits 2 rather than judging an older one
 # gate: smoke-canaries class=operator ci=no -- verify-canaries + host rows: dist inputs, appcast feed, live-store purity, Sparkle key parity, keychain domain cleanliness (scripts/canaries.sh --host)
 # gate: test-keychain-session class=hermetic ci=no -- ephemeral signing-keychain contract (scripts/tests/keychain-session-test.sh) against a FAKE security binary and a temp HOME; touches no real keychain
@@ -438,10 +438,19 @@ format-swift:
 # merges what the Swift compiler extracted in the last Debug build; it mutates
 # the catalog, so it is a tool like format-swift, not a gate. The two verify-*
 # targets are the gates: one reads the catalog JSON alone, the other compares
-# the catalog with a real build.
-.PHONY: l10n-sync verify-l10n-sync verify-l10n-catalog
+# the catalog with a real build. `l10n-sheet` is the translator's round trip
+# (catalog -> CSV -> catalog); it is a tool as well, not a gate.
+.PHONY: l10n-sync verify-l10n-sync verify-l10n-catalog l10n-sheet
 l10n-sync:
 	@./scripts/l10n-sync.sh
+
+# make l10n-sheet L10N_LANG=pl            -> export a worksheet to macos/build/l10n
+# make l10n-sheet L10N_LANG=pl CSV='...'  -> fold filled worksheets back in
+# (not LANG: that is the shell locale and would leak in)
+l10n-sheet:
+	@if [ -z "$(L10N_LANG)" ]; then echo "l10n-sheet: set L10N_LANG=<code> (e.g. make l10n-sheet L10N_LANG=pl)" >&2; exit 2; fi
+	@if [ -n "$(CSV)" ]; then python3 scripts/l10n-sheet.py import $(L10N_LANG) $(CSV); \
+	else python3 scripts/l10n-sheet.py export $(L10N_LANG) macos/build/l10n; fi
 
 verify-l10n-sync:
 	@./scripts/l10n-sync.sh --check
@@ -1121,6 +1130,7 @@ verify:
 	bash scripts/validate-envs.sh; \
 	echo "=== Verify (String Catalog lint instrument) ==="; \
 	python3 -m unittest scripts/tests/test_l10n_lint.py; \
+	python3 -m unittest scripts/tests/test_l10n_sheet.py; \
 	python3 -m unittest scripts/tests/test_generate_swift_bindings.py; \
 	echo "=== Verify (install-lane single-instance stamp) ==="; \
 	bash scripts/tests/single-instance-stamp-test.sh; \
@@ -1275,8 +1285,9 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'fix' 'Format all code (Rust + Prettier)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'semgrep' 'Run release security scan'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'hooks' 'Install pre-commit + pre-push + commit-msg hooks'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-catalog' 'String Catalog lint (part of check): stale keys, arguments, plurals'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-catalog' 'String Catalog lint (part of check): stale keys, arguments, plurals, coverage'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'l10n-sync' 'Fold strings extracted by the last Debug build into the String Catalog'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'l10n-sheet' 'Translator worksheet: L10N_LANG=pl exports CSV, CSV=... imports it'
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'QUALITY — BENCH INSTRUMENTS (this host only, never a merge gate)'
 	@printf '%s\n' '  Full classification: make -s gate-ledger'

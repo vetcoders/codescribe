@@ -31,13 +31,17 @@ website, the docs, the CLI and model prompts are outside this ledger.
 
 ## 2. Where the app stands
 
-`Localizable.xcstrings` holds **1311 keys** (1288 translatable). Before this
+`Localizable.xcstrings` holds **1398 keys** (1375 translatable). Before this
 work the compiler extracted 468 — the literals SwiftUI localizes by itself; the
-rest was plain `String` and invisible to any translation.
+rest was plain `String` and invisible to any translation. **Polish is complete**
+in both catalogs (1375/1375 and 4/4), imported from the translator worksheet
+(`scripts/l10n-sheet.py`); the catalog is the source of the translation from
+here on.
 
 | Measure                                       | Count    |
 | --------------------------------------------- | -------- |
-| Keys in `Localizable.xcstrings`               | 1311     |
+| Keys in `Localizable.xcstrings`               | 1398     |
+| Keys translated to Polish                     | 1375     |
 | Keys with a translator comment                | 412      |
 | Keys with English plural forms                | 26       |
 | Keys written as identifiers (`defaultValue:`) | 37       |
@@ -361,7 +365,7 @@ shows the same in every language until it moves to a format style.
 | Protocol names                   | `Responses`, `Messages` in the provider editor are wire names                                                                                                                                                         | **Decided:** verbatim.                                                                                                                                                                                                                        |
 | Active STT row                   | `Apple` and `Whisper` are proper names and stay verbatim; `Streaming Whisper`, `Cloud`, `Whisper (fallback)` and `Not yet served` are copy. An engine id the app does not know is shown as received                   | **Open.** Map every id, or show `Unknown` for the rest.                                                                                                                                                                                       |
 | Developer-only copy              | The Lab pane, its section title, the `Voice Lab…` tray row and the power-mode corner mark exist only on a developer build; `DesignGallery` is reachable only from its preview. Their copy is extracted like any other | **Decided:** these 22 keys are marked `shouldTranslate: false` (13 used only by `LabPanel`, 3 shown only behind `DeveloperSurface`, 6 gallery samples), so no translator sees them. A key that a shipped screen starts to use loses the mark. |
-| Coverage before a language ships | `make verify-l10n-catalog` fails a language only when it has no translations; a partly translated one passes and would ship a mixed interface                                                                         | **Decided:** a gate requiring full coverage of each declared language lands with the Polish import, before the first localized release.                                                                                                       |
+| Coverage before a language ships | `make verify-l10n-catalog` fails a language that is partly translated in either catalog; `--allow-partial` reports instead while a language is built up on a branch                                                   | **Done** with the Polish import: every language the bundle carries must be complete, and `CodeScribe` is refused in any string. New English copy now needs its Polish before `make check` passes.                                             |
 
 ### 5.4 Found on the way (not localization, not changed)
 
