@@ -1115,6 +1115,7 @@ verify:
 	python3 -m unittest scripts/tests/test_data_asset_references.py; \
 	python3 -m unittest scripts/tests/test_sessions_dedupe.py; \
 	python3 -m unittest scripts/tests/test_bus_demux_speech.py; \
+	python3 -m unittest scripts/tests/test_install_if_idle.py; \
 	python3 -m unittest scripts/tests/test_bus_native_queue.py; \
 	python3 -m unittest scripts/tests/test_cs_say_entry.py; \
 	bash scripts/validate-envs.sh; \

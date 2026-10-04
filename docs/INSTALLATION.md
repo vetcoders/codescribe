@@ -3,7 +3,7 @@
 This document describes the installation methods, configuration paths, and how the application locates its resources.
 
 > **Published/source split:** GitHub currently publishes `v0.13.3` as Latest.
-> The repository version is `0.14.1`, but a source version is not a public
+> The repository version is `0.15.2`, but a source version is not a public
 > release until the signed/notarized/stapled DMG, tag, appcast, and GitHub
 > Release have been cut and verified.
 
@@ -16,7 +16,7 @@ This document describes the installation methods, configuration paths, and how t
 make app PROFILE=local-release
 
 # Build and copy to /Applications/Codescribe.app
-make install-app
+make install-if-idle
 ```
 
 **Result**: App bundle installed at `/Applications/Codescribe.app`, with model/cache checks handled by `scripts/build-app.sh`.
@@ -24,6 +24,20 @@ make install-app
 **How it runs**: Launch the app bundle through LaunchServices using Finder,
 Spotlight, or `make start`. For a specific build or per-launch environment,
 use the explicit bundle commands below.
+
+### Install the Signed Release After Packaging
+
+```bash
+make release-standard
+make install-if-idle INSTALL_APP_SOURCE="$PWD/macos/build/Build/Products/Release/Codescribe.app"
+```
+
+The guarded installer checks the release's version, source commit, Developer ID
+signature, notarization staple and Gatekeeper acceptance. It requests a graceful
+Quit only after idle checks, waits for the old process to exit, then holds the
+runtime interlock while copying the signed bundle. An active take, agent turn,
+unreadable state or failed Quit refuses the copy. Launch the installed app through
+LaunchServices after the installer succeeds.
 
 ### Method 2: Qube CLI Tools (Batch Quality Work)
 
