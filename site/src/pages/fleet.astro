@@ -81,16 +81,16 @@ import { page } from '../lib/asset';
         <p class="eyebrow">ONE CIRCUIT</p>
         <h2 id="circuit-title">Seal → envelope → wake → reply → receipt.</h2>
         <ol class="steps">
-          <li><span class="n">01</span><strong>Seal.</strong> Your words become a transcript sealed in the
-            acoustic ledger — identity is the audio span itself, not a guess.</li>
-          <li><span class="n">02</span><strong>Envelope.</strong> The bus demultiplexer wraps the seal for its
-            audience: a channel, a lease, a <code>delivery_id</code>.</li>
-          <li><span class="n">03</span><strong>Wake.</strong> Each runtime has its native edge — a queue that
-            wakes a Codex session, a task that wakes a Claude Code session after its turn.</li>
-          <li><span class="n">04</span><strong>Reply.</strong> The agent answers on the same bus — and out loud,
-            in its own assigned voice.</li>
-          <li><span class="n">05</span><strong>Receipt.</strong> The agent acknowledges the
-            <code>delivery_id</code>. Unacknowledged mail stays pending; nothing is lost silently.</li>
+          <li><span class="n">01</span><p><strong>Seal.</strong> Your words become a transcript sealed in the
+            acoustic ledger — identity is the audio span itself, not a guess.</p></li>
+          <li><span class="n">02</span><p><strong>Envelope.</strong> The bus demultiplexer wraps the seal for its
+            audience: a channel, a lease, a <code>delivery_id</code>.</p></li>
+          <li><span class="n">03</span><p><strong>Wake.</strong> Each runtime has its native edge — a queue that
+            wakes a Codex session, a task that wakes a Claude Code session after its turn.</p></li>
+          <li><span class="n">04</span><p><strong>Reply.</strong> The agent answers on the same bus — and out loud,
+            in its own assigned voice.</p></li>
+          <li><span class="n">05</span><p><strong>Receipt.</strong> The agent acknowledges the
+            <code>delivery_id</code>. Unacknowledged mail stays pending; nothing is lost silently.</p></li>
         </ol>
       </div>
     </section>
@@ -231,10 +231,11 @@ import { page } from '../lib/asset';
   .circuit .container { max-width: 720px; }
   .steps { list-style: none; margin: 34px 0 0; padding: 0; text-align: left;
     display: grid; gap: 14px; }
-  .steps li { display: grid; grid-template-columns: 44px 1fr; gap: 14px;
+  .steps li { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 14px;
     padding: 16px 18px; background: var(--bg-card); border: 1px solid var(--stroke);
     border-radius: var(--radius-card); font: 400 14.5px / 1.6 var(--font-display);
     color: var(--muted); min-width: 0; }
+  .steps li p { margin: 0; min-width: 0; overflow-wrap: anywhere; }
   .steps li strong { color: var(--ink); }
   .steps .n { font: 600 13px var(--font-mono); color: var(--terracotta); padding-top: 3px; }
   .steps code { font: 500 0.85em var(--font-mono); color: var(--terracotta-ink); }
@@ -303,6 +304,6 @@ import { page } from '../lib/asset';
     .section { padding: 72px 20px; }
     .hero { padding: 96px 20px 64px; }
     .connector { flex-basis: 18px; }
-    .steps li { grid-template-columns: 34px 1fr; }
+    .steps li { grid-template-columns: 34px minmax(0, 1fr); }
   }
 </style>
