@@ -112,12 +112,18 @@ final class AudioRecordingControlTests: XCTestCase {
           finalPass: state.isFinalPass)
         reads.values.append(read)
         return Text(verbatim: "\(read.starting) \(read.recording) \(read.finalPass)")
+          .frame(width: 300, height: 100)
       })
+    // The fixture owns the window size; changing status text must not resize it.
+    host.sizingOptions = []
+    host.safeAreaRegions = []
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 300, height: 100),
       styleMask: [.borderless], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = host
+    window.setContentSize(NSSize(width: 300, height: 100))
+    host.frame = NSRect(x: 0, y: 0, width: 300, height: 100)
     window.orderFrontRegardless()
     defer {
       window.contentView = nil

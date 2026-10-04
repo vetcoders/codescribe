@@ -4628,7 +4628,7 @@ final class OverlayStateTests: XCTestCase {
       state.footerWarning?.owner, .coverage, "a refused seal reports an observation, not a culprit")
     XCTAssertEqual(
       state.coverageRefusalDetail,
-      "Codescribe could not confirm that this transcription is complete.")
+      "No seal was recorded for this take, so nothing here is certified complete.")
     XCTAssertEqual(successes, 0, "a refused seal fired the success callback")
     XCTAssertNil(state.errorMessage, "refusal is not an error message")
     XCTAssertTrue(state.isTranscriptEditable, "review is possible even when a seal was refused")
@@ -4783,14 +4783,14 @@ final class OverlayStateTests: XCTestCase {
         terminal: true, sealCoverage: receipt)
 
       XCTAssertEqual(state.mode, .coverageRefused)
-      XCTAssertEqual(state.statusText, "Completion unconfirmed")
+      XCTAssertEqual(state.statusText, "unsealed transcript")
       XCTAssertEqual(
         state.coverageRefusalNotice,
         "Speech coverage was measured as complete, but this take has no terminal seal."
       )
       XCTAssertEqual(
         state.coverageRefusalDetail,
-        "All measured speech has words, but Codescribe could not confirm that this transcription finished."
+        "Acoustic coverage was measured as complete, but this transcript has no current terminal seal."
       )
       XCTAssertEqual(Array(state.activeText.utf8), Array(words.utf8))
       XCTAssertEqual(state.canCopy, copyAllowed, "measurement must not grant copy permission")

@@ -1163,8 +1163,8 @@ public protocol CodescribeAgentStatusProtocol: AnyObject, Sendable {
     /**
      * Agentic-lane readiness. `ready` is the core capability gate (assistive
      * provider + its API key + native tools); the MCP rows are informational.
-     * Loads `Config` first so Keychain-backed keys are populated into env and the
-     * core gate sees real key presence (mirrors `available_providers`).
+     * Projects files, env and the existing credential cache. The explicit
+     * background provider-access refresh acquires credentials before publication.
      */
     func agenticReadiness()  -> CsAgenticReadiness
 
@@ -1247,8 +1247,8 @@ public convenience init() {
     /**
      * Agentic-lane readiness. `ready` is the core capability gate (assistive
      * provider + its API key + native tools); the MCP rows are informational.
-     * Loads `Config` first so Keychain-backed keys are populated into env and the
-     * core gate sees real key presence (mirrors `available_providers`).
+     * Projects files, env and the existing credential cache. The explicit
+     * background provider-access refresh acquires credentials before publication.
      */
 open func agenticReadiness() -> CsAgenticReadiness  {
     return try!  FfiConverterTypeCsAgenticReadiness_lift(try! rustCall() {
@@ -1383,6 +1383,16 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func cloudFileRetranscriptionAvailable()  -> Bool
 
     /**
+     * Opaque palette cache stamp over the runtime cache's canonical settings
+     * mtime, invalidation generation and the existing credential revision.
+     * One metadata lookup and cache-only locks, no
+     * settings parsing, lane projection, provider registry or credential I/O.
+     * Missing/unreadable metadata refuses cache reuse rather than certifying
+     * that a previous projection is still current.
+     */
+    func composerModelCacheStamp()  -> String?
+
+    /**
      * Absolute path to the config directory (`~/.codescribe`, or the
      * `CODESCRIBE_DATA_DIR` override).
      */
@@ -1475,6 +1485,16 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
      * Read the user-visible pin from the canonical settings snapshot.
      */
     func overlayKeepVisibleBetweenTakes()  -> Bool
+
+    /**
+     * Cache-only revision check; it never waits for credential I/O.
+     */
+    func providerAccessRevision()  -> UInt64
+
+    /**
+     * Explicit credential acquisition. Swift executes this off MainActor.
+     */
+    func providerAccessSnapshot() throws  -> CsProviderAccessSnapshot
 
     func removeCustomProvider(id: String) throws  -> CsCustomProviderRemoval
 
@@ -1652,9 +1672,9 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func testApiKey(account: String) throws  -> CsApiKeyProbeResult
 
     /**
-     * Lightweight tray-only settings read. Unlike `load_settings`, this never
-     * populates the Keychain, so it never prompts just because the user opened
-     * the menu. Projects from one keychain-free runtime snapshot.
+     * Lightweight tray-only settings read uses files, env and cached credentials.
+     * It never prompts just because the user opened the menu. Projects from one
+     * keychain-free runtime snapshot.
      */
     func trayToggles()  -> CsTrayToggles
 
@@ -1830,6 +1850,22 @@ open func clearMcpConfiguration()throws   {try rustCallWithError(FfiConverterTyp
 open func cloudFileRetranscriptionAvailable() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_cloud_file_retranscription_available(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Opaque palette cache stamp over the runtime cache's canonical settings
+     * mtime, invalidation generation and the existing credential revision.
+     * One metadata lookup and cache-only locks, no
+     * settings parsing, lane projection, provider registry or credential I/O.
+     * Missing/unreadable metadata refuses cache reuse rather than certifying
+     * that a previous projection is still current.
+     */
+open func composerModelCacheStamp() -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_composer_model_cache_stamp(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -2021,6 +2057,28 @@ open func overlayExpandedByDefault() -> Bool  {
 open func overlayKeepVisibleBetweenTakes() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_overlay_keep_visible_between_takes(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Cache-only revision check; it never waits for credential I/O.
+     */
+open func providerAccessRevision() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_provider_access_revision(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Explicit credential acquisition. Swift executes this off MainActor.
+     */
+open func providerAccessSnapshot()throws  -> CsProviderAccessSnapshot  {
+    return try  FfiConverterTypeCsProviderAccessSnapshot_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_provider_access_snapshot(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -2389,9 +2447,9 @@ open func testApiKey(account: String)throws  -> CsApiKeyProbeResult  {
 }
 
     /**
-     * Lightweight tray-only settings read. Unlike `load_settings`, this never
-     * populates the Keychain, so it never prompts just because the user opened
-     * the menu. Projects from one keychain-free runtime snapshot.
+     * Lightweight tray-only settings read uses files, env and cached credentials.
+     * It never prompts just because the user opened the menu. Projects from one
+     * keychain-free runtime snapshot.
      */
 open func trayToggles() -> CsTrayToggles  {
     return try!  FfiConverterTypeCsTrayToggles_lift(try! rustCall() {
@@ -11776,6 +11834,73 @@ public func FfiConverterTypeCsPromptSnapshot_lower(_ value: CsPromptSnapshot) ->
 
 
 /**
+ * Secret-free credential projection captured at one cache revision.
+ */
+public struct CsProviderAccessSnapshot: Equatable, Hashable {
+    public var providers: [CsProviderOption]
+    public var accountErrors: [String: String]
+    public var keyStatus: CsKeyStatus
+    public var sttLanes: [CsSttLane]
+    public var revision: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(providers: [CsProviderOption], accountErrors: [String: String], keyStatus: CsKeyStatus, sttLanes: [CsSttLane], revision: UInt64) {
+        self.providers = providers
+        self.accountErrors = accountErrors
+        self.keyStatus = keyStatus
+        self.sttLanes = sttLanes
+        self.revision = revision
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsProviderAccessSnapshot: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsProviderAccessSnapshot: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsProviderAccessSnapshot {
+        return
+            try CsProviderAccessSnapshot(
+                providers: FfiConverterSequenceTypeCsProviderOption.read(from: &buf),
+                accountErrors: FfiConverterDictionaryStringString.read(from: &buf),
+                keyStatus: FfiConverterTypeCsKeyStatus.read(from: &buf),
+                sttLanes: FfiConverterSequenceTypeCsSttLane.read(from: &buf),
+                revision: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsProviderAccessSnapshot, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeCsProviderOption.write(value.providers, into: &buf)
+        FfiConverterDictionaryStringString.write(value.accountErrors, into: &buf)
+        FfiConverterTypeCsKeyStatus.write(value.keyStatus, into: &buf)
+        FfiConverterSequenceTypeCsSttLane.write(value.sttLanes, into: &buf)
+        FfiConverterUInt64.write(value.revision, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsProviderAccessSnapshot_lift(_ buf: RustBuffer) throws -> CsProviderAccessSnapshot {
+    return try FfiConverterTypeCsProviderAccessSnapshot.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsProviderAccessSnapshot_lower(_ value: CsProviderAccessSnapshot) -> RustBuffer {
+    return FfiConverterTypeCsProviderAccessSnapshot.lower(value)
+}
+
+
+/**
  * Provider identity and credential presence; never a returned secret.
  */
 public struct CsProviderOption: Equatable, Hashable {
@@ -18275,6 +18400,32 @@ fileprivate struct FfiConverterSequenceTypeCsLlmLane: FfiConverterRustBuffer {
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterDictionaryStringString: FfiConverterRustBuffer {
+    public static func write(_ value: [String: String], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for (key, value) in value {
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterString.write(value, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String: String] {
+        let len: Int32 = try readInt(&buf)
+        var dict = [String: String]()
+        dict.reserveCapacity(Int(len))
+        for _ in 0..<len {
+            let key = try FfiConverterString.read(from: &buf)
+            let value = try FfiConverterString.read(from: &buf)
+            dict[key] = value
+        }
+        return dict
+    }
+}
 private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
 private let UNIFFI_RUST_FUTURE_POLL_WAKE: Int8 = 1
 
@@ -18806,7 +18957,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_workspace_with_attachments() != 44225) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_agentic_readiness() != 27253) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_agentic_readiness() != 2261) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_capability_matrix() != 24926) {
@@ -18837,6 +18988,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_cloud_file_retranscription_available() != 7524) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_composer_model_cache_stamp() != 32005) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_config_dir() != 34462) {
@@ -18885,6 +19039,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_overlay_keep_visible_between_takes() != 3434) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_provider_access_revision() != 35789) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_provider_access_snapshot() != 34624) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_remove_custom_provider() != 11187) {
@@ -18977,7 +19137,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_test_api_key() != 41767) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_tray_toggles() != 33834) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_tray_toggles() != 33194) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_update_config() != 45382) {

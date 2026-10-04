@@ -580,6 +580,10 @@ fn last_good_runtime_snapshot() -> &'static Mutex<CachedRuntimeSnapshot> {
 static RUNTIME_SNAPSHOT_BUILDS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(test)]
+static INVALIDATE_AFTER_RUNTIME_LOAD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Drop the last-good lane snapshot. Credential mutations (Keychain / OAuth)
 /// never touch `settings.json`, so mtime is not a sufficient cache key.
 pub(crate) fn invalidate_runtime_snapshot_cache() {
@@ -617,6 +621,10 @@ fn load_runtime_snapshot_for_lane() -> RuntimeSettingsSnapshot {
             .map(|(_, snapshot)| snapshot.clone())
             .unwrap_or_else(|| Config::load_startup_runtime_snapshot(false)),
     };
+    #[cfg(test)]
+    if INVALIDATE_AFTER_RUNTIME_LOAD.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        invalidate_runtime_snapshot_cache();
+    }
     let mut guard = last_good_runtime_snapshot()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

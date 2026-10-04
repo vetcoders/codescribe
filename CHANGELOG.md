@@ -13,22 +13,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Release reality
 
-| Version  | Repository milestone | Public distribution status                                                            |
-| -------- | -------------------- | ------------------------------------------------------------------------------------- |
-| `0.13.3` | 2026-08-13           | **Latest published GitHub Release** (`v0.13.3`), signed, notarized, and stapled.      |
-| `0.14.0` | 2026-08-17           | Source/daily-build milestone only; no Git tag or GitHub Release was published.        |
-| `0.14.1` | 2026-08-18 onward    | Earlier source/release-candidate milestone.                                           |
-| `0.15.1` | 2026-09-13           | Earlier source/daily-build milestone.                                                 |
-| `0.15.2` | 2026-09-30           | Release candidate `0784c554` (build 1531) under review; not a published distribution. |
+| Version  | Repository milestone | Public distribution status                                                       |
+| -------- | -------------------- | -------------------------------------------------------------------------------- |
+| `0.13.3` | 2026-08-13           | **Latest published GitHub Release** (`v0.13.3`), signed, notarized, and stapled. |
+| `0.14.0` | 2026-08-17           | Source/daily-build milestone only; no Git tag or GitHub Release was published.   |
+| `0.14.1` | 2026-08-18 onward    | Earlier source/release-candidate milestone.                                      |
+| `0.15.1` | 2026-09-13           | Earlier source/daily-build milestone.                                            |
+| `0.15.2` | 2026-10-04           | Integrated release candidate; signed distribution publication is pending.        |
 
 The sections below distinguish code milestones from public releases. A version
 number in `Cargo.toml` is not evidence that a DMG, tag, appcast, or GitHub
 Release exists.
 
-## [0.15.2] - 2026-09-30 (release candidate)
+## [0.15.2] - 2026-10-04 (release candidate)
 
-Candidate `0784c554` (build 1531) on `release/0.15.2-dragon`. Installed
-locally through `make install-if-idle`; not a published DMG, tag or appcast.
+This candidate combines the current dictation/agent stack and PR #117. The
+September 30 candidate has been superseded. Publication and installed-process
+acceptance are recorded separately from source checks.
+
+### Integrated in this cut
+
+- Keychain reads and writes run outside the interface's main actor. Settings,
+  onboarding and licensing preserve newer drafts while asynchronous work
+  finishes, report errors, and avoid redundant credential refreshes.
+- Passive configuration reads do not write settings or access Keychain. Initial
+  environment values are visible before the settings file exists; admitted
+  writes preserve pending credential imports and reject invalid configurations.
+- Audio uses the shared recording admission path, observes both tray and overlay
+  state, blocks calibration while busy, and displays final formatting as work
+  in progress. Composer model discovery checks its cache before reading providers.
+- Whisper model selection uses the current catalog. Apple file transcription
+  observes the original float PCM in measured windows and preserves recognized
+  text when terminal validation refuses completion.
+- Acoustic occurrences, reducer revisions and terminal delivery remain separate
+  authorities. Regression controls cover five physical repeated words, bounded
+  observation ownership, explicit gaps and retained text on refused completion.
+- Hosted agent tools operate on the shared workspace document. Responses retain
+  their conversation chain; terminal tool events preserve already received
+  arguments when the closing event omits them.
+- Thread selection supports keyboard and accessibility actions. Deletion,
+  export results, credential readiness and current-take recovery have localized
+  interface copy.
+- Rust–Swift binding generation stages output before publication and retains
+  unchanged files, timestamps and inode identity. Helper installation retains
+  validated command ownership after receipt loss while refusing foreign IDs.
 
 ### Added
 
