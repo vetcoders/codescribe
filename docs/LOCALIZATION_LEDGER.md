@@ -31,17 +31,17 @@ website, the docs, the CLI and model prompts are outside this ledger.
 
 ## 2. Where the app stands
 
-`Localizable.xcstrings` holds **1398 keys** (1375 translatable). Before this
+`Localizable.xcstrings` holds **1402 keys** (1379 translatable). Before this
 work the compiler extracted 468 — the literals SwiftUI localizes by itself; the
 rest was plain `String` and invisible to any translation. **Polish is complete**
-in both catalogs (1375/1375 and 4/4), imported from the translator worksheet
+in both catalogs (1379/1379 and 4/4), imported from the translator worksheet
 (`scripts/l10n-sheet.py`); the catalog is the source of the translation from
 here on.
 
 | Measure                                       | Count    |
 | --------------------------------------------- | -------- |
-| Keys in `Localizable.xcstrings`               | 1398     |
-| Keys translated to Polish                     | 1375     |
+| Keys in `Localizable.xcstrings`               | 1402     |
+| Keys translated to Polish                     | 1379     |
 | Keys with a translator comment                | 412      |
 | Keys with English plural forms                | 26       |
 | Keys written as identifiers (`defaultValue:`) | 37       |

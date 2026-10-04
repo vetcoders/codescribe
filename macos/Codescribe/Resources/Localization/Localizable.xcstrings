@@ -175,19 +175,19 @@
         }
       }
     },
-    "%@ s of speech had no words · %@" : {
+    "%@ s of speech not covered · %@" : {
       "comment" : "“s” is seconds. First placeholder is a pre-formatted duration, e.g. “1.3”; second is a list of positions in the take, e.g. “0:12, 0:58”",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "%1$@ s of speech had no words · %2$@"
+            "value" : "%1$@ s of speech not covered · %2$@"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@ s mowy bez rozpoznanych słów · %2$@"
+            "value" : "%1$@ s mowy bez pokrycia · %2$@"
           }
         }
       }
@@ -1416,6 +1416,36 @@
         }
       }
     },
+    "24h" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "24 h"
+          }
+        }
+      }
+    },
+    "30 days" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "30 dni"
+          }
+        }
+      }
+    },
+    "7 days" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "7 dni"
+          }
+        }
+      }
+    },
     "A longer gap in speech opens a new sentence in pasted dictation." : {
       "localizations" : {
         "pl" : {
@@ -1483,17 +1513,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dostawca AI"
-          }
-        }
-      }
-    },
-    "AI provider key" : {
-      "comment" : "Summary row: whether an API key is stored for the chosen AI provider",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Klucz dostawcy AI"
           }
         }
       }
@@ -1690,16 +1709,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dodaj"
-          }
-        }
-      }
-    },
-    "Add API key to discover models" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dodaj klucz API, aby pobrać listę modeli"
           }
         }
       }
@@ -2479,6 +2488,16 @@
         }
       }
     },
+    "Audio retention" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przechowywanie audio"
+          }
+        }
+      }
+    },
     "Auto" : {
       "comment" : "Dictation language picker: detect the spoken language automatically",
       "localizations" : {
@@ -2699,16 +2718,6 @@
         }
       }
     },
-    "Browse saved takes; this does not retry the current take" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przegląda zapisane nagrania; nie ponawia bieżącego nagrania"
-          }
-        }
-      }
-    },
     "Buffer delay" : {
       "localizations" : {
         "pl" : {
@@ -2757,6 +2766,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "CODESCRIBE_LAYERED_TRANSCRIPTION wyłącza korektę na żywo. Usuń to diagnostyczne nadpisanie z pliku .env i uruchom aplikację ponownie."
+          }
+        }
+      }
+    },
+    "CODESCRIBE_MODEL_PATH overrides the selected model." : {
+      "comment" : "Whisper model picker: an environment variable shadows the saved selection",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmienna CODESCRIBE_MODEL_PATH nadpisuje wybrany model."
           }
         }
       }
@@ -3441,33 +3461,12 @@
         }
       }
     },
-    "Codescribe detected speech that no recognizer turned into words; its timing is unavailable for this take." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe wykrył mowę, ale żaden silnik nie rozpoznał w niej słów. Dla tego nagrania nie ma danych o czasie."
-          }
-        }
-      }
-    },
     "Codescribe does not phone home while you work. A future fulfillment service may refresh the validation timestamp explicitly; offline grace is 30 days." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codescribe nie łączy się z serwerem podczas Twojej pracy. W przyszłości usługa licencyjna może jawnie odświeżać datę weryfikacji. Bez połączenia aplikacja działa do 30 dni."
-          }
-        }
-      }
-    },
-    "Codescribe heard speech at %@ that no recognizer turned into words — it may have been cut off, noise or the microphone." : {
-      "comment" : "The placeholder is a list of time ranges within the take, e.g. “0:12–0:14, 0:58–1:00”",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe wykrył mowę w %@, ale żaden silnik nie rozpoznał w niej słów — przyczyną mogło być ucięcie wypowiedzi, szum lub mikrofon."
           }
         }
       }
@@ -3642,6 +3641,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zatwierdza ten szkic w rejestrze transkrypcji"
+          }
+        }
+      }
+    },
+    "Committed text does not cover measured speech at %@; you can review and recover the available text." : {
+      "comment" : "The placeholder is a list of time ranges within the take, e.g. “0:12–0:14, 0:58–1:00”",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zatwierdzony tekst nie pokrywa zmierzonej mowy w %@; możesz przejrzeć i odzyskać dostępny tekst."
           }
         }
       }
@@ -4303,17 +4313,6 @@
         }
       }
     },
-    "Couldn't retranscribe recording: %@" : {
-      "comment" : "The placeholder is the engine's own failure text",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie udało się wykonać ponownej transkrypcji nagrania: %@"
-          }
-        }
-      }
-    },
     "Couldn't save overlay preference" : {
       "localizations" : {
         "pl" : {
@@ -4766,16 +4765,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dyktowanie"
-          }
-        }
-      }
-    },
-    "Dictation failed — transcript kept" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dyktowanie nie powiodło się — transkrypcja została zachowana"
           }
         }
       }
@@ -5503,6 +5492,16 @@
         }
       }
     },
+    "Forever" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bezterminowo"
+          }
+        }
+      }
+    },
     "Format transcript" : {
       "localizations" : {
         "pl" : {
@@ -5864,23 +5863,6 @@
         }
       }
     },
-    "Helper %@ failed: %@" : {
-      "comment" : "Placeholders: the pass name, then an error message",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Helper %1$@ failed: %2$@"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Błąd procesu pomocnicznego %1$@: %2$@"
-          }
-        }
-      }
-    },
     "Helper %@ matches daily." : {
       "localizations" : {
         "pl" : {
@@ -6014,6 +5996,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Gotowość"
+          }
+        }
+      }
+    },
+    "In use" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "W użyciu"
           }
         }
       }
@@ -6201,6 +6193,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przejdź do bieżącej odpowiedzi"
+          }
+        }
+      }
+    },
+    "Keep completed recordings" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zachowuj ukończone nagrania"
           }
         }
       }
@@ -6446,6 +6448,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Podgląd na żywo"
+          }
+        }
+      }
+    },
+    "Live preview. Uncommitted words may change." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podgląd na żywo. Niezatwierdzone słowa mogą się jeszcze zmienić."
           }
         }
       }
@@ -7755,16 +7767,6 @@
         }
       }
     },
-    "Nothing was captured this session." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "W tej sesji niczego nie zarejestrowano."
-          }
-        }
-      }
-    },
     "OK" : {
       "localizations" : {
         "pl" : {
@@ -7782,6 +7784,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyłączone"
+          }
+        }
+      }
+    },
+    "Off applies to new takes after processing finishes. Text history stays available. A take already in progress keeps its starting choice." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "„Wyłączone” dotyczy nowych nagrań po zakończeniu przetwarzania. Historia tekstu pozostaje dostępna. Nagranie już w toku zachowuje ustawienie z chwili startu."
           }
         }
       }
@@ -8131,6 +8143,16 @@
         }
       }
     },
+    "Original audio could not be played." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się odtworzyć oryginalnego audio."
+          }
+        }
+      }
+    },
     "Original audio is not available for this correction." : {
       "localizations" : {
         "pl" : {
@@ -8466,16 +8488,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pozwala korzystać z dyktowania na żywo Apple bezpośrednio na Macu. Mowa nie opuszcza urządzenia."
-          }
-        }
-      }
-    },
-    "Powers AI formatting and the agent lane. Stored in the macOS Keychain — write-only, never shown back. Optional: skip and add it later in Settings › Keys." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Potrzebne do formatowania przez AI i pracy z agentem. Klucz jest przechowywany w pęku kluczy macOS i nigdy nie jest później wyświetlany. Ten krok jest opcjonalny — możesz wrócić do niego później w Ustawieniach › Klucze."
           }
         }
       }
@@ -9959,16 +9971,6 @@
         }
       }
     },
-    "Retranscribe recording" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Transkrybuj ponownie"
-          }
-        }
-      }
-    },
     "Retranscribe this take on the helper engine" : {
       "localizations" : {
         "pl" : {
@@ -10315,6 +10317,39 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zapisano · %@"
+          }
+        }
+      }
+    },
+    "Saved · an override decides the active model (see note below)" : {
+      "comment" : "Whisper model picker: selection persisted but an env override shadows it",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisano · o aktywnym modelu decyduje nadpisanie (patrz uwaga poniżej)"
+          }
+        }
+      }
+    },
+    "Saved · applies from the next take" : {
+      "comment" : "Whisper model picker: selection persisted and the engine switches at the next take",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisano · obowiązuje od następnego nagrania"
+          }
+        }
+      }
+    },
+    "Saved · applies when the current recording finishes" : {
+      "comment" : "Whisper model picker: selection deferred because a take owns the engine",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisano · zacznie obowiązywać po zakończeniu bieżącego nagrania"
           }
         }
       }
@@ -11088,6 +11123,16 @@
         }
       }
     },
+    "Some measured speech is not covered by committed text; its timing is unavailable for this take. You can review and recover the available text." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Część zmierzonej mowy nie ma pokrycia w zatwierdzonym tekście; dla tego nagrania brak jej położenia w czasie. Możesz przejrzeć i odzyskać dostępny tekst."
+          }
+        }
+      }
+    },
     "Something went wrong: %@" : {
       "localizations" : {
         "pl" : {
@@ -11220,6 +11265,16 @@
         }
       }
     },
+    "Speech coverage incomplete" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niepełne pokrycie mowy"
+          }
+        }
+      }
+    },
     "Speech coverage not measured" : {
       "localizations" : {
         "pl" : {
@@ -11296,16 +11351,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozpoznawanie mowy jest niedostępne."
-          }
-        }
-      }
-    },
-    "Speech had no words" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wykryto mowę bez rozpoznanych słów"
           }
         }
       }
@@ -12143,6 +12188,26 @@
     "Text formatting" : {
       "shouldTranslate" : false
     },
+    "Text verification incomplete" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niepełna weryfikacja tekstu"
+          }
+        }
+      }
+    },
+    "Text verification is incomplete; this receipt provides no usable uncovered speech interval. You can review and recover the available text." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Weryfikacja tekstu jest niepełna; to potwierdzenie nie wskazuje użytecznego odcinka mowy bez pokrycia. Możesz przejrzeć i odzyskać dostępny tekst."
+          }
+        }
+      }
+    },
     "The %@ pass returned no text" : {
       "comment" : "The placeholder is the name of the engine that ran the pass",
       "localizations" : {
@@ -12160,6 +12225,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Obecny skill Codescribe dla %@ zostanie zachowany jako kopia zapasowa, a następnie zastąpiony wersją dołączoną do tej aplikacji.\nPozostałe skille i ustawienia agenta pozostaną bez zmian. Instalacja nie uruchomi nasłuchiwania."
+          }
+        }
+      }
+    },
+    "The LOCAL_MODEL environment variable overrides the selected model." : {
+      "comment" : "Whisper model picker: an environment variable shadows the saved selection",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmienna środowiskowa LOCAL_MODEL nadpisuje wybrany model."
           }
         }
       }
@@ -12448,6 +12524,16 @@
         }
       }
     },
+    "This build embeds Whisper — the on-disk model selection is ignored." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta kompilacja ma wbudowany model Whisper — wybór modelu z dysku jest pomijany."
+          }
+        }
+      }
+    },
     "This connection is optional. You can continue and set it up later." : {
       "comment" : "Setup step footnote on the agent-readiness step",
       "localizations" : {
@@ -12465,16 +12551,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ten szkic nie jest zapisany. Kontynuuj z dyktowaniem, a potem wróć w tej sesji konfiguracji, aby go zapisać, gdy dostęp do dostawcy będzie dostępny."
-          }
-        }
-      }
-    },
-    "This is retained text from an earlier take, including any unsaved edit. It is separate from the current take's audio." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "To zachowany tekst z wcześniejszego nagrania, łącznie z niezapisanymi zmianami. Jest niezależny od dźwięku bieżącego nagrania."
           }
         }
       }
@@ -12704,16 +12780,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "U góry po prawej"
-          }
-        }
-      }
-    },
-    "Transcribe again" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Transkrybuj ponownie"
           }
         }
       }
@@ -12992,6 +13058,17 @@
         }
       }
     },
+    "Unavailable" : {
+      "comment" : "Whisper model row: no detail",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niedostępny"
+          }
+        }
+      }
+    },
     "Undo needs the recording engine" : {
       "localizations" : {
         "pl" : {
@@ -13208,16 +13285,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "użytkownik"
-          }
-        }
-      }
-    },
-    "Uses audio from the take currently shown in the overlay" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Używa dźwięku z nagrania widocznego teraz w nakładce"
           }
         }
       }
@@ -13710,6 +13777,16 @@
         }
       }
     },
+    "Whisper model" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Model Whisper"
+          }
+        }
+      }
+    },
     "Whisper was unsure of this word" : {
       "localizations" : {
         "pl" : {
@@ -14065,17 +14142,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "ścieżka assistive: brak danych dostępowych"
-          }
-        }
-      }
-    },
-    "assistive lane: no key" : {
-      "comment" : "Settings health footer, lower case: no API key for the assistive lane",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent: brak klucza API"
           }
         }
       }
@@ -14791,6 +14857,17 @@
         }
       }
     },
+    "loads on next take" : {
+      "comment" : "Whisper model row: no weights resident; the next take loads the selected model",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "załaduje się przy następnym nagraniu"
+          }
+        }
+      }
+    },
     "local Whisper HQ" : {
       "comment" : "Retranscribe pass: the local engine",
       "localizations" : {
@@ -14875,28 +14952,6 @@
         }
       }
     },
-    "model discovery failed" : {
-      "comment" : "Model discovery status",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "nie udało się pobrać listy modeli"
-          }
-        }
-      }
-    },
-    "model discovery failed — %@" : {
-      "comment" : "The placeholder is a status message from the core",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "nie udało się pobrać listy modeli — %@"
-          }
-        }
-      }
-    },
     "name (e.g. prview)" : {
       "localizations" : {
         "pl" : {
@@ -14955,17 +15010,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "klucz API nie jest wymagany"
-          }
-        }
-      }
-    },
-    "no models returned by provider" : {
-      "comment" : "Model discovery status",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "brak modeli od dostawcy"
           }
         }
       }
@@ -15370,17 +15414,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "wynik"
-          }
-        }
-      }
-    },
-    "retranscribe refused · %@" : {
-      "comment" : "The placeholder is the engine's own failure text",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ponowna transkrypcja odrzucona · %@"
           }
         }
       }
@@ -16068,17 +16101,6 @@
         }
       }
     },
-    "systems ready" : {
-      "comment" : "Settings health footer, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "wszystko gotowe do pracy"
-          }
-        }
-      }
-    },
     "take audio unavailable" : {
       "localizations" : {
         "pl" : {
@@ -16220,13 +16242,13 @@
         }
       }
     },
-    "under 0.1 s of speech had no words · %@" : {
+    "under 0.1 s of speech not covered · %@" : {
       "comment" : "“s” is seconds. The placeholder is a list of positions in the take, e.g. “0:12, 0:58”",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "mniej niż 0,1 s mowy bez rozpoznanych słów · %@"
+            "value" : "poniżej 0,1 s mowy bez pokrycia · %@"
           }
         }
       }
@@ -16247,6 +16269,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "cofnięcie niedostępne"
+          }
+        }
+      }
+    },
+    "unresolved" : {
+      "comment" : "Whisper model row: resolution failed",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "nie rozstrzygnięto"
           }
         }
       }
