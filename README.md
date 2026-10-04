@@ -1,11 +1,11 @@
 # ⌜ Codescribe ⌟
 
-[![Version](https://img.shields.io/badge/version-0.14.1-6a9bcc)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.15.2-6a9bcc)](Cargo.toml)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
 [![Landing](https://img.shields.io/badge/site-vetcoders.github.io%2Fcodescribe-788c5d)](https://vetcoders.github.io/codescribe/)
 
-**Native macOS tray dictation and assistive voice overlay: instant Apple-neural live canvas, Whisper filling the gaps on the go, lexicon correction last — append-only, never rewritten — plus quality tooling.**
+**Native macOS tray dictation and assistive voice overlay: instant Apple-neural live canvas, Whisper repairing the same PCM-bound spans on the go, lexicon correction last — plus quality tooling.**
 
 ## Overview
 
@@ -13,9 +13,9 @@ Codescribe is a native macOS menu-bar application that captures audio through gl
 transcription while you speak, and pastes or routes the final result into the focused application. The shipped product
 in this repo is a tray app whose SwiftUI front-end has two explicit surfaces: settings and overlays.
 
-The transcription shape is layered and append-only (see `AGENTS.md`, the one rule): Apple Speech is the instant
-letter-level live canvas; local Whisper transcribes partials on the go to fill the canvas gaps — it is not the live
-engine and not a stop-time authority; lexicon correction by dictionary substitution is the final automated layer, and
+The transcription shape is layered and span-bound (see `docs/THE_ENGINE_CONTRACT.md`): Apple Speech is the instant
+letter-level live canvas; in Local Power mode, local Whisper transcribes partials on the go to repair weaker wording
+inside the same proven audio spans — it is not a stop-time authority; lexicon correction by dictionary substitution is the final automated layer, and
 human corrections feed the lexicon. Cloud STT is optional and used as a post-capture transcript backend, not as live
 cloud preview. AI formatting and assistive mode use OpenAI Responses API (`/v1/responses`) by default, configured in
 Settings or `~/.codescribe/.env`.
@@ -34,7 +34,7 @@ flowchart TB
         direction TB
         REC[Streaming Recorder]
         POST[Stream Postprocess]
-        STT[Apple Live Canvas + Whisper Gap Fill + Lexicon]
+        STT[Apple Live + PCM-bound Whisper + Lexicon]
         LLM[Responses API Formatting / Assistive]
         QL[Quality Loop]
     end
@@ -57,9 +57,17 @@ flowchart TB
     CORE -.-> TOOLS
 ```
 
-> **Current runtime truth:** live overlay preview is local Whisper. Cloud STT is configurable in Settings, but in the current build it is still a **post-capture** path rather than live cloud preview.
+> **Current runtime truth:** Apple Speech paints the instant live overlay.
+> Local Power arms Whisper as a background observer of bounded windows from the
+> same PCM clock; accepted wording can change only the proven target span.
+> Cloud mode may arm its configured live provider after explicit consent.
+> Full-file local/cloud Retranscribe is a separate operator action and is never
+> the automatic stop authority.
 
-> **Status:** current source version is `0.14.1` (see `Cargo.toml`) and ships as a native macOS tray/settings/overlay app with local live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
+> **Release status:** current source version is `0.15.2` (see `Cargo.toml`),
+> while the latest published GitHub Release is `v0.13.3`. No `v0.14.0` or
+> `v0.14.1` tag/Release exists yet. Source builds are candidates, not published
+> distribution artifacts.
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
@@ -103,7 +111,7 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 ## Features
 
 - **Rust core + SwiftUI app** — Native macOS SwiftUI shell over the Rust engine through UniFFI, with candle-core + Metal GPU
-- **Two DMG variants** — Standard (daily) embeds Silero VAD and signs MiniLM as a runtime app resource; Whisper is downloaded from Settings → Dictation or HF cache. Optional `_full` DMG also embeds Whisper for offline/curiosity installs.
+- **Two DMG variants** — Standard (daily) embeds Silero VAD only; Whisper is downloaded from Settings → Dictation or HF cache. Optional `_full` DMG also embeds Whisper for offline/curiosity installs.
 - **Whisper Live** — Streaming transcription happens _during recording_ (chunks + overlap), so `stop()` is
   near-instant
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
@@ -139,7 +147,7 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 
 - **macOS 14+** (Sonoma or later)
 - **Apple Silicon** (M1, M2, M3, or later)
-- **Rust Toolchain** (1.88+; the workspace declares this MSRV)
+- **Rust Toolchain** (1.94+; the workspace declares this MSRV)
 
 ### Install from Source
 
@@ -169,7 +177,11 @@ Tagged builds publish DMGs through GitHub Releases:
 2. Download `Codescribe_<version>-<builddate>-<sha>.dmg` for the standard build, or the `_full` variant for the larger build with embedded Whisper.
 3. Drag `Codescribe.app` into `Applications`
 
-> **Current truth:** `v0.13.0` is the latest version published on GitHub Releases, as a Developer ID signed, notarized and stapled DMG (`releases/latest/download/Codescribe.dmg`, ~1.4 GB — the `_full` build with embedded Whisper); source install remains the freshest path for unreleased work on this branch. The release workflow is wired to fail if the required Apple signing/notary secrets are missing.
+> **Current truth:** `v0.13.3` is the latest version published on GitHub
+> Releases. The repository is at `0.14.1`, but those newer milestones have not
+> been tagged or published. A production artifact must be Developer ID signed,
+> notarized, stapled, and pass `verify-dmg`; a source install or ad-hoc `.app` is
+> not a public release.
 
 ### Build Options
 
@@ -220,7 +232,7 @@ flowchart TD
     B -->|Hold Fn| C[Start Recording]
     B -->|Double Option| C
     C --> D[Recording]
-    D -->|live chunks| E["Whisper STT (streaming)"]
+    D -->|live chunks| E["Apple L0 + bounded Whisper L1"]
     D -->|Release / Toggle| F[Stop]
     F --> G[Finalize last chunk]
     G --> H{AI Enabled?}
@@ -235,17 +247,21 @@ flowchart TD
 
 ### Transcription Pipeline
 
-Live transcription is now modeled as:
+Live transcription is a four-layer relay on one PCM timeline:
 
-- committed utterances already safe to keep
-- one active preview tail for the current utterance
-- corrections that rewrite only that active tail
+1. **L0 Apple** paints fast, revisable hypotheses.
+2. **L1 Whisper** observes bounded overlapping PCM windows and may repair only
+   the matching occurrence behind the rewrite fence.
+3. **L2 Lexicon + Light+** performs deterministic, occurrence-preserving
+   shaping.
+4. **L3 Responses formatter** can polish stable spans through the configured
+   formatting lane; it is the existing formatter, not a hidden small model.
 
-That means streaming partials are appended session-wide, but partial-pass fixes
-only backspace inside the current tail instead of overwriting earlier committed
-text. Final utterances keep their timestamp/segment metadata through the event
-pipeline, while overlays/chat bubbles still receive only backspace-encoded
-`TranscriptDelta` payloads.
+Silero supplies speech probability, boundaries, and pause/time evidence; it is
+not a text layer. The presentation reducer is the only transcript authority.
+The overlay, delivery, history, Agent, and Transcript Bus consume committed
+reducer events. A full-file retranscription remains an explicit proposal, not a
+replacement pass users must wait for after every take.
 
 ### Recording Modes
 
@@ -334,7 +350,7 @@ Codescribe uses **whisper-large-v3-turbo** (mlx-community, fp16):
 
 ### Runtime Whisper (Current)
 
-**Daily public builds keep large weights out of Cargo artifacts.** `make release`, `make dmg` / `dmg-signed`, and `make release-standard` embed only **Silero VAD** in the Rust engine. **MiniLM** is copied into the signed app as a runtime resource, while **Whisper is not baked in** (~900 MB–1.5 GB saved). Install local Candle Whisper from **Settings → Dictation → Download Whisper**, or run `make download-model`.
+**Daily public builds keep large weights out of the artifact.** `make release`, `make dmg` / `dmg-signed`, and `make release-standard` embed only **Silero VAD** in the Rust engine. **Whisper is not baked in** (~900 MB–1.5 GB saved) — install local Candle Whisper from **Settings → Dictation → Download Whisper**, or run `make download-model`. **MiniLM is not bundled either** (~471 MB saved): no runtime path loads it, so it ships only when a build asks with `./scripts/build-dmg.sh --bundle-embedder`. The e2e round-trip and lexicon-calibration lanes resolve it from the HF cache after `make download-embedder`.
 
 Optional fat SKU (offline / curiosity): `make release-full` or `CODESCRIBE_EMBED_WHISPER=1` / `make release-codescribe-embedded`.
 

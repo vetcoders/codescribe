@@ -46,7 +46,7 @@ final class RealTrayEngine: TrayEngine {
   func currentToggles() -> (
     showDockIcon: Bool,
     overlayEnabled: Bool,
-    autoPasteEnabled: Bool,
+    pasteMode: CsPasteMode,
     autoFormatLevel: FormattingPolicyOption,
     notesMode: Bool,
     startInAssistive: Bool,
@@ -59,7 +59,7 @@ final class RealTrayEngine: TrayEngine {
     return (
       toggles.showDockIcon,
       toggles.transcriptionOverlayEnabled,
-      toggles.autoPasteEnabled,
+      toggles.pasteMode,
       formatLevel,
       toggles.notesModeEnabled,
       toggles.startAssistive,
@@ -74,8 +74,8 @@ final class RealTrayEngine: TrayEngine {
     try? config.updateConfig(key: toggle.configKey, value: enabled ? "1" : "0")
   }
 
-  func setAutoPasteEnabled(_ enabled: Bool) {
-    _ = try? config.setAutoPasteEnabled(enabled: enabled)
+  func setPasteMode(_ mode: CsPasteMode) {
+    _ = try? config.setPasteMode(mode: mode)
   }
 
   func setAutoFormatLevel(_ level: FormattingPolicyOption) {

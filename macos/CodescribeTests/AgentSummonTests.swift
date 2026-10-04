@@ -5,28 +5,18 @@ import XCTest
 
 @MainActor
 final class AgentSummonTests: XCTestCase {
-  private final class SpyEngine: AgentChatEngine {
+  private final class SpyEngine: ChatEngineFixture {
     private(set) var streamCalls = 0
     private(set) var cancelCalls = 0
 
-    func isAvailable() -> Bool { true }
-    func availabilityDetail() -> String? { nil }
-    func generateThreadTitle(_ text: String) async throws -> String? { nil }
-
-    func streamReply(
-      _ text: String,
-      threadId: String,
-      attachmentPaths: [String],
-      onDelta: @escaping @MainActor (String) -> Void,
-      onReasoning: @escaping @MainActor (String) -> Void,
-      onToolExecuting: @escaping @MainActor (String, String) -> Void,
-      onToolResult: @escaping @MainActor (String, String, Bool, String) -> Void
+    func acceptReply(
+      _: String, threadId _: String, attachmentPaths _: [String]
     ) async throws -> String {
       streamCalls += 1
       return "unexpected"
     }
 
-    func cancelReply(threadId: String) -> Bool {
+    func cancelReply(threadId _: String) -> Bool {
       cancelCalls += 1
       return false
     }
@@ -78,6 +68,17 @@ final class AgentSummonTests: XCTestCase {
     listener.onShowAgent()
 
     await fulfillment(of: [delivered], timeout: 1.0)
+  }
+
+  func testMaxApprovalInvalidationDoesNotInvokeTheChatSummonAction() async {
+    let delivered = expectation(description: "Max pending state refreshed")
+    let listener = AgentAppActionListener(
+      maxApprovalsChanged: { delivered.fulfill() },
+      summonAgent: { XCTFail("Max must not select or focus the chat composer") }
+    )
+    listener.onMaxApprovalsChanged()
+    await fulfillment(of: [delivered], timeout: 1.0)
+    listener.invalidate()
   }
 
   func testAgentPinMapsToFloatingAndNormalWindowLevels() {

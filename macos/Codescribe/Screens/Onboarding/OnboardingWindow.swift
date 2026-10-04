@@ -34,10 +34,15 @@ final class OnboardingWindowController {
       model.onFinished = { [weak self] in self?.close() }
       let hosting = NSHostingController(rootView: OnboardingView(model: model))
       let window = NSWindow(contentViewController: hosting)
-      window.title = "Welcome to codescribe"
+      window.title = String(
+        localized: "Welcome to codescribe",
+        comment: "Setup wizard window title; codescribe is the product name, kept lowercase"
+      )
       window.setContentSize(NSSize(width: 720, height: 620))
       window.styleMask = [.titled, .closable, .fullSizeContentView]
       window.titlebarAppearsTransparent = true
+      window.isOpaque = false
+      window.backgroundColor = .clear
       window.isReleasedWhenClosed = false
       window.center()
       self.window = window
@@ -49,5 +54,26 @@ final class OnboardingWindowController {
   private func close() {
     window?.close()
     window = nil
+  }
+}
+
+/// Only the noninteractive chapter header owns window dragging. The scrollable
+/// step and footer retain their normal selection and control hit testing.
+struct OnboardingDragRegion: NSViewRepresentable {
+  func makeNSView(context: Context) -> OnboardingDragView {
+    let view = OnboardingDragView()
+    view.setAccessibilityIdentifier("onboarding-window-drag-region")
+    view.setAccessibilityElement(false)
+    return view
+  }
+
+  func updateNSView(_ nsView: OnboardingDragView, context: Context) {}
+}
+
+final class OnboardingDragView: NSView {
+  override var isOpaque: Bool { false }
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+  override func mouseDown(with event: NSEvent) {
+    window?.performDrag(with: event)
   }
 }

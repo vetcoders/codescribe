@@ -3,68 +3,76 @@ import SwiftUI
 
 struct LicensePanel: View {
   @ObservedObject var model: SettingsViewModel
+  /// Sample key shape, not copy: identical in every language.
+  private static let keyPlaceholder = "CSK1.…"
+
   @State private var key = ""
+  @FocusState private var keyFocused: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      EyebrowLabel(text: "Settings · License")
-      Text("Basic stays free.")
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
-        .padding(.top, 6)
-      Text(
-        "A signed CSK1 key unlocks the Agentic lane. Validation is local and the key stays in the macOS Keychain."
+      SettingsPageHeader(
+        String(localized: "Basic stays free."),
+        blurb: String(
+          localized:
+            "A signed CSK1 key unlocks the Agentic lane. Validation is local and the key stays in the macOS Keychain."
+        )
       )
-      .font(CSFont.ui(12.5))
-      .lineSpacing(2)
-      .foregroundStyle(CSColor.textMutedAlt)
-      .padding(.top, 8)
 
-      SettingsSectionLabel("License status")
-        .padding(.top, 24)
+      SettingsSectionLabel(String(localized: "License status"))
+        .padding(.top, CSSpace.section)
       VStack(spacing: 0) {
         RuntimeRow(
-          key: "State", value: stateLabel, tint: model.licenseStatus.agenticEntitled,
+          key: String(localized: "State"), value: stateLabel,
+          tint: model.licenseStatus.agenticEntitled,
           trailing: .none)
         divider
         RuntimeRow(
-          key: "SKU", value: model.licenseStatus.sku ?? "Basic", tint: false, mono: true,
+          key: String(localized: "SKU"), value: model.licenseStatus.sku ?? "Basic", tint: false,
+          mono: true,
           trailing: .none)
         divider
         RuntimeRow(
-          key: "Updates through", value: model.licenseStatus.updatesUntil ?? "—", tint: false,
+          key: String(localized: "Updates through"),
+          value: model.licenseStatus.updatesUntil ?? "—", tint: false,
           mono: true, trailing: .none)
       }
-      .padding(.top, 11)
-      .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+      .padding(.top, CSSpace.control)
+      .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
       .overlay(
-        RoundedRectangle(cornerRadius: 13, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+        RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
 
-      SettingsSectionLabel("Enter or restore key")
-        .padding(.top, 24)
-      SecureField("CSK1.…", text: $key)
+      SettingsSectionLabel(String(localized: "Enter or restore key"))
+        .padding(.top, CSSpace.section)
+      SecureField(Self.keyPlaceholder, text: $key)
         .font(CSFont.mono(11.5, .regular))
         .textFieldStyle(.plain)
-        .padding(12)
-        .background(CSColor.surfaceRaised(0.04))
+        .focused($keyFocused)
+        .padding(CSSpace.md)
+        .background(Color.primary.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
         .overlay(
           RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-            .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
         )
-        .padding(.top, 11)
+        .overlay {
+          CSFocusOutline(isFocused: keyFocused, cornerRadius: CSRadius.input)
+        }
+        .padding(.top, CSSpace.control)
         .accessibilityLabel("Codescribe license key")
 
       HStack(spacing: 12) {
         Button("Activate / Restore") {
-          if model.activateLicense(key) { key = "" }
+          let submitted = key
+          Task { @MainActor in
+            if await model.activateLicense(submitted), key == submitted { key = "" }
+          }
         }
         .buttonStyle(.borderedProminent)
         .tint(CSColor.chromeAccent)
-        .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .disabled(model.licenseBusy || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
         // Self-service issuance: codescribe.vetcoders.io/license/ mints a
         // signed key for an email on the spot (open beta). Without this
@@ -81,18 +89,30 @@ struct LicensePanel: View {
 
         if model.licenseStatus.state != .unlicensed {
           Button("Remove license", role: .destructive) {
-            model.removeLicense()
+            Task { @MainActor in await model.removeLicense() }
           }
-          .csFocusRing(cornerRadius: 8)
-          .foregroundStyle(CSColor.dangerLight)
+          .csFocusRing()
+          .foregroundStyle(CSColor.danger)
+          .disabled(model.licenseBusy)
         }
       }
       .padding(.top, 12)
 
+      if model.licenseReadState != .available {
+        Text(model.licenseReadState == .loading
+          ? String(localized: "Checking license…")
+          : String(localized: "License access is unavailable. The last verified license still follows its original expiry."))
+          .font(CSFont.ui(11.5))
+          .padding(.top, 10)
+      }
+      Button("Retry license access") { model.refreshLicense() }
+        .disabled(model.licenseBusy)
+        .padding(.top, 10)
+
       if let error = model.licenseError {
         Text(error)
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.dangerLight)
+          .foregroundStyle(CSColor.danger)
           .padding(.top, 10)
           .textSelection(.enabled)
       }
@@ -102,25 +122,32 @@ struct LicensePanel: View {
       )
       .font(CSFont.ui(11.5))
       .lineSpacing(2)
-      .foregroundStyle(CSColor.textFaintAlt)
+      .foregroundStyle(Color.secondary)
       .padding(.top, 18)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
   }
 
   private var stateLabel: String {
+    if model.licenseStatus.state == .unlicensed, model.licenseReadState != .available {
+      return model.licenseReadState == .loading
+        ? String(localized: "Checking license…")
+        : String(localized: "License access unavailable")
+    }
     switch model.licenseStatus.state {
-    case .unlicensed: return "Unlicensed · Basic"
-    case .active: return "Active · Agentic unlocked"
+    case .unlicensed: return String(localized: "Unlicensed · Basic")
+    case .active: return String(localized: "Active · Agentic unlocked")
     case .graceOffline:
-      return "Offline grace · \(model.licenseStatus.daysLeft ?? 0) days left"
-    case .expiredUpdates: return "Updates expired · installed app remains active"
+      let daysLeft = Int(model.licenseStatus.daysLeft ?? 0)
+      return String(localized: "Offline grace · \(daysLeft) days left")
+    case .expiredUpdates:
+      return String(localized: "Updates expired · installed app remains active")
     }
   }
 
   private var divider: some View {
-    Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
   }
 }
 
@@ -128,7 +155,5 @@ struct LicensePanel: View {
   #Preview("License panel") {
     ScrollView { LicensePanel(model: .preview(.license)) }
       .frame(width: 720, height: 760)
-      .background(SettingsView.windowGradient)
-      .preferredColorScheme(.dark)
   }
 #endif

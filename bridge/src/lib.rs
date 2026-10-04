@@ -18,14 +18,33 @@
 
 uniffi::setup_scaffolding!();
 
+/// Seal the embedding application's state and credential identity before any
+/// config, agent, account or recording handle is constructed.
+#[uniffi::export]
+pub fn configure_embedded_runtime(
+    data_directory: String,
+    keychain_service: String,
+) -> Result<(), CsError> {
+    let host = codescribe_core::config::runtime_host::RuntimeHost::new(
+        data_directory.into(),
+        keychain_service,
+    )?;
+    codescribe_core::config::runtime_host::configure(host)?;
+    Ok(())
+}
+
 /// Streaming agent chat surface (`CodescribeAgent` + listener).
 mod agent;
 /// Agent delivery callbacks into Swift UI.
 mod agent_delivery;
 /// Read-only agent readiness and MCP status.
 mod agent_status;
+/// Process-owned async runtime and lifecycle evidence.
+mod application_runtime;
 /// Settings, prompts, keychain, and onboarding config.
 mod config;
+/// Live buffer tools supplied by an embedding document editor.
+mod document_agent;
 /// Global hotkey registration and app-action callbacks.
 mod hotkeys;
 /// CSK1 license state exposed to the Swift shell.
@@ -34,26 +53,40 @@ mod licensing;
 mod mcp_admin;
 /// Notes surface bridged for agent tools / UI.
 mod notes;
+/// Host on-device formatting (Apple FoundationModels) registration (W6).
+mod on_device_format;
 /// Overlay quality records and lexicon commit helpers.
 mod quality;
 /// Dictation / STT streaming into the Swift app.
 mod recording;
+/// Vendor speech synthesis and cancellation.
+mod speech;
 /// Thread persistence and history for agent chats.
 mod threads;
 /// Menu-bar tray status payloads and listener.
 mod tray_status;
+/// Private, app-owned vocabulary replay.
+mod vocabulary_ab;
+/// Workspace discovery and explicit document opening for an embedded session.
+mod workspace_agent;
 
 pub use agent::{CodescribeAgent, CsAgentListener};
 pub use agent_delivery::CsAgentDeliveryListener;
+pub use application_runtime::CsApplicationRuntimeSnapshot;
 pub use hotkeys::CodescribeHotkeys;
 pub use hotkeys::CsAppActionListener;
 pub use licensing::{CsLicenseState, CsLicenseStatus};
+pub use on_device_format::{CsOnDeviceFormatOutcome, CsOnDeviceFormatter};
 pub use quality::{
-    CsLexiconEntry, CsOverlayHighlight, CsOverlayHighlightKind, CsQualityCommitResult,
-    CsQualityRecord, commit_overlay_quality_record, lexicon_custom_entries,
-    overlay_highlights_enabled, quality_finalize_correction, quality_recent_records,
-    quality_teach_span,
+    CsDiffSpan, CsDiffTier, CsLexiconEntry, CsQualityCommitResult, CsQualityListing,
+    CsQualityRecord, CsRuleCandidate, commit_overlay_quality_record, lexicon_custom_entries,
+    quality_diff_spans, quality_finalize_correction, quality_recent_listing,
+    quality_rule_candidates, quality_teach_span,
 };
+#[cfg(unix)]
+pub use recording::CsAudioReadLease;
+pub use recording::{CsCaptureHandle, CsConditionalStop, CsTranscriptDelivery};
+pub use speech::{CsSpeechResult, speak_text, speech_availability, stop_speaking};
 pub use tray_status::{
     CodescribeTrayStatus, CsTrayStatusKind, CsTrayStatusListener, CsTrayStatusPayload,
     CsTrayStatusTone,
@@ -70,6 +103,7 @@ pub enum CsError {
     Recording { msg: String },
     License { msg: String },
     Quality { msg: String },
+    Runtime { msg: String },
 }
 
 impl std::fmt::Display for CsError {
@@ -80,7 +114,8 @@ impl std::fmt::Display for CsError {
             | CsError::Config { msg }
             | CsError::Recording { msg }
             | CsError::License { msg }
-            | CsError::Quality { msg } => {
+            | CsError::Quality { msg }
+            | CsError::Runtime { msg } => {
                 write!(f, "{msg}")
             }
         }
@@ -88,6 +123,53 @@ impl std::fmt::Display for CsError {
 }
 
 impl std::error::Error for CsError {}
+
+/// Start the one process-owned async runtime. Idempotent while running; once
+/// shut down it cannot be restarted in the same process.
+#[uniffi::export]
+pub fn start_application_runtime() -> Result<CsApplicationRuntimeSnapshot, CsError> {
+    start_application_runtime_with_compaction(|| {
+        let path = codescribe::presentation::transcript_bus::transcript_bus_path();
+        if let Err(error) =
+            codescribe::presentation::transcript_bus_maintenance::compact_bus_if_enabled(
+                &path, "startup",
+            )
+        {
+            tracing::warn!(%error, "startup bus compaction unavailable");
+        }
+    })
+}
+
+/// Inject the startup compaction work for the thread-ordering test. The app
+/// uses the production closure above; both paths use the same spawn boundary.
+#[doc(hidden)]
+pub fn start_application_runtime_with_compaction(
+    compaction: impl FnOnce() + Send + 'static,
+) -> Result<CsApplicationRuntimeSnapshot, CsError> {
+    let snapshot = application_runtime::start()?;
+    if let Err(error) = std::thread::Builder::new()
+        .name("codescribe-bus-compaction".to_string())
+        .spawn(compaction)
+    {
+        tracing::warn!(%error, "startup bus compaction thread unavailable");
+    }
+    Ok(snapshot)
+}
+
+/// Content-free lifecycle snapshot used by diagnostics and delivery probes.
+#[uniffi::export]
+pub fn application_runtime_snapshot() -> Result<CsApplicationRuntimeSnapshot, CsError> {
+    application_runtime::snapshot()
+}
+
+/// Stop controller/account activity first, then tear down every runtime worker.
+#[uniffi::export]
+pub fn shutdown_application_runtime() -> Result<CsApplicationRuntimeSnapshot, CsError> {
+    config::cancel_pending_account_login_for_shutdown();
+    speech::stop_speaking();
+    hotkeys::shutdown_application_controller()?;
+    application_runtime::shutdown()
+}
 
 impl From<anyhow::Error> for CsError {
     /// Map `anyhow` failures onto the Agent error variant by default.
@@ -101,6 +183,14 @@ impl From<anyhow::Error> for CsError {
 impl From<std::io::Error> for CsError {
     /// Map I/O failures onto the Config error variant.
     fn from(error: std::io::Error) -> Self {
+        CsError::Config {
+            msg: error.to_string(),
+        }
+    }
+}
+
+impl From<codescribe_core::config::SettingsSnapshotValidationError> for CsError {
+    fn from(error: codescribe_core::config::SettingsSnapshotValidationError) -> Self {
         CsError::Config {
             msg: error.to_string(),
         }
@@ -141,13 +231,30 @@ impl From<CsLanguage> for codescribe_core::config::Language {
     }
 }
 
-impl CsLanguage {
-    /// Two-letter code (`"pl"` / `"en"`) as the core uses it.
-    pub fn as_code(&self) -> &'static str {
-        match self {
-            CsLanguage::Auto => "auto",
-            CsLanguage::Polish => "pl",
-            CsLanguage::English => "en",
-        }
+#[cfg(test)]
+mod startup_tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn startup_returns_while_compaction_thread_is_held_at_entry() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let snapshot = super::start_application_runtime_with_compaction(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            finished_tx.send(()).unwrap();
+        })
+        .unwrap();
+
+        assert_eq!(snapshot.state, "running");
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            matches!(finished_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "compaction must still be held after startup returned"
+        );
+        release_tx.send(()).unwrap();
+        finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     }
 }

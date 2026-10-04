@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rand::distributions::Alphanumeric;
-use rand::{Rng, thread_rng};
+use rand::distr::Alphanumeric;
+use rand::{RngExt, rng};
 use sha2::{Digest, Sha256};
 
 use super::types::ImageAsset;
@@ -32,6 +32,7 @@ impl AgentAssetStore {
     /// same bytes may be saved repeatedly.
     pub fn save_image(data: &[u8], media_type: &str) -> Result<ImageAsset> {
         let dir = Self::assets_dir();
+        crate::test_isolation::assert_test_write_allowed(&dir);
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("Failed to create agent assets dir: {}", dir.display()))?;
 
@@ -60,6 +61,7 @@ impl AgentAssetStore {
     /// the same asset file instead of minting a new copy per save.
     pub fn save_inline_image(data: &[u8], media_type: &str) -> Result<ImageAsset> {
         let dir = Self::assets_dir();
+        crate::test_isolation::assert_test_write_allowed(&dir);
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("Failed to create agent assets dir: {}", dir.display()))?;
 
@@ -151,7 +153,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
 
 /// Lowercase alphanumeric suffix that keeps same-millisecond captures distinct.
 fn random_suffix(len: usize) -> String {
-    thread_rng()
+    rng()
         .sample_iter(&Alphanumeric)
         .take(len)
         .map(char::from)
@@ -189,12 +191,42 @@ mod tests {
 
     /// Bytes written by `save_image` must be readable back via `read_image`.
     #[test]
+    #[serial_test::serial]
     fn read_image_roundtrips_saved_asset() {
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         let asset = AgentAssetStore::save_image(b"png-bytes", "image/png")
             .expect("save_image should succeed");
+        let root = data_dir.path().canonicalize().expect("canonical tempdir");
+        assert!(
+            asset.path.starts_with(&root),
+            "the asset must land under the isolated data root: {}",
+            asset.path.display()
+        );
         let data = AgentAssetStore::read_image(&asset.path).expect("saved asset must be readable");
         assert_eq!(data, b"png-bytes");
-        std::fs::remove_file(&asset.path).ok();
+    }
+
+    /// Asset writes pass the same real-home fence as every other store under
+    /// the config dir: a test that forgets `CODESCRIBE_DATA_DIR` isolation is
+    /// refused before `assets/` is created, instead of polluting the account.
+    #[test]
+    #[serial_test::serial]
+    fn asset_writes_are_refused_under_the_real_account_home() {
+        let home = crate::test_isolation::account_home().expect("account home");
+        let _data_dir = crate::test_isolation::EnvGuard::set(
+            "CODESCRIBE_DATA_DIR",
+            home.join(".codescribe-asset-fence-probe"),
+        );
+        for save in [
+            AgentAssetStore::save_image,
+            AgentAssetStore::save_inline_image,
+        ] {
+            let refused = std::panic::catch_unwind(|| save(b"fence", "image/png"));
+            assert!(refused.is_err(), "real-home asset write must be refused");
+        }
+        assert!(!home.join(".codescribe-asset-fence-probe").exists());
     }
 
     /// Paths without a file-name component are rejected before directory listing.

@@ -95,18 +95,6 @@ impl MoshiConfig {
         self
     }
 
-    /// Set temperature
-    pub fn with_temperature(mut self, temp: f32) -> Self {
-        self.temperature = temp.clamp(0.0, 2.0);
-        self
-    }
-
-    /// Enable/disable streaming
-    pub fn with_streaming(mut self, streaming: bool) -> Self {
-        self.streaming = streaming;
-        self
-    }
-
     /// Check if model files exist
     pub fn validate(&self) -> Result<(), String> {
         if !self.model_path.exists() {

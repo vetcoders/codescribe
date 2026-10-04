@@ -1,4 +1,4 @@
-//! Apple on-device STT adapter (macOS 26+) via Swift bridge subprocess.
+//! Apple on-device STT (macOS 26+) via Swift bridge subprocess.
 //!
 //! Dual-backend probe/transcribe order (per locale):
 //! 1. **SpeechTranscriber** (`SpeechAnalyzer`) when the locale is supported+installed
@@ -16,8 +16,6 @@
 //! Optional `backend` field is additive.
 
 mod live_stream;
-#[cfg(test)]
-pub(crate) use live_stream::parse_stream_stdout_line;
 pub use live_stream::{LiveStreamEvent, LiveStreamSession, progressive_live_enabled};
 
 use std::fs;
@@ -32,8 +30,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::pipeline::contracts::{
-    RawTranscript, SpeechUtterance, TranscriptSegment, TranscriptionAdapter,
-    TranscriptionEngineMode, TranscriptionEngineVerdict, TranscriptionSource, TranscriptionVerdict,
+    RawTranscript, TranscriptSegment, TranscriptionEngineMode, TranscriptionEngineVerdict,
+    TranscriptionSource, TranscriptionVerdict,
 };
 
 /// Floor macOS major version for the Apple STT path (SpeechAnalyzer era).
@@ -67,35 +65,6 @@ const BRIDGE_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
 #[cfg(test)]
 const SF_SPEECH_RECOGNITION_DEADLINE_SECS: f64 = 2.5;
 
-/// Zero-sized adapter using Apple's SpeechAnalyzer via subprocess bridge.
-pub struct AppleSpeechAnalyzerAdapter;
-
-impl AppleSpeechAnalyzerAdapter {
-    /// Construct the adapter. Zero-sized: all state lives in the bridge child
-    /// process and the process-wide `OnceLock` caches below.
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for AppleSpeechAnalyzerAdapter {
-    /// Same as [`Self::new`]: zero-sized; runtime state lives in the bridge child.
-    fn default() -> Self {
-        Self
-    }
-}
-
-impl TranscriptionAdapter for AppleSpeechAnalyzerAdapter {
-    /// Transcribe one utterance via the Swift bridge (Apple on-device backends).
-    fn transcribe(
-        &self,
-        utterance: &SpeechUtterance,
-        language: Option<&str>,
-    ) -> Result<RawTranscript> {
-        transcribe_long_with_segments(&utterance.samples, utterance.sample_rate, language)
-    }
-}
-
 /// One protocol-v1 request line written to the bridge child's stdin.
 ///
 /// Borrows its strings from the caller so a request can be built without
@@ -113,6 +82,18 @@ struct BridgeRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     contextual_strings: Option<&'a [String]>,
     allow_download: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deadline_policy: Option<AppleDeadlinePolicy>,
+}
+
+/// Caller intent for URL recognition; file length only sizes the chosen budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppleDeadlinePolicy {
+    /// Interactive stop path: retain the short SFSpeech deadline and env override.
+    LiveFinal,
+    /// Offline recognition: collect every phrase until the task finishes.
+    WholeFile,
 }
 
 /// Apple bridge backend selected for a locale (matches Swift `AppleSttBackend`).
@@ -237,6 +218,9 @@ struct BridgeResponse {
     /// SFSpeechRecognizer TCC: `not_determined` | `denied` | `restricted` | `authorized`.
     #[serde(default)]
     speech_auth: Option<String>,
+    /// Producer progress for offline SFSpeech, independent of recognized text.
+    #[serde(default)]
+    processed_audio_seconds: Option<f64>,
 }
 
 impl BridgeResponse {
@@ -254,6 +238,11 @@ struct BridgeSegment {
     text: String,
     start_ts: f32,
     end_ts: f32,
+    /// `SFTranscriptionSegment.confidence` (0…1) when the bridge supplies it.
+    /// 0.0 is Apple's "no metric" sentinel; SpeechTranscriber results omit the
+    /// attribute entirely (A6, d4: never invented).
+    #[serde(default)]
+    confidence: Option<f32>,
 }
 
 /// Initialize Apple STT backend (platform + bridge + locale readiness).
@@ -427,15 +416,24 @@ pub(crate) fn try_transcribe_long_with_segments(
 
 /// Convenience helper for batch/offline file transcription.
 pub fn transcribe_file(path: &Path, language: Option<&str>) -> Result<RawTranscript> {
-    Ok(transcribe_file_with_backend(path, language)?.0)
+    Ok(transcribe_file_with_backend(path, language, AppleDeadlinePolicy::WholeFile)?.0)
 }
 
-/// File transcription with Apple backend provenance for final-pass adjudication.
+/// Whole-file transcription with Apple backend provenance.
 pub fn transcribe_file_verdict(
     path: &Path,
     language: Option<&str>,
 ) -> Result<TranscriptionVerdict> {
-    let (raw, backend) = transcribe_file_with_backend(path, language)?;
+    transcribe_file_verdict_with_policy(path, language, AppleDeadlinePolicy::WholeFile)
+}
+
+/// URL transcription with an explicit interactive or offline caller budget.
+pub fn transcribe_file_verdict_with_policy(
+    path: &Path,
+    language: Option<&str>,
+    policy: AppleDeadlinePolicy,
+) -> Result<TranscriptionVerdict> {
+    let (raw, backend) = transcribe_file_with_backend(path, language, policy)?;
     let mode = backend
         .map(AppleSttBackend::engine_mode)
         .unwrap_or(TranscriptionEngineMode::SfSpeechOnDevice);
@@ -450,12 +448,25 @@ pub fn transcribe_file_verdict(
     ))
 }
 
-/// Transcribe a path already on disk without re-encoding (preferred final-pass path).
+/// Transcribe a path already on disk with the caller's URL recognition policy.
 fn transcribe_file_with_backend(
     path: &Path,
     language: Option<&str>,
+    policy: AppleDeadlinePolicy,
 ) -> Result<(RawTranscript, Option<AppleSttBackend>)> {
+    #[cfg(unix)]
+    let (leased_path, _audio_read_lease) =
+        crate::state::history::audio_retention::AudioReadLease::acquire_for_path(
+            &crate::config::Config::config_dir(),
+            path,
+        )?;
+    #[cfg(unix)]
+    let path = leased_path.as_path();
     init()?;
+    // The read lease stays in this frame for every window read below.
+    if policy == AppleDeadlinePolicy::WholeFile {
+        return transcribe_apple_file_windows(path, language);
+    }
     let locale = resolved_locale(language);
     let audio_path = path.display().to_string();
     let request = BridgeRequest {
@@ -465,8 +476,19 @@ fn transcribe_file_with_backend(
         audio_path: Some(audio_path.as_str()),
         contextual_strings: None,
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+        deadline_policy: Some(policy),
     };
-    let response = run_bridge_with_timeout(&request, Some(BRIDGE_TRANSCRIBE_TIMEOUT))
+    let timeout = match policy {
+        AppleDeadlinePolicy::LiveFinal => BRIDGE_TRANSCRIBE_TIMEOUT,
+        AppleDeadlinePolicy::WholeFile => {
+            let (samples, rate) = crate::audio::load_audio_file(path)
+                .context("read whole-file Apple recognition duration")?;
+            let audio_seconds = samples.len() as f64 / f64::from(rate.max(1));
+            // Same recognition budget as Swift, plus process/setup margin.
+            Duration::from_secs_f64((audio_seconds + 25.0).max(20.0) + 30.0)
+        }
+    };
+    let response = run_bridge_with_timeout(&request, Some(timeout))
         .context("Apple STT bridge transcribe failed")?;
     let backend = response
         .backend
@@ -475,14 +497,324 @@ fn transcribe_file_with_backend(
     Ok((raw_transcript_from_bridge_response(response), backend))
 }
 
-/// Live-path entry point: transcribe in-memory PCM through the bridge.
+/// One Silero bucket is 500 ms: every measurable pause closes a file window.
+const APPLE_FILE_PAUSE_SECS: f32 = 0.5;
+/// Pauses already close windows; retain sentence context for continuous speech.
+/// Search the last five seconds for the lowest measured Silero bucket.
+const APPLE_FILE_MAX_WINDOW_SECS: f32 = 20.0;
+const APPLE_FILE_CUT_SEARCH_SECS: f32 = 5.0;
+const APPLE_FILE_PROCESSING_TOLERANCE_SECS: f64 = 0.5;
+
+/// Same recognition budget as the Swift whole-file deadline
+/// `max(20, audio + 25)`, plus the host process margin.
+fn whole_file_host_timeout(audio_seconds: f64) -> Duration {
+    Duration::from_secs_f64((audio_seconds + 25.0).max(20.0) + 30.0)
+}
+
+/// Partition original PCM, excluding only intervals certified silent by Silero.
+fn plan_apple_file_windows(
+    sample_count: usize,
+    sample_rate: u32,
+    silences: &[(f32, f32)],
+    probabilities: &[f32],
+) -> Vec<(usize, usize)> {
+    let mut windows = Vec::new();
+    let maximum = ((APPLE_FILE_MAX_WINDOW_SECS * sample_rate as f32) as usize).max(1);
+    let next_cut = |cursor: usize, end: usize| {
+        let limit = cursor.saturating_add(maximum).min(end);
+        if limit == end {
+            return end;
+        }
+        let hi = limit as f32 / sample_rate as f32;
+        let lo = hi - APPLE_FILE_CUT_SEARCH_SECS;
+        let hop = crate::vad::DISCRIMINATOR_WINDOW_MS as f32 / 1000.0;
+        // Same minimum-bin and nearest-target tie break as Whisper's
+        // least_speech_point; that function is private to its engine module.
+        let point = probabilities
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &p)| {
+                let begin = (index as f32 * hop).max(lo);
+                let end = ((index + 1) as f32 * hop).min(hi);
+                (p.is_finite() && end > begin).then_some(((begin + end) / 2.0, p))
+            })
+            .min_by(|(a, ap), (b, bp)| {
+                ap.total_cmp(bp)
+                    .then_with(|| (a - hi).abs().total_cmp(&(b - hi).abs()))
+            })
+            .map(|(point, _)| point)
+            .expect("validated Silero timeline covers the cut");
+        ((point * sample_rate as f32).round() as usize).clamp(cursor + 1, limit)
+    };
+    let mut cursor = 0;
+    for &(start, end) in silences {
+        // The final measured bucket can be shorter than 500 ms. It is
+        // still certified silence; floating-point rounding must not retain it.
+        let terminal = end * sample_rate as f32 >= sample_count as f32;
+        if end - start + f32::EPSILON < APPLE_FILE_PAUSE_SECS && !terminal {
+            continue;
+        }
+        let start = ((start * sample_rate as f32).round() as usize).min(sample_count);
+        let end = ((end * sample_rate as f32).round() as usize).min(sample_count);
+        while cursor < start {
+            let next = next_cut(cursor, start);
+            windows.push((cursor, next));
+            cursor = next;
+        }
+        cursor = cursor.max(end);
+    }
+    while cursor < sample_count {
+        let next = next_cut(cursor, sample_count);
+        windows.push((cursor, next));
+        cursor = next;
+    }
+    windows
+}
+
+/// The silence arbiter admits each speech window independently; Apple only
+/// describes it. Collect every description before reporting any missing window.
+fn transcribe_apple_file_windows(
+    path: &Path,
+    language: Option<&str>,
+) -> Result<(RawTranscript, Option<AppleSttBackend>)> {
+    let (samples, rate) =
+        crate::audio::load_audio_file(path).context("read Apple file PCM for Silero")?;
+    if rate == 0 {
+        bail!("recognition_incomplete: invalid Apple file sample rate");
+    }
+    if samples.is_empty() {
+        return Ok((RawTranscript::default(), None));
+    }
+    // extract_speech skips a final fragment shorter than half a 500 ms
+    // bucket. Measure that physical tail too, padding only the VAD input with
+    // zeros; the planner and Apple always use the original sample count/PCM.
+    let bucket = (rate as usize / 2).max(1);
+    let padding = (bucket - samples.len() % bucket) % bucket;
+    let padded = if padding == 0 {
+        Vec::new()
+    } else {
+        let mut input = samples.clone();
+        input.resize(samples.len() + padding, 0.0);
+        input
+    };
+    let vad_input = if padding == 0 { &samples } else { &padded };
+    let (_, stats) = crate::vad::extract_speech(vad_input, rate);
+    if stats.probabilities.len() < samples.len().div_ceil(bucket)
+        || stats.probabilities.iter().any(|p| !p.is_finite())
+    {
+        let uncovered = samples.len() as f64 / f64::from(rate);
+        bail!(
+            "recognition_incomplete: Silero evidence unavailable ({:?}) \
+             uncovered_ranges_seconds=[0..{uncovered}]",
+            stats.no_speech_reason
+        );
+    }
+    let silences = crate::stt::whisper::silence_spans_from_vad_probabilities(
+        &stats.probabilities,
+        crate::vad::VadConfig::default().threshold,
+        samples.len() as f32 / rate as f32,
+    );
+    transcribe_apple_file_windows_from_pcm(
+        &samples,
+        rate,
+        &silences,
+        &stats.probabilities,
+        language,
+        run_bridge_exchange,
+    )
+}
+
+fn transcribe_apple_file_windows_from_pcm(
+    samples: &[f32],
+    rate: u32,
+    silences: &[(f32, f32)],
+    probabilities: &[f32],
+    language: Option<&str>,
+    mut exchange: impl FnMut(&BridgeRequest<'_>, Option<Duration>) -> Result<BridgeResponse>,
+) -> Result<(RawTranscript, Option<AppleSttBackend>)> {
+    let windows = plan_apple_file_windows(samples.len(), rate, silences, probabilities);
+    eprintln!(
+        "INFO apple_file: windows={} pause_seconds={} maximum_window_seconds={}",
+        windows.len(),
+        APPLE_FILE_PAUSE_SECS,
+        APPLE_FILE_MAX_WINDOW_SECS
+    );
+    let directory = tempfile::Builder::new()
+        .prefix("codescribe-apple-file-")
+        .tempdir()
+        .context("create private Apple file window directory")?;
+    let locale = resolved_locale(language);
+    let mut raw = RawTranscript::default();
+    let mut backend = None;
+    let mut gaps = Vec::new();
+    for &(start, end) in &windows {
+        let offset = start as f32 / rate as f32;
+        let through = end as f32 / rate as f32;
+        let window_path = directory.path().join("window.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut writer = hound::WavWriter::create(&window_path, spec)
+            .context("create Apple speech window WAV")?;
+        for &sample in &samples[start..end] {
+            writer
+                .write_sample(sample)
+                .context("write Apple speech window PCM")?;
+        }
+        writer
+            .finalize()
+            .context("finish Apple speech window WAV")?;
+        let audio_path = window_path
+            .to_str()
+            .context("Apple window path is not UTF-8")?;
+        let request = BridgeRequest {
+            protocol_version: 1,
+            command: "transcribe",
+            locale: &locale,
+            audio_path: Some(audio_path),
+            contextual_strings: None,
+            allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+            deadline_policy: Some(AppleDeadlinePolicy::WholeFile),
+        };
+        let window_seconds = (end - start) as f64 / f64::from(rate);
+        let mut response = match exchange(&request, Some(whole_file_host_timeout(window_seconds))) {
+            Ok(response) => response,
+            Err(error) => {
+                let detail = format!("{error:#}");
+                let timed_out =
+                    detail.contains("timed out") || detail.contains("recognition_timeout");
+                let reason = if timed_out { "timeout" } else { "bridge_error" };
+                gaps.push(serde_json::json!({
+                    "start_seconds": offset,
+                    "end_seconds": through,
+                    "reason": reason,
+                    "detail": detail
+                }));
+                continue;
+            }
+        };
+        if !response.is_ok() {
+            let detail = response
+                .error
+                .as_deref()
+                .unwrap_or("bridge returned error without message");
+            let reason = if detail.contains("recognition_timeout") {
+                "timeout"
+            } else {
+                "bridge_error"
+            };
+            gaps.push(serde_json::json!({
+                "start_seconds": offset,
+                "end_seconds": through,
+                "reason": reason,
+                "detail": detail
+            }));
+        }
+        if response.text.trim().is_empty() {
+            gaps.push(serde_json::json!({
+                "start_seconds": offset,
+                "end_seconds": through,
+                "reason": "empty_speech_window"
+            }));
+        }
+        let selected = response
+            .backend
+            .as_deref()
+            .and_then(AppleSttBackend::from_bridge);
+        if backend.is_some() && backend != selected {
+            gaps.push(serde_json::json!({
+                "start_seconds": offset,
+                "end_seconds": through,
+                "reason": "bridge_error",
+                "detail": "Apple backend changed within file"
+            }));
+        } else {
+            backend = selected;
+        }
+        if selected == Some(AppleSttBackend::SfSpeechRecognizer)
+            && !response.processed_audio_seconds.is_some_and(|processed| {
+                processed.is_finite()
+                    && processed >= 0.0
+                    && processed + APPLE_FILE_PROCESSING_TOLERANCE_SECS
+                        >= f64::from(through - offset)
+            })
+        {
+            gaps.push(serde_json::json!({
+                "start_seconds": offset,
+                "end_seconds": through,
+                "reason": "processing_incomplete",
+                "processed_audio_seconds": response.processed_audio_seconds
+            }));
+        }
+        for segment in &mut response.segments {
+            segment.start_ts += offset;
+            segment.end_ts += offset;
+        }
+        let mut next = RawTranscript {
+            text: response.text.trim().to_string(),
+            // File segments remain phrases or windows, never synthetic word pins.
+            segments: response
+                .segments
+                .into_iter()
+                .filter_map(bridge_segment_to_transcript_segment)
+                .collect(),
+            ..Default::default()
+        };
+        if next
+            .segments
+            .iter()
+            .any(|segment| segment.start_ts < offset || segment.end_ts > through + 0.05)
+        {
+            gaps.push(serde_json::json!({
+                "start_seconds": offset,
+                "end_seconds": through,
+                "reason": "bridge_error",
+                "detail": "invalid segment range"
+            }));
+            next.segments.clear();
+        }
+        if next.segments.is_empty() && !next.text.is_empty() {
+            // A physical window is known even when Apple supplies no time pins.
+            next.segments.push(TranscriptSegment {
+                text: next.text.clone(),
+                start_ts: offset,
+                end_ts: through,
+                confidence: None,
+            });
+        }
+        if !next.text.is_empty() && !raw.text.is_empty() {
+            raw.text.push(' ');
+        }
+        raw.text.push_str(&next.text);
+        raw.segments.extend(next.segments);
+    }
+    if !gaps.is_empty() {
+        // The existing Result error receipt makes CLI exit unsuccessfully and
+        // prevents its success seal. Preserve all collected text on this lane.
+        bail!(
+            "recognition_incomplete: {}",
+            serde_json::json!({
+                "complete": false,
+                "raw": raw,
+                "gaps": gaps,
+                "timing_precision": "phrase_or_window"
+            })
+        );
+    }
+    Ok((raw, backend))
+}
+
+/// In-memory Apple bridge A/B entry point.
 ///
-/// Defaults to streaming v2 (one long-lived recognition request fed raw PCM,
-/// the system-dictation shape). The older per-request WAV window path measured
-/// 0.228 parity against system Apple live, which is why streaming exists; it
-/// stays reachable through `CODESCRIBE_APPLE_STT_LIVE_MODE` as an A/B escape
-/// hatch. The host timeout is sized from audio wall-clock plus the bridge's
-/// post-EOF settle grace, so a slow settle is not mistaken for a hang.
+/// `stream` feeds raw PCM to one Apple `SFSpeechAudioBufferRecognitionRequest`.
+/// `wav` writes a temporary WAV and sends one Apple `transcribe_live` bridge
+/// request. Both choices are Apple transport mechanics inside the same
+/// authority architecture; neither selects a VAD/scheduler pipeline. The host
+/// timeout is sized from audio wall-clock plus the bridge's post-EOF settle
+/// grace, so a slow settle is not mistaken for a hang.
 fn transcribe_via_bridge(
     audio: &[f32],
     sample_rate: u32,
@@ -494,11 +826,10 @@ fn transcribe_via_bridge(
 
     init()?;
 
-    // Live path = streaming v2: one long-lived SFSpeechAudioBuffer request fed
-    // raw PCM (system-dictation shape). The old `transcribe_live` WAV window
-    // path measured 0.228 parity against system Apple live — streaming exists
-    // to close that gap. Final-pass still uses `transcribe` → SFSpeechURL.
-    // Escape hatch for A/B: CODESCRIBE_APPLE_STT_LIVE_MODE=wav|stream (default stream).
+    // Apple transport A/B only: `stream` feeds raw PCM into one AudioBuffer
+    // recognition request; `wav` writes one temp WAV for an Apple
+    // `transcribe_live` bridge request. Neither branch changes occurrence or
+    // transcript authority. Final-pass still uses `transcribe` → SFSpeechURL.
     let live_mode =
         std::env::var("CODESCRIBE_APPLE_STT_LIVE_MODE").unwrap_or_else(|_| "stream".into());
     if live_mode.eq_ignore_ascii_case("wav") || live_mode.eq_ignore_ascii_case("transcribe_live") {
@@ -516,8 +847,9 @@ fn transcribe_via_bridge(
     Ok(raw_transcript_from_bridge_response(response))
 }
 
-/// Legacy live path: temp WAV + `transcribe_live` (per-request windowed engine).
-/// Kept as A/B escape hatch; product default is `stream`.
+/// Older Apple transport: one temp WAV + one `transcribe_live` bridge request.
+/// Kept only for transport A/B against the default live AudioBuffer stream; it
+/// is not a separate VAD/scheduler pipeline.
 fn transcribe_via_bridge_wav_live(
     audio: &[f32],
     sample_rate: u32,
@@ -526,7 +858,7 @@ fn transcribe_via_bridge_wav_live(
     let wav = TempWavFile::write(audio, sample_rate)?;
     let audio_path = wav.path().display().to_string();
     let locale = resolved_locale(language);
-    let contextual_strings = crate::pipeline::stream_postprocess::apple_contextual_strings();
+    let contextual_strings: Option<Vec<String>> = None;
     let request = BridgeRequest {
         protocol_version: 1,
         command: "transcribe_live",
@@ -534,6 +866,7 @@ fn transcribe_via_bridge_wav_live(
         audio_path: Some(audio_path.as_str()),
         contextual_strings: contextual_strings.as_deref(),
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+        deadline_policy: None,
     };
     let audio_secs = audio.len() as f64 / sample_rate.max(1) as f64;
     let timeout = Duration::from_secs_f64((audio_secs + 20.0).clamp(30.0, 180.0));
@@ -583,7 +916,7 @@ fn run_bridge_stream(
         // Swift host (see `util::pipes`).
         crate::util::pipes::disable_sigpipe(stdin);
 
-        let contextual_strings = crate::pipeline::stream_postprocess::apple_contextual_strings();
+        let contextual_strings: Option<Vec<String>> = None;
         let request = BridgeRequest {
             protocol_version: 1,
             command: "stream",
@@ -591,6 +924,7 @@ fn run_bridge_stream(
             audio_path: None,
             contextual_strings: contextual_strings.as_deref(),
             allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+            deadline_policy: None,
         };
         let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
         stdin
@@ -710,6 +1044,16 @@ fn bridge_segment_to_transcript_segment(seg: BridgeSegment) -> Option<Transcript
         text,
         start_ts: seg.start_ts,
         end_ts: seg.end_ts,
+        confidence: seg
+            .confidence
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(|value| {
+                crate::pipeline::word_confidence::WordConfidence::new(
+                    crate::pipeline::word_confidence::WordConfidenceSource::AppleSegmentConfidence,
+                    value,
+                    1,
+                )
+            }),
     })
 }
 
@@ -727,6 +1071,23 @@ fn bridge_global_lock() -> &'static Mutex<()> {
 /// response line. A bridge-reported error becomes an `Err` carrying the
 /// bridge's own message, so caller context stacks on top of the real cause.
 fn run_bridge_with_timeout(
+    request: &BridgeRequest<'_>,
+    timeout: Option<std::time::Duration>,
+) -> Result<BridgeResponse> {
+    let response = run_bridge_exchange(request, timeout)?;
+    if !response.is_ok() {
+        let message = response
+            .error
+            .unwrap_or_else(|| "bridge returned error without message".to_string());
+        bail!("{message}");
+    }
+    Ok(response)
+}
+
+/// Same child exchange as `run_bridge_with_timeout`, including a zero exit
+/// that carries `ok: false`. File windows keep recognized text beside an
+/// explicit gap. Process timeout, a nonzero exit, and empty stdout stay `Err`.
+fn run_bridge_exchange(
     request: &BridgeRequest<'_>,
     timeout: Option<std::time::Duration>,
 ) -> Result<BridgeResponse> {
@@ -803,12 +1164,6 @@ fn run_bridge_with_timeout(
 
     let response: BridgeResponse =
         serde_json::from_str(trimmed).context("parse Apple STT bridge JSON response")?;
-    if !response.is_ok() {
-        let message = response
-            .error
-            .unwrap_or_else(|| "bridge returned error without message".to_string());
-        bail!("{message}");
-    }
     Ok(response)
 }
 
@@ -901,6 +1256,7 @@ fn probe_bridge(locale: &str, allow_download: bool) -> Result<ProbeResult> {
         audio_path: None,
         contextual_strings: None,
         allow_download,
+        deadline_policy: None,
     };
     let response = run_bridge_with_timeout(&request, Some(BRIDGE_PROBE_TIMEOUT))
         .context("Apple STT bridge probe failed")?;
@@ -918,6 +1274,7 @@ fn request_speech_auth_bridge(locale: &str, allow_download: bool) -> Result<Brid
         audio_path: None,
         contextual_strings: None,
         allow_download,
+        deadline_policy: None,
     };
     // Dialog can wait on the user; reuse the generous probe budget.
     run_bridge_with_timeout(&request, Some(BRIDGE_PROBE_TIMEOUT))
@@ -1072,14 +1429,27 @@ fn bridge_binary() -> PathBuf {
 }
 
 /// Resolution order: explicit env override → bridge bundled beside the `.app`
-/// executable → bare command name left for `PATH` lookup at spawn time.
+/// executable → PATH → installed Codescribe.app (standalone CLI fallback).
 /// Testable seam: `current_exe` is injected rather than read from the process.
 fn bridge_binary_for_current_exe(current_exe: Option<&Path>) -> PathBuf {
+    bridge_binary_with_installed_app(
+        current_exe,
+        Path::new("/Applications/Codescribe.app/Contents/MacOS/Codescribe"),
+    )
+}
+
+fn bridge_binary_with_installed_app(current_exe: Option<&Path>, installed_exe: &Path) -> PathBuf {
     if let Some(override_bin) = bridge_override_binary() {
         return override_bin;
     }
-
-    bundled_bridge_binary_for_exe(current_exe).unwrap_or_else(|| PathBuf::from(DEFAULT_BRIDGE_BIN))
+    if let Some(bundled) = bundled_bridge_binary_for_exe(current_exe) {
+        return bundled;
+    }
+    if which_in_path(DEFAULT_BRIDGE_BIN).is_some() {
+        return PathBuf::from(DEFAULT_BRIDGE_BIN);
+    }
+    bundled_bridge_binary_for_exe(Some(installed_exe))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_BRIDGE_BIN))
 }
 
 /// The `CODESCRIBE_APPLE_STT_BRIDGE` override, if set to a non-blank value.
@@ -1116,10 +1486,8 @@ fn bundled_bridge_binary_for_exe(current_exe: Option<&Path>) -> Option<PathBuf> 
 /// Cheap, process-cached check that the Apple STT bridge binary can actually be
 /// launched: an explicit `CODESCRIBE_APPLE_STT_BRIDGE` path wins first, then a
 /// bridge bundled beside the current `.app` executable, then the default bare
-/// command name on `PATH`. AUTO engine selection gates on this so it never
-/// advertises Apple on a host where the bridge is absent (which wastes a probe
-/// and then silently falls back to Candle). Explicit `CODESCRIBE_STT_ENGINE=apple`
-/// bypasses this and still probes + fails loudly.
+/// command name on `PATH`, then the installed Codescribe.app. Automatic router
+/// selection gates on this so it never advertises Apple with no bridge.
 pub(crate) fn is_bridge_resolvable() -> bool {
     /// Cached answer to "can we launch the bridge binary" for AUTO engine selection.
     static RESOLVABLE: OnceLock<bool> = OnceLock::new();
@@ -1136,14 +1504,7 @@ fn bridge_binary_resolvable() -> bool {
 /// exist" instead of "what would we spawn". An explicit override is checked as
 /// a real file: a broken override must fail here rather than at spawn time.
 fn bridge_binary_resolvable_for_current_exe(current_exe: Option<&Path>) -> bool {
-    if let Some(override_bin) = bridge_override_binary() {
-        return bridge_candidate_resolvable(&override_bin);
-    }
-    if bundled_bridge_binary_for_exe(current_exe).is_some() {
-        return true;
-    }
-
-    which_in_path(DEFAULT_BRIDGE_BIN).is_some()
+    bridge_candidate_resolvable(&bridge_binary_for_current_exe(current_exe))
 }
 
 /// A path-like candidate must exist as a file; a bare command name is looked
@@ -1344,6 +1705,86 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    #[test]
+    fn apple_file_windows_keep_five_physical_repetitions_and_refused_text() {
+        let rate = 16_000;
+        let samples = vec![0.125_f32; 80_000];
+        let silences = (0..5)
+            .map(|i| (i as f32 + 0.5, i as f32 + 1.0))
+            .collect::<Vec<_>>();
+        let probabilities = [0.9, 0.0].repeat(5);
+        for refuse_middle in [false, true] {
+            let mut calls = 0;
+            let result = transcribe_apple_file_windows_from_pcm(
+                &samples,
+                rate,
+                &silences,
+                &probabilities,
+                Some("pl-PL"),
+                |request, timeout| {
+                    let mut wav = hound::WavReader::open(request.audio_path.unwrap()).unwrap();
+                    assert_eq!(wav.spec().sample_format, hound::SampleFormat::Float);
+                    assert_eq!(wav.spec().sample_rate, rate);
+                    assert_eq!(
+                        wav.samples::<f32>().collect::<Result<Vec<_>, _>>().unwrap(),
+                        samples[..8_000]
+                    );
+                    assert_eq!(
+                        request.deadline_policy,
+                        Some(AppleDeadlinePolicy::WholeFile)
+                    );
+                    assert_eq!(timeout, Some(whole_file_host_timeout(0.5)));
+                    calls += 1;
+                    let accepted = !(refuse_middle && calls == 3);
+                    Ok(serde_json::from_value(serde_json::json!({
+                        "ok":accepted, "status":if accepted {"ok"} else {"error"},
+                        "text":"Iwo", "segments":[], "backend":"speech_transcriber",
+                        "error":if accepted {None} else {Some("refused synthetic coverage")}
+                    }))
+                    .unwrap())
+                },
+            );
+            assert_eq!(calls, 5, "a refused window must not drop later windows");
+            let raw = if refuse_middle {
+                let error = result.unwrap_err().to_string();
+                let receipt: serde_json::Value =
+                    serde_json::from_str(error.strip_prefix("recognition_incomplete: ").unwrap())
+                        .unwrap();
+                assert_eq!(receipt["complete"], false);
+                assert_eq!(receipt["gaps"].as_array().unwrap().len(), 1);
+                assert_eq!(receipt["gaps"][0]["start_seconds"], 2.0);
+                serde_json::from_value::<RawTranscript>(receipt["raw"].clone()).unwrap()
+            } else {
+                let (raw, backend) = result.unwrap();
+                assert_eq!(backend, Some(AppleSttBackend::SpeechTranscriber));
+                raw
+            };
+            assert_eq!(raw.text, "Iwo Iwo Iwo Iwo Iwo");
+            assert_eq!(raw.segments.len(), 5);
+            for (i, segment) in raw.segments.iter().enumerate() {
+                assert_eq!(segment.text, "Iwo");
+                assert_eq!(segment.start_ts, i as f32);
+                assert_eq!(segment.end_ts, i as f32 + 0.5);
+            }
+        }
+    }
+
+    #[test]
+    fn apple_file_window_plan_bounds_continuous_speech_and_excludes_certified_silence() {
+        let rate = 16_000;
+        let end = 80 * rate as usize;
+        let windows = plan_apple_file_windows(end, rate, &[], &vec![0.9; 160]);
+        assert_eq!(windows.first().unwrap().0, 0);
+        assert_eq!(windows.last().unwrap().1, end);
+        for window in &windows {
+            assert!(window.1 > window.0 && window.1 - window.0 <= 20 * rate as usize);
+        }
+        for pair in windows.windows(2) {
+            assert_eq!(pair[0].1, pair[1].0);
+        }
+        assert!(plan_apple_file_windows(end, rate, &[(0.0, 80.0)], &vec![0.0; 160]).is_empty());
+    }
+
     /// The shipped product state: DT PoC lane not armed.
     const DT_LANE_CLOSED: DictationLane = DictationLane {
         enabled: false,
@@ -1498,12 +1939,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Adapter must be Send+Sync so engine routers can share it across threads.
     #[test]
-    fn adapter_is_send_sync() {
-        /// Compile-time Send+Sync bound check (no runtime body).
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<AppleSpeechAnalyzerAdapter>();
+    #[serial]
+    fn standalone_cli_can_use_installed_bridge_without_overriding_a_broken_explicit_path() {
+        let _bridge = crate::test_isolation::EnvGuard::capture(ENV_STT_BRIDGE);
+        let _path = crate::test_isolation::EnvGuard::capture("PATH");
+        let root = tempfile::tempdir().unwrap();
+        let installed_exe = root.path().join("Codescribe.app/Contents/MacOS/Codescribe");
+        let installed_bridge = installed_exe.with_file_name(DEFAULT_BRIDGE_BIN);
+        std::fs::create_dir_all(installed_exe.parent().unwrap()).unwrap();
+        std::fs::write(&installed_bridge, b"bridge").unwrap();
+        // SAFETY: serialized; guards restore both variables.
+        unsafe {
+            std::env::remove_var(ENV_STT_BRIDGE);
+            std::env::set_var("PATH", root.path());
+        }
+        assert_eq!(
+            bridge_binary_with_installed_app(None, &installed_exe),
+            installed_bridge
+        );
+        let missing = root.path().join("explicit-missing");
+        unsafe { std::env::set_var(ENV_STT_BRIDGE, &missing) };
+        assert_eq!(
+            bridge_binary_with_installed_app(None, &installed_exe),
+            missing
+        );
+        assert!(!bridge_candidate_resolvable(&missing));
     }
 
     /// Short language codes expand to the product default region (pl→pl-PL, en→en-US).
@@ -1962,55 +2423,5 @@ mod tests {
             speech_auth_init_decision(Some(AppleSttBackend::SpeechTranscriber), Some("denied")),
             SpeechAuthInitDecision::NotRequired
         );
-    }
-
-    /// Bridge segments become RawTranscript spans and survive Silero tail-drop mapping.
-    #[test]
-    fn bridge_response_segments_flow_to_raw_transcript_and_silero_tail_drop() {
-        let response: BridgeResponse = serde_json::from_str(
-            r#"{
-                "ok": true,
-                "status": "ok",
-                "text": "To jest początek Dziękuję za uwagę",
-                "segments": [
-                    {"text": "To jest początek", "start_ts": 0.0, "end_ts": 0.4},
-                    {"text": "Dziękuję za uwagę", "start_ts": 2.0, "end_ts": 2.4}
-                ]
-            }"#,
-        )
-        .expect("fixture bridge response must parse");
-
-        let raw = raw_transcript_from_bridge_response(response);
-
-        assert_eq!(raw.segments.len(), 2);
-        assert!(
-            raw.segments
-                .windows(2)
-                .all(|pair| pair[0].end_ts <= pair[1].start_ts),
-            "Apple bridge segments must preserve a monotonic timeline"
-        );
-
-        let timeline = crate::vad::discriminator::VadTimeline {
-            classes: vec![
-                crate::pipeline::contracts::VadClass::Speech,
-                crate::pipeline::contracts::VadClass::Speech,
-                crate::pipeline::contracts::VadClass::TrailingSilence,
-                crate::pipeline::contracts::VadClass::TrailingSilence,
-                crate::pipeline::contracts::VadClass::TrailingSilence,
-            ],
-            window_sec: 0.5,
-        };
-        let vad_config = crate::vad::VadConfig {
-            tail_drop_enabled: true,
-            ..Default::default()
-        };
-        let outcome = crate::stt::whisper::map_whisper_segments_to_silero(
-            &raw.segments,
-            &timeline,
-            &vad_config,
-        );
-
-        assert_eq!(outcome.dropped_count, 1);
-        assert_eq!(outcome.text, "To jest początek");
     }
 }

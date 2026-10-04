@@ -1,16 +1,16 @@
 import AppKit
 import SwiftUI
 
-// Screen-local helpers for Agent Chat. Off-token shades from the mock that the
-// shared CSColor palette does not carry verbatim live here (and ONLY here).
+// Screen-local chat ink. Names, tool detail, and the thinking label track
+// the system appearance through semantic SwiftUI colors. An active thread subtitle keeps
+// the system accent.
 
 enum ChatPalette {
-  static let nameInactive = Color(hex: 0xC7CABF)  // inactive thread name / segmented body
-  static let nameActive = Color(hex: 0xF0EEE7)  // active thread name / titles / you-bubble text
+  static let nameInactive = Color.secondary
+  static let nameActive = Color.primary
   static var activeThreadSub: Color { CSColor.chromeAccent.opacity(0.78) }
-  static let toolBody = Color(hex: 0x9AA093)  // tool-activity detail text
-  static let thinking = Color(hex: 0x8A8D87)  // "thinking…" label
-  static let sendGlyph = Color(hex: 0x0A0A0A)
+  static let toolBody = Color.secondary
+  static let thinking = CSColor.textTertiary
 }
 
 enum ComposerMicVisualState: CaseIterable, Equatable {
@@ -21,10 +21,10 @@ enum ComposerMicVisualState: CaseIterable, Equatable {
 
   var accessibilityLabel: String {
     switch self {
-    case .idle: return "Start voice input"
-    case .preparing: return "Preparing voice input"
-    case .recording: return "Stop voice input"
-    case .blocked: return "Microphone busy with shortcut dictation"
+    case .idle: return String(localized: "Start voice input")
+    case .preparing: return String(localized: "Preparing voice input")
+    case .recording: return String(localized: "Stop voice input")
+    case .blocked: return String(localized: "Microphone busy with shortcut dictation")
     }
   }
 
@@ -53,7 +53,7 @@ struct RippleMic: View {
         icon: state.icon,
         size: ComposerControlMetrics.glyphSize,
         weight: isActive ? .semibold : .regular,
-        color: isActive ? CSColor.terracottaLight : CSColor.textFaint
+        color: isActive ? CSColor.terracotta : CSColor.textTertiary
       )
     }
     .frame(
@@ -103,7 +103,7 @@ struct BlinkCaret: View {
 struct MarkdownText: View {
   let raw: String
   var size: CGFloat = 14
-  var bodyColor: Color = CSColor.textBodyAlt
+  var bodyColor: Color = Color.primary
   var showsCaret: Bool = false
 
   /// Per-surface text scale (chat window ⌘+/-/0). A single multiplier over the
@@ -142,7 +142,7 @@ struct MarkdownText: View {
     case .heading(let level, let text):
       let hSize = headingSize(level)
       inlineText(
-        text, baseFont: CSFont.ui(hSize, .bold), baseColor: CSColor.textHigh,
+        text, baseFont: CSFont.ui(hSize, .bold), baseColor: Color.primary,
         fontSize: hSize, isLast: isLast
       )
       .padding(.top, level <= 2 ? 3 : 1)
@@ -164,7 +164,7 @@ struct MarkdownText: View {
       codeBlock(language, content, isLast: isLast)
     case .thematicBreak:
       Rectangle()
-        .fill(CSColor.hairline(0.12))
+        .fill(Color.primary.opacity(0.12))
         .frame(height: 1)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 4)
@@ -228,7 +228,7 @@ struct MarkdownText: View {
     HStack(alignment: .firstTextBaseline, spacing: 7) {
       Text(marker)
         .font(CSFont.mono(deep ? s - 4 : s - 2))
-        .foregroundStyle(deep ? CSColor.textFaint : CSColor.textMutedAlt)
+        .foregroundStyle(deep ? CSColor.textTertiary : Color.secondary)
         .frame(minWidth: 14, alignment: .trailing)
       inlineText(
         text, baseFont: CSFont.ui(s), baseColor: bodyColor,
@@ -247,12 +247,12 @@ struct MarkdownText: View {
         icon: done ? .checkboxOn : .checkboxOff,
         size: s - 1,
         weight: done ? .semibold : .regular,
-        color: done ? CSColor.oliveLight : CSColor.textFaint
+        color: done ? CSColor.oliveLight : CSColor.textTertiary
       )
       .frame(minWidth: 14, alignment: .trailing)
       inlineText(
         text, baseFont: CSFont.ui(s),
-        baseColor: done ? CSColor.textMutedAlt : bodyColor,
+        baseColor: done ? Color.secondary : bodyColor,
         fontSize: s, isLast: isLast)
     }
     .padding(.leading, CGFloat(min(indent, 4)) * 16)
@@ -287,6 +287,7 @@ struct MarkdownText: View {
       HStack(spacing: 6) {
         CSIconView(icon: kind.csIcon, size: s - 2, weight: .semibold)
         Text(kind.label)
+          .textCase(.uppercase)
           .font(CSFont.mono(s - 4, .semibold))
           .tracking(0.8)
       }
@@ -334,7 +335,7 @@ struct MarkdownText: View {
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
     )
     .fixedSize(horizontal: false, vertical: true)
   }
@@ -365,7 +366,7 @@ struct MarkdownText: View {
   private func tableCell(_ text: String, isHeader: Bool, isLastRow: Bool) -> some View {
     let cellSize = isHeader ? s - 2 : s - 1
     let font = isHeader ? CSFont.mono(cellSize, .semibold) : CSFont.ui(cellSize)
-    let color = isHeader ? CSColor.textHigh : bodyColor
+    let color = isHeader ? Color.primary : bodyColor
     let attr = Self.inlineAttributed(
       text, fontSize: cellSize,
       baseFont: font, baseColor: color)
@@ -376,11 +377,11 @@ struct MarkdownText: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       .padding(.horizontal, 10)
       .padding(.vertical, 6)
-      .background(isHeader ? CSColor.surfaceRaised(0.05) : Color.clear)
+      .background(isHeader ? Color.primary.opacity(0.05) : Color.clear)
       .overlay(alignment: .bottom) {
         if !isLastRow {
           Rectangle()
-            .fill(CSColor.hairline(isHeader ? 0.12 : 0.06))
+            .fill(Color.primary.opacity(isHeader ? 0.12 : 0.06))
             .frame(height: 1)
         }
       }
@@ -445,7 +446,7 @@ struct MarkdownText: View {
     for range in codeRanges {
       attr[range].font = CSFont.mono(fontSize - 1)
       attr[range].foregroundColor = CSColor.oliveLight
-      attr[range].backgroundColor = CSColor.surfaceRaised(0.10)
+      attr[range].backgroundColor = Color.primary.opacity(0.10)
     }
     // Links use the operator's system accent and a subtle underline.
     for range in linkRanges {
@@ -516,13 +517,30 @@ enum CalloutKind {
     }
   }
 
+  /// Header shown above the callout body. The `[!NOTE]` marker the model
+  /// writes stays the identity (`init(tag:)`); this is only what a person reads.
   var label: String {
     switch self {
-    case .note: return "NOTE"
-    case .tip: return "TIP"
-    case .important: return "IMPORTANT"
-    case .warning: return "WARNING"
-    case .caution: return "CAUTION"
+    case .note:
+      return String(
+        localized: "chat.callout.note", defaultValue: "Note",
+        comment: "Callout header in agent chat: a neutral aside")
+    case .tip:
+      return String(
+        localized: "chat.callout.tip", defaultValue: "Tip",
+        comment: "Callout header in agent chat: helpful advice")
+    case .important:
+      return String(
+        localized: "chat.callout.important", defaultValue: "Important",
+        comment: "Callout header in agent chat: something the reader must know")
+    case .warning:
+      return String(
+        localized: "chat.callout.warning", defaultValue: "Warning",
+        comment: "Callout header in agent chat: needs attention to avoid a problem")
+    case .caution:
+      return String(
+        localized: "chat.callout.caution", defaultValue: "Caution",
+        comment: "Callout header in agent chat: an action with a risky outcome")
     }
   }
 
@@ -538,7 +556,7 @@ enum CalloutKind {
 
   var tint: Color {
     switch self {
-    case .note: return CSColor.textMuted  // neutral (palette carries no blue)
+    case .note: return Color.secondary  // neutral (palette carries no blue)
     case .tip: return CSColor.oliveLight
     case .important: return CSColor.terracottaDeep
     case .warning: return CSColor.amber
@@ -608,18 +626,18 @@ private struct CodeBlockView: View {
       .font(CSFont.mono(size - 1))
       // Base colour for runs the theme leaves unstyled; the highlighter's
       // per-token foreground colours win over this modifier.
-      .foregroundColor(CSColor.textBodyAlt)
+      .foregroundStyle(Color.primary)
       .lineSpacing(4)
       .textSelection(.enabled)
       .fixedSize(horizontal: false, vertical: true)
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 11)
       .padding(.vertical, 9)
-      .background(CSColor.surfaceRaised(0.05))
+      .background(CSColor.codeWell)
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.06), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
       )
       .overlay(alignment: .topTrailing) {
         if hovering || copied {
@@ -673,20 +691,24 @@ private struct CodeBlockView: View {
     } label: {
       HStack(spacing: 4) {
         CSIconView(icon: copied ? .check : .copy, size: 9)
-        Text(copied ? "copied" : "copy")
-          .font(CSFont.mono(10, .medium))
+        Text(
+          copied
+            ? String(localized: "copied", comment: "Button state after copying")
+            : String(localized: "copy", comment: "Button: copy this code block")
+        )
+        .font(CSFont.mono(10, .medium))
       }
-      .foregroundStyle(copied ? CSColor.oliveLight : CSColor.textMuted)
+      .foregroundStyle(copied ? CSColor.oliveLight : Color.secondary)
       .padding(.horizontal, 7)
       .padding(.vertical, 3)
-      .background(CSColor.glassUnder.opacity(0.7))
+      .background(Color.primary.opacity(0.08))
       .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
       )
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .help("Copy code")
   }
 }

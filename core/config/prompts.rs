@@ -20,6 +20,9 @@ use std::process::Command;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+pub use super::settings::PromptSource;
+use super::settings::{FormattingPolicy, RuntimeSealedPrompt};
+
 // Default prompts (fallback if file missing/empty)
 /// Built-in prompt for [`FormattingPolicy::Correction`] — the conservative rung.
 ///
@@ -170,31 +173,6 @@ impl PromptKind {
     }
 }
 
-/// Where the content of a resolved prompt actually came from.
-///
-/// Recorded so a surprising prompt can be traced to an override, a fallback, or
-/// a silently unreadable file — the three cases look identical downstream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PromptSource {
-    /// A non-empty operator override on disk.
-    CustomFile,
-    /// The compiled-in default: no file, or a file that was empty.
-    BuiltInFallback,
-    /// The file exists but could not be read; the default was used instead.
-    ReadError,
-}
-
-impl PromptSource {
-    /// Stable identifier for logs and telemetry.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::CustomFile => "custom_file",
-            Self::BuiltInFallback => "built_in_fallback",
-            Self::ReadError => "read_error",
-        }
-    }
-}
-
 /// A resolved prompt plus the provenance of its content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptSnapshot {
@@ -254,6 +232,7 @@ fn ensure_prompts_dir() -> std::io::Result<()> {
 /// Reads never create the file, so an untouched install keeps tracking the
 /// built-in default as it changes.
 pub fn prompt_snapshot(kind: PromptKind) -> PromptSnapshot {
+    super::loader::note_startup_acquisition("prompt file");
     let path = prompts_dir().join(kind.filename());
     match fs::read_to_string(&path) {
         Ok(content) => {
@@ -301,6 +280,7 @@ pub fn prompt_snapshot(kind: PromptKind) -> PromptSnapshot {
 /// Used for the `*_tuning.txt` appendices, which are additive and therefore
 /// have no built-in default to fall back to.
 fn load_optional(filename: &str) -> Option<String> {
+    super::loader::note_startup_acquisition("prompt tuning file");
     let path = prompts_dir().join(filename);
     match fs::read_to_string(&path) {
         Ok(content) => {
@@ -312,6 +292,111 @@ fn load_optional(filename: &str) -> Option<String> {
             }
         }
         Err(_) => None,
+    }
+}
+
+/// Captured prompt source, before shared composition and hashing. No I/O on construction.
+#[derive(Clone)]
+pub struct CapturedPrompt {
+    pub content: String,
+    pub source: PromptSource,
+    pub tuning: Option<String>,
+}
+
+impl CapturedPrompt {
+    pub fn builtin(kind: PromptKind) -> Self {
+        Self {
+            content: kind.default_content().to_string(),
+            source: PromptSource::BuiltInFallback,
+            tuning: None,
+        }
+    }
+
+    fn capture(kind: PromptKind, tuning_filename: &str) -> Self {
+        let snapshot = prompt_snapshot(kind);
+        Self {
+            content: snapshot.content,
+            source: snapshot.source,
+            tuning: load_optional(tuning_filename),
+        }
+    }
+
+    fn seal(&self) -> RuntimeSealedPrompt {
+        let base_sha256 = sha256_hex(self.content.as_bytes());
+        let tuning = self
+            .tuning
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let tuning_sha256 = tuning.map(str::as_bytes).map(sha256_hex);
+        let mut composed_content = self.content.clone();
+        if let Some(tuning) = tuning {
+            composed_content.push_str("\n\n");
+            composed_content.push_str(tuning);
+        }
+        let composed_sha256 = sha256_hex(composed_content.as_bytes());
+        RuntimeSealedPrompt::seal(
+            composed_content,
+            self.source,
+            composed_sha256,
+            base_sha256,
+            tuning_sha256,
+        )
+    }
+}
+
+/// All policy rungs are explicit; resolution never substitutes host prompt files.
+#[derive(Clone)]
+pub struct CapturedRuntimePrompts {
+    pub correction: CapturedPrompt,
+    pub smart: CapturedPrompt,
+    pub max: CapturedPrompt,
+    pub assistive: CapturedPrompt,
+}
+
+impl Default for CapturedRuntimePrompts {
+    fn default() -> Self {
+        Self {
+            correction: CapturedPrompt::builtin(PromptKind::Formatting),
+            smart: CapturedPrompt::builtin(PromptKind::FormattingSmart),
+            max: CapturedPrompt::builtin(PromptKind::FormattingMax),
+            assistive: CapturedPrompt::builtin(PromptKind::Assistive),
+        }
+    }
+}
+
+impl CapturedRuntimePrompts {
+    /// Capture every rung for later one-shot choices, including when configured Off.
+    pub(crate) fn capture(_policy: FormattingPolicy) -> Self {
+        super::loader::note_startup_acquisition("prompt files");
+        let tuning = load_optional("formatting_tuning.txt");
+        let capture_formatting = |kind| {
+            let snapshot = prompt_snapshot(kind);
+            CapturedPrompt {
+                content: snapshot.content,
+                source: snapshot.source,
+                tuning: tuning.clone(),
+            }
+        };
+        Self {
+            correction: capture_formatting(PromptKind::Formatting),
+            smart: capture_formatting(PromptKind::FormattingSmart),
+            max: capture_formatting(PromptKind::FormattingMax),
+            assistive: CapturedPrompt::capture(PromptKind::Assistive, "assistive_tuning.txt"),
+        }
+    }
+
+    pub(crate) fn seal(
+        &self,
+        policy: FormattingPolicy,
+    ) -> (Option<RuntimeSealedPrompt>, RuntimeSealedPrompt) {
+        let formatting = match policy {
+            FormattingPolicy::Off => None,
+            FormattingPolicy::Correction => Some(self.correction.seal()),
+            FormattingPolicy::Smart => Some(self.smart.seal()),
+            FormattingPolicy::Max => Some(self.max.seal()),
+        };
+        (formatting, self.assistive.seal())
     }
 }
 
@@ -632,7 +717,7 @@ fn append_prompt_audit(event: PromptAuditEvent<'_>) -> std::io::Result<()> {
 
 /// Lowercase hex SHA-256, the digest form used throughout the audit trail.
 fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 /// Reveal the prompts directory in Finder, creating it first if needed.
@@ -652,33 +737,242 @@ pub fn open_prompts_folder() {
 mod tests {
     use super::*;
     use serial_test::serial;
-    use std::ffi::{OsStr, OsString};
     use tempfile::TempDir;
 
-    /// RAII override of `CODESCRIBE_DATA_DIR` for serialised prompt tests.
-    struct EnvGuard {
-        previous: Option<OsString>,
+    use crate::test_isolation::EnvGuard;
+
+    #[test]
+    #[serial]
+    fn one_shot_uses_captured_custom_prompt() {
+        use crate::config::{CapturedRuntimeInputs, Config, StartupAcquisitionProbe};
+
+        let sandbox = TempDir::new().expect("prompt sandbox");
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
+        let dir = prompts_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let files = [
+            ("formatting-smart.txt", "Operator Smart"),
+            ("formatting-max.txt", "Operator Max"),
+            ("formatting_tuning.txt", "  Shared tuning\n"),
+        ];
+        for (name, content) in files {
+            fs::write(dir.join(name), content).unwrap();
+        }
+        let settings_bytes = b"{\"formatting_level\":\"smart\"}\n";
+        fs::write(sandbox.path().join("settings.json"), settings_bytes).unwrap();
+        let mut inputs = CapturedRuntimeInputs::defaults_at(sandbox.path().to_path_buf(), 42);
+        inputs.user_settings.formatting_level = Some("smart".into());
+        inputs.settings_bytes = Some(settings_bytes.to_vec());
+        inputs.prompts = CapturedRuntimePrompts::capture(FormattingPolicy::Smart);
+        for (name, content) in files {
+            assert_eq!(fs::read_to_string(dir.join(name)).unwrap(), content);
+        }
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), files.len());
+
+        // A later edit must not change the inputs sealed for this generation.
+        fs::write(dir.join("formatting-max.txt"), "Later Max").unwrap();
+        fs::write(dir.join("formatting_tuning.txt"), "Later tuning").unwrap();
+        let probe = StartupAcquisitionProbe::forbid();
+        let settings = Config::runtime_snapshot_from_captured(inputs);
+        let before = settings.digest().clone();
+        let request = settings.with_formatting_level(FormattingPolicy::Max);
+        let prompt = request
+            .ai_execution()
+            .formatter()
+            .formatting_prompt()
+            .unwrap();
+        assert_eq!(prompt.composed_content(), "Operator Max\n\nShared tuning");
+        assert_eq!(prompt.source(), PromptSource::CustomFile);
+        assert_eq!(
+            prompt.composed_sha256(),
+            sha256_hex(b"Operator Max\n\nShared tuning")
+        );
+        assert_eq!(settings.formatting_policy(), FormattingPolicy::Smart);
+        assert_eq!(
+            settings.user_settings().formatting_level.as_deref(),
+            Some("smart")
+        );
+        assert_eq!(settings.digest(), &before);
+        assert_eq!(
+            settings
+                .ai_execution()
+                .formatter()
+                .formatting_prompt()
+                .unwrap()
+                .composed_content(),
+            "Operator Smart\n\nShared tuning"
+        );
+        assert!(!format!("{settings:?}").contains("Operator Max"));
+        assert_eq!(
+            fs::read(sandbox.path().join("settings.json")).unwrap(),
+            settings_bytes
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("formatting-max.txt")).unwrap(),
+            "Later Max"
+        );
+        assert!(probe.attempts().is_empty());
     }
 
-    impl EnvGuard {
-        /// Install `value` as `CODESCRIBE_DATA_DIR`, restoring the prior env on drop.
-        fn set(value: impl AsRef<OsStr>) -> Self {
-            let previous = std::env::var_os("CODESCRIBE_DATA_DIR");
-            // SAFETY: every prompt test that mutates process env is serialized.
-            unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", value) };
-            Self { previous }
+    #[test]
+    #[serial]
+    fn unselected_prompt_files_leave_configured_snapshot_digest_unchanged() {
+        use crate::config::{CapturedRuntimeInputs, Config, StartupAcquisitionProbe};
+
+        for policy in FormattingPolicy::ALL {
+            let sandbox = TempDir::new().expect("prompt sandbox");
+            let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
+            let dir = prompts_dir();
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("formatting_tuning.txt"), " Shared tuning \n").unwrap();
+            if let Some(kind) = PromptKind::for_formatting_policy(policy) {
+                fs::write(dir.join(kind.filename()), "Configured prompt").unwrap();
+            }
+            let mut selected = CapturedRuntimeInputs::defaults_at(sandbox.path().to_path_buf(), 42);
+            selected.user_settings.formatting_level = Some(policy.as_str().into());
+            selected.prompts = CapturedRuntimePrompts::capture(policy);
+            // Reconstruct the pre-change capture: only the configured rung and assistive.
+            let mut prior = selected.clone();
+            prior.prompts = CapturedRuntimePrompts::default();
+            match policy {
+                FormattingPolicy::Correction => {
+                    prior.prompts.correction = selected.prompts.correction.clone()
+                }
+                FormattingPolicy::Smart => prior.prompts.smart = selected.prompts.smart.clone(),
+                FormattingPolicy::Max => prior.prompts.max = selected.prompts.max.clone(),
+                FormattingPolicy::Off => {}
+            }
+            prior.prompts.assistive = selected.prompts.assistive.clone();
+            for kind in PromptKind::FORMATTING {
+                if Some(kind) != PromptKind::for_formatting_policy(policy) {
+                    fs::write(dir.join(kind.filename()), "Unselected private prompt").unwrap();
+                }
+            }
+            let mut all = selected.clone();
+            all.prompts = CapturedRuntimePrompts::capture(policy);
+            let probe = StartupAcquisitionProbe::forbid();
+            let before = Config::runtime_snapshot_from_captured(prior);
+            let selected = Config::runtime_snapshot_from_captured(selected);
+            let all = Config::runtime_snapshot_from_captured(all);
+            assert_eq!(before.ai_execution(), selected.ai_execution());
+            assert_eq!(before.digest(), selected.digest());
+            assert_eq!(all.ai_execution(), selected.ai_execution());
+            assert_eq!(all.digest(), selected.digest());
+            assert!(!format!("{all:?}").contains("Unselected private prompt"));
+            assert!(probe.attempts().is_empty());
         }
     }
 
-    impl Drop for EnvGuard {
-        /// Restore the previous `CODESCRIBE_DATA_DIR` (or remove it if it was unset).
-        fn drop(&mut self) {
-            // SAFETY: restores the serialized test's prior process environment.
-            unsafe {
-                match &self.previous {
-                    Some(value) => std::env::set_var("CODESCRIBE_DATA_DIR", value),
-                    None => std::env::remove_var("CODESCRIBE_DATA_DIR"),
+    #[test]
+    #[serial]
+    fn capture_preserves_all_prompt_files() {
+        use crate::config::{CapturedRuntimeInputs, Config, StartupAcquisitionProbe};
+
+        let sandbox = TempDir::new().expect("prompt sandbox");
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
+        let dir = prompts_dir();
+        fs::create_dir_all(&dir).unwrap();
+        for kind in PromptKind::USER_OWNED {
+            fs::write(dir.join(kind.filename()), kind.filename()).unwrap();
+        }
+        fs::write(dir.join("formatting_tuning.txt"), " shared \n").unwrap();
+        fs::write(dir.join("assistive_tuning.txt"), " assistive \n").unwrap();
+        for configured in FormattingPolicy::ALL {
+            let mut inputs = CapturedRuntimeInputs::defaults_at(sandbox.path().to_path_buf(), 42);
+            inputs.user_settings.formatting_level = Some(configured.as_str().into());
+            inputs.prompts = CapturedRuntimePrompts::capture(configured);
+            let probe = StartupAcquisitionProbe::forbid();
+            let settings = Config::runtime_snapshot_from_captured(inputs);
+            for level in FormattingPolicy::ALL {
+                let request = settings.with_formatting_level(level);
+                if let Some(kind) = PromptKind::for_formatting_policy(level) {
+                    let prompt = request
+                        .ai_execution()
+                        .formatter()
+                        .formatting_prompt()
+                        .unwrap();
+                    assert_eq!(prompt.source(), PromptSource::CustomFile);
+                    assert_eq!(
+                        prompt.composed_content(),
+                        format!("{}\n\nshared", kind.filename())
+                    );
+                } else {
+                    assert!(
+                        request
+                            .ai_execution()
+                            .formatter()
+                            .formatting_prompt()
+                            .is_none()
+                    );
                 }
+                assert_eq!(settings.formatting_policy(), configured);
+            }
+            assert_eq!(
+                settings
+                    .ai_execution()
+                    .formatter()
+                    .assistive_prompt()
+                    .composed_content(),
+                "assistive.txt\n\nassistive"
+            );
+            assert!(probe.attempts().is_empty());
+        }
+        for kind in PromptKind::USER_OWNED {
+            assert_eq!(
+                fs::read_to_string(dir.join(kind.filename())).unwrap(),
+                kind.filename()
+            );
+        }
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            PromptKind::USER_OWNED.len() + 2
+        );
+        assert!(!sandbox.path().join("settings.json").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn captured_missing_blank_and_unreadable_rungs_retain_provenance() {
+        let sandbox = TempDir::new().expect("prompt sandbox");
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
+        for state in ["missing", "blank", "unreadable"] {
+            for kind in PromptKind::FORMATTING {
+                let path = prompts_dir().join(kind.filename());
+                match state {
+                    "missing" => {}
+                    "blank" => {
+                        fs::create_dir_all(prompts_dir()).unwrap();
+                        fs::write(&path, " \n\t ").unwrap();
+                    }
+                    _ => {
+                        fs::remove_file(&path).unwrap();
+                        fs::create_dir(&path).unwrap();
+                    }
+                }
+            }
+            for configured in FormattingPolicy::ALL {
+                let captured = CapturedRuntimePrompts::capture(configured);
+                for level in FormattingPolicy::ALL {
+                    if let Some(kind) = PromptKind::for_formatting_policy(level) {
+                        let prompt = captured.seal(level).0.unwrap();
+                        assert_eq!(prompt.composed_content(), kind.default_content());
+                        assert_eq!(
+                            prompt.source(),
+                            if state == "unreadable" {
+                                PromptSource::ReadError
+                            } else {
+                                PromptSource::BuiltInFallback
+                            }
+                        );
+                        assert!(prompt.tuning_sha256().is_none());
+                    }
+                }
+            }
+            if state == "missing" {
+                assert!(
+                    !prompts_dir().exists(),
+                    "capture must not create prompt files"
+                );
             }
         }
     }
@@ -688,7 +982,7 @@ mod tests {
     /// Formatting/assistive path helpers resolve under the sandbox with policy suffixes.
     fn test_prompt_paths_api() {
         let sandbox = TempDir::new().expect("prompt sandbox");
-        let _env = EnvGuard::set(sandbox.path());
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
         // Test path functions (used by GUI apps and tests)
         let formatting_path = get_formatting_prompt_path();
         let assistive_path = get_assistive_prompt_path();
@@ -716,7 +1010,7 @@ mod tests {
     /// Every formatting kind: exact-byte IO, rename-failure safety, backup, reset, audit.
     fn all_formatting_prompts_share_exact_byte_read_write_failure_and_reset_contract() {
         let sandbox = TempDir::new().expect("prompt sandbox");
-        let _env = EnvGuard::set(sandbox.path());
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
 
         for (index, kind) in PromptKind::FORMATTING.into_iter().enumerate() {
             let path = prompts_dir().join(kind.filename());
@@ -803,7 +1097,7 @@ mod tests {
     /// Missing assistive prompt falls back in-memory and never creates a file on read.
     fn missing_prompt_uses_memory_fallback_without_creating_a_file() {
         let sandbox = TempDir::new().expect("prompt sandbox");
-        let _env = EnvGuard::set(sandbox.path());
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
         let path = get_assistive_prompt_path();
 
         let snapshot = prompt_snapshot(PromptKind::Assistive);
@@ -821,7 +1115,7 @@ mod tests {
     /// Custom on-disk bytes survive every read probe without rewrite or re-encode.
     fn custom_prompt_bytes_survive_every_read_probe() {
         let sandbox = TempDir::new().expect("prompt sandbox");
-        let _env = EnvGuard::set(sandbox.path());
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
         let custom = b"custom prompt\nwith exact bytes\n";
         let path = get_assistive_prompt_path();
         fs::create_dir_all(path.parent().expect("prompt parent")).expect("create prompt dir");
@@ -852,7 +1146,7 @@ mod tests {
     /// Atomic save keeps a backup and writes a reason-tagged digest audit receipt.
     fn atomic_save_keeps_backup_and_reason_tagged_digest_receipt() {
         let sandbox = TempDir::new().expect("prompt sandbox");
-        let _env = EnvGuard::set(sandbox.path());
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
         let path = get_formatting_prompt_path();
         fs::create_dir_all(path.parent().expect("prompt parent")).expect("create prompt dir");
         fs::write(&path, b"old prompt bytes").expect("seed old prompt");
@@ -925,5 +1219,47 @@ mod tests {
                 .lines()
                 .any(|line| line.contains("\"status\":\"failed\""))
         );
+    }
+}
+
+#[cfg(test)]
+mod captured_prompt_tests {
+    use super::*;
+    use crate::config::StartupAcquisitionProbe;
+
+    #[test]
+    fn captured_composition_hashes_exact_bytes_and_retains_source() {
+        let probe = StartupAcquisitionProbe::forbid();
+        let captured = CapturedPrompt {
+            content: "base bytes\n".into(),
+            source: PromptSource::ReadError,
+            tuning: Some("  tuning bytes\n ".into()),
+        };
+        let sealed = captured.seal();
+        assert_eq!(sealed.composed_content(), "base bytes\n\n\ntuning bytes");
+        assert_eq!(sealed.base_sha256(), sha256_hex(b"base bytes\n"));
+        assert_eq!(
+            sealed.tuning_sha256(),
+            Some(sha256_hex(b"tuning bytes").as_str())
+        );
+        assert_eq!(
+            sealed.composed_sha256(),
+            sha256_hex(sealed.composed_content().as_bytes())
+        );
+        assert_eq!(sealed.source(), PromptSource::ReadError);
+        assert!(probe.attempts().is_empty());
+    }
+
+    #[test]
+    fn captured_off_bypasses_formatting_and_empty_tuning_does_not_change_base() {
+        let probe = StartupAcquisitionProbe::forbid();
+        let mut prompts = CapturedRuntimePrompts::default();
+        prompts.assistive.tuning = Some(" \n ".into());
+        let (formatting, assistive) = prompts.seal(FormattingPolicy::Off);
+        assert!(formatting.is_none());
+        assert_eq!(assistive.composed_content(), DEFAULT_ASSISTIVE_PROMPT);
+        assert_eq!(assistive.base_sha256(), assistive.composed_sha256());
+        assert!(assistive.tuning_sha256().is_none());
+        assert!(probe.attempts().is_empty());
     }
 }

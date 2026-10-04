@@ -27,11 +27,23 @@
 //! Idle is not "the app looks quiet" and not "a long HQ pass has been running".
 //! Set `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0` to keep weights resident for
 //! the whole process life.
+//!
+//! ## Model switching
+//!
+//! The configured model is a living setting, so no path is frozen for the
+//! process lifetime: every cold load resolves the current configuration fresh.
+//! [`apply_model_switch`] is the single owner corridor for changing the model
+//! of a *running* process: it validates the new selection (a failure keeps the
+//! running model and the real error), drops warm weights only when the caller
+//! warrants no take owns the engine, and otherwise arms a deferred switch that
+//! the bridge recording-idle hook applies through [`apply_pending_model_switch`].
+//! An ongoing capture/decode and its tail therefore always keep their model and
+//! their full audio; the new selection applies from the next safe take.
 
 // This entire module is a public API for library consumers
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -41,6 +53,7 @@ use tracing::{info, warn};
 use crate::config::models::resolve_runtime_whisper_model_path;
 use crate::config::{Config, UserSettings};
 use crate::pipeline::contracts::{FileTranscriptionOptions, RawTranscript, TranscriptionVerdict};
+use crate::stt::LocalExecutionControl;
 
 use super::engine::LocalWhisperEngine;
 use super::params::DecodingParams;
@@ -61,11 +74,34 @@ const DEFAULT_IDLE_UNLOAD_SECS: u64 = 1800;
 /// How often the reaper wakes to check for idleness.
 const REAPER_TICK: Duration = Duration::from_secs(30);
 
+/// What the resident engine was built from. Recorded at load so the Settings
+/// surface can tell the actually-loaded model apart from the saved preference,
+/// and so a switch request can no-op when the warm engine already matches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelIdentity {
+    /// Weights came from the embedded payload of a fat build.
+    Embedded,
+    /// Weights were loaded from this on-disk directory.
+    Path(PathBuf),
+}
+
+impl ModelIdentity {
+    /// Stable provenance label: `embedded` or the model directory path.
+    pub fn describe(&self) -> String {
+        match self {
+            ModelIdentity::Embedded => "embedded".to_string(),
+            ModelIdentity::Path(path) => path.display().to_string(),
+        }
+    }
+}
+
 /// Resettable engine slot: `None` when unloaded, plus the last-use timestamp the
-/// reaper consults. A single `Mutex` serializes loads, transcriptions, and
-/// unloads — exactly as the previous `Mutex<LocalWhisperEngine>` did.
+/// reaper consults. A single `Mutex` serializes loads, transcriptions, unloads
+/// and model switches — exactly as the previous `Mutex<LocalWhisperEngine>` did.
 struct WhisperSlot {
     engine: Option<LocalWhisperEngine>,
+    /// Provenance of `engine`; `None` exactly while `engine` is `None`.
+    loaded_identity: Option<ModelIdentity>,
     last_used: Instant,
 }
 
@@ -73,8 +109,11 @@ struct WhisperSlot {
 /// guards creation of the `Mutex`, the `Mutex` guards the engine inside it.
 static SLOT: OnceLock<Mutex<WhisperSlot>> = OnceLock::new();
 
-/// Runtime model path used only when embedded provisioning is unavailable.
-static MODEL_PATH: OnceLock<PathBuf> = OnceLock::new();
+/// Armed model switch, set when a take (or an in-flight decode) owns the
+/// engine. Applied at the next safe boundary: the bridge recording-idle hook
+/// calls [`apply_pending_model_switch`], and every cold load resolves the
+/// current configuration fresh regardless.
+static PENDING_SWITCH: AtomicBool = AtomicBool::new(false);
 
 /// Guard so the idle reaper thread is spawned at most once.
 static REAPER_STARTED: OnceLock<()> = OnceLock::new();
@@ -99,6 +138,7 @@ fn slot() -> &'static Mutex<WhisperSlot> {
     SLOT.get_or_init(|| {
         Mutex::new(WhisperSlot {
             engine: None,
+            loaded_identity: None,
             last_used: Instant::now(),
         })
     })
@@ -171,22 +211,109 @@ fn non_empty(value: String) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// Get the resolved model path used by runtime Whisper fallback loading.
-pub fn get_model_path() -> Result<&'static PathBuf> {
-    if let Some(path) = MODEL_PATH.get() {
-        return Ok(path);
-    }
-
-    let path = resolve_model_path_fallback()?;
-    let _ = MODEL_PATH.set(path.clone());
-
-    MODEL_PATH
-        .get()
-        .ok_or_else(|| anyhow!("Failed to store model path"))
+/// Resolve the model path the runtime Whisper fallback would load *now*.
+///
+/// Deliberately a fresh resolution on every call: the configured model is a
+/// living setting, so nothing here may freeze the first answer for the process
+/// lifetime. Engine (re)loads call this at cold-load time, which is what makes
+/// a model switch take effect from the next safe take.
+pub fn get_model_path() -> Result<PathBuf> {
+    resolve_model_path_fallback()
 }
 
-/// Build a fresh engine, embedded-first with a runtime-path fallback.
-fn load_engine() -> Result<LocalWhisperEngine> {
+/// The configured model reference the runtime fallback resolves, with the full
+/// precedence chain (process env → settings.json → env file → default).
+pub fn configured_model_reference() -> String {
+    configured_local_model()
+}
+
+/// What the resident engine was built from; `None` while weights are unloaded
+/// (idle reaper or a just-applied switch). This is runtime truth, never the
+/// persisted preference.
+pub fn loaded_model_identity() -> Option<ModelIdentity> {
+    SLOT.get()
+        .and_then(|mutex| mutex.lock().ok())
+        .and_then(|guard| guard.loaded_identity.clone())
+}
+
+/// Outcome of one model-switch request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSwitch {
+    /// Nothing to drop: no weights are resident (the next cold load follows
+    /// the new selection), or the resident weights already match it.
+    Current,
+    /// Warm weights were dropped; the next take cold-loads the new selection.
+    Unloaded,
+    /// The engine was mid-decode; the switch is armed and lands at the next
+    /// safe boundary instead of interrupting the pass.
+    Pending,
+}
+
+/// The identity the engine should hold under the current configuration.
+/// Embedded provisioning always wins, mirroring [`load_engine`].
+fn desired_model_identity() -> Result<ModelIdentity> {
+    if super::embedded::is_embedded_available() {
+        return Ok(ModelIdentity::Embedded);
+    }
+    Ok(ModelIdentity::Path(resolve_model_path_fallback()?))
+}
+
+/// Drop the resident engine and reclaim its Metal buffers, mirroring the idle
+/// reaper's unload discipline. Caller holds the slot lock.
+fn unload_slot_engine(guard: &mut WhisperSlot) {
+    guard.engine = None;
+    guard.loaded_identity = None;
+    // Dropped weight buffers only return to the MetalDevice free-buffer pool;
+    // force candle's prune so the multi-GB does not stay resident until the
+    // next inference. Same discipline as the idle reaper.
+    if let Some(device) = super::engine::cached_process_device() {
+        crate::memory::reclaim_metal_buffer_pool(&device);
+    }
+}
+
+/// Apply the persisted model selection now.
+///
+/// The caller warrants that no take owns the engine (the bridge checks the
+/// recording controller before calling). A resolution/validation failure keeps
+/// the running model untouched and returns the real error; a mid-decode call
+/// never interrupts the pass — it arms the deferred switch instead.
+pub fn apply_model_switch() -> Result<ModelSwitch> {
+    let desired = desired_model_identity()?;
+    let mut guard = match slot().try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            PENDING_SWITCH.store(true, Ordering::Release);
+            return Ok(ModelSwitch::Pending);
+        }
+    };
+    PENDING_SWITCH.store(false, Ordering::Release);
+    if guard.engine.is_none() || guard.loaded_identity.as_ref() == Some(&desired) {
+        return Ok(ModelSwitch::Current);
+    }
+    unload_slot_engine(&mut guard);
+    drop(guard);
+    crate::memory::release_freed_heap();
+    Ok(ModelSwitch::Unloaded)
+}
+
+/// Arm the deferred switch: a take owns the engine right now, so the change
+/// lands when recording returns to idle (or at the next cold load).
+pub fn mark_model_switch_pending() {
+    PENDING_SWITCH.store(true, Ordering::Release);
+}
+
+/// Recording-idle hook: apply an armed switch. A no-op when none is armed, so
+/// the bridge can call this on every return to idle.
+pub fn apply_pending_model_switch() -> Result<ModelSwitch> {
+    if !PENDING_SWITCH.swap(false, Ordering::AcqRel) {
+        return Ok(ModelSwitch::Current);
+    }
+    apply_model_switch()
+}
+
+/// Build a fresh engine, embedded-first with a runtime-path fallback, plus the
+/// provenance of what it was built from.
+fn load_engine() -> Result<(LocalWhisperEngine, ModelIdentity)> {
     #[cfg(test)]
     TEST_LOAD_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
@@ -195,15 +322,16 @@ fn load_engine() -> Result<LocalWhisperEngine> {
         let engine = LocalWhisperEngine::from_embedded(&embedded)
             .context("Failed to initialize from embedded model")?;
         info!("Whisper engine loaded from embedded model (zero I/O)");
-        return Ok(engine);
+        return Ok((engine, ModelIdentity::Embedded));
     }
 
-    // 2. Fallback path: resolve Whisper model at runtime.
+    // 2. Fallback path: resolve Whisper model at runtime. Fresh resolution on
+    // every cold load, so a changed selection takes effect here.
     let path = get_model_path()?;
-    let engine = LocalWhisperEngine::new_with_params(path, DecodingParams::default())
+    let engine = LocalWhisperEngine::new_with_params(&path, DecodingParams::default())
         .context("Failed to initialize Whisper engine from path")?;
     info!("Whisper engine loaded from path: {}", path.display());
-    Ok(engine)
+    Ok((engine, ModelIdentity::Path(path)))
 }
 
 /// Emit the load transition without leaking transcription content.
@@ -272,6 +400,7 @@ fn reaper_loop() {
             // reuses it — no Device::new_metal churn / port leak.
             let unload_started = Instant::now();
             guard.engine = None;
+            guard.loaded_identity = None;
             let unload_drop_ms = unload_started.elapsed().as_millis() as u64;
             // Dropped weight buffers only return to the MetalDevice free-buffer
             // pool; force candle's prune or the multi-GB stays resident until
@@ -311,20 +440,57 @@ fn reaper_loop() {
 
 /// Run `f` with the engine, loading it on demand and refreshing the idle clock.
 fn with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> Result<R> {
+    with_engine_controlled(&LocalExecutionControl::default(), f)
+}
+
+/// Poll only our own admission. A waiter must not acquire a foreign holder's
+/// engine after its deadline, nor install cancellation on that holder.
+fn acquire_controlled<'a, T>(
+    mutex: &'a Mutex<T>,
+    control: &LocalExecutionControl,
+) -> Result<std::sync::MutexGuard<'a, T>> {
+    loop {
+        control.check()?;
+        match mutex.try_lock() {
+            Ok(guard) => {
+                control.check()?;
+                return Ok(guard);
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(anyhow!("Failed to lock poisoned Whisper engine"));
+            }
+        }
+    }
+}
+
+fn with_engine_controlled<R>(
+    control: &LocalExecutionControl,
+    f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>,
+) -> Result<R> {
     let lock_started = Instant::now();
-    let mut guard = slot()
-        .lock()
-        .map_err(|e| anyhow!("Failed to lock engine: {}", e))?;
+    let mut guard = acquire_controlled(slot(), control)?;
     let lock_wait_ms = lock_started.elapsed().as_millis() as u64;
     let mut model_load_ms = 0u64;
     let cold_load = guard.engine.is_none();
     if cold_load {
+        control.check()?;
         let load_started = Instant::now();
-        guard.engine = Some(load_engine()?);
+        let (engine, identity) = load_engine()?;
+        guard.engine = Some(engine);
+        guard.loaded_identity = Some(identity);
+        // A fresh load follows the current configuration; any armed switch is
+        // satisfied by construction.
+        PENDING_SWITCH.store(false, Ordering::Release);
         model_load_ms = load_started.elapsed().as_millis() as u64;
         ensure_reaper();
         record_residency_load(model_load_ms);
     }
+    // Loading/native Metal calls cannot be preempted. Ownership stays here
+    // until they return; expiry then prevents entering the decoder.
+    control.check()?;
     super::timing::record_engine_acquire(lock_wait_ms, model_load_ms, cold_load);
     let engine = guard
         .engine
@@ -347,13 +513,7 @@ fn with_engine_initial_prompt<R>(
     initial_prompt: Option<String>,
     f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>,
 ) -> Result<R> {
-    with_engine(|engine| {
-        let previous = engine.decoding_params.initial_prompt.clone();
-        engine.decoding_params.initial_prompt = initial_prompt;
-        let result = f(engine);
-        engine.decoding_params.initial_prompt = previous;
-        result
-    })
+    with_engine(|engine| engine.with_request(initial_prompt, f))
 }
 
 /// Full-file decoding is deliberately prompt-free. The live A/B measured a
@@ -373,7 +533,10 @@ fn try_with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> R
     let cold_load = guard.engine.is_none();
     if cold_load {
         let load_started = Instant::now();
-        guard.engine = Some(load_engine()?);
+        let (engine, identity) = load_engine()?;
+        guard.engine = Some(engine);
+        guard.loaded_identity = Some(identity);
+        PENDING_SWITCH.store(false, Ordering::Release);
         model_load_ms = load_started.elapsed().as_millis() as u64;
         ensure_reaper();
         record_residency_load(model_load_ms);
@@ -398,12 +561,6 @@ pub fn init() -> Result<()> {
     #[cfg(test)]
     TEST_INIT_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     with_engine(|_| Ok(()))
-}
-
-#[cfg(test)]
-pub(crate) fn reset_test_init_calls() {
-    TEST_INIT_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
-    TEST_LOAD_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[cfg(test)]
@@ -449,19 +606,46 @@ pub fn transcribe_with_segments_with_initial_prompt(
     language: Option<&str>,
     initial_prompt: Option<String>,
 ) -> Result<RawTranscript> {
-    with_engine_initial_prompt(initial_prompt, |engine| {
-        engine.transcribe_long_with_language_segments(samples, sample_rate, language)
-    })
+    transcribe_controlled(
+        samples,
+        sample_rate,
+        language,
+        initial_prompt,
+        &LocalExecutionControl::default(),
+    )
 }
 
-/// Transcribe with streaming callback
-pub fn transcribe_streaming<'a>(
+pub(crate) fn transcribe_controlled(
     samples: &[f32],
     sample_rate: u32,
     language: Option<&str>,
-    callback: Option<super::engine::ChunkCallback<'a>>,
-) -> Result<String> {
-    with_engine(|engine| engine.transcribe_long_streaming(samples, sample_rate, language, callback))
+    initial_prompt: Option<String>,
+    control: &LocalExecutionControl,
+) -> Result<RawTranscript> {
+    with_engine_controlled(control, |engine| {
+        engine.with_request(initial_prompt, |engine| {
+            engine.transcribe_long_controlled(samples, sample_rate, language, control)
+        })
+    })
+}
+
+/// L1 tail window. Phrase segments stay on the transcript. Word segments are
+/// measured only when the checkpoint's alignment heads produce a DTW path.
+pub(crate) fn transcribe_tail_window(
+    samples: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+    initial_prompt: Option<String>,
+    control: &LocalExecutionControl,
+) -> Result<(
+    RawTranscript,
+    Option<Vec<crate::pipeline::contracts::TranscriptSegment>>,
+)> {
+    with_engine_controlled(control, |engine| {
+        engine.with_request(initial_prompt, |engine| {
+            engine.transcribe_tail_window(samples, sample_rate, language, control)
+        })
+    })
 }
 
 /// Transcribe a file with full structured verdict (VAD stats, confidence, provenance).
@@ -470,8 +654,26 @@ pub fn transcribe_file_verdict(
     language: Option<&str>,
     options: FileTranscriptionOptions,
 ) -> Result<TranscriptionVerdict> {
+    transcribe_file_verdict_observed(path, language, options, &mut |_| Ok(()))
+}
+
+/// Streaming observes the process-owned engine instead of creating a second model.
+pub fn transcribe_file_verdict_observed(
+    path: &std::path::Path,
+    language: Option<&str>,
+    options: FileTranscriptionOptions,
+    on_segments: &mut dyn FnMut(&[crate::pipeline::contracts::TranscriptSegment]) -> Result<()>,
+) -> Result<TranscriptionVerdict> {
+    #[cfg(unix)]
+    let (leased_path, _audio_read_lease) =
+        crate::state::history::audio_retention::AudioReadLease::acquire_for_path(
+            &crate::config::Config::config_dir(),
+            path,
+        )?;
+    #[cfg(unix)]
+    let path = leased_path.as_path();
     with_engine_initial_prompt(file_transcription_initial_prompt(), |engine| {
-        engine.transcribe_file_with_language(path, language, options)
+        engine.transcribe_file_with_language_observed(path, language, options, on_segments)
     })
 }
 
@@ -508,51 +710,22 @@ pub fn transcribe_chunk(
 mod tests {
     use super::*;
     use serial_test::serial;
-    use std::ffi::OsString;
 
-    /// RAII capture of one process env key for serial restoration on drop.
-    struct EnvRestore {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvRestore {
-        /// Snapshot `key`'s current value (or absence) before a test mutates it.
-        fn capture(key: &'static str) -> Self {
-            Self {
-                key,
-                previous: std::env::var_os(key),
-            }
-        }
-    }
-
-    impl Drop for EnvRestore {
-        /// Restore the exact process env captured at `capture`.
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(value) => unsafe { std::env::set_var(self.key, value) },
-                None => unsafe { std::env::remove_var(self.key) },
-            }
-        }
-    }
+    use crate::test_isolation::EnvGuard;
 
     /// File transcription stays prompt-free by contract.
     #[test]
     #[serial]
     fn file_transcription_initial_prompt_defaults_off() {
-        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
-        let _prompt_enabled = EnvRestore::capture(
-            crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
-        );
+        let _data_dir = EnvGuard::capture("CODESCRIBE_DATA_DIR");
+        let _env_path = EnvGuard::capture("CODESCRIBE_ENV_PATH");
+        let _prompt_enabled = EnvGuard::capture("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         let temp_dir = tempfile::tempdir().expect("temp data dir");
 
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
             std::env::remove_var("CODESCRIBE_ENV_PATH");
-            std::env::remove_var(
-                crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
-            );
+            std::env::remove_var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         }
 
         assert_eq!(file_transcription_initial_prompt(), None);
@@ -562,20 +735,15 @@ mod tests {
     #[test]
     #[serial]
     fn file_transcription_initial_prompt_stays_off_when_window_prompt_is_opted_in() {
-        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
-        let _prompt_enabled = EnvRestore::capture(
-            crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
-        );
+        let _data_dir = EnvGuard::capture("CODESCRIBE_DATA_DIR");
+        let _env_path = EnvGuard::capture("CODESCRIBE_ENV_PATH");
+        let _prompt_enabled = EnvGuard::capture("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         let temp_dir = tempfile::tempdir().expect("temp data dir");
 
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
             std::env::remove_var("CODESCRIBE_ENV_PATH");
-            std::env::set_var(
-                crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
-                "1",
-            );
+            std::env::set_var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", "1");
         }
 
         assert_eq!(
@@ -589,7 +757,7 @@ mod tests {
     #[test]
     #[serial]
     fn whisper_default_ttl_is_1800() {
-        let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
+        let _ttl = EnvGuard::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
 
         unsafe { std::env::remove_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS") };
         assert_eq!(
@@ -604,7 +772,7 @@ mod tests {
     #[test]
     #[serial]
     fn fleet_red_whisper_effective_ttl_overrides_include_zero_keep_warm() {
-        let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
+        let _ttl = EnvGuard::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
 
         unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "17") };
         assert_eq!(idle_unload_after(), Some(Duration::from_secs(17)));
@@ -620,7 +788,7 @@ mod tests {
     #[test]
     #[serial]
     fn whisper_residency_policy_exposes_effective_ttl_and_keep_warm() {
-        let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
+        let _ttl = EnvGuard::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
 
         unsafe { std::env::remove_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS") };
         assert_eq!(
@@ -645,8 +813,8 @@ mod tests {
     #[test]
     #[serial]
     fn configured_local_model_prefers_env_then_settings_then_env_file() {
-        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let _local_model = EnvRestore::capture("LOCAL_MODEL");
+        let _data_dir = EnvGuard::capture("CODESCRIBE_DATA_DIR");
+        let _local_model = EnvGuard::capture("LOCAL_MODEL");
         let temp_dir = tempfile::tempdir().expect("temp data dir");
 
         unsafe {
@@ -691,5 +859,203 @@ mod tests {
             text.is_empty(),
             "empty input should stay empty after no-op load"
         );
+    }
+
+    /// Real Metal footprint of large-v3-turbo: after load, after ≥60 s of
+    /// speech in Relay's 4 s windows, and after `reclaim_metal_buffer_pool`
+    /// with the weights still resident.
+    ///
+    /// Ignored because it loads the on-disk Whisper weights and decodes about
+    /// a minute of audio. Skip reason when the model file is absent is printed
+    /// before return. Run with `--ignored`.
+    #[test]
+    #[ignore = "loads the real Whisper weights and decodes 60s on Metal"]
+    #[serial]
+    fn whisper_metal_pool_footprint_with_resident_weights() {
+        let _ttl = EnvGuard::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
+        // Keep the weights resident for the whole measurement. The reaper's
+        // 30-minute unload must not race this bench.
+        unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "0") };
+
+        let model = match resolve_model_path_fallback() {
+            Ok(path) => path,
+            Err(err) => {
+                println!(
+                    "skip: whisper model file absent ({err:#}) — named reason: runtime Whisper weights are not installed"
+                );
+                return;
+            }
+        };
+        if !model.join("weights.safetensors").is_file()
+            && !model.join("model.safetensors").is_file()
+        {
+            println!(
+                "skip: whisper model file absent at {} — named reason: weights file missing",
+                model.display()
+            );
+            return;
+        }
+
+        let pcm = match relay_speech_pcm() {
+            Some(pcm) => pcm,
+            None => {
+                println!(
+                    "skip: speech fixture absent — named reason: tests/assets/synthetic_speech_tts.wav is missing or silent"
+                );
+                return;
+            }
+        };
+
+        let window = (crate::pipeline::streaming::layer1_window::Layer1Coalesce::MAX_AUDIO_SECS
+            * 16_000.0) as usize;
+        assert_eq!(window, 64_000, "Relay window is 4 s at 16 kHz");
+        let covered = 60 * 16_000;
+        assert!(pcm.len() >= covered, "fixture must cover at least 60 s");
+        let windows = covered / window;
+        assert_eq!(windows * window, covered);
+
+        init().expect("Whisper weights load");
+        assert!(is_initialized(), "weights resident after load");
+        let after_load = crate::memory::phys_footprint_bytes().expect("phys_footprint after load");
+
+        let control = LocalExecutionControl::default();
+        let mut first_text = String::new();
+        for index in 0..windows {
+            let start = index * window;
+            let (transcript, _) = transcribe_tail_window(
+                &pcm[start..start + window],
+                16_000,
+                Some("pl"),
+                None,
+                &control,
+            )
+            .expect("Relay window decode");
+            if index == 0 {
+                first_text = transcript.text;
+            }
+        }
+        assert!(
+            !first_text.trim().is_empty(),
+            "first 4 s window produced no text; the fixture did not exercise a decode"
+        );
+        let after_decode =
+            crate::memory::phys_footprint_bytes().expect("phys_footprint after decode");
+        // Same wait as the post-prune sample, with the pool still untouched,
+        // so a later drop can be told apart from the process just settling.
+        std::thread::sleep(Duration::from_secs(2));
+        let after_decode_settled =
+            crate::memory::phys_footprint_bytes().expect("phys_footprint after decode settled");
+
+        {
+            let guard = slot().lock().expect("whisper slot");
+            assert!(
+                guard.engine.is_some(),
+                "prune must run while the weights are still loaded"
+            );
+            let device = super::super::engine::cached_process_device()
+                .expect("process Metal device after a resident load");
+            crate::memory::reclaim_metal_buffer_pool(&device);
+            assert!(guard.engine.is_some(), "prune must not drop the weights");
+        }
+        assert!(is_initialized(), "weights still resident after prune");
+        let after_prune =
+            crate::memory::phys_footprint_bytes().expect("phys_footprint after prune");
+        std::thread::sleep(Duration::from_secs(2));
+        let after_prune_settled =
+            crate::memory::phys_footprint_bytes().expect("phys_footprint after prune settled");
+
+        let (again, _) = transcribe_tail_window(&pcm[..window], 16_000, Some("pl"), None, &control)
+            .expect("decode after prune");
+        assert_eq!(
+            again.text, first_text,
+            "decode after a resident-weight prune diverged from the pre-prune decode"
+        );
+
+        let reclaimed = after_decode_settled.saturating_sub(after_prune_settled);
+        println!(
+            "WHISPER_METAL_FOOTPRINT after_load_bytes={after_load} after_decode_bytes={after_decode} after_decode_settled_bytes={after_decode_settled} after_prune_bytes={after_prune} after_prune_settled_bytes={after_prune_settled} reclaimed_vs_settled_decode_bytes={reclaimed} windows={windows} window_samples={window} weights_still_loaded=true"
+        );
+    }
+
+    /// Tile the checked-in 16 kHz mono speech clip out to at least 60 s.
+    fn relay_speech_pcm() -> Option<Vec<f32>> {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/assets/synthetic_speech_tts.wav");
+        let mut reader = hound::WavReader::open(path).ok()?;
+        let spec = reader.spec();
+        if spec.channels != 1 || spec.sample_rate != 16_000 {
+            return None;
+        }
+        let samples = reader
+            .samples::<i16>()
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        if samples.is_empty() {
+            return None;
+        }
+        let pcm: Vec<f32> = samples
+            .into_iter()
+            .map(|sample| f32::from(sample) / f32::from(i16::MAX))
+            .collect();
+        let energy: f32 = pcm.iter().map(|sample| sample * sample).sum();
+        let rms = (energy / pcm.len() as f32).sqrt();
+        if rms < 0.01 {
+            return None;
+        }
+        let mut tiled = Vec::new();
+        while tiled.len() < 60 * 16_000 {
+            tiled.extend_from_slice(&pcm);
+        }
+        Some(tiled)
+    }
+}
+
+#[cfg(test)]
+mod local_execution_contention_tests {
+    use super::*;
+
+    #[test]
+    fn cancelled_and_expired_waiters_exit_before_foreign_holder_release() {
+        for expire in [false, true] {
+            // The exact acquisition helper used by the singleton, with a
+            // separately held slot. No process-global engine/model fixture.
+            let held = std::sync::Arc::new(Mutex::new("foreign prompt/cache"));
+            let holder_slot = std::sync::Arc::clone(&held);
+            let (held_tx, held_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let holder = std::thread::spawn(move || {
+                let guard = holder_slot.lock().unwrap();
+                held_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                assert_eq!(*guard, "foreign prompt/cache");
+            });
+            held_rx.recv().unwrap();
+            let control = LocalExecutionControl::default();
+            let waiter_control = control.clone();
+            let waiter_slot = std::sync::Arc::clone(&held);
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let waiter = std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                let result = acquire_controlled(&waiter_slot, &waiter_control);
+                done_tx.send(result.is_err()).unwrap();
+            });
+            started_rx.recv().unwrap();
+            if expire {
+                control.limit_until(Instant::now());
+            } else {
+                control.cancel();
+            }
+            // Release even on failure so the falsifier itself cannot strand a
+            // native thread when an assertion fails.
+            let result = done_rx.recv_timeout(Duration::from_secs(1));
+            release_tx.send(()).unwrap();
+            holder.join().unwrap();
+            waiter.join().unwrap();
+            assert!(result.unwrap());
+            assert_eq!(*held.lock().unwrap(), "foreign prompt/cache");
+            assert!(acquire_controlled(&held, &control).is_err());
+            assert!(acquire_controlled(&held, &LocalExecutionControl::default()).is_ok());
+        }
     }
 }

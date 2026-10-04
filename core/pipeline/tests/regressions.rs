@@ -5,38 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::audio::chunker::{DEFAULT_BUFFERED_SILENCE_SEC, SpeechSession};
 use crate::vad;
 
-struct EnvGuard {
-    key: &'static str,
-    prev: Option<String>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-        let prev = std::env::var(key).ok();
-        // SAFETY: tests run single-threaded with controlled env usage.
-        unsafe { std::env::set_var(key, value) };
-        Self { key, prev }
-    }
-
-    fn unset(key: &'static str) -> Self {
-        let prev = std::env::var(key).ok();
-        // SAFETY: tests run single-threaded with controlled env usage.
-        unsafe { std::env::remove_var(key) };
-        Self { key, prev }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        if let Some(prev) = &self.prev {
-            // SAFETY: tests run single-threaded with controlled env usage.
-            unsafe { std::env::set_var(self.key, prev) };
-        } else {
-            // SAFETY: tests run single-threaded with controlled env usage.
-            unsafe { std::env::remove_var(self.key) };
-        }
-    }
-}
+use crate::test_isolation::EnvGuard;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -55,7 +24,7 @@ fn read_workspace_source(relative_path: &str) -> String {
 #[serial]
 fn utterance_silence_default_regression() {
     // Ensure a clean baseline for this test (do not inherit user shell env).
-    let _g = EnvGuard::unset("CODESCRIBE_BUFFERED_SILENCE_SEC");
+    let _g = EnvGuard::remove("CODESCRIBE_BUFFERED_SILENCE_SEC");
 
     let sr = 16000u32;
     let stream = SpeechSession::new_stream(sr, 3.0, 0.6);
@@ -154,4 +123,34 @@ fn runtime_contract_blocks_legacy_worker_symbols() {
             );
         }
     }
+}
+
+#[test]
+fn production_replay_threads_the_typed_layer1_stop_receipt() {
+    let recorder = read_workspace_source("core/audio/streaming_recorder.rs");
+
+    assert!(
+        recorder.contains("tail_patch_receipt: Option<TailPatchSessionReceipt>"),
+        "production replay must expose typed Layer 1 stop evidence"
+    );
+    assert!(
+        recorder.contains("TailPatchSessionReceipt::from_events(&events)"),
+        "production replay must derive its receipt from the same event stream consumed by Delivery"
+    );
+}
+
+#[test]
+fn apple_stop_emits_layer1_receipt_before_session_finalised() {
+    let source = read_workspace_source("core/pipeline/streaming/apple_live_session.rs");
+    let receipt = source
+        .rfind("event_sink.on_event(&receipt.as_event())")
+        .expect("Apple stop must emit the typed Layer 1 receipt into the ordered event stream");
+    let finalised = source
+        .rfind("emit_session_finalised(")
+        .expect("Apple stop must emit SessionFinalised");
+
+    assert!(
+        receipt < finalised,
+        "Layer 1 terminal accounting must reach the event stream before SessionFinalised seals Delivery evidence"
+    );
 }

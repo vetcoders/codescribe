@@ -30,39 +30,7 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// Restores one process environment variable after a serialized test.
-struct EnvGuard {
-    key: &'static str,
-    previous: Option<String>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: &Path) -> Self {
-        let previous = std::env::var(key).ok();
-        // SAFETY: callers use #[serial] and the guard restores the prior value.
-        unsafe { std::env::set_var(key, value) };
-        Self { key, previous }
-    }
-
-    fn unset(key: &'static str) -> Self {
-        let previous = std::env::var(key).ok();
-        // SAFETY: callers use #[serial] and the guard restores the prior value.
-        unsafe { std::env::remove_var(key) };
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        if let Some(previous) = &self.previous {
-            // SAFETY: callers use #[serial] and the guard restores the prior value.
-            unsafe { std::env::set_var(self.key, previous) };
-        } else {
-            // SAFETY: callers use #[serial] and the guard restores the prior value.
-            unsafe { std::env::remove_var(self.key) };
-        }
-    }
-}
+use codescribe_core::test_isolation::EnvGuard;
 
 fn resolve_model_or_skip(suite: &str) -> Option<ModelDiscovery> {
     match discover_local_whisper_model() {
@@ -216,12 +184,14 @@ fn create_complete_model(path: &Path) {
     )
     .expect("write config");
     let mut tokenizer = tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
-    tokenizer.add_special_tokens(&[
-        tokenizers::AddedToken::from("<|startoftranscript|>", true),
-        tokenizers::AddedToken::from("<|endoftext|>", true),
-        tokenizers::AddedToken::from("<|transcribe|>", true),
-        tokenizers::AddedToken::from("<|pl|>", true),
-    ]);
+    tokenizer
+        .add_special_tokens([
+            tokenizers::AddedToken::from("<|startoftranscript|>", true),
+            tokenizers::AddedToken::from("<|endoftext|>", true),
+            tokenizers::AddedToken::from("<|transcribe|>", true),
+            tokenizers::AddedToken::from("<|pl|>", true),
+        ])
+        .expect("add fixture special tokens");
     tokenizer
         .save(path.join("tokenizer.json"), false)
         .expect("write tokenizer");
@@ -375,7 +345,7 @@ fn live_model_discovery_uses_validated_default_hf_snapshot() {
 
     let _home = EnvGuard::set("HOME", &home);
     let _models_root = EnvGuard::set("CODESCRIBE_MODELS_DIR", &models_root);
-    let _model_path = EnvGuard::unset("CODESCRIBE_MODEL_PATH");
+    let _model_path = EnvGuard::remove("CODESCRIBE_MODEL_PATH");
     let _codescribe_hf = EnvGuard::set("CODESCRIBE_HF_CACHE", &hf_cache);
     let _huggingface_hub = EnvGuard::set("HUGGINGFACE_HUB_CACHE", &hf_cache);
     let _hf_hub = EnvGuard::set("HF_HUB_CACHE", &hf_cache);

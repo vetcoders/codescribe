@@ -66,7 +66,13 @@ fn transcribe_audio_definition() -> ToolDefinition {
 /// path or a missing model is something the model can read and correct instead
 /// of a failed turn.
 async fn handle_transcribe_audio(input: Value) -> Vec<ToolResultContent> {
-    match transcribe_audio_from_input_with_engine(&input, &WhisperSingleton) {
+    let result = tokio::task::spawn_blocking(move || {
+        transcribe_audio_from_input_with_engine(&input, &WhisperSingleton)
+    })
+    .await
+    .context("audio transcription worker join error")
+    .and_then(|result| result);
+    match result {
         Ok(output) => vec![ToolResultContent::Text(output)],
         Err(error) => vec![ToolResultContent::Error(error.to_string())],
     }
@@ -96,7 +102,21 @@ fn transcribe_audio_from_input_with_engine(
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
 
+    #[cfg(unix)]
+    let (leased_path, _audio_read_lease) =
+        codescribe_core::state::history::audio_retention::AudioReadLease::acquire_for_path(
+            &codescribe_core::config::Config::config_dir(),
+            Path::new(path_str),
+        )?;
     let path = validate_audio_path(path_str)?;
+    #[cfg(unix)]
+    let path = {
+        // Keep the path gate, then read the alias pinned under the lease.
+        ensure_allowed_audio_path(&leased_path)?;
+        ensure_supported_audio_extension(&leased_path)?;
+        let _ = path;
+        leased_path
+    };
 
     engine.init().context(
         "Failed to initialize shared Whisper engine. If this build has no embedded model, set CODESCRIBE_MODEL_PATH to a complete Whisper model directory.",
@@ -270,13 +290,12 @@ fn ensure_supported_audio_extension(path: &Path) -> Result<()> {
     }
 }
 
-/// Confine reads to `~/.codescribe` or the agent assets directory.
+/// Confine reads to the configured Codescribe data directory or agent assets.
 ///
 /// Both roots are canonicalized before comparison so the two sides of the
 /// prefix test are in the same form. Expects an already-canonical `path`.
 fn ensure_allowed_audio_path(path: &Path) -> Result<()> {
-    let home_var = std::env::var("HOME").context("HOME environment variable is not set")?;
-    let codescribe_dir = canonical_or_original(PathBuf::from(home_var).join(".codescribe"));
+    let codescribe_dir = canonical_or_original(codescribe_core::config::Config::config_dir());
     let assets_dir = canonical_or_original(AgentAssetStore::assets_dir());
 
     if is_path_allowed(path, &codescribe_dir, &assets_dir) {
@@ -430,6 +449,10 @@ mod tests {
     #[test]
     #[serial]
     fn transcribes_allowed_audio_path_with_mock_engine() {
+        let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         let assets_dir = AgentAssetStore::assets_dir();
         std::fs::create_dir_all(&assets_dir).expect("create assets dir");
         let audio_path = assets_dir.join(format!(
@@ -452,7 +475,6 @@ mod tests {
         assert_eq!(parsed.language_source, "detected");
         assert!(parsed.duration_seconds > 0.0);
         assert!(parsed.speech_duration_seconds > 0.0);
-        std::fs::remove_file(audio_path).ok();
     }
 
     /// Paths outside `~/.codescribe` / assets roots are rejected before decode.

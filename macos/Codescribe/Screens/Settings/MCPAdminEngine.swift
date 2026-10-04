@@ -9,6 +9,7 @@ import Foundation
 // CRUD calls are cheap synchronous disk I/O. `testServer` is async: the handshake
 // can take up to ~10s, so it runs off the main actor to keep Settings responsive.
 
+@MainActor
 protocol MCPAdminEngine {
   func listServers() throws -> [CsMcpServer]
   func addServer(_ input: CsMcpServerInput) throws
@@ -27,6 +28,7 @@ protocol MCPAdminEngine {
   func setServerPermission(server: String, level: String) throws
   /// Live capabilities from the same registry the dispatcher uses.
   func listToolCapabilities() -> [CsToolCapability]
+  func loadPermissionSurface() async -> (CsPermissionPolicy, [CsToolCapability])
 }
 
 extension MCPAdminEngine {
@@ -49,6 +51,9 @@ extension MCPAdminEngine {
   func setToolPermission(identity: String, level: String) throws {}
   func setServerPermission(server: String, level: String) throws {}
   func listToolCapabilities() -> [CsToolCapability] { [] }
+  func loadPermissionSurface() async -> (CsPermissionPolicy, [CsToolCapability]) {
+    (getPermissionPolicy(), listToolCapabilities())
+  }
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -81,6 +86,12 @@ final class RealMCPAdminEngine: MCPAdminEngine {
     try admin.setServerPermission(server: server, level: level)
   }
   func listToolCapabilities() -> [CsToolCapability] { admin.listToolCapabilities() }
+  nonisolated func loadPermissionSurface() async -> (CsPermissionPolicy, [CsToolCapability]) {
+    await Task.detached(priority: .userInitiated) {
+      let admin = CodescribeMcpAdmin()
+      return (admin.getPermissionPolicy(), admin.listToolCapabilities())
+    }.value
+  }
 
   // Spawning + handshaking a server can take up to ~10s; run it off the main
   // actor so the Settings window never freezes. A fresh stateless handle is

@@ -1,0 +1,18 @@
+{
+  "schema": "codescribe.layered-engine-acceptance.v1",
+  "meaning_loss": {
+    "apple": "mój model pt. Musi latać",
+    "spoken": "Whisper musi łatać partiale."
+  },
+  "onset": {
+    "apple": "IWO został ucięte",
+    "repaired": "IWO zostało ucięte.",
+    "required_first_token": "IWO"
+  },
+  "repetition": {
+    "text": "IWO",
+    "distinct_span_ids": [1, 2, 3, 4, 5],
+    "replayed_span_id": 3,
+    "expected_deliveries": 5
+  }
+}

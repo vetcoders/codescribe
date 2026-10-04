@@ -53,43 +53,6 @@ impl fmt::Display for SessionId {
     }
 }
 
-/// Session, utterance, and sequence identity carried by every event.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EventIdentity {
-    /// Which session this event belongs to.
-    session_id: SessionId,
-    /// Which utterance inside the session.
-    utterance_id: u64,
-    /// Codescribe-owned stream-global monotonic counter; the ordering authority.
-    sequence_id: u64,
-}
-
-impl EventIdentity {
-    /// Build an identity triple.
-    pub fn new(session_id: SessionId, utterance_id: u64, sequence_id: u64) -> Self {
-        Self {
-            session_id,
-            utterance_id,
-            sequence_id,
-        }
-    }
-
-    /// Session this event belongs to.
-    pub fn session_id(&self) -> &SessionId {
-        &self.session_id
-    }
-
-    /// Utterance this event belongs to.
-    pub fn utterance_id(&self) -> u64 {
-        self.utterance_id
-    }
-
-    /// Monotonic stream position of this event.
-    pub fn sequence_id(&self) -> u64 {
-        self.sequence_id
-    }
-}
-
 /// A bounded span of session audio an event describes.
 ///
 /// Session time, measured in seconds from the first captured sample — the same
@@ -148,6 +111,21 @@ impl AudioRange {
     /// Span length in seconds.
     pub fn duration_secs(&self) -> f32 {
         self.end_secs - self.start_secs
+    }
+
+    /// Capture-clock span in samples at `rate_hz`, stored as session seconds.
+    ///
+    /// `rate_hz` is the native rate the recorder offered the session. Callers
+    /// recover the sample bounds with `seconds * rate_hz`. A later conversion
+    /// of the PCM bytes onto a 16 kHz wire does not change this span.
+    pub fn from_capture_samples(start_sample: u64, end_sample: u64, rate_hz: u32) -> Option<Self> {
+        if rate_hz == 0 || end_sample <= start_sample {
+            return None;
+        }
+        let rate = f64::from(rate_hz);
+        let start_secs = (start_sample as f64 / rate) as f32;
+        let end_secs = (end_sample as f64 / rate) as f32;
+        Self::new(start_secs, end_secs)
     }
 }
 
@@ -213,23 +191,150 @@ impl fmt::Display for AsrErrorKind {
     }
 }
 
+/// How a final was bound to one client commit.
+///
+/// The order is fixed: vendor echo, then the server's sample range, then the
+/// oldest pending commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitMatchPath {
+    /// (a) The final echoed `commit_id`, `id`, or `item_id`.
+    Echo,
+    /// (b) `start_ms`/`end_ms` fell inside one pending commit.
+    Range,
+    /// (c) Oldest pending commit.
+    Fifo,
+}
+
+impl CommitMatchPath {
+    /// Contract label `a`, `b`, or `c`.
+    pub fn as_label(self) -> char {
+        match self {
+            Self::Echo => 'a',
+            Self::Range => 'b',
+            Self::Fifo => 'c',
+        }
+    }
+}
+
+/// Whether a stamped final carries word spans or one phrase span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinalGrain {
+    /// One capture range per word.
+    Word,
+    /// The commit range plus the final's text.
+    Phrase,
+}
+
+/// One word placed on the integer capture clock.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptureWord {
+    /// The word as the vendor sent it.
+    pub word: String,
+    /// Inclusive start, in samples at [`FinalCommit::capture_rate_hz`].
+    pub sample_start: u64,
+    /// Exclusive end, in samples at [`FinalCommit::capture_rate_hz`].
+    pub sample_end: u64,
+    /// Vendor confidence, when it was finite.
+    pub probability: Option<f32>,
+}
+
+/// Both sides of a commit-range disagreement, in capture samples.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitRangeMismatch {
+    /// Client commit the final was bound to.
+    pub commit_id: String,
+    /// Inclusive start of the commit that was kept.
+    pub commit_sample_start: u64,
+    /// Exclusive end of the commit that was kept.
+    pub commit_sample_end: u64,
+    /// Server `start_ms` converted on the capture clock.
+    pub server_sample_start: u64,
+    /// Server `end_ms` converted on the capture clock.
+    pub server_sample_end: u64,
+    /// Rate used for the conversion, in Hz.
+    pub capture_rate_hz: u32,
+}
+
+/// A named protocol notice that does not fault the session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Layer1ProtocolNotice {
+    /// Server span and the kept commit span disagree past one frame or 1 ms.
+    CommitRangeMismatch(CommitRangeMismatch),
+    /// A sample was dropped before the server. Emitted once per session.
+    StreamClockUnreliable,
+}
+
+impl Layer1ProtocolNotice {
+    /// Stable name CL-W2 and the tests match on.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::CommitRangeMismatch(_) => "commit_range_mismatch",
+            Self::StreamClockUnreliable => "stream_clock_unreliable",
+        }
+    }
+}
+
+/// Integer capture-clock stamp on one final.
+///
+/// [`AudioRange`] on the same event is only the derived seconds view. These
+/// fields are the sample identity CL-W2 matches against the ledger.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FinalCommit {
+    /// Client commit id sent on `flush` or `end`.
+    pub commit_id: String,
+    /// Inclusive start on the offered capture clock.
+    pub sample_start: u64,
+    /// Exclusive end on the offered capture clock.
+    pub sample_end: u64,
+    /// Native rate of those samples, in Hz.
+    pub capture_rate_hz: u32,
+    /// Word grain, or the whole commit as one phrase.
+    pub grain: FinalGrain,
+    /// Words on the capture clock. Empty when the grain is phrase.
+    pub words: Vec<CaptureWord>,
+    /// Words clamped into the commit because they hung partly outside it.
+    pub word_time_clamped: u64,
+    /// A word fell entirely outside the commit, so the whole final is phrase grain.
+    pub phrase_fallback: bool,
+    /// Which of echo, range, or FIFO bound this final.
+    pub match_path: CommitMatchPath,
+    /// Set when the server span was not the commit span. The commit span was kept.
+    pub range_mismatch: Option<CommitRangeMismatch>,
+    /// The stream clock was already unreliable when this final was stamped.
+    pub clock_unreliable: bool,
+}
+
 /// Recognized text for one utterance, partial or final.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptEvent {
-    /// Session, utterance, and sequence identity.
-    pub identity: EventIdentity,
+    /// Recording this provider event belongs to. Transport correlation only;
+    /// acoustic existence is owned by `AcousticLedger`.
+    pub session_id: SessionId,
+    /// Provider-local utterance correlation, never a PCM identity.
+    pub utterance_id: u64,
+    /// Codescribe-owned stream order after transport deduplication.
+    pub sequence_id: u64,
     /// The recognized text. Layer 1 output is a *candidate*; committing it is
     /// the caller's decision and is bounded by the append-only doctrine.
     pub text: String,
-    /// Session-time span this text came from, when the provider reports one.
+    /// Derived seconds view of the span, when it fits in [`AudioRange`].
+    ///
+    /// Not sample identity. A long capture loses samples in `f32` seconds;
+    /// the `commit` stamp keeps the integer bounds.
     pub range: Option<AudioRange>,
+    /// Commit stamp. Present on cloud finals, absent on partials.
+    pub commit: Option<FinalCommit>,
 }
 
 /// A typed session failure.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ErrorEvent {
-    /// Session, utterance, and sequence identity.
-    pub identity: EventIdentity,
+    /// Recording this provider event belongs to.
+    pub session_id: SessionId,
+    /// Provider-local utterance correlation, or zero for session faults.
+    pub utterance_id: u64,
+    /// Codescribe-owned stream order.
+    pub sequence_id: u64,
     /// What went wrong.
     pub kind: AsrErrorKind,
 }
@@ -237,8 +342,12 @@ pub struct ErrorEvent {
 /// Consumption accounting for one session — no content, ever.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UsageEvent {
-    /// Session, utterance, and sequence identity.
-    pub identity: EventIdentity,
+    /// Recording this provider event belongs to.
+    pub session_id: SessionId,
+    /// Provider-local utterance correlation; zero for session accounting.
+    pub utterance_id: u64,
+    /// Codescribe-owned stream order.
+    pub sequence_id: u64,
     /// Audio seconds the provider processed.
     pub audio_secs: f32,
     /// Provider-side billable units, when it reports them.
@@ -259,12 +368,30 @@ pub enum AsrSessionEvent {
 }
 
 impl AsrSessionEvent {
-    /// Identity triple carried by this event.
-    pub fn identity(&self) -> &EventIdentity {
+    /// Recording correlation carried directly by the transport payload.
+    pub fn session_id(&self) -> &SessionId {
         match self {
-            Self::Partial(event) | Self::Final(event) => &event.identity,
-            Self::Error(event) => &event.identity,
-            Self::Usage(event) => &event.identity,
+            Self::Partial(event) | Self::Final(event) => &event.session_id,
+            Self::Error(event) => &event.session_id,
+            Self::Usage(event) => &event.session_id,
+        }
+    }
+
+    /// Provider-local utterance correlation; never an acoustic key.
+    pub fn utterance_id(&self) -> u64 {
+        match self {
+            Self::Partial(event) | Self::Final(event) => event.utterance_id,
+            Self::Error(event) => event.utterance_id,
+            Self::Usage(event) => event.utterance_id,
+        }
+    }
+
+    /// Codescribe-owned transport order.
+    pub fn sequence_id(&self) -> u64 {
+        match self {
+            Self::Partial(event) | Self::Final(event) => event.sequence_id,
+            Self::Error(event) => event.sequence_id,
+            Self::Usage(event) => event.sequence_id,
         }
     }
 

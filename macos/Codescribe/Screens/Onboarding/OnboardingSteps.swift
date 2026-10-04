@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 // Individual step bodies for the first-run wizard. Welcome, Permission (reused
@@ -12,22 +13,49 @@ import SwiftUI
 struct WelcomeStepView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: "Welcome")
-      Text("Codescribe turns your voice into text — anywhere.")
-        .font(CSFont.ui(28, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
+      EyebrowLabel(text: String(localized: "Welcome", comment: "Setup step eyebrow"))
+      Text("Think it. Say it. Keep your flow.")
+        .font(.title2.weight(.semibold))
+        .foregroundStyle(.primary)
         .fixedSize(horizontal: false, vertical: true)
       Text(
-        "This quick setup grants the macOS permissions Codescribe needs, "
-          + "picks your language and hotkeys, and optionally wires up an AI "
-          + "provider. You can change everything later in Settings."
+        "Bring your words into the apps you already use. We’ll connect your microphone, choose your language and shortcuts, and optionally add an AI assistant. Every choice can be changed later in Settings."
       )
-      .font(CSFont.ui(14))
+      .font(.body)
       .lineSpacing(3)
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
+
+      HStack(alignment: .top, spacing: 14) {
+        invitation(
+          "Speak naturally", symbol: "waveform", detail: "Capture a thought while it’s fresh.")
+        invitation(
+          "Shape your words", symbol: "text.alignleft", detail: "Review and refine your transcript."
+        )
+        invitation(
+          "Choose where it goes", symbol: "paperplane", detail: "Keep control of the destination.")
+      }
+      .padding(.top, 20)
     }
+  }
+
+  private func invitation(
+    _ title: LocalizedStringKey,
+    symbol: String,
+    detail: LocalizedStringKey
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Image(systemName: symbol)
+        .font(.system(size: 26, weight: .medium))
+        .accessibilityHidden(true)
+      Text(title).font(.headline)
+      Text(detail).font(.callout).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .frame(maxWidth: .infinity, minHeight: 135, alignment: .topLeading)
+    .padding(18)
+
+    .accessibilityElement(children: .combine)
   }
 }
 
@@ -44,14 +72,13 @@ private struct OnboardingStepHeader: View {
     VStack(alignment: .leading, spacing: 16) {
       EyebrowLabel(text: eyebrow)
       Text(title)
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
+        .font(.title2.weight(.semibold))
+        .foregroundStyle(.primary)
         .fixedSize(horizontal: false, vertical: true)
       Text(blurb)
-        .font(CSFont.ui(14))
+        .font(.body)
         .lineSpacing(3)
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
   }
@@ -68,51 +95,24 @@ struct OnboardingChoiceCard: View {
   var body: some View {
     Button(action: action) {
       HStack(alignment: .top, spacing: 12) {
-        ZStack {
-          Circle()
-            .strokeBorder(
-              isSelected ? CSColor.chromeAccent.opacity(0.9) : CSColor.hairline(0.18),
-              lineWidth: 1.5
-            )
-            .frame(width: 16, height: 16)
-          if isSelected {
-            Circle().fill(CSColor.chromeAccent).frame(width: 8, height: 8)
-          }
-        }
-        .padding(.top, 1)
+        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+          .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
         VStack(alignment: .leading, spacing: 3) {
-          Text(title)
-            .font(CSFont.ui(13.5, .semibold))
-            .foregroundStyle(CSColor.textHigh)
+          Text(title).font(.body.weight(.semibold))
           if let subtitle {
             Text(subtitle)
-              .font(CSFont.ui(12))
-              .lineSpacing(2)
-              .foregroundStyle(CSColor.textMutedAlt)
+              .font(.callout)
+              .foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }
         }
         Spacer(minLength: 0)
       }
-      .padding(.horizontal, 15)
-      .padding(.vertical, 13)
-      .background(
-        RoundedRectangle(cornerRadius: 11, style: .continuous)
-          .fill(CSColor.chromeAccent.opacity(isSelected ? 0.07 : 0))
-          .background(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-              .fill(CSColor.surfaceRaised(isSelected ? 0 : 0.03))
-          )
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 11, style: .continuous)
-          .strokeBorder(
-            isSelected ? CSColor.chromeAccent.opacity(0.28) : CSColor.hairline(0.08),
-            lineWidth: 1
-          )
-      )
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(6)
     }
-    .csFocusRing(cornerRadius: 8)
+    .csAction()
+    .accessibilityAddTraits(isSelected ? .isSelected : [])
   }
 }
 
@@ -122,7 +122,7 @@ private struct OnboardingStepNote: View {
 
   var body: some View {
     Text(text)
-      .font(CSFont.mono(11, .medium))
+      .font(.callout)
       .foregroundStyle(CSColor.textFaint)
       .fixedSize(horizontal: false, vertical: true)
       .padding(.top, 4)
@@ -137,28 +137,42 @@ struct ModeStepView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       OnboardingStepHeader(
-        eyebrow: "Operating lane",
-        title: "Basic or Agentic.",
-        blurb: "Choose how codescribe works. You can switch lanes later in Settings.")
+        eyebrow: String(localized: "Operating lane", comment: "Setup step eyebrow"),
+        title: String(localized: "Where should your words go?", comment: "Setup step heading"),
+        blurb: String(
+          localized:
+            "Start with dictation, or bring an assistant into the conversation. Change this any time in Settings.",
+          comment: "Setup step blurb")
+      )
 
       VStack(spacing: 10) {
         OnboardingChoiceCard(
-          title: "Basic — dictation only",
-          subtitle: "Voice-to-text anywhere. The simplest, fastest setup.",
+          title: String(
+            localized: "Basic — dictation only",
+            comment: "Operating lane choice; Basic is the lane name"),
+          subtitle: String(
+            localized: "Voice-to-text anywhere. The simplest, fastest setup.",
+            comment: "Operating lane choice detail"),
           isSelected: model.onboardingMode == .basic
         ) { model.selectMode(.basic) }
 
         OnboardingChoiceCard(
-          title: "Agentic — dictation + AI agent",
-          subtitle: "Unlocks the agent chat and MCP tool substrate, "
-            + "so your voice can drive an AI assistant, not just type.",
+          title: String(
+            localized: "Agentic — dictation + AI agent",
+            comment: "Operating lane choice; Agentic is the lane name"),
+          subtitle: String(
+            localized:
+              "Talk with an AI assistant and connect its tools, so your voice can drive an AI assistant, not just type.",
+            comment: "Operating lane choice detail"),
           isSelected: model.onboardingMode == .agentic
         ) { model.selectMode(.agentic) }
       }
       .padding(.top, 4)
 
       OnboardingStepNote(
-        text: "Agentic adds one more setup step (readiness check). Basic skips it.")
+        text: String(
+          localized: "Agentic adds one more setup step (readiness check). Basic skips it.",
+          comment: "Setup step footnote; Agentic and Basic are the two lane names"))
     }
   }
 }
@@ -173,10 +187,12 @@ struct LanguageStepView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       OnboardingStepHeader(
-        eyebrow: "Language",
-        title: "Pick your dictation language.",
-        blurb: "Sets the transcription language. Auto-detect handles mixed or "
-          + "multilingual speech. Change it any time in Settings.")
+        eyebrow: String(localized: "Language", comment: "Setup step eyebrow"),
+        title: String(localized: "Pick your dictation language.", comment: "Setup step heading"),
+        blurb: String(
+          localized:
+            "Sets the transcription language. Auto-detect handles mixed or multilingual speech. Change it any time in Settings.",
+          comment: "Setup step blurb; Auto-detect is the name of the first language choice"))
 
       VStack(spacing: 10) {
         ForEach(choices, id: \.self) { language in
@@ -193,15 +209,23 @@ struct LanguageStepView: View {
 
   private func languageTitle(_ language: CsLanguage) -> String {
     switch language {
-    case .auto: return "Auto-detect"
-    case .english: return "English"
-    case .polish: return "Polish"
+    case .auto:
+      return String(
+        localized: "Auto-detect",
+        comment: "Dictation language choice: let the engine detect the language")
+    case .english:
+      return String(localized: "English", comment: "Dictation language choice")
+    case .polish:
+      return String(localized: "Polish", comment: "Dictation language choice")
     }
   }
 
   private func languageSubtitle(_ language: CsLanguage) -> String? {
     switch language {
-    case .auto: return "Multilingual — detects the language as you speak."
+    case .auto:
+      return String(
+        localized: "Multilingual — detects the language as you speak.",
+        comment: "Detail under the Auto-detect dictation language choice")
     default: return nil
     }
   }
@@ -215,10 +239,12 @@ struct HotkeyModeStepView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       OnboardingStepHeader(
-        eyebrow: "Hotkeys",
-        title: "How do you trigger recording?",
-        blurb: "Pick a starting preset. This sets the Dictation, Formatting, "
-          + "and Assistive shortcuts for you.")
+        eyebrow: String(localized: "Hotkeys", comment: "Setup step eyebrow"),
+        title: String(localized: "How do you trigger recording?", comment: "Setup step heading"),
+        blurb: String(
+          localized:
+            "Pick a starting preset. This sets the Dictation, Formatting, and Assistive shortcuts for you.",
+          comment: "Setup step blurb; Dictation, Formatting and Assistive are the three modes"))
 
       VStack(spacing: 10) {
         ForEach(HotkeyModeChoice.allCases, id: \.self) { mode in
@@ -232,12 +258,14 @@ struct HotkeyModeStepView: View {
       .padding(.top, 4)
 
       OnboardingStepNote(
-        text: "Fine-tune the exact keys later in Settings › Shortcuts.")
+        text: String(
+          localized: "Fine-tune the exact keys later in Settings › Shortcuts.",
+          comment: "Setup step footnote; Settings › Shortcuts is a navigation path in the app"))
     }
   }
 }
 
-// MARK: - Agentic readiness (agentic lane only — informational)
+// MARK: - Agentic readiness (agentic lane only)
 
 struct AgenticReadinessStepView: View {
   @ObservedObject var model: OnboardingViewModel
@@ -246,105 +274,145 @@ struct AgenticReadinessStepView: View {
   // selector, so the SwiftUI environment action is the only reliable open path
   // (matching TrayMenuView / AgentChatView). The Settings scene activates the
   // app and orders its window front, above the wizard.
-  @Environment(\.openSettings) private var openSettings
+  @Environment(\.openWindow) private var openWindow
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      HStack(alignment: .firstTextBaseline, spacing: 10) {
-        OnboardingStepHeader(
-          eyebrow: "Agentic readiness",
-          title: "Your agentic substrate.",
-          blurb: "A read-only check of what the agent lane needs: an AI "
-            + "provider + key, native tools, and any MCP servers you've wired.")
-        Spacer(minLength: 0)
+      agentBridgeSetup
+      DisclosureGroup("Connection details") {
+        VStack(alignment: .leading, spacing: 12) {
+          Text(model.agentBridgeExplanation)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+          Text(model.agentBridgeStatus.detail)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+          ForEach(model.agentBridgeStatus.installedPaths, id: \.self) { path in
+            Text(path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+              .font(.caption.monospaced())
+              .textSelection(.enabled)
+          }
+          if model.providerAccessResolved, model.providerAccessError == nil, let readiness = model.readiness {
+            SettingsSectionLabel(String(localized: "Agent readiness"))
+            readinessPill(ready: readiness.ready)
+            Text(
+              "Agent readiness covers Assistive access and native tools. Cloud Formatting is configured separately in Settings › Agent › LLM lanes."
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            // Core orders verdict, provider, native tools and workspace roots first.
+            // Optional MCP has its own status report below.
+            statusCard(rows: Array(readiness.rows.prefix(4)), valueLineLimit: nil)
+              .accessibilityIdentifier("onboarding-agent-readiness-core-status")
+          }
+          Text(model.providerAccessDescription)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+          if let mcpStatus = model.mcpStatus {
+            SettingsSectionLabel(String(localized: "MCP servers"))
+            statusCard(rows: mcpStatus.rows)
+              .accessibilityIdentifier("onboarding-mcp-status")
+          }
+          Button("Refresh") { model.refreshReadiness() }.csAction()
+        }.padding(.top, 8)
       }
 
-      if let readiness = model.readiness {
-        readinessPill(ready: readiness.ready)
-        statusCard(rows: readiness.rows)
-      }
-
-      if let mcp = model.mcpStatus, mcp.configured {
-        Text("MCP servers")
-          .font(CSFont.mono(10, .semibold))
-          .tracking(0.4)
-          .foregroundStyle(CSColor.textFaint)
-          .padding(.top, 4)
-        statusCard(rows: mcp.rows)
-      } else if !model.mcpSetupDismissed {
-        mcpSetupPrompt
-          .padding(.top, 4)
-      }
-
-      OnboardingButton(title: "Refresh", kind: .secondary) {
-        model.refreshReadiness()
-      }
-      .padding(.top, 2)
+      Text(
+        "MCP connects your assistant to additional tools. You can add servers later in Settings."
+      )
+      .font(.callout)
+      .foregroundStyle(.secondary)
+      Button("MCP settings…") {
+        model.prepareMcpSettingsDeepLink()
+        openWindow(id: SettingsView.windowID)
+      }.csAction()
+        .accessibilityIdentifier("onboarding-mcp-settings")
 
       OnboardingStepNote(
-        text: "Informational — press Continue whether or not everything is green.")
+        text: String(
+          localized: "This connection is optional. You can continue and set it up later.",
+          comment: "Setup step footnote on the agent-readiness step"))
     }
   }
 
-  /// Shown on the readiness step when no MCP server is configured yet: a short,
-  /// human explainer plus a route into the real setup surface and a no-guilt skip.
-  /// Replaces the old dead end where a missing `mcp.json` showed nothing at all.
-  private var mcpSetupPrompt: some View {
+  /// Product install for the external named-session bridge. The checkboxes are
+  /// deliberately empty on first run; visiting this step performs no writes.
+  /// Reopening Setup seeds clients from the managed receipt for an explicit
+  /// reinstall/update or a safe deselection.
+  private var agentBridgeSetup: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text("MCP servers (optional)")
+      Text("Coding assistants", comment: "Setup: eyebrow above the coding-assistant choices")
+        .textCase(.uppercase)
         .font(CSFont.mono(10, .semibold))
         .tracking(0.4)
         .foregroundStyle(CSColor.textFaint)
+      Text(model.agentBridgeTitle)
+        .font(CSFont.ui(15, .bold))
+        .foregroundStyle(.primary)
       Text(
-        "MCP servers give the agent extra tools — things like code search, "
-          + "PR review, or web search. It's entirely optional: skip it now and "
-          + "wire servers any time from Settings › Engine."
+        "Choose where to send your dictation. Your assistant can listen as you speak; changes wait until you finish."
       )
-      .font(CSFont.ui(13))
+      .font(CSFont.ui(12.5))
       .lineSpacing(3)
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
-      HStack(spacing: 10) {
-        OnboardingButton(title: "Set up MCP servers", kind: .primary) {
-          model.prepareMcpSettingsDeepLink()
-          openSettings()
-        }
-        OnboardingButton(title: "Skip for now", kind: .secondary) {
-          model.dismissMcpSetupPrompt()
+
+      VStack(spacing: 8) {
+        ForEach(AgentBridgeClient.allCases) { client in
+          OnboardingChoiceCard(
+            title: client.displayName,
+            subtitle: String(
+              localized: "Connect a live coding session",
+              comment: "Detail under a coding-assistant checkbox"),
+            isSelected: model.selectedAgentClients.contains(client)
+          ) { model.toggleAgentClient(client) }
         }
       }
+
+      HStack(spacing: 10) {
+        Button(model.agentBridgeButtonTitle) {
+          model.installAgentBridge()
+        }.csAction(prominent: true)
+          .disabled(
+            model.selectedAgentClients.isEmpty || !model.agentBridgeStatus.payloadAvailable
+          )
+      }
+
+      if let error = model.agentBridgeError {
+        Text(error)
+          .font(CSFont.mono(10.5, .medium))
+          .foregroundStyle(CSColor.terracottaLight)
+          .fixedSize(horizontal: false, vertical: true)
+      }
     }
-    .padding(14)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.02))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1))
   }
 
   private func readinessPill(ready: Bool) -> some View {
     let accent = ready ? CSColor.olive : CSColor.terracotta
     let accentLight = ready ? CSColor.oliveLight : CSColor.terracottaLight
-    return Text(ready ? "READY" : "NOT READY")
-      .font(CSFont.mono(9, .semibold))
-      .tracking(0.4)
-      .foregroundStyle(accentLight)
-      .padding(.horizontal, 8)
-      .padding(.vertical, 2)
-      .background(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(accent.opacity(0.12))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .strokeBorder(accent.opacity(0.24), lineWidth: 1))
+    return Text(
+      ready
+        ? String(localized: "Agent capabilities ready")
+        : String(localized: "Agent capabilities not ready")
+    )
+    .textCase(.uppercase)
+    .font(CSFont.mono(9, .semibold))
+    .tracking(0.4)
+    .foregroundStyle(accentLight)
+    .padding(.horizontal, 8)
+    .padding(.vertical, 2)
+    .background(
+      RoundedRectangle(cornerRadius: 6, style: .continuous)
+        .fill(accent.opacity(0.12))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 6, style: .continuous)
+        .strokeBorder(accent.opacity(0.24), lineWidth: 1))
   }
 
   @ViewBuilder
-  private func statusCard(rows: [CsMcpStatusRow]) -> some View {
+  private func statusCard(rows: [CsMcpStatusRow], valueLineLimit: Int? = 2) -> some View {
     VStack(spacing: 0) {
       ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
         if index > 0 {
@@ -353,12 +421,13 @@ struct AgenticReadinessStepView: View {
         HStack(spacing: 12) {
           Text(row.label)
             .font(CSFont.mono(11.5, .medium))
-            .foregroundStyle(CSColor.textMutedAlt)
+            .foregroundStyle(.secondary)
             .frame(width: 150, alignment: .leading)
           Text(row.value)
             .font(CSFont.ui(12, .semibold))
-            .foregroundStyle(CSColor.textHigh)
-            .lineLimit(2)
+            .foregroundStyle(.primary)
+            .lineLimit(valueLineLimit)
+            .fixedSize(horizontal: false, vertical: valueLineLimit == nil)
             .frame(maxWidth: .infinity, alignment: .leading)
           Circle().fill(row.tone.dotColor).frame(width: 7, height: 7)
         }
@@ -366,10 +435,6 @@ struct AgenticReadinessStepView: View {
         .padding(.vertical, 11)
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1))
   }
 }
 
@@ -384,57 +449,62 @@ struct PermissionStepView: View {
   /// Primary CTA mirrors Settings matrix: in-app request while undetermined
   /// (when the scope supports it), System Settings deep-link once determined.
   private var primaryTitle: String {
-    if state.isGranted { return "Granted" }
     if state == .notDetermined, kind.supportsInAppPermissionRequest {
-      return "Allow \(kind.rawValue)"
+      return String(
+        localized: "Allow \(kind.displayName)",
+        comment: "Button on a permission step; %@ is a privacy scope such as Microphone")
     }
-    return "Open System Settings"
+    return String(
+      localized: "Open System Settings",
+      comment: "Button that deep-links into the macOS System Settings privacy pane")
   }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: "Permission · \(kind.rawValue)")
+      EyebrowLabel(
+        text: String(
+          localized: "Permission · \(kind.displayName)",
+          comment: "Eyebrow on a permission step; %@ is a privacy scope such as Microphone"))
       Text(kind.onboardingTitle)
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
+        .font(.title2.weight(.semibold))
+        .foregroundStyle(.primary)
         .fixedSize(horizontal: false, vertical: true)
       Text(kind.onboardingReason)
-        .font(CSFont.ui(14))
+        .font(.body)
         .lineSpacing(3)
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
-      statusRow
-        .padding(.top, 4)
-
-      HStack(spacing: 10) {
-        OnboardingButton(title: primaryTitle, kind: .primary) {
-          guard !state.isGranted else { return }
-          model.grantPermission(for: kind)
-        }
-        OnboardingButton(title: "Refresh status", kind: .secondary) {
-          model.refreshPermissions()
-        }
+      HStack(spacing: 16) {
+        statusRow
+        Button("Refresh status") { model.refreshPermissions() }
+          .csAction()
       }
       .padding(.top, 4)
 
-      if kind == .fullDiskAccess {
-        Text("Optional — skip it to limit file-aware features only.")
-          .font(CSFont.mono(11, .medium))
+      if !state.isGranted {
+        Button(primaryTitle) { model.grantPermission(for: kind) }
+          .csAction(prominent: true)
+      }
+
+      if !state.isGranted {
+        if kind == .fullDiskAccess {
+          Text("Optional — skip it to limit file-aware features only.")
+            .font(.callout)
+            .foregroundStyle(CSColor.textFaint)
+        } else if kind == .speechRecognition {
+          Text(
+            "Required for Apple live dictation. Without it Codescribe cannot run on-device Speech."
+          )
+          .font(.callout)
           .foregroundStyle(CSColor.textFaint)
-      } else if kind == .speechRecognition {
-        Text(
-          "Required for Apple live dictation. Without it Codescribe cannot run on-device Speech."
-        )
-        .font(CSFont.mono(11, .medium))
-        .foregroundStyle(CSColor.textFaint)
-      } else {
-        Text(
-          "You can continue without granting this, but the matching feature stays off until you do."
-        )
-        .font(CSFont.mono(11, .medium))
-        .foregroundStyle(CSColor.textFaint)
+        } else {
+          Text(
+            "You can continue without granting this, but the matching feature stays off until you do."
+          )
+          .font(.callout)
+          .foregroundStyle(CSColor.textFaint)
+        }
       }
     }
   }
@@ -446,16 +516,7 @@ struct PermissionStepView: View {
         .font(CSFont.mono(12, .semibold))
         .foregroundStyle(statusColor)
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 10)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.03))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-    )
+
   }
 
   private var statusColor: Color {
@@ -471,26 +532,51 @@ struct PermissionStepView: View {
 
 struct ApiKeyStepView: View {
   @ObservedObject var model: OnboardingViewModel
+  @FocusState private var keyFocused: Bool
+  @Environment(\.openWindow) private var openWindow
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: "AI provider")
+      EyebrowLabel(text: String(localized: "AI provider", comment: "Setup step eyebrow"))
       Text("Connect an AI provider.")
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
+        .font(.title2.weight(.semibold))
+        .foregroundStyle(.primary)
       Text(
-        "Powers AI formatting and the agent lane. Stored in the macOS "
-          + "Keychain — write-only, never shown back. Optional: skip and add "
-          + "it later in Settings › Keys."
+        "Account sign-in and API keys are separate ways to connect. Account sign-in supports Assistive; cloud Formatting and model discovery use an API key. Keys are stored in the macOS Keychain and never shown back. You can skip this step and configure access later in Settings › Providers."
       )
-      .font(CSFont.ui(14))
+      .font(.body)
       .lineSpacing(3)
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
 
       providerPicker
         .padding(.top, 4)
+
+      if model.providerAccessError != nil {
+        Button("Retry provider access") { model.refreshProviderAccess() }
+          .disabled(model.providerAccessPending || model.providerMutationPending)
+      }
+      Text(model.providerAccessDescription)
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      if model.providerAccessResolved, model.providerAccessError == nil, model.selectedProviderHasAccountAccess {
+        HStack {
+          Text("Provider account")
+          Spacer(minLength: 0)
+          Text(
+            model.selectedProviderAccountError != nil
+              ? String(localized: "Account access unavailable")
+              : model.selectedProviderAccountConnected
+              ? String(localized: "connected") : String(localized: "not connected")
+          )
+        }
+        .font(.callout)
+      }
+      Button("Manage provider access…") {
+        model.prepareProviderSettingsDeepLink()
+        openWindow(id: SettingsView.windowID)
+      }.csAction()
 
       keyField
     }
@@ -500,7 +586,7 @@ struct ApiKeyStepView: View {
     HStack(spacing: 12) {
       Text("Provider")
         .font(CSFont.mono(12, .medium))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(.secondary)
         .frame(width: 72, alignment: .leading)
       Menu {
         ForEach(model.providers, id: \.id) { provider in
@@ -517,30 +603,34 @@ struct ApiKeyStepView: View {
       } label: {
         Text(model.selectedProvider?.displayName ?? model.selectedProviderId)
           .font(CSFont.ui(12.5, .semibold))
-          .foregroundStyle(CSColor.textHigh)
+          .foregroundStyle(.primary)
       }
       .menuStyle(.borderlessButton)
+      .disabled(model.providerMutationPending)
       Spacer(minLength: 0)
     }
-    .padding(.horizontal, 15)
     .padding(.vertical, 12)
-    .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.03))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-    )
+    .overlay(alignment: .bottom) {
+      Rectangle().fill(CSColor.hairline(0.08)).frame(height: 1)
+    }
   }
 
   private var keyField: some View {
-    let account = model.selectedProvider?.apiKeyAccount ?? "LLM_ASSISTIVE_API_KEY"
+    let account = model.selectedProvider?.apiKeyAccount ?? "LLM_OPENAI_API_KEY"
     let isSet = model.selectedProviderKeySet
+    let isOptional =
+      model.selectedProviderAccountConnected
+      || model.selectedProvider?.keyRequired == false
+    let statusColor =
+      !model.providerAccessResolved || model.providerAccessError != nil
+      ? CSColor.textFaint
+      : isSet
+      ? CSColor.oliveLight
+      : (isOptional ? CSColor.textFaint : CSColor.terracottaLight)
     return VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 10) {
         Circle()
-          .fill((isSet ? CSColor.olive : CSColor.terracotta).opacity(0.85))
+          .fill(statusColor.opacity(0.85))
           .frame(width: 7, height: 7)
         Text(SettingsViewModel.keyLabel(for: account))
           .font(CSFont.ui(13.5, .semibold))
@@ -549,39 +639,39 @@ struct ApiKeyStepView: View {
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textFaint)
         Spacer(minLength: 0)
-        Text(isSet ? "set" : "not set")
+        Text(!model.providerAccessResolved
+          ? String(localized: "Checking provider access…")
+          : model.providerAccessError != nil
+            ? String(localized: "Provider access unavailable")
+            : isSet ? String(localized: "set") : String(localized: "not set"))
           .font(CSFont.mono(10, .semibold))
-          .foregroundStyle(isSet ? CSColor.oliveLight : CSColor.terracottaLight)
+          .foregroundStyle(statusColor)
       }
       HStack(spacing: 8) {
-        SecureField(isSet ? "Replace key…" : "Paste key…", text: $model.apiKeyDraft)
-          .textFieldStyle(.plain)
-          .font(CSFont.mono(12))
-          .foregroundStyle(CSColor.textBody)
-          .padding(.horizontal, 11)
-          .padding(.vertical, 8)
-          .background(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .fill(CSColor.surfaceRaised(0.03))
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-          )
-          .onSubmit { model.saveApiKey() }
-        OnboardingButton(title: "Save key", kind: .primary) { model.saveApiKey() }
+        SecureField(
+          isSet ? String(localized: "Replace key…") : String(localized: "Paste key…"),
+          text: $model.apiKeyDraft
+        )
+        .focused($keyFocused)
+        .settingsInputChrome(isFocused: keyFocused)
+        .onSubmit { model.saveApiKey() }
+        Button("Save key") { model.saveApiKey() }.csAction(prominent: true)
+          .disabled(model.providerMutationPending || !model.apiKeySaveAvailable)
+        if model.providerMutationPending { ProgressView().controlSize(.small) }
+      }
+      if !model.apiKeySaveAvailable,
+        !model.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      {
+        Text("This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available.")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
       }
     }
-    .padding(.horizontal, 15)
     .padding(.vertical, 13)
-    .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill((isSet ? CSColor.olive : CSColor.terracotta).opacity(0.06))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder((isSet ? CSColor.olive : CSColor.terracotta).opacity(0.18), lineWidth: 1)
-    )
+    .overlay(alignment: .bottom) {
+      Rectangle().fill(CSColor.hairline(0.08)).frame(height: 1)
+    }
   }
 }
 
@@ -597,44 +687,72 @@ struct DoneStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: "All set")
+      EyebrowLabel(text: String(localized: "All set", comment: "Setup step eyebrow"))
       Text("You're ready to talk.")
-        .font(CSFont.ui(28, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
+        .font(.title2.weight(.semibold))
+        .foregroundStyle(.primary)
       Text(
         "Press Finish to close setup and start using Codescribe. Anything you skipped is available in Settings."
       )
-      .font(CSFont.ui(14))
+      .font(.body)
       .lineSpacing(3)
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
 
       VStack(alignment: .leading, spacing: 8) {
         ForEach(summaryOrder) { kind in
-          summaryRow(kind.rawValue, granted: model.permissions.state(kind).isGranted)
+          summaryRow(
+            kind.displayName,
+            done: model.permissions.state(kind).isGranted,
+            doneLabel: String(
+              localized: "granted", comment: "Permission status: this permission is granted"))
         }
-        summaryRow("AI provider key", granted: model.selectedProviderKeySet)
+        if model.providerAccessResolved, model.providerAccessError == nil {
+          summaryRow(
+            String(
+              localized: "Provider API key",
+              comment: "Summary row: whether an API key is stored for the chosen AI provider"),
+            done: model.selectedProviderKeySet,
+            doneLabel: String(localized: "set", comment: "Status chip: a value is stored"))
+          if model.selectedProviderHasAccountAccess, model.selectedProviderAccountError == nil {
+            summaryRow(
+              String(localized: "Provider account"),
+              done: model.selectedProviderAccountConnected,
+              doneLabel: String(localized: "connected"),
+              missingLabel: String(localized: "not connected"))
+          }
+        }
       }
       .padding(.top, 6)
+      if model.providerAccessError != nil {
+        Button("Retry provider access") { model.refreshProviderAccess() }
+          .disabled(model.providerAccessPending || model.providerMutationPending)
+      }
+      Text(model.providerAccessDescription)
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
     }
   }
 
-  private func summaryRow(_ label: String, granted: Bool) -> some View {
+  private func summaryRow(
+    _ label: String, done: Bool, doneLabel: String,
+    missingLabel: String = String(localized: "optional")
+  ) -> some View {
     HStack(spacing: 10) {
       CSIconView(
-        icon: granted ? .checkCircleFill : .circleEmpty,
+        icon: done ? .checkCircleFill : .circleEmpty,
         size: 12,
         weight: .semibold,
-        color: granted ? CSColor.oliveLight : CSColor.textFaint
+        color: done ? CSColor.oliveLight : CSColor.textFaint
       )
       Text(label)
         .font(CSFont.ui(13))
         .foregroundStyle(CSColor.textBody)
       Spacer(minLength: 0)
-      Text(granted ? "granted" : "optional")
+      Text(done ? doneLabel : missingLabel)
         .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(granted ? CSColor.oliveLight : CSColor.textFaint)
+        .foregroundStyle(done ? CSColor.oliveLight : CSColor.textFaint)
     }
   }
 }
@@ -645,12 +763,18 @@ extension PermissionKind {
   /// Wizard heading, mirroring the excised AppKit `PermissionKind::title`.
   var onboardingTitle: String {
     switch self {
-    case .microphone: return "Microphone Access"
-    case .accessibility: return "Accessibility Access"
-    case .inputMonitoring: return "Input Monitoring Access"
-    case .screenRecording: return "Screen Recording Access"
-    case .speechRecognition: return "Speech Recognition Access"
-    case .fullDiskAccess: return "Full Disk Access"
+    case .microphone:
+      return String(localized: "Microphone Access", comment: "Permission step heading")
+    case .accessibility:
+      return String(localized: "Accessibility Access", comment: "Permission step heading")
+    case .inputMonitoring:
+      return String(localized: "Input Monitoring Access", comment: "Permission step heading")
+    case .screenRecording:
+      return String(localized: "Screen Recording Access", comment: "Permission step heading")
+    case .speechRecognition:
+      return String(localized: "Speech Recognition Access", comment: "Permission step heading")
+    case .fullDiskAccess:
+      return String(localized: "Full Disk Access", comment: "Permission step heading")
     }
   }
 
@@ -658,18 +782,31 @@ extension PermissionKind {
   var onboardingReason: String {
     switch self {
     case .microphone:
-      return "Transcribe your voice into text. Audio is processed locally on your Mac."
+      return String(
+        localized: "Transcribe your voice into text. Audio is processed locally on your Mac.",
+        comment: "Why the app asks for the Microphone scope")
     case .accessibility:
-      return "Type transcribed text into any application and control text insertion."
+      return String(
+        localized: "Type transcribed text into any application and control text insertion.",
+        comment: "Why the app asks for the Accessibility scope")
     case .inputMonitoring:
-      return "Detect keyboard shortcuts to start and stop voice recording."
+      return String(
+        localized: "Detect keyboard shortcuts to start and stop voice recording.",
+        comment: "Why the app asks for the Input Monitoring scope")
     case .screenRecording:
-      return
-        "Capture screen context to give the AI assistant visual awareness of what you're working on."
+      return String(
+        localized:
+          "Capture screen context to give the AI assistant visual awareness of what you're working on.",
+        comment: "Why the app asks for the Screen Recording scope")
     case .speechRecognition:
-      return "Power Apple live dictation on-device. Speech never leaves your Mac."
+      return String(
+        localized: "Power Apple live dictation on-device. Speech never leaves your Mac.",
+        comment: "Why the app asks for the Speech Recognition scope")
     case .fullDiskAccess:
-      return "Read project files for AI context. Optional — limits file-aware features if skipped."
+      return String(
+        localized:
+          "Read project files for AI context. Optional — limits file-aware features if skipped.",
+        comment: "Why the app asks for the Full Disk Access scope")
     }
   }
 }

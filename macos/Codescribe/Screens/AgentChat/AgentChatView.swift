@@ -1,92 +1,99 @@
 import AppKit
 import SwiftUI
 
-/// Agent Chat MVP shell. `NavigationSplitView`: local in-memory thread rail ↔
+/// Agent Chat shell: native split between the thread rail and
 /// thread view. Turns render You / Tool-activity / Assistant; `send` routes a
-/// single-shot `formatText(_:assistive:)` round-trip through the injected
-/// `AgentChatEngine`, then simulates a word-reveal stream. See AgentChatStore
-/// for the full FFI-gap note (no streaming / threads / tools backend yet —
-/// real streaming chat is a tracked core-change follow-up).
+/// streamed `streamReply` turn through the injected `AgentChatEngine`.
 struct AgentChatView: View {
   @StateObject var store: AgentChatStore
-  /// Rail state survives window close/reopen and app relaunch. Collapse is
-  /// the NATIVE split-view collapse (`columnVisibility = .detailOnly`) — the
-  /// same mechanism the Settings window uses, so both windows speak one
-  /// design language. The previous shape faked collapse by clamping the
-  /// column to a 56pt icon strip, but `navigationSplitViewColumnWidth` is
-  /// read only when the column is built and the split view's width autosave
-  /// outlives an `.id()` content rebuild, so "Collapse sidebar" left the
-  /// monogram strip floating in a 200-500pt band (operator screenshots,
-  /// 2026-08-09). Recovery stays guaranteed: the toggle lives in the DETAIL
-  /// header, which never collapses.
+  @State private var sidebarContentWidth = AgentSidebarMetrics.minimumWidth
+  private let maxPermissions: SettingsViewModel?
+  /// Persist only the user's expanded/collapsed choice; AppKit owns column geometry.
   @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
   @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
-  @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
-  init(store: AgentChatStore) {
+  init(store: AgentChatStore, maxPermissions: SettingsViewModel? = nil) {
     _store = StateObject(wrappedValue: store)
+    self.maxPermissions = maxPermissions
   }
 
   var body: some View {
-    NavigationSplitView(columnVisibility: $columnVisibility) {
-      ThreadRail(store: store, mode: .expanded)
-        // Drag-resizable within the expanded bounds. The rail view
-        // itself carries no fixed width — a hardcoded 236 inside a
-        // resizable column left a dead band between rail and detail.
-        .navigationSplitViewColumnWidth(
-          min: AgentSidebarMode.expanded.minimumWidth,
-          ideal: AgentSidebarMode.expanded.idealWidth,
-          max: AgentSidebarMode.expanded.maximumWidth
-        )
-        .toolbar(removing: .sidebarToggle)
-    } detail: {
-      ThreadDetail(
+    AgentColumns(
+      sidebarExpanded: sidebarExpanded,
+      sidebarMaximumWidth: AgentSidebarMetrics.boundedMaximum(sidebarContentWidth),
+      sidebar: ThreadRail(store: store) { width in
+        if width > 0 { sidebarContentWidth = width }
+      },
+      detail: ThreadDetail(
         store: store,
         isSidebarExpanded: sidebarExpanded,
         isPinned: $isPinned,
         toggleSidebar: toggleSidebar
       )
+    )
+    .safeAreaInset(edge: .bottom) {
+      if let maxPermissions {
+        MaxPermissionPresentation(model: maxPermissions)
+      }
     }
-    .navigationSplitViewStyle(.balanced)
     .csFocusPolicy()
-    .developerPowerCorner(padding: 12)
-    .background(CSColor.glassBase)
-    .background(AgentWindowCapabilities(isPinned: isPinned))
-    .frame(minWidth: 760, idealWidth: 960, minHeight: 560, idealHeight: 600)
+    .developerPowerCorner(padding: 8)
+    .background(AgentWindowCapabilities(isPinned: isPinned, model: store.currentThread?.model))
+    .frame(
+      minWidth: AgentWindowMetrics.minWidth,
+      idealWidth: AgentWindowMetrics.idealWidth,
+      minHeight: AgentWindowMetrics.minHeight,
+      idealHeight: AgentWindowMetrics.idealHeight
+    )
     .task {
       // Point-in-time marker: correlate with the adjacent "thread index
       // load" / "selected thread load" durations in the same log stream.
       AgentPerf.logger.info("agent window shell rendered")
       store.startDemoStreamIfNeeded()
     }
-    // Restore the persisted rail state through the native mechanism.
-    .onAppear { columnVisibility = sidebarExpanded ? .all : .detailOnly }
   }
 
   private func toggleSidebar() {
     withAnimation {
       sidebarExpanded.toggle()
-      columnVisibility = sidebarExpanded ? .all : .detailOnly
     }
   }
 }
 
-/// The rail's two presentation states and the column geometry each owns. Pure,
-/// so the widths are unit-testable without rendering a split view.
-enum AgentSidebarMode: Equatable {
-  case expanded
-  case compact
+/// Separate Max permission projection; it never changes the selected chat thread.
+private struct MaxPermissionPresentation: View {
+  @ObservedObject var model: SettingsViewModel
 
-  /// Icon strip width: one hit target plus symmetric padding.
-  static let compactWidth: CGFloat = 56
+  var body: some View {
+    if !model.maxToolApprovals.isEmpty || model.maxApprovalError != nil {
+      ScrollView {
+        MaxApprovalCards(model: model)
+          .padding(CSSpace.card)
+      }
+      .frame(maxHeight: 260)
+    }
+  }
+}
 
-  var isExpanded: Bool { self == .expanded }
-  var minimumWidth: CGFloat { isExpanded ? 200 : Self.compactWidth }
-  var idealWidth: CGFloat { isExpanded ? 236 : Self.compactWidth }
-  var maximumWidth: CGFloat { isExpanded ? 360 : Self.compactWidth }
+/// Desktop-utility window floor for Agent. Named so the split-view rail
+/// (expanded min 267) plus a usable detail column stay a single invariant.
+enum AgentWindowMetrics {
+  static let minWidth: CGFloat = 640
+  static let minHeight: CGFloat = 440
+  static let idealWidth: CGFloat = 840
+  static let idealHeight: CGFloat = 520
+  /// Traffic-light cluster when the rail is `.detailOnly` under
+  /// `fullSizeContentView` — the sidebar toggle lives in the detail chrome
+  /// and must stay clickable after native collapse.
+  static let collapsedTrafficLightClearance: CGFloat = 70
+}
 
-  static func toggled(_ mode: AgentSidebarMode) -> AgentSidebarMode {
-    mode == .expanded ? .compact : .expanded
+/// Bounds enforced by the native sidebar item. Collapsing removes the whole column.
+enum AgentSidebarMetrics {
+  static let minimumWidth: CGFloat = 267
+  static let maximumWidth: CGFloat = 360
+  static func boundedMaximum(_ contentWidth: CGFloat) -> CGFloat {
+    min(maximumWidth, max(minimumWidth, ceil(contentWidth)))
   }
 }
 
@@ -100,6 +107,7 @@ enum AgentWindowLevelPolicy {
 
 private struct AgentWindowCapabilities: NSViewRepresentable {
   let isPinned: Bool
+  let model: String?
 
   func makeNSView(context: Context) -> NSView {
     let view = NSView(frame: .zero)
@@ -113,21 +121,72 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
 
   private func configure(_ window: NSWindow?) {
     window?.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
+    let name = model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    window?.title =
+      name.isEmpty
+      ? String(localized: "Agent", comment: "Agent window title")
+      : String(localized: "Agent — \(name)", comment: "The placeholder is a model name")
   }
 }
 
-// MARK: - Detail (header · title bar · messages · composer)
+/// One native owner for the divider's hard bounds and collapse state.
+private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepresentable {
+  let sidebarExpanded: Bool
+  let sidebarMaximumWidth: CGFloat
+  let sidebar: Sidebar
+  let detail: Detail
+
+  func makeNSViewController(context: Context) -> NSSplitViewController {
+    let controller = NSSplitViewController()
+    controller.splitView.isVertical = true
+    controller.splitView.dividerStyle = .thin
+    let rail = NSSplitViewItem(
+      sidebarWithViewController: NSHostingController(
+        rootView: AnyView(sidebar.environment(\.self, context.environment))))
+    rail.minimumThickness = AgentSidebarMetrics.minimumWidth
+    rail.maximumThickness = sidebarMaximumWidth
+    rail.canCollapse = false
+    controller.addSplitViewItem(rail)
+    let conversation = NSSplitViewItem(
+      viewController: NSHostingController(
+        rootView: AnyView(detail.environment(\.self, context.environment))))
+    conversation.minimumThickness = 320
+    controller.addSplitViewItem(conversation)
+    return controller
+  }
+
+  func updateNSViewController(_ controller: NSSplitViewController, context: Context) {
+    let rail = controller.splitViewItems[0]
+    (rail.viewController as? NSHostingController<AnyView>)?.rootView =
+      AnyView(sidebar.environment(\.self, context.environment))
+    (controller.splitViewItems[1].viewController as? NSHostingController<AnyView>)?.rootView =
+      AnyView(detail.environment(\.self, context.environment))
+    if rail.maximumThickness != sidebarMaximumWidth {
+      rail.maximumThickness = sidebarMaximumWidth
+      if !rail.isCollapsed, rail.viewController.view.frame.width > sidebarMaximumWidth {
+        controller.splitView.setPosition(sidebarMaximumWidth, ofDividerAt: 0)
+      }
+    }
+    rail.isCollapsed = !sidebarExpanded
+  }
+}
+
+// MARK: - Detail (chrome · messages · composer)
 
 private struct ThreadDetail: View {
   @ObservedObject var store: AgentChatStore
   /// Sidebar controls live in the DETAIL header so the toggle stays reachable
-  /// while the rail is in its compact icon state.
+  /// while the native sidebar is collapsed.
   let isSidebarExpanded: Bool
   @Binding var isPinned: Bool
   let toggleSidebar: () -> Void
-  @Environment(\.openSettings) private var openSettings
+  @Environment(\.openWindow) private var openWindow
   @State private var isRenaming = false
   @State private var renameText = ""
+  /// Toolbar deletion goes through the same confirmation as the rail.
+  @State private var deleteCandidate: ChatThread?
+  /// The last Markdown export, shown until the user dismisses the alert.
+  @State private var exportOutcome: ThreadExportOutcome?
   /// Shared with `MessageList` via `ChatLayoutPolicy.defaultsKey`.
   @AppStorage(ChatLayoutPolicy.defaultsKey) private var widthModeRaw = ChatLayoutPolicy.defaultMode
     .rawValue
@@ -136,10 +195,16 @@ private struct ThreadDetail: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      header
-      titleBar
+      chrome
       if let thread = store.currentThread {
-        MessageList(threadID: thread.id, messages: thread.messages) { messageID in
+        MessageList(
+          threadID: thread.id,
+          messages: thread.messages,
+          speechUnavailableReason: store.speechUnavailableReason,
+          speakingMessageID: store.speakingMessageID,
+          onSpeak: { message in Task { await store.speak(message) } },
+          onStopSpeaking: { store.stopSpeaking() }
+        ) { messageID in
           store.toggleRenderMode(messageID: messageID, in: thread.id)
         }
       } else {
@@ -152,8 +217,8 @@ private struct ThreadDetail: View {
             save: { store.editQueuedTurn(queued.id, text: $0) },
             cancel: { store.cancelQueuedTurn(queued.id) }
           )
-          .padding(.horizontal, 20)
-          .padding(.bottom, 6)
+          .padding(.horizontal, 14)
+          .padding(.bottom, 4)
         }
       }
       ForEach(store.currentToolApprovals) { request in
@@ -165,13 +230,24 @@ private struct ThreadDetail: View {
             store.resolveToolApproval(request, approved: true, remember: true)
           }
         )
-        .padding(.horizontal, 20)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 6)
       }
       Composer(store: store, overlay: AppModel.shared.overlay.state)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(CSColor.glassBase)
+    .background(CSColor.windowCanvas)
+    .alert(
+      "Speech unavailable",
+      isPresented: Binding(
+        get: { store.speechError != nil },
+        set: { if !$0 { store.speechError = nil } }
+      )
+    ) {
+      Button("OK") { store.speechError = nil }
+    } message: {
+      Text(store.speechError ?? "")
+    }
     .alert("Rename thread", isPresented: $isRenaming) {
       TextField("Thread title", text: $renameText)
       Button("Rename") {
@@ -179,55 +255,114 @@ private struct ThreadDetail: View {
       }
       Button("Cancel", role: .cancel) {}
     }
+    .threadDeleteConfirmation(candidate: $deleteCandidate) { store.delete($0) }
+    .alert(
+      exportOutcome?.title ?? Text(verbatim: ""),
+      isPresented: Binding(
+        get: { exportOutcome != nil },
+        set: { if !$0 { exportOutcome = nil } }
+      ),
+      presenting: exportOutcome
+    ) { outcome in
+      if case .saved(let path, _) = outcome {
+        let url = URL(fileURLWithPath: path)
+        Button("Reveal in Finder") {
+          NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+        Button("Open") {
+          NSWorkspace.shared.open(url)
+        }
+      }
+      Button("OK", role: .cancel) {}
+    } message: { outcome in
+      outcome.message
+    }
   }
 
-  // Header: sidebar toggle · live status pill · width density · Settings · thread menu
-  private var header: some View {
-    HStack(spacing: 12) {
+  // One compact chrome row: sidebar · title · live pill · pin / settings / thread.
+  private var chrome: some View {
+    HStack(spacing: 8) {
       Button(action: toggleSidebar) {
         Image(systemName: "sidebar.leading")
-          .font(.system(size: 14, weight: .medium))
+          .font(.system(size: 13, weight: .medium))
       }
-      .csFocusRing(cornerRadius: 8)
-      .foregroundStyle(isSidebarExpanded ? CSColor.textBody : CSColor.textFaint)
+      .csFocusRing()
+      .foregroundStyle(isSidebarExpanded ? CSColor.chromeAccent : CSColor.textTertiary)
       .keyboardShortcut("s", modifiers: [.command, .control])
-      .help(isSidebarExpanded ? "Collapse sidebar (⌃⌘S)" : "Expand sidebar (⌃⌘S)")
+      .help(
+        isSidebarExpanded
+          ? String(localized: "Collapse sidebar (⌃⌘S)")
+          : String(localized: "Expand sidebar (⌃⌘S)")
+      )
       .accessibilityLabel("Toggle Sidebar")
-      .accessibilityValue(isSidebarExpanded ? "Expanded" : "Compact")
+      .accessibilityValue(
+        isSidebarExpanded
+          ? String(localized: "Expanded", comment: "Sidebar state")
+          : String(localized: "Compact", comment: "Sidebar state"))
 
-      StaticStatusPill(text: status.label, color: status.color)
-      Spacer()
-      HStack(spacing: 14) {
+      Text(store.currentThread?.title ?? "—")
+        .font(CSFont.ui(13, .semibold))
+        .foregroundStyle(ChatPalette.nameActive)
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .layoutPriority(1)
+
+      if turnCount > 0 {
+        Text(verbatim: "· \(turnCount)")
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(CSColor.textTertiary)
+          .fixedSize()
+      }
+
+      liveStatusPill
+        .layoutPriority(2)
+
+      Spacer(minLength: 8)
+
+      HStack(spacing: 10) {
         widthModeMenu
 
         Button {
           isPinned.toggle()
         } label: {
           Image(systemName: isPinned ? "pin.fill" : "pin")
-            .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.textFaint)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.textTertiary)
         }
-        .csFocusRing(cornerRadius: 8)
-        .help(isPinned ? "Disable Always on Top" : "Enable Always on Top")
-        .accessibilityLabel(
-          isPinned ? "Agent pinned, disable Always on Top" : "Agent unpinned, enable Always on Top"
+        .csFocusRing()
+        .help(
+          isPinned
+            ? String(localized: "Disable Always on Top")
+            : String(localized: "Enable Always on Top")
         )
-        .accessibilityValue(isPinned ? "Pinned" : "Unpinned")
+        .accessibilityLabel(
+          isPinned
+            ? String(localized: "Agent pinned, disable Always on Top")
+            : String(localized: "Agent unpinned, enable Always on Top")
+        )
+        .accessibilityValue(
+          isPinned
+            ? String(localized: "Pinned", comment: "Always-on-top state")
+            : String(localized: "Unpinned", comment: "Always-on-top state"))
 
-        Button(action: { openSettings() }) {
-          CSIconView(icon: .settings, size: 16)
+        Button(action: { openWindow.presentSettings() }) {
+          CSIconView(icon: .settings, size: 14)
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .help("Settings")
 
         threadMenu
       }
-      .foregroundStyle(CSColor.textFaint)
+      .foregroundStyle(CSColor.chromeAccent)
     }
-    .padding(.horizontal, 18)
-    .padding(.vertical, 14)
+    .padding(
+      .leading,
+      isSidebarExpanded ? 12 : AgentWindowMetrics.collapsedTrafficLightClearance
+    )
+    .padding(.trailing, 12)
+    .padding(.vertical, 6)
     .overlay(alignment: .bottom) {
-      Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
+      Rectangle().fill(Color.primary.opacity(0.06)).frame(height: 1)
     }
   }
 
@@ -259,23 +394,34 @@ private struct ThreadDetail: View {
   }
 
   // Current-thread actions. Export entries appear only for persisted threads
-  // (a not-yet-saved local thread has no backend id to export from).
+  // (a not-yet-saved local thread has no backend id to export from). The
+  // export section names its fixed destination up front: there is no file
+  // chooser, the file always lands in the Transcripts folder.
   private var threadMenu: some View {
     Menu {
       if let thread = store.currentThread {
         Button("Rename") { beginRename(thread) }
-        Button(thread.isFavorite ? "Unfavorite" : "Favorite") {
+        Button(
+          thread.isFavorite
+            ? String(localized: "Unfavorite") : String(localized: "Favorite")
+        ) {
           store.toggleFavorite(thread)
         }
         if thread.backendId != nil {
-          Button("Export to Markdown") { export(thread, assistantOnly: false) }
-          Button("Export assistant replies only") { export(thread, assistantOnly: true) }
+          Section {
+            Button("Export to Markdown") { export(thread, assistantOnly: false) }
+            Button("Export assistant replies only") { export(thread, assistantOnly: true) }
+          } header: {
+            Text(
+              "Exports save to the Transcripts folder",
+              comment: "Menu section header above the Markdown export actions")
+          }
         }
         Divider()
-        Button("Delete Thread", role: .destructive) { store.delete(thread) }
+        Button("Delete Thread", role: .destructive) { deleteCandidate = thread }
       }
     } label: {
-      CSIconView(icon: .more, size: 16, weight: .bold)
+      CSIconView(icon: .more, size: 14, weight: .bold)
     }
     .menuStyle(.borderlessButton)
     .menuIndicator(.hidden)
@@ -288,36 +434,35 @@ private struct ThreadDetail: View {
     isRenaming = true
   }
 
-  /// Export the thread and reveal the written file in Finder (no permission
-  /// prompt — the path lives under the app's own `~/.codescribe` data dir).
+  /// Export the thread, then report where the file went — or that nothing was
+  /// written. Finder is opened only from the alert's own button, never as a
+  /// side effect of the menu action. The path lives under the app's own data
+  /// directory, so no permission prompt is involved.
   private func export(_ thread: ChatThread, assistantOnly: Bool) {
-    guard let path = store.exportMarkdown(thread, assistantOnly: assistantOnly) else { return }
-    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-  }
-
-  // Live status: Idle → Thinking → Streaming → Stopping.
-  private var status: (label: String, color: Color) {
-    if store.isCancelling { return ("Stopping", CSColor.textFaintAlt) }
-    if store.isStreaming { return ("Streaming", CSColor.terracottaLight) }
-    if store.isThinking { return ("Thinking", CSColor.amber) }
-    return ("Idle", CSColor.oliveLight)
-  }
-
-  // Title bar: thread title · turn count
-  private var titleBar: some View {
-    HStack(spacing: 10) {
-      Text(store.currentThread?.title ?? "—")
-        .font(CSFont.ui(14, .semibold))
-        .foregroundStyle(ChatPalette.nameActive)
-      Text("· \(turnCount) turns")
-        .font(CSFont.mono(11, .medium))
-        .foregroundStyle(CSColor.textFaintAlt)
-      Spacer()
+    let title = ThreadRowTitle.displayTitle(for: thread)
+    if let path = store.exportMarkdown(thread, assistantOnly: assistantOnly) {
+      exportOutcome = .saved(path: path, assistantOnly: assistantOnly)
+    } else {
+      exportOutcome = .failed(threadTitle: title, assistantOnly: assistantOnly)
     }
-    .padding(.horizontal, 20)
-    .padding(.vertical, 12)
-    .overlay(alignment: .bottom) {
-      Rectangle().fill(CSColor.hairline(0.04)).frame(height: 1)
+  }
+
+  /// Live status only. Idle is silent chrome — the always-on olive pill was
+  /// a second title row's worth of empty studio.
+  @ViewBuilder
+  private var liveStatusPill: some View {
+    if store.isCancelling {
+      StaticStatusPill(
+        text: String(localized: "Stopping", comment: "Turn status"),
+        color: CSColor.textTertiary)
+    } else if store.isStreaming {
+      StatusPill(
+        text: String(localized: "Streaming", comment: "Turn status"),
+        color: CSColor.terracotta, rippling: true)
+    } else if store.isThinking {
+      StatusPill(
+        text: String(localized: "Thinking", comment: "Turn status"),
+        color: CSColor.amber, rippling: true)
     }
   }
 
@@ -333,6 +478,7 @@ private struct QueuedTurnRow: View {
   let cancel: () -> Void
   @State private var isEditing = false
   @State private var editText = ""
+  @FocusState private var editFocused: Bool
 
   var body: some View {
     HStack(spacing: 10) {
@@ -342,57 +488,64 @@ private struct QueuedTurnRow: View {
       if isEditing {
         TextField("Queued message", text: $editText, axis: .vertical)
           .textFieldStyle(.plain)
+          .focused($editFocused)
           .font(CSFont.ui(12, .regular))
-          .foregroundStyle(CSColor.textHigh)
+          .foregroundStyle(Color.primary)
           .lineLimit(1...4)
           .onSubmit { commitEdit() }
           .onExitCommand { isEditing = false }
       } else {
-        Text(turn.text.isEmpty ? "\(turn.attachments.count) attachment(s)" : turn.text)
-          .font(CSFont.ui(12, .regular))
-          .foregroundStyle(CSColor.textBody)
-          .lineLimit(2)
-          .truncationMode(.tail)
-          .textSelection(.enabled)
-          .onTapGesture(count: 2) { beginEdit() }
+        Text(
+          turn.text.isEmpty
+            ? String(localized: "\(turn.attachments.count) attachments") : turn.text
+        )
+        .font(CSFont.ui(12, .regular))
+        .foregroundStyle(Color.primary)
+        .lineLimit(2)
+        .truncationMode(.tail)
+        .textSelection(.enabled)
+        .onTapGesture(count: 2) { beginEdit() }
       }
       Spacer()
       if isEditing {
         Button("Save") { commitEdit() }
-          .csFocusRing(cornerRadius: 8)
+          .csFocusRing()
           .font(CSFont.mono(10, .semibold))
           .foregroundStyle(CSColor.oliveLight)
         Button("Cancel") { isEditing = false }
-          .csFocusRing(cornerRadius: 8)
+          .csFocusRing()
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
       } else {
         Button(action: beginEdit) {
           Image(systemName: "pencil.circle.fill")
             .font(.system(size: 13))
-            .foregroundStyle(CSColor.textFaintAlt)
+            .foregroundStyle(CSColor.textTertiary)
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .help("Edit queued message")
         .accessibilityLabel("Edit queued message")
       }
       Button(action: cancel) {
         Image(systemName: "xmark.circle.fill")
           .font(.system(size: 13))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .help("Cancel queued message")
       .accessibilityLabel("Cancel queued message")
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 7)
-    .background(CSColor.surfaceRaised(0.04))
+    .background(Color.primary.opacity(0.04))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.09), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+    .overlay {
+      CSFocusOutline(isFocused: isEditing && editFocused, cornerRadius: CSRadius.card)
+    }
   }
 
   private func beginEdit() {
@@ -405,7 +558,7 @@ private struct QueuedTurnRow: View {
   }
 }
 
-private struct ToolApprovalCard: View {
+struct ToolApprovalCard: View {
   let request: PendingToolApproval
   let reject: () -> Void
   let allowOnce: () -> Void
@@ -420,33 +573,33 @@ private struct ToolApprovalCard: View {
         Spacer()
         Text(request.risk.replacingOccurrences(of: "_", with: " "))
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
       }
-      Text("\(request.server) · \(request.tool)")
+      Text(verbatim: "\(request.server) · \(request.tool)")
         .font(CSFont.mono(11.5, .semibold))
-        .foregroundStyle(CSColor.textHigh)
+        .foregroundStyle(Color.primary)
         .textSelection(.enabled)
       if !request.summary.isEmpty {
         Text(request.summary)
           .font(CSFont.ui(12, .regular))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
       }
       if let command = request.command {
-        Text("$ \(command)")
+        Text(verbatim: "$ \(command)")
           .font(CSFont.mono(11, .medium))
-          .foregroundStyle(CSColor.terracottaLight)
+          .foregroundStyle(CSColor.terracotta)
           .textSelection(.enabled)
       }
       if let cwd = request.cwd {
-        Text("cwd: \(cwd)")
+        Text(verbatim: "cwd: \(cwd)")
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
           .textSelection(.enabled)
       }
       ForEach(request.paths, id: \.self) { path in
         Text(path)
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
           .textSelection(.enabled)
       }
       HStack {
@@ -457,8 +610,8 @@ private struct ToolApprovalCard: View {
           .buttonStyle(.borderedProminent)
       }
     }
-    .padding(14)
-    .background(CSColor.surfaceRaised(0.04))
+    .padding(CSSpace.card)
+    .background(Color.primary.opacity(0.04))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(CSColor.amber.opacity(0.35), lineWidth: 1)
@@ -467,12 +620,60 @@ private struct ToolApprovalCard: View {
   }
 }
 
+// MARK: - Markdown export outcome (pure, unit-testable)
+
+/// What one Markdown export did. Success names the file and the folder it
+/// landed in; failure names the thread and the one place to look. Nothing
+/// about the export is left to a Finder window appearing on its own.
+enum ThreadExportOutcome: Equatable {
+  case saved(path: String, assistantOnly: Bool)
+  case failed(threadTitle: String, assistantOnly: Bool)
+
+  var title: Text {
+    switch self {
+    case .saved:
+      Text("Exported to Markdown", comment: "Alert title after a successful thread export")
+    case .failed:
+      Text("Export failed", comment: "Alert title when a thread export wrote nothing")
+    }
+  }
+
+  var message: Text {
+    switch self {
+    case .saved(let path, let assistantOnly):
+      let file = Self.fileName(of: path)
+      let folder = Self.folderLabel(of: path)
+      return assistantOnly
+        ? Text(
+          "Saved the assistant replies as \(file) in \(folder).",
+          comment: "Placeholders: file name, then folder path")
+        : Text(
+          "Saved the whole thread as \(file) in \(folder).",
+          comment: "Placeholders: file name, then folder path")
+    case .failed(let threadTitle, _):
+      return Text(
+        "Codescribe couldn't write the Markdown file for “\(threadTitle)”. Check the Transcripts folder shown under Settings › User › Local data, then try again.",
+        comment: "The placeholder is the thread title")
+    }
+  }
+
+  /// `…/2026-10-03/142501_chat.md` → `142501_chat.md`.
+  static func fileName(of path: String) -> String {
+    (path as NSString).lastPathComponent
+  }
+
+  /// `/Users/me/.codescribe/transcriptions/2026-10-03/x.md` →
+  /// `~/.codescribe/transcriptions/2026-10-03`.
+  static func folderLabel(of path: String) -> String {
+    ((path as NSString).deletingLastPathComponent as NSString).abbreviatingWithTildeInPath
+  }
+}
+
 // MARK: - Preview (standalone — mock engine + seeded threads)
 
 #if DEBUG
   #Preview("Agent Chat") {
     AgentChatView(store: AgentChatStore(engine: MockChatEngine()))
-      .frame(width: 960, height: 600)
-      .preferredColorScheme(.dark)
+      .frame(width: 840, height: 520)
   }
 #endif

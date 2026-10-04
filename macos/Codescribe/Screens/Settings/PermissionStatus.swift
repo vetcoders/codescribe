@@ -27,9 +27,15 @@ enum PermissionState: Equatable {
   /// Short mono label shown on the right of a permission row.
   var label: String {
     switch self {
-    case .granted: return "granted"
-    case .denied: return "denied"
-    case .notDetermined: return "not determined"
+    case .granted:
+      return String(localized: "granted", comment: "Permission row status, lower case")
+    case .denied:
+      return String(localized: "denied", comment: "Permission row status, lower case")
+    case .notDetermined:
+      return String(
+        localized: "not determined",
+        comment: "Permission row status, lower case: the user has not decided yet"
+      )
     }
   }
 }
@@ -50,6 +56,19 @@ enum PermissionKind: String, CaseIterable, Identifiable {
   case fullDiskAccess = "Full Disk Access"
 
   var id: String { rawValue }
+
+  /// Display name for the privacy scope. The identity (`rawValue`) is the
+  /// System Settings pane name and must never reach the screen directly.
+  var displayName: String {
+    switch self {
+    case .microphone: String(localized: "Microphone")
+    case .accessibility: String(localized: "Accessibility")
+    case .inputMonitoring: String(localized: "Input Monitoring")
+    case .screenRecording: String(localized: "Screen Recording")
+    case .speechRecognition: String(localized: "Speech Recognition")
+    case .fullDiskAccess: String(localized: "Full Disk Access")
+    }
+  }
 
   /// Deep-link into the matching System Settings privacy pane.
   var settingsURL: URL? {
@@ -82,33 +101,28 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     }
   }
 
-  /// Fire the in-app TCC dialog when still undetermined. Always calls
-  /// `completion` on the main queue with the post-request state (or the
-  /// preflight state when the scope cannot request in-app).
-  func requestInApp(completion: @escaping (PermissionState) -> Void) {
+  /// Fire the in-app TCC dialog when still undetermined and return the
+  /// post-request state. Async continuation ownership avoids sending a UI
+  /// callback through framework completion queues.
+  func requestInApp() async -> PermissionState {
     switch self {
     case .speechRecognition:
-      SpeechRecognitionPermission.request(completion: completion)
+      return await SpeechRecognitionPermission.request()
     case .microphone:
-      AVCaptureDevice.requestAccess(for: .audio) { granted in
-        DispatchQueue.main.async {
-          completion(granted ? .granted : NativePermissionProbe().snapshot().microphone)
+      let granted = await withCheckedContinuation { continuation in
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+          continuation.resume(returning: granted)
         }
       }
+      return granted ? .granted : NativePermissionProbe().snapshot().microphone
     case .screenRecording:
       let ok = CGRequestScreenCaptureAccess()
-      DispatchQueue.main.async {
-        completion(ok ? .granted : NativePermissionProbe().snapshot().screenRecording)
-      }
+      return ok ? .granted : NativePermissionProbe().snapshot().screenRecording
     case .inputMonitoring:
       let ok = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
-      DispatchQueue.main.async {
-        completion(ok ? .granted : NativePermissionProbe().snapshot().inputMonitoring)
-      }
+      return ok ? .granted : NativePermissionProbe().snapshot().inputMonitoring
     case .accessibility, .fullDiskAccess:
-      DispatchQueue.main.async {
-        completion(NativePermissionProbe().snapshot().state(self))
-      }
+      return NativePermissionProbe().snapshot().state(self)
     }
   }
 }
@@ -238,16 +252,18 @@ struct MockPermissionProbe: PermissionProbing {
 /// this helper closes. Only fires the system dialog while `.notDetermined`;
 /// afterwards macOS never re-prompts and the caller should deep-link instead.
 enum SpeechRecognitionPermission {
-  static func request(completion: @escaping (PermissionState) -> Void) {
-    SFSpeechRecognizer.requestAuthorization { status in
-      let state: PermissionState
-      switch status {
-      case .authorized: state = .granted
-      case .notDetermined: state = .notDetermined
-      case .denied, .restricted: state = .denied
-      @unknown default: state = .denied
+  static func request() async -> PermissionState {
+    await withCheckedContinuation { continuation in
+      SFSpeechRecognizer.requestAuthorization { status in
+        let state: PermissionState
+        switch status {
+        case .authorized: state = .granted
+        case .notDetermined: state = .notDetermined
+        case .denied, .restricted: state = .denied
+        @unknown default: state = .denied
+        }
+        continuation.resume(returning: state)
       }
-      DispatchQueue.main.async { completion(state) }
     }
   }
 }

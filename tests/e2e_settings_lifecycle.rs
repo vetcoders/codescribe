@@ -11,12 +11,54 @@
 
 use codescribe::config::{Config, ShortcutBinding, UserSettings, WorkMode};
 use serial_test::serial;
+use std::ffi::OsString;
 use std::fs;
 use tempfile::TempDir;
 
+struct TestEnv {
+    temp: TempDir,
+    previous: Vec<(&'static str, Option<OsString>)>,
+}
+
+impl std::ops::Deref for TestEnv {
+    type Target = TempDir;
+    fn deref(&self) -> &Self::Target {
+        &self.temp
+    }
+}
+
+impl Drop for TestEnv {
+    fn drop(&mut self) {
+        for (key, value) in &self.previous {
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+}
+
 /// Setup isolated config environment (same pattern as e2e_settings_commands)
-fn setup_test_env() -> TempDir {
+fn setup_test_env() -> TestEnv {
     let tmp = TempDir::new().expect("tempdir");
+    let keys = [
+        "CODESCRIBE_DATA_DIR",
+        "CODESCRIBE_ENV_PATH",
+        "HOME",
+        "WHISPER_LANGUAGE",
+        "AI_FORMATTING_ENABLED",
+        "HOLD_EXCLUSIVE",
+        "CODESCRIBE_TYPING_CPS",
+        "USE_LOCAL_STT",
+        "HOLD_MODS",
+        "TOGGLE_TRIGGER",
+    ];
+    let previous = keys
+        .into_iter()
+        .map(|key| (key, std::env::var_os(key)))
+        .collect();
     // SAFETY: Tests run serially, single-threaded context
     unsafe {
         std::env::set_var("CODESCRIBE_DATA_DIR", tmp.path());
@@ -28,7 +70,10 @@ fn setup_test_env() -> TempDir {
         std::env::remove_var("HOLD_MODS");
         std::env::remove_var("TOGGLE_TRIGGER");
     }
-    tmp
+    TestEnv {
+        temp: tmp,
+        previous,
+    }
 }
 
 fn set_mode_binding(mode: WorkMode, binding: ShortcutBinding) {
@@ -178,6 +223,13 @@ fn test_agent_permissions_roundtrip_and_remember_allow() {
 
     // remember_allow writes settings.json with the same identity the gate checks.
     AgentPermissions::remember_allow("Desktop-Commander", "edit_block").expect("remember");
+    let grants_path = codescribe_core::agent::tool_grants::default_tool_grants_path().unwrap();
+    // Config::config_dir() canonicalizes the data dir (/var -> /private/var on macOS).
+    assert_eq!(
+        grants_path,
+        _tmp.path().canonicalize().unwrap().join("tool_grants.json")
+    );
+    assert!(grants_path.exists());
     let after = UserSettings::load()
         .agent_permissions
         .expect("permissions present after remember");
@@ -419,41 +471,67 @@ fn test_settings_full_round_trip() {
 
 #[test]
 #[serial]
-fn test_engine_tab_stt_engine_env_default() {
-    let previous = std::env::var("CODESCRIBE_STT_ENGINE").ok();
-    unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") };
-    let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "auto".to_string());
-    assert_eq!(engine, "auto", "default STT engine policy should be auto");
-    match previous {
-        Some(value) => unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", value) },
-        None => unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") },
+fn retired_engine_settings_load_repairs_once_and_does_not_reseed() {
+    let _tmp = setup_test_env();
+    let path = UserSettings::settings_path();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        r#"{"schema_version":3,"speech":{"engine":{
+        "asr_mode":"local_power","stt_engine":"whisper",
+        "final_pass_mode":"smart","layered_transcription":"off"
+    }}}"#,
+    )
+    .unwrap();
+    let first = UserSettings::load();
+    assert_eq!(first.asr_mode.as_deref(), Some("local_power"));
+    let bytes = fs::read(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    for key in ["stt_engine", "final_pass_mode", "layered_transcription"] {
+        assert!(value["speech"]["engine"].get(key).is_none());
     }
+    let metadata = fs::metadata(&path).unwrap();
+    let entries = fs::read_dir(path.parent().unwrap()).unwrap().count();
+    let second = UserSettings::load();
+    assert_eq!(first, second);
+    assert_eq!(bytes, fs::read(&path).unwrap());
+    let after = fs::metadata(&path).unwrap();
+    assert_eq!(metadata.modified().unwrap(), after.modified().unwrap());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // Every settings write replaces the inode atomically, including identical bytes.
+        assert_eq!(
+            metadata.ino(),
+            after.ino(),
+            "second load must perform zero writes"
+        );
+    }
+    assert_eq!(
+        entries,
+        fs::read_dir(path.parent().unwrap()).unwrap().count()
+    );
 }
 
 #[test]
 #[serial]
-fn test_engine_tab_stt_engine_env_onnx() {
-    let previous = std::env::var("CODESCRIBE_STT_ENGINE").ok();
-    unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", "onnx") };
-    let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "candle".to_string());
-    assert_eq!(engine, "onnx", "STT engine should reflect env var");
-    match previous {
-        Some(value) => unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", value) },
-        None => unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") },
+fn retired_engine_writes_are_rejected_without_creating_files() {
+    let _tmp = setup_test_env();
+    let config = Config::default();
+    for key in [
+        "CODESCRIBE_STT_ENGINE",
+        "FINAL_PASS_MODE",
+        "CODESCRIBE_FINAL_PASS_MODE",
+    ] {
+        assert!(config.save_to_env(key, "off").is_err());
+        assert!(
+            config
+                .save_to_env_many(&[("CODESCRIBE_ASR_MODE", "cloud"), (key, "off")])
+                .is_err()
+        );
     }
-}
-
-#[test]
-#[serial]
-fn test_engine_tab_stt_engine_env_apple() {
-    let previous = std::env::var("CODESCRIBE_STT_ENGINE").ok();
-    unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", "apple") };
-    let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "candle".to_string());
-    assert_eq!(engine, "apple", "STT engine should reflect env var");
-    match previous {
-        Some(value) => unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", value) },
-        None => unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") },
-    }
+    assert!(!UserSettings::settings_path().exists());
+    assert!(!_tmp.path().join(".env").exists());
 }
 
 #[test]

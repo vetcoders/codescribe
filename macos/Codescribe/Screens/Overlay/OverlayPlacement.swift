@@ -4,10 +4,10 @@ import AppKit
 //
 // Two modes, deliberately binary (no hidden third state):
 // - Anchored (default): the origin is ALWAYS derived from one of six screen
-//   anchors on every show(). A drag in this mode is ephemeral — the next show
-//   snaps back to the anchor. Predictability over cleverness.
-// - Free motion: the user's last dragged origin is persisted and restored
-//   (clamped to the visible frame); the anchor is ignored.
+//   anchors on every show(). A user drag records its origin without changing
+//   the selected anchor.
+// - Free motion: an explicit choice restores the last dragged origin (clamped
+//   to the visible frame); the anchor is ignored.
 //
 // Size is persisted independently of either mode (DictationOverlayWindow).
 
@@ -21,14 +21,28 @@ enum OverlayAnchor: String, CaseIterable, Identifiable {
 
   var id: String { rawValue }
 
+  /// Display name for the anchor; `rawValue` stays the persisted identity.
   var label: String {
     switch self {
-    case .topLeft: return "Top Left"
-    case .topCenter: return "Top Center"
-    case .topRight: return "Top Right"
-    case .bottomLeft: return "Bottom Left"
-    case .bottomCenter: return "Bottom Center"
-    case .bottomRight: return "Bottom Right"
+    case .topLeft: return String(localized: "Top Left", comment: "Overlay screen anchor")
+    case .topCenter: return String(localized: "Top Center", comment: "Overlay screen anchor")
+    case .topRight: return String(localized: "Top Right", comment: "Overlay screen anchor")
+    case .bottomLeft: return String(localized: "Bottom Left", comment: "Overlay screen anchor")
+    case .bottomCenter:
+      return String(localized: "Bottom Center", comment: "Overlay screen anchor")
+    case .bottomRight:
+      return String(localized: "Bottom Right", comment: "Overlay screen anchor")
+    }
+  }
+
+  var systemImage: String {
+    switch self {
+    case .topLeft: return "arrow.up.left"
+    case .topCenter: return "arrow.up"
+    case .topRight: return "arrow.up.right"
+    case .bottomLeft: return "arrow.down.left"
+    case .bottomCenter: return "arrow.down"
+    case .bottomRight: return "arrow.down.right"
     }
   }
 }
@@ -62,6 +76,14 @@ enum OverlayPlacement {
 
   /// Pure anchor→origin math over a visible frame, split from the NSScreen
   /// wrapper so it is unit-testable without a display.
+  ///
+  /// This is the one rounding site for anchored placement. AppKit puts window
+  /// frames on whole points: it floors the origin and rounds the size up
+  /// (measured on a 2x display: a requested x of 808.5 or 808.75 lands at 808,
+  /// a width of 470.3 becomes 471). A center anchor with an odd restored width,
+  /// or any fractional restored size, therefore used to land up to a point away
+  /// from this math. Flooring here yields the origin the panel actually gets, for
+  /// the size asked for and for the size AppKit rounds it up to alike.
   static func origin(for anchor: OverlayAnchor, size: NSSize, in visible: NSRect) -> NSPoint {
     let x: CGFloat
     switch anchor {
@@ -79,7 +101,7 @@ enum OverlayPlacement {
     case .bottomLeft, .bottomCenter, .bottomRight:
       y = visible.minY + margin
     }
-    return NSPoint(x: x, y: y)
+    return NSPoint(x: x.rounded(.down), y: y.rounded(.down))
   }
 
   static func origin(for anchor: OverlayAnchor, size: NSSize, on screen: NSScreen?) -> NSPoint? {
@@ -87,17 +109,24 @@ enum OverlayPlacement {
     return origin(for: anchor, size: size, in: visible)
   }
 
-  /// Free-motion memory: the last dragged origin, restored on show.
-  static func persistOrigin(_ point: NSPoint) {
-    let defaults = UserDefaults.standard
+  /// Saved drag origin restored only after the user explicitly selects Free motion.
+  static func persistOrigin(_ point: NSPoint, defaults: UserDefaults = .standard) {
     defaults.set(Double(point.x), forKey: originKey + ".x")
     defaults.set(Double(point.y), forKey: originKey + ".y")
   }
 
+  static func clearPersistedOrigin(defaults: UserDefaults = .standard) {
+    defaults.removeObject(forKey: originKey + ".x")
+    defaults.removeObject(forKey: originKey + ".y")
+  }
+
   /// Restore the persisted free-motion origin, clamped so the panel stays
   /// fully inside the screen's visible frame (displays may have changed).
-  static func restoredOrigin(size: NSSize, on screen: NSScreen?) -> NSPoint? {
-    let defaults = UserDefaults.standard
+  static func restoredOrigin(
+    size: NSSize,
+    on screen: NSScreen?,
+    defaults: UserDefaults = .standard
+  ) -> NSPoint? {
     guard defaults.object(forKey: originKey + ".x") != nil,
       defaults.object(forKey: originKey + ".y") != nil
     else { return nil }

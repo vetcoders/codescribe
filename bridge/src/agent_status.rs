@@ -153,17 +153,26 @@ impl CodescribeAgentStatus {
 
     /// Agentic-lane readiness. `ready` is the core capability gate (assistive
     /// provider + its API key + native tools); the MCP rows are informational.
-    /// Loads `Config` first so Keychain-backed keys are populated into env and the
-    /// core gate sees real key presence (mirrors `available_providers`).
+    /// Projects files, env and the existing credential cache. The explicit
+    /// background provider-access refresh acquires credentials before publication.
     pub fn agentic_readiness(&self) -> CsAgenticReadiness {
-        let _ = codescribe_core::config::Config::load();
-        probe_agentic_readiness().into()
+        // Settings and onboarding call this synchronously; an unreadable
+        // settings store is a not-ready verdict for the card, never a crash
+        // of the host process.
+        match codescribe_core::config::Config::load_runtime_snapshot_without_keychain() {
+            Ok(runtime_settings) => probe_agentic_readiness(&runtime_settings).into(),
+            Err(error) => CsAgenticReadiness {
+                config_path_display: format!("runtime settings unavailable: {error}"),
+                ready: false,
+                rows: Vec::new(),
+            },
+        }
     }
 
     /// Provider-neutral capability matrix: native / enhanced / unavailable + reason.
     /// IntelliJ wrong-project or stale sessions are detected and bypassed.
     pub fn capability_matrix(&self) -> Vec<CsCapabilityRow> {
-        let _ = codescribe_core::config::Config::load();
+        let _ = codescribe_core::config::Config::load_without_keychain();
         let health = live_connector_health();
         capability_matrix(&health)
             .into_iter()
@@ -215,7 +224,7 @@ fn live_connector_health() -> ConnectorHealth {
         }
     }
 
-    let workspace_roots = Config::effective_agent_workspace_roots()
+    let workspace_roots = Config::effective_agent_workspace_roots_projection()
         .into_iter()
         .map(|root| {
             if let Some(rest) = root.strip_prefix("~/") {
@@ -243,6 +252,137 @@ fn live_connector_health() -> ConnectorHealth {
 /// UniFFI mapping contracts: tone/row fidelity and probe non-empty degradation.
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[serial_test::serial]
+    fn credential_projection_dependency_mode_keeps_late_stt_cache_out_of_process_env() {
+        use codescribe_core::config::{Config, UserSettings};
+        struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                // SAFETY: the serial fixture has no background worker.
+                unsafe {
+                    for (key, value) in self.0.drain(..) {
+                        match value {
+                            Some(value) => std::env::set_var(key, value),
+                            None => std::env::remove_var(key),
+                        }
+                    }
+                }
+            }
+        }
+        let root = tempfile::TempDir::new().unwrap();
+        let keys = [
+            "CODESCRIBE_DATA_DIR",
+            "CODESCRIBE_ENV_PATH",
+            "CODESCRIBE_VOICE_LAB_SRC",
+            "STT_FILE_API_KEY",
+            "STT_LIVE_API_KEY",
+            "STT_API_KEY",
+        ];
+        let _restore = RestoreEnv(
+            keys.iter()
+                .map(|key| (*key, std::env::var_os(key)))
+                .collect(),
+        );
+        // SAFETY: this serial fixture controls its own temp root and has no workers.
+        unsafe {
+            for key in keys {
+                std::env::remove_var(key);
+            }
+            std::env::set_var("CODESCRIBE_DATA_DIR", root.path());
+        }
+        UserSettings::default().save().unwrap();
+        let _empty = codescribe_core::config::keychain::test_support::install_bundle(&[]);
+        let first = Config::load_without_keychain();
+        assert!(first.stt_file_api_key.is_none());
+        let _acquired = codescribe_core::config::keychain::test_support::install_bundle(&[
+            ("STT_FILE_API_KEY", "synthetic-file-after-bootstrap"),
+            ("STT_LIVE_API_KEY", "synthetic-live-after-bootstrap"),
+        ]);
+        let acquired = Config::load();
+        assert_eq!(
+            acquired.stt_file_api_key.as_deref(),
+            Some("synthetic-file-after-bootstrap")
+        );
+        assert_eq!(
+            acquired.stt_live_api_key.as_deref(),
+            Some("synthetic-live-after-bootstrap")
+        );
+        assert!(std::env::var_os("STT_FILE_API_KEY").is_none());
+        assert!(std::env::var_os("STT_LIVE_API_KEY").is_none());
+        // SAFETY: still the same serial fixture without background workers.
+        unsafe {
+            std::env::set_var("STT_FILE_API_KEY", "synthetic-explicit-override");
+        }
+        let probe = codescribe_core::config::keychain::CredentialAcquisitionProbe::forbid();
+        let passive = Config::load_without_keychain();
+        assert_eq!(
+            passive.stt_file_api_key.as_deref(),
+            Some("synthetic-explicit-override")
+        );
+        assert_eq!(
+            passive.stt_live_api_key.as_deref(),
+            Some("synthetic-live-after-bootstrap")
+        );
+        assert!(probe.attempts().is_empty());
+    }
+    #[test]
+    #[serial_test::serial]
+    fn credential_projection_capability_matrix_finishes_while_secret_edit_owns_settings() {
+        use codescribe_core::config::UserSettings;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        struct RestoreDataDir(Option<std::ffi::OsString>);
+        impl Drop for RestoreDataDir {
+            fn drop(&mut self) {
+                // SAFETY: this fixture is serial; all spawned readers have joined.
+                unsafe {
+                    if let Some(value) = self.0.take() {
+                        std::env::set_var("CODESCRIBE_DATA_DIR", value);
+                    } else {
+                        std::env::remove_var("CODESCRIBE_DATA_DIR");
+                    }
+                }
+            }
+        }
+        let root = tempfile::TempDir::new().unwrap();
+        let _restore = RestoreDataDir(std::env::var_os("CODESCRIBE_DATA_DIR"));
+        // SAFETY: this fixture is serial and no thread has started yet.
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", root.path());
+        }
+        UserSettings {
+            agent_workspace_roots: Some(vec![root.path().to_string_lossy().to_string()]),
+            ..Default::default()
+        }
+        .save()
+        .unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            UserSettings::with_credential_edit("LLM_OPENAI_API_KEY", |_| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(())
+            })
+        });
+        let entered = entered_rx.recv_timeout(Duration::from_secs(2));
+        let (read_tx, read_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let probe = codescribe_core::config::keychain::CredentialAcquisitionProbe::forbid();
+            let rows = CodescribeAgentStatus::default().capability_matrix();
+            read_tx.send((rows.len(), probe.attempts())).unwrap();
+        });
+        let read = read_rx.recv_timeout(Duration::from_secs(1));
+        release_tx.send(()).unwrap();
+        writer.join().unwrap().unwrap();
+        reader.join().unwrap();
+        entered.unwrap();
+        let (count, attempts) =
+            read.expect("the real capability bridge must not wait on a pending credential edit");
+        assert!(count > 0);
+        assert!(attempts.is_empty());
+    }
     use super::*;
     use codescribe::agent::tools::mcp::{McpRowTone, McpStatusRow};
 

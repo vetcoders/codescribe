@@ -8,16 +8,23 @@ pub mod account_auth;
 pub mod ai_formatting;
 /// HTTP client for cloud STT / LLM multipart upload paths.
 pub mod client;
-/// Inline-format buffer: chunk-chained live formatting so stop pays only the
-/// tail (W13-1, feature-flagged via `CODESCRIBE_INLINE_FORMAT`).
+/// Occurrence-bound post-ASR label proposals. The Apple live session produces
+/// them; presentation reads the contract. Text is payload, never identity.
 pub mod inline_format;
 /// Minimal API-key liveness probes for Settings (one cheap call per key).
 pub mod key_liveness;
-/// Canonical resolution of lane secrets, endpoints, and model ids.
-pub mod lane_truth;
 /// Live `/models` discovery for Settings pickers with last-good cache.
 pub mod model_discovery;
+/// Host-owned on-device formatting (Apple FoundationModels), opt-in knob.
+pub mod on_device;
 /// Provider identity, wire families, and per-model capability policy.
 pub mod provider;
+/// Shared reader for a Responses `output` array (JSON body and terminal SSE).
+mod responses_output;
 /// SSE client for OpenAI-compatible `/v1/responses` streaming.
 pub mod responses_streaming_manager;
+/// Vendor wire specifications (one self-contained module per pinned vendor).
+pub mod vendors;
+
+/// Vendor speech synthesis, credentials and cancellable playback (independent of CSM).
+pub mod speech;

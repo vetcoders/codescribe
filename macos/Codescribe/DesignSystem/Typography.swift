@@ -1,13 +1,13 @@
 import AppKit
 import SwiftUI
 
-// Typography — Space Grotesk (display/UI) + JetBrains Mono (mono/eyebrows/code).
+// Typography — system UI + JetBrains Mono (mono/eyebrows/code).
 // Mono is used ONLY for eyebrows, meta, code, logs — never as the page voice.
 
 enum CSFont {
-  // Display / UI — Space Grotesk
+  // Display / UI — native system face
   static func ui(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-    Font.custom(FontLoader.spaceGrotesk, size: size).weight(weight)
+    Font.system(size: size, weight: weight)
   }
   // Code / eyebrows / meta — JetBrains Mono
   static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
@@ -23,14 +23,11 @@ enum CSFont {
   // Named ramps from the handoff
   // -.03/-.04em tracking applied at call site
   static func hero(_ size: CGFloat = 64) -> Font { ui(size, .bold) }
-  static let h2 = ui(26, .bold)
   static let title = ui(15, .bold)
   static let bodyLg = ui(18, .regular)
   static let body = ui(14, .regular)
-  static let bodyStrong = ui(13, .semibold)
   static let eyebrow = mono(11, .semibold)  // tracking .18–.24em at call site
   static let metaMono = mono(11, .medium)
-  static let tagMono = mono(10, .semibold)
 }
 
 // Eyebrow label: mono, uppercase, wide tracking, olive — the section marker.
@@ -38,7 +35,8 @@ struct EyebrowLabel: View {
   let text: String
   var color: Color = CSColor.eyebrowOlive
   var body: some View {
-    Text(text.uppercased())
+    Text(text)
+      .textCase(.uppercase)
       .font(CSFont.eyebrow)
       .tracking(2.2)
       .foregroundStyle(color)

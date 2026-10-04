@@ -8,7 +8,7 @@
 // Portions derived from openai/codex (Apache-2.0).
 
 use base64::Engine;
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 
 /// One PKCE pair for a single authorization attempt. Never reuse across flows:
@@ -24,7 +24,7 @@ pub struct PkceCodes {
 /// Generate a fresh verifier/challenge pair from 64 bytes of OS entropy.
 pub fn generate_pkce() -> PkceCodes {
     let mut bytes = [0u8; 64];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     let code_verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
     let code_challenge = challenge_for_verifier(&code_verifier);
     PkceCodes {

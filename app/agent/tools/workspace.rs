@@ -206,7 +206,6 @@ mod tests {
     use super::*;
     use codescribe_core::config::UserSettings;
     use serial_test::serial;
-    use std::ffi::{OsStr, OsString};
     use tempfile::TempDir;
 
     /// Recursive scan: `.git` dir/file both count; nested checkouts are found
@@ -348,40 +347,5 @@ mod tests {
         );
     }
 
-    /// RAII process-env restore for serial tests that mutate settings paths.
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvGuard {
-        /// Set `key` to `value`, restoring the prior value (or absence) on drop.
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let previous = env::var_os(key);
-            // SAFETY: the test mutating process env is serialized.
-            unsafe { env::set_var(key, value) };
-            Self { key, previous }
-        }
-
-        /// Remove `key` for the duration of the guard; restore previous on drop.
-        fn remove(key: &'static str) -> Self {
-            let previous = env::var_os(key);
-            // SAFETY: the test mutating process env is serialized.
-            unsafe { env::remove_var(key) };
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the env var to its pre-guard value or remove it if it was absent.
-        fn drop(&mut self) {
-            // SAFETY: the test mutating process env is serialized.
-            unsafe {
-                match self.previous.as_ref() {
-                    Some(value) => env::set_var(self.key, value),
-                    None => env::remove_var(self.key),
-                }
-            }
-        }
-    }
+    use codescribe_core::test_isolation::EnvGuard;
 }

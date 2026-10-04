@@ -3,38 +3,63 @@ import SwiftUI
 
 /// Developer-only Lab desk. Hidden unless `CSDeveloperSurface` is baked.
 struct LabPanel: View {
+  @ObservedObject var model: SettingsViewModel
   @AppStorage("codescribe.lab_mode") private var labMode = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: "Settings · \(SettingsSection.lab.title)")
-      Text("Voice Lab")
-        .font(CSFont.ui(26, .bold))
-        .foregroundStyle(CSColor.textHigh)
-      Text(
-        labMode
-          ? "Lab mode is on. Daily overlay stays off so you test against the bus and the PWA tape."
-          : "Open the loopback Voice Lab. Production builds never show this panel."
+      SettingsPageHeader(
+        String(localized: "Voice Lab"),
+        blurb: labMode
+          ? String(
+            localized: "Lab mode is on. Overlay follows the tray toggle — Lab does not steal it.")
+          : String(
+            localized: "Open the loopback Voice Lab. Production builds never show this panel.")
       )
-      .font(CSFont.ui(12.5))
-      .foregroundStyle(CSColor.textMutedAlt)
 
-      Toggle("Lab mode (overlay off)", isOn: $labMode)
+      Toggle("Lab mode", isOn: $labMode)
         .toggleStyle(.switch)
-        .font(CSFont.ui(13, .medium))
-        .onChange(of: labMode) { _, on in
-          if on {
-            AppModel.shared.overlay.hide()
-          }
-        }
+        .font(.body)
+
+      Picker(
+        "Whisper buffering",
+        selection: Binding(
+          get: { model.settings.whisperAdaptiveBuffer },
+          set: { model.setWhisperAdaptiveBuffer($0) }
+        )
+      ) {
+        Text("Fixed windows").tag(false)
+        Text("Adaptive buffer (experimental)").tag(true)
+      }
+      Text(
+        "Applies to the next recording. Adaptive buffering preserves phrase boundaries within bounded audio and wait limits."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+
+      Picker(
+        "Text formatting",
+        selection: Binding(
+          get: { model.settings.formatOnDevice },
+          set: { model.setFormatOnDevice($0) }
+        )
+      ) {
+        Text("Cloud provider").tag(false)
+        Text("Apple on-device (experimental)").tag(true)
+      }
+      Text(
+        "Applies to the next formatting pass. The on-device model runs first; any failure falls back to the cloud provider. A .env value overrides this toggle."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
 
       Button("Open Voice Lab") {
-        VoiceLabRuntime.openConsole()
+        Task { await VoiceLabRuntime.shared.openConsole() }
       }
       .font(CSFont.mono(11, .semibold))
       .foregroundStyle(CSColor.chromeAccent)
     }
-    .padding(28)
+    .padding(CSSpace.xl)
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 }

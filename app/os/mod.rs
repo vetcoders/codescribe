@@ -7,6 +7,9 @@
 //! carries its own non-macOS no-op stubs so callers need no `cfg` of their own.
 
 #[cfg(target_os = "macos")]
+/// Accessibility FFI declarations shared by the OS modules.
+pub(crate) mod ax_ffi;
+#[cfg(target_os = "macos")]
 pub mod clipboard;
 // Cross-platform: macOS AppKit impl + non-macOS no-op stubs live in the module.
 /// Hold-to-dictate badge window (macOS AppKit + non-macOS no-op stubs).

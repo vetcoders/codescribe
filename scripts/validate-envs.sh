@@ -71,14 +71,14 @@ NC='\033[0m' # No Color
 
 echo "🔍 Validating environment variables against registry..."
 
-# Extract registered var names from TOML
-if [[ ! -f "$REGISTRY" ]]; then
-    echo -e "${RED}ERROR: Registry file not found: $REGISTRY${NC}"
+# Python 3.11+ is required for the standard-library TOML parser. Validate the
+# entire document before scanning names or creating any E2E output.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: Python 3.11+ with stdlib tomllib is required to validate $REGISTRY" >&2
     exit 1
 fi
-
-# Get all registered var names (including deprecated)
-REGISTERED=$(grep -E '^\[vars\.' "$REGISTRY" | sed 's/\[vars\.\(.*\)\]/\1/' | sort -u)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REGISTERED=$(python3 "$SCRIPT_DIR/validate_env_registry.py" "$REGISTRY")
 
 # Find all env vars used in Rust code (env::var patterns)
 echo "Scanning Rust code for env var usage..."
@@ -128,7 +128,9 @@ done
 if [[ $ERRORS -gt 0 ]]; then
     echo -e "${RED}❌ Found $ERRORS unregistered environment variable(s):${NC}"
     echo -e "$UNREGISTERED" | while read -r var; do
-        [[ -n "$var" ]] && echo -e "   ${YELLOW}$var${NC}"
+        if [[ -n "$var" ]]; then
+            echo -e "   ${YELLOW}$var${NC}"
+        fi
     done
     echo ""
     echo -e "${YELLOW}Add these to docs/ENV_REGISTRY.toml:${NC}"

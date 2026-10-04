@@ -1,0 +1,7 @@
+{
+  "text": "Hello.",
+  "voice_id": "eve",
+  "language": "auto",
+  "output_format": { "codec": "pcm", "sample_rate": 24000 },
+  "speed": 1.25
+}

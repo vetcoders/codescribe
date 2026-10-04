@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetcoders.io/schemas/codescribe/session-conservation-receipt.v1.json",
+  "title": "Codescribe session conservation receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "emitted",
+    "windows_admitted",
+    "windows_coalesced",
+    "windows_unresolved",
+    "first_covered_sample",
+    "last_covered_sample",
+    "transcript_seal_timestamp_ms",
+    "delivery_timestamp_ms",
+    "observations_admitted",
+    "observations_delivered",
+    "observations_unanchored",
+    "observations_refused_by_reason",
+    "windows_refused_before_inference",
+    "energy_lookups_without_voiced_hop"
+  ],
+  "properties": {
+    "schema": { "const": "codescribe-session-conservation/v1" },
+    "emitted": { "type": "boolean" },
+    "windows_admitted": { "type": "integer", "minimum": 0 },
+    "windows_coalesced": { "type": "integer", "minimum": 0 },
+    "windows_unresolved": { "type": "integer", "minimum": 0 },
+    "first_covered_sample": { "type": ["integer", "null"], "minimum": 0 },
+    "last_covered_sample": { "type": ["integer", "null"], "minimum": 0 },
+    "transcript_seal_timestamp_ms": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "delivery_timestamp_ms": { "type": ["integer", "null"], "minimum": 0 },
+    "observations_admitted": { "type": "integer", "minimum": 0 },
+    "observations_delivered": { "type": "integer", "minimum": 0 },
+    "observations_unanchored": { "type": "integer", "minimum": 0 },
+    "observations_refused_by_reason": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "windows_refused_before_inference": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "energy_lookups_without_voiced_hop": { "type": "integer", "minimum": 0 }
+  }
+}

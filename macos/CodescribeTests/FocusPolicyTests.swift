@@ -41,35 +41,6 @@ final class FocusPolicyTests: XCTestCase {
     )
   }
 
-  // MARK: - Agent sidebar: two states, never a hole
-
-  func testSidebarToggleSwapsModesInsteadOfRemovingTheRail() {
-    XCTAssertEqual(AgentSidebarMode.toggled(.expanded), .compact)
-    XCTAssertEqual(AgentSidebarMode.toggled(.compact), .expanded)
-    XCTAssertEqual(
-      AgentSidebarMode.toggled(AgentSidebarMode.toggled(.expanded)),
-      .expanded,
-      "toggling twice must return to the starting state"
-    )
-  }
-
-  func testCompactRailKeepsAPositiveFixedWidthAndExpandedStaysResizable() {
-    let compact = AgentSidebarMode.compact
-    XCTAssertGreaterThan(
-      compact.minimumWidth, 0,
-      "a collapsed rail must still occupy the column — width 0 is the empty-band bug"
-    )
-    XCTAssertEqual(compact.minimumWidth, compact.maximumWidth, "compact strip is not resizable")
-    XCTAssertEqual(compact.idealWidth, AgentSidebarMode.compactWidth)
-
-    let expanded = AgentSidebarMode.expanded
-    XCTAssertLessThan(
-      expanded.minimumWidth, expanded.maximumWidth,
-      "expanded rail must keep a drag-resizable range"
-    )
-    XCTAssertGreaterThan(expanded.minimumWidth, compact.maximumWidth)
-  }
-
   // MARK: - W10-A voice reveal policy
 
   func testVoiceDeliveryNeverActivates() {

@@ -25,7 +25,9 @@ struct ShortcutsPanel: View {
         permissionNote.padding(.top, 18)
       }
 
-      bindingRows.padding(.top, 20)
+      bindingRows.padding(.top, CSSpace.lg)
+      inputSurfaceSection.padding(.top, 12)
+      pasteModeSection.padding(.top, 12)
       deferredInsertSection.padding(.top, 12)
       badgeLegend.padding(.top, 12)
 
@@ -33,26 +35,20 @@ struct ShortcutsPanel: View {
         conflictList.padding(.top, 16)
       }
 
-      actions.padding(.top, 22)
+      actions.padding(.top, CSSpace.section)
       hint.padding(.top, 14)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
   }
 
   // MARK: Header
 
   private var header: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      EyebrowLabel(text: "Settings · Hotkeys")
-      Text("Trigger keys.")
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
-      Text("One gesture per mode. Changes apply immediately — no restart.")
-        .font(CSFont.ui(13, .medium))
-        .foregroundStyle(CSColor.textMuted)
-    }
+    SettingsPageHeader(
+      String(localized: "Trigger keys."),
+      blurb: String(localized: "One gesture per mode. Changes apply immediately — no restart.")
+    )
   }
 
   // MARK: Per-mode binding rows
@@ -64,10 +60,10 @@ struct ShortcutsPanel: View {
         bindingRow(row)
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 13, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 
@@ -77,10 +73,10 @@ struct ShortcutsPanel: View {
         VStack(alignment: .leading, spacing: 3) {
           Text(row.modeLabel)
             .font(CSFont.ui(13.5, .semibold))
-            .foregroundStyle(CSColor.textHigh)
+            .foregroundStyle(Color.primary)
           Text(row.modeDescription)
             .font(CSFont.ui(11.5, .medium))
-            .foregroundStyle(CSColor.textMuted)
+            .foregroundStyle(Color.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -93,7 +89,7 @@ struct ShortcutsPanel: View {
     }
     .padding(.horizontal, 16)
     .padding(.vertical, 14)
-    .background(CSColor.surfaceRaised(0.02))
+    .background(Color.primary.opacity(0.04))
   }
 
   private func bindingPicker(_ row: CsModeBinding) -> some View {
@@ -113,18 +109,18 @@ struct ShortcutsPanel: View {
       HStack(spacing: 8) {
         Text(row.bindingLabel)
           .font(CSFont.mono(12, .semibold))
-          .foregroundStyle(CSColor.terracottaLight)
-        CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.textMuted)
+          .foregroundStyle(CSColor.terracotta)
+        CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: Color.secondary)
       }
       .padding(.horizontal, 12)
       .padding(.vertical, 8)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .fill(CSColor.surfaceRaised(0.04))
+          .fill(Color.primary.opacity(0.08))
       )
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.09), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
     }
     .menuStyle(.borderlessButton)
@@ -144,10 +140,10 @@ struct ShortcutsPanel: View {
       HStack(spacing: 8) {
         Text("Arm with")
           .font(CSFont.ui(11, .medium))
-          .foregroundStyle(CSColor.textMuted)
+          .foregroundStyle(Color.secondary)
         Picker("Arm modifier", selection: armModifierBinding) {
-          Text("Shift").tag("shift")
-          Text("Command").tag("cmd")
+          Text(verbatim: "Shift").tag("shift")
+          Text(verbatim: "Command").tag("cmd")
         }
         .pickerStyle(.segmented)
         .labelsHidden()
@@ -159,18 +155,18 @@ struct ShortcutsPanel: View {
     .padding(.vertical, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .fill(CSColor.assistive.opacity(0.08))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(CSColor.assistive.opacity(0.18), lineWidth: 1)
     )
   }
 
-  private func assistiveModeVariant(title: String, gesture: String, description: String)
-    -> some View
-  {
+  private func assistiveModeVariant(
+    title: LocalizedStringKey, gesture: String, description: LocalizedStringKey
+  ) -> some View {
     HStack(alignment: .top, spacing: 9) {
       Circle()
         .fill(CSColor.assistive)
@@ -182,13 +178,13 @@ struct ShortcutsPanel: View {
           .foregroundStyle(CSColor.assistiveLight)
         Text(description)
           .font(CSFont.ui(11, .medium))
-          .foregroundStyle(CSColor.textMuted)
+          .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
       Spacer(minLength: 8)
       Text(gesture)
         .font(CSFont.mono(10.5, .semibold))
-        .foregroundStyle(CSColor.textBodyAlt)
+        .foregroundStyle(Color.primary)
         .multilineTextAlignment(.trailing)
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -208,7 +204,7 @@ struct ShortcutsPanel: View {
 
   private var badgeLegend: some View {
     VStack(alignment: .leading, spacing: 8) {
-      SettingsSectionLabel("Dot colors")
+      SettingsSectionLabel(String(localized: "Dot colors"))
       HStack(spacing: 12) {
         legendItem(color: CSColor.terracotta, text: "Red — dictation or formatting is recording")
         legendItem(color: CSColor.assistive, text: "Purple — voice goes to the agent")
@@ -218,10 +214,10 @@ struct ShortcutsPanel: View {
         VStack(alignment: .leading, spacing: 2) {
           Text("Pointer indicator")
             .font(CSFont.ui(12.5, .semibold))
-            .foregroundStyle(CSColor.textBody)
+            .foregroundStyle(Color.primary)
           Text("Base size; Agent mode stays proportionally larger")
             .font(CSFont.ui(10.5, .medium))
-            .foregroundStyle(CSColor.textMutedAlt)
+            .foregroundStyle(Color.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -240,12 +236,12 @@ struct ShortcutsPanel: View {
     .padding(.vertical, 11)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.025))
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(Color.primary.opacity(0.05))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 
@@ -253,6 +249,152 @@ struct ShortcutsPanel: View {
     Binding(
       get: { model.holdBadgeOption },
       set: { model.setHoldBadgeOption($0) }
+    )
+  }
+
+  // MARK: Channel, Fn tap, middle mouse
+
+  /// Three input surfaces on the same hotkey config as the mode rows.
+  /// Command is absent from the channel picker. Both toggles default off.
+  private var inputSurfaceSection: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      inputSurfaceRow(
+        title: "Agent channel",
+        detail:
+          "Ctrl+digit switches an agent channel. Choose Fn if you want the globe key instead. Command is not offered — it collides with tab switching."
+      ) {
+        Picker("Agent channel modifier", selection: channelModifierBinding) {
+          Text(verbatim: "Ctrl").tag("ctrl")
+          Text(verbatim: "Fn").tag("fn")
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(maxWidth: 160)
+      }
+      divider
+      inputSurfaceRow(
+        title: "Tap Fn to dictate",
+        detail:
+          "A quick Fn press starts dictation and the next tap stops it. Holding past the hold delay stays hold-to-talk. For best results set the macOS Fn key action to Do Nothing — Codescribe reacts to a single tap, and macOS can claim a double-press for its own dictation."
+      ) {
+        Toggle("Tap Fn to dictate", isOn: fnTapBinding)
+          .labelsHidden()
+          .toggleStyle(.switch)
+      }
+      divider
+      inputSurfaceRow(
+        title: "Middle mouse acts as Fn",
+        detail:
+          "The middle mouse button follows the same press, hold, and tap rules as Fn. The click still reaches the frontmost app."
+      ) {
+        Toggle("Middle mouse acts as Fn", isOn: middleMouseBinding)
+          .labelsHidden()
+          .toggleStyle(.switch)
+      }
+    }
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+    )
+  }
+
+  private func inputSurfaceRow<Control: View>(
+    title: LocalizedStringKey, detail: LocalizedStringKey,
+    @ViewBuilder control: () -> Control
+  ) -> some View {
+    HStack(alignment: .center, spacing: 12) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text(title)
+          .font(CSFont.ui(13.5, .semibold))
+          .foregroundStyle(Color.primary)
+        Text(detail)
+          .font(CSFont.ui(11.5, .medium))
+          .foregroundStyle(Color.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      control()
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 14)
+    .background(Color.primary.opacity(0.04))
+  }
+
+  private var channelModifierBinding: Binding<String> {
+    Binding(get: { model.channelModifier }, set: { model.setChannelModifier($0) })
+  }
+
+  private var fnTapBinding: Binding<Bool> {
+    Binding(get: { model.fnTapTogglesDictation }, set: { model.setFnTapTogglesDictation($0) })
+  }
+
+  private var middleMouseBinding: Binding<Bool> {
+    Binding(get: { model.middleMouseActsAsFn }, set: { model.setMiddleMouseActsAsFn($0) })
+  }
+
+  // MARK: Automatic paste mode
+
+  /// Safe / Comfort / Off — one persisted `PASTE_MODE` shared with the tray
+  /// Quick settings row. Each mode carries its one-sentence contract so the
+  /// choice is explained where it is made.
+  private var pasteModeSection: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      SettingsSectionLabel(String(localized: "Automatic paste"))
+      HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Paste after dictation")
+            .font(CSFont.ui(12.5, .semibold))
+            .foregroundStyle(Color.primary)
+          Text("Where the transcript goes when a Hold or toggle take ends.")
+            .font(CSFont.ui(10.5, .medium))
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+
+        Picker("Paste mode", selection: pasteModeBinding) {
+          ForEach(CsPasteMode.allModes, id: \.self) { mode in
+            Text(mode.visibleName).tag(mode)
+          }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 260)
+        .accessibilityIdentifier("settings.pasteMode")
+      }
+      VStack(alignment: .leading, spacing: 3) {
+        ForEach(CsPasteMode.allModes, id: \.self) { mode in
+          HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(mode.visibleName)
+              .font(CSFont.ui(10.5, .semibold))
+              .foregroundStyle(mode == model.pasteMode ? Color.primary : Color.secondary)
+              .frame(width: 58, alignment: .leading)
+            Text(mode.blurb)
+              .font(CSFont.ui(10.5, .medium))
+              .foregroundStyle(Color.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 11)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(Color.primary.opacity(0.05))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+    )
+  }
+
+  private var pasteModeBinding: Binding<CsPasteMode> {
+    Binding(
+      get: { model.pasteMode },
+      set: { model.setPasteMode($0) }
     )
   }
 
@@ -265,17 +407,17 @@ struct ShortcutsPanel: View {
   /// would also react (core/config/types.rs).
   private var deferredInsertSection: some View {
     VStack(alignment: .leading, spacing: 8) {
-      SettingsSectionLabel("Deferred insert")
+      SettingsSectionLabel(String(localized: "Deferred insert"))
       HStack(spacing: 12) {
         VStack(alignment: .leading, spacing: 2) {
           Text("Insert armed transcript")
             .font(CSFont.ui(12.5, .semibold))
-            .foregroundStyle(CSColor.textBody)
+            .foregroundStyle(Color.primary)
           Text(
             "Global chord pastes the armed transcript at the caret. Apps bound to the same chord will also react."
           )
           .font(CSFont.ui(10.5, .medium))
-          .foregroundStyle(CSColor.textMutedAlt)
+          .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -294,12 +436,12 @@ struct ShortcutsPanel: View {
     .padding(.vertical, 11)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.025))
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(Color.primary.opacity(0.05))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 
@@ -310,12 +452,12 @@ struct ShortcutsPanel: View {
     )
   }
 
-  private func legendItem(color: Color, text: String) -> some View {
+  private func legendItem(color: Color, text: LocalizedStringKey) -> some View {
     HStack(spacing: 6) {
       Circle().fill(color).frame(width: 7, height: 7)
       Text(text)
         .font(CSFont.ui(11.5, .medium))
-        .foregroundStyle(CSColor.textMuted)
+        .foregroundStyle(Color.secondary)
         .lineLimit(2)
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -326,7 +468,7 @@ struct ShortcutsPanel: View {
 
   private var conflictList: some View {
     VStack(alignment: .leading, spacing: 8) {
-      SettingsSectionLabel("Conflicts")
+      SettingsSectionLabel(String(localized: "Conflicts"))
       ForEach(Array(model.bindingConflicts.enumerated()), id: \.offset) { _, conflict in
         conflictRow(conflict)
       }
@@ -335,9 +477,9 @@ struct ShortcutsPanel: View {
 
   private func conflictRow(_ conflict: CsHotkeyConflict) -> some View {
     let accent = conflict.blocking ? CSColor.terracotta : CSColor.amber
-    let accentLight = conflict.blocking ? CSColor.terracottaLight : CSColor.amber
+    let accentLight = conflict.blocking ? CSColor.terracotta : CSColor.amber
     return HStack(alignment: .top, spacing: 9) {
-      Text(conflict.blocking ? "!" : "i")
+      Text(verbatim: conflict.blocking ? "!" : "i")
         .font(CSFont.ui(11, .bold))
         .foregroundStyle(accentLight)
         .frame(width: 14)
@@ -347,7 +489,7 @@ struct ShortcutsPanel: View {
           .foregroundStyle(accentLight)
         Text(conflict.message)
           .font(CSFont.ui(12, .medium))
-          .foregroundStyle(CSColor.textBodyAlt)
+          .foregroundStyle(Color.primary)
           .fixedSize(horizontal: false, vertical: true)
       }
     }
@@ -355,10 +497,10 @@ struct ShortcutsPanel: View {
     .padding(.vertical, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous).fill(accent.opacity(0.08))
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous).fill(accent.opacity(0.08))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(accent.opacity(0.2), lineWidth: 1)
     )
   }
@@ -367,7 +509,7 @@ struct ShortcutsPanel: View {
 
   private var permissionNote: some View {
     HStack(alignment: .top, spacing: 9) {
-      Text("!")
+      Text(verbatim: "!")
         .font(CSFont.ui(11, .bold))
         .foregroundStyle(CSColor.amber)
         .frame(width: 14)
@@ -379,7 +521,7 @@ struct ShortcutsPanel: View {
           "You can edit bindings here, but they won't fire until both are granted. Click to open System Settings."
         )
         .font(CSFont.ui(12, .medium))
-        .foregroundStyle(CSColor.textBodyAlt)
+        .foregroundStyle(Color.primary)
         .fixedSize(horizontal: false, vertical: true)
       }
     }
@@ -387,10 +529,11 @@ struct ShortcutsPanel: View {
     .padding(.vertical, 11)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous).fill(CSColor.amber.opacity(0.08))
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(CSColor.amber.opacity(0.08))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(CSColor.amber.opacity(0.2), lineWidth: 1)
     )
     .contentShape(Rectangle())
@@ -412,9 +555,9 @@ struct ShortcutsPanel: View {
       } label: {
         Text("Reset to defaults")
           .font(CSFont.ui(12.5, .semibold))
-          .foregroundStyle(CSColor.textMuted)
+          .foregroundStyle(Color.secondary)
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
 
       Spacer(minLength: 0)
 
@@ -425,23 +568,23 @@ struct ShortcutsPanel: View {
           .font(CSFont.ui(12.5, .semibold))
           .padding(.horizontal, 18)
           .padding(.vertical, 8)
-          .foregroundStyle(model.canSaveBindings ? CSColor.textHigh : CSColor.textFaint)
+          .foregroundStyle(model.canSaveBindings ? Color.primary : Color.secondary)
           .background(
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
               .fill(
                 model.canSaveBindings
                   ? CSColor.terracotta.opacity(0.9)
-                  : CSColor.surfaceRaised(0.03))
+                  : Color.primary.opacity(0.06))
           )
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .disabled(!model.canSaveBindings)
     }
   }
 
   private var hint: some View {
     HStack(spacing: 8) {
-      Text("●")
+      Text(verbatim: "●")
         .font(CSFont.mono(11, .medium))
         .foregroundStyle(model.hasBlockingBindingConflicts ? CSColor.terracotta : CSColor.olive)
       Text(
@@ -450,19 +593,21 @@ struct ShortcutsPanel: View {
           : "Bindings persist to settings.json and reload the detector live"
       )
       .font(CSFont.mono(11, .medium))
-      .foregroundStyle(CSColor.textFaint)
+      .foregroundStyle(Color.secondary)
     }
   }
 
   private var divider: some View {
-    Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
   }
 }
 
 /// Single production owner for attach-arm gesture copy in Settings.
 enum ArmGestureCopy {
   static func label(for modifier: String) -> String {
-    modifier == "cmd" ? "Command during Fn hold" : "Shift during Fn hold"
+    modifier == "cmd"
+      ? String(localized: "Command during Fn hold")
+      : String(localized: "Shift during Fn hold")
   }
 }
 
@@ -470,7 +615,5 @@ enum ArmGestureCopy {
   #Preview("Shortcuts panel") {
     ScrollView { ShortcutsPanel(model: .preview(.shortcuts)) }
       .frame(width: 720, height: 620)
-      .background(SettingsView.windowGradient)
-      .preferredColorScheme(.dark)
   }
 #endif

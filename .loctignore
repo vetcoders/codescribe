@@ -1,0 +1,3 @@
+# Owner: Codescribe maintainers.
+# Intent: keep root Markdown contracts visible to Loctree.
+!/*.md

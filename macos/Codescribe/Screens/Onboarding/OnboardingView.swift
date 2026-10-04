@@ -8,40 +8,120 @@ import SwiftUI
 struct OnboardingView: View {
   @ObservedObject var model: OnboardingViewModel
 
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+  @State private var hostWindow: NSWindow?
+
   var body: some View {
+    content
+      .frame(minWidth: 680, minHeight: 560)
+      .background {
+        Group {
+          if reduceTransparency {
+            Color(nsColor: .windowBackgroundColor)
+          } else if #available(macOS 26, *) {
+            Color.clear.glassEffect(.regular, in: .rect(cornerRadius: 0))
+          } else {
+            Rectangle().fill(.regularMaterial)
+          }
+        }
+        .ignoresSafeArea()
+      }
+      .csFocusPolicy()
+      .controlSize(.regular)
+      .background(OnboardingWindowReader { hostWindow = $0 })
+      .onAppear { model.refreshForCurrentStep() }
+      .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) {
+        notification in
+        guard let window = notification.object as? NSWindow, window === hostWindow else { return }
+        model.refreshProviderAccess()
+      }
+  }
+
+  private var content: some View {
     VStack(spacing: 0) {
       header
-      Divider().overlay(CSColor.hairline(0.08))
       ScrollView {
         stepBody
           .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 32)
-          .padding(.vertical, 26)
+          .padding(28)
+          .id(model.stepIndex)
       }
-      Divider().overlay(CSColor.hairline(0.08))
+      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: model.stepIndex)
       footer
     }
-    .frame(minWidth: 680, minHeight: 560)
-    .background(SettingsView.windowGradient.ignoresSafeArea())
-    .onAppear { model.refreshForCurrentStep() }
   }
 
-  // MARK: - Header (brand + progress)
+  private var chapter: (title: String, symbol: String, purpose: String) {
+    switch model.step {
+    case .welcome, .mode:
+      return (
+        String(localized: "Your voice, a new possibility", comment: "Setup chapter heading"),
+        "waveform",
+        String(localized: "First, choose what you want to do.", comment: "Setup chapter subtitle")
+      )
+    case .permission:
+      return (
+        String(localized: "Make the connection", comment: "Setup chapter heading"),
+        "hand.raised",
+        String(
+          localized: "You decide what Codescribe can access.",
+          comment: "Setup chapter subtitle; Codescribe is the product name")
+      )
+    case .language, .apiKey, .hotkeyMode:
+      return (
+        String(localized: "Make it yours", comment: "Setup chapter heading"),
+        "slider.horizontal.3",
+        String(
+          localized: "Your language. Your shortcuts. Your way of working.",
+          comment: "Setup chapter subtitle")
+      )
+    case .agenticReadiness:
+      return (
+        String(localized: "Give your voice tools", comment: "Setup chapter heading"),
+        "sparkles",
+        String(
+          localized: "Connect the assistants you want to work with.",
+          comment: "Setup chapter subtitle")
+      )
+    case .done:
+      return (
+        String(localized: "Your next thought starts here", comment: "Setup chapter heading"),
+        "checkmark",
+        String(
+          localized: "Setup is complete. Your voice takes it from here.",
+          comment: "Setup chapter subtitle")
+      )
+    }
+  }
 
   private var header: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: 12) {
       HStack {
-        EyebrowLabel(text: "codescribe · setup")
+        Wordmark(size: 16)
         Spacer()
-        Text(model.progressLabel)
-          .font(CSFont.mono(11, .medium))
-          .foregroundStyle(CSColor.textFaint)
+        Text(model.progressLabel).font(.callout).foregroundStyle(.secondary)
       }
-      OnboardingProgressBar(current: model.stepIndex, total: model.totalSteps)
+      HStack(spacing: 12) {
+        Image(systemName: chapter.symbol)
+          .font(.system(size: 17, weight: .medium))
+          .frame(width: 34, height: 34)
+          .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 5) {
+          Text(chapter.title).font(.headline)
+          Text(chapter.purpose).font(.subheadline).foregroundStyle(.secondary)
+        }
+        Spacer(minLength: 0)
+      }
+      ProgressView(value: Double(model.stepIndex), total: Double(max(1, model.totalSteps - 1)))
+        .controlSize(.small)
+        .accessibilityLabel("Setup progress")
     }
-    .padding(.horizontal, 32)
-    .padding(.top, 22)
-    .padding(.bottom, 16)
+    .padding(.horizontal, 28)
+    .padding(.top, 24)
+    .padding(.bottom, 12)
+    .background(OnboardingDragRegion())
   }
 
   // MARK: - Step dispatch
@@ -72,82 +152,20 @@ struct OnboardingView: View {
   private var footer: some View {
     HStack(spacing: 10) {
       if model.canGoBack {
-        OnboardingButton(title: "Back", kind: .secondary) { model.back() }
+        Button("Back") { model.back() }.csAction()
       }
       Spacer(minLength: 0)
       // The API-key step is skippable — a key can be added later in Settings.
       if case .apiKey = model.step {
-        OnboardingButton(title: "Skip", kind: .secondary) { model.advance() }
+        Button("Skip") { model.advance() }.csAction()
       }
-      OnboardingButton(title: model.primaryLabel, kind: .primary) {
+      Button(model.primaryLabel) {
         model.primaryAction()
-      }
+      }.csAction(prominent: true)
     }
-    .padding(.horizontal, 32)
-    .padding(.vertical, 16)
-  }
-}
-
-// MARK: - Progress bar
-
-struct OnboardingProgressBar: View {
-  let current: Int
-  let total: Int
-
-  private var fraction: CGFloat {
-    guard total > 1 else { return 1 }
-    return CGFloat(current) / CGFloat(total - 1)
-  }
-
-  var body: some View {
-    GeometryReader { geo in
-      ZStack(alignment: .leading) {
-        Capsule().fill(CSColor.surfaceRaised(0.05))
-        Capsule()
-          .fill(CSColor.chromeAccent.opacity(0.85))
-          .frame(width: max(6, geo.size.width * fraction))
-      }
-    }
-    .frame(height: 4)
-  }
-}
-
-// MARK: - Buttons
-
-/// Wizard navigation button, matching the Keys panel's accent-on-surface style.
-struct OnboardingButton: View {
-  enum Kind { case primary, secondary }
-  let title: String
-  var kind: Kind = .primary
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      Text(title)
-        .font(CSFont.ui(13, .semibold))
-        .foregroundStyle(foreground)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 9)
-        .background(
-          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-            .fill(fill)
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-            .strokeBorder(border, lineWidth: 1)
-        )
-    }
-    .csFocusRing(cornerRadius: CSRadius.input)
-  }
-
-  private var foreground: Color {
-    kind == .primary ? CSColor.chromeAccent : CSColor.textMutedAlt
-  }
-  private var fill: Color {
-    kind == .primary ? CSColor.chromeAccent.opacity(0.16) : CSColor.surfaceRaised(0.03)
-  }
-  private var border: Color {
-    kind == .primary ? CSColor.chromeAccent.opacity(0.30) : CSColor.hairline(0.08)
+    .disabled(model.providerMutationPending)
+    .padding(.horizontal, CSSpace.page)
+    .padding(.vertical, 18)
   }
 }
 
@@ -242,3 +260,27 @@ struct OnboardingButton: View {
     .preferredColorScheme(.dark)
   }
 #endif
+
+/// Bind focus notifications to this wizard's actual native window.
+private struct OnboardingWindowReader: NSViewRepresentable {
+  let onWindow: (NSWindow?) -> Void
+
+  func makeNSView(context: Context) -> WindowView {
+    let view = WindowView()
+    view.onWindow = onWindow
+    return view
+  }
+
+  func updateNSView(_ view: WindowView, context: Context) { view.onWindow = onWindow }
+
+  final class WindowView: NSView {
+    var onWindow: ((NSWindow?) -> Void)?
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        self.onWindow?(self.window)
+      }
+    }
+  }
+}

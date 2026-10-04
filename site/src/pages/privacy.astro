@@ -60,8 +60,9 @@ import { page } from "../lib/asset";
         STT runs on-device.
       </li>
       <li>
-        <strong>Audio recording</strong> — RAM only; deleted after transcription (unless
-        you explicitly enable debug audio dumps).
+        <strong>Audio recording</strong> — complete local captures, preserved even
+        when transcription or delivery fails. Settings › Audio › Audio retention
+        defaults to Forever; choices are Forever / 30 days / 7 days / 24h / Off.
       </li>
       <li>
         <strong>Transcripts</strong> — <code>~/.codescribe/transcriptions/</code
@@ -139,6 +140,13 @@ import { page } from "../lib/asset";
 
     <h2>Data retention and rights</h2>
     <p>
+      Audio lives locally under <code>~/.codescribe/takes/</code>,
+      <code>~/.codescribe/sessions/</code>, and the daily
+      <code>~/.codescribe/transcriptions/</code> archive. Finite retention expires
+      completed owned audio after processing and read leases settle. Off applies
+      to future takes and does not erase old recordings. Active takes keep their
+      starting choice; uncertain completion or failed deletion preserves audio
+      and records an error. Audio retention does not delete transcript text.
       Transcript history lives under <code>~/.codescribe/</code>. You can
       disable history, delete files, or remove the whole directory. For EU users
       under GDPR-style access/erasure/portability requests: your data is already

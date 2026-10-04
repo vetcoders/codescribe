@@ -15,8 +15,18 @@ final class DeveloperSurfaceTests: XCTestCase {
     XCTAssertTrue(DeveloperSurface.parse(NSNumber(value: 1)))
   }
 
-  func testPowerModeCaptionIsTheVisibleInstallTag() {
+  func testPowerModeCaptionDescribesActiveLabMode() {
     XCTAssertEqual(DeveloperSurface.powerModeCaption, "You use dev power mode")
+  }
+
+  func testPowerModeRequiresBothDeveloperBuildAndEnabledVoiceLab() {
+    for surface in [false, true] {
+      for labMode in [false, true] {
+        XCTAssertEqual(
+          DeveloperSurface.isPowerModeEnabled(labMode: labMode, surfaceEnabled: surface),
+          surface && labMode)
+      }
+    }
   }
 
   func testLabSectionIsHiddenOnProductionBundle() {
@@ -25,11 +35,11 @@ final class DeveloperSurfaceTests: XCTestCase {
     XCTAssertTrue(SettingsSection.matching(query: "").contains(.agent))
   }
 
-  func testLabModeOnDeveloperSurfaceHidesOverlayWithoutTouchingTray() {
+  func testLabModeDoesNotHideOverlayWhenTrayWantsIt() {
     let defaults = UserDefaults(suiteName: UUID().uuidString)!
     defaults.set(true, forKey: DictationOverlayGate.labModeDefaultsKey)
     XCTAssertTrue(DictationOverlayGate.isLabModeOn(defaults: defaults, surfaceEnabled: true))
-    XCTAssertFalse(
+    XCTAssertTrue(
       DictationOverlayGate.shouldShowOverlay(
         trayEnabled: true,
         defaults: defaults,

@@ -7,11 +7,133 @@ use std::str::FromStr;
 
 use super::defaults::*;
 
-/// Serde default for [`Config::auto_paste_enabled`]: pasting is on unless the
-/// user turns it off, so configs written before the field existed keep the
-/// historical behaviour.
-const fn default_auto_paste_enabled() -> bool {
-    true
+/// Explicit audio storage policy. Unknown persisted strings preserve audio.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioRetention {
+    /// Expire eligible completed audio after thirty days.
+    #[serde(rename = "30_days")]
+    Days30,
+    /// Expire eligible completed audio after seven days.
+    #[serde(rename = "7_days")]
+    Days7,
+    /// Expire eligible completed audio after twenty-four hours.
+    #[serde(rename = "24h")]
+    Hours24,
+    /// Discard future captures only after processing and readers settle.
+    Off,
+    /// Preserve audio without an age limit; unknown strings select this value.
+    #[default]
+    #[serde(other)]
+    Forever,
+}
+
+impl AudioRetention {
+    /// Settings wire values; this policy has no environment override.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Forever => "forever",
+            Self::Days30 => "30_days",
+            Self::Days7 => "7_days",
+            Self::Hours24 => "24h",
+            Self::Off => "off",
+        }
+    }
+
+    /// Only explicit finite choices expire previously completed owned takes.
+    pub const fn duration_seconds(self) -> Option<u64> {
+        match self {
+            Self::Days30 => Some(30 * 86400),
+            Self::Days7 => Some(7 * 86400),
+            Self::Hours24 => Some(86400),
+            Self::Forever | Self::Off => None,
+        }
+    }
+}
+
+impl FromStr for AudioRetention {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "forever" => Ok(Self::Forever),
+            "30_days" => Ok(Self::Days30),
+            "7_days" => Ok(Self::Days7),
+            "24h" => Ok(Self::Hours24),
+            "off" => Ok(Self::Off),
+            _ => Err("expected forever, 30_days, 7_days, 24h, or off".to_string()),
+        }
+    }
+}
+
+/// Automatic paste policy for Orient dictation (Hold Fn / Globe, Double Left
+/// Option, toggle Finish). One persisted choice, three modes — Founder
+/// 2026-09-25: "tryb safe / comfort / off … to będzie koniec dysputy".
+///
+/// The delivery throne (`app/controller/delivery_route.rs`) reads this as a
+/// veto on the paste gun; it never picks a destination by itself. Explicit
+/// overlay Insert and To Agent are not governed by it.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PasteMode {
+    /// Paste only into a focused, editable, non-password text field. A
+    /// terminal target is pasted only when the executable-content guard
+    /// passes. Anything else is held on the clipboard with a notification.
+    #[default]
+    Safe,
+    /// Paste wherever the caret is, terminals included. Password fields and
+    /// the executable-content guard for terminals still hold the paste.
+    Comfort,
+    /// Never paste automatically. The transcript stays on the overlay and in
+    /// history; the pasteboard is not touched.
+    Off,
+}
+
+impl PasteMode {
+    /// Every mode in Settings order.
+    pub const ALL: [Self; 3] = [Self::Safe, Self::Comfort, Self::Off];
+
+    /// Canonical wire/persisted spelling; round-trips through [`FromStr`].
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Safe => "safe",
+            Self::Comfort => "comfort",
+            Self::Off => "off",
+        }
+    }
+
+    /// The single reader of the retired boolean `auto_paste_enabled`.
+    ///
+    /// No Founder decision records what "on" meant for terminals; the old
+    /// setting pasted into every foreign caret. `true` maps to [`Self::Safe`]
+    /// (Claude's assumption, 2026-09-29) and `false` to [`Self::Off`].
+    pub const fn from_retired_auto_paste(enabled: bool) -> Self {
+        if enabled { Self::Safe } else { Self::Off }
+    }
+}
+
+impl std::fmt::Display for PasteMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for PasteMode {
+    /// Parse error payload for [`PasteMode`] wire identifiers.
+    type Err = String;
+
+    /// Parse `safe` / `comfort` / `off`. Anything else is an error, never a
+    /// silent default: an unknown value must not arm a more permissive mode.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "safe" => Ok(Self::Safe),
+            "comfort" => Ok(Self::Comfort),
+            "off" => Ok(Self::Off),
+            _ => Err(format!(
+                "unknown PASTE_MODE {value:?}; expected safe, comfort, or off"
+            )),
+        }
+    }
 }
 
 /// First-class work modes used by the runtime and settings UI.
@@ -58,19 +180,6 @@ impl WorkMode {
     /// caret.
     pub fn is_assistive(&self) -> bool {
         matches!(self, Self::Assistive)
-    }
-
-    /// Whether the mode pastes by default. Assistive sends to the agent, so it
-    /// never auto-pastes; the user preference and controller-owned vetoes still
-    /// apply on top of this (see [`Config::auto_paste_enabled`]).
-    pub fn defaults_to_auto_paste(&self) -> bool {
-        !self.is_assistive()
-    }
-
-    /// Whether the mode requires an LLM round-trip regardless of the global AI
-    /// formatting switch: formatting rewrites the text, assistive answers it.
-    pub fn forces_ai(&self) -> bool {
-        matches!(self, Self::Formatting | Self::Assistive)
     }
 }
 
@@ -407,6 +516,53 @@ impl HoldArmModifier {
     }
 }
 
+/// Modifier that opens an agent channel together with a digit.
+///
+/// `Ctrl` is the product default. `Fn` is the optional alternative.
+/// Command is not a variant: it collides with tab switching.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelModifier {
+    #[default]
+    Ctrl,
+    Fn,
+}
+
+impl ChannelModifier {
+    /// Stable settings.json / env token (`ctrl` or `fn`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ctrl => "ctrl",
+            Self::Fn => "fn",
+        }
+    }
+
+    /// Settings label. Presentation only.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ctrl => "Ctrl",
+            Self::Fn => "Fn",
+        }
+    }
+}
+
+impl FromStr for ChannelModifier {
+    /// Parse error payload for channel-modifier wire identifiers.
+    type Err = String;
+
+    /// Accept `ctrl` and `fn`. `cmd` / `command` / `meta` are rejected.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "ctrl" | "control" => Ok(Self::Ctrl),
+            "fn" | "globe" | "function" => Ok(Self::Fn),
+            "cmd" | "command" | "meta" => {
+                Err("Command cannot be the agent-channel modifier (tab-switching collision)".into())
+            }
+            other => Err(format!("Unknown channel modifier: {other}")),
+        }
+    }
+}
+
 impl FromStr for HoldArmModifier {
     /// Parse error payload for HoldArmModifier wire identifiers.
     type Err = String;
@@ -448,9 +604,38 @@ pub struct Config {
     #[serde(default = "default_toggle_silence_sec")]
     pub toggle_silence_sec: f32,
 
+    /// Seconds of captured PCM Whisper hears for each Layer 1 fragment,
+    /// ending at that fragment. Hot: the next take reads the sealed snapshot.
+    #[serde(default = "default_whisper_context_window_sec")]
+    pub whisper_context_window_sec: f32,
+
+    /// Developer experiment; sampled once at take start.
+    #[serde(default)]
+    pub whisper_adaptive_buffer: bool,
+
+    /// `CODESCRIBE_FORMAT_ON_DEVICE`: try the host-registered Apple system
+    /// model before the cloud formatting lane. Opt-in; read per formatting call.
+    #[serde(default)]
+    pub format_on_device: bool,
+
+    #[serde(default = "default_light_plus_sentence_pause_sec")]
+    pub light_plus_sentence_pause_sec: f32,
+
     /// Global one-shot command for inserting the in-memory deferred transcript.
     #[serde(default)]
     pub deferred_insert_shortcut: DeferredInsertShortcut,
+
+    /// Modifier held with a digit to open an agent channel. Command is unrepresentable.
+    #[serde(default)]
+    pub channel_modifier: ChannelModifier,
+
+    /// Quick Fn press below the hold delay toggles dictation. Off until chosen.
+    #[serde(default)]
+    pub fn_tap_toggles_dictation: bool,
+
+    /// Middle mouse button (button 2) follows the Fn press/release path. Off until chosen.
+    #[serde(default)]
+    pub middle_mouse_acts_as_fn: bool,
 
     // ===== Language =====
     /// Whisper language preference
@@ -462,11 +647,11 @@ pub struct Config {
     #[serde(default)]
     pub ai_formatting_enabled: bool,
 
-    /// User-owned automatic paste policy for non-assistive dictation.
-    /// Assistive, empty/no-speech, Notes save-only, and safety branches remain
-    /// controller-owned vetoes even when this preference is enabled.
-    #[serde(default = "default_auto_paste_enabled")]
-    pub auto_paste_enabled: bool,
+    /// User-owned automatic paste policy for non-assistive dictation
+    /// (`PASTE_MODE`). Assistive, empty/no-speech, Notes save-only, and safety
+    /// branches remain controller-owned vetoes in every mode.
+    #[serde(default)]
+    pub paste_mode: PasteMode,
 
     /// Strategy for sending transcript (end-of-utterance vs streaming)
     #[serde(default)]
@@ -552,6 +737,9 @@ pub struct Config {
     // ===== Audio =====
     /// Preferred audio input device name (cpal) (optional)
     pub audio_input_device: Option<String>,
+    /// Settings-only choice, frozen at capture start.
+    #[serde(default)]
+    pub audio_retention: AudioRetention,
 
     // ===== History =====
     /// Whether to keep transcription history
@@ -584,8 +772,18 @@ pub struct Config {
     #[serde(default = "default_local_model")]
     pub local_model: String,
 
-    /// Cloud STT endpoint used when cloud is selected as the committed verdict path.
-    pub stt_endpoint: Option<String>,
+    /// Atomic File and Live rows frozen into each runtime snapshot.
+    pub stt_file_endpoint: Option<String>,
+    pub stt_file_api_key: Option<String>,
+    pub stt_live_endpoint: Option<String>,
+    pub stt_live_api_key: Option<String>,
+    /// CLOUD multipart refine endpoint. Always present; never the file lane.
+    #[serde(default = "default_cloud_refine_endpoint")]
+    pub stt_cloud_refine_endpoint: String,
+    /// True when [`super::cloud_asr::resolve_asr_product_mode`] resolved Cloud,
+    /// which already requires granted audio-egress consent.
+    #[serde(default)]
+    pub cloud_refine_selected: bool,
 
     /// Opt-in Whisper domain-vocabulary initial prompt.
     ///
@@ -594,16 +792,6 @@ pub struct Config {
     /// for diagnosis and future retuning.
     #[serde(default = "default_stt_initial_prompt_enabled")]
     pub stt_initial_prompt_enabled: bool,
-
-    /// Full LLM endpoint URL (default: https://api.openai.com/v1/responses)
-    #[serde(default = "default_llm_endpoint_option")]
-    pub llm_endpoint: Option<String>,
-
-    /// API key for cloud LLM providers
-    pub llm_api_key: Option<String>,
-
-    /// API key for cloud STT providers used on the committed verdict path
-    pub stt_api_key: Option<String>,
 
     // ===== Clipboard =====
     /// Whether to restore previous clipboard after paste
@@ -624,6 +812,9 @@ pub struct Config {
     /// When false, Enter inserts newline (Cmd+Enter sends).
     #[serde(default = "default_agent_enter_sends")]
     pub agent_enter_sends: bool,
+    /// Send an untouched Agent transcript after the terminal countdown.
+    #[serde(default)]
+    pub agent_auto_send: bool,
     // ===== Debugging =====
     /// Whether to dump raw audio files to logs/audio directory
     #[serde(default = "default_dump_audio_logs")]
@@ -639,10 +830,17 @@ impl Default for Config {
             hold_start_delay_ms: default_hold_start_delay_ms(),
             double_tap_interval_ms: default_double_tap_interval_ms(),
             toggle_silence_sec: default_toggle_silence_sec(),
+            whisper_context_window_sec: default_whisper_context_window_sec(),
+            whisper_adaptive_buffer: false,
+            format_on_device: false,
+            light_plus_sentence_pause_sec: default_light_plus_sentence_pause_sec(),
             deferred_insert_shortcut: DeferredInsertShortcut::default(),
+            channel_modifier: ChannelModifier::default(),
+            fn_tap_toggles_dictation: false,
+            middle_mouse_acts_as_fn: false,
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
-            auto_paste_enabled: default_auto_paste_enabled(),
+            paste_mode: PasteMode::default(),
             transcript_send_mode: TranscriptSendMode::default(),
             transcript_tagging_enabled: false,
             transcript_tag_template: default_transcript_tag_template(),
@@ -663,20 +861,24 @@ impl Default for Config {
             sound_name: default_sound_name(),
             sound_volume: default_sound_volume(),
             audio_input_device: None,
+            audio_retention: AudioRetention::Forever,
             history_enabled: default_history_enabled(),
             quick_notes_enabled: false,
             quick_notes_save_only: false,
             use_local_stt: true,
             local_model: default_local_model(),
-            stt_endpoint: None,
+            stt_file_endpoint: None,
+            stt_live_endpoint: None,
             stt_initial_prompt_enabled: default_stt_initial_prompt_enabled(),
-            llm_endpoint: Some(default_llm_endpoint()),
-            llm_api_key: None,
-            stt_api_key: None,
+            stt_file_api_key: None,
+            stt_live_api_key: None,
+            stt_cloud_refine_endpoint: default_cloud_refine_endpoint(),
+            cloud_refine_selected: false,
             restore_clipboard: default_restore_clipboard(),
             restore_clipboard_delay_ms: default_restore_clipboard_delay_ms(),
             start_at_login: false,
             agent_enter_sends: default_agent_enter_sends(),
+            agent_auto_send: false,
             dump_audio_logs: default_dump_audio_logs(),
         }
     }
@@ -693,6 +895,10 @@ impl Config {
 
         // Clamp toggle silence to a reasonable range
         self.toggle_silence_sec = self.toggle_silence_sec.clamp(0.5, 30.0);
+        self.whisper_context_window_sec =
+            normalize_whisper_context_window_sec(self.whisper_context_window_sec);
+        self.light_plus_sentence_pause_sec =
+            normalize_light_plus_sentence_pause_sec(self.light_plus_sentence_pause_sec);
 
         // Clamp double-tap interval to safe bounds
         self.double_tap_interval_ms = self.double_tap_interval_ms.clamp(100, 450);
@@ -708,7 +914,6 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::{Config, DeferredInsertShortcut, ShortcutBinding};
-    use crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT;
 
     /// Legacy shortcut aliases must fail parse so old broken names do not resurrect.
     #[test]
@@ -772,15 +977,6 @@ mod tests {
         assert_eq!("cmd".parse(), Ok(HoldArmModifier::Cmd));
         assert_eq!("command".parse(), Ok(HoldArmModifier::Cmd));
         assert!("nope".parse::<HoldArmModifier>().is_err());
-    }
-
-    /// Default LLM endpoint is the OpenAI Responses URL, not chat/completions.
-    #[test]
-    fn default_config_uses_openai_responses_endpoint() {
-        assert_eq!(
-            Config::default().llm_endpoint.as_deref(),
-            Some(DEFAULT_OPENAI_RESPONSES_ENDPOINT)
-        );
     }
 
     /// Default disables Whisper initial_prompt (WER collapse guard, W2-F).

@@ -138,18 +138,6 @@ impl EmbedderConfig {
             ..Default::default()
         }
     }
-
-    /// Override max token length
-    pub fn with_max_length(mut self, max_length: usize) -> Self {
-        self.max_length = Some(max_length);
-        self
-    }
-
-    /// Disable embedded model usage
-    pub fn disable_embedded(mut self) -> Self {
-        self.use_embedded = false;
-        self
-    }
 }
 
 /// Text embedding engine using Candle BERT (MiniLM)

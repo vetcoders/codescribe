@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
@@ -7,6 +9,23 @@ import XCTest
 /// thresholds themselves are pinned by ChatRenderCostTests — these tests only
 /// guard how a disposition turns into displayed characters.
 final class OversizedTextSliceTests: XCTestCase {
+  @MainActor
+  func testFullTextViewDisablesWritingTools() throws {
+    let host = NSHostingView(rootView: FullTextView(text: "Streamed reply", font: .systemFont(ofSize: 13)))
+    host.frame = NSRect(x: 0, y: 0, width: 320, height: 160)
+    host.layoutSubtreeIfNeeded()
+
+    func textView(in view: NSView) -> NSTextView? {
+      if let text = view as? NSTextView { return text }
+      return view.subviews.lazy.compactMap { textView(in: $0) }.first
+    }
+
+    let text = try XCTUnwrap(textView(in: host))
+    if #available(macOS 15.0, *) {
+      XCTAssertEqual(text.writingToolsBehavior, .none)
+    }
+  }
+
   private func prose(bytes: Int, line: String = "sialalala bumcyk cyk ") -> String {
     var out = ""
     out.reserveCapacity(bytes + line.utf8.count + 1)
