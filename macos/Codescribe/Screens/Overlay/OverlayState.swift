@@ -754,7 +754,11 @@ final class OverlayState {
     conversationFocusRevision &+= 1
     showsAgentMonitor = false
     pendingChannelConversation = nil
-    if id != nil { expandAgentSurface() }
+    if id != nil {
+      expandAgentSurface()
+    } else {
+      onChannelPresentationChanged?()
+    }
     markVisibleConversationRead()
   }
 
@@ -3281,7 +3285,28 @@ final class OverlayState {
     pendingRevisionSource = nil
     pendingRevisionDraft = nil
     userRevisionProvenance = nil
+    followDictationCapturePresentation()
     onTranscriptPresentationChanged?()
+  }
+
+  /// A new ordinary capture shows its own canvas. The controller's roster
+  /// resolves a channel snapshot that still describes the preceding capture.
+  private func followDictationCapturePresentation() {
+    if !hasOpenChannel, indicatorMode != .assistive {
+      selectConversation(nil)
+    }
+    guard let engine else { return }
+    let generation = captureGeneration
+    let focusRevision = conversationFocusRevision
+    Task { @MainActor [weak self] in
+      let roster = await engine.channelRosterSnapshot()
+      guard let self, captureGeneration == generation,
+        conversationFocusRevision == focusRevision, recording, !finalized
+      else { return }
+      applyChannelRoster(roster)
+      guard !hasOpenChannel, indicatorMode != .assistive else { return }
+      selectConversation(nil)
+    }
   }
 
   private func resetTranscript() {
