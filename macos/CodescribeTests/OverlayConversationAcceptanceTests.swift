@@ -252,21 +252,102 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   }
 
   @MainActor
-  func testScrollMaterialFadeSurvivesResizeAndReversal() throws {
+  func testConversationGlassDoesNotPaintAFullWidthComposerBar() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(occurrence(0, revision: 1, text: "Wiadomość pod pływającym polem tekstowym."))
+    let conversation = try lenaConversation(bus)
+    for scheme in [ColorScheme.dark, .light] {
+      let host = NSHostingView(
+        rootView: OverlayConversationView(
+          conversation: conversation, palette: .resolve(scheme), topInset: 50, bottomInset: 20,
+          pendingControls: [], controlErrors: [:], onControl: { _, _ in }, onShowMonitor: {},
+          draft: .constant(""), sending: false, sendError: nil, onSend: {}
+        )
+        .preferredColorScheme(scheme))
+      host.frame = NSRect(x: 0, y: 0, width: 532, height: 260)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
+      func effects(_ root: NSView) -> [NSVisualEffectView] {
+        (root as? NSVisualEffectView).map { [$0] } ?? root.subviews.flatMap(effects)
+      }
+      let sampling = effects(host).filter {
+        $0.blendingMode == .withinWindow && $0.maskImage != nil
+      }
+      XCTAssertEqual(
+        sampling.count, 1, "only the header has full-width chrome; input glass hugs its field")
+      if let effect = sampling.first {
+        XCTAssertGreaterThan(
+          effect.bounds.height, 58, "pinned back navigation remains below the main header")
+        XCTAssertLessThan(effect.bounds.height, 110, "chrome cannot cover the reading viewport")
+      }
+    }
+  }
+
+  @MainActor
+  func testScrollChromeSamplesWithinWindowAndKeepsFullHeightFade() throws {
     for top in [true, false] {
-      for size in [NSSize(width: 120, height: 58), NSSize(width: 350, height: 140)] {
-        let renderer = ImageRenderer(
-          content: OverlayScrollFade(top: top).frame(width: size.width, height: size.height))
-        let image = try XCTUnwrap(renderer.nsImage)
-        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation)))
+      for size in [NSSize(width: 532, height: 58), NSSize(width: 720, height: 140)] {
+        let host = NSHostingView(rootView: OverlayScrollMaterial(top: top))
+        host.frame = NSRect(origin: .zero, size: size)
+        let window = NSWindow(
+          contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
+        func effects(_ root: NSView) -> [NSVisualEffectView] {
+          (root as? NSVisualEffectView).map { [$0] } ?? root.subviews.flatMap(effects)
+        }
+        let sampling = effects(host).filter { $0.blendingMode == .withinWindow }
+        XCTAssertEqual(sampling.count, 1, "one native sampler of the text behind each chrome edge")
+        guard let effect = sampling.first else { continue }
+        XCTAssertEqual(effect.state, .active, "non-activating panels still blur their own text")
+        XCTAssertEqual(effect.bounds.height, size.height, accuracy: 1)
+        XCTAssertNil(effect.hitTest(.zero), "scroll chrome cannot intercept selection or dragging")
+        let mask = try XCTUnwrap(effect.maskImage)
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(mask.tiffRepresentation)))
         let x = bitmap.pixelsWide / 2
-        let edgeY = top ? bitmap.pixelsHigh - 1 : 0
-        let interiorY = top ? 0 : bitmap.pixelsHigh - 1
-        XCTAssertLessThan(try XCTUnwrap(bitmap.colorAt(x: x, y: edgeY)).alphaComponent, 0.1)
-        XCTAssertGreaterThan(try XCTUnwrap(bitmap.colorAt(x: x, y: interiorY)).alphaComponent, 0.95)
         let center = try XCTUnwrap(bitmap.colorAt(x: x, y: bitmap.pixelsHigh / 2))
         XCTAssertGreaterThan(center.alphaComponent, 0.35)
-        XCTAssertLessThan(center.alphaComponent, 0.65, "gradient spans all chrome, no opaque slab")
+        XCTAssertLessThan(center.alphaComponent, 0.65, "the entire height fades, not only its edge")
+        let start = try XCTUnwrap(bitmap.colorAt(x: x, y: 0)).alphaComponent
+        let end = try XCTUnwrap(bitmap.colorAt(x: x, y: bitmap.pixelsHigh - 1)).alphaComponent
+        XCTAssertEqual(start, top ? 1 : 0, accuracy: 0.08)
+        XCTAssertEqual(end, top ? 0 : 1, accuracy: 0.08)
+      }
+    }
+  }
+
+  @MainActor
+  func testOrdinaryDictationHeaderSamplesItsOwnTranscript() throws {
+    for scheme in [ColorScheme.dark, .light] {
+      let host = NSHostingView(
+        rootView: DictationOverlayView(state: .previewFormatted()).preferredColorScheme(scheme))
+      host.frame = NSRect(x: 0, y: 0, width: 600, height: 350)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
+      func effects(_ root: NSView) -> [NSVisualEffectView] {
+        (root as? NSVisualEffectView).map { [$0] } ?? root.subviews.flatMap(effects)
+      }
+      let sampling = effects(host).filter {
+        $0.blendingMode == .withinWindow && $0.maskImage != nil
+      }
+      XCTAssertEqual(sampling.count, 1, "dictation has the same native header sampler as chat")
+      if let effect = sampling.first {
+        XCTAssertEqual(effect.state, .active)
+        XCTAssertGreaterThan(effect.bounds.height, 30)
+        XCTAssertLessThan(effect.bounds.height, 120, "chrome must not cover the full transcript")
       }
     }
   }

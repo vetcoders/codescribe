@@ -1134,33 +1134,13 @@ private struct OverlayHeaderChrome: ViewModifier {
     content.background {
       if enabled {
         GeometryReader { geometry in
-          let fade: CGFloat = 12
-          let height = geometry.size.height + fade
-          chrome
-            .frame(height: height)
-            .mask {
-              LinearGradient(
-                stops: [
-                  .init(color: .black, location: 0),
-                  .init(color: .black, location: max(0, 1 - fade / height)),
-                  .init(color: .clear, location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-              )
-            }
-            .opacity(0.35)
+          OverlayScrollMaterial(top: true)
+            .frame(height: geometry.size.height + 8)
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
       }
     }
-  }
-
-  private var chrome: some View {
-    // Broad scroll-edge shading must not join the controls' glass composition.
-    // A masked glassEffect here can paint over the header foreground.
-    Rectangle().fill(.regularMaterial)
   }
 }
 
