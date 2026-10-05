@@ -49,17 +49,6 @@
         }
       }
     },
-    "%@ - agent reply ready" : {
-      "comment" : "Menu bar tooltip while an unread agent reply waits; %@ is the status tooltip",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ – odpowiedź agenta gotowa"
-          }
-        }
-      }
-    },
     "%@ OAuth client id" : {
       "comment" : "Popover title; the placeholder is a vendor brand, e.g. ChatGPT",
       "localizations" : {
@@ -166,6 +155,7 @@
       }
     },
     "%@ needs setup" : {
+      "comment" : "Status below an agent client card; %@ is Codex or Claude Code",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -1595,19 +1585,8 @@
         }
       }
     },
-    "AI provider" : {
-      "comment" : "Setup step eyebrow",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dostawca AI"
-          }
-        }
-      }
-    },
     "API key" : {
-      "comment" : "Lane auth: an API key is stored",
+      "comment" : "Lane auth: an API key is stored\nSetup provider API key row label",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -1623,16 +1602,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz API (opcjonalnie)"
-          }
-        }
-      }
-    },
-    "API key configured. Supported Assistive requests, cloud Formatting and model discovery can use this provider's key. No account is connected." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Klucz API jest skonfigurowany. Możesz korzystać z formatowania w chmurze i pobierać listę modeli. Podłącz konto, żeby zacząć."
           }
         }
       }
@@ -1700,41 +1669,12 @@
       }
     },
     "Account access unavailable" : {
+      "comment" : "Setup Agent account row status when account credentials cannot be read",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Brak dostępu do konta"
-          }
-        }
-      }
-    },
-    "Account connected and API key configured. Supported Assistive requests can use the account; Formatting and model discovery use the provider API key." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Konto i klucz API są skonfigurowane."
-          }
-        }
-      }
-    },
-    "Account connected for supported Assistive requests. No API key is configured. You can continue without adding one; cloud Formatting and model discovery require a provider API key." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Konto jest połączone. Dodaj klucz API."
-          }
-        }
-      }
-    },
-    "Account sign-in and API keys are separate ways to connect. Account sign-in supports Assistive; cloud Formatting and model discovery use an API key. Keys are stored in the macOS Keychain and never shown back. You can skip this step and configure access later in Settings › Providers." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zaloguj się na konto, aby korzystać z funkcji agentowych. Dodaj klucz API, aby włączyć formatowanie w chmurze i pobrać listę modeli."
           }
         }
       }
@@ -1819,6 +1759,7 @@
       "shouldTranslate" : false
     },
     "Add" : {
+      "comment" : "Setup API key row action when no key is stored",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -1947,6 +1888,7 @@
       }
     },
     "Agent account" : {
+      "comment" : "Setup provider account row label\nSummary row: provider account used by Agent features",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -1983,26 +1925,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się bezpiecznie dokończyć instalacji Agent Bridge: %@"
-          }
-        }
-      }
-    },
-    "Agent capabilities not ready" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent nie jest jeszcze gotowy."
-          }
-        }
-      }
-    },
-    "Agent capabilities ready" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent jest gotowy."
           }
         }
       }
@@ -2108,16 +2030,6 @@
         }
       }
     },
-    "Agent readiness covers Assistive access and native tools. Cloud Formatting is configured separately in Settings › Agent › LLM lanes." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent jest gotowy. Formatowanie w chmurze ustaw osobno w Ustawieniach › Agent › Ścieżki modeli AI."
-          }
-        }
-      }
-    },
     "Agent transcript tagging" : {
       "localizations" : {
         "pl" : {
@@ -2188,17 +2100,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Agentowy"
-          }
-        }
-      }
-    },
-    "Agentic adds one more setup step (readiness check). Basic skips it." : {
-      "comment" : "Setup step footnote; Agentic and Basic are the two lane names",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tryb agentowy dodaje jeszcze jeden krok konfiguracji — sprawdzenie gotowości. Tryb podstawowy go pomija."
           }
         }
       }
@@ -2417,6 +2318,7 @@
       }
     },
     "Anything you skipped is available later in Settings." : {
+      "comment" : "Setup completion footnote",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -2548,16 +2450,6 @@
         }
       }
     },
-    "Assistant · %@" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Asystent · %@"
-          }
-        }
-      }
-    },
     "Assistive" : {
       "comment" : "Prompt file: voice-assistant base prompt\nRequest lane: agent and voice assistant",
       "localizations" : {
@@ -2606,16 +2498,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Załącz obrazy dla Agenta."
-          }
-        }
-      }
-    },
-    "Attach images to send to the agent" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Załącz obrazy dla agenta."
           }
         }
       }
@@ -2844,17 +2726,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Podstawowy prompt systemowy Agenta (assistive.txt)"
-          }
-        }
-      }
-    },
-    "Base system prompt for the voice assistant (assistive.txt)" : {
-      "comment" : "assistive.txt is a file name — do not translate",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Podstawowy prompt systemowy asystenta głosowego (assistive.txt)"
           }
         }
       }
@@ -3126,27 +2997,6 @@
         }
       }
     },
-    "Capabilities" : {
-      "comment" : "Settings tab: agent capability matrix",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Możliwości"
-          }
-        }
-      }
-    },
-    "Capabilities." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Możliwości."
-          }
-        }
-      }
-    },
     "Capability matrix" : {
       "localizations" : {
         "pl" : {
@@ -3193,16 +3043,6 @@
         }
       }
     },
-    "Capture is live and the words go to the agent." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nagrywanie trwa, a rozpoznany tekst trafia do agenta."
-          }
-        }
-      }
-    },
     "Capture is live while the shortcut is held." : {
       "localizations" : {
         "pl" : {
@@ -3223,17 +3063,6 @@
         }
       }
     },
-    "Capture screen context to give the AI assistant visual awareness of what you're working on." : {
-      "comment" : "Why the app asks for the Screen Recording scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pozwala korzystać z obrazu ekranu jako kontekstu, żeby agent AI mógł uwzględnić to, nad czym pracujesz."
-          }
-        }
-      }
-    },
     "Capture stays live until you stop it." : {
       "localizations" : {
         "pl" : {
@@ -3245,6 +3074,7 @@
       }
     },
     "Change" : {
+      "comment" : "Setup API key row action when a key is stored",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3367,21 +3197,12 @@
       }
     },
     "Checking provider access…" : {
+      "comment" : "Setup provider row status while credentials are loading",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdzanie dostępu…"
-          }
-        }
-      }
-    },
-    "Checking provider access… You can continue with Basic dictation." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdzanie konta… Podstawowe funkcje pozostają dostępne."
           }
         }
       }
@@ -3457,7 +3278,7 @@
       }
     },
     "Choose how you want to use Codescribe." : {
-      "comment" : "Setup chapter subtitle",
+      "comment" : "Setup chapter heading",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3484,26 +3305,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wybierz agentów, z którymi chcesz pracować głosem."
-          }
-        }
-      }
-    },
-    "Choose the assistant model" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybierz model asystenta"
-          }
-        }
-      }
-    },
-    "Choose where to send your dictation. Your assistant can listen as you speak; changes wait until you finish." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybierz, dokąd ma trafiać dyktowany tekst. Agent może słuchać na bieżąco, ale zaczyna działać dopiero, gdy skończysz mówić."
           }
         }
       }
@@ -3566,6 +3367,7 @@
       }
     },
     "Click Finish to close setup." : {
+      "comment" : "Setup completion explanation; Finish is the button label",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3852,17 +3654,6 @@
         }
       }
     },
-    "Coding assistants" : {
-      "comment" : "Setup: eyebrow above the coding-assistant choices",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agenci do kodu"
-          }
-        }
-      }
-    },
     "Collapse" : {
       "comment" : "Fold the message back to its head",
       "localizations" : {
@@ -4041,6 +3832,7 @@
       }
     },
     "Connect" : {
+      "comment" : "Setup Agent account row action for a disconnected account",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -4061,28 +3853,6 @@
         }
       }
     },
-    "Connect Codescribe to your agent." : {
-      "comment" : "Setup step heading; Codescribe is the product name",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Połącz Codescribe z agentem."
-          }
-        }
-      }
-    },
-    "Connect a live coding session" : {
-      "comment" : "Detail under a coding-assistant checkbox",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Połącz z aktywną sesją kodowania"
-          }
-        }
-      }
-    },
     "Connect a microphone and refresh Audio settings." : {
       "localizations" : {
         "pl" : {
@@ -4094,32 +3864,12 @@
       }
     },
     "Connect an AI provider" : {
+      "comment" : "Setup step heading",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Połącz dostawcę AI"
-          }
-        }
-      }
-    },
-    "Connect an AI provider." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Połącz Codescribe z dostawcą AI."
-          }
-        }
-      }
-    },
-    "Connect the assistants you want to work with." : {
-      "comment" : "Setup chapter subtitle",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Połącz agentów, z którymi chcesz pracować."
           }
         }
       }
@@ -4146,6 +3896,7 @@
       }
     },
     "Connected" : {
+      "comment" : "Setup Agent account row status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5092,7 +4843,7 @@
       }
     },
     "Denied" : {
-      "comment" : "Permission row status, lower case",
+      "comment" : "Permission row status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5145,6 +4896,7 @@
       }
     },
     "Diagnostics" : {
+      "comment" : "Settings tab: agent connection diagnostics",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5203,26 +4955,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "W tych folderach Agent szuka repozytoriów Git, aby ustalić ścieżkę projektu. (list_projects). Przeszukuje też podfoldery, do kilku poziomów w głąb. Pomija foldery ukryte i foldery z plikami kompilacji."
-          }
-        }
-      }
-    },
-    "Directories the agent may read and write. Everything outside them is out of reach." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Foldery, w których agent może odczytywać i zapisywać dane. Wszystko poza nimi jest niedostępne."
-          }
-        }
-      }
-    },
-    "Directories the assistant scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "W tych folderach asystent szuka repozytoriów Git, aby ustalić ścieżkę projektu. (list_projects). Przeszukuje też podfoldery, do kilku poziomów w głąb. Pomija foldery ukryte i foldery z plikami kompilacji."
           }
         }
       }
@@ -5309,19 +5041,8 @@
         }
       }
     },
-    "Double-tap Left/Right Option to start, tap again to stop." : {
-      "comment" : "Hotkey preset detail; Option is the key cap on a Mac keyboard",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Naciśnij dwukrotnie lewy lub prawy Option, aby zacząć; naciśnij ponownie, aby zatrzymać."
-          }
-        }
-      }
-    },
     "Double-tap left Option: dictation with formatting. Double-tap right Option: talk to the Agent. Tap again to stop." : {
-      "comment" : "Hotkey preset detail; Option is the key cap on a Mac keyboard",
+      "comment" : "Hotkey preset detail; left and right Option activate different modes",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5719,16 +5440,6 @@
         }
       }
     },
-    "Export assistant replies only" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Eksportuj tylko odpowiedzi asystenta"
-          }
-        }
-      }
-    },
     "Export failed" : {
       "comment" : "Alert title when a thread export wrote nothing",
       "localizations" : {
@@ -5782,16 +5493,6 @@
         }
       }
     },
-    "External MCP servers the agent can call, and their transports." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zewnętrzne serwery MCP dostępne dla agenta i sposoby łączenia się z nimi."
-          }
-        }
-      }
-    },
     "Favorite" : {
       "localizations" : {
         "pl" : {
@@ -5829,17 +5530,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz do transkrypcji plików"
-          }
-        }
-      }
-    },
-    "Fine-tune the exact keys later in Settings › Shortcuts." : {
-      "comment" : "Setup step footnote; Settings › Shortcuts is a navigation path in the app",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dokładne skróty ustawisz później w Ustawieniach › Skróty."
           }
         }
       }
@@ -5882,17 +5572,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zakończ nagrywanie lub poczekaj na zakończenie pracy Agenta i spróbuj ponownie. Wybrany język został zapisany."
-          }
-        }
-      }
-    },
-    "Finish recording or the agent’s turn, then try again. Your language choice is saved." : {
-      "comment" : "Language restart refused while the app is busy",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Zakończ nagrywanie lub poczekaj na zakończenie pracy agenta i spróbuj ponownie. Wybrany język został zapisany."
           }
         }
       }
@@ -5944,17 +5623,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Końcowe przetwarzanie…"
-          }
-        }
-      }
-    },
-    "First, choose what you want to do." : {
-      "comment" : "Setup chapter subtitle",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Najpierw wybierz, do czego chcesz używać Codescribe."
           }
         }
       }
@@ -6153,7 +5821,7 @@
       }
     },
     "Getting started" : {
-      "comment" : "Setup wizard window title; codescribe is the product name, kept lowercase",
+      "comment" : "Setup wizard window title",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -6180,17 +5848,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Token GitHub. Adresy API i klucze do rozpoznawania mowy są w sekcji powyżej."
-          }
-        }
-      }
-    },
-    "Give your voice tools" : {
-      "comment" : "Setup chapter heading",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Połącz głos z narzędziami"
           }
         }
       }
@@ -6237,7 +5894,7 @@
       }
     },
     "Granted" : {
-      "comment" : "Permission row status, lower case\nPermission status: this permission is granted",
+      "comment" : "Permission row status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -6391,17 +6048,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ukryj podgląd na żywo"
-          }
-        }
-      }
-    },
-    "Hold Fn/Globe to dictate, or double-tap Option to toggle." : {
-      "comment" : "Hotkey preset detail; Fn, Globe and Option are Mac key caps",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przytrzymaj Fn/Globe, aby dyktować, albo naciśnij dwukrotnie Option, aby przełączać nagrywanie."
           }
         }
       }
@@ -6618,17 +6264,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wstaw transkrypcję"
-          }
-        }
-      }
-    },
-    "Install selected" : {
-      "comment" : "Button: install the bridge for the checked coding assistants",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zainstaluj wybrane"
           }
         }
       }
@@ -7202,16 +6837,6 @@
         }
       }
     },
-    "MCP connects your assistant to additional tools. You can add servers later in Settings." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "MCP daje agentowi dostęp do dodatkowych narzędzi. Serwery możesz dodać później w Ustawieniach."
-          }
-        }
-      }
-    },
     "MCP servers" : {
       "localizations" : {
         "pl" : {
@@ -7232,43 +6857,12 @@
         }
       }
     },
-    "MCP servers extend the agent with extra tools like code search, PR review, or web search. Add your first server below, or skip it and wire one any time." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Serwery MCP dają agentowi dodatkowe narzędzia, np. wyszukiwanie w kodzie, przegląd PR albo wyszukiwanie w sieci. Dodaj pierwszy serwer poniżej albo pomiń ten krok i podłącz go w dowolnej chwili."
-          }
-        }
-      }
-    },
     "MCP servers." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Serwery MCP."
-          }
-        }
-      }
-    },
-    "MCP settings…" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ustawienia MCP…"
-          }
-        }
-      }
-    },
-    "Make it yours" : {
-      "comment" : "Setup chapter heading",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ustaw po swojemu"
           }
         }
       }
@@ -7285,6 +6879,7 @@
       }
     },
     "Manage" : {
+      "comment" : "Setup Agent account row action for a connected account",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7300,16 +6895,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zarządzaj serwerami MCP"
-          }
-        }
-      }
-    },
-    "Manage provider access…" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zarządzaj kontem i kluczem API…"
           }
         }
       }
@@ -7444,16 +7029,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Napisz do Agenta"
-          }
-        }
-      }
-    },
-    "Message the agent" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Napisz do agenta"
           }
         }
       }
@@ -7887,17 +7462,6 @@
         }
       }
     },
-    "Multilingual — detects the language as you speak." : {
-      "comment" : "Detail under the Auto-detect dictation language choice",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozpoznaje język w trakcie mówienia, także gdy przechodzisz między językami."
-          }
-        }
-      }
-    },
     "My dictation" : {
       "localizations" : {
         "en" : {
@@ -8018,16 +7582,6 @@
         }
       }
     },
-    "No API key is configured for this provider. Add one in Settings › Providers, choose another provider, or skip this step for dictation." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Brak klucza API dla tego dostawcy. Dodaj go w Ustawienia › Dostawcy albo wybierz innego dostawcę. Ten krok możesz pominąć, jeśli chcesz tylko dyktować."
-          }
-        }
-      }
-    },
     "No Agent provider or MCP connector secrets are currently stored." : {
       "localizations" : {
         "pl" : {
@@ -8065,16 +7619,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie potrzebujesz konta. Twoja konfiguracja i historia transkrypcji pozostają na tym Macu."
-          }
-        }
-      }
-    },
-    "No account or API key is configured for this provider. Connect a supported account for Assistive, or add an API key in Settings › Providers. You can skip this step for dictation." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aby korzystać z trybu agentowego, zaloguj się na swoje konto."
           }
         }
       }
@@ -8312,16 +7856,6 @@
         }
       }
     },
-    "No tools registered yet — open the agent once or add an MCP server." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie ma jeszcze żadnych zarejestrowanych narzędzi. Otwórz agenta lub dodaj serwer MCP."
-          }
-        }
-      }
-    },
     "No transcript to save" : {
       "comment" : "Tray banner: there is no recent transcript to append to the daily note",
       "localizations" : {
@@ -8374,6 +7908,7 @@
       }
     },
     "Not connected" : {
+      "comment" : "Setup Agent account row status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8384,7 +7919,7 @@
       }
     },
     "Not determined" : {
-      "comment" : "Permission row status, lower case: the user has not decided yet",
+      "comment" : "Permission row status: the user has not decided yet",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8436,6 +7971,7 @@
       }
     },
     "Not set" : {
+      "comment" : "Setup API key row status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8813,6 +8349,7 @@
       }
     },
     "Optional" : {
+      "comment" : "Status chip",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8924,6 +8461,7 @@
       }
     },
     "Paste key…" : {
+      "comment" : "Setup API key editor placeholder",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9065,17 +8603,6 @@
         }
       }
     },
-    "Pick a starting preset. This sets the Dictation, Formatting, and Assistive shortcuts for you." : {
-      "comment" : "Setup step blurb; Dictation, Formatting and Assistive are the three modes",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybierz sposób uruchamiania. Na tej podstawie ustawimy skróty dla Dyktowania, Formatowania i Agenta."
-          }
-        }
-      }
-    },
     "Pick your dictation language." : {
       "comment" : "Setup step heading",
       "localizations" : {
@@ -9213,17 +8740,6 @@
         }
       }
     },
-    "Power Apple live dictation on-device. Speech never leaves your Mac." : {
-      "comment" : "Why the app asks for the Speech Recognition scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pozwala korzystać z dyktowania na żywo Apple bezpośrednio na Macu. Mowa nie opuszcza urządzenia."
-          }
-        }
-      }
-    },
     "Powers Apple live dictation on your computer. The recording never leaves your device." : {
       "comment" : "Why the app asks for the Speech Recognition scope",
       "localizations" : {
@@ -9251,27 +8767,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zachowaj oryginał i zainstaluj dla %@"
-          }
-        }
-      }
-    },
-    "Press Finish to close setup and start using Codescribe. Anything you skipped is available in Settings." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kliknij „Gotowe”, aby zakończyć konfigurację i zacząć korzystać z Codescribe. Pominięte opcje znajdziesz później w ustawieniach."
-          }
-        }
-      }
-    },
-    "Press and hold Fn/Globe while you speak; release to stop." : {
-      "comment" : "Hotkey preset detail; Fn and Globe are the key caps on a Mac keyboard",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przytrzymaj Fn/Globe podczas mówienia; puść, aby zatrzymać."
           }
         }
       }
@@ -9515,16 +9010,6 @@
         }
       }
     },
-    "Provider access is unavailable. Retry to check account and API key status." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie można teraz sprawdzić dostępu do dostawcy. Spróbuj ponownie, aby sprawdzić stan konta i klucza API."
-          }
-        }
-      }
-    },
     "Provider access is unavailable. The last checked values are shown below." : {
       "localizations" : {
         "pl" : {
@@ -9536,31 +9021,12 @@
       }
     },
     "Provider access unavailable" : {
+      "comment" : "Setup provider row status when the credential snapshot failed",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Brak dostępu do dostawcy"
-          }
-        }
-      }
-    },
-    "Provider account" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Konto dostawcy"
-          }
-        }
-      }
-    },
-    "Provider account access is unavailable. Remove the stored account in Settings › Providers, then sign in again." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie można uzyskać dostępu do konta dostawcy. Usuń zapisane konto w Ustawieniach › Dostawcy i zaloguj się ponownie."
           }
         }
       }
@@ -9608,16 +9074,6 @@
       }
     },
     "Purple — voice goes to the Agent" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Fioletowy — głos trafia do Agenta"
-          }
-        }
-      }
-    },
-    "Purple — voice goes to the agent" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9768,17 +9224,6 @@
         }
       }
     },
-    "Read project files for AI context. Optional — limits file-aware features if skipped." : {
-      "comment" : "Why the app asks for the Full Disk Access scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pozwala czytać pliki projektu i używać ich jako kontekstu dla AI. To opcjonalne — bez tego funkcje korzystające z plików będą ograniczone."
-          }
-        }
-      }
-    },
     "Read-only" : {
       "localizations" : {
         "pl" : {
@@ -9871,6 +9316,7 @@
       }
     },
     "Ready to go ✓" : {
+      "comment" : "Agent setup status below the client cards",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9990,17 +9436,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nagrywanie dla Agenta"
-          }
-        }
-      }
-    },
-    "Recording for the agent" : {
-      "comment" : "Recording light state",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nagrywanie dla agenta"
           }
         }
       }
@@ -10860,16 +10295,6 @@
         }
       }
     },
-    "Retry provider access" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdź ponownie dostęp do usług."
-          }
-        }
-      }
-    },
     "Reveal in Finder" : {
       "localizations" : {
         "pl" : {
@@ -11034,6 +10459,7 @@
       }
     },
     "Save key" : {
+      "comment" : "Setup button: save the provider API key",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -11118,23 +10544,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odpowiedzi Agenta zapisano w folderze %2$@ jako plik %1$@."
-          }
-        }
-      }
-    },
-    "Saved the assistant replies as %@ in %@." : {
-      "comment" : "Placeholders: file name, then folder path",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Saved the assistant replies as %1$@ in %2$@."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odpowiedzi agenta zapisano w folderze %2$@ jako plik %1$@."
           }
         }
       }
@@ -11571,7 +10980,7 @@
       }
     },
     "Set" : {
-      "comment" : "Status chip: a value is stored",
+      "comment" : "Setup API key row status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -11582,6 +10991,7 @@
       }
     },
     "Set up" : {
+      "comment" : "Button below an agent client card",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -11592,22 +11002,12 @@
       }
     },
     "Set up an Agent account or an API key. You can also do this later." : {
+      "comment" : "Setup step description",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Skonfiguruj konto Agenta lub klucz API. Możesz zrobić to także później."
-          }
-        }
-      }
-    },
-    "Sets the transcription language. Auto-detect handles mixed or multilingual speech. Change it any time in Settings." : {
-      "comment" : "Setup step blurb; Auto-detect is the name of the first language choice",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ustawia język rozpoznawania mowy. Automatyczne wykrywanie sprawdza się też wtedy, gdy mówisz w kilku językach. Zmienisz to później w Ustawieniach."
           }
         }
       }
@@ -11654,23 +11054,12 @@
       }
     },
     "Setup is complete." : {
-      "comment" : "Setup chapter subtitle",
+      "comment" : "Setup chapter heading",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Konfiguracja jest gotowa."
-          }
-        }
-      }
-    },
-    "Setup is complete. Your voice takes it from here." : {
-      "comment" : "Setup chapter subtitle",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Konfiguracja jest gotowa. Dalej prowadzi Cię głos."
           }
         }
       }
@@ -12437,34 +11826,6 @@
         }
       }
     },
-    "Start with dictation, or bring an assistant into the conversation. Change this any time in Settings." : {
-      "comment" : "Setup step blurb",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Możesz po prostu dyktować albo pracować głosem razem z agentem AI. Ten wybór możesz później zmienić w Ustawieniach."
-          }
-        }
-      }
-    },
-    "Start with the language of the app." : {
-      "comment" : "First setup chapter subtitle",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Start with the language of the app."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Zacznij od języka aplikacji."
-          }
-        }
-      }
-    },
     "Starting" : {
       "comment" : "Tray status: a recording start is in flight",
       "localizations" : {
@@ -12958,17 +12319,6 @@
         }
       }
     },
-    "Talk with an AI assistant and connect its tools, so your voice can drive an AI assistant, not just type." : {
-      "comment" : "Operating lane choice detail",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozmawiaj z Agentem i korzystaj z jego narzędzi. Twój głos może nie tylko tworzyć tekst, ale też sterować pracą AI."
-          }
-        }
-      }
-    },
     "Talk with the Agent and use its tools." : {
       "comment" : "Operating lane choice detail",
       "localizations" : {
@@ -13368,17 +12718,6 @@
         }
       }
     },
-    "The named agent can hear live drafts and reply during the pause. Installation, commits, deletion, and every other state-changing action wait for transcript_sealed." : {
-      "comment" : "Setup step explanation; transcript_sealed is an event name, keep it verbatim",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Połączony agent może odbierać tekst na bieżąco i odpowiadać podczas pauzy. Instalowanie, tworzenie commitów, usuwanie i wszystkie inne działania zmieniające stan czekają na transcript_sealed."
-          }
-        }
-      }
-    },
     "The on-device model behind the direct Whisper engine and Local power refinement." : {
       "localizations" : {
         "pl" : {
@@ -13521,35 +12860,8 @@
         }
       }
     },
-    "This changes the app’s interface. You’ll choose your dictation language later." : {
-      "comment" : "Interface language is independent of speech recognition",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "This changes the app’s interface. You’ll choose your dictation language later."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "To język aplikacji. Język dyktowania wybierzesz osobno w dalszej części konfiguracji."
-          }
-        }
-      }
-    },
-    "This connection is optional. You can continue and set it up later." : {
-      "comment" : "Setup step footnote on the agent-readiness step",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "To połączenie jest opcjonalne. Możesz przejść dalej i skonfigurować je później."
-          }
-        }
-      }
-    },
     "This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available." : {
+      "comment" : "Setup API key editor note shown while provider access is unavailable",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -13565,16 +12877,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ta prośba o zgodę nie jest już aktualna."
-          }
-        }
-      }
-    },
-    "This provider does not require an API key. Choose a model in Settings › Agent › LLM lanes." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ten dostawca nie wymaga klucza API. Wybierz model w Ustawienia › Agent › Modele AI."
           }
         }
       }
@@ -13798,17 +13100,6 @@
         }
       }
     },
-    "Transcribe your voice into text. Audio is processed locally on your Mac." : {
-      "comment" : "Why the app asks for the Microphone scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zamienia Twój głos na tekst. Dźwięk jest przetwarzany lokalnie na Macu."
-          }
-        }
-      }
-    },
     "Transcriber catching up" : {
       "localizations" : {
         "pl" : {
@@ -14011,6 +13302,7 @@
       }
     },
     "Try again" : {
+      "comment" : "Setup API key save retry button\nSetup provider access retry button",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -14047,17 +13339,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Napisz wiadomość…"
-          }
-        }
-      }
-    },
-    "Type transcribed text into any application and control text insertion." : {
-      "comment" : "Why the app asks for the Accessibility scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pozwala Codescribe wpisywać rozpoznany tekst w innych aplikacjach i sterować miejscem, do którego trafia."
           }
         }
       }
@@ -14236,17 +13517,6 @@
         }
       }
     },
-    "Update selected" : {
-      "comment" : "Button: update the bridge for the checked coding assistants",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zaktualizuj wybrane"
-          }
-        }
-      }
-    },
     "Update skill" : {
       "localizations" : {
         "pl" : {
@@ -14299,7 +13569,7 @@
       }
     },
     "Use both methods." : {
-      "comment" : "Hotkey preset detail; Fn, Globe and Option are Mac key caps",
+      "comment" : "Hotkey preset detail: hold and toggle methods are both enabled",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -14447,17 +13717,6 @@
         }
       }
     },
-    "Voice-to-text anywhere. The simplest, fastest setup." : {
-      "comment" : "Operating lane choice detail",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Mówisz, a Codescribe zamienia Twoją wypowiedź w tekst. Najprostszy sposób na start."
-          }
-        }
-      }
-    },
     "Volume" : {
       "localizations" : {
         "pl" : {
@@ -14540,17 +13799,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przygotowywanie nagrywania…"
-          }
-        }
-      }
-    },
-    "Welcome to codescribe" : {
-      "comment" : "Setup wizard window title; codescribe is the product name, kept lowercase",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Witaj w Codescribe"
           }
         }
       }
@@ -14771,33 +14019,12 @@
         }
       }
     },
-    "What the local agent substrate can currently do, and why." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Co Agent może teraz zrobić lokalnie — i od czego to zależy."
-          }
-        }
-      }
-    },
     "Where audio lives, and the one condition under which it leaves this Mac." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Miejsce przechowywania nagrań i jedyny warunek ich wysyłania poza ten Mac."
-          }
-        }
-      }
-    },
-    "Where should your words go?" : {
-      "comment" : "Setup step heading",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Co ma się dziać z Twoimi słowami?"
           }
         }
       }
@@ -15037,17 +14264,6 @@
         }
       }
     },
-    "You decide what Codescribe can access." : {
-      "comment" : "Setup chapter subtitle; Codescribe is the product name",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "To Ty decydujesz, do czego Codescribe ma dostęp."
-          }
-        }
-      }
-    },
     "You speak, Codescribe turns it into text." : {
       "comment" : "Operating lane choice detail",
       "localizations" : {
@@ -15106,7 +14322,7 @@
       }
     },
     "Your language. Your shortcuts. Your way of working." : {
-      "comment" : "Setup chapter subtitle",
+      "comment" : "Setup chapter heading",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -15122,17 +14338,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Twoja licencja wygasła. Odnów ją, aby nadal korzystać z trybu agentowego. Dyktowanie w trybie podstawowym pozostaje bezpłatne."
-          }
-        }
-      }
-    },
-    "Your next thought starts here" : {
-      "comment" : "Setup chapter heading",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Teraz wystarczy powiedzieć, co chcesz zrobić."
           }
         }
       }
@@ -15153,17 +14358,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Mówisz bardzo cicho i mikrofon może gubić słowa. Przysuń się bliżej albo uruchom kalibrację mikrofonu."
-          }
-        }
-      }
-    },
-    "Your voice, a new possibility" : {
-      "comment" : "Setup chapter heading",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Twój głos potrafi więcej"
           }
         }
       }
@@ -15474,16 +14668,6 @@
         }
       }
     },
-    "connected" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "połączono"
-          }
-        }
-      }
-    },
     "connected — %lld tools" : {
       "localizations" : {
         "en" : {
@@ -15616,17 +14800,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "działa z problemami — %@"
-          }
-        }
-      }
-    },
-    "denied" : {
-      "comment" : "Permission row status, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "odmówiono"
           }
         }
       }
@@ -15863,17 +15036,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "formatowanie…"
-          }
-        }
-      }
-    },
-    "granted" : {
-      "comment" : "Permission row status, lower case\nPermission status: this permission is granted",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "przyznano"
           }
         }
       }
@@ -16444,27 +15606,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "brak mowy"
-          }
-        }
-      }
-    },
-    "not connected" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "nie połączono"
-          }
-        }
-      }
-    },
-    "not determined" : {
-      "comment" : "Permission row status, lower case: the user has not decided yet",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "bez decyzji"
           }
         }
       }
@@ -17252,12 +16393,12 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "settings.search.tab.agentStatus"
+            "value" : "diagnostics, connection, installation path, capability, readiness"
           }
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "diagnostyka, połączenie, ścieżka instalacji, możliwości, gotowość"
           }
         }
