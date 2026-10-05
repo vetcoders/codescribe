@@ -254,17 +254,24 @@ final class AgentBridgeInstallerTests: XCTestCase {
     let engine = MockOnboardingEngine(progress: 11)
     engine.mode = "agentic"
     let bridge = RecordingAgentBridgeInstaller()
-    _ = try bridge.install(selectedClients: [.codex])
+    _ = try bridge.install(selectedClients: [.claudeCode])
     let model = OnboardingViewModel(
       engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
       agentBridge: bridge, probe: MockPermissionProbe(.allGranted))
-    XCTAssertEqual(model.selectedAgentClients, [.codex])
-    model.toggleAgentClient(.codex)
+    XCTAssertEqual(model.selectedAgentClients, [.claudeCode])
+    model.toggleAgentClient(.claudeCode)
     XCTAssertEqual(
-      bridge.installCalls, [[.codex]], "Selection alone does not mutate the installation")
+      bridge.installCalls, [[.claudeCode]], "Selection alone does not mutate the installation")
+    bridge.failInstallation = true
+    model.advance()
+    XCTAssertEqual(model.step, .agenticReadiness)
+    XCTAssertTrue(model.agentClientShowsError(.claudeCode))
+    XCTAssertFalse(
+      model.agentClientShowsError(.codex), "Attribute the failure to the installed client")
+    bridge.failInstallation = false
     model.advance()
     XCTAssertEqual(model.step, .done)
-    XCTAssertEqual(bridge.installCalls, [[.codex], []])
+    XCTAssertEqual(bridge.installCalls, [[.claudeCode], [], []])
     XCTAssertTrue(model.agentBridgeStatus.installedClients.isEmpty)
   }
 

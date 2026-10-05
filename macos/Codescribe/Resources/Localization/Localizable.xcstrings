@@ -9607,6 +9607,16 @@
         }
       }
     },
+    "Purple — voice goes to the Agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fioletowy — głos trafia do Agenta"
+          }
+        }
+      }
+    },
     "Purple — voice goes to the agent" : {
       "localizations" : {
         "pl" : {

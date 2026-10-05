@@ -131,8 +131,9 @@ Setup, its completion summary and the provider cards distinguish these states:
 | Key-optional host | Not required  | Optional       | Requests supported by that host, after selecting a model                                 |
 
 A connected ChatGPT account is not an OpenAI API key. It does not authorize the
-Formatting lane. Setup can continue with account-only access; use **Manage
-provider access…** to open Providers when another credential is needed. A lane
+Formatting lane. Setup can continue with account-only access. Use **Add/Change**
+in the API-key row to edit a key, or **Connect/Manage** in the Agent-account row
+to open Providers. A lane
 is usable only when its resolved runtime snapshot reports it available.
 
 ### Model discovery

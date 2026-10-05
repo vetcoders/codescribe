@@ -299,8 +299,8 @@ final class OnboardingViewModel: ObservableObject {
   func agentClientShowsError(_ client: AgentBridgeClient) -> Bool {
     guard agentBridgeError != nil else { return false }
     guard
-      let errorClient = selectedAgentClients.sorted(by: { $0.rawValue < $1.rawValue }).first
-        ?? AgentBridgeClient.allCases.first
+      let errorClient = selectedAgentClients.union(agentBridgeStatus.installedClients)
+        .sorted(by: { $0.rawValue < $1.rawValue }).first
     else { return false }
     return client == errorClient
   }

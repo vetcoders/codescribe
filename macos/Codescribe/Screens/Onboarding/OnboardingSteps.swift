@@ -775,7 +775,8 @@ struct DoneStepView: View {
               localized: LocalizedStringResource(
                 "Provider API key", locale: model.interfaceLocale,
                 comment: "Summary row: whether an API key is stored for the chosen AI provider")),
-            done: model.selectedProviderKeySet,
+            done: model.providerAccessResolved && !model.providerAccessPending
+              && model.providerAccessError == nil && model.selectedProviderKeySet,
             doneLabel: model.selectedProviderKeyStatus,
             statusLabel: model.selectedProviderKeyStatus)
         }
@@ -785,7 +786,9 @@ struct DoneStepView: View {
               localized: LocalizedStringResource(
                 "Agent account", locale: model.interfaceLocale,
                 comment: "Summary row: provider account used by Agent features")),
-            done: model.selectedProviderAccountConnected,
+            done: model.providerAccessResolved && !model.providerAccessPending
+              && model.providerAccessError == nil && model.selectedProviderAccountError == nil
+              && model.selectedProviderAccountConnected,
             doneLabel: model.selectedProviderAccountStatus,
             statusLabel: model.selectedProviderAccountStatus)
         }
