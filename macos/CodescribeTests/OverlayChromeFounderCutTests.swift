@@ -590,7 +590,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(
       canvas.range(
         of:
-          #"if !state\.isCollapsed \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*HStack\(spacing: 6\)"#,
+          #"if !state\.isCollapsed && state\.showsMyDictation \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*HStack\(spacing: 6\)"#,
         options: .regularExpression) != nil)
     XCTAssertTrue(
       canvas.range(
