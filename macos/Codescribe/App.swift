@@ -175,14 +175,20 @@ struct CodescribeApp: App {
 
   private var settingsWindow: some Scene {
     Window("Settings", id: SettingsView.windowID) {
-      SettingsView(
-        model: SettingsViewModel(
-          engine: RealSettingsEngine(),
-          agentStatus: RealAgentStatusEngine(),
-          mcpAdmin: RealMCPAdminEngine(),
-          hotkeys: RealHotkeysEngine(),
-          licenseService: LicenseService.shared
-        ))
+      if QualityCaptureHost.isRunningTests {
+        // AppDelegate already keeps the XCTest host passive. Its scene must
+        // also avoid opening real model caches before the test runner starts.
+        EmptyView()
+      } else {
+        SettingsView(
+          model: SettingsViewModel(
+            engine: RealSettingsEngine(),
+            agentStatus: RealAgentStatusEngine(),
+            mcpAdmin: RealMCPAdminEngine(),
+            hotkeys: RealHotkeysEngine(),
+            licenseService: LicenseService.shared
+          ))
+      }
     }
     .defaultSize(width: 1000, height: 720)
     .windowResizability(.contentMinSize)

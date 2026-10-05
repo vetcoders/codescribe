@@ -4,6 +4,34 @@ import XCTest
 @testable import Codescribe
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
+  func testFollowerDeliveryIdentitySurvivesPrunedMailboxAndQuietRestart() throws {
+    // Golden IDs produced by the canonical Python follower, including Unicode case folding.
+    let cases: [(String, Bool, String)] = [
+      ("Lena", false, "9655faaf3646b0a670acb8d8"),
+      ("Lena", true, "cf7eb3fe3ae22e59c9624a0b"),
+      ("Straße", false, "4c052a44a94110dc857c9df9"),
+      ("Straße", true, "c24d69d2aadaf3054ebc3b6e"),
+      ("*", false, "5065093fac94bf219c2b211e"),
+      ("*", true, "b4433a2426097d2bd4c556a7"),
+    ]
+    for (audience, terminal, delivery) in cases {
+      var bus = OverlayChannelDelivery.Bus()
+      var row = occurrence(0, revision: 1)
+      row["audience"] = audience
+      if !terminal { row["reducer_action"] = "apply_manual_edit" }
+      bus.consume(row)
+      XCTAssertEqual(try all(bus).messages.first?.recipients.first?.deliveryID, delivery)
+      bus = try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus))
+      var ack = owner(leaseA)
+      ack.merge(["schema": "codescribe.agent-ack.v1", "delivery_id": delivery]) { _, new in new }
+      bus.consume(ack)
+      bus.consume(reply(String(repeating: "d", count: 24), delivery: delivery))
+      let messages = try all(bus).messages
+      XCTAssertEqual(messages.first?.recipients.first?.acknowledged, true)
+      XCTAssertEqual(messages.last?.replyTo, messages.first?.recipients.first?.deliveryID)
+    }
+  }
+
   private let busPath = "/fixture/transcript-events.jsonl"
   private let leaseA = String(repeating: "a", count: 32)
   private let leaseB = String(repeating: "b", count: 32)

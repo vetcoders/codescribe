@@ -160,7 +160,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           && session?.providerSession == providerSession && seal.audience == agent
       }.max { $0.order < $1.order }
       let deliveryID = seal.map {
-        Self.identity(["native_bus_demux", leaseID, $0.phaseID, "seal", $0.audience])
+        Self.identity(["native_bus_demux", leaseID, $0.phaseID, "seal", Self.routedAudience($0.audience)])
       }
       var stage: Stage? = deliveryID == nil ? nil : .sent
       if let deliveryID {
@@ -448,10 +448,12 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           Self.coordinate(row["utterance_id"]), row["status"] as? String ?? ""])
       }
       var recipients: [OverlayConversationRecipient] = []
+      let kind = terminal ? "seal" : evidence || row["status"] as? String == "utterance_revised"
+        ? "revised" : row["status"] as? String == "utterance_draft" ? "draft" : "event"
       for owner in owners {
         historicalOwners[owner.id] = historicalOwners[owner.id] ?? owner
         let delivery = Self.identity(["native_bus_demux", owner.leaseID, phase,
-          terminal ? "seal" : "draft", audience])
+          kind, Self.routedAudience(audience)])
         let old = messages[key]?.recipients.first { $0.owner.id == owner.id && $0.deliveryID == delivery }
         recipients.append(old ?? OverlayConversationRecipient(owner: owner, deliveryID: delivery,
           queued: false, accepted: false, acknowledged: false))
@@ -485,7 +487,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         let phase = Self.identity(["coverage-refused-seal", session, origin.documentIndex])
         for index in message.recipients.indices {
           let owner = message.recipients[index].owner
-          let delivery = Self.identity(["native_bus_demux", owner.leaseID, phase, "seal", origin.audience])
+          let delivery = Self.identity(["native_bus_demux", owner.leaseID, phase, "seal", Self.routedAudience(origin.audience)])
           if message.recipients[index].deliveryID != delivery {
             message.recipients[index] = OverlayConversationRecipient(owner: owner, deliveryID: delivery,
               queued: false, accepted: false, acknowledged: false)
@@ -583,6 +585,10 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
 
     // Exact bus-demux.py _identity contract, including its NUL separator and
     // terminal phase coalescing. Fixed Python-produced vectors guard drift.
+    private static func routedAudience(_ audience: String) -> String {
+      audience.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+    }
+
     private static func identity(_ parts: [String]) -> String {
       SHA256.hash(data: Data(parts.joined(separator: "\0").utf8))
         .prefix(12).map { String(format: "%02x", $0) }.joined()
