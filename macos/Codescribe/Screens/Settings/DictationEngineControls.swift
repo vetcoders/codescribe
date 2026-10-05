@@ -16,7 +16,7 @@ struct DictationEngineControls: View {
         title: String(localized: "ASR mode"),
         subtitle: String(
           localized:
-            "Apple only = live Apple without Layer 1. Local power = Apple-first with mandatory on-device Whisper refinement. Cloud uses its consent-gated provider, not local Whisper."
+            "Apple only: live Apple recognition. Local power: live Apple recognition refined by the on-device Whisper model. Cloud: the cloud provider you agreed to, without local Whisper."
         )
       ) {
         SettingsOptionMenu(

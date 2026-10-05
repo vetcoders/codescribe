@@ -12,7 +12,7 @@ struct DictationHandsFreeTab: View {
             .font(CSFont.ui(13, .semibold))
             .foregroundStyle(Color.primary)
           Text(
-            "Rest the Apple engine after this much silence; the next speech edge wakes a fresh epoch so Whisper can patch the sealed span"
+            "After this much silence Apple recognition pauses. It resumes when you speak again, and Whisper can refine the finished passage."
           )
           .font(CSFont.ui(11.5))
           .foregroundStyle(Color.secondary)
@@ -55,7 +55,7 @@ struct DictationHandsFreeTab: View {
 
       HStack {
         VStack(alignment: .leading, spacing: 4) {
-          Text("Light+ sentence pause")
+          Text("Sentence pause")
             .font(CSFont.ui(13, .semibold))
             .foregroundStyle(Color.primary)
           Text("A longer gap in speech opens a new sentence in pasted dictation.")
@@ -72,7 +72,7 @@ struct DictationHandsFreeTab: View {
       }
       Slider(value: $model.lightPlusSentencePauseSlider, in: 0.3...2.0, step: 0.1)
         .tint(CSColor.chromeAccent)
-        .accessibilityLabel("Light+ sentence pause")
+        .accessibilityLabel("Sentence pause")
         .accessibilityValue(
           Text("\(model.settings.lightPlusSentencePauseSec, format: Self.oneDecimal) seconds"))
     }
