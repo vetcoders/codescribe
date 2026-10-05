@@ -461,6 +461,116 @@ struct PermissionStepView: View {
   }
 }
 
+// MARK: - API key
+
+struct ApiKeyStepView: View {
+  @ObservedObject var model: OnboardingViewModel
+  @FocusState private var keyFocused: Bool
+  @Environment(\.openWindow) private var openWindow
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "Connect an AI provider", locale: model.interfaceLocale,
+            comment: "Setup step heading"))
+      )
+      .font(.title2.weight(.semibold))
+      .foregroundStyle(.primary)
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "Set up an Agent account or an API key. You can also do this later.",
+            locale: model.interfaceLocale, comment: "Setup step description"))
+      )
+      .font(.body)
+      .lineSpacing(3)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+
+      providerPicker
+        .padding(.top, 4)
+
+      if let error = model.providerAccessError {
+        inlineError(error)
+      }
+
+      if model.selectedProviderHasAccountAccess {
+        accountField
+      }
+
+      if model.selectedProviderRequiresApiKey {
+        keyField
+      }
+    }
+  }
+
+  private var providerPicker: some View {
+    HStack(spacing: 12) {
+      Text("Provider")
+        .font(CSFont.mono(12, .medium))
+        .foregroundStyle(.secondary)
+        .frame(width: 72, alignment: .leading)
+      Menu {
+        ForEach(model.providers, id: \.id) { provider in
+          Button {
+            model.selectProvider(provider.id)
+          } label: {
+            if provider.id == model.selectedProviderId {
+              Label(provider.displayName, systemImage: "checkmark")
+            } else {
+              Text(provider.displayName)
+            }
+          }
+        }
+      } label: {
+        Text(model.selectedProvider?.displayName ?? model.selectedProviderId)
+          .font(CSFont.ui(12.5, .semibold))
+          .foregroundStyle(.primary)
+      }
+      .menuStyle(.borderlessButton)
+      .disabled(model.providerMutationPending)
+      Spacer(minLength: 0)
+    }
+    .padding(.vertical, 12)
+    .overlay(alignment: .bottom) {
+      Rectangle().fill(CSColor.hairline(0.08)).frame(height: 1)
+    }
+  }
+
+  private var accountField: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 10) {
+        Circle()
+          .fill(accountStatusColor.opacity(0.85))
+          .frame(width: 7, height: 7)
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "Agent account", locale: model.interfaceLocale,
+              comment: "Setup provider account row label"))
+        )
+        .font(CSFont.ui(13.5, .semibold))
+        .foregroundStyle(CSColor.textBody)
+        Spacer(minLength: 0)
+        Text(model.selectedProviderAccountStatus)
+          .font(CSFont.mono(10, .semibold))
+          .foregroundStyle(accountStatusColor)
+        Button(accountActionTitle, action: openProviderSettings)
+          .csAction()
+          .disabled(model.providerMutationPending)
+      }
+      if let error = model.selectedProviderAccountError {
+        inlineError(error)
+      }
+    }
+    .padding(.vertical, 13)
+    .overlay(alignment: .bottom) {
+      Rectangle().fill(CSColor.hairline(0.08)).frame(height: 1)
+    }
+  }
+
   private var keyField: some View {
     return VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 10) {
@@ -618,116 +728,6 @@ struct PermissionStepView: View {
       ) { model.saveApiKey() }
       .csAction()
       .disabled(model.providerMutationPending || !canSubmitApiKey)
-    }
-  }
-
-// MARK: - API key
-
-struct ApiKeyStepView: View {
-  @ObservedObject var model: OnboardingViewModel
-  @FocusState private var keyFocused: Bool
-  @Environment(\.openWindow) private var openWindow
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      Text(
-        String(
-          localized: LocalizedStringResource(
-            "Connect an AI provider", locale: model.interfaceLocale,
-            comment: "Setup step heading"))
-      )
-      .font(.title2.weight(.semibold))
-      .foregroundStyle(.primary)
-      Text(
-        String(
-          localized: LocalizedStringResource(
-            "Set up an Agent account or an API key. You can also do this later.",
-            locale: model.interfaceLocale, comment: "Setup step description"))
-      )
-      .font(.body)
-      .lineSpacing(3)
-      .foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
-
-      providerPicker
-        .padding(.top, 4)
-
-      if let error = model.providerAccessError {
-        inlineError(error)
-      }
-
-      if model.selectedProviderHasAccountAccess {
-        accountField
-      }
-
-      if model.selectedProviderRequiresApiKey {
-        keyField
-      }
-    }
-  }
-
-  private var providerPicker: some View {
-    HStack(spacing: 12) {
-      Text("Provider")
-        .font(CSFont.mono(12, .medium))
-        .foregroundStyle(.secondary)
-        .frame(width: 72, alignment: .leading)
-      Menu {
-        ForEach(model.providers, id: \.id) { provider in
-          Button {
-            model.selectProvider(provider.id)
-          } label: {
-            if provider.id == model.selectedProviderId {
-              Label(provider.displayName, systemImage: "checkmark")
-            } else {
-              Text(provider.displayName)
-            }
-          }
-        }
-      } label: {
-        Text(model.selectedProvider?.displayName ?? model.selectedProviderId)
-          .font(CSFont.ui(12.5, .semibold))
-          .foregroundStyle(.primary)
-      }
-      .menuStyle(.borderlessButton)
-      .disabled(model.providerMutationPending)
-      Spacer(minLength: 0)
-    }
-    .padding(.vertical, 12)
-    .overlay(alignment: .bottom) {
-      Rectangle().fill(CSColor.hairline(0.08)).frame(height: 1)
-    }
-  }
-
-  private var accountField: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 10) {
-        Circle()
-          .fill(accountStatusColor.opacity(0.85))
-          .frame(width: 7, height: 7)
-        Text(
-          String(
-            localized: LocalizedStringResource(
-              "Agent account", locale: model.interfaceLocale,
-              comment: "Setup provider account row label"))
-        )
-        .font(CSFont.ui(13.5, .semibold))
-        .foregroundStyle(CSColor.textBody)
-        Spacer(minLength: 0)
-        Text(model.selectedProviderAccountStatus)
-          .font(CSFont.mono(10, .semibold))
-          .foregroundStyle(accountStatusColor)
-        Button(accountActionTitle, action: openProviderSettings)
-          .csAction()
-          .disabled(model.providerMutationPending)
-      }
-      if let error = model.selectedProviderAccountError {
-        inlineError(error)
-      }
-    }
-    .padding(.vertical, 13)
-    .overlay(alignment: .bottom) {
-      Rectangle().fill(CSColor.hairline(0.08)).frame(height: 1)
     }
   }
 }

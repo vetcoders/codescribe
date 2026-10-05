@@ -655,7 +655,16 @@ final class OnboardingViewModel: ObservableObject {
 
   func selectProvider(_ id: String) {
     guard !providerMutationPending else { return }
+    guard id != selectedProviderId else { return }
+    if apiKeyDraft.isEmpty {
+      apiKeyDraftsByProviderId[selectedProviderId] = nil
+    } else {
+      apiKeyDraftsByProviderId[selectedProviderId] = apiKeyDraft
+    }
     selectedProviderId = id
+    apiKeyDraft = apiKeyDraftsByProviderId[id] ?? ""
+    apiKeyEditorExpanded = false
+    lastError = nil
     do {
       try engine.updateConfig(key: "LLM_ASSISTIVE_PROVIDER", value: id)
     } catch {
@@ -666,19 +675,15 @@ final class OnboardingViewModel: ObservableObject {
   /// True when the currently selected provider's key is present in the Keychain.
   var selectedProviderKeySet: Bool {
     selectedProvider?.apiKeySet == true
-    guard id != selectedProviderId else { return }
-    if apiKeyDraft.isEmpty {
-      apiKeyDraftsByProviderId[selectedProviderId] = nil
-    } else {
-      apiKeyDraftsByProviderId[selectedProviderId] = apiKeyDraft
-    }
   }
-    apiKeyDraft = apiKeyDraftsByProviderId[id] ?? ""
-    apiKeyEditorExpanded = false
-    lastError = nil
+
+  var selectedProviderRequiresApiKey: Bool {
+    selectedProvider?.keyRequired == true
+  }
 
   var apiKeySaveAvailable: Bool {
     providerAccessResolved && providerAccessError == nil
+      && selectedProviderRequiresApiKey
       && selectedProvider?.apiKeyAccount.isEmpty == false
   }
 
@@ -688,13 +693,8 @@ final class OnboardingViewModel: ObservableObject {
     selectedProvider?.accountSignedIn == true
   }
 
-  var selectedProviderRequiresApiKey: Bool {
-    selectedProvider?.keyRequired == true
-  }
-
   var selectedProviderHasAccountAccess: Bool {
     selectedProvider?.accountLoginEnabled == true || selectedProviderAccountConnected
-      && selectedProviderRequiresApiKey
   }
 
   var selectedProviderAccountStatus: String {
@@ -768,6 +768,7 @@ final class OnboardingViewModel: ObservableObject {
     guard apiKeySaveAvailable, !trimmed.isEmpty, let account = selectedProvider?.apiKeyAccount,
       !providerMutationPending
     else { return }
+    lastError = nil
     providerMutationPending = true
     providerAccessGeneration &+= 1
     Task { @MainActor [self] in
@@ -779,7 +780,6 @@ final class OnboardingViewModel: ObservableObject {
         try await engine.setApiKeyAsync(account: account, secret: trimmed)
         let stillCurrent =
           apiKeyDraft == submitted
-    lastError = nil
           && selectedProviderId == providerId
           && selectedProvider?.apiKeyAccount == account
         if stillCurrent {
