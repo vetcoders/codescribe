@@ -501,20 +501,21 @@ BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundle
 # Prefer a REAL signing identity (Developer ID / Apple Development). Its designated
 # requirement is certificate-based, so a TCC grant (Accessibility / Input
 # Monitoring) survives rebuilds. Ad-hoc (`--sign -`) is cdhash-based, so the grant
-# dies on every rebuild — fall back to it only when no real identity exists.
+# dies on every rebuild. An explicit "-" selects it for isolated test builds;
+# otherwise prefer a real identity whenever the caller did not specify one.
 SIGN_ID="${CODESCRIBE_CODESIGN_IDENTITY:-}"
-if [ -z "$SIGN_ID" ] || [ "$SIGN_ID" = "-" ]; then
+if [ -z "$SIGN_ID" ]; then
   SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
   [ -z "$SIGN_ID" ] && SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)"
 fi
 # Resource executables are outside codesign's automatic nested-code paths.
 # Sign the canonical publisher explicitly before the outer resource seal.
 codesign --force --sign "${SIGN_ID:--}" --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
-if [ -n "$SIGN_ID" ]; then
+if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
   echo "==> [7/7] Signing $SCHEME.app with stable identity: $SIGN_ID"
   codesign --force --deep --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
 else
-  echo "==> [7/7] Ad-hoc signing $SCHEME.app (no stable identity — TCC re-grants per build)"
+  echo "==> [7/7] Ad-hoc signing $SCHEME.app (TCC re-grants per build)"
   codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
 fi
 python3 "$REPO_ROOT/scripts/lib/refresh-agent-publisher-manifest.py" "$AGENT_BRIDGE_BUNDLE_DIR"

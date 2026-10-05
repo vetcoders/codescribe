@@ -57,6 +57,12 @@ make install
 
 This matters because macOS TCC permissions are far more stable with a persistent code-signing identity than with ad-hoc signatures.
 
+For an isolated build/test bundle on a host whose signing keychain is locked,
+`CODESCRIBE_CODESIGN_IDENTITY=- make app` explicitly selects ad-hoc signing and
+does not query installed certificate identities. This is a test artifact;
+Founder installs use the stable Developer ID signature and the signed prebuilt
+installation checks above.
+
 `make install-app` bakes the org public keys so Get license CSK1
 verifies. The key files live in the local developer key pack (see
 `scripts/developer-surface-gate.sh`). Production DMGs still use the

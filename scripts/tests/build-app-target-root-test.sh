@@ -128,15 +128,16 @@ elif name == "swiftc":
     assert dest == out / "codescribe-stt-bridge", args
     dest.write_bytes(b"fresh:codescribe-stt-bridge")
 elif name == "codesign":
+    signing_identity = spec["signing_identity"]
     expected_id = "com.vetcoders.codescribe.dev" if profile == "debug" else "com.vetcoders.codescribe"
     if Path(args[-1]).name == "codescribe":
-        assert args[:-1] == ["--force", "--sign", "fixture-identity", "--identifier", expected_id + ".publisher"], args
+        assert args[:-1] == ["--force", "--sign", signing_identity, "--identifier", expected_id + ".publisher"], args
         publisher = Path(args[-1])
         assert publisher.read_bytes() == b"fresh:codescribe"
         publisher.write_bytes(b"fresh:codescribe:signed")
         record(explicit_publisher_signature=True)
         sys.exit(0)
-    assert args[:-1] in [["--force", "--deep", "--sign", "fixture-identity", "--identifier", expected_id], ["--force", "--sign", "fixture-identity", "--identifier", expected_id]], args
+    assert args[:-1] in [["--force", "--deep", "--sign", signing_identity, "--identifier", expected_id], ["--force", "--sign", signing_identity, "--identifier", expected_id]], args
     app = Path(args[-1])
     for folder, filename in [("Frameworks", "libcodescribe_ffi.dylib"), ("MacOS", "codescribe-stt-sidecar"), ("MacOS", "codescribe-stt-bridge")]:
         copied = app / "Contents" / folder / filename
@@ -160,9 +161,11 @@ else:
 
 passed = failed = 0
 
-def run_case(base, profile, layout, mode="success", skip=False):
+def run_case(base, profile, layout, mode="success", skip=False, signing_identity="fixture-identity"):
     global passed, failed
     label = f"{profile}/{layout}/{mode}" + ("/bindings-only" if skip else "")
+    if signing_identity == "-":
+        label += "/explicit-adhoc"
     case = base / str(passed + failed)
     repo = case / "repo with spaces"
     tools = case / "tools"
@@ -178,7 +181,7 @@ def run_case(base, profile, layout, mode="success", skip=False):
         shutil.copyfile(helpers / helper, repo / "scripts/lib" / helper)
     roots = {"default": repo / "target", "absolute": case / "shared", "spaces": case / "shared artifacts", "relative": repo / "relative artifacts", "config": case / "config artifacts"}
     root = roots[layout]
-    spec = dict(repo=str(repo), root=str(root), profile=profile, mode=mode, tools=str(tools), log=str(case / "calls.jsonl"))
+    spec = dict(repo=str(repo), root=str(root), profile=profile, mode=mode, tools=str(tools), log=str(case / "calls.jsonl"), signing_identity=signing_identity)
     spec_path = case / "spec.json"
     spec_path.write_text(json.dumps(spec))
     for name in ["cargo", "git", "install_name_tool", "bindgen-template", "xcodegen", "xcodebuild", "swiftc", "cp", "codesign", "security"]:
@@ -190,7 +193,7 @@ def run_case(base, profile, layout, mode="success", skip=False):
     old.mkdir(parents=True)
     for name in ["libcodescribe_ffi.dylib", "codescribe-stt-sidecar", "uniffi-bindgen"]:
         (old / name).write_text("stale:" + name)
-    env = {"PATH": str(tools) + ":" + str(Path(sys.executable).parent) + ":/usr/bin:/bin", "HOME": str(case / "home"), "CARGO_HOME": str(case / "cargo-home"), "TMPDIR": str(case / "tmp"), "FIXTURE_SPEC": str(spec_path), "CODESCRIBE_EMBED_EMBEDDER": "1", "CODESCRIBE_CODESIGN_IDENTITY": "fixture-identity", "CODESCRIBE_LOCAL_INSTALL": "inherited-must-be-cleared", "CODESCRIBE_VOICE_LAB_SRC": str(case / "absent-voice-lab")}
+    env = {"PATH": str(tools) + ":" + str(Path(sys.executable).parent) + ":/usr/bin:/bin", "HOME": str(case / "home"), "CARGO_HOME": str(case / "cargo-home"), "TMPDIR": str(case / "tmp"), "FIXTURE_SPEC": str(spec_path), "CODESCRIBE_EMBED_EMBEDDER": "1", "CODESCRIBE_CODESIGN_IDENTITY": signing_identity, "CODESCRIBE_LOCAL_INSTALL": "inherited-must-be-cleared", "CODESCRIBE_VOICE_LAB_SRC": str(case / "absent-voice-lab")}
     if layout in ("absolute", "spaces"):
         env["CARGO_TARGET_DIR"] = str(root)
     elif layout == "relative":
@@ -217,6 +220,8 @@ def run_case(base, profile, layout, mode="success", skip=False):
             assert (case / "staged/manifest.json").is_file()
         elif mode in ("success", "fresh-receipt"):
             assert result.returncode == 0, f"script exit {result.returncode}"
+            if signing_identity == "-":
+                assert "security" not in names, "Explicit ad-hoc signing must not query identities"
             for name in ["install_name_tool", "uniffi-bindgen"] + ([] if skip else ["xcodebuild"]):
                 assert any(c["tool"] == name and "sha256" in c for c in calls), name
             assert sum(c["tool"] == "codesign" and "copy" in c for c in calls) == (0 if skip else 6)
@@ -253,6 +258,7 @@ with tempfile.TemporaryDirectory(prefix="build-app-target-root-") as tmp:
         for layout in ("default", "absolute", "spaces", "relative", "config"):
             run_case(base, profile, layout)
         run_case(base, profile, "spaces", skip=True)
+        run_case(base, profile, "spaces", signing_identity="-")
     for mode in ("metadata-error", "metadata-malformed", "metadata-relative", "ffi-error", "sidecar-error", "missing-receipt", "missing-file", "malformed-receipt", "unfinished", "cross-env", "cross-config", "fresh-receipt", "stage", "publisher-library-only"):
         run_case(base, "debug", "spaces", mode)
 print(f"build-app-target-root: scenarios={passed + failed} passed={passed} failed={failed}")
