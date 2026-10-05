@@ -2000,6 +2000,17 @@
         }
       }
     },
+    "Agent needs setup" : {
+      "comment" : "Global provider or native readiness problem, not a client installation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent wymaga konfiguracji"
+          }
+        }
+      }
+    },
     "Agent pinned, disable Always on Top" : {
       "localizations" : {
         "pl" : {
@@ -3197,7 +3208,7 @@
       }
     },
     "Checking provider access…" : {
-      "comment" : "Setup provider row status while credentials are loading",
+      "comment" : "Setup Agent readiness while the provider snapshot is loading\nSetup provider row status while credentials are loading",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8238,6 +8249,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Otwórz codescribe.vetcoders.io/license, podaj adres e-mail i wklej tutaj otrzymany klucz"
+          }
+        }
+      }
+    },
+    "Open diagnostics" : {
+      "comment" : "Open Agent diagnostics from the Setup global readiness row",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz diagnostykę"
           }
         }
       }
@@ -13302,7 +13324,7 @@
       }
     },
     "Try again" : {
-      "comment" : "Setup API key save retry button\nSetup provider access retry button",
+      "comment" : "Setup API key save retry button\nSetup provider access retry button\nSetup provider selection retry button",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
