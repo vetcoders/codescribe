@@ -18,38 +18,87 @@ struct OverlayConversationView: View {
   let onSend: () -> Void
 
   @State private var followsLatest = true
+  @State private var navigationHeight: CGFloat = 0
+  @State private var composerHeight: CGFloat = 0
 
   var orderedMessages: [OverlayConversationMessage] { conversation.messages }
 
   var body: some View {
     GeometryReader { geometry in
-      VStack(spacing: 10) {
-        navigation
-          .padding(.top, topInset)
-        ScrollViewReader { proxy in
-          trackedMessages(maxBubbleWidth: max(0, min(660, (geometry.size.width - 40) * 0.82)))
-            .onAppear { scrollToLatest(proxy) }
-            .onChange(of: conversation.id) { _, _ in scrollToLatest(proxy) }
-            .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
-            .onChange(of: orderedMessages.last) { _, _ in
-              if followsLatest || followsLiveChannel { scrollToLatest(proxy) }
-            }
-        }
-        if conversation.owner != nil {
-          OverlayConversationComposer(
-            palette: palette, draft: $draft, sending: sending, onSubmit: submit
-          )
-          .padding(.horizontal, 20)
-          if let sendError {
-            Text(verbatim: sendError).font(.caption).foregroundStyle(palette.errorStatus.color)
-              .padding(.horizontal, 20)
+      ScrollViewReader { proxy in
+        trackedMessages(maxBubbleWidth: max(0, min(660, (geometry.size.width - 40) * 0.82)))
+          .overlay(alignment: .top) {
+            navigation
+              .padding(.vertical, 10)
+              .background { conversationChrome(top: true) }
+              .padding(.top, topInset)
+              .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+              } action: {
+                navigationHeight = $0
+              }
           }
-        }
+          .overlay(alignment: .bottom) {
+            composer
+              .background { conversationChrome(top: false) }
+              .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+              } action: {
+                composerHeight = $0
+              }
+          }
+          .onAppear { scrollToLatest(proxy) }
+          .onChange(of: conversation.id) { _, _ in scrollToLatest(proxy) }
+          .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
+          .onChange(of: composerHeight) { _, _ in
+            if followsLatest { scrollToLatest(proxy) }
+          }
+          .onChange(of: orderedMessages.last) { _, _ in
+            if followsLatest || followsLiveChannel { scrollToLatest(proxy) }
+          }
       }
-      .padding(.bottom, bottomInset)
       .foregroundStyle(palette.primaryText.color)
     }
     .accessibilityIdentifier("overlay-conversation-body")
+  }
+
+  private var composer: some View {
+    VStack(spacing: 8) {
+      if conversation.owner != nil {
+        OverlayConversationComposer(
+          palette: palette, draft: $draft, sending: sending, onSubmit: submit)
+        if let sendError {
+          Text(verbatim: sendError).font(.caption).foregroundStyle(palette.errorStatus.color)
+        }
+      }
+    }
+    .padding(.horizontal, 20)
+    .padding(.top, 10)
+    .padding(.bottom, bottomInset)
+    .frame(maxWidth: .infinity)
+  }
+
+  private func conversationChrome(top: Bool) -> some View {
+    GeometryReader { geometry in
+      let fade: CGFloat = 20
+      let height = geometry.size.height + fade
+      // Match transcript scroll-edge material; the input keeps its interactive glass.
+      // Broad masked glassEffect surfaces can paint over the header's foreground.
+      Rectangle().fill(.regularMaterial)
+        .frame(height: height)
+        .mask {
+          LinearGradient(
+            stops: [
+              .init(color: .black, location: 0),
+              .init(color: .black, location: max(0, 1 - fade / height)),
+              .init(color: .clear, location: 1),
+            ], startPoint: top ? .top : .bottom, endPoint: top ? .bottom : .top)
+        }
+        .offset(y: top ? 0 : -fade)
+        .opacity(0.65)
+    }
+    .allowsHitTesting(false)
+    .accessibilityHidden(true)
   }
 
   private var navigation: some View {
@@ -86,8 +135,9 @@ struct OverlayConversationView: View {
     }
   }
 
+  @ViewBuilder
   private func messageList(maxBubbleWidth: CGFloat) -> some View {
-    ScrollView {
+    let list = ScrollView {
       LazyVStack(alignment: .leading, spacing: 12) {
         if orderedMessages.isEmpty {
           Text("No conversation messages yet")
@@ -101,6 +151,13 @@ struct OverlayConversationView: View {
       .padding(.horizontal, 20)
       .padding(.vertical, 8)
       .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .contentMargins(.top, navigationHeight > 0 ? navigationHeight : topInset + 36)
+    .contentMargins(.bottom, composerHeight > 0 ? composerHeight : bottomInset + 54)
+    if #available(macOS 26.0, *) {
+      list.scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+    } else {
+      list
     }
   }
 

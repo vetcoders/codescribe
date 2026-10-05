@@ -164,6 +164,12 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
       }
       let scroll = try XCTUnwrap(scrollViews(host).first { $0.bounds.height > 150 })
+      let viewport = scroll.convert(scroll.bounds, to: host)
+      XCTAssertEqual(
+        viewport.height, host.bounds.height, accuracy: 1,
+        "messages must scroll beneath the fixed header and composer, without a clipped middle strip"
+      )
+      XCTAssertEqual(viewport.minY, host.bounds.minY, accuracy: 1)
       let document = try XCTUnwrap(scroll.documentView)
       XCTAssertGreaterThan(
         scroll.documentVisibleRect.maxY, document.bounds.height - 50,
