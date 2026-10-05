@@ -8,8 +8,8 @@
 //!
 //! Two properties are load-bearing and easy to break:
 //!
-//! - **The tap is listen-only.** It observes events and cannot suppress them,
-//!   so the callback's return value is ignored by CoreGraphics.
+//! - **The tap claims channel digit chords only.** Other keyboard and mouse
+//!   events retain their normal application behavior.
 //! - **Teardown is a swap race, not a lock.** Every CoreFoundation handle lives
 //!   in an `AtomicPtr` inside `RuntimeControl`; whoever swaps a non-null value
 //!   out owns the teardown. That is what keeps `shutdown()` and `Drop` from
@@ -41,6 +41,40 @@ fn preempts_stop_paste(event: &HotkeyEvent) -> bool {
     )
 }
 
+/// Track claimed digit edges even when the modifier is released first.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct ChannelKeyClaims {
+    down: [bool; 10],
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl ChannelKeyClaims {
+    fn claim(
+        &mut self,
+        input: &HotkeyDetectorInput,
+        config: super::config::HotkeyRuntimeConfig,
+    ) -> bool {
+        match input {
+            HotkeyDetectorInput::KeyDown {
+                key: HotkeyPhysicalKey::Digit(digit),
+                modifiers,
+                ..
+            } if *digit < 10 => {
+                let index = usize::from(*digit);
+                self.down[index] |=
+                    super::detector::channel_chord_matches(config.channel_modifier, *modifiers);
+                self.down[index]
+            }
+            HotkeyDetectorInput::KeyUp {
+                key: HotkeyPhysicalKey::Digit(digit),
+                ..
+            } if *digit < 10 => std::mem::take(&mut self.down[usize::from(*digit)]),
+            _ => false,
+        }
+    }
+}
+
 // --- macOS CGEventTap Implementation using raw bindings ---
 
 /// The real implementation: a session-level CGEventTap driven on its own
@@ -65,7 +99,7 @@ mod macos {
     /// Opaque `CGEventRef` — a single keyboard event, owned by the callback's
     /// caller for the callback's duration only.
     type CGEventRef = *mut c_void;
-    /// Opaque `CGEventTapProxy` — unused here, the tap is listen-only.
+    /// Opaque `CGEventTapProxy` — unused by this callback.
     type CGEventTapProxy = *mut c_void;
     /// Opaque `CFMachPortRef` — the event tap port; retained, must be released.
     type CFMachPortRef = *mut c_void;
@@ -162,9 +196,8 @@ mod macos {
     const K_CG_SESSION_EVENT_TAP: u32 = 1;
     /// Insert at the head of the tap chain.
     const K_CG_HEAD_INSERT_EVENT_TAP: u32 = 0;
-    /// Observe only — the tap cannot modify or swallow events, and the
-    /// callback's return value is ignored.
-    const K_CG_EVENT_TAP_OPTION_LISTEN_ONLY: u32 = 1;
+    /// An active tap can consume the configured channel chord.
+    const K_CG_EVENT_TAP_OPTION_DEFAULT: u32 = 0;
 
     // Callback type
     /// Signature CoreGraphics expects for an event tap callback.
@@ -255,6 +288,7 @@ mod macos {
     /// `&mut HotkeyState`.
     struct HotkeyState {
         detector: HotkeyDetector,
+        channel_keys: ChannelKeyClaims,
         tx: Sender<HotkeyEvent>,
         /// Shared runtime handle so the callback can read the live tap port
         /// (`control.tap`) to re-arm it after macOS disables the tap. The
@@ -268,6 +302,7 @@ mod macos {
         fn new(tx: Sender<HotkeyEvent>, control: Arc<RuntimeControl>) -> Self {
             Self {
                 detector: HotkeyDetector::default(),
+                channel_keys: ChannelKeyClaims::default(),
                 tx,
                 control,
             }
@@ -639,10 +674,8 @@ mod macos {
 
     /// CGEventTap callback - thin adapter from CoreGraphics events to HotkeyDetector input.
     ///
-    /// Note: the tap is created with `K_CG_EVENT_TAP_OPTION_LISTEN_ONLY`
-    /// (see `run_event_tap`), so CoreGraphics ignores our return value and
-    /// we cannot suppress events here. If real Fn-emoji-picker suppression
-    /// is ever needed, the tap shape must change to an active tap first.
+    /// Consume only channel digit down/repeat/up events. Modifier events,
+    /// ordinary typing, deferred paste and middle mouse still pass through.
     extern "C" fn event_callback(
         _proxy: CGEventTapProxy,
         event_type: CGEventType,
@@ -660,7 +693,7 @@ mod macos {
         }
         let state = unsafe { &mut *state_ptr };
 
-        // macOS may forcibly disable a listen-only tap when our callback is too
+        // macOS may forcibly disable an event tap when our callback is too
         // slow (timeout) or on user input. Without re-arming here, every hotkey
         // (dictation/formatting/assistive) goes silently dead until restart.
         // Re-enable the tap immediately and warn. We only *read* the live tap
@@ -745,7 +778,7 @@ mod macos {
                 }
             }
             K_CG_EVENT_OTHER_MOUSE_DOWN | K_CG_EVENT_OTHER_MOUSE_UP => {
-                // Listen-only: the click still reaches the frontmost app.
+                // The click still reaches the frontmost app.
                 // Buttons other than 2 (middle) are ignored, including click-drag.
                 if !runtime_config.middle_mouse_acts_as_fn {
                     return event;
@@ -765,11 +798,12 @@ mod macos {
             _ => return event,
         };
 
+        let claimed = state.channel_keys.claim(&input, runtime_config);
         if let Some(hotkey_event) = state.detector.feed(input, runtime_config) {
             deliver_event(state, hotkey_event);
         }
 
-        event
+        if claimed { ptr::null_mut() } else { event }
     }
     /// Start the hotkey listener on a background thread and return its runtime owner.
     pub fn start_listener(tx: Sender<HotkeyEvent>) -> Result<HotkeyRuntime, String> {
@@ -845,7 +879,7 @@ mod macos {
             CGEventTapCreate(
                 K_CG_SESSION_EVENT_TAP,
                 K_CG_HEAD_INSERT_EVENT_TAP,
-                K_CG_EVENT_TAP_OPTION_LISTEN_ONLY,
+                K_CG_EVENT_TAP_OPTION_DEFAULT,
                 event_mask,
                 event_callback,
                 resources.user_info_ptr(),
@@ -1118,6 +1152,38 @@ pub use macos::{HotkeyRuntime, disable, enable, is_enabled, start_listener};
 mod stop_preemption_tests {
     use super::*;
     use crate::os::hotkeys::{HoldAction, HoldMode};
+
+    #[test]
+    fn channel_claim_consumes_repeat_and_release_but_preserves_ordinary_typing() {
+        let mut claims = ChannelKeyClaims::default();
+        let config = get_hotkey_runtime_config();
+        let ctrl = HotkeyModifierSnapshot {
+            ctrl: true,
+            ..Default::default()
+        };
+        let down = |modifiers| HotkeyDetectorInput::KeyDown {
+            now: Instant::now(),
+            key: HotkeyPhysicalKey::Digit(2),
+            modifiers,
+        };
+        assert!(!claims.claim(&down(Default::default()), config));
+        let modifiers = match config.channel_modifier {
+            codescribe_core::config::ChannelModifier::Ctrl => ctrl,
+            codescribe_core::config::ChannelModifier::Fn => HotkeyModifierSnapshot {
+                fn_key: true,
+                ..Default::default()
+            },
+        };
+        assert!(claims.claim(&down(modifiers), config));
+        assert!(claims.claim(&down(Default::default()), config));
+        let up = HotkeyDetectorInput::KeyUp {
+            key: HotkeyPhysicalKey::Digit(2),
+            modifiers: Default::default(),
+        };
+        assert!(claims.claim(&up, config));
+        assert!(!claims.claim(&up, config));
+        assert!(!claims.claim(&down(Default::default()), config));
+    }
 
     #[test]
     fn next_take_intent_preempts_but_release_and_ui_actions_do_not() {

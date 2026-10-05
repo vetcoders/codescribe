@@ -953,7 +953,7 @@ pub(crate) fn open_bus_append_file(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-/// Narrow external reply publication. Transcript authority remains reducer-only.
+/// External agent messages use the same private journal. PCM transcript authority remains reducer-only.
 pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<serde_json::Value> {
     let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "invalid agent reply event");
     if !path.is_absolute() || !event.is_object() {
@@ -968,7 +968,9 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
                     .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         })
     };
-    if !identity_field("reply_id")
+    let typed = event["schema"] == "codescribe.agent-user-message.v1"
+        && event["kind"] == "agent_user_message";
+    if !identity_field(if typed { "message_id" } else { "reply_id" })
         || ["provider", "provider_session_id", "lease_id", "emitted_at"]
             .iter()
             .any(|key| text_field(key).is_none())
@@ -986,6 +988,45 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
         }
     }
     match (event["schema"].as_str(), event["kind"].as_str()) {
+        (Some("codescribe.agent-user-message.v1"), Some("agent_user_message")) => {
+            let recipients = event["recipients"].as_array().ok_or_else(invalid)?;
+            let owner = recipients.first().ok_or_else(invalid)?;
+            if text_field("text").is_none()
+                || event["text"]
+                    .as_str()
+                    .is_some_and(|text| text.len() > 64 * 1024)
+                || event["source"] != "typed"
+                || event["source_event_id"] != event["message_id"]
+                || recipients.len() != 1
+                || [
+                    "provider",
+                    "provider_session_id",
+                    "lease_id",
+                    "channel",
+                    "audience",
+                ]
+                .iter()
+                .any(|key| owner[*key] != event[*key] || text_field(key).is_none())
+                || owner["bus"].as_str() != path.to_str()
+                || !matches!(
+                    event["channel"].as_str(),
+                    Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+                )
+                || [
+                    "status",
+                    "wav",
+                    "capture_epoch",
+                    "sample_start",
+                    "sample_end",
+                    "occurrence_session_id",
+                ]
+                .iter()
+                .any(|key| event.get(*key).is_some())
+            {
+                return Err(invalid());
+            }
+        }
+
         (Some("codescribe.agent-reply.v1"), Some("agent_reply")) => {
             if text_field("text").is_none()
                 || event["spoken"].as_bool() != Some(false)
@@ -2123,6 +2164,41 @@ fn expand_tilde(path: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn typed_publication_uses_private_journal_and_refuses_audio_claims() {
+        use sha2::{Digest, Sha256};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bus.jsonl");
+        let lease = hex::encode(Sha256::digest(b"codex\0agent-a"));
+        let owner = serde_json::json!({"provider":"codex", "provider_session_id":"agent-a",
+            "lease_id":&lease[..32], "channel":"2", "audience":"lena", "bus":path});
+        let mut event = owner.clone();
+        event.as_object_mut().unwrap().extend(
+            serde_json::json!({
+            "schema":"codescribe.agent-user-message.v1", "kind":"agent_user_message",
+            "message_id":"111111111111111111111111", "source_event_id":"111111111111111111111111",
+            "source":"typed", "text":"Iwo", "emitted_at":"2026-10-05T10:00:00Z",
+            "recipients":[owner]})
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        assert!(
+            super::append_agent_event(&path, &event).unwrap()["length"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        let before = std::fs::read(&path).unwrap();
+        event["capture_epoch"] = serde_json::json!(1);
+        assert!(super::append_agent_event(&path, &event).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        event.as_object_mut().unwrap().remove("capture_epoch");
+        event["recipients"][0]["provider_session_id"] = serde_json::json!("foreign");
+        assert!(super::append_agent_event(&path, &event).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
     fn fixture_refusal(receipt: &super::SealCoverageReceipt) -> super::TerminalFinalityRefusal {
         let mut ledger = super::AcousticLedger::new();
         assert!(ledger.record_seal_coverage(receipt.clone()));

@@ -45,6 +45,25 @@ class NativeQueueTests(unittest.TestCase):
             "wav": "/private/audio.wav", "sample_start": 123, "sample_end": 456,
         }
 
+    @patch("shutil.which", return_value="/fake/codex")
+    @patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "queued", ""))
+    def test_typed_message_uses_native_queue_without_audio_seal(self, run, _which):
+        payload = dict(self.pending[0], kind="message", source="typed", state_change_allowed=True)
+        for key in ("coverage", "wav", "sample_start", "sample_end"): payload.pop(key, None)
+        self.pending[0] = payload
+        state = DEMUX.read_json(self.root / "leases" / f"{self.lease_id}.json")
+        state["pending"] = self.pending
+        DEMUX.atomic_json(self.root / "leases" / f"{self.lease_id}.json", state)
+        wake = self.wake()
+        wake.enqueue(payload)
+        wake.close(wait=True)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(self.result(payload["delivery_id"])["disposition"], "provider_accepted")
+        wake = self.wake()
+        wake.enqueue(payload)
+        wake.close(wait=True)
+        self.assertEqual(run.call_count, 1)
+
     def wake(self):
         return DEMUX.NativeQueueWakeup(self.root, self.session, "2")
 

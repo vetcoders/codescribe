@@ -70,6 +70,7 @@ LEASE_SCHEMA = "codescribe.agent-bridge.lease.v1"
 ATTACH_SCHEMA = "codescribe.agent-bridge.attach.v1"
 EVENT_SCHEMA = "codescribe.agent-bridge.event.v1"
 ACTIVE_NAMES_SCHEMA = "codescribe.agent-bridge.active-names.v1"
+AGENT_USER_MESSAGE_SCHEMA = "codescribe.agent-user-message.v1"
 AGENT_REPLY_SCHEMA = "codescribe.agent-reply.v1"
 AGENT_REPLY_PLAYBACK_SCHEMA = "codescribe.agent-reply-playback.v1"
 REPLY_SOURCE_SCHEMA = "codescribe.agent-reply-source.v1"
@@ -908,6 +909,7 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         CLEAN_SCHEMA,
         EVIDENCE_SCHEMA,
         CHANNEL_SESSION_SCHEMA,
+        AGENT_USER_MESSAGE_SCHEMA,
         "codescribe.bus-chunk.v1",
     ):
         return None
@@ -1284,6 +1286,19 @@ def consider(
     debug: bool,
     recipients: set[str] | None = None,
 ) -> dict[str, Any] | None:
+    if event.get("schema") == AGENT_USER_MESSAGE_SCHEMA:
+        if (event.get("kind") != "agent_user_message" or event.get("source") != "typed"
+                or not isinstance(event.get("text"), str) or not event["text"].strip()
+                or not isinstance(event.get("message_id"), str)
+                or not re.fullmatch(r"[0-9a-f]{24}", event["message_id"])
+                or event.get("source_event_id") != event["message_id"]):
+            return None
+        audience = event.get("audience")
+        if not isinstance(audience, str) or not name or audience.casefold() != name.casefold():
+            return None
+        return {**event, "schema": EVENT_SCHEMA, "kind": "message",
+                "producer_schema": AGENT_USER_MESSAGE_SCHEMA, "state_change_allowed": True,
+                "routing_match": "audience"}
     status = event.get("status")
     if status != SEALED and not (drafts and status in LIVE_STATUSES):
         return None
@@ -1991,7 +2006,7 @@ class NativeQueueWakeup:
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cs-native-queue")
 
     def enqueue(self, payload: dict[str, Any], *, retry: bool = False) -> None:
-        if payload.get("kind") != "seal":
+        if payload.get("kind") not in ("seal", "message"):
             return
         self.executor.submit(self._deliver, dict(payload), retry).add_done_callback(self._report_error)
 
@@ -2187,7 +2202,7 @@ def run(args: argparse.Namespace) -> int:
                     publish(payload)
                     if native:
                         native.enqueue(payload)
-                    if args.on_seal and payload.get("kind") == "seal":
+                    if args.on_seal and payload.get("kind") in ("seal", "message"):
                         fire_seal_hook(args.on_seal, payload)
                 remaining.pop(0)
         except BufferError:
@@ -3307,7 +3322,7 @@ def say_reply(args: argparse.Namespace) -> int:
             reply["channel"] = owner.get("channel")
         for key in ("source_event_id", "utterance_id", "session_id", "occurrence_session_id",
                     "capture_epoch", "sample_start", "sample_end", "document_index",
-                    "audience", "broadcast_id", "recipients"):
+                    "audience", "broadcast_id", "recipients", "message_id"):
             if key in envelope:
                 reply[key] = envelope[key]
     receipt = publish_reply_event(bus, reply, bridge_root=args.bridge_home)
@@ -3321,6 +3336,57 @@ def say_reply(args: argparse.Namespace) -> int:
                  **{key: reply[key] for key in ("reply_id", "provider", "provider_session_id", "lease_id")}})
     emit(reply)
     return speak_published_reply(args, bus, reply, os.urandom(12).hex())
+
+
+def send_text_command(args: argparse.Namespace) -> int:
+    """Publish explicit user text to the selected immutable channel owner."""
+    root = args.bridge_home
+    channel = str(args.channel)
+    bus = args.bus.expanduser().resolve(strict=False)
+    lease_id = lease_identifier(args.provider, args.session)
+    if args.lease != lease_id:
+        raise ValueError("selected conversation owner no longer matches")
+    path = root / AUDIENCE_BINDING_FILENAME
+    with path.with_suffix(".lock").open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+        state = read_json(path) or {}
+        binding = state.get("bindings", {}).get(channel)
+        lease = read_json(root / "leases" / f"{lease_id}.json") or {}
+        if (state.get("schema") != AUDIENCE_BINDING_SCHEMA or not isinstance(binding, dict)
+                or binding.get("provider") != args.provider.casefold()
+                or binding.get("provider_session_id") != args.session
+                or Path(binding.get("bus") or "").resolve(strict=False) != bus
+                or lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
+                or lease.get("provider") != args.provider.casefold()
+                or lease.get("provider_session_id") != args.session
+                or lease.get("bus") != str(bus)
+                or not live_follower_pid(root, lease_id)):
+            raise ValueError("channel was rebound or its agent is not listening; draft retained")
+        text = sys.stdin.buffer.read(65537)
+        if len(text) > 65536:
+            raise ValueError("message exceeds 64 KiB; draft retained")
+        text = text.decode("utf-8")
+        if not text.strip():
+            raise ValueError("empty message")
+        audience = binding.get("audience")
+        if not isinstance(audience, str) or not audience:
+            raise ValueError("channel has no audience")
+        identity = os.urandom(12).hex()
+        owner = {"provider": args.provider.casefold(), "provider_session_id": args.session,
+                 "lease_id": lease_id, "channel": channel, "audience": audience,
+                 "name": audience, "bus": str(bus)}
+        event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
+                 **owner, "message_id": identity, "source_event_id": identity,
+                 "source": "typed", "text": text, "emitted_at": utc_now(),
+                 "recipients": [owner]}
+        receipt = publish_reply_event(bus, event, bridge_root=root)
+        if (any(type(receipt.get(key)) is not int or receipt[key] < 0
+                for key in ("stream_dev", "stream_inode", "offset", "length"))
+                or not 0 < receipt["length"] <= REPLY_READ_LIMIT
+                or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
+            raise ValueError("publication has no durable receipt; do not automatically resend")
+    emit({"kind": "message_published", "message_id": identity, "source": receipt})
+    return 0
 
 
 def follower_pidfile(root: Path, lease_id: str) -> Path:
@@ -3632,7 +3698,7 @@ def status_command(args: argparse.Namespace) -> int:
         for item in pending
         if isinstance(item, dict) and item.get("delivery_id") not in markers
     ]
-    seals = [item for item in unacked if item.get("kind") == "seal"]
+    seals = [item for item in unacked if item.get("kind") in ("seal", "message")]
     last_seal = max(
         seals, key=lambda item: str(item.get("emitted_at") or ""), default=None
     )
@@ -3977,6 +4043,7 @@ def main() -> int:
         help="append an agent reply to the canonical Bus and speak it through "
         "vendor TTS; --name defaults to the name on this session's lease",
     )
+    parser.add_argument("--send-text", action="store_true", help="send user text from stdin to an exact channel owner; --channel, --lease and --bus required")
     parser.add_argument("--reply-to", metavar="DELIVERY_ID", help="associate --say with this owned delivery envelope")
     playback = parser.add_mutually_exclusive_group()
     playback.add_argument("--play-reply", metavar="REPLY_ID", help="explicitly play one durable reply")
@@ -4051,6 +4118,18 @@ def main() -> int:
         )
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.send_text:
+        if (not args.provider or args.channel not in tuple(str(n) for n in range(1, 10))
+                or not args.lease or not args.bus_overridden
+                or any((args.say is not None, args.ack, args.attach, args.status, args.watch,
+                        args.follow, args.once, args.read_delivery, args.retry_wakeup,
+                        args.play_reply, args.stop_reply, args.reply_to))):
+            parser.error("--send-text requires an exact --provider/--session/--lease/--channel/--bus owner")
+        try:
+            return send_text_command(args)
+        except (OSError, ValueError, RuntimeError) as error:
+            sys.stderr.write(f"cs-bus: message publication refused: {error}\n")
+            return 3
     if args.reply_to and (args.say is None or not re.fullmatch(r"[0-9a-f]{24}", args.reply_to)):
         parser.error("--reply-to requires --say and a delivery id")
     if args.play_reply or args.stop_reply:
@@ -4094,7 +4173,7 @@ def main() -> int:
         lease_id = lease_identifier(args.provider, args.session)
         state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
         payload = next((p for p in state.get("pending", []) if p.get("delivery_id") == args.retry_wakeup), None)
-        if payload is None or payload.get("kind") != "seal":
+        if payload is None or payload.get("kind") not in ("seal", "message"):
             parser.error("delivery is not a pending seal in this mailbox")
         native = NativeQueueWakeup(args.bridge_home, args.session, None)
         native.enqueue(payload, retry=True)

@@ -381,13 +381,47 @@ final class OverlayStateTests: XCTestCase {
     let view = OverlayConversationView(
       conversation: all, palette: .dark, topInset: 50,
       bottomInset: 20, pendingControls: [], controlErrors: [:], onControl: { _, _ in },
-      onShowMonitor: {})
+      onShowMonitor: {}, draft: .constant(""), sending: false, sendError: nil, onSend: {})
     XCTAssertEqual(view.newestMessages.map(\.order), [5, 4, 3, 2, 1])
     XCTAssertEqual(Set(view.newestMessages.map(\.id)).count, 5)
     XCTAssertEqual(view.newestMessages.map(\.text), Array(repeating: "Iwo", count: 5))
     XCTAssertEqual(
       all.messages.map(\.order), [1, 2, 3, 4, 5],
       "presentation must not reorder the canonical observer")
+  }
+
+  @MainActor
+  func testTextPublicationRetainsDraftOnFailureAndClearsOnlyPublishedBytes() async throws {
+    let state = OverlayState()
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "agent-a",
+        "lease_id": String(repeating: "a", count: 32), "channel": "2", "name": "Lena",
+      ]))
+    let conversation = OverlayConversation(
+      id: owner.id, channel: "2", name: "Lena", owner: owner, messages: [])
+    state.conversationDrafts[owner.id] = "Pierwszy szkic"
+    state.publishConversationText = { _, _ in throw CocoaError(.fileWriteUnknown) }
+    await state.sendConversationText(conversation)
+    XCTAssertEqual(state.conversationDrafts[owner.id], "Pierwszy szkic")
+    XCTAssertNotNil(state.textMessageErrors[owner.id])
+    XCTAssertTrue(state.pendingTextMessages.isEmpty)
+    state.publishConversationText = { recipient, text in
+      XCTAssertEqual(recipient.id, owner.id)
+      XCTAssertEqual(text, "Pierwszy szkic")
+      state.conversationDrafts[owner.id] = "Nowszy szkic"
+    }
+    await state.sendConversationText(conversation)
+    XCTAssertEqual(state.conversationDrafts[owner.id], "Nowszy szkic")
+    XCTAssertNil(state.textMessageErrors[owner.id])
+    state.publishConversationText = { _, _ in }
+    await state.sendConversationText(conversation)
+    XCTAssertEqual(state.conversationDrafts[owner.id], "")
+    let focus = state.conversationFocusRevision
+    state.applyConversationSnapshot(
+      OverlayChannelDeliverySnapshot(deliveries: [], conversations: [conversation]))
+    state.selectConversation(conversation.id)
+    XCTAssertGreaterThan(state.conversationFocusRevision, focus)
   }
 
   func testSelectingConversationExpandsTheCanvasWithoutChangingCapture() {

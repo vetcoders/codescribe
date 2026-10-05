@@ -1028,3 +1028,20 @@ arbitrary agent. Header and conversation navigation never request speech.
 `d57196ab`. C11 is the next structural executable cut; its actual commit hash is
 recorded only in the durable C11 report. Compiler, tests, runtime, app, install,
 and release behavior are `NOT_ASSESSED` under the C11 embargo.
+
+## Written messages from agent conversations
+
+`codescribe.agent-user-message.v1` / `agent_user_message` carries a random
+24-hex `message_id`, `source_event_id` equal to that ID, `source: typed`, exact
+UTF-8 text (at most 64 KiB), timestamp, channel and one frozen recipient with
+provider/session/32-hex lease/bus. It contains no PCM coordinates, WAV, seal or
+coverage claim. Five submissions of the same text remain five messages.
+
+`cs-bus --send-text --channel N --provider P --session S --lease L --bus ABS`
+reads the text on stdin. It holds the canonical binding's shared lock through
+publication, refuses a rebound owner or an absent listener, and uses
+`codescribe bus append-event` for the existing private generation journal.
+The follower produces a `kind: message` envelope and uses its ordinary mailbox,
+ACK and native queue path. Agent replies retain the exact delivery association;
+written input never passes through acoustic finality or microphone ownership.
+Publication uncertainty is reported without automatic replay.

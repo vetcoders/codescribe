@@ -32,6 +32,26 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     }
   }
 
+  func testTypedMessagesRetainDistinctIdentityAndCausalReceipt() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    for index in 0..<5 {
+      let identity = String(format: "%024x", index + 1)
+      bus.consume([
+        "schema": "codescribe.agent-user-message.v1", "kind": "agent_user_message",
+        "message_id": identity, "text": "Iwo", "audience": "lena", "channel": "2",
+        "recipients": [owner(leaseA)], "emitted_at": "2026-10-05T10:00:00Z",
+      ])
+    }
+    let rows = try all(bus).messages
+    XCTAssertEqual(rows.count, 5)
+    XCTAssertEqual(Set(rows.map(\.id)).count, 5)
+    let delivery = try XCTUnwrap(rows.first?.recipients.first?.deliveryID)
+    bus.consume(reply(String(repeating: "d", count: 24), delivery: delivery))
+    XCTAssertEqual(try all(bus).messages.last?.replyTo, delivery)
+    bus = try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus))
+    XCTAssertEqual(try all(bus).messages.count, 6)
+  }
+
   private let busPath = "/fixture/transcript-events.jsonl"
   private let leaseA = String(repeating: "a", count: 32)
   private let leaseB = String(repeating: "b", count: 32)

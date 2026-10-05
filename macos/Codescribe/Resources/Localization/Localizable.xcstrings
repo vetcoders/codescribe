@@ -6291,6 +6291,16 @@
         }
       }
     },
+    "Install the agent bridge to send messages." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zainstaluj obsługę agentów, aby wysyłać wiadomości."
+          }
+        }
+      }
+    },
     "Installed" : {
       "localizations" : {
         "pl" : {
@@ -6983,6 +6993,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wiadomość"
+          }
+        }
+      }
+    },
+    "Message could not be sent. Your draft is retained." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się wysłać wiadomości. Twój szkic został zachowany."
+          }
+        }
+      }
+    },
+    "Message the agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Napisz do agenta"
           }
         }
       }
@@ -10893,6 +10923,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dołączono zaznaczenie i kontekst aplikacji."
+          }
+        }
+      }
+    },
+    "Send" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wyślij"
           }
         }
       }

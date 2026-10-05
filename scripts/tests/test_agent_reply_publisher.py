@@ -8,6 +8,7 @@ import argparse
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import shutil
@@ -85,6 +86,42 @@ class PackagedReplyPublisherTests(unittest.TestCase):
             self.assertEqual(self.demux.play_reply_command(self.args), 0)
         self.assertEqual((bus.stat().st_mode & 0o777), 0o600)
         self.assertTrue(Path(str(bus) + ".generations.json").is_file())
+
+    def test_written_message_reaches_private_journal_mailbox_ack_and_reply(self):
+        self.args.channel = "2"
+        self.args.lease = self.demux.lease_identifier("codex", self.args.session)
+        self.demux.write_channel_binding(self.home, "2", "lena", "codex", self.args.session, str(self.bus))
+        lease = self.demux.SessionLease(root=self.home, provider="codex", provider_session_id=self.args.session,
+            name="lena", bus=self.bus, requested_id=None, ttl_seconds=30, follow_from_end=False, coalesce=True)
+        try:
+            with patch.object(self.demux, "live_follower_pid", return_value=os.getpid()),                  patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO("Iwo".encode()))),                  contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(self.demux.send_text_command(self.args), 0)
+            normalizer = self.demux.EvidenceNormalizer()
+            events = [event for raw in self.demux.replay(self.bus)
+                      for event in self.demux.normalized_revision_events(raw, normalizer)]
+            event = next(event for event in events if event.get("kind") == "agent_user_message")
+            payload = self.demux.consider(event, name="lena", hear_all=False, drafts=False, debug=False)
+            lease.enrich(payload)
+            self.assertTrue(lease.queue_delivery(payload))
+            wake = self.demux.NativeQueueWakeup(self.home, self.args.session, "2")
+            with patch("shutil.which", return_value="/fixture/codex"),                  patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "queued", "")) as run:
+                wake.enqueue(payload)
+                wake.close(wait=True)
+                self.assertEqual(run.call_count, 1)
+            self.args.ack = [payload["delivery_id"]]
+            self.args.bus_overridden = True
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(self.demux.acknowledge_delivery(self.args), 0)
+            lease.collect_acknowledgments()
+            self.args.reply_to = payload["delivery_id"]
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(self.say(lambda *_args, **_kwargs: (True, None, None)), 0)
+            _, reply = self.published()
+            self.assertEqual(reply["delivery_id"], payload["delivery_id"])
+            self.assertEqual(reply["message_id"], event["message_id"])
+            self.assertNotIn("capture_epoch", reply)
+        finally:
+            lease.close()
 
     def test_foreign_provider_session_cannot_replay_published_text(self):
         self.assertEqual(self.say(lambda *_args, **_kwargs: (True, None, None)), 0)

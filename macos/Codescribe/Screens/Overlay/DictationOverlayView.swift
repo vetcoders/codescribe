@@ -365,7 +365,15 @@ struct DictationOverlayView: View {
           pendingControls: state.pendingReplyControls, controlErrors: state.replyControlErrors,
           onControl: { message, stop in
             Task { await state.controlReply(message, stop: stop) }
-          }, onShowMonitor: state.showAgentMonitor)
+          }, onShowMonitor: state.showAgentMonitor,
+          focusRevision: state.conversationFocusRevision,
+          followsLiveChannel: state.channelHudStates[conversation.channel]?.open == true,
+          draft: Binding(
+            get: { state.conversationDrafts[conversation.id] ?? "" },
+            set: { state.conversationDrafts[conversation.id] = $0 }),
+          sending: state.pendingTextMessages.contains(conversation.id),
+          sendError: state.textMessageErrors[conversation.id],
+          onSend: { Task { await state.sendConversationText(conversation) } })
       } else if state.showsAgentMonitor, !state.isCollapsed {
         ScrollView {
           channelStatusView.monitorBody

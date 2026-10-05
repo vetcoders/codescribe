@@ -22,6 +22,25 @@ The existing voice profiles, microphone interlock and serialization apply;
 failed or refused speech leaves reply text visible. Tab changes never schedule
 historical replay or start extra offscreen sound.
 
+Opening a capture channel follows the exact provider/session conversation and
+scrolls to its newest message. New messages on that open channel keep the latest
+entry visible; a passive roster poll does not replace a manually selected thread.
+The newest messages are painted first without reordering the observer history.
+
+The channel digit chord is claimed by the CoreGraphics tap: down, repeat and up
+are consumed, including an up after modifier release. Ordinary typing, other
+shortcuts and mouse events still reach the frontmost app. A successfully opened
+live channel plays **Pop**, respecting Start sound and its configured volume.
+A rejected open, a close or automatic phrase reopening does not play that cue.
+
+Each named conversation has a written-message composer. Clicking it takes the
+existing overlay keyboard gate; opening a voice channel never steals keyboard
+focus from the dictation destination. **Send** publishes an explicit typed
+message to the selected immutable provider/session/lease. Rebinding or a missing
+listener refuses publication and keeps the draft. Publication is separate from
+queue acceptance and the agent's acknowledgment; successful publication clears
+only the submitted draft, preserving text entered while the request was pending.
+
 > Technical specification for codescribe hotkey system.
 >
 > Created by Vetcoders (c)2026

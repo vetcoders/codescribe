@@ -112,7 +112,7 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
     }
     for lease in &leases {
         for pending in &lease.pending {
-            if pending.kind.as_deref() == Some("seal")
+            if matches!(pending.kind.as_deref(), Some("seal" | "message"))
                 && cursor.known_seals.insert(pending.id.clone())
             {
                 dirty = true;
@@ -179,7 +179,8 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
                 .iter()
                 .find(|pending| pending.id == delivery_id)
                 .and_then(|pending| pending.kind.as_deref());
-            let proven = pending_kind == Some("seal") || cursor.known_seals.contains(&delivery_id);
+            let proven = matches!(pending_kind, Some("seal" | "message"))
+                || cursor.known_seals.contains(&delivery_id);
             if !proven {
                 stats.skipped_unproven += 1;
                 continue;
@@ -762,7 +763,17 @@ fn read_marker(
     if !matches_owner(&value)
         || !matches_owner(envelope)
         || envelope["delivery_id"].as_str() != Some(stem)
-        || envelope["kind"].as_str() != Some("seal")
+        || !matches!(envelope["kind"].as_str(), Some("seal" | "message"))
+    {
+        return Ok(None);
+    }
+    if envelope["kind"] == "message"
+        && (envelope["producer_schema"] != "codescribe.agent-user-message.v1"
+            || envelope["source"] != "typed"
+            || envelope["message_id"]
+                .as_str()
+                .is_none_or(|id| !is_delivery_id(id))
+            || envelope["source_event_id"] != envelope["message_id"])
     {
         return Ok(None);
     }
@@ -972,6 +983,42 @@ mod tests {
         assert_eq!(rows[0]["provider"], "codex");
         assert_eq!(rows[0]["provider_session_id"], "sess-roman");
         assert_eq!(rows[0]["lease_id"], LEASE_ID);
+    }
+
+    #[test]
+    fn typed_message_ack_preserves_owned_recipient_after_rebind() {
+        let root = tempfile::tempdir().unwrap();
+        let bridge = root.path().join("bridge");
+        let bus = root.path().join("bus.jsonl");
+        write_json(
+            &bridge.join(BINDING_FILENAME),
+            &binding("replacement-session"),
+        );
+        write_json(
+            &bridge.join("leases").join(format!("{LEASE_ID}.json")),
+            &lease(&bus, json!([{ "delivery_id": SEAL_ID, "kind": "message" }])),
+        );
+        let marker = json!({"lease_id": LEASE_ID, "delivery_id": SEAL_ID,
+            "provider":"codex", "provider_session_id":"sess-roman", "bus":bus,
+            "envelope":{"delivery_id":SEAL_ID, "lease_id":LEASE_ID,
+                "provider":"codex", "provider_session_id":"sess-roman", "bus":bus,
+                "kind":"message", "producer_schema":"codescribe.agent-user-message.v1",
+                "source":"typed", "message_id":"111111111111111111111111",
+                "source_event_id":"111111111111111111111111",
+                "recipients":[{"channel":"2", "name":"Roman", "provider":"codex",
+                    "provider_session_id":"sess-roman", "lease_id":LEASE_ID, "bus":bus}]}});
+        write_json(
+            &bridge
+                .join("acknowledgments")
+                .join(LEASE_ID)
+                .join(format!("{SEAL_ID}.json")),
+            &marker,
+        );
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
+        let rows = ack_rows(&bus);
+        assert_eq!(rows[0]["agent"], "Roman");
+        assert_eq!(rows[0]["channel"], "2");
     }
 
     #[test]

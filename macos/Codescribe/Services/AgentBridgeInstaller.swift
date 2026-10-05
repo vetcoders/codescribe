@@ -227,6 +227,61 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     return output.fileHandleForReading.readDataToEndOfFile()
   }
 
+  /// Written user messages share the installed canonical bus publisher and follower.
+  @MainActor
+  static func sendBusText(owner: OverlayConversationOwner, text: String) async throws {
+    let installer = RealAgentBridgeInstaller()
+    let executable = installer.commandURL("cs-bus")
+    guard installer.fileManager.isExecutableFile(atPath: executable.path),
+      installer.managedCommandID(executable) != nil
+    else {
+      throw NSError(
+        domain: "Codescribe.BusText", code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey: String(localized: "Install the agent bridge to send messages.")
+        ])
+    }
+    let root = installer.bridgeRoot
+    try await Task.detached(priority: .userInitiated) {
+      let lease = root.appendingPathComponent("leases/\(owner.leaseID).json")
+      guard
+        let receipt = try JSONSerialization.jsonObject(with: Data(contentsOf: lease))
+          as? [String: Any],
+        receipt["provider"] as? String == owner.provider,
+        receipt["provider_session_id"] as? String == owner.providerSessionID,
+        receipt["lease_id"] as? String == owner.leaseID,
+        let bus = receipt["bus"] as? String, bus.hasPrefix("/")
+      else {
+        throw CocoaError(.fileReadCorruptFile)
+      }
+      let process = Process()
+      let input = Pipe()
+      process.executableURL = executable
+      process.arguments = [
+        "--send-text", "--channel", owner.channel, "--provider", owner.provider,
+        "--session", owner.providerSessionID, "--lease", owner.leaseID, "--bus", bus,
+        "--bridge-home", root.path,
+      ]
+      process.standardInput = input
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      // Bound text fits in the pipe; writing happens off the UI thread.
+      guard text.utf8.count <= 65536 else { throw CocoaError(.fileWriteOutOfSpace) }
+      try process.run()
+      try input.fileHandleForWriting.write(contentsOf: Data(text.utf8))
+      try input.fileHandleForWriting.close()
+      process.waitUntilExit()
+      guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+        throw NSError(
+          domain: "Codescribe.BusText", code: Int(process.terminationStatus),
+          userInfo: [
+            NSLocalizedDescriptionKey: String(
+              localized: "Message could not be sent. Your draft is retained.")
+          ])
+      }
+    }.value
+  }
+
   /// Uses the installed bus speech owner; the built-in chat player is separate.
   @MainActor
   static func controlBusReply(

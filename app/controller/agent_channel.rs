@@ -585,13 +585,21 @@ impl RecordingController {
     /// session seals with `reason: hangup` and does not reopen. Dictation
     /// state is not changed.
     pub async fn toggle_agent_channel(&self, digit: u8) -> Result<()> {
-        self.dispatch_agent_channel(
-            digit,
-            &binding_path(),
-            &crate::presentation::transcript_bus::transcript_bus_path(),
-            ChannelOpenMode::Live,
-        )
-        .await
+        let opened = self
+            .dispatch_agent_channel(
+                digit,
+                &binding_path(),
+                &crate::presentation::transcript_bus::transcript_bus_path(),
+                ChannelOpenMode::Live,
+            )
+            .await?;
+        if opened {
+            let settings = self.runtime_settings_arc().await;
+            if settings.values().beep_on_start {
+                crate::audio::play_sound_with_volume("Pop", settings.values().sound_volume);
+            }
+        }
+        Ok(())
     }
 
     /// `shared_bus` carries the rows and receipts of a channel whose binding
@@ -602,7 +610,7 @@ impl RecordingController {
         binding_file: &Path,
         shared_bus: &Path,
         mode: ChannelOpenMode,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut channels = self.agent_channels.lock().await;
         if let Some(open) = channels.remove(&digit) {
             drop(channels);
@@ -614,7 +622,7 @@ impl RecordingController {
                 channel_autoseal_secs(),
             )
             .await?;
-            return Ok(());
+            return Ok(false);
         }
 
         let bound = resolve_digit(digit, binding_file).map_err(refusal)?;
@@ -641,6 +649,7 @@ impl RecordingController {
         }
         let runtime_settings = self.runtime_settings_arc().await;
         let silence_sec = runtime_settings.values().toggle_silence_sec;
+
         let opened_at = SystemTime::now();
         let last_voice_at = Arc::new(StdMutex::new(opened_at));
         let last_text = Arc::new(StdMutex::new(String::new()));
@@ -809,7 +818,7 @@ impl RecordingController {
                 bus.record_channel_receipt(&line);
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Epoch `begin_channel_session` stamps on every live channel capture.

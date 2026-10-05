@@ -751,6 +751,7 @@ final class OverlayState {
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
     selectedConversationID = id
+    conversationFocusRevision &+= 1
     showsAgentMonitor = false
     pendingChannelConversation = nil
     if id != nil { expandAgentSurface() }
@@ -799,6 +800,7 @@ final class OverlayState {
       return
     }
     selectedConversationID = matches[0].id
+    conversationFocusRevision &+= 1
     showsAgentMonitor = false
     pendingChannelConversation = nil
     markVisibleConversationRead()
@@ -829,6 +831,32 @@ final class OverlayState {
     replyControlErrors = replyControlErrors.filter { retained.contains($0.key) }
     markVisibleConversationRead()
     onChannelPresentationChanged?()
+  }
+
+  var conversationDrafts: [String: String] = [:]
+  private(set) var pendingTextMessages: Set<String> = []
+  private(set) var textMessageErrors: [String: String] = [:]
+  private(set) var conversationFocusRevision: UInt64 = 0
+  @ObservationIgnored var publishConversationText:
+    @MainActor (OverlayConversationOwner, String) async throws -> Void = {
+      owner, text in try await RealAgentBridgeInstaller.sendBusText(owner: owner, text: text)
+    }
+
+  func sendConversationText(_ conversation: OverlayConversation) async {
+    guard let owner = conversation.owner, let draft = conversationDrafts[conversation.id],
+      !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      !pendingTextMessages.contains(conversation.id)
+    else { return }
+    pendingTextMessages.insert(conversation.id)
+    textMessageErrors.removeValue(forKey: conversation.id)
+    defer { pendingTextMessages.remove(conversation.id) }
+    do {
+      try await publishConversationText(owner, draft)
+      // A newer draft belongs to the Founder, even if publication finishes late.
+      if conversationDrafts[conversation.id] == draft { conversationDrafts[conversation.id] = "" }
+    } catch {
+      textMessageErrors[conversation.id] = error.userFacingMessage
+    }
   }
 
   func controlReply(_ message: OverlayConversationMessage, stop: Bool) async {

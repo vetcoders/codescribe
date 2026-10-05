@@ -272,30 +272,51 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         acknowledged: true)
     }
 
-    private mutating func associateEnvelope(_ envelope: [String: Any], owner: OverlayConversationOwner,
-      delivery: String) {
-      guard envelope["kind"] as? String == "seal",
-        let session = envelope["session_id"] as? String else { return }
+    private mutating func associateEnvelope(
+      _ envelope: [String: Any], owner: OverlayConversationOwner,
+      delivery: String
+    ) {
+      guard let kind = envelope["kind"] as? String, kind == "seal" || kind == "message" else {
+        return
+      }
+      let session = envelope["session_id"] as? String ?? ""
       let key: String
       let revision: UInt64
-      if envelope["producer_schema"] as? String == "codescribe.transcript-evidence.v1" {
+      if kind == "message",
+        envelope["producer_schema"] as? String == "codescribe.agent-user-message.v1",
+        let identity = envelope["message_id"] as? String
+      {
+        key = "typed:" + identity
+        revision = 0
+      } else if envelope["producer_schema"] as? String == "codescribe.transcript-evidence.v1" {
         guard let occurrenceSession = envelope["occurrence_session_id"] as? String,
           let epoch = envelope["capture_epoch"] as? NSNumber,
           let start = envelope["sample_start"] as? NSNumber,
-          let end = envelope["sample_end"] as? NSNumber else { return }
-        key = "utterance:" + Self.identity(["occurrence", occurrenceSession,
-          epoch.stringValue, start.stringValue, end.stringValue])
+          let end = envelope["sample_end"] as? NSNumber
+        else { return }
+        key =
+          "utterance:"
+          + Self.identity([
+            "occurrence", occurrenceSession,
+            epoch.stringValue, start.stringValue, end.stringValue,
+          ])
         revision = (envelope["reducer_revision"] as? NSNumber)?.uint64Value ?? 0
       } else {
-        guard envelope["utterance_id"] is NSNumber || envelope["utterance_id"] is String else { return }
-        key = "utterance:" + Self.identity(["utterance", session, Self.coordinate(envelope["utterance_id"])])
+        guard envelope["utterance_id"] is NSNumber || envelope["utterance_id"] is String else {
+          return
+        }
+        key =
+          "utterance:"
+          + Self.identity(["utterance", session, Self.coordinate(envelope["utterance_id"])])
         revision = (envelope["sequence"] as? NSNumber)?.uint64Value ?? 0
       }
       guard revision >= (messageRevisions[key] ?? 0), var message = messages[key],
-        let index = message.recipients.firstIndex(where: { $0.owner.id == owner.id }) else { return }
+        let index = message.recipients.firstIndex(where: { $0.owner.id == owner.id })
+      else { return }
       if message.recipients[index].deliveryID != delivery {
         self.revision &+= 1
-        message.recipients[index] = OverlayConversationRecipient(owner: message.recipients[index].owner,
+        message.recipients[index] = OverlayConversationRecipient(
+          owner: message.recipients[index].owner,
           deliveryID: delivery, queued: false, accepted: false, acknowledged: false)
       }
       messages[key] = message
@@ -303,17 +324,50 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
 
     private mutating func consumeConversation(_ row: [String: Any]) {
       let schema = row["schema"] as? String
+      if schema == "codescribe.agent-user-message.v1",
+        row["kind"] as? String == "agent_user_message",
+        let identity = row["message_id"] as? String, identity.count == 24,
+        identity.allSatisfy({ "0123456789abcdef".contains($0) }),
+        let text = row["text"] as? String, !text.isEmpty,
+        let audience = row["audience"] as? String,
+        let entries = row["recipients"] as? [[String: Any]]
+      {
+        let owners = entries.compactMap(OverlayConversationOwner.init(row:))
+        guard owners.count == 1 else { return }
+        let key = "typed:" + identity
+        guard messages[key] == nil else { return }
+        let recipients = owners.map { owner in
+          historicalOwners[owner.id] = historicalOwners[owner.id] ?? owner
+          return OverlayConversationRecipient(
+            owner: owner,
+            deliveryID: Self.identity([
+              "native_bus_demux", owner.leaseID, identity, "message",
+              Self.routedAudience(audience),
+            ]), queued: false, accepted: false, acknowledged: false)
+        }
+        store(
+          OverlayConversationMessage(
+            id: key, kind: .user, text: text, order: nextOrder(),
+            emittedAt: row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
+            deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: ""))
+        return
+      }
       if schema == "codescribe.channel-session.v1", let session = row["session_id"] as? String,
-        let channel = row["channel"] as? String {
+        let channel = row["channel"] as? String
+      {
         if row["state"] as? String == "open" {
           guard let openedAt = row["opened_at"] as? String,
             admitsOpening(channel: channel, session: session, openedAt: openedAt),
-            let opened = Self.openingDate(openedAt) else { return }
+            let opened = Self.openingDate(openedAt)
+          else { return }
           sessionOpenedAt[session] = openedAt
-          for origin in deliveryOrigins.values where origin.channel == channel
-            && origin.captureSession != session {
+          for origin in deliveryOrigins.values
+          where origin.channel == channel
+            && origin.captureSession != session
+          {
             guard let previous = sessionOpenedAt[origin.captureSession],
-              let earlier = Self.openingDate(previous), earlier < opened else { continue }
+              let earlier = Self.openingDate(previous), earlier < opened
+            else { continue }
             finalizeRefused(session: origin.captureSession)
           }
         } else {
@@ -321,22 +375,27 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           finalizeRefused(session: session)
         }
       }
-      if (schema == "codescribe.transcript.v1" || schema == "codescribe.transcript-evidence.v1"),
-        row["status"] as? String == "session_ended" || row["reducer_action"] as? String == "session_ended",
-        let session = row["session_id"] as? String {
+      if schema == "codescribe.transcript.v1" || schema == "codescribe.transcript-evidence.v1",
+        row["status"] as? String == "session_ended"
+          || row["reducer_action"] as? String == "session_ended",
+        let session = row["session_id"] as? String
+      {
         finalizeRefused(session: session)
       }
       if schema == "codescribe.channel-recipients.v1",
         let session = row["session_id"] as? String,
-        let entries = row["recipients"] as? [[String: Any]] {
+        let entries = row["recipients"] as? [[String: Any]]
+      {
         captureRecipients[session] = entries.compactMap(OverlayConversationOwner.init(row:))
         for owner in captureRecipients[session] ?? [] { historicalOwners[owner.id] = owner }
         return
       }
       if schema == "codescribe.agent-ack.v1",
         let delivery = row["delivery_id"] as? String,
-        let owner = OverlayConversationOwner(row: row) {
-        updateRecipient(delivery: delivery, owner: owner, queued: false, accepted: false,
+        let owner = OverlayConversationOwner(row: row)
+      {
+        updateRecipient(
+          delivery: delivery, owner: owner, queued: false, accepted: false,
           acknowledged: true)
         return
       }
@@ -345,8 +404,10 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         let owner = OverlayConversationOwner(row: row),
         let ticket = row["playback_ticket"] as? String,
         let state = row["state"] as? String,
-        let message = messages["reply:" + replyID], message.owner?.id == owner.id {
-        let playback = OverlayReplyPlayback(replyID: replyID, ticket: ticket, state: state,
+        let message = messages["reply:" + replyID], message.owner?.id == owner.id
+      {
+        let playback = OverlayReplyPlayback(
+          replyID: replyID, ticket: ticket, state: state,
           reason: row["reason"] as? String ?? row["tts_error"] as? String,
           spoken: row["spoken"] as? Bool == true,
           emittedAt: row["emitted_at"] as? String ?? "")
@@ -355,10 +416,16 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         if let current = playbackByReply[replyID] {
           if playback.emittedAt < current.emittedAt { return }
           if current.ticket == ticket, current.state != "waiting" && current.state != "playing",
-            state == "waiting" || state == "playing" { return }
+            state == "waiting" || state == "playing"
+          {
+            return
+          }
         }
         if let current = playbackByReply[replyID], current.ticket != ticket,
-          state != "waiting" && state != "playing" { return }
+          state != "waiting" && state != "playing"
+        {
+          return
+        }
         if let current = playbackByReply[replyID], current.ticket != ticket {
           var retired = retiredPlaybackTickets[replyID] ?? []
           retired.append(current.ticket)
@@ -369,14 +436,17 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         return
       }
       if schema == "codescribe.agent-reply.v1", let replyID = row["reply_id"] as? String,
-        let owner = OverlayConversationOwner(row: row), let text = row["text"] as? String {
+        let owner = OverlayConversationOwner(row: row), let text = row["text"] as? String
+      {
         let key = "reply:" + replyID
         if let previous = messages[key], previous.owner?.id != owner.id { return }
         historicalOwners[owner.id] = historicalOwners[owner.id] ?? owner
-        let addressed = row["association"] as? String == "addressed"
+        let addressed =
+          row["association"] as? String == "addressed"
           && row["delivery_id"] is String
         let order = messages[key]?.order ?? nextOrder()
-        var message = OverlayConversationMessage(id: key, kind: .reply,
+        var message = OverlayConversationMessage(
+          id: key, kind: .reply,
           text: text, order: order,
           emittedAt: row["emitted_at"] as? String ?? "", owner: historicalOwners[owner.id],
           recipients: [], deliveryID: addressed ? row["delivery_id"] as? String : nil,
@@ -386,9 +456,14 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           !occurrenceSession.isEmpty, let epoch = row["capture_epoch"] as? NSNumber,
           UInt64(epoch.stringValue) != nil, let start = row["sample_start"] as? NSNumber,
           let end = row["sample_end"] as? NSNumber,
-          let first = UInt64(start.stringValue), let last = UInt64(end.stringValue), last > first {
-          message.replyToOccurrenceID = "utterance:" + Self.identity(["occurrence", occurrenceSession,
-            epoch.stringValue, start.stringValue, end.stringValue])
+          let first = UInt64(start.stringValue), let last = UInt64(end.stringValue), last > first
+        {
+          message.replyToOccurrenceID =
+            "utterance:"
+            + Self.identity([
+              "occurrence", occurrenceSession,
+              epoch.stringValue, start.stringValue, end.stringValue,
+            ])
         }
         store(message)
         return
@@ -403,66 +478,99 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       if let entries = row["recipients"] as? [[String: Any]] {
         owners = entries.compactMap(OverlayConversationOwner.init(row:))
         captureRecipients[session] = owners
-      } else { owners = captureRecipients[session] ?? [] }
+      } else {
+        owners = captureRecipients[session] ?? []
+      }
       // An audience label alone cannot choose a current provider session.
       guard !owners.isEmpty else { return }
-      let text = row["label"] as? String ?? row["text"] as? String
+      let text =
+        row["label"] as? String ?? row["text"] as? String
         ?? row["rendered_text"] as? String
       guard let text, !text.isEmpty else { return }
       let evidence = schema == "codescribe.transcript-evidence.v1"
       if !evidence && !(row["utterance_id"] is NSNumber || row["utterance_id"] is String) { return }
-      if evidence && (row["occurrence_session_id"] as? String == nil
-        || !(row["capture_epoch"] is NSNumber) || !(row["sample_start"] is NSNumber)
-        || !(row["sample_end"] is NSNumber)) { return }
-      let occurrence = evidence
-        ? Self.identity(["occurrence", row["occurrence_session_id"] as? String ?? session,
+      if evidence
+        && (row["occurrence_session_id"] as? String == nil
+          || !(row["capture_epoch"] is NSNumber) || !(row["sample_start"] is NSNumber)
+          || !(row["sample_end"] is NSNumber))
+      {
+        return
+      }
+      let occurrence =
+        evidence
+        ? Self.identity([
+          "occurrence", row["occurrence_session_id"] as? String ?? session,
           Self.coordinate(row["capture_epoch"]), Self.coordinate(row["sample_start"]),
-          Self.coordinate(row["sample_end"])])
+          Self.coordinate(row["sample_end"]),
+        ])
         : Self.identity(["utterance", session, Self.coordinate(row["utterance_id"])])
       let key = "utterance:" + occurrence
-      let revision = (row[evidence ? "reducer_revision" : "sequence"] as? NSNumber)?.uint64Value ?? 0
+      let revision =
+        (row[evidence ? "reducer_revision" : "sequence"] as? NSNumber)?.uint64Value ?? 0
       guard revision >= (messageRevisions[key] ?? 0) else { return }
       messageRevisions[key] = revision
       let phase: String
-      let terminal = evidence
+      let terminal =
+        evidence
         ? row["reducer_action"] as? String == "record_ledger_terminal_seal"
         : row["status"] as? String == "transcript_sealed"
       if evidence {
         let components = session.split(separator: "-")
-        let channel = components.count > 2 && components[0] == "agent" && components[1] == "channel"
+        let channel =
+          components.count > 2 && components[0] == "agent" && components[1] == "channel"
           ? String(components[2]) : ""
-        deliveryOrigins[key] = DeliveryOrigin(captureSession: session, channel: channel,
-          documentIndex: Self.coordinate(row["document_index"]), audience: audience, terminal: terminal)
+        deliveryOrigins[key] = DeliveryOrigin(
+          captureSession: session, channel: channel,
+          documentIndex: Self.coordinate(row["document_index"]), audience: audience,
+          terminal: terminal)
       }
       if evidence && terminal {
-        phase = Self.identity(["terminal-seal", session, Self.coordinate(row["reducer_revision"]),
-          "record_ledger_terminal_seal"])
+        phase = Self.identity([
+          "terminal-seal", session, Self.coordinate(row["reducer_revision"]),
+          "record_ledger_terminal_seal",
+        ])
       } else if evidence {
-        phase = Self.identity(["evidence", session, Self.coordinate(row["sequence"]),
+        phase = Self.identity([
+          "evidence", session, Self.coordinate(row["sequence"]),
           Self.coordinate(row["reducer_revision"]), row["reducer_action"] as? String ?? "",
           row["occurrence_session_id"] as? String ?? "", Self.coordinate(row["capture_epoch"]),
           Self.coordinate(row["sample_start"]), Self.coordinate(row["sample_end"]),
-          Self.coordinate(row["document_index"])])
+          Self.coordinate(row["document_index"]),
+        ])
       } else {
-        phase = Self.identity(["clean", session, Self.coordinate(row["sequence"]),
-          Self.coordinate(row["utterance_id"]), row["status"] as? String ?? ""])
+        phase = Self.identity([
+          "clean", session, Self.coordinate(row["sequence"]),
+          Self.coordinate(row["utterance_id"]), row["status"] as? String ?? "",
+        ])
       }
       var recipients: [OverlayConversationRecipient] = []
-      let kind = terminal ? "seal" : evidence || row["status"] as? String == "utterance_revised"
-        ? "revised" : row["status"] as? String == "utterance_draft" ? "draft" : "event"
+      let kind =
+        terminal
+        ? "seal"
+        : evidence || row["status"] as? String == "utterance_revised"
+          ? "revised" : row["status"] as? String == "utterance_draft" ? "draft" : "event"
       for owner in owners {
         historicalOwners[owner.id] = historicalOwners[owner.id] ?? owner
-        let delivery = Self.identity(["native_bus_demux", owner.leaseID, phase,
-          kind, Self.routedAudience(audience)])
-        let old = messages[key]?.recipients.first { $0.owner.id == owner.id && $0.deliveryID == delivery }
-        recipients.append(old ?? OverlayConversationRecipient(owner: owner, deliveryID: delivery,
-          queued: false, accepted: false, acknowledged: false))
+        let delivery = Self.identity([
+          "native_bus_demux", owner.leaseID, phase,
+          kind, Self.routedAudience(audience),
+        ])
+        let old = messages[key]?.recipients.first {
+          $0.owner.id == owner.id && $0.deliveryID == delivery
+        }
+        recipients.append(
+          old
+            ?? OverlayConversationRecipient(
+              owner: owner, deliveryID: delivery,
+              queued: false, accepted: false, acknowledged: false))
       }
       let order = messages[key]?.order ?? nextOrder()
-      store(OverlayConversationMessage(id: key, kind: .user,
-        text: text, order: order,
-        emittedAt: row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
-        deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: ""))
+      store(
+        OverlayConversationMessage(
+          id: key, kind: .user,
+          text: text, order: order,
+          emittedAt: row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
+          deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: ""))
     }
 
     private func admitsOpening(channel: String, session: String, openedAt: String) -> Bool {

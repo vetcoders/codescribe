@@ -126,7 +126,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum BusAction {
-    /// Append one owned agent reply or playback receipt through the private journal
+    /// Append an owned written message, agent reply or playback receipt through the private journal
     AppendEvent {
         #[arg(long)]
         bus: std::path::PathBuf,
