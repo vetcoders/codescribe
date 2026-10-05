@@ -8,20 +8,23 @@ import XCTest
 final class OverlayConversationAcceptanceTests: XCTestCase {
   func testFollowerDeliveryIdentitySurvivesPrunedMailboxAndQuietRestart() throws {
     // Golden IDs produced by the canonical Python follower, including Unicode case folding.
-    let cases: [(String, Bool, String)] = [
-      ("Lena", false, "9655faaf3646b0a670acb8d8"),
-      ("Lena", true, "cf7eb3fe3ae22e59c9624a0b"),
-      ("Straße", false, "4c052a44a94110dc857c9df9"),
-      ("Straße", true, "c24d69d2aadaf3054ebc3b6e"),
-      ("*", false, "5065093fac94bf219c2b211e"),
-      ("*", true, "b4433a2426097d2bd4c556a7"),
+    let cases: [(String, Bool, String, String)] = [
+      ("Lena", false, "a3ef146175321188c29696c2", "0071dabf01108c70423514ac"),
+      ("Lena", true, "f3dc2f9c6f8361352456291b", "0071dabf01108c70423514ac"),
+      ("Straße", false, "21f5bc73227810fd65926352", "3c55192d29e8a0186f69cbc9"),
+      ("Straße", true, "18d07635403401be1687107e", "3c55192d29e8a0186f69cbc9"),
+      ("*", false, "293a28be203f6fbd5a2fa823", "9bc72fbcce2cebd795f86e24"),
+      ("*", true, "441fab6ca0f6c7e77c4dee1f", "9bc72fbcce2cebd795f86e24"),
     ]
-    for (audience, terminal, delivery) in cases {
+    for (audience, terminal, preview, delivery) in cases {
       var bus = OverlayChannelDelivery.Bus()
       var row = occurrence(0, revision: 1)
       row["audience"] = audience
       if !terminal { row["reducer_action"] = "apply_manual_edit" }
       bus.consume(row)
+      XCTAssertEqual(
+        try lenaConversation(bus).messages.first?.recipients.first?.deliveryID, preview)
+      endCapture(&bus, session: "agent-channel-2-take-a")
       XCTAssertEqual(
         try lenaConversation(bus).messages.first?.recipients.first?.deliveryID, delivery)
       bus = try JSONDecoder().decode(
@@ -138,7 +141,9 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       bus.consume(
         occurrence(
           index * 3200, revision: index + 1,
-          text: "Wiadomość człowieka, która ma pozostać po prawej stronie rozmowy."))
+          text: "Wiadomość człowieka, która ma pozostać po prawej stronie rozmowy.",
+          captureSession: "agent-channel-2-take-\(index)"))
+      endCapture(&bus, session: "agent-channel-2-take-\(index)")
       let delivery = try XCTUnwrap(
         try lenaConversation(bus).messages.last?.recipients.first?.deliveryID)
       bus.consume(reply(String(format: "%024x", index + 1), delivery: delivery))
@@ -321,16 +326,23 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   }
 
   private func occurrence(
-    _ start: Int, revision: Int, text: String = "Iwo", recipients: [[String: Any]]? = nil
+    _ start: Int, revision: Int, text: String = "Iwo", recipients: [[String: Any]]? = nil,
+    captureSession: String = "agent-channel-2-take-a"
   ) -> [String: Any] {
     [
-      "schema": "codescribe.transcript-evidence.v1", "session_id": "agent-channel-2-take-a",
-      "occurrence_session_id": "agent-channel-2-take-a", "capture_epoch": 1,
+      "schema": "codescribe.transcript-evidence.v1", "session_id": captureSession,
+      "occurrence_session_id": captureSession, "capture_epoch": 1,
       "sample_start": start, "sample_end": start + 1600, "document_index": 0,
       "reducer_revision": revision, "sequence": revision,
       "reducer_action": "record_ledger_terminal_seal", "audience": "Lena",
       "rendered_text": text, "recipients": recipients ?? [owner(leaseA)],
     ]
+  }
+
+  private func endCapture(_ bus: inout OverlayChannelDelivery.Bus, session: String) {
+    bus.consume([
+      "schema": "codescribe.transcript.v1", "session_id": session, "status": "session_ended",
+    ])
   }
 
   private func reply(_ replyID: String, delivery: String? = nil) -> [String: Any] {
@@ -360,19 +372,42 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     try XCTUnwrap(bus.conversations(busPath: busPath).first { $0.owner?.leaseID == leaseA })
   }
 
-  func testFiveEqualLabelsInOneCaptureAndDocumentStayFiveRanges() throws {
+  func testFiveEqualLabelsInOneCaptureRetainFiveRangesInsideOneMessage() throws {
     var bus = OverlayChannelDelivery.Bus()
-    for index in 0..<5 { bus.consume(occurrence(index * 3200, revision: index + 1)) }
+    let full = "Iwo Iwo Iwo Iwo Iwo"
+    for index in 0..<5 {
+      bus.consume(occurrence(index * 3200, revision: index + 1, text: full))
+    }
+    XCTAssertEqual(try lenaConversation(bus).messages.count, 1)
+    let message = try XCTUnwrap(try lenaConversation(bus).messages.first)
+    let identities = try XCTUnwrap(message.occurrenceIDs)
+    XCTAssertEqual(identities.count, 5)
+    XCTAssertEqual(Set(identities).count, 5, "document_index0 must not overwrite physical ranges")
+    XCTAssertEqual(message.text, full, "copy the full canonical render once")
+    bus.consume(occurrence(0, revision: 10, text: "Iwo poprawione"))
+    bus.consume(occurrence(0, revision: 1, text: "stara odpowiedź"))
+    XCTAssertEqual(try lenaConversation(bus).messages.count, 1)
+    let revised = try XCTUnwrap(try lenaConversation(bus).messages.first)
+    XCTAssertEqual(revised.id, message.id)
+    XCTAssertEqual(revised.text, "Iwo poprawione")
+    XCTAssertEqual(revised.occurrenceIDs, identities)
+    bus = try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus))
+    XCTAssertEqual(try lenaConversation(bus).messages.first?.occurrenceIDs, identities)
+  }
+
+  func testFiveEqualCapturesRemainFiveDistinctMessages() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    for index in 0..<5 {
+      let session = "agent-channel-2-identical-\(index)"
+      bus.consume(occurrence(0, revision: 1, captureSession: session))
+      endCapture(&bus, session: session)
+    }
     let rows = try lenaConversation(bus).messages
     XCTAssertEqual(rows.count, 5)
     XCTAssertEqual(Set(rows.map(\.id)).count, 5)
     XCTAssertEqual(rows.map(\.text), Array(repeating: "Iwo", count: 5))
-    bus.consume(occurrence(0, revision: 10, text: "Iwo poprawione"))
-    bus.consume(occurrence(0, revision: 1, text: "stara odpowiedź"))
-    let revised = try lenaConversation(bus).messages
-    XCTAssertEqual(revised.count, 5)
-    XCTAssertEqual(revised.first?.text, "Iwo poprawione")
-    XCTAssertEqual(revised.map(\.id), rows.map(\.id))
+    XCTAssertEqual(Set(rows.flatMap { $0.occurrenceIDs ?? [] }).count, 5)
+    XCTAssertEqual(Set(rows.flatMap { $0.recipients.compactMap(\.deliveryID) }).count, 5)
   }
 
   func testBroadcastIsOneQuestionWithFrozenRecipientsAndNoLateInheritance() throws {
@@ -517,7 +552,12 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
 
   func testHistoryRetainsOnlyTheLatestBoundedRows() throws {
     var bus = OverlayChannelDelivery.Bus()
-    for index in 0..<300 { bus.consume(occurrence(index * 3200, revision: index + 1)) }
+    for index in 0..<300 {
+      bus.consume(
+        occurrence(
+          index * 3200, revision: index + 1,
+          captureSession: "agent-channel-2-history-\(index)"))
+    }
     let rows = try lenaConversation(bus).messages
     XCTAssertEqual(rows.count, 256)
     XCTAssertEqual(rows.first?.order, 45)

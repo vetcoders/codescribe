@@ -364,7 +364,8 @@ final class OverlayStateTests: XCTestCase {
     for index in 0..<5 {
       bus.consume([
         "schema": "codescribe.transcript-evidence.v1",
-        "session_id": "agent-channel-2-test", "occurrence_session_id": "agent-channel-2-test",
+        "session_id": "agent-channel-2-test-\(index)",
+        "occurrence_session_id": "agent-channel-2-test-\(index)",
         "capture_epoch": 1, "sample_start": index * 3200, "sample_end": index * 3200 + 1600,
         "document_index": 0, "reducer_revision": index + 1, "sequence": index + 1,
         "reducer_action": "record_ledger_terminal_seal", "audience": "Lena", "rendered_text": "Iwo",
@@ -378,6 +379,7 @@ final class OverlayStateTests: XCTestCase {
     }
     let all = try XCTUnwrap(bus.conversations(busPath: "/fixture/bus").first { $0.channel == "2" })
     XCTAssertEqual(all.messages.count, 5)
+    XCTAssertEqual(Set(all.messages.flatMap { $0.occurrenceIDs ?? [] }).count, 5)
     let view = OverlayConversationView(
       conversation: all, palette: .dark, topInset: 50,
       bottomInset: 20, pendingControls: [], controlErrors: [:], onControl: { _, _ in },

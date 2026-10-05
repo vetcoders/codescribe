@@ -66,4 +66,136 @@ class UserTextTests(unittest.TestCase):
                 with self.assertRaises(ValueError): DEMUX.send_text_command(args)
                 self.assertEqual(publish.call_count, 1)
 
+class ChannelCaptureMessageTests(unittest.TestCase):
+    """One capture message retains every exact physical observation."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.bus = self.root / "bus.jsonl"
+        self.bus.touch()
+        self.lease = DEMUX.SessionLease(root=self.root, provider="codex", provider_session_id="agent-a",
+            name="lena", bus=self.bus, requested_id=None, ttl_seconds=30, follow_from_end=False)
+        self.addCleanup(self.lease.close)
+        self.normalizer = DEMUX.EvidenceNormalizer()
+
+    def evidence(self, start=0, revision=1, session="agent-channel-2-five", text="Iwo Iwo Iwo Iwo Iwo",
+                 action="record_ledger_terminal_seal", document_index=0):
+        return {"schema": DEMUX.EVIDENCE_SCHEMA, "session_id": session,
+            "occurrence_session_id": session, "capture_epoch": 1,
+            "sample_start": start, "sample_end": start + 1600, "document_index": document_index,
+            "reducer_revision": revision, "sequence": revision, "reducer_action": action,
+            "rendered_text": text, "label": "Iwo", "audience": "lena",
+            "emitted_at": "2026-10-05T10:00:00Z",
+            "acoustic_receipts": [{"receipt_id": f"pcm-{start}"}]}
+
+    def close_capture(self, session="agent-channel-2-five"):
+        return DEMUX.normalized_revision_events(json.dumps({"schema": DEMUX.CLEAN_SCHEMA,
+            "session_id": session, "status": DEMUX.SESSION_ENDED}), self.normalizer)
+
+    def envelopes(self, rows):
+        values = []
+        for row in rows:
+            payload = DEMUX.consider(row, name="lena", hear_all=False, drafts=True, debug=False)
+            if payload:
+                self.lease.enrich(payload)
+                values.append(payload)
+        return values
+
+    @staticmethod
+    def ranges(row):
+        return [(item["occurrence_session_id"], item["capture_epoch"],
+                 item["sample_start"], item["sample_end"]) for item in row["occurrences"]]
+
+    def test_shared_revision_delivers_once_with_five_complete_pcm_receipts(self):
+        row = self.evidence()
+        row["persistence_encoding"] = "shared-revision.v1"
+        fields = ("sequence", "capture_epoch", "sample_start", "sample_end", "document_index",
+                  "emitted_at", "occurrence_session_id", "label", "acoustic_receipts")
+        row["occurrence_rows"] = [
+            {key: self.evidence(start=index * 3200)[key] for key in fields}
+            for index in range(1, 5)]
+        previews = DEMUX.normalized_revision_events(json.dumps(row), self.normalizer)
+        self.assertEqual(len(previews), 1)
+        self.assertNotEqual(previews[0]["status"], DEMUX.SEALED)
+        final = [event for event in self.close_capture() if event.get("status") == DEMUX.SEALED]
+        self.assertEqual(len(final), 1)
+        payload = self.envelopes(final)[0]
+        self.assertEqual(payload["text"], row["rendered_text"])
+        self.assertEqual(self.ranges(payload), [(row["session_id"], 1, index * 3200, index * 3200 + 1600) for index in range(5)])
+        self.assertEqual([item["label"] for item in payload["occurrences"]], ["Iwo"] * 5)
+        self.assertEqual([item["acoustic_receipts"] for item in payload["occurrences"]],
+                         [[{"receipt_id": f"pcm-{index * 3200}"}] for index in range(5)])
+        self.assertTrue(self.lease.queue_delivery(payload))
+        self.assertFalse(self.lease.queue_delivery(payload))
+        self.assertEqual(len(self.lease.pending), 1)
+        self.assertEqual(len(self.ranges(DEMUX.receipt_envelope(payload, str(self.bus)))), 5)
+        self.assertFalse(any(event.get("status") == DEMUX.SEALED for event in self.close_capture()))
+
+    def test_five_equal_captures_have_five_distinct_message_and_delivery_ids(self):
+        messages, deliveries = [], []
+        for index in range(5):
+            session = f"agent-channel-2-capture-{index}"
+            self.normalizer.normalize(self.evidence(session=session))
+            final = [row for row in self.close_capture(session) if row.get("status") == DEMUX.SEALED]
+            payload = self.envelopes(final)[0]
+            messages.append(payload["message_id"])
+            deliveries.append(payload["delivery_id"])
+            self.assertTrue(self.lease.queue_delivery(payload))
+        self.assertEqual(len(set(messages)), 5)
+        self.assertEqual(len(set(deliveries)), 5)
+        self.assertEqual(len(self.lease.pending), 5)
+
+    def test_stale_first_observed_range_survives_without_replacing_new_text_or_receipt(self):
+        latest = self.evidence(revision=10, text="Nowy pełny tekst")
+        self.normalizer.normalize(latest)
+        stale = self.evidence(start=3200, revision=1, text="Stary tekst")
+        self.assertIsNone(self.normalizer.normalize(stale))
+        stale_same = self.evidence(revision=1, text="Stary tekst")
+        stale_same["acoustic_receipts"] = [{"receipt_id": "stale"}]
+        self.assertIsNone(self.normalizer.normalize(stale_same))
+        final = [row for row in self.close_capture() if row.get("status") == DEMUX.SEALED][0]
+        self.assertEqual(final["text"], latest["rendered_text"])
+        self.assertEqual(len(set(self.ranges(final))), 2)
+        self.assertEqual(final["occurrences"][0]["acoustic_receipts"], latest["acoustic_receipts"])
+
+    def test_document_position_changes_neither_duplicate_nor_drop_physical_identity(self):
+        for index in range(5):
+            self.normalizer.normalize(self.evidence(start=index * 3200, revision=index + 1))
+        self.normalizer.normalize(self.evidence(revision=10, document_index=4))
+        final = [row for row in self.close_capture() if row.get("status") == DEMUX.SEALED][0]
+        self.assertEqual(len(self.ranges(final)), 5)
+        self.assertEqual(len(set(self.ranges(final))), 5)
+
+    def test_quiet_restart_preserves_unclosed_inventory_and_final_delivery_identity(self):
+        for index in range(5):
+            self.normalizer.normalize(self.evidence(start=index * 3200, revision=index + 1))
+        saved = json.loads(json.dumps(list(self.normalizer.channel_documents().values())))
+        original = self.envelopes([row for row in self.close_capture() if row.get("status") == DEMUX.SEALED])[0]
+        self.normalizer = DEMUX.EvidenceNormalizer()
+        self.normalizer.restore_channel_documents(saved)
+        recovered = self.envelopes([row for row in self.close_capture() if row.get("status") == DEMUX.SEALED])[0]
+        self.assertEqual(recovered["delivery_id"], original["delivery_id"])
+        self.assertEqual(recovered["message_id"], original["message_id"])
+        self.assertEqual(recovered["text"], original["text"])
+        self.assertEqual(recovered["occurrences"], original["occurrences"])
+
+    def test_late_close_only_settles_its_named_predecessor(self):
+        self.normalizer.normalize(self.evidence(session="agent-channel-2-old"))
+        self.normalizer.normalize(self.evidence(session="agent-channel-2-new", text="Nowa wiadomość"))
+        old = [row for row in self.close_capture("agent-channel-2-old") if row.get("status") == DEMUX.SEALED]
+        self.assertEqual([row["session_id"] for row in old], ["agent-channel-2-old"])
+        self.assertIn("agent-channel-2-new", self.normalizer.channel_documents())
+        new = [row for row in self.close_capture("agent-channel-2-new") if row.get("status") == DEMUX.SEALED]
+        self.assertEqual(new[0]["text"], "Nowa wiadomość")
+
+    def test_uncertified_capture_retains_refusal_diagnostic_and_all_ranges(self):
+        for index in range(5):
+            self.normalizer.normalize(self.evidence(start=index * 3200, revision=index + 1, action="seal_coverage"))
+        final = self.envelopes([row for row in self.close_capture() if row.get("status") == DEMUX.SEALED])[0]
+        self.assertEqual(final["coverage"], "refused")
+        self.assertFalse(final["state_change_allowed"])
+        self.assertEqual(len(set(self.ranges(final))), 5)
+
 if __name__ == "__main__": unittest.main()
