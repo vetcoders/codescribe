@@ -158,6 +158,7 @@ struct OverlayMicrophoneGlyph: View {
 /// A quiet notification affordance opens the full monitor on the overlay canvas.
 struct OverlayChannelStatusView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.displayScale) private var displayScale
 
   let channels: [OverlayChannelDelivery]
   let unavailable: Bool
@@ -230,6 +231,16 @@ struct OverlayChannelStatusView: View {
     return title + " (" + String(count) + ")"
   }
 
+  /// Native menu labels accept images, but omit Shapes and reset text colors.
+  /// Render the existing mark once per projection, preserving its tone without motion.
+  private var nativeHeaderImage: CGImage? {
+    let renderer = ImageRenderer(
+      content: OverlayAgentStatusMark(
+        reduceMotion: true, glyph: glyph, palette: palette, animates: false, fontSize: 13))
+    renderer.scale = displayScale
+    return renderer.cgImage
+  }
+
   var body: some View {
     Menu {
       Button("My dictation", systemImage: "waveform") { onSelectConversation?(nil) }
@@ -258,9 +269,13 @@ struct OverlayChannelStatusView: View {
       Divider()
       Button("Capture channels", systemImage: "person.2") { showMonitor() }
     } label: {
-      OverlayAgentStatusMark(
-        reduceMotion: reduceMotion, glyph: glyph, palette: palette, animates: animates, fontSize: 13
-      )
+      Group {
+        if let image = nativeHeaderImage {
+          Image(decorative: image, scale: displayScale)
+            .renderingMode(.original)
+        }
+      }
+      .frame(width: OverlayAgentGlyph.slotSize.width, height: OverlayAgentGlyph.slotSize.height)
       .contentShape(Rectangle())
       .overlay(alignment: .topTrailing) {
         if unreadCounts.values.contains(where: { $0 > 0 }) {

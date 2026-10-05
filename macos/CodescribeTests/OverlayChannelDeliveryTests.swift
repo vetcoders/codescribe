@@ -615,6 +615,132 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(unknown.detail(for: channel), "receipt confirmed by the agent")
   }
 
+  func testHeaderNativeMenuPaintsEveryAgentGlyphInBothAppearances() throws {
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      for glyph in OverlayAgentGlyph.allCases {
+        let channel = OverlayChannelDelivery(
+          channel: "2", agent: "lena",
+          deliveryID: glyph == .attached || glyph == .open ? nil : "d1",
+          stage: glyph == .awaitingReceipt ? .queued : glyph == .acknowledged ? .received : nil,
+          isOpen: glyph == .open)
+        let mark = OverlayAgentStatusMark(
+          reduceMotion: true, glyph: glyph, palette: palette, animates: false, fontSize: 13)
+        let standalone = try glyphInk(mark, palette: palette, name: "standalone-\(glyph)")
+        let oldButton = try glyphInk(
+          Button {
+          } label: {
+            mark
+          }.buttonStyle(.plain),
+          palette: palette, name: "old-button-\(glyph)")
+        let menu = try glyphInk(
+          OverlayChannelStatusView(
+            channels: [channel], unavailable: glyph == .unavailable,
+            palette: palette, animates: true),
+          palette: palette, name: "native-menu-\(glyph)")
+        print(
+          "GLYPH_INK \(palette.appearance) \(glyph) standalone=\(standalone) oldButton=\(oldButton) menu=\(menu)"
+        )
+        XCTAssertGreaterThan(standalone, 5, "standalone positive rendering control")
+        XCTAssertGreaterThan(oldButton, 5, "original plain button positive rendering control")
+        XCTAssertGreaterThan(
+          menu, 5,
+          "native Menu must paint the glyph, not merely reserve its slot: \(glyph), \(palette.appearance)"
+        )
+      }
+    }
+  }
+
+  private func glyphInk<V: View>(
+    _ view: V, palette: OverlayAppearancePalette, name: String
+  ) throws -> Int {
+    let host = NSHostingView(
+      rootView: ZStack {
+        palette.desktopBackground.color
+        view
+      }
+      .frame(width: 64, height: 64)
+      .environment(\.colorScheme, palette.appearance == .dark ? .dark : .light))
+    host.frame = NSRect(x: 0, y: 0, width: 64, height: 64)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.appearance = NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)
+    window.contentView = host
+    defer {
+      window.contentView = nil
+      window.close()
+    }
+    host.layoutSubtreeIfNeeded()
+    host.displayIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
+    host.layoutSubtreeIfNeeded()
+    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    let background = try XCTUnwrap(bitmap.colorAt(x: 2, y: 2)?.usingColorSpace(.deviceRGB))
+    XCTAssertGreaterThan(background.alphaComponent, 0.95, "opaque test surface must render")
+    var ink = 0
+    var strongestContrast: CGFloat = 0
+    var strongestColor = background
+    let sx = CGFloat(bitmap.pixelsWide) / 64
+    let sy = CGFloat(bitmap.pixelsHigh) / 64
+    for y in Int(21 * sy)..<Int(43 * sy) {
+      for x in Int(23 * sx)..<Int(41 * sx) {
+        let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
+        let contrast = max(
+          abs(color.redComponent - background.redComponent),
+          abs(color.greenComponent - background.greenComponent),
+          abs(color.blueComponent - background.blueComponent))
+        if contrast > 0.08 { ink += 1 }
+        if contrast > strongestContrast {
+          strongestContrast = contrast
+          strongestColor = color
+        }
+      }
+    }
+    if name == "native-menu-attached" {
+      let expected = try XCTUnwrap(palette.mutedText.nsColor.usingColorSpace(.deviceRGB))
+      XCTAssertLessThan(
+        max(
+          abs(strongestColor.redComponent - expected.redComponent),
+          abs(strongestColor.greenComponent - expected.greenComponent),
+          abs(strongestColor.blueComponent - expected.blueComponent)),
+        0.08, "idle glyph must retain its muted palette rather than the native menu title color")
+    }
+    let attachment = XCTAttachment(
+      data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])),
+      uniformTypeIdentifier: "public.png")
+    attachment.name = "\(palette.appearance)-\(name)"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+    func nativeLabels(_ node: NSView) -> [String] {
+      let own: [String]
+      if let button = node as? NSButton {
+        own = [
+          "\(type(of: button)): title=\(button.title.debugDescription) image=\(button.image != nil) frame=\(button.frame)"
+        ]
+      } else {
+        own = []
+      }
+      return own + node.subviews.flatMap(nativeLabels)
+    }
+    print("GLYPH_NATIVE \(palette.appearance) \(name) \(nativeLabels(host))")
+    if name == "native-menu-awaitingReceipt" {
+      func buttons(_ node: NSView) -> [NSButton] {
+        ((node as? NSButton).map { [$0] } ?? []) + node.subviews.flatMap(buttons)
+      }
+      XCTAssertTrue(
+        buttons(host).contains { $0.image != nil },
+        "waiting state needs a native label image, not an unsupported animated Shape")
+      let before = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      XCTAssertEqual(
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])), before,
+        "the header receipt icon stays stationary even while overlay animation is enabled")
+    }
+    return ink
+  }
+
   // MARK: Agent glyph (Annex A3/A4 — the state table is the Codex root's proposal)
 
   func testAgentGlyphUsesSpinnerOrOneCharacterWithOneLabelPerState() {
