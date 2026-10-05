@@ -1510,6 +1510,280 @@ mod tests {
         assert_eq!(controller.current_state().await, super::super::State::Idle);
     }
 
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn ordinary_handover_closes_each_channel_once_with_its_owned_receipt() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let first_bus = dir.path().join("channel-1.jsonl");
+        let third_bus = dir.path().join("channel-3.jsonl");
+        let binding = write_binding(dir.path(), &serde_json::json!({
+            "schema": "vc.agent-audience-binding.v1",
+            "bindings": {
+                "1": {"audience": "Lena", "provider": "codex", "provider_session_id": "lena-session", "bus": first_bus},
+                "3": {"audience": "Astra", "provider": "codex", "provider_session_id": "astra-session", "bus": third_bus}
+            }
+        }).to_string());
+        let shared_bus = dir.path().join("shared.jsonl");
+        for digit in [1, 3] {
+            controller
+                .dispatch_agent_channel(digit, &binding, &shared_bus, ChannelOpenMode::AttachedOnly)
+                .await
+                .expect("open fixture channel");
+            controller
+                .agent_channels
+                .lock()
+                .await
+                .get_mut(&digit)
+                .expect("open")
+                .session_id = Some(format!("agent-channel-{digit}-handover"));
+        }
+        let serial = controller.serial_lock.lock().await;
+        controller
+            .close_agent_channels_for_dictation()
+            .await
+            .expect("handover");
+        drop(serial);
+        assert!(controller.agent_channels.lock().await.is_empty());
+        assert_eq!(
+            controller.capture_subscriber_view().await,
+            (0, false, false)
+        );
+        assert_eq!(controller.current_state().await, super::super::State::Idle);
+        for (digit, bus, owner) in [
+            (1, &first_bus, "lena-session"),
+            (3, &third_bus, "astra-session"),
+        ] {
+            let rows = bus_rows(bus);
+            assert_eq!(rows.len(), 1, "exactly one closure per owned channel");
+            assert_eq!(rows[0]["reason"], "hangup");
+            assert_eq!(rows[0]["state"], "sealed");
+            assert_eq!(rows[0]["channel"], digit.to_string());
+            assert_eq!(rows[0]["provider_session_id"], owner);
+            assert_eq!(
+                rows[0]["session_id"],
+                format!("agent-channel-{digit}-handover")
+            );
+        }
+        controller
+            .close_agent_channels_for_dictation()
+            .await
+            .expect("idempotent close");
+        assert_eq!(bus_rows(&first_bus).len(), 1);
+        assert_eq!(bus_rows(&third_bus).len(), 1);
+        assert!(
+            !shared_bus.exists(),
+            "no receipt is sent to an unrelated bus"
+        );
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn ordinary_handover_serializes_silence_poll_without_reopening_the_channel() {
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared.jsonl");
+        let opened = open_stamped(
+            &controller,
+            &binding,
+            &shared_bus,
+            "agent-channel-3-handover",
+        )
+        .await;
+        hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
+        let serial = controller.serial_lock.lock().await;
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let polling_controller = Arc::clone(&controller);
+        let poll_bus = shared_bus.clone();
+        let poll = tokio::spawn(async move {
+            started.send(()).expect("poll observed");
+            polling_controller
+                .poll_channel_autoseal(opened + Duration::from_secs(600), &poll_bus)
+                .await
+        });
+        waiting.await.expect("poll started");
+        tokio::task::yield_now().await;
+        assert!(
+            !poll.is_finished(),
+            "silence poll waits for the existing transition owner"
+        );
+        controller
+            .close_agent_channels_for_dictation()
+            .await
+            .expect("handover");
+        drop(serial);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), poll)
+                .await
+                .expect("bounded poll")
+                .expect("poll task")
+                .is_empty()
+        );
+        assert!(controller.agent_channel_snapshot(3).await.is_none());
+        let rows = bus_rows(&channel_bus);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["reason"], "hangup");
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn ordinary_hold_and_toggle_admit_only_after_owned_channel_close() {
+        use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
+
+        for key_type in [HotkeyType::Hold, HotkeyType::Toggle] {
+            let controller = Arc::new(RecordingController::new_without_keychain());
+            let dir = tempfile::tempdir().expect("temp");
+            let (binding, channel_bus) = write_dedicated_binding(dir.path());
+            let shared_bus = dir.path().join("shared.jsonl");
+            open_stamped(
+                &controller,
+                &binding,
+                &shared_bus,
+                "agent-channel-3-before-take",
+            )
+            .await;
+            controller
+                .handle_hotkey_event(HotkeyInput {
+                    key_type,
+                    action: if key_type == HotkeyType::Hold {
+                        HotkeyAction::Down
+                    } else {
+                        HotkeyAction::Press
+                    },
+                    assistive: false,
+                    hold_mode: HoldMode::Raw,
+                    force_raw: false,
+                    force_ai: false,
+                })
+                .await
+                .expect("ordinary start");
+            let expected = if key_type == HotkeyType::Hold {
+                State::RecHold
+            } else {
+                State::RecToggle
+            };
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while controller.current_state().await != expected {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("bounded fake recorder admission");
+            assert!(controller.agent_channel_snapshot(3).await.is_none());
+            let rows = bus_rows(&channel_bus);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0]["reason"], "hangup");
+            assert_eq!(rows[0]["session_id"], "agent-channel-3-before-take");
+            let take = controller
+                .session_id
+                .read()
+                .await
+                .clone()
+                .expect("ordinary take");
+            assert_ne!(take, "agent-channel-3-before-take");
+            // AttachedOnly stamps ownership without physical PCM. This case
+            // proves admission and close ordering, not a final transcript seal.
+            controller.reset().await;
+            assert_eq!(controller.current_state().await, State::Idle);
+        }
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn hold_release_while_handover_waits_cancels_the_ordinary_take() {
+        use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
+
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared.jsonl");
+        open_stamped(&controller, &binding, &shared_bus, "agent-channel-3-cancel").await;
+        let serial = controller.serial_lock.lock().await;
+        let pending_controller = Arc::clone(&controller);
+        let event = |action| HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action,
+            assistive: false,
+            hold_mode: HoldMode::Raw,
+            force_raw: false,
+            force_ai: false,
+        };
+        let down = event(HotkeyAction::Down);
+        let pending =
+            tokio::spawn(async move { pending_controller.handle_hotkey_event(down).await });
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !pending.is_finished(),
+            "start waits for handover serialization"
+        );
+        controller
+            .handle_hotkey_event(event(HotkeyAction::Up))
+            .await
+            .expect("release does not wait for drain");
+        drop(serial);
+        tokio::time::timeout(Duration::from_secs(1), pending)
+            .await
+            .expect("bounded handover")
+            .expect("task")
+            .expect("start resolves");
+        assert_eq!(controller.current_state().await, State::Idle);
+        assert!(controller.session_id.read().await.is_none());
+        assert!(controller.hold_start_task.lock().await.is_none());
+        assert!(controller.agent_channel_snapshot(3).await.is_none());
+        assert_eq!(
+            bus_rows(&channel_bus).len(),
+            1,
+            "channel closure remains durable"
+        );
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn raw_hold_arm_preserves_channel_until_an_ordinary_take_is_admitted() {
+        use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared.jsonl");
+        open_stamped(
+            &controller,
+            &binding,
+            &shared_bus,
+            "agent-channel-3-before-chord",
+        )
+        .await;
+        let event = |action| HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action,
+            assistive: false,
+            hold_mode: HoldMode::Raw,
+            force_raw: false,
+            force_ai: false,
+        };
+        controller
+            .handle_hotkey_event(event(HotkeyAction::Down))
+            .await
+            .expect("arm hold");
+        let channel_preserved = controller.agent_channel_snapshot(3).await.is_some();
+        controller
+            .handle_hotkey_event(event(HotkeyAction::Up))
+            .await
+            .expect("cancel arm");
+        assert_eq!(controller.current_state().await, State::Idle);
+        assert!(controller.session_id.read().await.is_none());
+        assert!(
+            channel_preserved,
+            "Fn down is also the prefix of a channel chord; it cannot hang up another channel before dictation admission"
+        );
+        assert!(
+            bus_rows(&channel_bus).is_empty(),
+            "no premature hangup receipt"
+        );
+    }
+
     #[test]
     #[serial(agent_ack_duck)]
     fn channel_autoseal_knob_defaults_to_the_brief_and_zero_disables() {

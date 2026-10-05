@@ -478,6 +478,45 @@ final class OverlayStateTests: XCTestCase {
     state.finishControllerRecording()
   }
 
+  func testStartedCaptureRefreshesRosterAfterOptimisticPreparingSawOpenChannel() async throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    engine.rosterSnapshot = [navigationRoster()]
+    state.applyChannelRoster(engine.rosterSnapshot)
+    state.handleRecordingPreparing()
+    for _ in 0..<10 { await Task.yield() }
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+    engine.rosterSnapshot = []
+    state.handleRecordingStarted()
+    for _ in 0..<10 { await Task.yield() }
+    XCTAssertTrue(
+      state.showsMyDictation, "admitted ordinary capture follows the closed controller roster")
+    XCTAssertFalse(state.hasOpenChannel)
+    XCTAssertTrue(engine.toggledDigits.isEmpty, "presentation never closes the recorder itself")
+    XCTAssertEqual(state.conversations.map(\.id), [lena.id])
+    state.finishControllerRecording()
+  }
+
+  func testDuplicateStartedCallbackPreservesManualSelectionAfterOrdinaryHandover() async throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    for _ in 0..<10 { await Task.yield() }
+    XCTAssertTrue(state.showsMyDictation)
+    state.selectConversation(lena.id)
+    state.handleRecordingStarted()
+    for _ in 0..<10 { await Task.yield() }
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+    state.finishControllerRecording()
+  }
+
   func testDuplicateLifecycleDoesNotSelectDictationRepeatedly() throws {
     let state = OverlayState()
     let lena = try navigationConversation()
