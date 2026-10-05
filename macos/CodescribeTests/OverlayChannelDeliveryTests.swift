@@ -615,8 +615,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(unknown.detail(for: channel), "receipt confirmed by the agent")
   }
 
-  func testHeaderNativeMenuPaintsEveryAgentGlyphInBothAppearances() throws {
+  func testHeaderNativeMenuKeepsFullAgentGlyphForEveryStateAndAppearance() throws {
     for palette in [OverlayAppearancePalette.light, .dark] {
+      var attachedMenuPixels: Data?
       for glyph in OverlayAgentGlyph.allCases {
         let channel = OverlayChannelDelivery(
           channel: "2", agent: "lena",
@@ -632,18 +633,22 @@ final class OverlayChannelDeliveryTests: XCTestCase {
             mark
           }.buttonStyle(.plain),
           palette: palette, name: "old-button-\(glyph)")
-        let menu = try glyphInk(
-          OverlayChannelStatusView(
-            channels: [channel], unavailable: glyph == .unavailable,
-            palette: palette, animates: true),
-          palette: palette, name: "native-menu-\(glyph)")
+        let header = OverlayChannelStatusView(
+          channels: [channel], unavailable: glyph == .unavailable,
+          palette: palette, animates: true)
+        XCTAssertEqual(header.glyph, glyph, "visual art must not replace projected receipt truth")
+        let menu = try glyphInk(header, palette: palette, name: "native-menu-\(glyph)")
+        if glyph == .attached { attachedMenuPixels = menu.pixels }
+        XCTAssertEqual(
+          menu.pixels, try XCTUnwrap(attachedMenuPixels),
+          "header must retain the full muted agent glyph rather than a spinner arc: \(glyph)")
         print(
-          "GLYPH_INK \(palette.appearance) \(glyph) standalone=\(standalone) oldButton=\(oldButton) menu=\(menu)"
+          "GLYPH_INK \(palette.appearance) \(glyph) standalone=\(standalone.ink) oldButton=\(oldButton.ink) menu=\(menu.ink)"
         )
-        XCTAssertGreaterThan(standalone, 5, "standalone positive rendering control")
-        XCTAssertGreaterThan(oldButton, 5, "original plain button positive rendering control")
+        XCTAssertGreaterThan(standalone.ink, 5, "standalone positive rendering control")
+        XCTAssertGreaterThan(oldButton.ink, 5, "original plain button positive rendering control")
         XCTAssertGreaterThan(
-          menu, 5,
+          menu.ink, 5,
           "native Menu must paint the glyph, not merely reserve its slot: \(glyph), \(palette.appearance)"
         )
       }
@@ -652,7 +657,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
 
   private func glyphInk<V: View>(
     _ view: V, palette: OverlayAppearancePalette, name: String
-  ) throws -> Int {
+  ) throws -> (ink: Int, pixels: Data) {
     let host = NSHostingView(
       rootView: ZStack {
         palette.desktopBackground.color
@@ -697,14 +702,14 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         }
       }
     }
-    if name == "native-menu-attached" {
+    if name.hasPrefix("native-menu-") {
       let expected = try XCTUnwrap(palette.mutedText.nsColor.usingColorSpace(.deviceRGB))
       XCTAssertLessThan(
         max(
           abs(strongestColor.redComponent - expected.redComponent),
           abs(strongestColor.greenComponent - expected.greenComponent),
           abs(strongestColor.blueComponent - expected.blueComponent)),
-        0.08, "idle glyph must retain its muted palette rather than the native menu title color")
+        0.08, "header glyph must retain its muted palette for every projected state")
     }
     let attachment = XCTAttachment(
       data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])),
@@ -738,7 +743,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         try XCTUnwrap(bitmap.representation(using: .png, properties: [:])), before,
         "the header receipt icon stays stationary even while overlay animation is enabled")
     }
-    return ink
+    return (ink, try XCTUnwrap(bitmap.representation(using: .png, properties: [:])))
   }
 
   // MARK: Agent glyph (Annex A3/A4 — the state table is the Codex root's proposal)

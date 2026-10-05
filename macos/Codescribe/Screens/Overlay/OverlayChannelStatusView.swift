@@ -18,7 +18,7 @@ enum OverlayAgentGlyph: CaseIterable, Equatable, Sendable {
   case attached
   /// ❖ in the listening hue: the microphone feeds this agent's channel now.
   case open
-  /// A rotating spinner: a sealed utterance is out and no receipt names it yet.
+  /// Roster spinner: a sealed utterance is out and no receipt names it yet.
   case awaitingReceipt
   /// ␆ the agent confirmed receipt of the newest delivery.
   case acknowledged
@@ -232,11 +232,12 @@ struct OverlayChannelStatusView: View {
   }
 
   /// Native menu labels accept images, but omit Shapes and reset text colors.
-  /// Render the existing mark once per projection, preserving its tone without motion.
+  /// The header uses the full bound-agent symbol as a muted navigation affordance.
+  /// The projected glyph still owns receipt labels, accessibility and roster marks.
   private var nativeHeaderImage: CGImage? {
     let renderer = ImageRenderer(
       content: OverlayAgentStatusMark(
-        reduceMotion: true, glyph: glyph, palette: palette, animates: false, fontSize: 13))
+        reduceMotion: true, glyph: .attached, palette: palette, animates: false, fontSize: 13))
     renderer.scale = displayScale
     return renderer.cgImage
   }
