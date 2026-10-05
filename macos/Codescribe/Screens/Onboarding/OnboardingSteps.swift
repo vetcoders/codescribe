@@ -881,13 +881,12 @@ extension PermissionKind {
     case .microphone:
       return String(
         localized: LocalizedStringResource(
-          "Transcribe your voice into text. Audio is processed locally on your Mac.",
-          locale: locale,
+          "Audio is processed locally on your computer.", locale: locale,
           comment: "Why the app asks for the Microphone scope"))
     case .accessibility:
       return String(
         localized: LocalizedStringResource(
-          "Type transcribed text into any application and control text insertion.", locale: locale,
+          "Lets Codescribe type text directly into other apps.", locale: locale,
           comment: "Why the app asks for the Accessibility scope"))
     case .inputMonitoring:
       return String(
@@ -897,19 +896,18 @@ extension PermissionKind {
     case .screenRecording:
       return String(
         localized: LocalizedStringResource(
-          "Capture screen context to give the AI assistant visual awareness of what you're working on.",
-          locale: locale,
+          "Lets the Agent use your screen as context.", locale: locale,
           comment: "Why the app asks for the Screen Recording scope"))
     case .speechRecognition:
       return String(
         localized: LocalizedStringResource(
-          "Power Apple live dictation on-device. Speech never leaves your Mac.", locale: locale,
+          "Powers Apple live dictation on your computer. The recording never leaves your device.",
+          locale: locale,
           comment: "Why the app asks for the Speech Recognition scope"))
     case .fullDiskAccess:
       return String(
         localized: LocalizedStringResource(
-          "Read project files for AI context. Optional — limits file-aware features if skipped.",
-          locale: locale,
+          "Lets the Agent read files and use them as context.", locale: locale,
           comment: "Why the app asks for the Full Disk Access scope"))
     }
   }

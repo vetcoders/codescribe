@@ -416,7 +416,7 @@ private struct PermissionChecklistRow: View {
         .foregroundStyle(Color.primary)
         .frame(maxWidth: .infinity, alignment: .leading)
       if granted {
-        Text("granted", comment: "Permission status: this permission is granted")
+        Text(state.label)
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(CSColor.oliveLight)
       } else {

@@ -21,13 +21,7 @@ struct PermissionMatrixCell: View {
           .font(CSFont.ui(12.5, .medium))
           .foregroundStyle(Color.primary)
           .frame(maxWidth: .infinity, alignment: .leading)
-        Text(
-          granted
-            ? String(
-              localized: "granted",
-              comment: "Permission status: this permission is granted")
-            : state.label
-        )
+        Text(state.label)
         .font(CSFont.mono(10, .semibold))
         .foregroundStyle(accentLight)
       }

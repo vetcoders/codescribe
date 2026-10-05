@@ -83,10 +83,7 @@ struct OnboardingView: View {
           localized: LocalizedStringResource(
             "Make the connection", locale: model.interfaceLocale, comment: "Setup chapter heading")),
         "hand.raised",
-        String(
-          localized: LocalizedStringResource(
-            "You decide what Codescribe can access.", locale: model.interfaceLocale,
-            comment: "Setup chapter subtitle; Codescribe is the product name"))
+        nil
       )
     case .language, .apiKey, .hotkeyMode:
       return (

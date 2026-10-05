@@ -2651,6 +2651,17 @@
         }
       }
     },
+    "Audio is processed locally on your computer." : {
+      "comment" : "Why the app asks for the Microphone scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dźwięk jest przetwarzany lokalnie na Twoim komputerze."
+          }
+        }
+      }
+    },
     "Audio retention" : {
       "localizations" : {
         "pl" : {
@@ -4946,6 +4957,17 @@
         }
       }
     },
+    "Denied" : {
+      "comment" : "Permission row status, lower case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odmówiono"
+          }
+        }
+      }
+    },
     "Deny" : {
       "comment" : "Tool permission level",
       "localizations" : {
@@ -6069,6 +6091,17 @@
         }
       }
     },
+    "Granted" : {
+      "comment" : "Permission row status, lower case\nPermission status: this permission is granted",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przyznano"
+          }
+        }
+      }
+    },
     "Grants %@ access." : {
       "localizations" : {
         "pl" : {
@@ -6721,6 +6754,39 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Długość niedostępna"
+          }
+        }
+      }
+    },
+    "Lets Codescribe type text directly into other apps." : {
+      "comment" : "Why the app asks for the Accessibility scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pozwala Codescribe wpisywać tekst bezpośrednio do innych aplikacji."
+          }
+        }
+      }
+    },
+    "Lets the Agent read files and use them as context." : {
+      "comment" : "Why the app asks for the Full Disk Access scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pozwala czytać pliki i używać ich jako kontekstu dla Agenta."
+          }
+        }
+      }
+    },
+    "Lets the Agent use your screen as context." : {
+      "comment" : "Why the app asks for the Screen Recording scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pozwala korzystać z obrazu ekranu jako kontekstu dla Agenta."
           }
         }
       }
@@ -8141,6 +8207,17 @@
         }
       }
     },
+    "Not determined" : {
+      "comment" : "Permission row status, lower case: the user has not decided yet",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie określono"
+          }
+        }
+      }
+    },
     "Not installed" : {
       "localizations" : {
         "pl" : {
@@ -8957,6 +9034,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pozwala korzystać z dyktowania na żywo Apple bezpośrednio na Macu. Mowa nie opuszcza urządzenia."
+          }
+        }
+      }
+    },
+    "Powers Apple live dictation on your computer. The recording never leaves your device." : {
+      "comment" : "Why the app asks for the Speech Recognition scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pozwala korzystać z dyktowania na żywo Apple bezpośrednio na Twoim komputerze. Nagranie nie opuszcza urządzenia."
           }
         }
       }
@@ -14644,7 +14732,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Możesz przejść dalej bez tego uprawnienia, ale powiązana funkcja pozostanie wyłączona, dopóki go nie przyznasz."
+            "value" : "Możesz kontynuować bez tego uprawnienia, ale powiązana funkcja pozostanie wyłączona."
           }
         }
       }
