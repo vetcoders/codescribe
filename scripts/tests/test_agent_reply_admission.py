@@ -286,7 +286,7 @@ class AgentReplyAdmissionTests(unittest.TestCase):
         self.assertTrue(DEMUX.delivery_acknowledged(self.home, lease, identity))
 
 
-    def test_five_equal_text_occurrences_remain_five_refused_documents(self):
+    def test_five_equal_text_occurrences_remain_five_pcm_entries_of_one_refused_message(self):
         normalizer = DEMUX.EvidenceNormalizer()
         for occurrence in range(5):
             normalizer.normalize({"schema": DEMUX.EVIDENCE_SCHEMA,
@@ -294,14 +294,15 @@ class AgentReplyAdmissionTests(unittest.TestCase):
                 "reducer_action": "apply_ledger_decision", "reducer_revision": occurrence,
                 "document_index": occurrence, "capture_epoch": 1,
                 "sample_start": occurrence * 16000, "sample_end": (occurrence + 1) * 16000,
-                "rendered_text": "Iwo"})
+                "rendered_text": " ".join(["Iwo"] * (occurrence + 1))})
         normalizer.normalize({"schema": DEMUX.CLEAN_SCHEMA,
             "session_id": "agent-channel-2-five", "status": DEMUX.SESSION_ENDED})
         rows = normalizer.pop_flushes()
-        self.assertEqual(len(rows), 5)
-        self.assertEqual(len({row["source_event_id"] for row in rows}), 5)
-        self.assertEqual({row["text"] for row in rows}, {"Iwo"})
-        self.assertTrue(all(row["coverage"] == "refused" for row in rows))
+        self.assertEqual(len(rows), 1, "one spoken take is one message, never one per document")
+        self.assertEqual(rows[0]["text"].split(), ["Iwo"] * 5)
+        self.assertEqual(rows[0]["coverage"], "refused")
+        self.assertEqual(len({(item["sample_start"], item["sample_end"])
+                              for item in rows[0]["occurrences"]}), 5)
 
 
     def test_foreign_phase_ack_cannot_discard_a_newly_queued_owned_delivery(self):

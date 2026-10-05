@@ -69,7 +69,9 @@ manual attach saga and drive the engine:
    goes on this call and is stored in the name's profile; the receipt then
    says `voice_source: "flag"`. It also carries lease, cursor, voice profile,
    follower pid and its log path. The follower runs with `--coalesce`: a
-   reducer storm folds into one envelope per document.
+   reducer storm folds into one preview per spoken message, and a channel
+   take seals as exactly one envelope that keeps every PCM entry in
+   `occurrences`.
 
 3. Codex attachment arms `codex queue` automatically for this exact thread.
    It continues after a final answer; no private hook or polling is needed.

@@ -24,7 +24,9 @@ one live follower for the session's lease (pidfile and readable log under
 the `voice` profile from `voices.json`. A second attach with a live follower
 reuses it (`follower_spawned: false`). The spawned follower always coalesces
 (`--coalesce`): the newest draft/revision replaces its predecessors per
-document, while every seal stays its own envelope. Pass
+spoken message, while every seal stays its own envelope. A channel take is
+one message: however many PCM documents it holds, it seals once and carries
+them as `occurrences`. Pass
 `--on-seal '<cmd>'` to forward a detached wake hook to the spawned follower;
 the hook receives `CODESCRIBE_SEAL_DELIVERY_ID`, `CODESCRIBE_SEAL_SESSION_ID`
 and `CODESCRIBE_SEAL_TEXT`, and fires exactly once per freshly queued seal.
