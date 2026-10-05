@@ -354,7 +354,10 @@ The existing 13-step Setup Wizard exposes the bridge on the **Agent** step. It
 does not write to the home directory merely because the step is shown,
 refreshed, skipped, or left with Back. The user selects Codex,
 Claude Code, or both; Continue installs or updates the selected managed skills
-only when that selection differs from the installer receipt. A failed install
+when that selection differs from the installer receipt or a selected client's
+managed receipt/folder evidence needs repair. A healthy unchanged selection
+does not write. Repair reuses the ownership checks and refuses an unowned
+replacement. A failed install
 keeps Setup on the Agent step and shows the error below the client cards so the
 user can retry. Continuing from a fresh empty selection remains read-only.
 

@@ -285,7 +285,9 @@ final class OnboardingViewModel: ObservableObject {
   }
 
   var agentBridgeReadyToGo: Bool {
-    readiness?.ready == true && agentBridgeError == nil
+    providerAccessResolved && !providerAccessPending && providerAccessError == nil
+      && readiness?.ready == true && agentBridgeError == nil
+      && agentBridgeStatus.clientsNeedingRepair.isDisjoint(with: selectedAgentClients)
   }
 
   func agentClientIsInstalled(_ client: AgentBridgeClient) -> Bool {
@@ -367,7 +369,8 @@ final class OnboardingViewModel: ObservableObject {
 
   /// The only home-directory write on the readiness step. It runs from an
   /// explicit Set up action or from Continue when the selected clients differ
-  /// from the managed receipt. Visiting, refreshing, Back, and Skip stay
+  /// from the managed receipt or its ownership evidence needs repair.
+  /// Visiting, refreshing, Back, and Skip stay
   /// read-only.
   func installAgentBridge() {
     do {
@@ -471,19 +474,24 @@ final class OnboardingViewModel: ObservableObject {
       }
       return
     }
-    if step == .apiKey, apiKeySaveAvailable,
+    if step == .apiKey, apiKeyEditorExpanded, apiKeySaveAvailable,
       !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     {
       saveApiKey(advanceOnSuccess: true)
       return
     }
-    if step == .agenticReadiness,
-      selectedAgentClients != Set(agentBridgeStatus.installedClients)
-    {
-      installAgentBridge()
-      guard agentBridgeError == nil,
-        selectedAgentClients == Set(agentBridgeStatus.installedClients)
-      else { return }
+    if step == .agenticReadiness {
+      agentBridgeStatus = agentBridge.status()
+      let selectionChanged = selectedAgentClients != Set(agentBridgeStatus.installedClients)
+      let selectedNeedsRepair =
+        !agentBridgeStatus.clientsNeedingRepair.isDisjoint(with: selectedAgentClients)
+      if selectionChanged || selectedNeedsRepair {
+        installAgentBridge()
+        guard agentBridgeError == nil,
+          selectedAgentClients == Set(agentBridgeStatus.installedClients),
+          agentBridgeStatus.clientsNeedingRepair.isDisjoint(with: selectedAgentClients)
+        else { return }
+      }
     }
     commitCurrentChoice()
     advanceAfterCommit()

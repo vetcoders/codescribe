@@ -34,6 +34,24 @@ struct AgentBridgeInstallationStatus: Equatable {
   let installedClients: [AgentBridgeClient]
   let installedPaths: [String]
   let detail: String
+  /// Detected clients whose managed receipt and folder marker do not match.
+  let clientsNeedingRepair: Set<AgentBridgeClient>
+
+  init(
+    payloadAvailable: Bool,
+    bundleVersion: String?,
+    installedClients: [AgentBridgeClient],
+    installedPaths: [String],
+    detail: String,
+    clientsNeedingRepair: Set<AgentBridgeClient> = []
+  ) {
+    self.payloadAvailable = payloadAvailable
+    self.bundleVersion = bundleVersion
+    self.installedClients = installedClients
+    self.installedPaths = installedPaths
+    self.detail = detail
+    self.clientsNeedingRepair = clientsNeedingRepair
+  }
 
   static let unavailable = AgentBridgeInstallationStatus(
     payloadAvailable: false,
@@ -391,6 +409,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     var clients: [AgentBridgeClient] = []
     var paths: [String] = []
     var details: [String] = []
+    var clientsNeedingRepair: Set<AgentBridgeClient> = []
     for client in AgentBridgeClient.allCases.sorted(by: { $0.rawValue < $1.rawValue }) {
       let destination = client.skillDirectory(home: homeDirectory)
       let marker = managedMarker(destination: destination, client: client)
@@ -401,12 +420,19 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         marker != nil
           ? destination.standardizedFileURL.path
           : receipt?.installedPaths[client.rawValue] ?? destination.standardizedFileURL.path)
+      let receiptMatchesManagedFolder =
+        marker.map { marker in
+          guard let receipt else { return false }
+          return recorded && receipt.managedID == marker.managedID
+            && receipt.installedPaths[client.rawValue] == destination.standardizedFileURL.path
+        } ?? false
+      if !receiptMatchesManagedFolder {
+        clientsNeedingRepair.insert(client)
+      }
       let evidence: String
-      if let marker {
-        if let receipt {
-          if recorded, receipt.managedID == marker.managedID,
-            receipt.installedPaths[client.rawValue] == destination.standardizedFileURL.path
-          {
+      if marker != nil {
+        if receipt != nil {
+          if receiptMatchesManagedFolder {
             evidence = String(
               localized: "receipt and managed folder found.",
               comment: "Installer evidence, follows \"<client name>: \" on one line"
@@ -439,7 +465,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       installedPaths: paths,
       detail: details.isEmpty
         ? String(localized: "Ready to install after you select an agent client.")
-        : details.joined(separator: "\n")
+        : details.joined(separator: "\n"),
+      clientsNeedingRepair: clientsNeedingRepair
     )
   }
 

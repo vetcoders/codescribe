@@ -302,6 +302,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
       }
       let status = installer.status()
       XCTAssertEqual(Set(status.installedClients), [.codex, .claudeCode])
+      XCTAssertEqual(status.clientsNeedingRepair, [.codex, .claudeCode])
       XCTAssertEqual(Set(status.installedPaths), Set(skills.map(\.path)))
       XCTAssertTrue(status.detail.contains("Update will re-adopt it."), status.detail)
       XCTAssertTrue(status.detail.contains("Claude Code: managed folder found"))
@@ -309,6 +310,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
 
       let updated = try installer.install(selectedClients: [.codex, .claudeCode])
       XCTAssertEqual(Set(updated.installedClients), [.codex, .claudeCode])
+      XCTAssertTrue(updated.clientsNeedingRepair.isEmpty)
       XCTAssertTrue(updated.detail.contains("receipt and managed folder found"))
       let newID = try XCTUnwrap(try jsonObject(receiptURL)["managed_id"] as? String)
       XCTAssertNotEqual(newID, oldID)
@@ -362,10 +364,76 @@ final class AgentBridgeInstallerTests: XCTestCase {
     let managedID = try jsonObject(receiptURL)["managed_id"] as? String
     try FileManager.default.removeItem(at: home.appendingPathComponent(".codex/skills/codescribe"))
     XCTAssertEqual(installer.status().installedClients, [.codex])
+    XCTAssertEqual(installer.status().clientsNeedingRepair, [.codex])
     XCTAssertTrue(
       installer.status().detail.contains("receipt found, managed folder missing or invalid"))
     _ = try installer.install(selectedClients: [.codex])
+    XCTAssertTrue(installer.status().clientsNeedingRepair.isEmpty)
     XCTAssertEqual(try jsonObject(receiptURL)["managed_id"] as? String, managedID)
+  }
+
+  func testOnboardingContinueRepairsManagedEvidenceAndHealthyRetryDoesNotWrite() throws {
+    let payload = try makePayload()
+    for drift in ["missing-receipt", "unreadable-receipt", "missing-folder"] {
+      let home = scratch.appendingPathComponent("onboarding-repair-" + drift)
+      let installer = RealAgentBridgeInstaller(
+        resourceRoot: payload, homeDirectory: home, environment: [:])
+      _ = try installer.install(selectedClients: [.codex])
+      let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+      let folder = home.appendingPathComponent(".codex/skills/codescribe")
+      switch drift {
+      case "missing-receipt": try FileManager.default.removeItem(at: receiptURL)
+      case "unreadable-receipt": try Data("invalid json".utf8).write(to: receiptURL)
+      default: try FileManager.default.removeItem(at: folder)
+      }
+      let engine = MockOnboardingEngine(progress: 11)
+      engine.mode = "agentic"
+      let model = OnboardingViewModel(
+        engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+        agentBridge: installer, probe: MockPermissionProbe(.allGranted))
+      XCTAssertEqual(model.selectedAgentClients, [.codex])
+      XCTAssertEqual(model.agentBridgeStatus.clientsNeedingRepair, [.codex])
+      model.advance()
+      XCTAssertEqual(model.step, .done)
+      XCTAssertNil(model.agentBridgeError)
+      XCTAssertTrue(model.agentBridgeStatus.clientsNeedingRepair.isEmpty)
+      XCTAssertTrue(
+        FileManager.default.fileExists(atPath: folder.appendingPathComponent("SKILL.md").path))
+      let repairedReceipt = try Data(contentsOf: receiptURL)
+      let repairedInode = try fileNumber(receiptURL)
+      model.back()
+      model.advance()
+      XCTAssertEqual(model.step, .done)
+      XCTAssertEqual(try Data(contentsOf: receiptURL), repairedReceipt)
+      XCTAssertEqual(
+        try fileNumber(receiptURL), repairedInode, "Healthy unchanged selection is read-only")
+    }
+  }
+
+  func testOnboardingRepairRefusesAnUnownedReplacementWithoutWriting() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("onboarding-repair-unowned")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receipt = try Data(contentsOf: receiptURL)
+    let folder = home.appendingPathComponent(".codex/skills/codescribe")
+    try FileManager.default.removeItem(at: folder)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let original = Data("user-maintained instructions".utf8)
+    let skill = folder.appendingPathComponent("SKILL.md")
+    try original.write(to: skill)
+    let engine = MockOnboardingEngine(progress: 11)
+    engine.mode = "agentic"
+    let model = OnboardingViewModel(
+      engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+      agentBridge: installer, probe: MockPermissionProbe(.allGranted))
+    model.advance()
+    XCTAssertEqual(model.step, .agenticReadiness)
+    XCTAssertNotNil(model.agentBridgeError)
+    XCTAssertEqual(try Data(contentsOf: skill), original)
+    XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
   }
 
   func testInvalidOwnershipMarkersRefuseUpdateWithoutMutation() throws {

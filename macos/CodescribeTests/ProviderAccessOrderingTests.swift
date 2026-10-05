@@ -195,6 +195,54 @@ final class ProviderAccessOrderingTests: XCTestCase {
     XCTAssertEqual(engine.writes, 0, "Changing the picker never writes a secret")
   }
 
+  func testContinueDoesNotSaveRestoredDraftBehindCollapsedEditor() async throws {
+    let engine = ControlledProviderEngine()
+    let second = try XCTUnwrap(
+      CsProviderOption.sampleProviders.first { $0.id != engine.provider.id && $0.keyRequired })
+    engine.additionalProviders = [second]
+    let model = makeModel(engine)
+    await load(model, engine)
+    let firstID = model.selectedProviderId
+    model.beginApiKeyEditing()
+    model.apiKeyDraft = "unsaved-provider-draft"
+    model.selectProvider(second.id)
+    model.selectProvider(firstID)
+    XCTAssertFalse(model.apiKeyEditorExpanded)
+    XCTAssertEqual(model.apiKeyDraft, "unsaved-provider-draft")
+
+    model.advance()
+    XCTAssertEqual(model.step, .hotkeyMode)
+    XCTAssertEqual(engine.writes, 0, "Continue and Skip must not submit a hidden field")
+    XCTAssertEqual(model.apiKeyDraft, "unsaved-provider-draft")
+    await load(model, engine)
+    model.back()
+    model.beginApiKeyEditing()
+    XCTAssertEqual(model.apiKeyDraft, "unsaved-provider-draft")
+    await load(model, engine)
+  }
+
+  func testReadyStateRequiresCurrentSuccessfulProviderRead() async {
+    let engine = ControlledProviderEngine()
+    engine.progress = 11
+    let model = makeModel(engine)
+    await load(model, engine)
+    XCTAssertTrue(model.agentBridgeReadyToGo)
+    XCTAssertFalse(model.agentClientNeedsSetup(.codex))
+    model.refreshProviderAccess()
+    await awaitCondition { engine.read != nil }
+    XCTAssertFalse(model.agentBridgeReadyToGo, "Pending credentials cannot claim ready")
+    let pending = engine.read
+    engine.read = nil
+    pending?.resume(throwing: ControlledProviderEngine.Failure.denied)
+    await awaitCondition { !model.providerAccessPending }
+    XCTAssertNotNil(model.providerAccessError)
+    XCTAssertFalse(model.agentBridgeReadyToGo, "A prior ready snapshot must not hide a failed read")
+    XCTAssertTrue(model.agentClientNeedsSetup(.codex))
+    await load(model, engine)
+    XCTAssertTrue(model.agentBridgeReadyToGo)
+    XCTAssertFalse(model.agentClientNeedsSetup(.codex))
+  }
+
   func testOldSnapshotAfterMutationIsRejectedAndFollowUpPublishesNewRevision() async {
     let engine = ControlledProviderEngine()
     let model = makeModel(engine)
@@ -220,6 +268,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
     let engine = ControlledProviderEngine()
     let model = makeModel(engine)
     await load(model, engine)
+    model.beginApiKeyEditing()
     model.apiKeyDraft = "submitted"
     model.advance()
     await awaitCondition { engine.write != nil }
