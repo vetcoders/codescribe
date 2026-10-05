@@ -1,7 +1,6 @@
 # CodescribeTests — what runs, and how
 
-Swift unit tests for the SwiftUI front-end. **893 tests, executed by
-`make test-swift`.**
+Swift unit tests for the SwiftUI front-end, executed by `make test-swift`.
 
 ```bash
 make test-swift                                    # whole suite
@@ -41,6 +40,14 @@ synthetic; no real credential is used by these unit fixtures.
    `** TEST SUCCEEDED **` and `Executed 0 tests` — a silent pass, the same trap
    `cargo test <filter>` carries. `make test-swift` fails with rc 3 when a run
    executes zero tests.
+5. **License fixtures require the checked-in DEV verifier.** Their RFC 8032
+   signature cannot validate against an app-distribution public key. The Rust
+   verifier is compiled into the bridge; clearing the environment before
+   `make test-swift` does not rebuild an existing bridge just because the key
+   changed. After an app build with a different public key, first run
+   `env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX make app-bindings`, then run tests
+   with that variable unset. Apply the app's public key separately for its
+   distribution or local-install build.
 
 ## Why the suite was believed unrunnable
 
