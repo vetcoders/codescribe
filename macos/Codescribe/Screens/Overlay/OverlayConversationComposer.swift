@@ -8,15 +8,8 @@ struct OverlayConversationComposer: View {
   let sending: Bool
   let onSubmit: () -> Void
 
-  @ViewBuilder
   var body: some View {
-    if #available(macOS 26.0, *) {
-      composerContent
-        .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 20))
-    } else {
-      composerContent
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
-    }
+    composerContent.modifier(OverlayControlGlass())
   }
 
   private var composerContent: some View {

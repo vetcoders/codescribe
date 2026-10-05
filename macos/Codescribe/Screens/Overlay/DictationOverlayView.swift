@@ -1130,16 +1130,12 @@ private struct OverlayRenderVisibility: NSViewRepresentable {
 private struct OverlayHeaderChrome: ViewModifier {
   var enabled = true
 
+  @ViewBuilder
   func body(content: Content) -> some View {
-    content.background {
-      if enabled {
-        GeometryReader { geometry in
-          OverlayScrollMaterial(top: true)
-            .frame(height: geometry.size.height + 8)
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-      }
+    if enabled {
+      content.modifier(OverlayControlGlass())
+    } else {
+      content
     }
   }
 }

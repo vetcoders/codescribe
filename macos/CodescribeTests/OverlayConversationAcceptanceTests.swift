@@ -272,83 +272,17 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       defer { window.close() }
       host.layoutSubtreeIfNeeded()
       RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
-      func effects(_ root: NSView) -> [NSVisualEffectView] {
-        (root as? NSVisualEffectView).map { [$0] } ?? root.subviews.flatMap(effects)
+      func scrollViews(_ root: NSView) -> [NSScrollView] {
+        (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
       }
-      let sampling = effects(host).filter {
-        $0.blendingMode == .withinWindow && $0.maskImage != nil
-      }
-      XCTAssertEqual(
-        sampling.count, 1, "only the header has full-width chrome; input glass hugs its field")
-      if let effect = sampling.first {
-        XCTAssertGreaterThan(
-          effect.bounds.height, 58, "pinned back navigation remains below the main header")
-        XCTAssertLessThan(effect.bounds.height, 110, "chrome cannot cover the reading viewport")
-      }
-    }
-  }
-
-  @MainActor
-  func testScrollChromeSamplesWithinWindowAndKeepsFullHeightFade() throws {
-    for top in [true, false] {
-      for size in [NSSize(width: 532, height: 58), NSSize(width: 720, height: 140)] {
-        let host = NSHostingView(rootView: OverlayScrollMaterial(top: top))
-        host.frame = NSRect(origin: .zero, size: size)
-        let window = NSWindow(
-          contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = host
-        defer { window.close() }
-        host.layoutSubtreeIfNeeded()
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
-        func effects(_ root: NSView) -> [NSVisualEffectView] {
-          (root as? NSVisualEffectView).map { [$0] } ?? root.subviews.flatMap(effects)
-        }
-        let sampling = effects(host).filter { $0.blendingMode == .withinWindow }
-        XCTAssertEqual(sampling.count, 1, "one native sampler of the text behind each chrome edge")
-        guard let effect = sampling.first else { continue }
-        XCTAssertEqual(effect.state, .active, "non-activating panels still blur their own text")
-        XCTAssertEqual(effect.bounds.height, size.height, accuracy: 1)
-        XCTAssertNil(effect.hitTest(.zero), "scroll chrome cannot intercept selection or dragging")
-        let mask = try XCTUnwrap(effect.maskImage)
-        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(mask.tiffRepresentation)))
-        let x = bitmap.pixelsWide / 2
-        let center = try XCTUnwrap(bitmap.colorAt(x: x, y: bitmap.pixelsHigh / 2))
-        XCTAssertGreaterThan(center.alphaComponent, 0.35)
-        XCTAssertLessThan(center.alphaComponent, 0.65, "the entire height fades, not only its edge")
-        let start = try XCTUnwrap(bitmap.colorAt(x: x, y: 0)).alphaComponent
-        let end = try XCTUnwrap(bitmap.colorAt(x: x, y: bitmap.pixelsHigh - 1)).alphaComponent
-        XCTAssertEqual(start, top ? 1 : 0, accuracy: 0.08)
-        XCTAssertEqual(end, top ? 0 : 1, accuracy: 0.08)
-      }
-    }
-  }
-
-  @MainActor
-  func testOrdinaryDictationHeaderSamplesItsOwnTranscript() throws {
-    for scheme in [ColorScheme.dark, .light] {
-      let host = NSHostingView(
-        rootView: DictationOverlayView(state: .previewFormatted()).preferredColorScheme(scheme))
-      host.frame = NSRect(x: 0, y: 0, width: 600, height: 350)
-      let window = NSWindow(
-        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
-      window.isReleasedWhenClosed = false
-      window.contentView = host
-      defer { window.close() }
-      host.layoutSubtreeIfNeeded()
-      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
-      func effects(_ root: NSView) -> [NSVisualEffectView] {
-        (root as? NSVisualEffectView).map { [$0] } ?? root.subviews.flatMap(effects)
-      }
-      let sampling = effects(host).filter {
-        $0.blendingMode == .withinWindow && $0.maskImage != nil
-      }
-      XCTAssertEqual(sampling.count, 1, "dictation has the same native header sampler as chat")
-      if let effect = sampling.first {
-        XCTAssertEqual(effect.state, .active)
-        XCTAssertGreaterThan(effect.bounds.height, 30)
-        XCTAssertLessThan(effect.bounds.height, 120, "chrome must not cover the full transcript")
-      }
+      let scrolls = scrollViews(host)
+      let messages = try XCTUnwrap(scrolls.first { $0.bounds.height > 150 })
+      let input = try XCTUnwrap(scrolls.first { $0.bounds.height < 80 })
+      let inputFrame = input.convert(input.bounds, to: host)
+      XCTAssertEqual(messages.bounds.height, host.bounds.height, accuracy: 1)
+      XCTAssertGreaterThanOrEqual(inputFrame.minX, 20)
+      XCTAssertLessThanOrEqual(inputFrame.maxX, host.bounds.width - 20)
+      XCTAssertLessThan(input.bounds.height, 40, "input glass remains one compact field")
     }
   }
 

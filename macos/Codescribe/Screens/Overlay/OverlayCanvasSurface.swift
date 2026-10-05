@@ -9,7 +9,7 @@ struct OverlayCanvasSurface<Content: View>: View {
   @ViewBuilder let content: Content
 
   var body: some View {
-    content
+    controlSurfaces
       .background {
         OverlayCanvasBackdrop(
           palette: palette, reduceTransparency: reduceTransparency)
@@ -26,6 +26,15 @@ struct OverlayCanvasSurface<Content: View>: View {
         x: 0,
         y: 9
       )
+  }
+
+  @ViewBuilder
+  private var controlSurfaces: some View {
+    if #available(macOS 26.0, *) {
+      GlassEffectContainer { content }
+    } else {
+      content
+    }
   }
 }
 
@@ -74,46 +83,14 @@ final class OverlayDesktopEffectView: NSVisualEffectView {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// Scroll chrome samples text inside the window; the desktop sheet remains behind it.
-/// Apply the fade to AppKit's material itself so SwiftUI does not flatten its backdrop.
-struct OverlayScrollMaterial: NSViewRepresentable {
-  let top: Bool
-
-  func makeNSView(context: Context) -> OverlayScrollEffectView {
-    let view = OverlayScrollEffectView()
-    view.material = .headerView
-    view.blendingMode = .withinWindow
-    view.state = .active
-    view.setAccessibilityElement(false)
-    view.top = top
-    return view
-  }
-
-  func updateNSView(_ view: OverlayScrollEffectView, context: Context) {
-    guard view.top != top else { return }
-    view.top = top
-    view.needsLayout = true
-  }
-}
-
-final class OverlayScrollEffectView: NSVisualEffectView {
-  var top = true
-  private var maskedSize = NSSize.zero
-  private var maskedTop = true
-
-  override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-  override func layout() {
-    super.layout()
-    guard bounds.width > 0, bounds.height > 0,
-      bounds.size != maskedSize || top != maskedTop || maskImage == nil
-    else { return }
-    let image = NSImage(size: bounds.size)
-    image.lockFocus()
-    NSGradient(starting: .black, ending: .clear)?.draw(in: bounds, angle: top ? -90 : 90)
-    image.unlockFocus()
-    maskImage = image
-    maskedSize = bounds.size
-    maskedTop = top
+/// Header and composer use the same system-owned control surface.
+struct OverlayControlGlass: ViewModifier {
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if #available(macOS 26.0, *) {
+      content.glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 20))
+    } else {
+      content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+    }
   }
 }

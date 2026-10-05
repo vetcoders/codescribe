@@ -42,7 +42,7 @@ struct OverlayConversationView: View {
                   navigationHeight = $0
                 }
             }
-            .background { headerChrome }
+            .modifier(OverlayControlGlass())
           }
           .overlay(alignment: .bottom) {
             composer
@@ -83,22 +83,18 @@ struct OverlayConversationView: View {
     .frame(maxWidth: .infinity)
   }
 
-  private var headerChrome: some View {
-    GeometryReader { geometry in
-      // Fade across the full header and pinned navigation; input owns its own glass.
-      OverlayScrollMaterial(top: true)
-        .frame(height: geometry.size.height + 8)
-    }
-    .allowsHitTesting(false)
-    .accessibilityHidden(true)
-  }
-
   private var navigation: some View {
     HStack {
-      Button("Capture channels", systemImage: "chevron.left", action: onShowMonitor)
-        .buttonStyle(.plain)
-        .font(.caption)
-        .accessibilityIdentifier("overlay-conversation-back")
+      Button(action: onShowMonitor) {
+        Image(systemName: "chevron.left")
+          .font(.system(size: 18, weight: .semibold))
+          .frame(width: 32, height: 32)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Capture channels")
+      .help("Capture channels")
+      .accessibilityIdentifier("overlay-conversation-back")
       Spacer()
       if conversation.channel == "0" {
         Text("0 · All").font(.headline)
