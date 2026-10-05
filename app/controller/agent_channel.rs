@@ -1582,6 +1582,55 @@ mod tests {
 
     #[tokio::test]
     #[serial(agent_ack_duck)]
+    async fn ordinary_handover_refuses_failed_terminal_receipt_and_retains_owner() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared.jsonl");
+        open_stamped(
+            &controller,
+            &binding,
+            &shared_bus,
+            "agent-channel-3-receipt-failure",
+        )
+        .await;
+        let original = controller.agent_channel_snapshot(3).await.expect("owner");
+        assert!(
+            !channel_bus.exists(),
+            "AttachedOnly fixture has no published PCM"
+        );
+        std::fs::create_dir_all(&channel_bus)
+            .expect("make receipt destination unwritable as a file");
+        let serial = controller.serial_lock.lock().await;
+        let result = controller.close_agent_channels_for_dictation().await;
+        drop(serial);
+        let retained = controller.agent_channel_snapshot(3).await;
+        assert!(
+            result.is_err(),
+            "ordinary admission must refuse when its canonical hangup receipt cannot be persisted; got {result:?} with retained_owner={}",
+            retained.is_some()
+        );
+        let retained = retained.expect("failed close retains its original owner");
+        assert_eq!(retained.session_id, original.session_id);
+        assert_eq!(retained.provider_session_id, original.provider_session_id);
+        assert_eq!(retained.audience, original.audience);
+        assert_eq!(controller.current_state().await, super::super::State::Idle);
+        assert!(
+            controller.session_id.read().await.is_none(),
+            "no new ordinary take"
+        );
+        assert!(
+            channel_bus.is_dir(),
+            "failure fixture did not fabricate a terminal receipt"
+        );
+        assert!(
+            !shared_bus.exists(),
+            "no unrelated publication replaces the owned receipt"
+        );
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
     async fn ordinary_handover_serializes_silence_poll_without_reopening_the_channel() {
         let controller = Arc::new(RecordingController::new_without_keychain());
         let dir = tempfile::tempdir().expect("temp");
