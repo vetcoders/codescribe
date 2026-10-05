@@ -589,7 +589,7 @@ PY
 # terminally must not be re-delivered by the net.
 : >"$BUS"
 python3 - "$BUS" <<'PY'
-import json, sys
+import hashlib, json, sys
 rows = [
     # Lost session: drafts only, ledger refused the terminal seal.
     {
@@ -616,8 +616,8 @@ rows = [
         "rendered_text": "James, ta wypowiedź nie dostała terminal seala. Cała.",
         "emitted_at": "2026-09-29T15:55:52Z",
     },
-    # The reducer re-projects the same full snapshot under a second document
-    # index; identical words must flush as one delivery, not two.
+    # The reducer re-projects the same document identity. Its duplicate
+    # observation must not create a second occurrence.
     {
         "schema": "codescribe.transcript-evidence.v1",
         "sequence": 3,
@@ -626,7 +626,7 @@ rows = [
         "mode": "dictation",
         "reducer_action": "seal_coverage",
         "reducer_revision": 2,
-        "document_index": 1,
+        "document_index": 0,
         "rendered_text": "James, ta wypowiedź nie dostała terminal seala. Cała.",
         "emitted_at": "2026-09-29T15:55:52Z",
     },
@@ -667,8 +667,21 @@ rows = [
         "emitted_at": "2026-09-29T15:57:28Z",
     },
 ]
+bus = str(__import__("pathlib").Path(sys.argv[1]).resolve())
+session = "codex-session-refused"
+owner = {"provider": "codex", "provider_session_id": session,
+         "lease_id": hashlib.sha256(("codex\0" + session).encode()).hexdigest()[:32],
+         "bus": bus, "channel": "2", "name": "james"}
+opening = lambda capture, time: {
+    "schema": "codescribe.channel-session.v1", "kind": "channel_session",
+    "state": "open", "channel": "2", "agent": "james", "session_id": capture,
+    "opened_at": time, "emitted_at": time}
+rows.insert(0, opening("agent-channel-2-lost", "2026-09-29T15:55:00Z"))
+rows.insert(4, opening("agent-channel-2-good", "2026-09-29T15:56:00Z"))
+rows[-1]["opened_at"] = rows[-1]["emitted_at"]
 with open(sys.argv[1], "a", encoding="utf-8") as handle:
     for row in rows:
+        row["recipients"] = [owner]
         handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 PY
 refused="$WORKDIR/coverage-refused.jsonl"
@@ -680,14 +693,14 @@ python3 - "$refused" "$DEMUX" <<'PY'
 import importlib.util, json, sys
 rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
 kinds = [row["kind"] for row in rows]
-# attach, four live drafts (incl. the duplicate-doc re-projection), the
-# healthy terminal seal, then exactly ONE refused flush for the lost session.
-assert kinds == ["attach", "revised", "revised", "revised", "revised", "seal", "seal"], kinds
-healthy = rows[5]
+# The newer opening closes the earlier unsealed document before the next
+# draft. Reobserving the same document does not create another occurrence.
+assert kinds == ["attach", "revised", "revised", "revised", "seal", "revised", "seal"], kinds
+healthy = rows[6]
 assert healthy["session_id"] == "agent-channel-2-good", healthy
 assert healthy.get("coverage") is None, healthy
 assert healthy["state_change_allowed"] is True, healthy
-flushed = rows[6]
+flushed = rows[4]
 assert flushed["session_id"] == "agent-channel-2-lost", flushed
 assert flushed["status"] == "transcript_sealed", flushed
 assert flushed["coverage"] == "refused", flushed
@@ -715,7 +728,7 @@ PY
 # after the hang-up and later channel receipts must not deliver it twice.
 : >"$BUS"
 python3 - "$BUS" <<'PY'
-import json, sys
+import hashlib, json, sys
 coverage = {
     "status": "incomplete",
     "speech_samples": 463872,
@@ -743,9 +756,9 @@ def evidence(sequence, action, revision, doc, text, **extra):
 full = "James, rozłączam się przed silence sealem. Całość."
 rows = [
     evidence(1, "apply_ledger_decision", 1, 0, "James, rozłączam się"),
-    evidence(2, "apply_ledger_decision", 3, 1, "przed silence sealem."),
+    evidence(2, "apply_ledger_decision", 3, 0, "przed silence sealem."),
     evidence(3, "seal_coverage", 20, 0, full, seal_coverage=coverage),
-    evidence(4, "seal_coverage", 20, 1, full, seal_coverage=coverage),
+    evidence(4, "seal_coverage", 20, 0, full, seal_coverage=coverage),
     {
         "schema": "codescribe.transcript.v1",
         "sequence": 5,
@@ -782,8 +795,16 @@ rows = [
         "emitted_at": "2026-09-29T16:40:00Z",
     },
 ]
+bus = str(__import__("pathlib").Path(sys.argv[1]).resolve())
+session = "codex-session-hangup"
+owner = {"provider": "codex", "provider_session_id": session,
+         "lease_id": hashlib.sha256(("codex\0" + session).encode()).hexdigest()[:32],
+         "bus": bus, "channel": "4", "name": "james"}
 with open(sys.argv[1], "a", encoding="utf-8") as handle:
     for row in rows:
+        row["recipients"] = [owner]
+        if row.get("state") == "open":
+            row["opened_at"] = row["emitted_at"]
         handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 PY
 hangup="$WORKDIR/coverage-refused-hangup.jsonl"

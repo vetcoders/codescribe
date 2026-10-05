@@ -1845,9 +1845,42 @@ class SessionLease:
 
 
 def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str) -> bool:
-    receipt = read_json(root / "acknowledgments" / lease_id / f"{delivery_id}.json")
-    return bool(receipt and receipt.get("lease_id") == lease_id
-                and receipt.get("delivery_id") == delivery_id)
+    path = root / "acknowledgments" / lease_id / f"{delivery_id}.json"
+    try:
+        metadata = path.lstat()
+        if not S_ISREG(metadata.st_mode) or metadata.st_size > 1 << 20:
+            return False
+        receipt = read_reply_json(path, 1 << 20)
+    except (OSError, ValueError, UnicodeError):
+        return False
+    if receipt.get("lease_id") != lease_id or receipt.get("delivery_id") != delivery_id:
+        return False
+    if set(receipt) == {"lease_id", "delivery_id"}:
+        return True
+    state = read_json(root / "leases" / f"{lease_id}.json")
+    if (not state or state.get("schema") != LEASE_SCHEMA
+            or state.get("lease_id") != lease_id
+            or not all(isinstance(state.get(key), str) and state[key]
+                       for key in ("provider", "provider_session_id", "bus"))
+            or lease_identifier(state["provider"], state["provider_session_id"]) != lease_id):
+        return False
+    owner = {key: state[key] for key in ("lease_id", "provider", "provider_session_id", "bus")}
+    matches = lambda value: isinstance(value, dict) and all(value.get(k) == v for k, v in owner.items())
+    envelope = receipt.get("envelope")
+    if not matches(receipt) or not matches(envelope) or envelope.get("delivery_id") != delivery_id:
+        return False
+    frozen = envelope.get("recipients")
+    if frozen is not None and (not isinstance(frozen, list)
+            or any(not isinstance(item, dict) for item in frozen)
+            or not any(matches(item) for item in frozen)):
+        return False
+    pending = state.get("pending", [])
+    original = next((item for item in pending if isinstance(item, dict)
+                     and item.get("delivery_id") == delivery_id), None) if isinstance(pending, list) else None
+    return original is None or envelope == {
+        **{key: value for key, value in original.items() if key not in ("text", "wav")},
+        "bus": state["bus"],
+    }
 
 
 def acknowledge_delivery(args: argparse.Namespace) -> int:
@@ -1912,10 +1945,10 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
             {"lease_id": lease_id, "delivery_id": delivery_id,
              "provider": args.provider.casefold(), "provider_session_id": args.session,
              "bus": state["bus"],
-             "envelope": {key: value for key, value in
-                          next(payload for payload in pending
-                               if payload.get("delivery_id") == delivery_id).items()
-                          if key not in ("text", "wav")}},
+             "envelope": {**{key: value for key, value in
+                           next(payload for payload in pending
+                                if payload.get("delivery_id") == delivery_id).items()
+                           if key not in ("text", "wav")}, "bus": state["bus"]}},
         )
     for delivery_id in delivery_ids:
         emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id})
@@ -3240,13 +3273,22 @@ def stop_reply_command(args: argparse.Namespace) -> int:
 def say_reply(args: argparse.Namespace) -> int:
     """Durably publish reply text before attempting synthesis or playback."""
     bus, envelope = reply_delivery_envelope(args)
-    profile = voice_profile(args.bridge_home, args.name)
+    lease_id = lease_identifier(args.provider, args.session)
+    owner = next((item for item in envelope.get("recipients", [])
+                  if item.get("provider") == args.provider.casefold()
+                  and item.get("provider_session_id") == args.session
+                  and item.get("lease_id") == lease_id
+                  and item.get("bus") == str(bus)), None) if envelope else None
+    historical_name = ((owner.get("name") or owner.get("audience")) if owner
+                       else envelope.get("audience")) if envelope else None
+    name = historical_name if historical_name and historical_name != "*" else args.name
+    profile = voice_profile(args.bridge_home, name)
     voice = args.voice or str(profile["voice"])
     speed = args.speed if args.speed is not None else float(profile["speed"])
     vendor = args.tts_vendor or str(profile.get("provider") or "xai")
     reply: dict[str, Any] = {
         "schema": AGENT_REPLY_SCHEMA, "kind": "agent_reply", "emitted_at": utc_now(),
-        "reply_id": os.urandom(12).hex(), "name": args.name,
+        "reply_id": os.urandom(12).hex(), "name": name,
         "provider": args.provider.casefold(), "provider_session_id": args.session,
         "lease_id": lease_identifier(args.provider, args.session), "text": args.say,
         "voice": voice, "speed": speed, "tts_vendor": vendor, "spoken": False,
@@ -3254,14 +3296,6 @@ def say_reply(args: argparse.Namespace) -> int:
         "delivery_id": args.reply_to,
     }
     if envelope:
-        owner = next((item for item in envelope.get("recipients", [])
-                      if item.get("provider") == args.provider.casefold()
-                      and item.get("provider_session_id") == args.session
-                      and item.get("lease_id") == reply["lease_id"]
-                      and item.get("bus") == str(bus)), None)
-        historical_name = owner.get("name") or owner.get("audience") if owner else envelope.get("audience")
-        if historical_name and historical_name != "*":
-            reply["name"] = historical_name
         if owner:
             reply["channel"] = owner.get("channel")
         for key in ("source_event_id", "utterance_id", "session_id", "occurrence_session_id",
@@ -3581,6 +3615,8 @@ def status_command(args: argparse.Namespace) -> int:
             entry[: -len(".json")]
             for entry in os.listdir(root / "acknowledgments" / lease_id)
             if entry.endswith(".json")
+            and re.fullmatch(r"[0-9a-f]{24}", entry[:-len(".json")])
+            and delivery_acknowledged(root, lease_id, entry[:-len(".json")])
         }
     except OSError:
         markers = set()

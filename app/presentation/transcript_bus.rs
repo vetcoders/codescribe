@@ -962,7 +962,10 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
     let text_field = |key: &str| event[key].as_str().filter(|value| !value.trim().is_empty());
     let identity_field = |key: &str| {
         text_field(key).is_some_and(|value| {
-            value.len() == 24 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            value.len() == 24
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         })
     };
     if !identity_field("reply_id")

@@ -8,7 +8,6 @@ import argparse
 import contextlib
 import importlib.util
 import io
-import json
 import os
 from pathlib import Path
 import shutil
@@ -103,6 +102,22 @@ class PackagedReplyPublisherTests(unittest.TestCase):
                 self.demux.say_reply(self.args)
             speaker.assert_not_called()
         self.assertFalse(self.bus.exists())
+
+
+    def test_canonical_publisher_refuses_uppercase_reply_and_playback_ids(self):
+        reply = {"schema": "codescribe.agent-reply.v1", "kind": "agent_reply",
+                 "reply_id": "a" * 24, "provider": "codex", "provider_session_id": self.args.session,
+                 "lease_id": self.demux.lease_identifier("codex", self.args.session),
+                 "emitted_at": "2026-10-05T06:00:00Z", "text": "Iwo", "spoken": False,
+                 "association": "unsolicited", "delivery_id": None}
+        cases = [{**reply, "reply_id": "A" * 24},
+                 {**reply, "association": "addressed", "delivery_id": "B" * 24},
+                 {**reply, "schema": "codescribe.agent-reply-playback.v1", "kind": "agent_reply_playback",
+                  "state": "waiting", "playback_ticket": "C" * 24}]
+        for event in cases:
+            with self.subTest(event=event["kind"]), self.assertRaises(OSError):
+                self.demux.publish_reply_event(self.bus, event, bridge_root=self.home)
+        self.assertFalse(self.bus.exists(), "invalid IDs must not enter the journal")
 
 
 if __name__ == "__main__":

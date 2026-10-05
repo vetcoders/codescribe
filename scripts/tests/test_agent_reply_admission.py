@@ -97,10 +97,8 @@ class AgentReplyAdmissionTests(unittest.TestCase):
         self.assertEqual(self.say(speaker), 0)
 
     def test_unexpected_speaker_failure_keeps_the_admitted_text(self):
-        try:
+        with self.assertRaises(RuntimeError):
             self.say(lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("speaker died")))
-        except RuntimeError:
-            pass
         replies = [row for row in self.rows() if row.get("kind") == "agent_reply"]
         self.assertEqual(len(replies), 1)
         self.assertEqual(replies[0]["text"], self.args.say)
@@ -114,10 +112,8 @@ class AgentReplyAdmissionTests(unittest.TestCase):
         self.bus.mkdir()
         with patch.object(DEMUX, "_speak_xai", return_value=(True, None, None)) as speaker, \
                 contextlib.redirect_stdout(io.StringIO()):
-            try:
+            with self.assertRaises(OSError):
                 DEMUX.say_reply(self.args)
-            except OSError:
-                pass
             speaker.assert_not_called()
 
     def test_equal_text_replies_keep_distinct_occurrence_ids(self):
@@ -221,6 +217,66 @@ class AgentReplyAdmissionTests(unittest.TestCase):
         reply = next(row for row in self.rows() if row["kind"] == "agent_reply")
         self.assertEqual((reply["delivery_id"], reply["source_event_id"]),
                          (identity, "physical-1"))
+
+
+    def test_renamed_reply_defaults_to_frozen_recipient_voice_profile(self):
+        identity, _, _ = self.admitted_delivery()
+        self.args.reply_to, self.args.name = identity, "renamed"
+        self.args.voice = self.args.speed = self.args.tts_vendor = None
+        with patch.object(DEMUX, "voice_profile", return_value={
+                "voice": "eve", "speed": 1.2, "provider": "xai"}) as profile:
+            self.assertEqual(self.say(lambda *_args, **_kwargs: (True, None, None)), 0)
+            profile.assert_called_once_with(self.home, "lena")
+        reply = next(row for row in self.rows() if row["kind"] == "agent_reply")
+        self.assertEqual((reply["name"], reply["voice"], reply["speed"]), ("lena", "eve", 1.2))
+
+    def test_enriched_ack_rejects_foreign_owner_envelope_and_frozen_recipient(self):
+        identity, _, state = self.admitted_delivery()
+        self.args.ack = [identity]
+        with contextlib.redirect_stdout(io.StringIO()):
+            DEMUX.acknowledge_delivery(self.args)
+        lease = state["lease_id"]
+        marker = self.home / "acknowledgments" / lease / f"{identity}.json"
+        valid = json.loads(marker.read_text())
+        self.assertTrue(DEMUX.delivery_acknowledged(self.home, lease, identity))
+        for target, key, value in [("marker", "provider", "claude"),
+                ("marker", "provider_session_id", "other"), ("marker", "bus", "/other"),
+                ("envelope", "lease_id", "wrong"), ("envelope", "delivery_id", "b" * 24),
+                ("envelope", "bus", "/other"), ("recipient", "provider_session_id", "other")]:
+            with self.subTest(target=target, key=key):
+                bad = json.loads(json.dumps(valid))
+                subject = bad if target == "marker" else bad["envelope"]
+                if target == "recipient":
+                    subject = subject["recipients"][0]
+                subject[key] = value
+                marker.write_text(json.dumps(bad))
+                self.assertFalse(DEMUX.delivery_acknowledged(self.home, lease, identity))
+        marker.write_text(json.dumps({"lease_id": lease, "delivery_id": identity, "provider": "codex"}))
+        self.assertFalse(DEMUX.delivery_acknowledged(self.home, lease, identity))
+        self.args.lease_ttl = 30
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            DEMUX.status_command(self.args)
+        self.assertEqual(json.loads(output.getvalue())["backlog"], 1)
+        marker.write_text(json.dumps({"lease_id": lease, "delivery_id": identity}))
+        self.assertTrue(DEMUX.delivery_acknowledged(self.home, lease, identity))
+
+
+    def test_five_equal_text_occurrences_remain_five_refused_documents(self):
+        normalizer = DEMUX.EvidenceNormalizer()
+        for occurrence in range(5):
+            normalizer.normalize({"schema": DEMUX.EVIDENCE_SCHEMA,
+                "session_id": "agent-channel-2-five", "audience": "lena",
+                "reducer_action": "apply_ledger_decision", "reducer_revision": occurrence,
+                "document_index": occurrence, "capture_epoch": 1,
+                "sample_start": occurrence * 16000, "sample_end": (occurrence + 1) * 16000,
+                "rendered_text": "Iwo"})
+        normalizer.normalize({"schema": DEMUX.CLEAN_SCHEMA,
+            "session_id": "agent-channel-2-five", "status": DEMUX.SESSION_ENDED})
+        rows = normalizer.pop_flushes()
+        self.assertEqual(len(rows), 5)
+        self.assertEqual(len({row["source_event_id"] for row in rows}), 5)
+        self.assertEqual({row["text"] for row in rows}, {"Iwo"})
+        self.assertTrue(all(row["coverage"] == "refused" for row in rows))
 
 
 if __name__ == "__main__":
