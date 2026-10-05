@@ -211,7 +211,9 @@ class ChannelCaptureMessageTests(unittest.TestCase):
         encoded = json.dumps(marker)
         self.assertNotIn("private acoustic words", encoded)
         self.assertNotIn(preview["text"], encoded)
-        self.assertEqual(len(self.ranges(marker["envelope"])), 5)
+        self.assertNotIn('"label"', encoded)
+        self.assertNotIn('"acoustic_receipts"', encoded)
+        self.assertEqual(self.ranges(marker["envelope"]), self.ranges(preview))
         quiet = follow()
         self.assertFalse(any(row.get("kind") in ("draft", "revised", "seal") for row in quiet))
         state = DEMUX.read_json(self.lease.path)
@@ -302,6 +304,74 @@ class ChannelCaptureMessageTests(unittest.TestCase):
         self.assertEqual(invoke("--ack", final[0]["delivery_id"])[0], 0)
         self.assertFalse(any(item.get("kind") == "seal" for item in
                              invoke("--name", "lena", "--from-start", "--drafts", "--coalesce")[1]))
+
+    def test_terminal_queue_buffer_error_preserves_final_inventory_and_cursor_on_restart(self):
+        self.lease.close()
+        row = self.evidence()
+        row["recipients"] = [{"provider": "codex", "provider_session_id": "agent-a",
+            "lease_id": self.lease.lease_id, "bus": self.lease.bus, "channel": "2", "name": "lena"}]
+        row["persistence_encoding"] = "shared-revision.v1"
+        fields = ("sequence", "capture_epoch", "sample_start", "sample_end", "document_index",
+                  "emitted_at", "occurrence_session_id", "label", "acoustic_receipts")
+        row["occurrence_rows"] = [
+            {key: self.evidence(start=index * 3200)[key] for key in fields}
+            for index in range(1, 5)]
+        evidence_line = json.dumps(row) + "\n"
+        close = {"schema": DEMUX.CLEAN_SCHEMA, "session_id": row["session_id"],
+                 "status": DEMUX.SESSION_ENDED}
+        self.bus.write_text(evidence_line + json.dumps(close) + "\n")
+        expected_ranges = [(row["session_id"], 1, index * 3200, index * 3200 + 1600)
+                           for index in range(5)]
+        base = [str(SPEC.origin), "--bus", str(self.bus), "--bridge-home", str(self.root),
+                "--provider", "codex", "--session", "agent-a"]
+
+        def invoke(*arguments):
+            output = io.StringIO()
+            with patch.object(sys, "argv", base + list(arguments)), \
+                 patch.object(sys, "stdout", output), patch.object(sys, "stderr", io.StringIO()):
+                code = DEMUX.main()
+            return code, [json.loads(line) for line in output.getvalue().splitlines()]
+
+        original_emit = DEMUX.emit_follower
+        interrupted_payloads = []
+
+        def refuse_terminal(payload, *arguments, **options):
+            if payload.get("kind") == "seal":
+                persisted = DEMUX.read_json(self.lease.path)
+                self.assertEqual(persisted["cursor"], len(evidence_line.encode()))
+                self.assertEqual(persisted["pending"], [payload])
+                interrupted_payloads.append(payload)
+                raise BufferError("injected after durable final, before close cursor commit")
+            return original_emit(payload, *arguments, **options)
+
+        with patch.object(DEMUX, "emit_follower", side_effect=refuse_terminal):
+            self.assertEqual(invoke("--name", "lena", "--from-start", "--coalesce")[0], 4)
+        self.assertEqual(len(interrupted_payloads), 1)
+        original = interrupted_payloads[0]
+        self.assertEqual(self.ranges(original), expected_ranges)
+        self.assertEqual(original["text"], row["rendered_text"])
+        self.assertEqual([item["label"] for item in original["occurrences"]], ["Iwo"] * 5)
+        self.assertEqual(len({item["acoustic_receipts"][0]["receipt_id"]
+                              for item in original["occurrences"]}), 5)
+
+        code, recovered = invoke("--name", "lena", "--from-start", "--coalesce")
+        self.assertEqual(code, 0)
+        finals = [item for item in recovered if item.get("kind") == "seal"]
+        self.assertEqual(finals, [original], "restart must emit the same complete final exactly once")
+        state = DEMUX.read_json(self.lease.path)
+        self.assertEqual(state["cursor"], self.bus.stat().st_size)
+        self.assertEqual(state["pending"], [original])
+        self.assertEqual(state["unclosed_channel_messages"], {})
+        self.assertEqual(invoke("--ack", original["delivery_id"])[0], 0)
+        marker = DEMUX.read_json(self.root / "acknowledgments" / self.lease.lease_id /
+                                (original["delivery_id"] + ".json"))
+        encoded = json.dumps(marker)
+        self.assertNotIn('"label"', encoded)
+        self.assertNotIn('"acoustic_receipts"', encoded)
+        self.assertNotIn(original["text"], encoded)
+        self.assertEqual(self.ranges(marker["envelope"]), expected_ranges)
+        self.assertFalse(any(item.get("kind") == "seal" for item in
+                             invoke("--name", "lena", "--from-start", "--coalesce")[1]))
 
     def test_late_close_only_settles_its_named_predecessor(self):
         self.normalizer.normalize(self.evidence(session="agent-channel-2-old"))
