@@ -2017,6 +2017,18 @@
         }
       }
     },
+    "Agent · one-time purchase" : {
+      "comment" : "License plan name",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent · zakup jednorazowy"
+          }
+        }
+      }
+    },
     "Agent — %@" : {
       "comment" : "The placeholder is a model name",
       "localizations" : {
@@ -8399,6 +8411,18 @@
         }
       }
     },
+    "Plan" : {
+      "comment" : "License status row: the purchased plan",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plan"
+          }
+        }
+      }
+    },
     "Play" : {
       "localizations" : {
         "pl" : {
@@ -10099,16 +10123,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Bieżący stan · tylko do odczytu"
-          }
-        }
-      }
-    },
-    "SKU" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wariant produktu"
           }
         }
       }
