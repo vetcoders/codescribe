@@ -2714,6 +2714,17 @@
         }
       }
     },
+    "Auto-detect also works when you speak several languages." : {
+      "comment" : "Detail under the Auto-detect dictation language choice",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatyczne wykrywanie sprawdza się również wtedy, gdy mówisz w kilku językach."
+          }
+        }
+      }
+    },
     "Auto-send to Agent" : {
       "localizations" : {
         "pl" : {

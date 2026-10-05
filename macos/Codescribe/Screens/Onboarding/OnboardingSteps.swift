@@ -65,22 +65,26 @@ struct InterfaceLanguageStepView: View {
 /// Shared heading (eyebrow + title + blurb) for the choice steps, matching the
 /// permission-step typography.
 private struct OnboardingStepHeader: View {
-  let eyebrow: String
+  let eyebrow: String?
   let title: String
-  let blurb: String
+  let blurb: String?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: eyebrow)
+      if let eyebrow {
+        EyebrowLabel(text: eyebrow)
+      }
       Text(title)
         .font(.title2.weight(.semibold))
         .foregroundStyle(.primary)
         .fixedSize(horizontal: false, vertical: true)
-      Text(blurb)
-        .font(.body)
-        .lineSpacing(3)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+      if let blurb {
+        Text(blurb)
+          .font(.body)
+          .lineSpacing(3)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
     }
   }
 }
@@ -198,11 +202,7 @@ struct LanguageStepView: View {
           localized: LocalizedStringResource(
             "Pick your dictation language.", locale: model.interfaceLocale,
             comment: "Setup step heading")),
-        blurb: String(
-          localized: LocalizedStringResource(
-            "Sets the transcription language. Auto-detect handles mixed or multilingual speech. Change it any time in Settings.",
-            locale: model.interfaceLocale,
-            comment: "Setup step blurb; Auto-detect is the name of the first language choice")))
+        blurb: nil)
 
       VStack(spacing: 10) {
         ForEach(choices, id: \.self) { language in
@@ -240,7 +240,8 @@ struct LanguageStepView: View {
     case .auto:
       return String(
         localized: LocalizedStringResource(
-          "Multilingual — detects the language as you speak.", locale: model.interfaceLocale,
+          "Auto-detect also works when you speak several languages.",
+          locale: model.interfaceLocale,
           comment: "Detail under the Auto-detect dictation language choice"))
     default: return nil
     }

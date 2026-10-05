@@ -89,12 +89,10 @@ struct OnboardingView: View {
       return (
         String(
           localized: LocalizedStringResource(
-            "Make it yours", locale: model.interfaceLocale, comment: "Setup chapter heading")),
+            "Your language. Your shortcuts. Your way of working.",
+            locale: model.interfaceLocale, comment: "Setup chapter heading")),
         "slider.horizontal.3",
-        String(
-          localized: LocalizedStringResource(
-            "Your language. Your shortcuts. Your way of working.", locale: model.interfaceLocale,
-            comment: "Setup chapter subtitle"))
+        nil
       )
     case .agenticReadiness:
       return (
