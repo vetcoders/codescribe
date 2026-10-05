@@ -3020,6 +3020,9 @@ def reply_publisher_command(root: Path) -> str:
     runtime = root / "runtime"
     bundled = runtime / "bin" / "codescribe"
     manifest_path = runtime / "manifest.json"
+    bundle_present = any(path.exists() or path.is_symlink() for path in (bundled, manifest_path))
+    if bundle_present and (not bundled.is_file() or not manifest_path.is_file() or manifest_path.is_symlink()):
+        raise ValueError("bundled canonical publisher or manifest is missing or invalid")
     if bundled.is_file() and manifest_path.is_file():
         manifest = read_reply_json(manifest_path, 4 << 20)
         entries = manifest.get("files", [])
@@ -3046,6 +3049,7 @@ def reply_publisher_command(root: Path) -> str:
             if digest.hexdigest() != entry.get("sha256"):
                 raise ValueError("bundled canonical publisher digest does not match its manifest")
             return str(bundled.resolve(strict=True))
+        raise ValueError("bundled canonical publisher manifest schema or entry is invalid")
     discovered = shutil.which("codescribe")
     if discovered:
         return discovered

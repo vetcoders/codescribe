@@ -25,6 +25,31 @@ SPEC.loader.exec_module(DEMUX)
 
 
 class AgentReplyAdmissionTests(unittest.TestCase):
+    def test_damaged_bundle_never_discovers_an_unverified_publisher(self):
+        for damage in ('missing-publisher', 'missing-manifest', 'wrong-schema', 'missing-entry', 'dangling-publisher'):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                runtime = root / 'runtime'
+                (runtime / 'bin').mkdir(parents=True)
+                publisher = runtime / 'bin/codescribe'
+                manifest = runtime / 'manifest.json'
+                publisher.write_bytes(b'publisher')
+                publisher.chmod(0o700)
+                manifest.write_text(json.dumps({'schema': 'codescribe.agent-bridge.bundle.v1', 'files': []}))
+                if damage == 'missing-publisher':
+                    publisher.unlink()
+                elif damage == 'missing-manifest':
+                    manifest.unlink()
+                elif damage == 'wrong-schema':
+                    manifest.write_text(json.dumps({'schema': 'foreign', 'files': []}))
+                elif damage == 'dangling-publisher':
+                    publisher.unlink()
+                    publisher.symlink_to(runtime / 'absent')
+                with patch('shutil.which', return_value='/unverified/codescribe') as discovery:
+                    with self.assertRaises(ValueError):
+                        DEMUX.reply_publisher_command(root)
+                    discovery.assert_not_called()
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
