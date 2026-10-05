@@ -9,6 +9,8 @@ private final class ControlledProviderEngine: OnboardingEngine {
   var reads = 0
   var writes = 0
   var revision: UInt64 = 0
+  var failProviderSelection = false
+  var providerSelectionAttempts: [String] = []
   var provider = CsProviderOption.sampleProviders[1]
   var additionalProviders: [CsProviderOption] = []
   var read: CheckedContinuation<CsProviderAccessSnapshot, Error>?
@@ -24,7 +26,12 @@ private final class ControlledProviderEngine: OnboardingEngine {
   func keyStatus() -> CsKeyStatus { .sampleAllSet }
   func availableProviders() -> [CsProviderOption] { [provider] }
   func setApiKey(account: String, secret: String) throws { XCTFail("sync mutation must not run") }
-  func updateConfig(key: String, value: String) throws {}
+  func updateConfig(key: String, value: String) throws {
+    if key == "LLM_ASSISTIVE_PROVIDER" {
+      providerSelectionAttempts.append(value)
+      if failProviderSelection { throw Failure.denied }
+    }
+  }
   func providerAccessRevision() -> UInt64 { revision }
   func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
     reads += 1
@@ -56,7 +63,8 @@ private final class ControlledProviderEngine: OnboardingEngine {
 }
 
 private struct OrderingBridgeInstaller: AgentBridgeInstalling {
-  func status() -> AgentBridgeInstallationStatus { .unavailable }
+  var value: AgentBridgeInstallationStatus = .unavailable
+  func status() -> AgentBridgeInstallationStatus { value }
   func install(selectedClients: Set<AgentBridgeClient>) throws -> AgentBridgeInstallationStatus {
     throw AgentBridgeInstallationError.payloadUnavailable
   }
@@ -67,10 +75,14 @@ private struct OrderingBridgeInstaller: AgentBridgeInstalling {
 
 @MainActor
 final class ProviderAccessOrderingTests: XCTestCase {
-  private func makeModel(_ engine: ControlledProviderEngine) -> OnboardingViewModel {
+  private func makeModel(
+    _ engine: ControlledProviderEngine,
+    bridge: AgentBridgeInstalling = OrderingBridgeInstaller(),
+    readiness: CsAgenticReadiness = .sample
+  ) -> OnboardingViewModel {
     OnboardingViewModel(
       engine: engine, hotkeys: MockHotkeysEngine(),
-      agentStatus: MockAgentStatusEngine(), agentBridge: OrderingBridgeInstaller(),
+      agentStatus: MockAgentStatusEngine(readiness: readiness), agentBridge: bridge,
       probe: MockPermissionProbe(.allGranted))
   }
 
@@ -123,7 +135,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
     XCTAssertEqual(model.apiKeyDraft, "synthetic-key")
     XCTAssertTrue(model.apiKeyEditorExpanded)
     XCTAssertEqual(model.step, .apiKey)
-    XCTAssertNotNil(model.lastError)
+    XCTAssertNotNil(model.apiKeySaveError)
     model.advance()
     await awaitCondition { engine.write != nil }
     engine.resolveWrite(success: true)
@@ -133,7 +145,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
     XCTAssertEqual(model.step, .hotkeyMode)
     XCTAssertEqual(model.apiKeyDraft, "")
     XCTAssertFalse(model.apiKeyEditorExpanded)
-    XCTAssertNil(model.lastError)
+    XCTAssertNil(model.apiKeySaveError)
   }
 
   func testSuccessfulSaveDoesNotClearNewerDraft() async {
@@ -195,6 +207,102 @@ final class ProviderAccessOrderingTests: XCTestCase {
     XCTAssertEqual(engine.writes, 0, "Changing the picker never writes a secret")
   }
 
+  func testProviderSelectionFailureKeepsCurrentProviderAndRetriesOnlySelection() async throws {
+    let engine = ControlledProviderEngine()
+    let second = try XCTUnwrap(
+      CsProviderOption.sampleProviders.first { $0.id != engine.provider.id && $0.keyRequired })
+    engine.additionalProviders = [second]
+    let model = makeModel(engine)
+    await load(model, engine)
+    let firstID = model.selectedProviderId
+    model.beginApiKeyEditing()
+    model.apiKeyDraft = "draft-a"
+    model.selectProvider(second.id)
+    model.beginApiKeyEditing()
+    model.apiKeyDraft = "draft-b"
+    model.selectProvider(firstID)
+    engine.failProviderSelection = true
+    model.selectProvider(second.id)
+    XCTAssertEqual(model.selectedProviderId, firstID)
+    XCTAssertEqual(model.apiKeyDraft, "draft-a")
+    XCTAssertFalse(model.apiKeyEditorExpanded)
+    XCTAssertNotNil(model.providerSelectionError)
+    XCTAssertNil(model.apiKeySaveError)
+    model.beginApiKeyEditing()
+    XCTAssertNil(model.apiKeySaveError, "Opening the key editor cannot reclassify another error")
+    model.retryProviderSelection()
+    XCTAssertEqual(engine.writes, 0)
+    XCTAssertEqual(model.selectedProviderId, firstID)
+    engine.failProviderSelection = false
+    model.retryProviderSelection()
+    XCTAssertEqual(model.selectedProviderId, second.id)
+    XCTAssertEqual(model.apiKeyDraft, "draft-b")
+    XCTAssertFalse(model.apiKeyEditorExpanded)
+    XCTAssertNil(model.providerSelectionError)
+    XCTAssertEqual(
+      Array(engine.providerSelectionAttempts.suffix(3)), [second.id, second.id, second.id])
+    XCTAssertEqual(engine.writes, 0)
+  }
+
+  func testKeySaveFailureAndRetryDoNotChangeProviderSelectionOrGeneralError() async {
+    let engine = ControlledProviderEngine()
+    let model = makeModel(engine)
+    await load(model, engine)
+    model.lastError = "earlier setup failure"
+    model.beginApiKeyEditing()
+    model.apiKeyDraft = "key-draft"
+    model.saveApiKey()
+    await awaitCondition { engine.write != nil }
+    engine.resolveWrite(success: false)
+    await awaitCondition { !model.providerMutationPending && engine.read != nil }
+    engine.resolveRead()
+    await awaitCondition { !model.providerAccessPending }
+    XCTAssertNotNil(model.apiKeySaveError)
+    XCTAssertNil(model.providerSelectionError)
+    XCTAssertEqual(model.lastError, "earlier setup failure")
+    XCTAssertTrue(engine.providerSelectionAttempts.isEmpty)
+    model.saveApiKey()
+    await awaitCondition { engine.write != nil }
+    XCTAssertEqual(engine.writes, 2)
+    engine.resolveWrite(success: true)
+    await awaitCondition { !model.providerMutationPending && engine.read != nil }
+    engine.resolveRead()
+    await awaitCondition { !model.providerAccessPending }
+    XCTAssertNil(model.apiKeySaveError)
+    XCTAssertEqual(model.lastError, "earlier setup failure")
+    XCTAssertTrue(engine.providerSelectionAttempts.isEmpty)
+  }
+
+  func testGlobalProviderAndNativeFailuresDoNotClaimClientInstallationProblems() async {
+    let installed = AgentBridgeInstallationStatus(
+      payloadAvailable: true, bundleVersion: "fixture", installedClients: [.codex],
+      installedPaths: ["/fixture/codex"], detail: "Installed")
+    for nativeReady in [true, false] {
+      let engine = ControlledProviderEngine()
+      engine.progress = 11
+      let model = makeModel(
+        engine, bridge: OrderingBridgeInstaller(value: installed),
+        readiness: CsAgenticReadiness(configPathDisplay: "", ready: nativeReady, rows: []))
+      await load(model, engine)
+      XCTAssertFalse(model.agentClientNeedsSetup(.codex), "Healthy selected client")
+      XCTAssertFalse(model.agentClientNeedsSetup(.claudeCode), "Unselected client")
+      if nativeReady {
+        model.refreshProviderAccess()
+        await awaitCondition { engine.read != nil }
+        let pending = engine.read
+        engine.read = nil
+        pending?.resume(throwing: ControlledProviderEngine.Failure.denied)
+        await awaitCondition { !model.providerAccessPending }
+      }
+      XCTAssertTrue(model.agentNeedsGlobalSetup)
+      XCTAssertFalse(model.agentClientNeedsSetup(.codex))
+      XCTAssertFalse(model.agentClientNeedsSetup(.claudeCode))
+      model.toggleAgentClient(.claudeCode)
+      XCTAssertTrue(model.agentClientNeedsSetup(.claudeCode), "Only the selected missing client")
+      XCTAssertFalse(model.agentClientNeedsSetup(.codex))
+    }
+  }
+
   func testContinueDoesNotSaveRestoredDraftBehindCollapsedEditor() async throws {
     let engine = ControlledProviderEngine()
     let second = try XCTUnwrap(
@@ -237,7 +345,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
     await awaitCondition { !model.providerAccessPending }
     XCTAssertNotNil(model.providerAccessError)
     XCTAssertFalse(model.agentBridgeReadyToGo, "A prior ready snapshot must not hide a failed read")
-    XCTAssertTrue(model.agentClientNeedsSetup(.codex))
+    XCTAssertTrue(model.agentNeedsGlobalSetup)
     await load(model, engine)
     XCTAssertTrue(model.agentBridgeReadyToGo)
     XCTAssertFalse(model.agentClientNeedsSetup(.codex))

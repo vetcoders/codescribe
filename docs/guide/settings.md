@@ -180,6 +180,17 @@ An unresolved, pending or failed provider read cannot show a ready verdict.
 Switching providers preserves separate drafts while collapsing the optional
 key editor; Continue saves a draft only while that editor is visible. A restored
 hidden draft remains available through Add or Change without a Keychain write.
+Provider selection is projected only after its configuration write succeeds.
+Selection errors and their retry stay beside the provider picker; key-save
+errors and their retry stay beside the key editor. Earlier setup errors do not
+become key-save errors.
+
+The Agent step distinguishes a selected client's missing or damaged installation
+from a global provider or native-readiness problem. Global issues open Diagnostics
+without selecting or installing another client. An installation error belongs
+to the single client affected by the attempted change; errors spanning multiple
+clients appear beneath the selection instead of being assigned to an arbitrary
+card.
 
 Prompt files live in `~/.codescribe/prompts/`.
 

@@ -360,6 +360,10 @@ does not write. Repair reuses the ownership checks and refuses an unowned
 replacement. A failed install
 keeps Setup on the Agent step and shows the error below the client cards so the
 user can retry. Continuing from a fresh empty selection remains read-only.
+Per-client setup actions describe only selected clients without healthy managed
+evidence. Provider or native-readiness failures use the Diagnostics action and
+do not select a client. A single affected client's installation error appears
+under that card; a selection-wide error appears below the cards.
 
 The installed runtime is stable across checkout moves and deletions:
 

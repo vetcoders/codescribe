@@ -360,6 +360,44 @@ struct AgenticReadinessStepView: View {
         )
         .font(CSFont.mono(10.5, .semibold))
         .foregroundStyle(CSColor.oliveLight)
+      } else if model.agentReadinessPending {
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "Checking provider access…", locale: model.interfaceLocale,
+              comment: "Setup Agent readiness while the provider snapshot is loading"))
+        )
+        .font(CSFont.mono(10.5, .medium))
+        .foregroundStyle(.secondary)
+      } else if model.agentNeedsGlobalSetup {
+        HStack(spacing: 10) {
+          Text(
+            String(
+              localized: LocalizedStringResource(
+                "Agent needs setup", locale: model.interfaceLocale,
+                comment: "Global provider or native readiness problem, not a client installation"))
+          )
+          .font(CSFont.mono(10.5, .medium))
+          .foregroundStyle(CSColor.terracottaLight)
+          Spacer(minLength: 0)
+          Button(
+            String(
+              localized: LocalizedStringResource(
+                "Open diagnostics", locale: model.interfaceLocale,
+                comment: "Open Agent diagnostics from the Setup global readiness row"))
+          ) {
+            model.prepareAgentDiagnosticsDeepLink()
+            openWindow(id: SettingsView.windowID)
+          }
+          .csAction()
+        }
+      }
+
+      if model.agentBridgeErrorClient == nil, let error = model.agentBridgeError {
+        Text(error)
+          .font(CSFont.mono(10.5, .medium))
+          .foregroundStyle(CSColor.terracottaLight)
+          .fixedSize(horizontal: false, vertical: true)
       }
 
     }
@@ -491,6 +529,10 @@ struct ApiKeyStepView: View {
 
       providerPicker
         .padding(.top, 4)
+
+      if let error = model.providerSelectionError {
+        providerSelectionError(error)
+      }
 
       if let error = model.providerAccessError {
         inlineError(error)
@@ -632,7 +674,7 @@ struct ApiKeyStepView: View {
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
         }
-        if let error = model.lastError {
+        if let error = model.apiKeySaveError {
           keySaveError(error)
         }
       }
@@ -709,6 +751,25 @@ struct ApiKeyStepView: View {
       ) { model.refreshProviderAccess() }
       .csAction()
       .disabled(model.providerAccessPending || model.providerMutationPending)
+    }
+  }
+
+  private func providerSelectionError(_ message: String) -> some View {
+    HStack(spacing: 8) {
+      Text(message)
+        .font(.callout)
+        .foregroundStyle(CSColor.terracottaLight)
+        .lineLimit(1)
+        .help(message)
+      Spacer(minLength: 0)
+      Button(
+        String(
+          localized: LocalizedStringResource(
+            "Try again", locale: model.interfaceLocale,
+            comment: "Setup provider selection retry button"))
+      ) { model.retryProviderSelection() }
+      .csAction()
+      .disabled(model.providerMutationPending)
     }
   }
 

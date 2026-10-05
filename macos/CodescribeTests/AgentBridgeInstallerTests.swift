@@ -275,6 +275,42 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertTrue(model.agentBridgeStatus.installedClients.isEmpty)
   }
 
+  func testAddingCodexFailureBelongsToCodexInsteadOfExistingClaude() throws {
+    let bridge = RecordingAgentBridgeInstaller()
+    _ = try bridge.install(selectedClients: [.claudeCode])
+    let engine = MockOnboardingEngine(progress: 11)
+    engine.mode = "agentic"
+    let model = OnboardingViewModel(
+      engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+      agentBridge: bridge, probe: MockPermissionProbe(.allGranted))
+    model.toggleAgentClient(.codex)
+    bridge.failInstallation = true
+    model.advance()
+    XCTAssertEqual(model.step, .agenticReadiness)
+    XCTAssertEqual(model.agentBridgeErrorClient, .codex)
+    XCTAssertTrue(model.agentClientShowsError(.codex))
+    XCTAssertFalse(model.agentClientShowsError(.claudeCode))
+    XCTAssertFalse(model.agentClientNeedsSetup(.claudeCode))
+    XCTAssertTrue(model.agentClientNeedsSetup(.codex))
+  }
+
+  func testMultipleClientFailureIsSelectionWideWithoutGuessingACard() {
+    let bridge = RecordingAgentBridgeInstaller()
+    bridge.failInstallation = true
+    let engine = MockOnboardingEngine(progress: 11)
+    engine.mode = "agentic"
+    let model = OnboardingViewModel(
+      engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+      agentBridge: bridge, probe: MockPermissionProbe(.allGranted))
+    model.toggleAgentClient(.codex)
+    model.toggleAgentClient(.claudeCode)
+    model.advance()
+    XCTAssertNotNil(model.agentBridgeError)
+    XCTAssertNil(model.agentBridgeErrorClient)
+    XCTAssertFalse(model.agentClientShowsError(.codex))
+    XCTAssertFalse(model.agentClientShowsError(.claudeCode))
+  }
+
   func testManagedFoldersRecoverFromMissingUnreadableOrForeignReceipt() throws {
     let payload = try makePayload()
     for drift in ["missing", "unreadable", "foreign-id", "foreign-schema"] {

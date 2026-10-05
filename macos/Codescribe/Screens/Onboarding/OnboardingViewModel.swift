@@ -161,6 +161,7 @@ final class OnboardingViewModel: ObservableObject {
   @Published private(set) var agentBridgeStatus: AgentBridgeInstallationStatus
   @Published private(set) var selectedAgentClients: Set<AgentBridgeClient>
   @Published private(set) var agentBridgeError: String?
+  @Published private(set) var agentBridgeErrorClient: AgentBridgeClient?
 
   // API-key step state.
   @Published private(set) var providers: [CsProviderOption] = []
@@ -169,9 +170,12 @@ final class OnboardingViewModel: ObservableObject {
   @Published private(set) var providerAccessResolved = false
   @Published private(set) var providerAccessError: String?
   @Published private(set) var providerAccountErrors: [String: String] = [:]
+  @Published private(set) var providerSelectionError: String?
+  @Published private(set) var apiKeySaveError: String?
   @Published private(set) var apiKeyEditorExpanded = false
   private var providerAccessGeneration: UInt64 = 0
   private var providerRefreshRequested = false
+  private var failedProviderSelectionId: String?
   private var apiKeyDraftsByProviderId: [String: String] = [:]
   @Published var selectedProviderId: String
   @Published var apiKeyDraft: String = ""
@@ -224,6 +228,7 @@ final class OnboardingViewModel: ObservableObject {
     self.agentBridgeStatus = bridgeStatus
     self.selectedAgentClients = Set(bridgeStatus.installedClients)
     self.agentBridgeError = nil
+    self.agentBridgeErrorClient = nil
     self.selectedProviderId =
       engine.assistiveProvider()
       ?? "openai-responses"
@@ -284,27 +289,35 @@ final class OnboardingViewModel: ObservableObject {
     providers.first { $0.id == selectedProviderId }
   }
 
-  var agentBridgeReadyToGo: Bool {
+  private var agentReadinessIsCurrentAndReady: Bool {
     providerAccessResolved && !providerAccessPending && providerAccessError == nil
-      && readiness?.ready == true && agentBridgeError == nil
-      && agentBridgeStatus.clientsNeedingRepair.isDisjoint(with: selectedAgentClients)
+      && readiness?.ready == true
+  }
+
+  var agentReadinessPending: Bool {
+    providerAccessPending || (!providerAccessResolved && providerAccessError == nil)
+  }
+
+  var agentNeedsGlobalSetup: Bool {
+    !agentReadinessPending && !agentReadinessIsCurrentAndReady
+  }
+
+  var agentBridgeReadyToGo: Bool {
+    agentReadinessIsCurrentAndReady && agentBridgeError == nil
+      && selectedAgentClients.allSatisfy { agentClientIsInstalled($0) }
   }
 
   func agentClientIsInstalled(_ client: AgentBridgeClient) -> Bool {
     agentBridgeStatus.installedClients.contains(client)
+      && !agentBridgeStatus.clientsNeedingRepair.contains(client)
   }
 
-  func agentClientNeedsSetup(_: AgentBridgeClient) -> Bool {
-    !agentBridgeReadyToGo
+  func agentClientNeedsSetup(_ client: AgentBridgeClient) -> Bool {
+    selectedAgentClients.contains(client) && !agentClientIsInstalled(client)
   }
 
   func agentClientShowsError(_ client: AgentBridgeClient) -> Bool {
-    guard agentBridgeError != nil else { return false }
-    guard
-      let errorClient = selectedAgentClients.union(agentBridgeStatus.installedClients)
-        .sorted(by: { $0.rawValue < $1.rawValue }).first
-    else { return false }
-    return client == errorClient
+    agentBridgeError != nil && agentBridgeErrorClient == client
   }
 
   // MARK: - Lifecycle refresh
@@ -365,6 +378,7 @@ final class OnboardingViewModel: ObservableObject {
     // the user changes that decision, do not present the stale failure as the
     // status of the new selection.
     agentBridgeError = nil
+    agentBridgeErrorClient = nil
   }
 
   /// The only home-directory write on the readiness step. It runs from an
@@ -373,11 +387,16 @@ final class OnboardingViewModel: ObservableObject {
   /// Visiting, refreshing, Back, and Skip stay
   /// read-only.
   func installAgentBridge() {
+    let current = agentBridge.status()
+    let affectedClients = selectedAgentClients.symmetricDifference(Set(current.installedClients))
+      .union(current.clientsNeedingRepair.intersection(selectedAgentClients))
     do {
       agentBridgeStatus = try agentBridge.install(selectedClients: selectedAgentClients)
       agentBridgeError = nil
+      agentBridgeErrorClient = nil
     } catch {
       agentBridgeError = error.userFacingMessage
+      agentBridgeErrorClient = affectedClients.count == 1 ? affectedClients.first : nil
       agentBridgeStatus = agentBridge.status()
     }
   }
@@ -669,15 +688,23 @@ final class OnboardingViewModel: ObservableObject {
     } else {
       apiKeyDraftsByProviderId[selectedProviderId] = apiKeyDraft
     }
-    selectedProviderId = id
-    apiKeyDraft = apiKeyDraftsByProviderId[id] ?? ""
     apiKeyEditorExpanded = false
-    lastError = nil
+    apiKeySaveError = nil
+    providerSelectionError = nil
+    failedProviderSelectionId = nil
     do {
       try engine.updateConfig(key: "LLM_ASSISTIVE_PROVIDER", value: id)
+      selectedProviderId = id
+      apiKeyDraft = apiKeyDraftsByProviderId[id] ?? ""
     } catch {
-      lastError = error.userFacingMessage
+      providerSelectionError = error.userFacingMessage
+      failedProviderSelectionId = id
     }
+  }
+
+  func retryProviderSelection() {
+    guard let id = failedProviderSelectionId else { return }
+    selectProvider(id)
   }
 
   /// True when the currently selected provider's key is present in the Keychain.
@@ -776,7 +803,7 @@ final class OnboardingViewModel: ObservableObject {
     guard apiKeySaveAvailable, !trimmed.isEmpty, let account = selectedProvider?.apiKeyAccount,
       !providerMutationPending
     else { return }
-    lastError = nil
+    apiKeySaveError = nil
     providerMutationPending = true
     providerAccessGeneration &+= 1
     Task { @MainActor [self] in
@@ -795,9 +822,9 @@ final class OnboardingViewModel: ObservableObject {
           apiKeyDraftsByProviderId[providerId] = nil
           apiKeyEditorExpanded = false
         }
-        lastError = nil
+        apiKeySaveError = nil
         if advanceOnSuccess, stillCurrent, step == .apiKey { advanceAfterCommit() }
-      } catch { lastError = error.userFacingMessage }
+      } catch { apiKeySaveError = error.userFacingMessage }
     }
   }
 
