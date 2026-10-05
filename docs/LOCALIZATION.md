@@ -22,8 +22,13 @@
   its Foundation copy through `LocalizedStringResource` with that locale.
   `String(localized:locale:)` alone would only change interpolation formatting,
   not the language of the lookup. The persisted preference applies to the rest
-  of the application on its next launch; no automatic restart interrupts setup
-  or an active recording. The initial step occupies the existing resume slot
+  of the application through the first step’s explicit “Restart and continue”
+  action. The host checks the canonical bus idle predicate and agent-turn lease,
+  saves the next step, and requests normal AppDelegate termination. LaunchServices
+  reopens the same bundle only after the old PID exits; setup resumes even when
+  the wizard was opened manually. A busy or unreadable runtime retains the picker
+  and shows a retry message. Selecting the running language needs no restart.
+  The initial step occupies the existing resume slot
   zero, so permission and dictation step indices remain unchanged.
 - The dictation language (`CsLanguage`, `WHISPER_LANGUAGE`) is an STT setting.
   It is unrelated to the interface language and must stay unrelated.

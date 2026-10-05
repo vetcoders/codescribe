@@ -80,6 +80,8 @@ struct OverlayChannelHudProjection: Equatable {
   let autosealDeadline: Date?
   /// Nil means the controller made no liveness claim.
   let followerAlive: Bool?
+  var provider: String? = nil
+  var providerSessionID: String? = nil
 }
 
 /// Shared by the header and roster; animation never owns delivery state.
@@ -230,10 +232,84 @@ struct OverlayChannelStatusView: View {
   var monitorBody: some View {
     ChannelRosterContent(palette: palette) {
       details
-        .font(.system(size: 14, weight: .medium))
+        .font(.system(size: 13, weight: .medium))
         .foregroundStyle(palette.primaryText.color)
     }
     .accessibilityIdentifier("overlay-agent-monitor")
+  }
+
+  var currentConversations: [OverlayConversation] {
+    conversations.filter { conversation in
+      if conversation.channel == "0" { return true }
+      guard let owner = conversation.owner, let hud = hudStates[conversation.channel],
+        hud.provider == owner.provider, hud.providerSessionID == owner.providerSessionID
+      else { return false }
+      // A roster without a lease cannot distinguish two leases of the same
+      // provider session. Keep both as saved conversations rather than guess.
+      return conversations.filter {
+        $0.channel == conversation.channel && $0.owner?.provider == hud.provider
+          && $0.owner?.providerSessionID == hud.providerSessionID
+      }.count == 1
+    }
+  }
+
+  var savedConversations: [OverlayConversation] {
+    let current = Set(currentConversations.map(\.id))
+    return conversations.filter { !current.contains($0.id) }
+  }
+
+  private func conversationRow(_ conversation: OverlayConversation, saved: Bool) -> some View {
+    Button {
+      onSelectConversation?(conversation.id)
+    } label: {
+      HStack(spacing: 10) {
+        Image(systemName: saved ? "clock" : "bubble.left")
+          .font(.system(size: 12))
+          .foregroundStyle(palette.mutedText.color)
+          .frame(width: 16)
+        VStack(alignment: .leading, spacing: 2) {
+          if conversation.channel == "0" {
+            Text("0 · All")
+          } else {
+            Text(verbatim: "\(conversation.channel) · \(conversation.name)")
+          }
+          if saved, let owner = conversation.owner {
+            Text(verbatim: savedConversationDetail(conversation, owner: owner))
+              .font(.system(size: 11))
+              .foregroundStyle(palette.mutedText.color)
+              .lineLimit(1)
+          }
+        }
+        Spacer(minLength: 8)
+        if let count = unreadCounts[conversation.id], count > 0 {
+          Text(verbatim: String(count))
+            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            .foregroundStyle(palette.processingStatus.color)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(palette.processingStatus.color.opacity(0.12), in: Capsule())
+            .accessibilityLabel("\(count) unread replies")
+        }
+        Image(systemName: selectedConversationID == conversation.id ? "checkmark" : "chevron.right")
+          .font(.system(size: 10, weight: .medium))
+          .foregroundStyle(palette.mutedText.color)
+      }
+      .padding(.vertical, 7)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .help("View conversation without changing the microphone")
+    .accessibilityIdentifier("overlay-view-conversation-\(conversation.id)")
+  }
+
+  private func savedConversationDetail(
+    _ conversation: OverlayConversation, owner: OverlayConversationOwner
+  ) -> String {
+    guard let stamp = conversation.messages.last?.emittedAt else { return owner.provider }
+    let parser = ISO8601DateFormatter()
+    parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let date = parser.date(from: stamp) ?? ISO8601DateFormatter().date(from: stamp)
+    guard let date else { return owner.provider }
+    return "\(owner.provider) · \(date.formatted(date: .abbreviated, time: .shortened))"
   }
 
   private var details: some View {
@@ -243,40 +319,33 @@ struct OverlayChannelStatusView: View {
           onSelectConversation?(nil)
         } label: {
           HStack {
+            Image(systemName: "waveform").frame(width: 16)
             Text("My dictation")
             Spacer()
-            if selectedConversationID == nil { Image(systemName: "checkmark") }
+            Image(systemName: "chevron.right").font(.system(size: 10, weight: .medium))
+              .foregroundStyle(palette.mutedText.color)
           }
         }
         .buttonStyle(.plain)
-        .padding(.vertical, 8)
+        .padding(.vertical, 7)
         .accessibilityIdentifier("overlay-view-my-dictation")
-        ForEach(conversations) { conversation in
-          Button {
-            onSelectConversation?(conversation.id)
-          } label: {
-            HStack {
-              if conversation.channel == "0" {
-                Text("0 · All")
-              } else {
-                Text(verbatim: "\(conversation.channel) · \(conversation.name)")
-              }
-              Spacer()
-              if let count = unreadCounts[conversation.id], count > 0 {
-                Text("\(count) unread")
-                  .foregroundStyle(palette.processingStatus.color)
-              }
-              if selectedConversationID == conversation.id { Image(systemName: "checkmark") }
-            }
+        ForEach(currentConversations) { conversation in
+          conversationRow(conversation, saved: false)
+        }
+        if !savedConversations.isEmpty {
+          Text("Saved conversations")
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(palette.mutedText.color)
+            .padding(.top, 8)
+          ForEach(savedConversations) { conversation in
+            conversationRow(conversation, saved: true)
           }
-          .buttonStyle(.plain)
-          .padding(.vertical, 8)
-          .help("View conversation without changing the microphone")
-          .accessibilityIdentifier("overlay-view-conversation-\(conversation.id)")
         }
         Divider()
         Text("Capture channels")
+          .font(.system(size: 11, weight: .medium))
           .foregroundStyle(palette.mutedText.color)
+          .padding(.top, 8)
       }
       ForEach(channels) { channel in
         if isOpen(channel) {
@@ -380,14 +449,9 @@ struct ChannelRosterContent<Content: View>: View {
 
   var body: some View {
     content
-      .padding(16)
+      .padding(.horizontal, 4)
+      .padding(.vertical, 8)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(style.surface.color)
-      .overlay {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .strokeBorder(style.border.color, lineWidth: 1)
-          .allowsHitTesting(false)
-      }
       .preferredColorScheme(style.colorScheme)
   }
 }

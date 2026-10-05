@@ -18,12 +18,13 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
   }
 
   private func model(
-    preferences: UserDefaults, engine: LanguageRecordingEngine = LanguageRecordingEngine()
+    preferences: UserDefaults, engine: LanguageRecordingEngine = LanguageRecordingEngine(),
+    processLanguage: InterfaceLanguage = .english
   ) -> OnboardingViewModel {
     OnboardingViewModel(
       engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
       agentBridge: LanguageTestBridge(), probe: MockPermissionProbe(.allGranted),
-      languagePreferences: preferences)
+      languagePreferences: preferences, processInterfaceLanguage: processLanguage)
   }
 
   func testSystemPreferenceMatchingAndUnsupportedLanguageDefault() {
@@ -70,6 +71,86 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
     }
   }
 
+  func testChangedLanguageDoesNotLeavePickerWithoutWholeAppApplication() async throws {
+    try withPreferences { preferences, _ in
+      let engine = LanguageRecordingEngine()
+      let wizard = model(preferences: preferences, engine: engine)
+      let running = InterfaceLanguage.preferred(from: Bundle.main.preferredLocalizations)
+      wizard.selectInterfaceLanguage(running == .english ? .polish : .english)
+      wizard.advance()
+      XCTAssertEqual(wizard.step, .interfaceLanguage)
+      XCTAssertEqual(engine.fixture.progress, 0)
+    }
+  }
+
+  func testWholeAppApplicationPersistsResumeOnlyAfterIdleAdmission() async throws {
+    let suite = "codescribe-language-apply-\(UUID().uuidString)"
+    let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+    preferences.setVolatileDomain([:], forName: UserDefaults.argumentDomain)
+    defer { preferences.removePersistentDomain(forName: suite) }
+    let engine = LanguageRecordingEngine()
+    let wizard = model(preferences: preferences, engine: engine)
+    let admitted = expectation(description: "Idle guard called")
+    let applied = expectation(description: "Restart armed")
+    let gate = AsyncStream<Void>.makeStream()
+    var applications = 0
+    wizard.onApplyInterfaceLanguage = { beforeTermination in
+      applications += 1
+      admitted.fulfill()
+      for await _ in gate.stream { break }
+      XCTAssertEqual(engine.fixture.progress, 0)
+      beforeTermination()
+      XCTAssertEqual(engine.fixture.progress, 1, "Persist before normal app termination")
+      applied.fulfill()
+    }
+    wizard.selectInterfaceLanguage(.polish)
+    wizard.advance()
+    await fulfillment(of: [admitted], timeout: 1)
+    XCTAssertTrue(wizard.applyingInterfaceLanguage)
+    XCTAssertEqual(wizard.step, .interfaceLanguage)
+    wizard.advance()
+    wizard.selectInterfaceLanguage(.english)
+    wizard.back()
+    XCTAssertEqual(wizard.interfaceLanguage, .polish)
+    XCTAssertEqual(applications, 1)
+    gate.continuation.yield(())
+    gate.continuation.finish()
+    await fulfillment(of: [applied], timeout: 1)
+    XCTAssertEqual(wizard.step, .mode)
+    XCTAssertTrue(engine.configWrites.isEmpty)
+    let resumed = model(preferences: preferences, engine: engine, processLanguage: .polish)
+    XCTAssertEqual(resumed.step, .mode)
+    XCTAssertEqual(resumed.interfaceLanguage, .polish)
+    XCTAssertFalse(resumed.interfaceLanguageNeedsRestart)
+    resumed.back()
+    resumed.advance()
+    XCTAssertEqual(resumed.step, .mode, "The relaunched process does not restart again")
+  }
+
+  func testBusyApplicationRetainsPickerAndSavedLanguageForRetry() async throws {
+    let suite = "codescribe-language-busy-\(UUID().uuidString)"
+    let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+    preferences.setVolatileDomain([:], forName: UserDefaults.argumentDomain)
+    defer { preferences.removePersistentDomain(forName: suite) }
+    let engine = LanguageRecordingEngine()
+    let wizard = model(preferences: preferences, engine: engine)
+    let refused = expectation(description: "Idle guard refused")
+    wizard.onApplyInterfaceLanguage = { _ in
+      defer { refused.fulfill() }
+      throw InterfaceLanguageRestartError.busy
+    }
+    wizard.selectInterfaceLanguage(.polish)
+    wizard.advance()
+    await fulfillment(of: [refused], timeout: 1)
+    await Task.yield()
+    XCTAssertEqual(wizard.step, .interfaceLanguage)
+    XCTAssertEqual(engine.fixture.progress, 0)
+    XCTAssertFalse(wizard.applyingInterfaceLanguage)
+    XCTAssertTrue(try XCTUnwrap(wizard.lastError).contains("Zakończ nagrywanie"))
+    XCTAssertEqual(preferences.stringArray(forKey: "AppleLanguages"), ["pl"])
+    XCTAssertTrue(engine.configWrites.isEmpty)
+  }
+
   func testConstructionDoesNotPersistAndContinueSavesUntouchedChoice() throws {
     try withPreferences { preferences, suite in
       let before = preferences.persistentDomain(forName: suite)
@@ -97,7 +178,7 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
       XCTAssertEqual(wizard.progressLabel, "Step 1 of 13")
       let englishTitle = wizard.windowTitle
       wizard.selectInterfaceLanguage(.polish)
-      XCTAssertEqual(wizard.primaryLabel, "Dalej")
+      XCTAssertEqual(wizard.primaryLabel, "Uruchom ponownie i kontynuuj")
       XCTAssertEqual(wizard.progressLabel, "Krok 1 z 13")
       XCTAssertNotEqual(wizard.windowTitle, englishTitle)
       XCTAssertEqual(
@@ -138,7 +219,7 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
       wizard.selectInterfaceLanguage(.polish)
       settle(host)
       let polish = try renderedText(host)
-      XCTAssertTrue(polish.contains("Dalej"), polish)
+      XCTAssertTrue(polish.contains("kontynuuj"), polish)
       XCTAssertTrue(polish.contains("Wybierz"), polish)
       XCTAssertFalse(polish.contains("Continue"), polish)
       XCTAssertFalse(window.isVisible, "No live screen or system input is used")

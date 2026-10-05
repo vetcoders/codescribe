@@ -1280,22 +1280,6 @@
         }
       }
     },
-    "%lld unread" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "%lld unread"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "%lld do przeczytania"
-          }
-        }
-      }
-    },
     "%lld unread replies" : {
       "localizations" : {
         "en" : {
@@ -3569,6 +3553,17 @@
         }
       }
     },
+    "Codescribe could not restart. Your language choice is saved; quit and reopen the app to apply it." : {
+      "comment" : "Language restart unavailable; saved preference remains valid",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się ponownie uruchomić Codescribe. Wybrany język został zapisany. Zamknij aplikację i otwórz ją ponownie, aby go zastosować."
+          }
+        }
+      }
+    },
     "Codescribe couldn't write the Markdown file for “%@”. Check the Transcripts folder shown under Settings › User › Local data, then try again." : {
       "comment" : "The placeholder is the thread title",
       "localizations" : {
@@ -3644,6 +3639,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codescribe uruchomi się ponownie jak po pierwszej instalacji."
+          }
+        }
+      }
+    },
+    "Codescribe will restart in this language and resume setup. Your recording must finish first." : {
+      "comment" : "Whole-app language application explanation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Codescribe uruchomi się ponownie w wybranym języku i wznowi konfigurację. Najpierw zakończ nagrywanie."
           }
         }
       }
@@ -5532,6 +5538,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zakończ nagrywanie"
+          }
+        }
+      }
+    },
+    "Finish recording or the agent’s turn, then try again. Your language choice is saved." : {
+      "comment" : "Language restart refused while the app is busy",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zakończ nagrywanie lub poczekaj na zakończenie pracy agenta i spróbuj ponownie. Wybrany język został zapisany."
           }
         }
       }
@@ -10125,6 +10142,17 @@
         }
       }
     },
+    "Restart and continue" : {
+      "comment" : "Apply the interface language to the entire app and resume setup",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Uruchom ponownie i kontynuuj"
+          }
+        }
+      }
+    },
     "Restore %@ to the built-in default?" : {
       "localizations" : {
         "pl" : {
@@ -10496,6 +10524,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zapisz prompt"
+          }
+        }
+      }
+    },
+    "Saved conversations" : {
+      "comment" : "Previous or unbound agent conversations; their immutable owner is retained",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zapisane rozmowy"
           }
         }
       }

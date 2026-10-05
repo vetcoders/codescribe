@@ -199,7 +199,7 @@ struct OnboardingView: View {
         model.primaryAction()
       }.csAction(prominent: true)
     }
-    .disabled(model.providerMutationPending)
+    .disabled(model.providerMutationPending || model.applyingInterfaceLanguage)
     .padding(.horizontal, CSSpace.page)
     .padding(.vertical, 18)
   }

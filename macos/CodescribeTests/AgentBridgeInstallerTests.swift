@@ -489,6 +489,53 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
   }
 
+  func testLanguageRestartUsesCanonicalIdleGuardAndHoldsTurnLease() async throws {
+    let home = scratch.appendingPathComponent("language-restart")
+    let leasePath = home.appendingPathComponent("turn.lock")
+    let busyPath = home.appendingPathComponent("busy")
+    let helper = """
+      #!/usr/bin/env python3
+      import pathlib, sys
+      root = pathlib.Path(__file__).resolve().parents[2]
+      if sys.argv[1:] == ['--print-agent-turn-lease-path']:
+          print(root / 'turn.lock')
+      elif sys.argv[1:] == ['--assert-install-idle']:
+          sys.exit(2 if (root / 'busy').exists() else 0)
+      else:
+          sys.exit(9)
+      """
+    let payload = try makePayload(helperContent: helper)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    try Data().write(to: busyPath)
+    do {
+      _ = try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease(installer: installer)
+      XCTFail("A live or unreadable bus must refuse restart")
+    } catch {
+      XCTAssertEqual(error as? InterfaceLanguageRestartError, .busy)
+    }
+    try FileManager.default.removeItem(at: busyPath)
+    let lease = try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease(
+      installer: installer)
+    let probe = Darwin.open(leasePath.path, O_RDWR | O_CLOEXEC)
+    XCTAssertGreaterThanOrEqual(probe, 0)
+    guard probe >= 0 else { return }
+    defer { _ = Darwin.close(probe) }
+    XCTAssertNotEqual(flock(probe, LOCK_SH | LOCK_NB), 0, "Restart prevents a new agent turn")
+    try lease.close()
+    XCTAssertEqual(
+      flock(probe, LOCK_SH | LOCK_NB), 0, "Closing the admitted lease releases ownership")
+    XCTAssertEqual(flock(probe, LOCK_UN), 0)
+    XCTAssertEqual(flock(probe, LOCK_SH | LOCK_NB), 0)
+    do {
+      _ = try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease(installer: installer)
+      XCTFail("An active agent turn must refuse restart")
+    } catch {
+      XCTAssertEqual(error as? InterfaceLanguageRestartError, .busy)
+    }
+  }
+
   func testInstallationRefusesSymlinkedLeaseWithoutTouchingItsTarget() throws {
     let payload = try makePayload()
     let home = scratch.appendingPathComponent("install-lock-symlink")

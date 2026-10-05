@@ -201,6 +201,26 @@ struct CodescribeApp: App {
   }
 }
 
+enum InterfaceLanguageRestartError: Error, Equatable {
+  case busy
+  case unavailable
+
+  func message(locale: Locale) -> String {
+    switch self {
+    case .busy:
+      return String(
+        localized: LocalizedStringResource(
+          "Finish recording or the agent’s turn, then try again. Your language choice is saved.",
+          locale: locale, comment: "Language restart refused while the app is busy"))
+    case .unavailable:
+      return String(
+        localized: LocalizedStringResource(
+          "Codescribe could not restart. Your language choice is saved; quit and reopen the app to apply it.",
+          locale: locale, comment: "Language restart unavailable; saved preference remains valid"))
+    }
+  }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
   private static let showAgentNotification = Notification.Name("com.vetcoders.codescribe.showAgent")
@@ -270,7 +290,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private let terminationCoordinator = AppTerminationCoordinator()
   // First-run onboarding wizard host. Presented at launch when the core gate
   // (`shouldShowOnboarding`) reports setup is due.
-  private lazy var onboarding = OnboardingWindowController(engine: RealOnboardingEngine())
+  private lazy var onboarding = OnboardingWindowController(
+    engine: RealOnboardingEngine(),
+    applyInterfaceLanguage: { [weak self] beforeTermination in
+      guard let self else { throw InterfaceLanguageRestartError.unavailable }
+      try await self.restartForInterfaceLanguage(beforeTermination: beforeTermination)
+    }
+  )
+  private var languageRestartProcess: Process?
+  private var languageRestartLease: FileHandle?
   // Sparkle update channel. Created in didFinishLaunching (after the
   // duplicate-instance/test-host guard) so the XCTest host never starts a
   // scheduled updater alongside the live app.
@@ -386,7 +414,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Show the first-run wizard on top of the freshly-installed tray when the
     // core reports onboarding is still due (no setup_done marker, or a stale
     // one invalidated because a required permission is missing).
-    onboarding.presentIfNeeded()
+    if CommandLine.arguments.contains("--resume-onboarding") {
+      onboarding.present()
+    } else {
+      onboarding.presentIfNeeded()
+    }
   }
 
   /// Prompt Speech Recognition while undetermined so Apple live dictation can
@@ -656,6 +688,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     )
     return .terminateLater
   }
+
+  private func restartForInterfaceLanguage(beforeTermination: @MainActor () -> Void) async throws {
+    guard languageRestartProcess == nil else { throw InterfaceLanguageRestartError.unavailable }
+    let lease = try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease()
+    guard !(await hotkeys.isRecording()) else { throw InterfaceLanguageRestartError.busy }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    // Values are positional arguments, never interpolated shell source. Wait
+    // for normal AppDelegate cleanup and exit before LaunchServices opens us.
+    process.arguments = [
+      "-c", Self.languageRelaunchScript, "codescribe-language-restart",
+      String(ProcessInfo.processInfo.processIdentifier), Bundle.main.bundleURL.path,
+    ]
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    languageRestartProcess = process
+    languageRestartLease = lease
+    beforeTermination()
+    NSApp.terminate(nil)
+  }
+
+  static let languageRelaunchScript = """
+    count=0
+    while /bin/kill -0 "$1" 2>/dev/null; do
+      count=$((count + 1))
+      [ "$count" -lt 240 ] || exit 1
+      /bin/sleep 0.25
+    done
+    exec /usr/bin/open "$2" --args --resume-onboarding
+    """
 
   private func shutdownForTermination() async {
     // The launch guards in applicationShouldTerminate keep the XCTest host

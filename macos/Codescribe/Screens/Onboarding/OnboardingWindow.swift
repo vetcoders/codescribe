@@ -15,9 +15,14 @@ import SwiftUI
 final class OnboardingWindowController {
   private var window: NSWindow?
   private let engine: OnboardingEngine
+  private let applyInterfaceLanguage: (@escaping @MainActor () -> Void) async throws -> Void
 
-  init(engine: OnboardingEngine) {
+  init(
+    engine: OnboardingEngine,
+    applyInterfaceLanguage: @escaping (@escaping @MainActor () -> Void) async throws -> Void
+  ) {
     self.engine = engine
+    self.applyInterfaceLanguage = applyInterfaceLanguage
   }
 
   /// Present the wizard only when the live gate says onboarding is due.
@@ -31,6 +36,7 @@ final class OnboardingWindowController {
   func present() {
     if window == nil {
       let model = OnboardingViewModel(engine: engine)
+      model.onApplyInterfaceLanguage = applyInterfaceLanguage
       model.onFinished = { [weak self] in self?.close() }
       let hosting = NSHostingController(rootView: OnboardingView(model: model))
       let window = NSWindow(contentViewController: hosting)

@@ -36,6 +36,21 @@ struct InterfaceLanguageStepView: View {
         ) { model.selectInterfaceLanguage(language) }
         .accessibilityIdentifier("onboarding-interface-language-\(language.rawValue)")
       }
+      .disabled(model.applyingInterfaceLanguage)
+      if model.interfaceLanguageNeedsRestart {
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "Codescribe will restart in this language and resume setup. Your recording must finish first.",
+              locale: model.interfaceLocale, comment: "Whole-app language application explanation"))
+        )
+        .font(.callout)
+        .foregroundStyle(.secondary)
+      }
+      if let error = model.lastError {
+        Text(error).font(.callout).foregroundStyle(CSColor.terracotta)
+          .accessibilityIdentifier("onboarding-interface-language-error")
+      }
     }
   }
 }

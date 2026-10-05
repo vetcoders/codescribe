@@ -911,7 +911,8 @@ final class OverlayState {
             autosealDeadline: row.autosealDeadlineUnixMs.map {
               Date(timeIntervalSince1970: Double($0) / 1_000)
             },
-            followerAlive: row.followerAlive)
+            followerAlive: row.followerAlive,
+            provider: row.provider, providerSessionID: row.providerSessionId)
         )
       }, uniquingKeysWith: { _, latest in latest })
     guard snapshot != channelRoster else { return }

@@ -172,6 +172,61 @@ private struct AgentBridgeManagedMarker: Codable {
 /// their inodes — and every rename forms one rollback-capable transaction;
 /// receipt replacement is the final commit point.
 final class RealAgentBridgeInstaller: AgentBridgeInstalling {
+  /// Uses the same bus predicate and turn lease as the idle-safe installer.
+  /// Retaining the returned exclusive lease prevents a new agent turn until
+  /// the restarting process exits. An unreadable bus refuses the restart.
+  static func acquireIdleLanguageRestartLease(
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async throws -> FileHandle {
+    let executable = installer.commandURL("cs-bus")
+    guard installer.fileManager.isExecutableFile(atPath: executable.path),
+      installer.managedCommandID(executable) != nil
+    else { throw InterfaceLanguageRestartError.unavailable }
+    return try await Task.detached(priority: .userInitiated) {
+      let pathData = try languageRestartHelper(executable, flag: "--print-agent-turn-lease-path")
+      guard
+        let path = String(data: pathData, encoding: .utf8)?.trimmingCharacters(
+          in: .whitespacesAndNewlines),
+        path.hasPrefix("/")
+      else { throw InterfaceLanguageRestartError.unavailable }
+      let descriptor = Darwin.open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+      guard descriptor >= 0 else { throw InterfaceLanguageRestartError.unavailable }
+      let lease = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+      guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+        try? lease.close()
+        throw InterfaceLanguageRestartError.busy
+      }
+      do {
+        _ = try languageRestartHelper(executable, flag: "--assert-install-idle")
+        return lease
+      } catch {
+        try? lease.close()
+        throw error
+      }
+    }.value
+  }
+
+  private static func languageRestartHelper(_ executable: URL, flag: String) throws -> Data {
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = executable
+    process.arguments = [flag]
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = output
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    let deadline = Date().addingTimeInterval(15)
+    while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+    guard !process.isRunning else {
+      process.terminate()
+      throw InterfaceLanguageRestartError.unavailable
+    }
+    guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+      throw InterfaceLanguageRestartError.busy
+    }
+    return output.fileHandleForReading.readDataToEndOfFile()
+  }
+
   /// Uses the installed bus speech owner; the built-in chat player is separate.
   @MainActor
   static func controlBusReply(
@@ -185,7 +240,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     else {
       throw NSError(
         domain: "Codescribe.BusPlayback", code: 1,
-        userInfo: [NSLocalizedDescriptionKey: String(localized: "Install the agent bridge to play replies.")])
+        userInfo: [
+          NSLocalizedDescriptionKey: String(localized: "Install the agent bridge to play replies.")
+        ])
     }
     let arguments = [
       stop ? "--stop-reply" : "--play-reply", replyID,
@@ -214,7 +271,10 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       guard process.terminationReason == .exit, process.terminationStatus == 0 else {
         throw NSError(
           domain: "Codescribe.BusPlayback", code: Int(process.terminationStatus),
-          userInfo: [NSLocalizedDescriptionKey: String(localized: "Reply playback could not complete. The reply text is retained.")])
+          userInfo: [
+            NSLocalizedDescriptionKey: String(
+              localized: "Reply playback could not complete. The reply text is retained.")
+          ])
       }
     }.value
   }

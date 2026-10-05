@@ -185,6 +185,9 @@ final class OnboardingViewModel: ObservableObject {
   /// Invoked when the wizard is finished (Done confirmed) so the host can close
   /// and release the window.
   var onFinished: (() -> Void)?
+  var onApplyInterfaceLanguage: ((@escaping @MainActor () -> Void) async throws -> Void)?
+  @Published private(set) var applyingInterfaceLanguage = false
+  private let processInterfaceLanguage: InterfaceLanguage
 
   init(
     engine: OnboardingEngine,
@@ -193,7 +196,9 @@ final class OnboardingViewModel: ObservableObject {
     agentBridge: AgentBridgeInstalling = RealAgentBridgeInstaller(),
     probe: PermissionProbing = NativePermissionProbe(),
     languagePreferences: UserDefaults = .standard,
-    preferredLanguages: [String] = Locale.preferredLanguages
+    preferredLanguages: [String] = Locale.preferredLanguages,
+    processInterfaceLanguage: InterfaceLanguage = .preferred(
+      from: Bundle.main.preferredLocalizations)
   ) {
     let bridgeStatus = agentBridge.status()
     self.engine = engine
@@ -202,6 +207,7 @@ final class OnboardingViewModel: ObservableObject {
     self.agentBridge = agentBridge
     self.probe = probe
     self.languagePreferences = languagePreferences
+    self.processInterfaceLanguage = processInterfaceLanguage
     self.interfaceLanguage = InterfaceLanguage.preferred(
       from: languagePreferences.stringArray(forKey: "AppleLanguages") ?? preferredLanguages
     )
@@ -224,9 +230,13 @@ final class OnboardingViewModel: ObservableObject {
   // MARK: - Derived
 
   func selectInterfaceLanguage(_ language: InterfaceLanguage) {
+    guard !applyingInterfaceLanguage else { return }
     interfaceLanguage = language
     languagePreferences.set([language.rawValue], forKey: "AppleLanguages")
+    lastError = nil
   }
+
+  var interfaceLanguageNeedsRestart: Bool { interfaceLanguage != processInterfaceLanguage }
 
   var step: OnboardingStep { OnboardingStep.step(at: stepIndex) }
   var windowTitle: String {
@@ -253,7 +263,13 @@ final class OnboardingViewModel: ObservableObject {
 
   /// Primary-button label: "Finish" on Done, "Continue" everywhere else.
   var primaryLabel: String {
-    isDone
+    if step == .interfaceLanguage, interfaceLanguageNeedsRestart {
+      return String(
+        localized: LocalizedStringResource(
+          "Restart and continue", locale: interfaceLocale,
+          comment: "Apply the interface language to the entire app and resume setup"))
+    }
+    return isDone
       ? String(
         localized: LocalizedStringResource(
           "Finish", locale: interfaceLocale, comment: "Setup wizard button: close the wizard"))
@@ -426,7 +442,30 @@ final class OnboardingViewModel: ObservableObject {
   /// The Agentic Readiness step is skipped in the Basic lane. Advancing off the
   /// end is treated as finishing so we never index past the flow.
   func advance() {
-    guard !providerMutationPending else { return }
+    guard !providerMutationPending, !applyingInterfaceLanguage else { return }
+    if step == .interfaceLanguage, interfaceLanguageNeedsRestart {
+      guard let onApplyInterfaceLanguage else {
+        lastError = InterfaceLanguageRestartError.unavailable.message(locale: interfaceLocale)
+        return
+      }
+      applyingInterfaceLanguage = true
+      lastError = nil
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        defer { applyingInterfaceLanguage = false }
+        do {
+          // Flush the per-app preference before the new process resolves its bundle.
+          guard languagePreferences.synchronize() else {
+            throw InterfaceLanguageRestartError.unavailable
+          }
+          try await onApplyInterfaceLanguage { [self] in advanceAfterCommit() }
+        } catch {
+          lastError = (error as? InterfaceLanguageRestartError ?? .unavailable)
+            .message(locale: interfaceLocale)
+        }
+      }
+      return
+    }
     if step == .apiKey, apiKeySaveAvailable,
       !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     {
@@ -448,7 +487,7 @@ final class OnboardingViewModel: ObservableObject {
   }
 
   func back() {
-    guard !providerMutationPending else { return }
+    guard !providerMutationPending, !applyingInterfaceLanguage else { return }
     guard let prev = prevVisibleIndex(before: stepIndex) else { return }
     stepIndex = prev
     persistProgress()
@@ -508,7 +547,7 @@ final class OnboardingViewModel: ObservableObject {
   }
 
   func finish() {
-    guard !providerMutationPending else { return }
+    guard !providerMutationPending, !applyingInterfaceLanguage else { return }
     engine.markOnboardingDone()
     onFinished?()
   }

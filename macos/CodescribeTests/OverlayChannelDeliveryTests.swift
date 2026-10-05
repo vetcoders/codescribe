@@ -386,6 +386,38 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(calls, [1, 3], "both directions use the same per-digit toggle intent")
   }
 
+  func testMonitorSeparatesCurrentOwnerFromSameNamedSavedConversation() throws {
+    func conversation(session: String, lease: String) throws -> OverlayConversation {
+      let owner = try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": session, "lease_id": lease,
+          "channel": "3", "name": "astra",
+        ]))
+      return OverlayConversation(
+        id: owner.id, channel: "3", name: "astra", owner: owner, messages: [])
+    }
+    let old = try conversation(session: "previous", lease: String(repeating: "a", count: 32))
+    let current = try conversation(session: "current", lease: String(repeating: "b", count: 32))
+    let hud = OverlayChannelHudProjection(
+      open: false, loud: false,
+      autosealDeadline: nil, followerAlive: true, provider: "codex", providerSessionID: "current")
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false,
+      palette: .dark, animates: false,
+      hudStates: ["3": hud], conversations: [old, current])
+    XCTAssertEqual(view.currentConversations.map(\.id), [current.id])
+    XCTAssertEqual(view.savedConversations.map(\.id), [old.id])
+    XCTAssertEqual(view.conversations.count, 2, "Rendering does not merge histories by name")
+    let sameSession = try conversation(session: "current", lease: String(repeating: "c", count: 32))
+    let ambiguous = OverlayChannelStatusView(
+      channels: [], unavailable: false,
+      palette: .dark, animates: false,
+      hudStates: ["3": hud], conversations: [current, sameSession])
+    XCTAssertTrue(
+      ambiguous.currentConversations.isEmpty, "The roster has no lease authority to choose")
+    XCTAssertEqual(ambiguous.savedConversations.count, 2)
+  }
+
   func testRosterClickWithoutBridgeActionDoesNotStartAnyAgent() {
     let channel = OverlayChannelDelivery(
       channel: "2", agent: "miron", deliveryID: nil, stage: nil, isOpen: false)
