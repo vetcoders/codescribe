@@ -38,6 +38,17 @@
         }
       }
     },
+    "%@ - Agent reply ready" : {
+      "comment" : "Menu bar tooltip while an unread agent reply waits; %@ is the status tooltip",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ – odpowiedź Agenta gotowa"
+          }
+        }
+      }
+    },
     "%@ - agent reply ready" : {
       "comment" : "Menu bar tooltip while an unread agent reply waits; %@ is the status tooltip",
       "localizations" : {
@@ -1930,7 +1941,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zapytania agenta i asystenta głosowego"
+            "value" : "Zapytania Agenta i asystenta głosowego"
           }
         }
       }
@@ -2062,7 +2073,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zapisane dane uwierzytelniające dostawcy agenta i połączeń MCP zostaną trwale usunięte."
+            "value" : "Zapisane dane uwierzytelniające dostawcy Agenta i połączeń MCP zostaną trwale usunięte."
           }
         }
       }
@@ -2072,7 +2083,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Gotowość agenta"
+            "value" : "Gotowość Agenta"
           }
         }
       }
@@ -2112,7 +2123,17 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Foldery z projektami agenta"
+            "value" : "Foldery z projektami Agenta"
+          }
+        }
+      }
+    },
+    "Agent · %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent · %@"
           }
         }
       }
@@ -2549,6 +2570,16 @@
         }
       }
     },
+    "Attach images to send to the Agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Załącz obrazy dla Agenta."
+          }
+        }
+      }
+    },
     "Attach images to send to the agent" : {
       "localizations" : {
         "pl" : {
@@ -2750,6 +2781,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wielkość domyślna. W trybie agentowym wskaźnik jest proporcjonalnie większy."
+          }
+        }
+      }
+    },
+    "Base system prompt for the Agent (assistive.txt)" : {
+      "comment" : "assistive.txt is a file name — do not translate",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podstawowy prompt systemowy Agenta (assistive.txt)"
           }
         }
       }
@@ -3089,6 +3131,16 @@
         }
       }
     },
+    "Capture is live and the words go to the Agent." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nagrywanie trwa, a rozpoznany tekst trafia do Agenta."
+          }
+        }
+      }
+    },
     "Capture is live and the words go to the agent." : {
       "localizations" : {
         "pl" : {
@@ -3338,6 +3390,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wybierz automatyczne wykrywanie albo model dopasowany do języka"
+          }
+        }
+      }
+    },
+    "Choose the Agent model" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz model Agenta"
           }
         }
       }
@@ -4947,6 +5009,26 @@
         }
       }
     },
+    "Directories the Agent may read and write. Everything outside them is out of reach." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Foldery, w których Agent może odczytywać i zapisywać dane. Wszystko poza nimi jest niedostępne."
+          }
+        }
+      }
+    },
+    "Directories the Agent scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "W tych folderach Agent szuka repozytoriów Git, aby ustalić ścieżkę projektu. (list_projects). Przeszukuje też podfoldery, do kilku poziomów w głąb. Pomija foldery ukryte i foldery z plikami kompilacji."
+          }
+        }
+      }
+    },
     "Directories the agent may read and write. Everything outside them is out of reach." : {
       "localizations" : {
         "pl" : {
@@ -5438,6 +5520,16 @@
         }
       }
     },
+    "Export Agent replies only" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eksportuj tylko odpowiedzi Agenta"
+          }
+        }
+      }
+    },
     "Export assistant replies only" : {
       "localizations" : {
         "pl" : {
@@ -5487,6 +5579,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Eksporty trafiają do folderu Transkrypcje"
+          }
+        }
+      }
+    },
+    "External MCP servers the Agent can call, and their transports." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zewnętrzne serwery MCP dostępne dla Agenta i sposoby łączenia się z nimi."
           }
         }
       }
@@ -5580,6 +5682,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zakończ nagrywanie"
+          }
+        }
+      }
+    },
+    "Finish recording or the Agent’s turn, then try again. Your language choice is saved." : {
+      "comment" : "Language restart refused while the app is busy",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zakończ nagrywanie lub poczekaj na zakończenie pracy Agenta i spróbuj ponownie. Wybrany język został zapisany."
           }
         }
       }
@@ -6843,6 +6956,16 @@
         }
       }
     },
+    "MCP servers extend the Agent with extra tools like code search, PR review, or web search. Add your first server below, or skip it and wire one any time." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Serwery MCP dają Agentowi dodatkowe narzędzia, np. wyszukiwanie w kodzie, przegląd PR albo wyszukiwanie w sieci. Dodaj pierwszy serwer poniżej albo pomiń ten krok i podłącz go w dowolnej chwili."
+          }
+        }
+      }
+    },
     "MCP servers extend the agent with extra tools like code search, PR review, or web search. Add your first server below, or skip it and wire one any time." : {
       "localizations" : {
         "pl" : {
@@ -7035,6 +7158,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Nie udało się wysłać wiadomości. Twój szkic został zachowany."
+          }
+        }
+      }
+    },
+    "Message the Agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Napisz do Agenta"
           }
         }
       }
@@ -7624,7 +7757,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie ma obecnie zapisanych danych uwierzytelniających dostawcy agenta ani połączeń MCP."
+            "value" : "Nie ma obecnie zapisanych danych uwierzytelniających dostawcy Agenta ani połączeń MCP."
           }
         }
       }
@@ -7889,6 +8022,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "nie wybrano tekstu"
+          }
+        }
+      }
+    },
+    "No tools registered yet — open the Agent once or add an MCP server." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie ma jeszcze żadnych zarejestrowanych narzędzi. Otwórz Agenta lub dodaj serwer MCP."
           }
         }
       }
@@ -9492,6 +9635,17 @@
         }
       }
     },
+    "Recording for the Agent" : {
+      "comment" : "Recording light state",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nagrywanie dla Agenta"
+          }
+        }
+      }
+    },
     "Recording for the agent" : {
       "comment" : "Recording light state",
       "localizations" : {
@@ -10101,7 +10255,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Reset danych agenta"
+            "value" : "Reset danych Agenta"
           }
         }
       }
@@ -10111,7 +10265,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wyzeruj dane agenta. Uwaga: operacja usuwa dane."
+            "value" : "Wyzeruj dane Agenta. Uwaga: operacja usuwa dane."
           }
         }
       }
@@ -10121,7 +10275,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wyzerować dane agenta?"
+            "value" : "Wyzerować dane Agenta?"
           }
         }
       }
@@ -10131,7 +10285,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wyzeruj dane agenta…"
+            "value" : "Wyzeruj dane Agenta…"
           }
         }
       }
@@ -10599,6 +10753,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zapisywane w settings.json. Jeśli urządzenie przestanie być dostępne, aplikacja bezpiecznie przełączy się na domyślne urządzenie systemowe."
+          }
+        }
+      }
+    },
+    "Saved the Agent replies as %@ in %@." : {
+      "comment" : "Placeholders: file name, then folder path",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Saved the Agent replies as %@ in %@."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odpowiedzi Agenta zapisano w folderze %2$@ jako plik %1$@."
           }
         }
       }
@@ -11170,7 +11341,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pokaż agenta"
+            "value" : "Pokaż Agenta"
           }
         }
       }
@@ -11313,7 +11484,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pokazuje zakres zmian dotyczących tylko agenta i wymaga wpisania %@ przed kontynuowaniem."
+            "value" : "Pokazuje zakres zmian dotyczących tylko Agenta i wymaga wpisania %@ przed kontynuowaniem."
           }
         }
       }
@@ -12553,7 +12724,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Narzędzia terminala i procesów zawsze wymagają „Zezwól raz”. Polecenia i ścieżki są ograniczone do folderów z projektami agenta."
+            "value" : "Narzędzia terminala i procesów zawsze wymagają „Zezwól raz”. Polecenia i ścieżki są ograniczone do folderów z projektami Agenta."
           }
         }
       }

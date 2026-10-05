@@ -32,7 +32,7 @@ enum ComposerPaletteCommand: String, CaseIterable, Equatable {
 
   var summary: String {
     switch self {
-    case .model: String(localized: "Choose the assistant model")
+    case .model: String(localized: "Choose the Agent model")
     case .grants:
       String(
         localized: "Tools with “always allow”",

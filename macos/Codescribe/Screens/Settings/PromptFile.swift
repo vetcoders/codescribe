@@ -52,7 +52,7 @@ enum PromptFile: String, CaseIterable, Identifiable {
       )
     case .assistive:
       String(
-        localized: "Base system prompt for the voice assistant (assistive.txt)",
+        localized: "Base system prompt for the Agent (assistive.txt)",
         comment: "assistive.txt is a file name — do not translate"
       )
     }

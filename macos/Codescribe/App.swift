@@ -210,7 +210,7 @@ enum InterfaceLanguageRestartError: Error, Equatable {
     case .busy:
       return String(
         localized: LocalizedStringResource(
-          "Finish recording or the agent’s turn, then try again. Your language choice is saved.",
+          "Finish recording or the Agent’s turn, then try again. Your language choice is saved.",
           locale: locale, comment: "Language restart refused while the app is busy"))
     case .unavailable:
       return String(
@@ -865,7 +865,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     button.toolTip =
       hasUnreadAgentUpdate
       ? String(
-        localized: "\(tooltip) - agent reply ready",
+        localized: "\(tooltip) - Agent reply ready",
         comment: "Menu bar tooltip while an unread agent reply waits; %@ is the status tooltip")
       : tooltip
   }

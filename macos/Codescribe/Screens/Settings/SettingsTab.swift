@@ -93,14 +93,14 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentWorkspace:
       String(
         localized:
-          "Directories the agent may read and write. Everything outside them is out of reach."
+          "Directories the Agent may read and write. Everything outside them is out of reach."
       )
     case .agentStatus:
       String(localized: "What the local agent substrate can currently do, and why.")
     case .agentTools:
       String(localized: "Allow, ask, or deny — per tool. Deny wins over everything.")
     case .agentMcp:
-      String(localized: "External MCP servers the agent can call, and their transports.")
+      String(localized: "External MCP servers the Agent can call, and their transports.")
     case .dictationEngine:
       String(
         localized:

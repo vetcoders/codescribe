@@ -75,7 +75,7 @@ struct MCPServersSection: View {
         .font(CSFont.ui(12.5, .semibold))
         .foregroundStyle(Color.primary)
       Text(
-        "MCP servers extend the agent with extra tools like code search, PR review, or web search. Add your first server below, or skip it and wire one any time."
+        "MCP servers extend the Agent with extra tools like code search, PR review, or web search. Add your first server below, or skip it and wire one any time."
       )
       .font(CSFont.mono(11, .medium))
       .foregroundStyle(Color.secondary)

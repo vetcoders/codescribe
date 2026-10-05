@@ -560,7 +560,7 @@ struct Composer: View {
     panel.canChooseDirectories = false
     panel.canChooseFiles = true
     panel.prompt = String(localized: "Attach", comment: "Open panel confirm button")
-    panel.message = String(localized: "Attach images to send to the agent")
+    panel.message = String(localized: "Attach images to send to the Agent")
     // Restrict to the vision-supported image types the bridge actually loads.
     panel.allowedContentTypes = [.png, .jpeg, .gif, .webP, .bmp, .tiff]
     attachLog.info("pickAttachments: presenting NSOpenPanel (modeless begin)")

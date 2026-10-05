@@ -94,7 +94,7 @@ struct ToolPermissionsSection: View {
   }
 
   private var emptyCapabilities: some View {
-    Text("No tools registered yet — open the agent once or add an MCP server.")
+    Text("No tools registered yet — open the Agent once or add an MCP server.")
       .font(CSFont.mono(11, .medium))
       .foregroundStyle(Color.secondary)
       .padding(.vertical, 10)

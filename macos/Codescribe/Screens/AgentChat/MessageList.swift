@@ -1346,7 +1346,7 @@ private struct AssistantTurn: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       HStack(spacing: 8) {
-        Text("Assistant · \(message.timestamp)")
+        Text("Agent · \(message.timestamp)")
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textTertiary)
         speechButton

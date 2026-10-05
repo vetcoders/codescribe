@@ -191,6 +191,14 @@ requiring an older check with the same name is not proof of localization coverag
 The single invariant: **a string that reaches the screen, VoiceOver or a tooltip
 is born localized at the place where it is written as a literal.**
 
+Use **Agent** for the Codescribe mode, window and conversation partner in both
+English and Polish. Generic AI agents and external coding agents keep lowercase
+(`agent AI`, `agent`, `agentów`). An account used by Codescribe's Agent is an
+**Agent account** / **Konto Agenta**; API-key presence is a separate status.
+Onboarding copy changes ship together in English, Polish and the corresponding
+view. Each step presents one question or choice and at most one sentence of
+explanation; connection diagnostics belong in Settings › Agent.
+
 ### R1 — Literals passed straight to SwiftUI are already localized
 
 `Text("Save")`, `Button("Cancel")`, `Label("History", systemImage: …)`,
