@@ -1751,6 +1751,10 @@ mod tests {
         let (binding, channel_bus) = write_dedicated_binding(dir.path());
         let shared_bus = dir.path().join("shared.jsonl");
         open_stamped(&controller, &binding, &shared_bus, "agent-channel-3-cancel").await;
+        let original = controller
+            .agent_channel_snapshot(3)
+            .await
+            .expect("original owner");
         let serial = controller.serial_lock.lock().await;
         let pending_controller = Arc::clone(&controller);
         let event = |action| HotkeyInput {
@@ -1789,7 +1793,17 @@ mod tests {
         assert_eq!(controller.current_state().await, State::Idle);
         assert!(controller.session_id.read().await.is_none());
         assert!(controller.hold_start_task.lock().await.is_none());
-        assert!(controller.agent_channel_snapshot(3).await.is_some());
+        let retained = controller
+            .agent_channel_snapshot(3)
+            .await
+            .expect("retained owner");
+        assert_eq!(retained.session_id, original.session_id);
+        assert_eq!(
+            retained.session_id.as_deref(),
+            Some("agent-channel-3-cancel")
+        );
+        assert_eq!(retained.provider_session_id, original.provider_session_id);
+        assert_eq!(retained.audience, original.audience);
         assert!(
             bus_rows(&channel_bus).is_empty(),
             "cancelled admission cannot hang up the channel"
