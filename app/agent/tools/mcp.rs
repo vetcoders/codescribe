@@ -254,8 +254,9 @@ const AGENTIC_PREREQS: &[(&str, &str)] = &[
 ];
 
 /// Core capability gate — the REAL ability of the agent to act. This is the only
-/// input that decides `ready`: an available assistive-lane provider request
-/// (account access, API key, or a key-optional provider), the native tool set, and exact agreement between
+/// input that decides `ready`: a usable sealed assistive lane with current
+/// credential access (account access, API key, or a key-optional provider),
+/// the native tool set, and exact agreement between
 /// the persisted Settings roots and the roots resolved by native tools. Operator
 /// tooling (MCP servers) is informational and never enters this verdict.
 #[derive(Debug, Clone)]
@@ -264,7 +265,7 @@ pub struct CoreReadiness {
     pub provider_label: String,
     /// Keychain/env account holding that provider's assistive key.
     pub key_env_key: String,
-    /// Whether a request can use account access, an API key, or a key-optional provider.
+    /// Whether the sealed lane is usable and a request has credential access.
     pub provider_access_available: bool,
     /// Number of native (compiled-in) tools available to the agent.
     pub native_tool_count: usize,
@@ -285,7 +286,7 @@ pub fn probe_core_readiness(runtime_settings: &RuntimeSettingsSnapshot) -> CoreR
     assemble_core_readiness(
         assistive_lane.provider_display_name().to_string(),
         assistive_lane.credential().key_account().to_string(),
-        assistive_lane.request_available(),
+        assistive_lane.available() && assistive_lane.request_available(),
         configured_workspace_roots,
         tool_workspace_roots,
     )
@@ -1652,6 +1653,37 @@ mod tests {
         );
         assert!(!core.provider_label.is_empty());
         assert!(!core.key_env_key.is_empty());
+    }
+
+    #[test]
+    fn core_readiness_requires_a_model_for_a_key_optional_custom_provider() {
+        use codescribe_core::config::{CapturedRuntimeInputs, Config};
+        use codescribe_core::llm::provider::{CustomProvider, WireFamily};
+
+        let root = tempfile::tempdir().expect("isolated runtime root");
+        let mut input = CapturedRuntimeInputs::defaults_at(root.path().to_path_buf(), 1);
+        let provider = CustomProvider::new(
+            "Readiness fixture",
+            WireFamily::OpenAiResponses,
+            "http://localhost:8080/v1",
+        )
+        .expect("valid custom provider");
+        input.user_settings.llm_assistive_provider = Some(format!("custom:{}", provider.id));
+        input.user_settings.llm_custom_providers = vec![provider];
+
+        let without_model = Config::runtime_snapshot_from_captured(input.clone());
+        let lane = without_model.llm_lanes().assistive();
+        assert!(lane.request_available(), "the custom endpoint needs no key");
+        assert!(!lane.available(), "the loader refuses a missing model");
+        assert!(
+            !super::probe_core_readiness(&without_model).provider_access_available,
+            "credential access alone cannot make an unusable lane ready"
+        );
+
+        input.user_settings.llm_assistive_model = Some("fixture-model".to_string());
+        let with_model = Config::runtime_snapshot_from_captured(input);
+        assert!(with_model.llm_lanes().assistive().available());
+        assert!(super::probe_core_readiness(&with_model).provider_access_available);
     }
 
     /// A passing core gate is READY with zero operator MCP tooling; MCP absence

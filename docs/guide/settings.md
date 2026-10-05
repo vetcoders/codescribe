@@ -176,6 +176,8 @@ only a short ready state or an inline setup action and error. The preceding
 provider step presents account and API-key presence from the provider credential
 snapshot; diagnostic readiness describes usable provider access and must not be
 read as proof that an API key exists.
+Readiness also requires the loader's sealed lane to be usable, including a
+selected model for a custom provider. A key-optional endpoint alone is not ready.
 An unresolved, pending or failed provider read cannot show a ready verdict.
 Switching providers preserves separate drafts while collapsing the optional
 key editor; Continue saves a draft only while that editor is visible. A restored
