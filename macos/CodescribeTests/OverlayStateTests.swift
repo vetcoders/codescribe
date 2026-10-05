@@ -359,7 +359,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.selectedConversationID, "0")
   }
 
-  func testNewestMessagesAppearFirstAndFivePhysicalOccurrencesRemainDistinct() throws {
+  func testNewestMessagesAppearLastAndFivePhysicalOccurrencesRemainDistinct() throws {
     var bus = OverlayChannelDelivery.Bus()
     for index in 0..<5 {
       bus.consume([
@@ -382,9 +382,9 @@ final class OverlayStateTests: XCTestCase {
       conversation: all, palette: .dark, topInset: 50,
       bottomInset: 20, pendingControls: [], controlErrors: [:], onControl: { _, _ in },
       onShowMonitor: {}, draft: .constant(""), sending: false, sendError: nil, onSend: {})
-    XCTAssertEqual(view.newestMessages.map(\.order), [5, 4, 3, 2, 1])
-    XCTAssertEqual(Set(view.newestMessages.map(\.id)).count, 5)
-    XCTAssertEqual(view.newestMessages.map(\.text), Array(repeating: "Iwo", count: 5))
+    XCTAssertEqual(view.orderedMessages.map(\.order), [1, 2, 3, 4, 5])
+    XCTAssertEqual(Set(view.orderedMessages.map(\.id)).count, 5)
+    XCTAssertEqual(view.orderedMessages.map(\.text), Array(repeating: "Iwo", count: 5))
     XCTAssertEqual(
       all.messages.map(\.order), [1, 2, 3, 4, 5],
       "presentation must not reorder the canonical observer")

@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// Paints the passive observer's immutable conversation projection.
@@ -18,72 +17,117 @@ struct OverlayConversationView: View {
   let sendError: String?
   let onSend: () -> Void
 
-  var newestMessages: [OverlayConversationMessage] { Array(conversation.messages.reversed()) }
+  @State private var followsLatest = true
+
+  var orderedMessages: [OverlayConversationMessage] { conversation.messages }
 
   var body: some View {
-    VStack(spacing: 8) {
-      ScrollViewReader { proxy in
-        ScrollView {
-          LazyVStack(alignment: .leading, spacing: 14) {
-            Color.clear.frame(height: topInset).id("conversation-top")
-            Button("Capture channels", systemImage: "chevron.left", action: onShowMonitor)
-              .buttonStyle(.plain)
-              .accessibilityIdentifier("overlay-conversation-back")
-            if conversation.channel == "0" {
-              Text("0 · All").font(.headline)
-            } else {
-              Text(verbatim: conversation.name).font(.headline)
+    GeometryReader { geometry in
+      VStack(spacing: 10) {
+        navigation
+          .padding(.top, topInset)
+        ScrollViewReader { proxy in
+          trackedMessages(maxBubbleWidth: max(0, min(660, (geometry.size.width - 40) * 0.82)))
+            .onAppear { scrollToLatest(proxy) }
+            .onChange(of: conversation.id) { _, _ in scrollToLatest(proxy) }
+            .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
+            .onChange(of: orderedMessages.last) { _, _ in
+              if followsLatest || followsLiveChannel { scrollToLatest(proxy) }
             }
-            if let owner = conversation.owner {
-              Text(verbatim: "\(owner.provider) · \(owner.providerSessionID)")
-                .font(.caption)
-                .foregroundStyle(palette.mutedText.color)
-                .textSelection(.enabled)
-            }
-            if conversation.messages.isEmpty {
-              Text("No conversation messages yet")
-                .foregroundStyle(palette.mutedText.color)
-            }
-            ForEach(newestMessages) { message in
-              messageRow(message)
-            }
-          }
+        }
+        if conversation.owner != nil {
+          OverlayConversationComposer(
+            palette: palette, draft: $draft, sending: sending, onSubmit: submit
+          )
           .padding(.horizontal, 20)
-          .padding(.bottom, bottomInset)
-          .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .onAppear { scrollToLatest(proxy) }
-        .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
-        .onChange(of: newestMessages.first?.id) { _, _ in
-          if followsLiveChannel { scrollToLatest(proxy) }
+          if let sendError {
+            Text(verbatim: sendError).font(.caption).foregroundStyle(palette.errorStatus.color)
+              .padding(.horizontal, 20)
+          }
         }
       }
-      if conversation.owner != nil {
-        HStack(alignment: .center, spacing: 10) {
-          ConversationMessageField(text: $draft)
-            .frame(height: 32)
-            .accessibilityIdentifier("overlay-conversation-composer")
-          Button("Send", systemImage: "paperplane.fill", action: onSend)
-            .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .accessibilityIdentifier("overlay-conversation-send")
-        }
-        .padding(.horizontal, 20)
-        if let sendError {
-          Text(verbatim: sendError).font(.caption).foregroundStyle(palette.errorStatus.color)
-            .padding(.horizontal, 20)
-        }
-      }
+      .padding(.bottom, bottomInset)
+      .foregroundStyle(palette.primaryText.color)
     }
-    .padding(.bottom, bottomInset)
-    .foregroundStyle(palette.primaryText.color)
     .accessibilityIdentifier("overlay-conversation-body")
   }
 
-  private func scrollToLatest(_ proxy: ScrollViewProxy) {
-    proxy.scrollTo("conversation-top", anchor: .top)
+  private var navigation: some View {
+    HStack {
+      Button("Capture channels", systemImage: "chevron.left", action: onShowMonitor)
+        .buttonStyle(.plain)
+        .font(.caption)
+        .accessibilityIdentifier("overlay-conversation-back")
+      Spacer()
+      if conversation.channel == "0" {
+        Text("0 · All").font(.headline)
+      } else {
+        Text(verbatim: conversation.name).font(.headline)
+          .help(
+            Text(
+              verbatim: conversation.owner.map { "\($0.provider) · \($0.providerSessionID)" } ?? "")
+          )
+      }
+    }
+    .padding(.horizontal, 20)
   }
 
-  private func messageRow(_ message: OverlayConversationMessage) -> some View {
+  @ViewBuilder
+  private func trackedMessages(maxBubbleWidth: CGFloat) -> some View {
+    if #available(macOS 15.0, *) {
+      messageList(maxBubbleWidth: maxBubbleWidth)
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+          geometry.visibleRect.maxY >= geometry.contentSize.height - 48
+        } action: { _, atBottom in
+          followsLatest = atBottom
+        }
+    } else {
+      messageList(maxBubbleWidth: maxBubbleWidth)
+    }
+  }
+
+  private func messageList(maxBubbleWidth: CGFloat) -> some View {
+    ScrollView {
+      LazyVStack(alignment: .leading, spacing: 12) {
+        if orderedMessages.isEmpty {
+          Text("No conversation messages yet")
+            .foregroundStyle(palette.mutedText.color)
+        }
+        ForEach(orderedMessages) { message in
+          messageRow(message, maxBubbleWidth: maxBubbleWidth)
+        }
+        Color.clear.frame(height: 1).id("conversation-bottom")
+      }
+      .padding(.horizontal, 20)
+      .padding(.vertical, 8)
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  private func submit() {
+    followsLatest = true
+    onSend()
+  }
+
+  private func scrollToLatest(_ proxy: ScrollViewProxy) {
+    followsLatest = true
+    proxy.scrollTo("conversation-bottom", anchor: .bottom)
+  }
+
+  private func messageRow(_ message: OverlayConversationMessage, maxBubbleWidth: CGFloat)
+    -> some View
+  {
+    HStack(alignment: .top, spacing: 0) {
+      if message.kind == .user { Spacer(minLength: 0) }
+      messageBubble(message)
+        .frame(maxWidth: maxBubbleWidth, alignment: message.kind == .user ? .trailing : .leading)
+      if message.kind == .reply { Spacer(minLength: 0) }
+    }
+    .frame(maxWidth: .infinity)
+    .id(message.id)
+  }
+
+  private func messageBubble(_ message: OverlayConversationMessage) -> some View {
     VStack(alignment: .leading, spacing: 5) {
       HStack {
         if message.kind == .user {
@@ -104,19 +148,19 @@ struct OverlayConversationView: View {
       }
       Text(verbatim: message.text)
         .textSelection(.enabled)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
         .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
       ForEach(message.recipients, id: \.owner.id) { recipient in
         VStack(alignment: .leading, spacing: 2) {
-          Text(
-            verbatim:
-              "\(recipient.owner.name) · \(recipient.owner.provider) · \(recipient.owner.providerSessionID)"
-          )
+          if conversation.channel == "0" { Text(verbatim: recipient.owner.name) }
           HStack(spacing: 8) {
-            if recipient.queued { Text("Queued") }
-            if recipient.accepted { Text("Queue accepted") }
-            if recipient.acknowledged { Text("Acknowledged") }
-            if !recipient.queued && !recipient.accepted && !recipient.acknowledged {
+            if recipient.acknowledged {
+              Text("Acknowledged")
+            } else if recipient.accepted {
+              Text("Queue accepted")
+            } else if recipient.queued {
+              Text("Queued")
+            } else {
               Text("Addressed")
             }
           }
@@ -150,11 +194,21 @@ struct OverlayConversationView: View {
         }
       }
     }
-    .padding(10)
+    .padding(12)
     .background(
-      palette.desktopBackground.color.opacity(0.65), in: RoundedRectangle(cornerRadius: 8)
+      message.kind == .user
+        ? CSColor.terracotta.opacity(palette.appearance == .dark ? 0.20 : 0.12)
+        : palette.primaryText.color.opacity(0.06),
+      in: RoundedRectangle(cornerRadius: 16, style: .continuous)
     )
-    .id(message.id)
+    .overlay {
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .strokeBorder(
+          message.kind == .user ? CSColor.terracotta.opacity(0.28) : palette.border.color,
+          lineWidth: 1
+        )
+        .allowsHitTesting(false)
+    }
   }
 
   private func playbackLabel(_ state: String) -> String {
@@ -184,38 +238,5 @@ struct OverlayConversationView: View {
       return matches.first { $0.id == occurrenceID }
     }
     return matches.count == 1 ? matches[0] : nil
-  }
-}
-
-/// Explicit text interaction opens the existing overlay keyboard gate.
-private struct ConversationMessageField: NSViewRepresentable {
-  @Binding var text: String
-  func makeCoordinator() -> Coordinator { Coordinator(self) }
-  func makeNSView(context: Context) -> NSTextField {
-    let field = MessageField()
-    field.placeholderString = String(localized: "Message the agent")
-    field.isEditable = true
-    field.isSelectable = true
-    field.delegate = context.coordinator
-    field.font = .systemFont(ofSize: 14)
-    field.focusRingType = .none
-    return field
-  }
-  func updateNSView(_ field: NSTextField, context: Context) {
-    context.coordinator.parent = self
-    if field.stringValue != text { field.stringValue = text }
-  }
-  final class Coordinator: NSObject, NSTextFieldDelegate {
-    var parent: ConversationMessageField
-    init(_ parent: ConversationMessageField) { self.parent = parent }
-    func controlTextDidChange(_ notification: Notification) {
-      if let field = notification.object as? NSTextField { parent.text = field.stringValue }
-    }
-  }
-  private final class MessageField: NSTextField {
-    override func mouseDown(with event: NSEvent) {
-      (window as? FloatingOverlayPanel)?.takeKeyForTranscript()
-      super.mouseDown(with: event)
-    }
   }
 }
