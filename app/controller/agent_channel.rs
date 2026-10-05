@@ -20,6 +20,7 @@ use codescribe_core::config::Config;
 use codescribe_core::pipeline::acoustic_ledger::AcousticLedger;
 use codescribe_core::pipeline::contracts::EventSink;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::audio::streaming_recorder::CaptureSubscriberId;
@@ -119,6 +120,67 @@ impl BindingEntry {
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
     }
+}
+
+/// Freeze only concrete bridge owners admitted before this capture starts.
+/// Reading this snapshot never acknowledges a delivery or starts a follower.
+fn frozen_channel_recipients(digit: u8, binding: &Path, shared_bus: &Path) -> Vec<serde_json::Value> {
+    let Ok(file) = load_binding(binding) else {
+        return Vec::new();
+    };
+    let root = binding.parent().unwrap_or_else(|| Path::new("."));
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or(0.0);
+    let mut recipients = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (channel, entry) in &file.bindings {
+        if channel.len() != 1
+            || !channel.bytes().all(|byte| (b'1'..=b'9').contains(&byte))
+            || (digit != 0 && channel != &digit.to_string())
+        {
+            continue;
+        }
+        let provider = entry.provider.trim().to_lowercase();
+        let session = entry.provider_session_id.trim();
+        if provider.is_empty() || session.is_empty() {
+            continue;
+        }
+        let identity = format!("{provider}\0{session}");
+        let lease_id = hex::encode(Sha256::digest(identity.as_bytes()))[..32].to_string();
+        let lease_path = root.join("leases").join(format!("{lease_id}.json"));
+        let lease: serde_json::Value = (|| {
+            use std::io::Read;
+            let file = std::fs::File::open(&lease_path).ok()?;
+            if file.metadata().ok()?.len() > 16 << 20 {
+                return None;
+            }
+            serde_json::from_reader(file.take(16 << 20)).ok()
+        })()
+        .unwrap_or(serde_json::Value::Null);
+        let age = now - lease["heartbeat_unix"].as_f64().unwrap_or(f64::NEG_INFINITY);
+        let bus = entry.bus().unwrap_or_else(|| shared_bus.to_path_buf());
+        let bus = bus.canonicalize().unwrap_or(bus);
+        if lease["schema"] != "codescribe.agent-bridge.lease.v1"
+            || lease["active"] != true
+            || !age.is_finite()
+            || age < 0.0
+            || age > active_names::LEASE_TTL_SECONDS
+            || lease["provider"] != provider
+            || lease["provider_session_id"] != session
+            || lease["lease_id"] != lease_id
+            || lease["bus"].as_str() != bus.to_str()
+            || !seen.insert(lease_id.clone())
+        {
+            continue;
+        }
+        recipients.push(serde_json::json!({
+            "channel": channel, "name": entry.audience.trim(), "audience": entry.audience.trim(),
+            "provider": provider, "provider_session_id": session, "lease_id": lease_id, "bus": bus,
+        }));
+    }
+    recipients
 }
 
 #[derive(Debug, Clone)]
@@ -549,21 +611,24 @@ impl RecordingController {
         }
 
         let bound = resolve_digit(digit, binding_file).map_err(refusal)?;
-        // Fn+0 always includes the shared bus. Freeze the binding's distinct
-        // dedicated paths for this take so hang-up closes the same destinations.
+        let mut recipients = frozen_channel_recipients(digit, binding_file, shared_bus);
+        if digit != 0 {
+            recipients.retain(|recipient| {
+                recipient["provider"].as_str() == bound.provider.as_deref()
+                    && recipient["provider_session_id"].as_str()
+                        == bound.provider_session_id.as_deref()
+                    && recipient["audience"].as_str() == Some(bound.audience.as_str())
+            });
+        }
+        // Fn+0 includes the shared bus and the admitted owners' destinations.
         let mut broadcast_buses = Vec::new();
         if digit == 0 {
-            match load_binding(binding_file) {
-                Ok(binding) => {
-                    for bus in binding.bindings.values().filter_map(BindingEntry::bus) {
-                        if bus != shared_bus && !broadcast_buses.contains(&bus) {
-                            broadcast_buses.push(bus);
-                        }
-                    }
-                }
-                Err(ChannelOpenRefusal::BindingMissing { .. }) => {}
-                Err(error) => {
-                    tracing::warn!(%error, "broadcast could not read dedicated destinations; shared bus remains active")
+            for recipient in &recipients {
+                if let Some(bus) = recipient["bus"].as_str().map(PathBuf::from)
+                    && bus != shared_bus
+                    && !broadcast_buses.contains(&bus)
+                {
+                    broadcast_buses.push(bus);
                 }
             }
         }
@@ -614,6 +679,12 @@ impl RecordingController {
                         .unwrap_or_else(|| shared_bus.to_path_buf()),
                     broadcast_buses,
                 ));
+                bus.record_channel_receipt(&serde_json::json!({
+                    "schema": "codescribe.channel-recipients.v1", "kind": "channel_recipients",
+                    "session_id": session_label, "channel": digit.to_string(),
+                    "audience": bound.audience, "recipients": recipients,
+                    "emitted_at": chrono::Utc::now().to_rfc3339(),
+                }));
                 transcript_bus = Some(Arc::clone(&bus));
                 // The Pointer Indicator knob rules every badge path: Settings
                 // promises "Base size; Agent mode stays proportionally larger",
@@ -1072,7 +1143,25 @@ impl RecordingController {
         for state in &mut states {
             state.follower_alive = alive(&state.provider, &state.provider_session_id);
         }
+        if !states.iter().any(|state| state.channel == "0") {
+            states.push(ChannelHudState {
+                open: false,
+                loud: false,
+                channel: "0".into(),
+                audience: BROADCAST_AUDIENCE.into(),
+                label: String::new(),
+                autoseal_secs: 0,
+                autoseal_deadline: None,
+                tts_ducking: false,
+                opened_at: SystemTime::UNIX_EPOCH,
+                utterance_silence_ms: 0,
+                provider: None,
+                provider_session_id: None,
+                follower_alive: None,
+            });
+        }
         let Ok(file) = load_binding(binding) else {
+            states.sort_by(|a, b| a.channel.cmp(&b.channel));
             return states;
         };
         for (digit, entry) in &file.bindings {

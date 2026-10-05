@@ -364,6 +364,48 @@ pub fn append(path: &Path, shared: &Arc<Mutex<File>>, bytes: &[u8]) -> io::Resul
     Ok(())
 }
 
+/// A durable append receipt uses the logical stream clock, across rollover.
+#[derive(Debug, Serialize)]
+pub struct BusAppendReceipt {
+    pub stream_id: String,
+    pub stream_dev: u64,
+    pub stream_inode: u64,
+    pub offset: u64,
+    pub length: u64,
+}
+
+/// Reply text must reach the same private journal authority before speech.
+/// Keep descriptor refresh, coordinates, write and durability under its lease.
+pub fn append_durable(
+    path: &Path,
+    shared: &Arc<Mutex<File>>,
+    bytes: &[u8],
+) -> io::Result<BusAppendReceipt> {
+    let mut file = shared.lock().unwrap_or_else(|error| error.into_inner());
+    let lease = Lease::acquire(path)?;
+    let closed = prepare_append(path, &mut file)?;
+    let manifest = view(path)?.ok_or_else(invalid)?;
+    let offset = manifest
+        .active
+        .start
+        .checked_add(file.metadata()?.len())
+        .ok_or_else(invalid)?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    file.sync_all()?;
+    let receipt = BusAppendReceipt {
+        stream_id: manifest.stream_id,
+        stream_dev: manifest.stream_dev,
+        stream_inode: manifest.stream_inode,
+        offset,
+        length: bytes.len() as u64,
+    };
+    drop(lease);
+    drop(file);
+    schedule_archives(path, closed);
+    Ok(receipt)
+}
+
 #[derive(Default)]
 struct ArchiveWork {
     pending: HashSet<String>,

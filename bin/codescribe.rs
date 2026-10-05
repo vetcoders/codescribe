@@ -126,6 +126,11 @@ enum Command {
 
 #[derive(Subcommand)]
 enum BusAction {
+    /// Append one owned agent reply or playback receipt through the private journal
+    AppendEvent {
+        #[arg(long)]
+        bus: std::path::PathBuf,
+    },
     /// Size, composition and span of the bus
     Status,
     /// Plan an explicit historical source; --stage prepares isolated daily files.
@@ -365,6 +370,24 @@ fn run_bus(action: BusAction) -> anyhow::Result<()> {
 
     let path = codescribe::presentation::transcript_bus::transcript_bus_path();
     match action {
+        BusAction::AppendEvent { bus } => {
+            use std::io::Read;
+            const LIMIT: u64 = 16 << 20;
+            let mut bytes = Vec::new();
+            std::io::stdin()
+                .lock()
+                .take(LIMIT + 1)
+                .read_to_end(&mut bytes)?;
+            anyhow::ensure!(
+                bytes.len() as u64 <= LIMIT,
+                "agent event exceeds input limit"
+            );
+            let event: serde_json::Value = serde_json::from_slice(&bytes)?;
+            let receipt =
+                codescribe::presentation::transcript_bus::append_agent_event(&bus, &event)?;
+            println!("{}", serde_json::to_string(&receipt)?);
+            Ok(())
+        }
         BusAction::PrepareMigration {
             source,
             out,

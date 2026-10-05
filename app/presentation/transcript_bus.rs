@@ -893,6 +893,8 @@ impl std::fmt::Debug for TranscriptBus {
 /// One lock orders live lifecycle and projections. Sequence is in-process
 /// publication order, never an acknowledgment of file persistence or delivery.
 struct TranscriptBusWriter {
+    /// Capture-time recipients are metadata, never transcript identity.
+    channel_recipients: Option<serde_json::Value>,
     /// Disabled for the rest of this session after any uncertain append.
     file: Option<Box<dyn Write + Send>>,
     sequence: u64,
@@ -949,6 +951,61 @@ pub(crate) fn open_bus_append_file(path: &Path) -> io::Result<File> {
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(file)
+}
+
+/// Narrow external reply publication. Transcript authority remains reducer-only.
+pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<serde_json::Value> {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "invalid agent reply event");
+    if !path.is_absolute() || !event.is_object() {
+        return Err(invalid());
+    }
+    let text_field = |key: &str| event[key].as_str().filter(|value| !value.trim().is_empty());
+    let identity_field = |key: &str| {
+        text_field(key).is_some_and(|value| {
+            value.len() == 24 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    };
+    if !identity_field("reply_id")
+        || ["provider", "provider_session_id", "lease_id", "emitted_at"]
+            .iter()
+            .any(|key| text_field(key).is_none())
+    {
+        return Err(invalid());
+    }
+    match (event["schema"].as_str(), event["kind"].as_str()) {
+        (Some("codescribe.agent-reply.v1"), Some("agent_reply")) => {
+            if text_field("text").is_none()
+                || !matches!(
+                    event["association"].as_str(),
+                    Some("addressed" | "unsolicited")
+                )
+                || (event["association"] == "addressed" && text_field("delivery_id").is_none())
+                || (event["association"] == "unsolicited" && !event["delivery_id"].is_null())
+            {
+                return Err(invalid());
+            }
+        }
+        (Some("codescribe.agent-reply-playback.v1"), Some("agent_reply_playback")) => {
+            if !identity_field("playback_ticket")
+                || !matches!(
+                    event["state"].as_str(),
+                    Some("waiting" | "playing" | "spoken" | "failed" | "refused" | "stopped")
+                )
+                || event["spoken"].as_bool() != Some(event["state"] == "spoken")
+            {
+                return Err(invalid());
+            }
+        }
+        _ => return Err(invalid()),
+    }
+    let encoded = super::transcript_bus_maintenance::generation::encode(event)?;
+    if encoded.len() > 24 << 20 {
+        return Err(invalid());
+    }
+    let file = shared_bus_file(path)?;
+    let receipt =
+        super::transcript_bus_maintenance::generation::append_durable(path, &file, &encoded)?;
+    serde_json::to_value(receipt).map_err(io::Error::other)
 }
 
 struct SharedBusWriter(Arc<Mutex<File>>, PathBuf);
@@ -1516,6 +1573,13 @@ impl TranscriptBus {
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        if receipt["schema"] == "codescribe.channel-recipients.v1"
+            && receipt["session_id"] == self.session.session_id
+            && receipt["recipients"].is_array()
+            && writer.channel_recipients.is_none()
+        {
+            writer.channel_recipients = Some(receipt.clone());
+        }
         if let Err(error) = Self::append_projection_locked(&mut writer, receipt) {
             self.log_write_error(error);
         }
@@ -1530,6 +1594,7 @@ impl TranscriptBus {
             session,
             path,
             writer: Mutex::new(TranscriptBusWriter {
+                channel_recipients: None,
                 file,
                 sequence: 0,
                 started: false,
@@ -1971,7 +2036,16 @@ impl TranscriptBus {
             return Ok(());
         };
         let result = (|| {
-            let encoded = super::transcript_bus_maintenance::generation::encode(event)?;
+            let encoded = if let Some(recipients) = &writer.channel_recipients {
+                let mut value = serde_json::to_value(event).map_err(io::Error::other)?;
+                if let Some(fields) = value.as_object_mut() {
+                    fields.insert("recipients".into(), recipients["recipients"].clone());
+                    fields.insert("channel".into(), recipients["channel"].clone());
+                }
+                super::transcript_bus_maintenance::generation::encode(&value)?
+            } else {
+                super::transcript_bus_maintenance::generation::encode(event)?
+            };
             file.write_all(&encoded)?;
             file.flush()
         })();

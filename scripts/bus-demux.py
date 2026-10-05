@@ -71,6 +71,10 @@ ATTACH_SCHEMA = "codescribe.agent-bridge.attach.v1"
 EVENT_SCHEMA = "codescribe.agent-bridge.event.v1"
 ACTIVE_NAMES_SCHEMA = "codescribe.agent-bridge.active-names.v1"
 AGENT_REPLY_SCHEMA = "codescribe.agent-reply.v1"
+AGENT_REPLY_PLAYBACK_SCHEMA = "codescribe.agent-reply-playback.v1"
+REPLY_SOURCE_SCHEMA = "codescribe.agent-reply-source.v1"
+REPLY_CONTROL_SCHEMA = "codescribe.agent-reply-control.v1"
+REPLY_READ_LIMIT = 32 << 20
 AUDIENCE_BINDING_SCHEMA = "vc.agent-audience-binding.v1"
 AUDIENCE_BINDING_FILENAME = "vc.agent-audience-binding.v1.json"
 ATTACH_RECEIPT_SCHEMA = "codescribe.agent-bridge.attach-receipt.v1"
@@ -802,6 +806,9 @@ def slim(
         "state_change_allowed": status == SEALED
         and event.get("coverage") != COVERAGE_REFUSED,
     }
+    for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id"):
+        if key in event:
+            payload[key] = event[key]
     coverage = event.get("coverage")
     if isinstance(coverage, str) and coverage:
         payload["coverage"] = coverage
@@ -1135,17 +1142,10 @@ class EvidenceNormalizer:
         if not docs or session in self._settled_sessions:
             return
         self._settled_sessions.add(session)
-        seen_texts: set[str] = set()
         for doc_index, clean in sorted(docs.items(), key=lambda item: str(item[0])):
             text = clean.get("text") or ""
             if not text.strip():
                 continue
-            # Channel documents often re-project one full-session snapshot
-            # under several document indexes; identical words are one refused
-            # delivery, not N.
-            if text in seen_texts:
-                continue
-            seen_texts.add(text)
             # A stable per-document identity keys the delivery, so a bus
             # replay after restart is the same refused phase, not a repeat.
             identity = _identity(("coverage-refused-seal", session, doc_index))
@@ -1187,6 +1187,9 @@ class EvidenceNormalizer:
         audience = event.get("audience")
         if isinstance(audience, str) and audience:
             clean["audience"] = audience
+        for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id"):
+            if key in event:
+                clean[key] = event[key]
         return clean
 
 
@@ -1747,10 +1750,22 @@ class SessionLease:
         self.name = name.casefold()
         self.persist(active=True)
 
+    def admits_channel_event(self, event: dict[str, Any]) -> bool:
+        frozen = event.get("recipients")
+        expected = {"provider": self.provider, "provider_session_id": self.provider_session_id,
+                    "lease_id": self.lease_id, "bus": self.bus}
+        if isinstance(frozen, list):
+            return any(isinstance(owner, dict) and all(owner.get(key) == value
+                       for key, value in expected.items()) for owner in frozen)
+        if channel_of_session(str(event.get("session_id") or "")) is not None:
+            return all(event.get(key) == value for key, value in expected.items())
+        return frozen is None
+
     def enrich(self, payload: dict[str, Any]) -> None:
         payload["lease_id"] = self.lease_id
         payload["provider"] = self.provider
         payload["provider_session_id"] = self.provider_session_id
+        payload["bus"] = self.bus
         # A delivery belongs to one lease owner and one source-event phase.
         # This namespaces native bridge output away from a manual rail while
         # the lease lock refuses a simultaneous second native owner.
@@ -1812,7 +1827,8 @@ class SessionLease:
 
 def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str) -> bool:
     receipt = read_json(root / "acknowledgments" / lease_id / f"{delivery_id}.json")
-    return receipt == {"lease_id": lease_id, "delivery_id": delivery_id}
+    return bool(receipt and receipt.get("lease_id") == lease_id
+                and receipt.get("delivery_id") == delivery_id)
 
 
 def acknowledge_delivery(args: argparse.Namespace) -> int:
@@ -1843,6 +1859,8 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
             "acknowledgment does not belong to this provider session and bus"
         )
     pending = state.get("pending", [])
+    if not isinstance(pending, list) or any(not isinstance(item, dict) for item in pending):
+        raise ValueError("invalid pending mailbox; nothing acknowledged")
     pending_ids = (
         {
             payload.get("delivery_id")
@@ -1858,7 +1876,13 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
         if not delivery_acknowledged(args.bridge_home, lease_id, delivery_id)
     ]
     for delivery_id in unread:
-        if delivery_id not in pending_ids:
+        payload = next((item for item in pending if isinstance(item, dict)
+                        and item.get("delivery_id") == delivery_id), None)
+        if (delivery_id not in pending_ids or not payload
+                or payload.get("lease_id") != lease_id
+                or payload.get("provider") != args.provider.casefold()
+                or payload.get("provider_session_id") != args.session
+                or payload.get("bus", state["bus"]) != state["bus"]):
             raise ValueError(
                 f"delivery {delivery_id} is not pending for this provider session; "
                 "nothing acknowledged"
@@ -1866,7 +1890,13 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
     for delivery_id in unread:
         atomic_json(
             args.bridge_home / "acknowledgments" / lease_id / f"{delivery_id}.json",
-            {"lease_id": lease_id, "delivery_id": delivery_id},
+            {"lease_id": lease_id, "delivery_id": delivery_id,
+             "provider": args.provider.casefold(), "provider_session_id": args.session,
+             "bus": state["bus"],
+             "envelope": {key: value for key, value in
+                          next(payload for payload in pending
+                               if payload.get("delivery_id") == delivery_id).items()
+                          if key not in ("text", "wav")}},
         )
     for delivery_id in delivery_ids:
         emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id})
@@ -1958,7 +1988,8 @@ class NativeQueueWakeup:
             message = (
                 f"Codescribe channel {label} / {name}:\n{text}\n\n"
                 f"Receipt: {json.dumps(diagnostic, ensure_ascii=False)}\n"
-                "Reply using the attached voice profile. Acknowledge this delivery_id only after reading. "
+                "Reply using cs-say with --reply-to " + identity + " and the attached voice profile. "
+                "Acknowledge this delivery_id only after reading. "
                 "Coverage is a transcription diagnostic; use this conversation's normal task permissions."
             )
             receipt = {
@@ -2127,6 +2158,8 @@ def run(args: argparse.Namespace) -> int:
             return
         payloads: list[dict[str, Any]] = []
         for event in events:
+            if lease and not lease.admits_channel_event(event):
+                continue
             payload = consider(
                 event,
                 name=name,
@@ -2172,6 +2205,8 @@ def run(args: argparse.Namespace) -> int:
             for raw in replay(path):
                 events = normalized_revision_events(raw, normalizer)
                 for event in events:
+                    if lease and not lease.admits_channel_event(event):
+                        continue
                     payload = consider(
                         event,
                         name=name,
@@ -2521,6 +2556,7 @@ def _speak_xai(
     *,
     playback_root: Path | None = None,
     bus: Path | None = None,
+    control: ReplyPlaybackControl | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
     import urllib.request
@@ -2550,7 +2586,7 @@ def _speak_xai(
         data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
-    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus)
+    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus, control=control)
 
 
 def _speak_pcm(
@@ -2560,16 +2596,19 @@ def _speak_pcm(
     *,
     playback_root: Path | None = None,
     bus: Path | None = None,
+    control: ReplyPlaybackControl | None = None,
 ) -> tuple[bool, str | None, str | None]:
     if pcm is None:
         return False, error, reason
-    return _play_pcm_24k(pcm, playback_root=playback_root, bus=bus)
+    return _play_pcm_24k(pcm, playback_root=playback_root, bus=bus, control=control)
 
 
-def _acquire_playback_lock(descriptor: int) -> bool:
+def _acquire_playback_lock(descriptor: int, control: ReplyPlaybackControl | None = None) -> bool:
     """Bound the wait with a monotonic clock; the kernel owns exclusivity."""
     deadline = time.monotonic() + PLAYBACK_WAIT_SECONDS
     while True:
+        if control is not None and control.stopped():
+            return False
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return True
@@ -2727,13 +2766,16 @@ def installation_idle_with_checkpoint(bus: Path, *, bridge_root: Path) -> bool:
 
 
 def _wait_for_take_end(
-    bus: Path, cursor: dict[str, Any], *, bridge_root: Path | None = None
+    bus: Path, cursor: dict[str, Any], *, bridge_root: Path | None = None,
+    control: ReplyPlaybackControl | None = None,
 ) -> bool:
     deadline = time.monotonic() + TAKE_WAIT_SECONDS
     root = bridge_root if bridge_root is not None else bridge_home()
     if not cursor:
         cursor.update(_load_lifecycle_cursor(bus, root, deadline))
     while time.monotonic() < deadline:
+        if control is not None and control.stopped():
+            return False
         previous = (cursor.get("offset"), {
             source: state.get("offset")
             for source, state in cursor.get("channel_buses", {}).items()
@@ -2776,6 +2818,7 @@ def _play_pcm_24k(
     *,
     playback_root: Path | None = None,
     bus: Path | None = None,
+    control: ReplyPlaybackControl | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Prepare WAV independently, then serialize only playback across agents."""
     import subprocess
@@ -2801,17 +2844,24 @@ def _play_pcm_24k(
         lock_descriptor = os.open(
             runtime / "playback.lock", os.O_RDWR | os.O_CREAT, 0o600
         )
-        if not _acquire_playback_lock(lock_descriptor):
-            return False, "playback wait timed out", "playback_busy"
+        if not _acquire_playback_lock(lock_descriptor, control):
+            return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "playback wait timed out", "playback_busy")
         # A take may have started during synthesis or the lock wait.
         speech_bus = bus if bus is not None else bus_path()
         cursor: dict[str, Any] = {}
-        if not _wait_for_take_end(speech_bus, cursor, bridge_root=root):
-            return False, "live take wait timed out", "take_live"
+        if not _wait_for_take_end(speech_bus, cursor, bridge_root=root, control=control):
+            return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "live take wait timed out", "take_live")
+        if control is not None:
+            if control.stopped():
+                return False, "playback stopped", "stopped"
+            control.publish("playing")
         player = subprocess.Popen(
             ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         while True:
+            if control is not None and control.stopped():
+                _stop_playback(player)
+                return False, "playback stopped", "stopped"
             idle = installation_idle(
                 speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
                 deadline=time.monotonic() + PLAYBACK_POLL_SECONDS,
@@ -2848,6 +2898,7 @@ def _speak_openai(
     *,
     playback_root: Path | None = None,
     bus: Path | None = None,
+    control: ReplyPlaybackControl | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Same TTS lane as the app (api.openai.com/v1/audio/speech, PCM s16le 24 kHz)."""
     import urllib.request
@@ -2877,7 +2928,7 @@ def _speak_openai(
         data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
-    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus)
+    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus, control=control)
 
 
 def lease_name(root: Path, provider: str, session: str) -> str | None:
@@ -2895,48 +2946,316 @@ def lease_name(root: Path, provider: str, session: str) -> str | None:
     return name if isinstance(name, str) and name else None
 
 
-def say_reply(args: argparse.Namespace) -> int:
-    """Append one agent-reply row to the canonical Bus, then speak it.
+def read_reply_json(path: Path, limit: int = 16 << 20) -> dict[str, Any]:
+    """Bounded private receipt reads; never deserialize the live journal here."""
+    with path.open("rb") as handle:
+        raw = handle.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError("oversized reply receipt")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("invalid reply receipt")
+    return value
 
-    The Bus is the canonical relay for agent replies; xAI is only the speaker,
-    so a failed synthesis still lands the row (spoken=false with the error
-    and a ``reason`` enum the agent can act on).
-    """
+
+def reply_publisher_command(root: Path) -> str:
+    """Find the existing Rust command without depending on a GUI shell's PATH."""
+    import shutil
+
+    runtime = root / "runtime"
+    bundled = runtime / "bin" / "codescribe"
+    manifest_path = runtime / "manifest.json"
+    if bundled.is_file() and manifest_path.is_file():
+        manifest = read_reply_json(manifest_path, 4 << 20)
+        entries = manifest.get("files", [])
+        entry = next((item for item in entries if isinstance(item, dict)
+                      and item.get("path") == "bin/codescribe"), None) if isinstance(entries, list) else None
+        if manifest.get("schema") == "codescribe.agent-bridge.bundle.v1" and entry:
+            metadata = bundled.stat()
+            size = entry.get("bytes")
+            if (type(size) is not int or not 0 < size <= 256 << 20
+                    or metadata.st_size != size or bundled.is_symlink()
+                    or not os.access(bundled, os.X_OK)):
+                raise ValueError("bundled canonical publisher ownership is invalid")
+            digest = hashlib.sha256()
+            with bundled.open("rb") as handle:
+                remaining = size
+                while remaining:
+                    block = handle.read(min(1 << 20, remaining))
+                    if not block:
+                        raise ValueError("bundled canonical publisher is incomplete")
+                    digest.update(block)
+                    remaining -= len(block)
+                if handle.read(1):
+                    raise ValueError("bundled canonical publisher changed during verification")
+            if digest.hexdigest() != entry.get("sha256"):
+                raise ValueError("bundled canonical publisher digest does not match its manifest")
+            return str(bundled.resolve(strict=True))
+    discovered = shutil.which("codescribe")
+    if discovered:
+        return discovered
+    for candidate in (Path.home() / ".cargo" / "bin" / "codescribe",
+                      Path.home() / ".local" / "bin" / "codescribe"):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    raise OSError("canonical codescribe bus publisher is unavailable")
+
+
+def publish_reply_event(bus: Path, event: dict[str, Any], *, bridge_root: Path | None = None) -> dict[str, Any]:
+    """The Rust generation/chunk/private append owner is the only bus writer."""
+    import subprocess
+
+    executable = reply_publisher_command(bridge_root if bridge_root is not None else bridge_home())
+    try:
+        result = subprocess.run(
+            [executable, "bus", "append-event", "--bus", str(bus.resolve(strict=False))],
+            input=json.dumps(event, ensure_ascii=False), capture_output=True,
+            text=True, timeout=30, check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise OSError("canonical bus publication timed out; speech did not start") from error
+    if result.returncode != 0:
+        raise OSError("canonical bus publication refused; speech did not start")
+    try:
+        receipt = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ValueError("canonical bus publication has no receipt") from error
+    if not isinstance(receipt, dict):
+        raise ValueError("canonical bus publication has invalid receipt")
+    return receipt
+
+
+def reply_delivery_envelope(args: argparse.Namespace) -> tuple[Path, dict[str, Any] | None]:
+    lease_id = lease_identifier(args.provider, args.session)
+    lease_path = args.bridge_home / "leases" / f"{lease_id}.json"
+    state = read_reply_json(lease_path) if lease_path.exists() else {}
+    if state and (state.get("schema") != LEASE_SCHEMA
+                  or state.get("lease_id") != lease_id
+                  or state.get("provider") != args.provider.casefold()
+                  or state.get("provider_session_id") != args.session):
+        raise ValueError("reply lease does not belong to this provider session")
+    if state and (not isinstance(state.get("bus"), str) or not state["bus"].strip()):
+        raise ValueError("reply lease has an invalid bus path")
+    pending = state.get("pending", [])
+    if not isinstance(pending, list) or any(not isinstance(item, dict) for item in pending):
+        raise ValueError("reply lease has an invalid pending mailbox")
+    bus = (args.bus if args.bus_overridden or not state.get("bus")
+           else Path(state["bus"])).expanduser().resolve(strict=False)
+    if state and state.get("bus") != str(bus):
+        raise ValueError("reply bus does not belong to this provider session")
+    identity = args.reply_to
+    if identity is None:
+        return bus, None
+    envelope = next((item for item in pending if item.get("delivery_id") == identity), None)
+    if envelope is None:
+        marker = args.bridge_home / "acknowledgments" / lease_id / f"{identity}.json"
+        receipt = read_reply_json(marker) if marker.exists() else {}
+        if (receipt.get("lease_id") != lease_id or receipt.get("delivery_id") != identity
+                or receipt.get("provider") != args.provider.casefold()
+                or receipt.get("provider_session_id") != args.session
+                or receipt.get("bus") != str(bus)):
+            raise ValueError("reply delivery has no owned envelope")
+        envelope = receipt.get("envelope")
+    if (not isinstance(envelope, dict) or envelope.get("delivery_id") != identity
+            or envelope.get("lease_id") != lease_id
+            or envelope.get("provider") != args.provider.casefold()
+            or envelope.get("provider_session_id") != args.session
+            or envelope.get("bus", state.get("bus")) != str(bus)):
+        raise ValueError("reply delivery does not belong to this provider session and bus")
+    frozen = envelope.get("recipients")
+    if frozen is not None and (not isinstance(frozen, list)
+            or any(not isinstance(owner, dict) for owner in frozen) or not any(
+            owner.get("provider") == args.provider.casefold()
+            and owner.get("provider_session_id") == args.session
+            and owner.get("lease_id") == lease_id and owner.get("bus") == str(bus)
+            for owner in frozen)):
+        raise ValueError("reply owner was not admitted for this channel utterance")
+    return bus, envelope
+
+
+def load_published_reply(args: argparse.Namespace, identity: str) -> tuple[Path, dict[str, Any]]:
+    source = read_reply_json(args.bridge_home / "runtime" / "reply-sources" / f"{identity}.json")
+    bus = Path(source.get("bus", ""))
+    lease_id = lease_identifier(args.provider, args.session)
+    if (source.get("schema") != REPLY_SOURCE_SCHEMA or source.get("reply_id") != identity
+            or source.get("lease_id") != lease_id
+            or source.get("provider") != args.provider.casefold()
+            or source.get("provider_session_id") != args.session or not bus.is_absolute()
+            or (args.bus_overridden and bus != args.bus.expanduser().resolve(strict=False))):
+        raise ValueError("reply source does not belong to this provider session and bus")
+    receipt = source.get("source", {})
+    offset, length = receipt.get("offset"), receipt.get("length")
+    if type(offset) is not int or offset < 0 or type(length) is not int or not 0 < length <= REPLY_READ_LIMIT:
+        raise ValueError("invalid reply source coordinates")
+    with GenerationFile(bus) as handle:
+        manifest = read_reply_json(Path(str(bus) + ".generations.json"), 4 << 20)
+        if (manifest.get("schema") != "codescribe.bus-generations.v1"
+                or manifest.get("root") != str(bus)
+                or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]
+                or manifest.get("stream_id") != receipt["stream_id"]
+                or (handle.dev, handle.ino) != (receipt.get("stream_dev"), receipt.get("stream_inode"))):
+            raise ValueError("reply source stream was replaced")
+        handle.seek(offset)
+        raw = handle.read(length)
+    if len(raw) != length or not raw.endswith(b"\n"):
+        raise ValueError("reply source is incomplete")
+    decoder = ChunkDecoder()
+    events = []
+    for line in raw.splitlines():
+        value = decoder.feed(json.loads(line))
+        if value is not None:
+            events.append(value)
+    if decoder.pending or len(events) != 1:
+        raise ValueError("reply source is not one complete event")
+    reply = events[0]
+    if (reply.get("schema") != AGENT_REPLY_SCHEMA or reply.get("kind") != "agent_reply"
+            or reply.get("reply_id") != identity or reply.get("lease_id") != lease_id
+            or reply.get("provider") != args.provider.casefold()
+            or reply.get("provider_session_id") != args.session):
+        raise ValueError("canonical reply does not match its source owner")
+    return bus, reply
+
+
+class ReplyPlaybackControl:
+    """One request ticket controls only its own child of the serialized player."""
+    def __init__(self, args: argparse.Namespace, bus: Path, reply: dict[str, Any], ticket: str):
+        self.bus, self.reply, self.ticket = bus, reply, ticket
+        self.root = args.bridge_home
+        self.path = self.root / "runtime" / "reply-playback" / f"{reply['reply_id']}.{ticket}.json"
+        self.stop_path = self.path.with_suffix(".stop.json")
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.descriptor = os.open(self.path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(self.descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if self.path.exists():
+                raise ValueError("playback ticket was already admitted; use a new ticket")
+        except BaseException:
+            os.close(self.descriptor)
+            raise
+
+    def owner(self) -> dict[str, Any]:
+        return {key: self.reply[key] for key in
+                ("reply_id", "provider", "provider_session_id", "lease_id")}
+
+    def stopped(self) -> bool:
+        if not self.stop_path.exists():
+            return False
+        stop = read_reply_json(self.stop_path, 65536)
+        return (stop.get("schema") == REPLY_CONTROL_SCHEMA
+                and stop.get("playback_ticket") == self.ticket
+                and all(stop.get(key) == value for key, value in self.owner().items()))
+
+    def publish(self, state: str, *, error: str | None = None, reason: str | None = None) -> None:
+        event = {"schema": AGENT_REPLY_PLAYBACK_SCHEMA, "kind": "agent_reply_playback",
+                 "emitted_at": utc_now(), **self.owner(), "playback_ticket": self.ticket,
+                 "state": state, "spoken": state == "spoken"}
+        if error:
+            event["tts_error"] = error
+        if reason:
+            event["reason"] = reason
+        publish_reply_event(self.bus, event, bridge_root=self.root)
+        atomic_json(self.path, {**event, "schema": REPLY_CONTROL_SCHEMA, "bus": str(self.bus)})
+        emit(event)
+
+    def close(self) -> None:
+        os.close(self.descriptor)
+
+
+def speak_published_reply(args: argparse.Namespace, bus: Path, reply: dict[str, Any], ticket: str) -> int:
+    control = ReplyPlaybackControl(args, bus, reply, ticket)
+    try:
+        control.publish("waiting")
+        if control.stopped():
+            spoken, error, reason = False, "playback stopped", "stopped"
+        else:
+            speaker = _speak_openai if reply["tts_vendor"] == "openai" else _speak_xai
+            spoken, error, reason = speaker(reply["text"], reply["voice"], reply["speed"],
+                                            playback_root=args.bridge_home, bus=bus_path(), control=control)
+            if control.stopped() and not spoken:
+                error, reason = "playback stopped", "stopped"
+        state = ("spoken" if spoken else "stopped" if reason == "stopped" else
+                 "refused" if reason in ("take_live", "take_started", "playback_busy") else "failed")
+        control.publish(state, error=error, reason=reason)
+        return 0 if spoken else 5
+    finally:
+        control.close()
+
+
+def play_reply_command(args: argparse.Namespace) -> int:
+    bus, reply = load_published_reply(args, args.play_reply)
+    return speak_published_reply(args, bus, reply, args.playback_ticket)
+
+
+def stop_reply_command(args: argparse.Namespace) -> int:
+    identity, ticket = args.stop_reply, args.playback_ticket
+    path = args.bridge_home / "runtime" / "reply-playback" / f"{identity}.{ticket}.json"
+    control = read_reply_json(path, 65536)
+    owner = {"reply_id": identity, "provider": args.provider.casefold(),
+             "provider_session_id": args.session,
+             "lease_id": lease_identifier(args.provider, args.session)}
+    bus = Path(control.get("bus", ""))
+    if (control.get("schema") != REPLY_CONTROL_SCHEMA or not bus.is_absolute()
+            or (args.bus_overridden and bus != args.bus.expanduser().resolve(strict=False))
+            or control.get("playback_ticket") != ticket
+            or any(control.get(key) != value for key, value in owner.items())):
+        raise ValueError("stop ticket does not belong to this reply playback owner")
+    if control.get("state") not in ("waiting", "playing"):
+        raise ValueError("playback ticket is already terminal")
+    with path.with_suffix(".lock").open("rb") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            raise ValueError("playback ticket has no running owner")
+    atomic_json(path.with_suffix(".stop.json"),
+                {"schema": REPLY_CONTROL_SCHEMA, **owner, "playback_ticket": ticket})
+    emit({"kind": "stop_requested", **owner, "playback_ticket": ticket})
+    return 0
+
+
+def say_reply(args: argparse.Namespace) -> int:
+    """Durably publish reply text before attempting synthesis or playback."""
+    bus, envelope = reply_delivery_envelope(args)
     profile = voice_profile(args.bridge_home, args.name)
     voice = args.voice or str(profile["voice"])
     speed = args.speed if args.speed is not None else float(profile["speed"])
     vendor = args.tts_vendor or str(profile.get("provider") or "xai")
     reply: dict[str, Any] = {
-        "schema": AGENT_REPLY_SCHEMA,
-        "kind": "agent_reply",
-        "emitted_at": utc_now(),
-        "reply_id": os.urandom(12).hex(),
-        "name": args.name,
-        "provider": args.provider,
-        "provider_session_id": args.session,
-        "text": args.say,
-        "voice": voice,
-        "speed": speed,
-        "tts_vendor": vendor,
-        "spoken": False,
+        "schema": AGENT_REPLY_SCHEMA, "kind": "agent_reply", "emitted_at": utc_now(),
+        "reply_id": os.urandom(12).hex(), "name": args.name,
+        "provider": args.provider.casefold(), "provider_session_id": args.session,
+        "lease_id": lease_identifier(args.provider, args.session), "text": args.say,
+        "voice": voice, "speed": speed, "tts_vendor": vendor, "spoken": False,
+        "association": "addressed" if envelope else "unsolicited",
+        "delivery_id": args.reply_to,
     }
-    speaker = _speak_openai if vendor == "openai" else _speak_xai
-    spoken, error, reason = speaker(
-        args.say, voice, speed, playback_root=args.bridge_home, bus=bus_path()
-    )
-    reply["spoken"] = spoken
-    if error:
-        reply["tts_error"] = error
-    if reason:
-        reply["reason"] = reason
-    line = json.dumps(reply, ensure_ascii=False) + "\n"
-    descriptor = os.open(args.bus, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
-    try:
-        os.write(descriptor, line.encode("utf-8"))
-    finally:
-        os.close(descriptor)
+    if envelope:
+        owner = next((item for item in envelope.get("recipients", [])
+                      if item.get("provider") == args.provider.casefold()
+                      and item.get("provider_session_id") == args.session
+                      and item.get("lease_id") == reply["lease_id"]
+                      and item.get("bus") == str(bus)), None)
+        historical_name = owner.get("name") or owner.get("audience") if owner else envelope.get("audience")
+        if historical_name and historical_name != "*":
+            reply["name"] = historical_name
+        if owner:
+            reply["channel"] = owner.get("channel")
+        for key in ("source_event_id", "utterance_id", "session_id", "occurrence_session_id",
+                    "capture_epoch", "document_index", "audience", "broadcast_id", "recipients"):
+            if key in envelope:
+                reply[key] = envelope[key]
+    receipt = publish_reply_event(bus, reply, bridge_root=args.bridge_home)
+    if (any(type(receipt.get(key)) is not int or receipt[key] < 0
+            for key in ("stream_dev", "stream_inode", "offset", "length"))
+            or not 0 < receipt["length"] <= REPLY_READ_LIMIT
+            or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
+        raise ValueError("canonical reply publication has invalid source coordinates")
+    atomic_json(args.bridge_home / "runtime" / "reply-sources" / f"{reply['reply_id']}.json",
+                {"schema": REPLY_SOURCE_SCHEMA, "bus": str(bus), "source": receipt,
+                 **{key: reply[key] for key in ("reply_id", "provider", "provider_session_id", "lease_id")}})
     emit(reply)
-    return 0 if spoken else 5
+    return speak_published_reply(args, bus, reply, os.urandom(12).hex())
 
 
 def follower_pidfile(root: Path, lease_id: str) -> Path:
@@ -3591,6 +3910,11 @@ def main() -> int:
         help="append an agent reply to the canonical Bus and speak it through "
         "vendor TTS; --name defaults to the name on this session's lease",
     )
+    parser.add_argument("--reply-to", metavar="DELIVERY_ID", help="associate --say with this owned delivery envelope")
+    playback = parser.add_mutually_exclusive_group()
+    playback.add_argument("--play-reply", metavar="REPLY_ID", help="explicitly play one durable reply")
+    playback.add_argument("--stop-reply", metavar="REPLY_ID", help="request stop from that reply's real player")
+    parser.add_argument("--playback-ticket", metavar="TICKET", help="24 lowercase hex identifying one playback request")
     parser.add_argument(
         "--tts-vendor",
         choices=("xai", "openai"),
@@ -3660,6 +3984,25 @@ def main() -> int:
         )
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.reply_to and (args.say is None or not re.fullmatch(r"[0-9a-f]{24}", args.reply_to)):
+        parser.error("--reply-to requires --say and a delivery id")
+    if args.play_reply or args.stop_reply:
+        identity = args.play_reply or args.stop_reply
+        if (not args.provider or not re.fullmatch(r"[0-9a-f]{24}", identity)
+                or not args.playback_ticket or not re.fullmatch(r"[0-9a-f]{24}", args.playback_ticket)):
+            parser.error("reply control requires --provider/--session, a reply id and a playback ticket")
+        if any((args.say is not None, args.ack, args.attach, args.channel is not None,
+                args.status, args.watch, args.follow, args.once, args.from_start, args.from_file,
+                args.read_delivery, args.retry_wakeup, args.all, args.become, args.active_names,
+                args.lease, args.voice, args.speed is not None, args.tts_vendor)):
+            parser.error("reply control combines with no other command")
+        try:
+            return play_reply_command(args) if args.play_reply else stop_reply_command(args)
+        except (OSError, ValueError, RuntimeError) as error:
+            sys.stderr.write(f"bus-demux: reply control refused: {error}\n")
+            return 3
+    if args.playback_ticket:
+        parser.error("--playback-ticket requires --play-reply or --stop-reply")
     if args.read_delivery:
         if not args.provider or not re.fullmatch(r"[0-9a-f]{24}", args.read_delivery):
             parser.error("--read-delivery requires --provider/--session and a delivery id")
@@ -3764,7 +4107,7 @@ def main() -> int:
                 parser.error("--say needs --name, or an attached lease carrying one")
         try:
             return say_reply(args)
-        except OSError as error:
+        except (OSError, ValueError, RuntimeError) as error:
             sys.stderr.write(f"bus-demux: reply refused: {error}\n")
             return 3
     if args.lease_ttl <= 0:

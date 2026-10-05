@@ -868,10 +868,14 @@ python3 scripts/bus-demux.py --provider codex --session SESSION_ID --ack DELIVER
 Pass `--bus` and `--bridge-home` as well when the reader used explicit overrides.
 The acknowledgment command does not attach a second follower. It refuses
 unknown delivery IDs and mismatched sessions/buses. Repeating a valid receipt
-is harmless. Receipt files under `acknowledgments/<lease_id>/` contain only
-lease and delivery IDs; they prevent a later projection of an acknowledged
-delivery from reentering the mailbox. The follower clears acknowledged pending
-text on its next loop or reattachment. Lease directories are private and files
+is harmless. Receipt files under `acknowledgments/<lease_id>/` retain lease,
+provider/session, selected bus and the original envelope's causal coordinates
+and frozen recipient identities. They omit transcript text and WAV paths.
+They prevent an acknowledged delivery from reentering the mailbox and let an
+explicit reply validate its original owner after the pending mailbox clears.
+The follower clears acknowledged pending text on its next loop or reattachment.
+Earlier ID-only receipts still prove receipt, but cannot authorize a causal
+reply once their original pending envelope has been cleared. Lease directories are private and files
 are mode 0600; unacknowledged transcript text persists across process exits.
 
 Pending storage is capped at 256 envelopes or 8 MiB of serialized envelope
@@ -931,9 +935,71 @@ the same open fact, including provider and session, for the overlay. The
 overlay paint itself is a separate cut.
 
 While in-process agent speech is playing, channel PCM is not offered to the
-channel feed. A bus `agent_reply` with `spoken: true` is written after the
-external speaker returns, so that row arms only a short tail. It does not
-cancel echo that already entered the microphone.
+channel feed. External speech reports its actual outcome in a distinct
+`agent_reply_playback` event. Reply text itself is published before synthesis;
+its initial `spoken: false` is not evidence of a failed or completed playback.
+The helper admits playback only after the existing capture interlock proves
+idle, and stops its own player when a take starts.
+
+## Durable replies and exact speech controls
+
+`cs-say TEXT --provider P --session S --reply-to DELIVERY_ID` first validates
+that the delivery's pending envelope or acknowledged ownership receipt belongs
+to this exact provider/session/lease and selected bus. It carries that
+utterance's source coordinates and frozen recipients onto one
+`codescribe.agent-reply.v1` / `agent_reply` event. Omitting `--reply-to` writes
+`association: "unsolicited"` and `delivery_id: null`; no newest-question guess
+is made. Explicit unknown or foreign delivery IDs are refused before publication.
+A broadcast has concrete admitted recipients, so a later attachment cannot
+acquire an earlier utterance's receipt obligation. The follower matches every
+channel event's frozen provider/session/lease/bus before name routing. Equal
+text in distinct document occurrences is never collapsed by string equality.
+
+The helper resolves a manifest-owned `runtime/bin/codescribe` first, then the
+existing `codescribe` on PATH and the known `~/.cargo/bin/codescribe` and
+`~/.local/bin/codescribe` install paths. Bundled ownership requires its recorded
+size and SHA-256 digest. It invokes `codescribe bus append-event --bus
+ABSOLUTE_PATH` with one JSON event on stdin. The Rust generation owner performs the private, chunked
+journal append and durability barrier. No helper opens the bus for writing.
+The publisher returns logical `offset` and `length`, plus `stream_dev`,
+`stream_inode` and `stream_id`. A refused publication or invalid receipt never
+starts speech. Text survives synthesis, credential, playback and capture failures.
+
+Each reply has one 24-lowercase-hex `reply_id`. Speech has separate
+`codescribe.agent-reply-playback.v1` / `agent_reply_playback` receipts naming that
+same ID, the exact provider/session/lease and a 24-lowercase-hex
+`playback_ticket`. States are `waiting`, `playing`, `spoken`, `failed`,
+`refused` or `stopped`; `spoken` is true only for the completed spoken state.
+`tts_error` and `reason` describe failures without credentials. ACK, provider
+queue acceptance, reply text and speech completion remain separate facts.
+
+`cs-say` still attempts speech immediately after text publication. In the app,
+Play is explicit for one reply; viewing a tab never synthesizes or replays.
+The installed helper's control interface is:
+
+```bash
+cs-bus --play-reply REPLY_ID --playback-ticket TICKET --provider P --session S --bus PATH
+cs-bus --stop-reply REPLY_ID --playback-ticket TICKET --provider P --session S --bus PATH
+```
+
+Play reads one complete canonical source event, bounded to 32 MiB of storage
+bytes, through the generation and chunk readers. A private derived receipt at
+`runtime/reply-sources/<reply_id>.json` stores only source coordinates, bus and
+owner; it contains no reply text and is not a transcript archive. Stream
+replacement, missing source, incomplete chunks and foreign ownership refuse
+playback. Existing `voices.json` profiles and the synthesis lane stay authoritative.
+
+A fresh ticket is required for each deliberate Play. Ticket reuse is refused.
+The existing stable `runtime/playback.lock` serializes all speakers, including
+channel 0. The microphone guard always starts from the canonical global
+capture bus and discovers the dedicated channel buses; a reply's publication
+path never substitutes for the global capture journal. The existing lifecycle
+cursor enforces capture interlocks.
+Stop writes an owner-checked request for that exact reply/ticket and requires
+its live ticket lock. The Python owner checks the request during lock/capture
+wait and playback, and terminates only its own `afplay` child. A stop request
+receipt is not completion; the terminal playback event supplies that fact.
+The app's built-in chat player is a separate owner and cannot stop this player.
 
 ## C11 evidence boundary
 
