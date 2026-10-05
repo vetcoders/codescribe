@@ -1718,7 +1718,7 @@ class SessionLease:
 
     def queue_delivery(self, payload: dict[str, Any]) -> bool:
         delivery_id = payload["delivery_id"]
-        if delivery_acknowledged(self.root, self.lease_id, delivery_id):
+        if delivery_acknowledged(self.root, self.lease_id, delivery_id, payload):
             return False
         if delivery_id in self.pending:
             return False
@@ -1758,7 +1758,7 @@ class SessionLease:
         completed = [
             delivery_id
             for delivery_id in self.pending
-            if delivery_acknowledged(self.root, self.lease_id, delivery_id)
+            if delivery_acknowledged(self.root, self.lease_id, delivery_id, self.pending[delivery_id])
         ]
         if completed:
             for delivery_id in completed:
@@ -1844,7 +1844,8 @@ class SessionLease:
             self._release_lock()
 
 
-def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str) -> bool:
+def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
+                          expected_payload: dict[str, Any] | None = None) -> bool:
     path = root / "acknowledgments" / lease_id / f"{delivery_id}.json"
     try:
         metadata = path.lstat()
@@ -1875,8 +1876,10 @@ def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str) -> bool:
             or not any(matches(item) for item in frozen)):
         return False
     pending = state.get("pending", [])
-    original = next((item for item in pending if isinstance(item, dict)
-                     and item.get("delivery_id") == delivery_id), None) if isinstance(pending, list) else None
+    original = expected_payload
+    if original is None and isinstance(pending, list):
+        original = next((item for item in pending if isinstance(item, dict)
+                         and item.get("delivery_id") == delivery_id), None)
     return original is None or envelope == {
         **{key: value for key, value in original.items() if key not in ("text", "wav")},
         "bus": state["bus"],
@@ -2017,7 +2020,7 @@ class NativeQueueWakeup:
         with (directory / f"{identity}.lock").open("a") as lock:
             os.chmod(lock.name, 0o600)
             fcntl.flock(lock, fcntl.LOCK_EX)
-            if delivery_acknowledged(self.root, self.lease_id, identity):
+            if delivery_acknowledged(self.root, self.lease_id, identity, payload):
                 return
             state = read_json(self.root / "leases" / f"{self.lease_id}.json") or {}
             if state.get("schema") != LEASE_SCHEMA or any(state.get(k) != v for k, v in expected.items()):

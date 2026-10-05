@@ -66,13 +66,13 @@ class AgentReplyAdmissionTests(unittest.TestCase):
         owner = {"provider": self.args.provider, "provider_session_id": self.args.session,
                  "lease_id": lease_id, "bus": str(self.bus), "channel": 2,
                  "name": "lena"}
-        envelope = {**owner, "delivery_id": identity, "source_event_id": "physical-1",
+        envelope = {**owner, "kind": "seal", "delivery_id": identity, "source_event_id": "physical-1",
                     "utterance_id": "physical-1", "session_id": "capture-a",
                     "capture_epoch": 1, "document_index": 0, "audience": "lena",
                     "recipients": [owner], "text": "Pytanie."}
         path = self.home / "leases" / f"{lease_id}.json"
         path.parent.mkdir()
-        state = {"schema": DEMUX.LEASE_SCHEMA, **owner, "pending": [envelope]}
+        state = {"schema": DEMUX.LEASE_SCHEMA, **owner, "cursor": 0, "pending": [envelope]}
         path.write_text(json.dumps(state))
         return identity, path, state
 
@@ -277,6 +277,27 @@ class AgentReplyAdmissionTests(unittest.TestCase):
         self.assertEqual(len({row["source_event_id"] for row in rows}), 5)
         self.assertEqual({row["text"] for row in rows}, {"Iwo"})
         self.assertTrue(all(row["coverage"] == "refused" for row in rows))
+
+
+    def test_foreign_phase_ack_cannot_discard_a_newly_queued_owned_delivery(self):
+        identity, path, state = self.admitted_delivery()
+        self.args.ack = [identity]
+        with contextlib.redirect_stdout(io.StringIO()):
+            DEMUX.acknowledge_delivery(self.args)
+        payload = state["pending"][0]
+        state["pending"] = []
+        path.write_text(json.dumps(state))
+        marker = self.home / "acknowledgments" / state["lease_id"] / f"{identity}.json"
+        receipt = json.loads(marker.read_text())
+        receipt["envelope"]["kind"] = "draft"
+        marker.write_text(json.dumps(receipt))
+        lease = DEMUX.SessionLease(root=self.home, provider="codex",
+            provider_session_id=self.args.session, name="lena", bus=self.bus,
+            requested_id=None, ttl_seconds=30, follow_from_end=False)
+        self.addCleanup(lease.close)
+        self.assertTrue(lease.queue_delivery(payload), "a mismatched phase receipt discarded a seal")
+        lease.collect_acknowledgments()
+        self.assertIn(identity, lease.pending)
 
 
 if __name__ == "__main__":

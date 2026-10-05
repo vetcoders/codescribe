@@ -505,6 +505,9 @@ if [ -z "$SIGN_ID" ] || [ "$SIGN_ID" = "-" ]; then
   SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
   [ -z "$SIGN_ID" ] && SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)"
 fi
+# Resource executables are outside codesign's automatic nested-code paths.
+# Sign the canonical publisher explicitly before the outer resource seal.
+codesign --force --sign "${SIGN_ID:--}" --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
 if [ -n "$SIGN_ID" ]; then
   echo "==> [7/7] Signing $SCHEME.app with stable identity: $SIGN_ID"
   codesign --force --deep --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
@@ -513,7 +516,7 @@ else
   codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
 fi
 python3 "$REPO_ROOT/scripts/lib/refresh-agent-publisher-manifest.py" "$AGENT_BRIDGE_BUNDLE_DIR"
-# Deep signing changes the publisher's Mach-O bytes. Seal its refreshed digest
+# Publisher signing changes its Mach-O bytes. Seal its refreshed digest
 # with the outer signature without signing that child a second time.
 codesign --force --sign "${SIGN_ID:--}" --identifier "$BUNDLE_ID" "$APP"
 if [ "$INSTALL_LANE" = "1" ]; then

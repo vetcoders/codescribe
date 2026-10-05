@@ -170,6 +170,7 @@ if [[ "$SIGN" -eq 1 ]]; then
     exit 1
   fi
   echo "Codesigning .app with identity: $IDENTITY"
+  codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP_PATH/Contents/Resources/agent-bridge/bin/codescribe"
   codesign --deep --force --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP_PATH"
   python3 "$ROOT_DIR/scripts/lib/refresh-agent-publisher-manifest.py" "$APP_PATH/Contents/Resources/agent-bridge"
   codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP_PATH"

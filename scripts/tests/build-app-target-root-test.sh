@@ -124,6 +124,13 @@ elif name == "swiftc":
     dest.write_bytes(b"fresh:codescribe-stt-bridge")
 elif name == "codesign":
     expected_id = "com.vetcoders.codescribe.dev" if profile == "debug" else "com.vetcoders.codescribe"
+    if Path(args[-1]).name == "codescribe":
+        assert args[:-1] == ["--force", "--sign", "fixture-identity", "--identifier", expected_id + ".publisher"], args
+        publisher = Path(args[-1])
+        assert publisher.read_bytes() == b"fresh:codescribe"
+        publisher.write_bytes(b"fresh:codescribe:signed")
+        record(explicit_publisher_signature=True)
+        sys.exit(0)
     assert args[:-1] in [["--force", "--deep", "--sign", "fixture-identity", "--identifier", expected_id], ["--force", "--sign", "fixture-identity", "--identifier", expected_id]], args
     app = Path(args[-1])
     for folder, filename in [("Frameworks", "libcodescribe_ffi.dylib"), ("MacOS", "codescribe-stt-sidecar"), ("MacOS", "codescribe-stt-bridge")]:
@@ -133,10 +140,10 @@ elif name == "codesign":
     payload = app / "Contents/Resources/agent-bridge"
     assert (payload / "manifest.json").is_file()
     publisher = payload / "bin/codescribe"
-    if "--deep" in args:
-        assert publisher.read_bytes() == b"fresh:codescribe"
-        publisher.write_bytes(b"fresh:codescribe:signed")
-    else:
+    # Real codesign --deep does not visit a Mach-O under Resources/bin.
+    # The publisher therefore must already have its own signature.
+    assert publisher.read_bytes() == b"fresh:codescribe:signed"
+    if "--deep" not in args:
         manifest = json.loads((payload / "manifest.json").read_text())
         entry = next(row for row in manifest["files"] if row["path"] == "bin/codescribe")
         assert publisher.read_bytes() == b"fresh:codescribe:signed"
