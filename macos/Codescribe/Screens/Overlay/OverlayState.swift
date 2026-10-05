@@ -2086,6 +2086,9 @@ final class OverlayState {
       beginCaptureClock()
     }
     recording = true
+    if !captureDidStart {
+      followDictationCapturePresentation()
+    }
     captureDidStart = true
     refreshOverlayPolicyTruth()
     refreshEngineChip(reset: false)

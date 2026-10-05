@@ -15,6 +15,14 @@ commit-on-blur admission; explicit transcript actions still use the existing
 reducer compare-and-swap path. Conversation messages are selectable read-only
 text. Unread reply counts describe viewing only, independently of delivery ACK.
 
+An explicit ordinary hold or toggle start closes active agent capture channels
+through their normal hangup path before admitting dictation (Founder delivery
+`f3cbd666a0d7d7e61d4d1971`, 2026-10-05).
+Each channel task joins and publishes its final receipt; its words are retained.
+The same unified overlay then shows My dictation. Channel auto-reopening shares
+the controller's serial transition lock with this handover. Repeated lifecycle
+callbacks do not replace a view the user selected during the admitted capture.
+
 Each reply's **Play** invokes the installed bus speech owner with its persisted
 reply ID and a fresh playback ticket. **Stop** names the exact emitted active
 ticket and provider session. These controls do not use the built-in chat player.
