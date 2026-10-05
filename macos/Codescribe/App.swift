@@ -708,7 +708,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     languageRestartProcess = process
     languageRestartLease = lease
     beforeTermination()
-    NSApp.terminate(nil)
+    // `terminate:` spins a nested event loop until the deferred Quit reply.
+    // This method runs inside a MainActor job (the wizard's advance task), and
+    // a nested loop started from a main-queue job cannot run other main-queue
+    // jobs, so the cleanup and deadline tasks behind that reply would never
+    // execute and the app would sit in `terminate:` forever (2026-10-05).
+    // Leave the job first: the run loop itself calls `terminate:` next tick.
+    RunLoop.main.perform { NSApp.terminate(nil) }
   }
 
   static let languageRelaunchScript = """
