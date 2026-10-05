@@ -172,6 +172,53 @@ private struct AgentBridgeManagedMarker: Codable {
 /// their inodes — and every rename forms one rollback-capable transaction;
 /// receipt replacement is the final commit point.
 final class RealAgentBridgeInstaller: AgentBridgeInstalling {
+  /// Uses the installed bus speech owner; the built-in chat player is separate.
+  @MainActor
+  static func controlBusReply(
+    replyID: String, ticket: String, provider: String, session: String,
+    busPath: String, stop: Bool
+  ) async throws {
+    let installer = RealAgentBridgeInstaller()
+    let executable = installer.commandURL("cs-bus")
+    guard installer.fileManager.isExecutableFile(atPath: executable.path),
+      installer.managedCommandID(executable) != nil
+    else {
+      throw NSError(
+        domain: "Codescribe.BusPlayback", code: 1,
+        userInfo: [NSLocalizedDescriptionKey: String(localized: "Install the agent bridge to play replies.")])
+    }
+    let arguments = [
+      stop ? "--stop-reply" : "--play-reply", replyID,
+      "--playback-ticket", ticket, "--provider", provider, "--session", session,
+      "--bus", busPath,
+    ]
+    let executablePath = executable.path
+    var environment = ProcessInfo.processInfo.environment
+    let commandDirectories = [
+      installer.homeDirectory.appendingPathComponent(".cargo/bin").path,
+      installer.homeDirectory.appendingPathComponent(".local/bin").path,
+      "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
+    ]
+    environment["PATH"] = (commandDirectories + [environment["PATH"] ?? ""]).joined(separator: ":")
+    let commandEnvironment = environment
+    try await Task.detached(priority: .userInitiated) {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: executablePath)
+      process.arguments = arguments
+      process.environment = commandEnvironment
+      process.standardInput = FileHandle.nullDevice
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      try process.run()
+      process.waitUntilExit()
+      guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+        throw NSError(
+          domain: "Codescribe.BusPlayback", code: Int(process.terminationStatus),
+          userInfo: [NSLocalizedDescriptionKey: String(localized: "Reply playback could not complete. The reply text is retained.")])
+      }
+    }.value
+  }
+
   static let bundleSchema = "codescribe.agent-bridge.bundle.v1"
   static let receiptSchema = "codescribe.agent-bridge.receipt.v1"
   static let markerSchema = "codescribe.agent-bridge.managed.v1"

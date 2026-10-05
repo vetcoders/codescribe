@@ -15,8 +15,10 @@ actor OverlayChannelDeliveryReader {
     category: "overlay-delivery-reader")
 
   private let root: URL
+  private let sharedBus: URL?
   private var buses: [URL: Cursor] = [:]
   private var persisted: [String: OverlayDeliveryCursorMark]?
+  private var savedRevisions: [URL: UInt64] = [:]
   /// Total bus bytes this reader consumed from disk. Tests use it to prove a
   /// restart reads only new bytes instead of replaying history.
   private(set) var consumedBytes: UInt64 = 0
@@ -25,6 +27,8 @@ actor OverlayChannelDeliveryReader {
     var inode: UInt64 = 0
     var offset: UInt64 = 0
     var headHash = ""
+    var headLength: Int = 0
+    var streamID: String? = nil
     /// The tail window landed mid-row: drop everything through the first newline.
     var dropsCutRow = false
     var partial = Data()
@@ -33,7 +37,10 @@ actor OverlayChannelDeliveryReader {
     var storageStart: UInt64?
   }
 
-  init(root: URL) { self.root = root }
+  init(root: URL, sharedBus: URL? = nil) {
+    self.root = root
+    self.sharedBus = sharedBus?.standardizedFileURL
+  }
 
   static func productionRoot(
     environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -47,57 +54,158 @@ actor OverlayChannelDeliveryReader {
     return home.appendingPathComponent(".codescribe/agent-bridge", isDirectory: true)
   }
 
-  func read() throws -> [OverlayChannelDelivery] {
+  func read() throws -> [OverlayChannelDelivery] { try readSnapshot().deliveries }
+
+  func readSnapshot() throws -> OverlayChannelDeliverySnapshot {
+    if persisted == nil { persisted = OverlayDeliveryCursorStore.load(root: root) }
     let bindingsURL = root.appendingPathComponent("vc.agent-audience-binding.v1.json")
-    guard FileManager.default.fileExists(atPath: bindingsURL.path) else {
-      buses.removeAll()
-      return []
+    var bindings: [String: [String: Any]] = [:]
+    if FileManager.default.fileExists(atPath: bindingsURL.path) {
+      let file = try object(at: bindingsURL)
+      guard file["schema"] as? String == "vc.agent-audience-binding.v1",
+        let values = file["bindings"] as? [String: [String: Any]]
+      else { throw CocoaError(.fileReadCorruptFile) }
+      bindings = values
     }
-    let bindingFile = try object(at: bindingsURL)
-    guard bindingFile["schema"] as? String == "vc.agent-audience-binding.v1",
-      let bindings = bindingFile["bindings"] as? [String: [String: Any]]
-    else { throw CocoaError(.fileReadCorruptFile) }
     let leasesURL = root.appendingPathComponent("leases", isDirectory: true)
-    guard FileManager.default.fileExists(atPath: leasesURL.path) else { return [] }
-    let files = try FileManager.default.contentsOfDirectory(
-      at: leasesURL, includingPropertiesForKeys: nil)
-    let leases = try files.filter { $0.pathExtension == "json" }.map { file in
-      let lease = try object(at: file)
-      guard lease["lease_id"] as? String == file.deletingPathExtension().lastPathComponent else {
-        throw CocoaError(.fileReadCorruptFile)
+    var leases: [[String: Any]] = []
+    if FileManager.default.fileExists(atPath: leasesURL.path) {
+      let files = try FileManager.default.contentsOfDirectory(
+        at: leasesURL, includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }
+      for file in files.sorted(by: { $0.path < $1.path }).prefix(128) {
+        guard let lease = try? object(at: file) else { continue }
+        guard lease["schema"] as? String == "codescribe.agent-bridge.lease.v1",
+          lease["lease_id"] as? String == file.deletingPathExtension().lastPathComponent
+        else { continue }
+        leases.append(lease)
       }
-      return lease
     }
-    var result: [OverlayChannelDelivery] = []
-    var usedBuses: Set<URL> = []
-    for channel in bindings.keys.sorted() where channel.count == 1 && "123456789".contains(channel)
-    {
+    var paths: [String] = sharedBus.map { [$0.path] } ?? []
+    for lease in leases {
+      if let path = lease["bus"] as? String, path.hasPrefix("/"), !paths.contains(path) {
+        paths.append(path)
+      }
+    }
+    // Closed channels retain their last verified projection even with no live follower.
+    for path in (persisted ?? [:]).keys.sorted() where !paths.contains(path) && path.hasPrefix("/") {
+      paths.append(path)
+    }
+    let usedBuses = Set(paths.prefix(16).map { URL(fileURLWithPath: $0).standardizedFileURL })
+    for bus in usedBuses.sorted(by: { $0.path < $1.path }) {
+      if FileManager.default.fileExists(atPath: bus.path) {
+        try refresh(bus)
+      } else if buses[bus] == nil, let restored = persistedCursor(for: bus) {
+        buses[bus] = restored
+      }
+    }
+    var deliveries: [OverlayChannelDelivery] = []
+    for channel in bindings.keys.sorted() where channel.count == 1 && "123456789".contains(channel) {
       guard let binding = bindings[channel] else { continue }
       let owners = leases.filter {
         $0["provider"] as? String == binding["provider"] as? String
           && $0["provider_session_id"] as? String == binding["provider_session_id"] as? String
       }
-      guard !owners.isEmpty else { continue }
       guard owners.count == 1, let lease = owners.first,
-        let path = lease["bus"] as? String, path.hasPrefix("/")
-      else { throw CocoaError(.fileReadCorruptFile) }
-      // The lease names the actual bus resolved by its producer, including
-      // data-dir/XDG overrides; the UI never invents another path authority.
+        let path = lease["bus"] as? String else { continue }
       let bus = URL(fileURLWithPath: path).standardizedFileURL
-      if usedBuses.insert(bus).inserted { try refresh(bus) }
-      if let status = buses[bus]?.projection.project(
-        channel: channel, binding: binding, lease: lease)
-      {
-        result.append(status)
+      guard var cursor = buses[bus] else { continue }
+      cursor.projection.observeLease(lease, channel: channel, binding: binding)
+      if let status = cursor.projection.project(channel: channel, binding: binding, lease: lease) {
+        deliveries.append(status)
       }
+      buses[bus] = cursor
+    }
+    for bus in usedBuses {
+      guard var cursor = buses[bus] else { continue }
+      for (owner, delivery) in cursor.projection.receiptCoordinates() {
+        guard delivery.count == 24, delivery.allSatisfy({ "0123456789abcdef".contains($0) }) else { continue }
+        let wakeup = root.appendingPathComponent("wakeups").appendingPathComponent(owner.leaseID)
+          .appendingPathComponent(delivery + ".json")
+        if let receipt = try? object(at: wakeup) { cursor.projection.observeAcceptance(receipt) }
+        let acknowledgment = root.appendingPathComponent("acknowledgments")
+          .appendingPathComponent(owner.leaseID).appendingPathComponent(delivery + ".json")
+        if let receipt = try? object(at: acknowledgment) {
+          cursor.projection.observeAcknowledgment(receipt, owner: owner, delivery: delivery, busPath: bus.path)
+        }
+      }
+      buses[bus] = cursor
+      try persist(bus, cursor: cursor, size: max(cursor.offset, persisted?[bus.path]?.length ?? 0))
+    }
+    for index in deliveries.indices {
+      let channel = deliveries[index].channel
+      guard let binding = bindings[channel],
+        let lease = leases.first(where: {
+          $0["provider"] as? String == binding["provider"] as? String
+            && $0["provider_session_id"] as? String == binding["provider_session_id"] as? String
+        }), let path = lease["bus"] as? String,
+        let status = buses[URL(fileURLWithPath: path).standardizedFileURL]?.projection.project(
+          channel: channel, binding: binding, lease: lease)
+      else { continue }
+      deliveries[index] = status
     }
     buses = buses.filter { usedBuses.contains($0.key) }
+    var named: [String: OverlayConversation] = [:]
+    var all: [String: OverlayConversationMessage] = [:]
+    for bus in buses.keys.sorted(by: { $0.path < $1.path }) {
+      guard let cursor = buses[bus] else { continue }
+      for conversation in cursor.projection.conversations(busPath: bus.path) {
+        if conversation.id == "0" {
+          for message in conversation.messages {
+            all[message.id] = all[message.id].map { Self.merge($0, message) } ?? message
+          }
+        } else if let existing = named[conversation.id] {
+          var rows = Dictionary(uniqueKeysWithValues: existing.messages.map { ($0.id, $0) })
+          for message in conversation.messages {
+            rows[message.id] = rows[message.id].map { Self.merge($0, message) } ?? message
+          }
+          named[conversation.id] = OverlayConversation(id: existing.id, channel: existing.channel,
+            name: existing.name, owner: existing.owner, messages: rows.values.sorted {
+              if $0.emittedAt != $1.emittedAt { return $0.emittedAt < $1.emittedAt }
+              return $0.order < $1.order
+            })
+        } else { named[conversation.id] = conversation }
+      }
+    }
+    let ordered = all.values.sorted {
+      if $0.emittedAt != $1.emittedAt { return $0.emittedAt < $1.emittedAt }
+      if $0.order != $1.order { return $0.order < $1.order }
+      return $0.id < $1.id
+    }
+    let broadcast = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil,
+      messages: Array(ordered.suffix(256)))
+    return OverlayChannelDeliverySnapshot(deliveries: deliveries,
+      conversations: [broadcast] + named.values.sorted {
+        if $0.channel != $1.channel { return $0.channel < $1.channel }
+        return $0.id < $1.id
+      })
+  }
+
+  private static func merge(_ first: OverlayConversationMessage, _ second: OverlayConversationMessage)
+    -> OverlayConversationMessage {
+    var result = first.emittedAt > second.emittedAt ? first : second
+    let other = first.emittedAt > second.emittedAt ? second : first
+    for recipient in other.recipients {
+      if let index = result.recipients.firstIndex(where: { $0.owner.id == recipient.owner.id }) {
+        if result.recipients[index].deliveryID == recipient.deliveryID {
+          result.recipients[index].queued = result.recipients[index].queued || recipient.queued
+          result.recipients[index].accepted = result.recipients[index].accepted || recipient.accepted
+          result.recipients[index].acknowledged = result.recipients[index].acknowledged || recipient.acknowledged
+        }
+      } else { result.recipients.append(recipient) }
+    }
+    if let playback = other.playback,
+      result.playback == nil || (result.playback?.emittedAt ?? "") < playback.emittedAt {
+      result.playback = playback
+    }
     return result
   }
 
   private func object(at url: URL) throws -> [String: Any] {
-    guard
-      let value = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+    let data = try handle.read(upToCount: (16 << 20) + 1) ?? Data()
+    guard data.count <= 16 << 20,
+      let value = try JSONSerialization.jsonObject(with: data) as? [String: Any]
     else { throw CocoaError(.fileReadCorruptFile) }
     return value
   }
@@ -111,17 +219,17 @@ actor OverlayChannelDeliveryReader {
     var cursor: Cursor
     if let stored = buses[url] {
       cursor = stored
-    } else if file.linked {
-      cursor = Cursor()
     } else if let persisted = persistedCursor(for: url) {
       cursor = persisted
     } else {
       cursor = Cursor()
     }
-    if cursor.offset > 0 {
+    if cursor.headLength == 0 && size > 0 && cursor.offset == 0 { cursor = Cursor() }
+    if !cursor.headHash.isEmpty {
       let stale = !file.linked && size >= cursor.offset && size - cursor.offset > Self.tailWindow
-      let headHash = try file.headHash()
-      if cursor.inode != inode || size < cursor.offset || stale || headHash != cursor.headHash {
+      let headHash = try file.headHash(length: cursor.headLength)
+      if cursor.inode != inode || cursor.streamID != file.streamID || size < cursor.offset
+        || stale || headHash != cursor.headHash {
         // Unlinked rotation, truncation, or a gap larger than the window resets
         // to a fresh tail. A linked cursor keeps its logical offset: the stream
         // inode does not change when the hot file rolls over.
@@ -131,9 +239,12 @@ actor OverlayChannelDeliveryReader {
     if cursor.headHash.isEmpty {
       let start = file.coldStart
       cursor.inode = inode
-      cursor.headHash = try file.headHash()
+      cursor.headLength = file.headLength
+      cursor.streamID = file.streamID
+      cursor.headHash = try file.headHash(length: cursor.headLength)
       cursor.offset = start
       if start > 0 {
+        cursor.storage.discardsLeadingParts = true
         // Skip only the row the window cut in half: when the byte before the
         // window is a newline, the window begins exactly on a row boundary.
         try file.seek(toOffset: start - 1)
@@ -177,6 +288,7 @@ actor OverlayChannelDeliveryReader {
           }
         }
         cursor.partial.removeSubrange(..<start)
+        guard cursor.partial.count <= 1 << 20 else { throw CocoaError(.fileReadCorruptFile) }
       }
     }
     buses[url] = cursor
@@ -185,21 +297,44 @@ actor OverlayChannelDeliveryReader {
 
   private func persistedCursor(for url: URL) -> Cursor? {
     if persisted == nil { persisted = OverlayDeliveryCursorStore.load(root: root) }
-    guard let mark = persisted?[url.path] else { return nil }
-    return Cursor(inode: mark.inode, offset: mark.offset, headHash: mark.headHash)
+    guard let mark = persisted?[url.path], let data = mark.projection,
+      let projection = try? JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: data)
+    else { return nil }
+    guard (0...256).contains(mark.headLength) else { return nil }
+    savedRevisions[url] = projection.revision
+    var cursor = Cursor(inode: mark.inode, offset: mark.offset, headHash: mark.headHash,
+      headLength: mark.headLength, streamID: mark.streamID, projection: projection)
+    cursor.storage.discardsLeadingParts = mark.discardsLeadingParts
+    cursor.dropsCutRow = mark.dropsCutRow
+    return cursor
   }
 
   private func persist(_ url: URL, cursor: Cursor, size: UInt64) throws {
     var marks = persisted ?? [:]
+    let offset = cursor.storageStart ?? (cursor.offset - UInt64(cursor.partial.count))
+    if let previous = marks[url.path], savedRevisions[url] == cursor.projection.revision,
+      previous.offset == offset, previous.inode == cursor.inode,
+      previous.headHash == cursor.headHash, previous.streamID == cursor.streamID { return }
     // The durable offset points past the last consumed newline; an unfinished
     // trailing row is re-read by the next generation once it completes.
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
     let mark = OverlayDeliveryCursorMark(
-      offset: cursor.storageStart ?? (cursor.offset - UInt64(cursor.partial.count)),
-      inode: cursor.inode, length: size, headHash: cursor.headHash)
+      offset: offset,
+      inode: cursor.inode, length: size, headHash: cursor.headHash,
+      projection: try encoder.encode(cursor.projection), headLength: cursor.headLength,
+      streamID: cursor.streamID, discardsLeadingParts: cursor.storage.discardsLeadingParts,
+      dropsCutRow: cursor.dropsCutRow)
     guard marks[url.path] != mark else { return }
     marks[url.path] = mark
-    try OverlayDeliveryCursorStore.save(root: root, marks: marks)
-    persisted = marks
+    if marks.count > 16 {
+      for path in marks.keys.sorted() where path != url.path && buses[URL(fileURLWithPath: path)] == nil {
+        marks.removeValue(forKey: path)
+        if marks.count <= 16 { break }
+      }
+    }
+    persisted = try OverlayDeliveryCursorStore.save(root: root, marks: marks)
+    if persisted?[url.path] != nil { savedRevisions[url] = cursor.projection.revision }
   }
 
   /// Expand every persisted occurrence before the existing UI projection acts.
@@ -240,11 +375,13 @@ actor OverlayChannelDeliveryReader {
     var parts = 0
     var length = 0
     var header: [String: Any] = [:]
+    var discardsLeadingParts = false
     var incomplete: Bool { parts != 0 }
 
     mutating func consume(_ row: [String: Any]) throws -> [[String: Any]] {
       guard row["schema"] as? String == "codescribe.bus-chunk.v1" else {
         guard !incomplete else { throw CocoaError(.fileReadCorruptFile) }
+        discardsLeadingParts = false
         return [row]
       }
       guard let next = row["part"] as? Int, let count = row["parts"] as? Int,
@@ -254,7 +391,9 @@ actor OverlayChannelDeliveryReader {
         let encoded = row["payload"] as? String, let block = Data(base64Encoded: encoded),
         block.count <= 32768
       else { throw CocoaError(.fileReadCorruptFile) }
+      if next > 0 && !incomplete && discardsLeadingParts { return [] }
       if next == 0 {
+        discardsLeadingParts = false
         guard !incomplete else { throw CocoaError(.fileReadCorruptFile) }
         id = identity
         part = 0
@@ -297,6 +436,8 @@ actor OverlayChannelDeliveryReader {
     let inode: UInt64
     let size: UInt64
     let linked: Bool
+    let streamID: String
+    var headLength: Int { Int(min(256, segments.first(where: { $0.length > 0 })?.length ?? 0)) }
     let coldStart: UInt64
     var offset: UInt64 = 0
 
@@ -318,6 +459,7 @@ actor OverlayChannelDeliveryReader {
         inode = current.0
         size = current.2
         linked = false
+        streamID = "\(current.1):\(current.0)"
         coldStart =
           current.2 > OverlayChannelDeliveryReader.tailWindow
           ? current.2 - OverlayChannelDeliveryReader.tailWindow : 0
@@ -336,6 +478,7 @@ actor OverlayChannelDeliveryReader {
         manifest["schema"] as? String == "codescribe.bus-generations.v1",
         manifest["root"] as? String == root.path,
         let stream = manifest["stream_inode"] as? NSNumber,
+        let identity = manifest["stream_id"] as? String, !identity.isEmpty,
         var active = manifest["active"] as? [String: Any],
         var closed = manifest["segments"] as? [[String: Any]]
       else { throw CocoaError(.fileReadCorruptFile) }
@@ -398,6 +541,7 @@ actor OverlayChannelDeliveryReader {
       inode = stream.uint64Value
       size = expected + current.2
       linked = true
+      streamID = identity
       // Cold observation is the newest tail of the whole logical stream, for
       // dated chains and an undated prefix alike. Inventory metadata above is
       // the check; historical segment bytes stay unread.
@@ -429,11 +573,11 @@ actor OverlayChannelDeliveryReader {
       }
       return out
     }
-    func headHash() throws -> String {
+    func headHash(length: Int) throws -> String {
       guard let first = segments.first(where: { $0.length > 0 }) else { return "" }
       let file = try FileHandle(forReadingFrom: first.url)
       defer { try? file.close() }
-      return try OverlayDeliveryCursorStore.headHash(of: file)
+      return try OverlayDeliveryCursorStore.headHash(of: file, length: length)
     }
   }
 

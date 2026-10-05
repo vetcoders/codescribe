@@ -715,7 +715,9 @@ final class OverlayState {
     engine?.setListener(listener)
     if engine is ControllerDictationEngine {
       observeChannelDelivery(
-        using: OverlayChannelDeliveryReader(root: OverlayChannelDeliveryReader.productionRoot()))
+        using: OverlayChannelDeliveryReader(
+          root: OverlayChannelDeliveryReader.productionRoot(),
+          sharedBus: URL(fileURLWithPath: agentConversationBusPath())))
     }
   }
 
@@ -724,6 +726,79 @@ final class OverlayState {
   private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:]
   private(set) var channelRosterNames: [String: String] = [:]
   private(set) var channelToggleError: String?
+  private(set) var conversations: [OverlayConversation] = []
+  private(set) var selectedConversationID: String?
+  private(set) var replyControlErrors: [String: String] = [:]
+  private(set) var pendingReplyControls: Set<String> = []
+  private var viewedReplyIDs: Set<String> = []
+  private var conversationIsVisible = false
+
+  var selectedConversation: OverlayConversation? {
+    conversations.first { $0.id == selectedConversationID }
+  }
+  var showsMyDictation: Bool { selectedConversationID == nil }
+
+  func unreadReplies(in conversation: OverlayConversation) -> Int {
+    conversation.replyIDs.filter { !viewedReplyIDs.contains($0) }.count
+  }
+
+  /// Viewing only changes presentation metadata. Capture stays controller-owned.
+  func selectConversation(_ id: String?) {
+    revisionFocusCommitTask?.cancel()
+    revisionFocusCommitTask = nil
+    selectedConversationID = id
+    markVisibleConversationRead()
+  }
+
+  func setConversationVisible(_ visible: Bool) {
+    conversationIsVisible = visible
+    markVisibleConversationRead()
+  }
+
+  private func markVisibleConversationRead() {
+    guard conversationIsVisible, !isCollapsed, let selectedConversation else { return }
+    viewedReplyIDs.formUnion(selectedConversation.replyIDs)
+  }
+
+  func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot) {
+    applyChannelDelivery(snapshot.deliveries)
+    guard conversations != snapshot.conversations else { return }
+    conversations = snapshot.conversations
+    if let selectedConversationID,
+      !conversations.contains(where: { $0.id == selectedConversationID })
+    {
+      self.selectedConversationID = nil
+    }
+    let retained = Set(conversations.flatMap(\.replyIDs))
+    viewedReplyIDs.formIntersection(retained)
+    replyControlErrors = replyControlErrors.filter { retained.contains($0.key) }
+    markVisibleConversationRead()
+    onChannelPresentationChanged?()
+  }
+
+  func controlReply(_ message: OverlayConversationMessage, stop: Bool) async {
+    guard message.kind == .reply, let owner = message.owner, let replyID = message.replyID
+    else { return }
+    let active = message.playback.map { ["waiting", "playing"].contains($0.state) } ?? false
+    guard (stop ? active : !active && !pendingReplyControls.contains(message.id)) else { return }
+    let ticket: String
+    if stop, let playback = message.playback {
+      ticket = playback.ticket
+    } else {
+      ticket = String(
+        UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(24))
+    }
+    pendingReplyControls.insert(message.id)
+    replyControlErrors.removeValue(forKey: message.id)
+    defer { pendingReplyControls.remove(message.id) }
+    do {
+      try await RealAgentBridgeInstaller.controlBusReply(
+        replyID: replyID, ticket: ticket, provider: owner.provider,
+        session: owner.providerSessionID, busPath: message.busPath, stop: stop)
+    } catch {
+      replyControlErrors[message.id] = error.userFacingMessage
+    }
+  }
   var visibleChannelRows: [OverlayChannelDelivery] {
     let deliveredDigits = Set(channelDelivery.map(\.channel))
     let boundWithoutDelivery = channelRosterNames.keys.sorted().compactMap {
@@ -754,9 +829,9 @@ final class OverlayState {
           self.applyChannelRoster(snapshot)
         }
         do {
-          let snapshot = try await reader.read()
+          let snapshot = try await reader.readSnapshot()
           guard !Task.isCancelled, self != nil else { return }
-          self?.applyChannelDelivery(snapshot)
+          self?.applyConversationSnapshot(snapshot)
         } catch {
           guard !Task.isCancelled, let self else { return }
           if !channelStatusUnavailable {
@@ -797,7 +872,7 @@ final class OverlayState {
   }
 
   func toggleAgentChannel(_ digit: UInt8) async {
-    guard (1...9).contains(digit), let engine else { return }
+    guard (0...9).contains(digit), let engine else { return }
     do {
       try await engine.toggleAgentChannel(digit: digit)
       channelToggleError = nil
@@ -1699,7 +1774,7 @@ final class OverlayState {
   func endTranscriptEdit() {
     guard isEditingTranscript else { return }
     isEditingTranscript = false
-    if isRevisionDraftDirty {
+    if isRevisionDraftDirty && showsMyDictation {
       scheduleRevisionCommitAfterFocusExit()
     } else if terminal {
       restartAutoHideCountdown()
@@ -1734,7 +1809,7 @@ final class OverlayState {
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = Task { @MainActor [weak self] in
       try? await Task.sleep(nanoseconds: OverlayState.focusExitCommitGraceNanoseconds)
-      guard !Task.isCancelled else { return }
+      guard !Task.isCancelled, self?.showsMyDictation == true else { return }
       self?.commitRevisionDraft()
     }
   }

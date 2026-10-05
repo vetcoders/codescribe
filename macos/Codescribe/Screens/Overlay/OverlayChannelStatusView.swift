@@ -145,13 +145,19 @@ struct OverlayChannelStatusView: View {
   let hudStates: [String: OverlayChannelHudProjection]
   let onToggleChannel: ((UInt8) -> Void)?
   let toggleError: String?
+  let conversations: [OverlayConversation]
+  let selectedConversationID: String?
+  let unreadCounts: [String: Int]
+  let onSelectConversation: ((String?) -> Void)?
 
   init(
     channels: [OverlayChannelDelivery], unavailable: Bool,
     palette: OverlayAppearancePalette, animates: Bool,
     hudStates: [String: OverlayChannelHudProjection] = [:],
     onToggleChannel: ((UInt8) -> Void)? = nil,
-    toggleError: String? = nil
+    toggleError: String? = nil,
+    conversations: [OverlayConversation] = [], selectedConversationID: String? = nil,
+    unreadCounts: [String: Int] = [:], onSelectConversation: ((String?) -> Void)? = nil
   ) {
     self.channels = channels
     self.unavailable = unavailable
@@ -160,10 +166,14 @@ struct OverlayChannelStatusView: View {
     self.hudStates = hudStates
     self.onToggleChannel = onToggleChannel
     self.toggleError = toggleError
+    self.conversations = conversations
+    self.selectedConversationID = selectedConversationID
+    self.unreadCounts = unreadCounts
+    self.onSelectConversation = onSelectConversation
   }
 
   static func toggleDigit(for channel: String) -> UInt8? {
-    guard let digit = UInt8(channel), (1...9).contains(digit) else { return nil }
+    guard let digit = UInt8(channel), (0...9).contains(digit) else { return nil }
     return digit
   }
 
@@ -194,6 +204,16 @@ struct OverlayChannelStatusView: View {
         reduceMotion: reduceMotion, glyph: glyph, palette: palette, animates: animates, fontSize: 13
       )
       .contentShape(Rectangle())
+      .overlay(alignment: .topTrailing) {
+        if let count = unreadCounts["0"], count > 0 {
+          Circle()
+            .fill(palette.processingStatus.color)
+            .frame(width: 5, height: 5)
+            .offset(x: 2, y: -2)
+            .accessibilityLabel("\(count) unread replies")
+            .accessibilityIdentifier("overlay-unread-replies")
+        }
+      }
     }
     .buttonStyle(.plain)
     .help(
@@ -217,6 +237,43 @@ struct OverlayChannelStatusView: View {
 
   private var details: some View {
     VStack(alignment: .leading, spacing: 4) {
+      if onSelectConversation != nil {
+        Button {
+          onSelectConversation?(nil)
+          showsDetails = false
+        } label: {
+          HStack {
+            Text("My dictation")
+            Spacer()
+            if selectedConversationID == nil { Image(systemName: "checkmark") }
+          }
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("overlay-view-my-dictation")
+        ForEach(conversations) { conversation in
+          Button {
+            onSelectConversation?(conversation.id)
+            showsDetails = false
+          } label: {
+            HStack {
+              if conversation.channel == "0" { Text("0 · All") }
+              else { Text(verbatim: "\(conversation.channel) · \(conversation.name)") }
+              Spacer()
+              if let count = unreadCounts[conversation.id], count > 0 {
+                Text("\(count) unread")
+                  .foregroundStyle(palette.processingStatus.color)
+              }
+              if selectedConversationID == conversation.id { Image(systemName: "checkmark") }
+            }
+          }
+          .buttonStyle(.plain)
+          .help("View conversation without changing the microphone")
+          .accessibilityIdentifier("overlay-view-conversation-\(conversation.id)")
+        }
+        Divider()
+        Text("Capture channels")
+          .foregroundStyle(rosterStyle.mutedText.color)
+      }
       ForEach(channels) { channel in
         if isOpen(channel) {
           Label("Microphone active · channel \(channel.channel)", systemImage: "mic.fill")

@@ -524,6 +524,38 @@
         }
       }
     },
+    "%lld unread" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%lld unread"
+          }
+        }
+      }
+    },
+    "%lld unread replies" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "new",
+                  "value" : "%lld unread reply"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "new",
+                  "value" : "%lld unread replies"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%lld unsaved edits to recover" : {
       "comment" : "The placeholder is how many retained edits are waiting",
       "localizations" : {
@@ -577,6 +609,16 @@
     },
     "+%lld minor (punctuation, casing)" : {
 
+    },
+    "0 · All" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "0 · All"
+          }
+        }
+      }
     },
     "A longer gap in speech opens a new sentence in pasted dictation." : {
 
@@ -644,6 +686,16 @@
     "Account sign-in supports Assistive requests, but model discovery requires a provider API key. Keep the current model or enter a Model ID in Settings › Agent › LLM lanes." : {
 
     },
+    "Acknowledged" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Acknowledged"
+          }
+        }
+      }
+    },
     "Acoustic coverage was measured as complete, but this transcript has no current terminal seal." : {
 
     },
@@ -682,6 +734,16 @@
     },
     "Add this provider's API key in Settings › Providers to discover models, or enter a Model ID in Settings › Agent › LLM lanes." : {
 
+    },
+    "Addressed" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Addressed"
+          }
+        }
+      }
     },
     "Advanced" : {
 
@@ -1039,6 +1101,16 @@
     },
     "Capture a thought while it’s fresh." : {
 
+    },
+    "Capture channels" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Capture channels"
+          }
+        }
+      }
     },
     "Capture has ended and the engine is transcribing the take." : {
 
@@ -1995,6 +2067,17 @@
     "Idle" : {
       "comment" : "Tray status: ready, not recording"
     },
+    "In reply to: %@" : {
+      "comment" : "Excerpt of the explicitly associated addressed utterance",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "In reply to: %@"
+          }
+        }
+      }
+    },
     "Input Monitoring" : {
 
     },
@@ -2027,6 +2110,16 @@
     },
     "Install the Codescribe skill and bus helper from this app. No repository clone or manual file copying is needed." : {
 
+    },
+    "Install the agent bridge to play replies." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Install the agent bridge to play replies."
+          }
+        }
+      }
     },
     "Installed" : {
 
@@ -2379,6 +2472,16 @@
     "Multilingual — detects the language as you speak." : {
       "comment" : "Detail under the Auto-detect dictation language choice"
     },
+    "My dictation" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "My dictation"
+          }
+        }
+      }
+    },
     "Name" : {
 
     },
@@ -2442,6 +2545,16 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "No confidence telemetry in %1$lld of %2$lld"
+          }
+        }
+      }
+    },
+    "No conversation messages yet" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "No conversation messages yet"
           }
         }
       }
@@ -2873,6 +2986,16 @@
     "Purple — voice goes to the agent" : {
 
     },
+    "Queue accepted" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Queue accepted"
+          }
+        }
+      }
+    },
     "Queued" : {
 
     },
@@ -3116,8 +3239,38 @@
     "Replace manual copy…" : {
 
     },
+    "Reply playback could not complete. The reply text is retained." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Reply playback could not complete. The reply text is retained."
+          }
+        }
+      }
+    },
+    "Reply text retained" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Reply text retained"
+          }
+        }
+      }
+    },
     "Request lanes." : {
 
+    },
+    "Requesting playback" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Requesting playback"
+          }
+        }
+      }
     },
     "Requests another transcription of this recording" : {
 
@@ -3603,6 +3756,16 @@
     "Speak this response. AI-generated voice." : {
 
     },
+    "Speaking" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speaking"
+          }
+        }
+      }
+    },
     "Speech Recognition" : {
 
     },
@@ -3639,8 +3802,38 @@
     "Speech engine is unavailable." : {
 
     },
+    "Speech failed" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speech failed"
+          }
+        }
+      }
+    },
     "Speech had no words" : {
 
+    },
+    "Speech refused" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speech refused"
+          }
+        }
+      }
+    },
+    "Speech stopped" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speech stopped"
+          }
+        }
+      }
     },
     "Speech too quiet or short — adjust the mic and try again" : {
 
@@ -3650,6 +3843,16 @@
     },
     "Speech-to-text Cloud Service" : {
 
+    },
+    "Spoken" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Spoken"
+          }
+        }
+      }
     },
     "Start Assistive" : {
       "comment" : "Tray row: start an agent recording"
@@ -4209,6 +4412,16 @@
     "Unreviewed" : {
       "comment" : "Dictionary badge: the session closed before this take was reviewed"
     },
+    "Unsolicited reply" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Unsolicited reply"
+          }
+        }
+      }
+    },
     "Untitled" : {
       "comment" : "Thread that carries no title"
     },
@@ -4263,6 +4476,16 @@
     "Very quiet" : {
       "comment" : "Measured microphone level"
     },
+    "View conversation without changing the microphone" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "View conversation without changing the microphone"
+          }
+        }
+      }
+    },
     "Violet" : {
       "comment" : "Recording light colour"
     },
@@ -4293,6 +4516,16 @@
     },
     "Waiting for measured level" : {
 
+    },
+    "Waiting for speech" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Waiting for speech"
+          }
+        }
+      }
     },
     "Waiting for the agent to confirm receipt" : {
 
@@ -4463,6 +4696,16 @@
     },
     "Yesterday" : {
       "comment" : "Thread rail section"
+    },
+    "You" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "You"
+          }
+        }
+      }
     },
     "You can continue without granting this, but the matching feature stays off until you do." : {
 
