@@ -3295,7 +3295,7 @@ final class OverlayState {
   /// A new ordinary capture shows its own canvas. The controller's roster
   /// resolves a channel snapshot that still describes the preceding capture.
   private func followDictationCapturePresentation() {
-    if !hasOpenChannel, indicatorMode != .assistive {
+    if !hasOpenChannel, indicatorMode != .assistive, !showsMyDictation {
       selectConversation(nil)
     }
     guard let engine else { return }
@@ -3307,7 +3307,8 @@ final class OverlayState {
         conversationFocusRevision == focusRevision, recording, !finalized
       else { return }
       applyChannelRoster(roster)
-      guard !roster.contains(where: \.open), indicatorMode != .assistive else { return }
+      guard !roster.contains(where: \.open), indicatorMode != .assistive, !showsMyDictation
+      else { return }
       selectConversation(nil)
     }
   }
