@@ -44,6 +44,7 @@ docs, the CLI and model prompts are separate surfaces with their own rules.
 | `macos/Codescribe/Resources/Localization/InfoPlist.xcstrings`   | System permission prompts (`NS…UsageDescription`). Keys are hand-kept.    |
 | `macos/project.yml`                                             | `developmentLanguage: en`, extraction build settings, test language.      |
 | `scripts/l10n-sync.sh`                                          | Folds compiler-extracted strings into `Localizable.xcstrings`.            |
+| `scripts/l10n-build.sh`                                         | Compiles Debug Swift extraction without a Rust build or executable link.  |
 | `scripts/l10n-lint.py`                                          | Static catalog checks (no build needed).                                  |
 | `scripts/l10n-sheet.py`                                         | Translator worksheet: catalog → CSV per language → catalog.               |
 | `scripts/l10n-bridge-census.py`                                 | Gate: every `String` crossing the UniFFI bridge is classified data/prose. |
@@ -81,11 +82,49 @@ make verify-l10n-bridge  # bridge census: no unclassified String crosses UniFFI;
 make l10n-sheet L10N_LANG=pl   # export the translator worksheet (CSV=... imports it back)
 ```
 
+For localization alone, use the cheaper compiler lane instead of `make app`:
+
+```sh
+export L10N_DERIVED="$PWD/macos/build/l10n"
+make l10n-build
+make l10n-sync
+make verify-l10n-sync
+make verify-l10n-catalog
+# Commit the catalog with the Swift changes.
+```
+
+`l10n-build` uses XcodeGen and the **existing Codescribe scheme**, its checked-in
+Swift/C bindings, package dependencies, bridging header and Debug settings.
+It compiles one host architecture with `SWIFT_EMIT_LOC_STRINGS=YES`.
+`MACH_O_TYPE=staticlib`, empty `OTHER_LDFLAGS` and `ENABLE_DEBUG_DYLIB=NO` archive
+the Swift objects instead of linking an executable against Rust. It builds no
+Rust library or STT sidecar, signs nothing and produces no runnable application.
+Keep its DerivedData separate from the normal app build. A cold runner still
+resolves/builds the existing Swift packages.
+
+The current app requires Xcode 27 / the macOS 27 SDK (`LanguageModelError` in
+Foundation Models). The required CI job uses GitHub's
+[`xcode-27` image](https://github.com/actions/runner-images/issues/14404);
+`macos-latest` currently selects Xcode 26.6 and cannot compile that API. Rust-only
+jobs retain `macos-latest`. `.github/actionlint.yaml` adds this documented hosted
+preview label to the linter's label allow-list.
+
+The archive lane and ordinary Debug compilation were compared on 2026-10-05
+at `27a130fb6`: all 128 app Swift sources produced identical `.stringsdata`.
+Plain `swiftc -typecheck` emitted none; Xcode localization export and `analyze`
+also attempted executable links, so neither removes the Rust prerequisite.
+
 The catalog tracks the **Debug** build. Debug is a superset of Release (it also
 compiles `#if DEBUG` code), so every string that ships has a row.
 
 `l10n-sync` refuses to run when any Swift source is newer than its last compile,
 because the extraction data describes the last build, not the working tree.
+It matches the compiler's absolute source paths to current files by filesystem
+identity (device/inode, as in `samefile`), so case differences on APFS and
+worktree symlink aliases do not invalidate a build. Another worktree's files
+cannot supply extraction for this one merely by sharing names or contents.
+Ambiguous identities among current source paths fail closed; missing sources
+and source replacement during the check still require a rebuild.
 
 `build-app.sh` generates UniFFI bindings in a temporary directory, normalizes
 Swift/C output there, and installs each generated file (including the modulemap)
@@ -115,6 +154,35 @@ After changing interface copy: build, `make l10n-sync`, commit the catalog with
 the code. A key that disappears from code is dropped from the catalog when it
 has no translations, and marked `stale` when it has — `verify-l10n-catalog`
 fails on stale rows so a translation is never orphaned silently.
+
+### Required PR gate
+
+`.github/workflows/rust.yml` runs `make l10n-build`, **`make verify-l10n-sync`**
+and **`make verify-l10n-catalog`** unconditionally inside **`Clippy + Tests`**
+on every PR to `main`, `develop` or `feat/onboarding-language-picker`. It uses a fresh per-run DerivedData directory,
+never cached `.stringsdata`, and never invokes the catalog-writing sync command.
+It also refuses catalog changes left by the compiler lane, so a toolchain that
+starts syncing on build cannot silently check an automatically repaired file.
+Missing tools, compilation failures, missing/outdated extraction, catalog drift
+and catalog lint errors all fail the job. `--check` compares the entire catalog
+as JSON, so formatting or an EOF newline alone does not count as drift.
+
+GitHub ruleset **`main porotection`** (ID **20429200**) already requires
+**`Clippy + Tests`** from GitHub Actions (integration ID **15368**) for `main`,
+`develop` and the integration branch `feat/onboarding-language-picker`.
+Localization failures therefore fail the existing required status; no separate
+optional job or additional ruleset entry is needed. Do not move these steps
+into an optional job, add path filters/skip conditions, or swallow their failures.
+This takes effect when the workflow change is published; local/YAML validation
+does not prove GitHub merge refusal. A real negative-control PR requires explicit
+Founder authorization and must use normal merge rules without bypass.
+
+The integration-branch scope is temporary: once that branch is incorporated into
+`main`, remove `feat/onboarding-language-picker` from both workflow filters and
+the ruleset's `ref_name.include` list. Extending a ruleset applies its existing
+review/deletion/force-push rules too. The workflow change must be present in the
+integration branch before its stacked PRs can execute the new localization steps;
+requiring an older check with the same name is not proof of localization coverage.
 
 ---
 
@@ -431,6 +499,15 @@ which reports the coverage instead; `make check` never passes that flag.
 ---
 
 ## 7. Tests
+
+`make test-l10n-sync` uses the real Swift compiler and `xcstringstool` in a
+temporary tree. A synchronized catalog passes; adding or changing SwiftUI copy
+without sync fails. Missing, malformed or outdated extraction fails closed,
+case/worktree aliases preserve physical identity and freshness checks, and
+foreign or ambiguous source identities fail closed. Every check asserts that
+catalog bytes stay unchanged. No test copy is
+written into the app. The required CI job runs these controls; missing macOS
+or Xcode fails rather than skipping them.
 
 On macOS, `scripts/tests/test_generate_swift_bindings.py` verifies that unchanged
 normalized outputs retain bytes, inode and nanosecond mtime, changed files are

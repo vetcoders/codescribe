@@ -161,12 +161,23 @@ for label, keys in (("+", added), ("-", removed), ("stale", stale)):
         print(f"  … and {len(keys) - 40} more")
 PY
 
-if cmp -s "$CATALOG" "$WORK/catalog/Localizable.xcstrings"; then
+# Compare the whole catalog semantically. xcstringstool omits the final newline,
+# while repository hooks add it; JSON layout alone must not make a required
+# check red. Keys, source values, comments and all translation metadata remain
+# part of the comparison.
+if python3 - "$CATALOG" "$WORK/catalog/Localizable.xcstrings" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as before, open(sys.argv[2]) as after:
+    raise SystemExit(0 if json.load(before) == json.load(after) else 1)
+PY
+then
   echo "l10n-sync: catalog is in step with the build."
   exit 0
 fi
 if [ "$CHECK" = "1" ]; then
-  echo "l10n-sync: catalog differs from the build — run 'make l10n-sync' and commit the result." >&2
+  echo "l10n-sync: catalog differs from the build — build Debug, run 'make l10n-sync', run 'make verify-l10n-catalog', and commit the catalog with the Swift changes (see docs/LOCALIZATION.md)." >&2
   exit 1
 fi
 cp "$WORK/catalog/Localizable.xcstrings" "$CATALOG"
