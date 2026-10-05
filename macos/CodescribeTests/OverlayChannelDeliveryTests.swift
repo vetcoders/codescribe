@@ -6,6 +6,26 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testRestartRestoresVisibleReceiptWithoutNeedingAnotherBusEvent() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    try fixture.append(fixture.ack(Fixture.firstID))
+    let first = OverlayChannelDeliveryReader(root: fixture.root)
+    let beforeRestart = try await first.read()
+    XCTAssertEqual(beforeRestart.first?.stage, .received)
+    XCTAssertEqual(beforeRestart.first?.isOpen, true)
+
+    // Restart without appending another seal, heartbeat or receipt. A saved
+    // cursor cannot replace the presentation state it has already consumed.
+    let restarted = OverlayChannelDeliveryReader(root: fixture.root)
+    let afterRestart = try await restarted.read()
+    XCTAssertEqual(afterRestart, beforeRestart)
+    let newBytes = await restarted.consumedBytes
+    XCTAssertEqual(newBytes, 0, "restored state does not need a history rescan")
+  }
+
   func testFixtureTriadRequiresNewestSealPendingEnvelopeAndMatchingBusAck() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
