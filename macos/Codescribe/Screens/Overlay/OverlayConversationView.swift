@@ -221,11 +221,15 @@ struct OverlayConversationView: View {
             Button("Stop", systemImage: "stop.fill") { onControl(message, true) }
               .accessibilityIdentifier("overlay-reply-stop-\(message.id)")
           } else {
-            Button("Play", systemImage: "play.fill") { onControl(message, false) }
-              .disabled(pendingControls.contains(message.id) || message.owner == nil)
-              .accessibilityIdentifier("overlay-reply-play-\(message.id)")
+            Button(
+              message.playback?.state == "spoken"
+                ? String(localized: "Play again") : String(localized: "Play"),
+              systemImage: "play.fill"
+            ) { onControl(message, false) }
+            .disabled(pendingControls.contains(message.id) || message.owner == nil)
+            .accessibilityIdentifier("overlay-reply-play-\(message.id)")
           }
-          if let playback = message.playback {
+          if let playback = message.playback, playback.state != "spoken" {
             Text(playbackLabel(playback.state)).font(.caption)
           } else if pendingControls.contains(message.id) {
             Text("Requesting playback").font(.caption)
@@ -259,7 +263,6 @@ struct OverlayConversationView: View {
     switch state {
     case "waiting": String(localized: "Waiting for speech")
     case "playing": String(localized: "Speaking")
-    case "spoken": String(localized: "Spoken")
     case "failed": String(localized: "Speech failed")
     case "refused": String(localized: "Speech refused")
     case "stopped": String(localized: "Speech stopped")

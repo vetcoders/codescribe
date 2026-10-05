@@ -6,6 +6,37 @@ import XCTest
 @testable import Codescribe
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
+  func testCompletedReplyHasOneLocalizedReplayAction() throws {
+    // SwiftUI buttons/text do not expose an AX subtree to this hermetic host.
+    // Pin the presentation branches; existing playback tests exercise canonical tickets/owners.
+    let macos = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let rawSource = try String(
+      contentsOf: macos.appendingPathComponent(
+        "Codescribe/Screens/Overlay/OverlayConversationView.swift"), encoding: .utf8)
+    let source = rawSource.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+      .joined(separator: " ").replacingOccurrences(of: " )", with: ")")
+    XCTAssertTrue(
+      source.contains("message.playback?.state == \"spoken\" ? String(localized: \"Play again\")"))
+    XCTAssertTrue(
+      source.contains("if let playback = message.playback, playback.state != \"spoken\""))
+    XCTAssertTrue(
+      source.contains("Button(\"Stop\", systemImage: \"stop.fill\") { onControl(message, true) }"))
+    XCTAssertTrue(source.contains("systemImage: \"play.fill\") { onControl(message, false) }"))
+    XCTAssertTrue(
+      source.contains(".disabled(pendingControls.contains(message.id) || message.owner == nil)"))
+    let data = try Data(
+      contentsOf: macos.appendingPathComponent(
+        "Codescribe/Resources/Localization/Localizable.xcstrings"))
+    let catalog = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let strings = try XCTUnwrap(catalog["strings"] as? [String: Any])
+    let key = try XCTUnwrap(strings["Play again"] as? [String: Any])
+    let localizations = try XCTUnwrap(key["localizations"] as? [String: Any])
+    let polish = try XCTUnwrap(localizations["pl"] as? [String: Any])
+    let unit = try XCTUnwrap(polish["stringUnit"] as? [String: Any])
+    XCTAssertEqual(unit["value"] as? String, "Odtwórz ponownie")
+  }
+
   func testFollowerDeliveryIdentitySurvivesPrunedMailboxAndQuietRestart() throws {
     // Golden IDs produced by the canonical Python follower, including Unicode case folding.
     let cases: [(String, Bool, String, String)] = [
