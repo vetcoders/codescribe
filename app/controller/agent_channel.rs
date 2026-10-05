@@ -921,18 +921,13 @@ impl RecordingController {
             .clone();
         if let Some(bus) = open.transcript_bus.as_ref() {
             bus.record_channel_receipt(&seal_receipt_line(reason, &opened, &refinement_warnings));
-        } else if let Err(error) = append_seal_receipt(
-            open.bus.as_deref().unwrap_or(shared_bus),
-            reason,
-            &opened,
-            &refinement_warnings,
-        ) {
-            tracing::warn!(
-                %error,
-                digit,
-                reason = reason.as_str(),
-                "channel seal receipt was not appended"
-            );
+        } else {
+            append_seal_receipt(
+                open.bus.as_deref().unwrap_or(shared_bus),
+                reason,
+                &opened,
+                &refinement_warnings,
+            )?;
         }
         super::finish_audio_capture(open.session_id.as_deref());
         let state = self.current_state().await;
