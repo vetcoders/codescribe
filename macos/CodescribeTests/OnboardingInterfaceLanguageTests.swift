@@ -236,7 +236,11 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
     let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
     host.cacheDisplay(in: host.bounds, to: bitmap)
     let request = VNRecognizeTextRequest()
-    request.recognitionLevel = .fast
+    // `.fast` misreads 13 pt text rendered without a display (a headless
+    // session gives the window backing scale 1.0): "Wybierz" came back as
+    // "Wyblerz" on Sztudio over SSH while the same bitmap reads cleanly on a
+    // Retina session. `.accurate` reads both renderings (probe 2026-10-05).
+    request.recognitionLevel = .accurate
     request.recognitionLanguages = ["en-US"]
     request.usesLanguageCorrection = false
     try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
