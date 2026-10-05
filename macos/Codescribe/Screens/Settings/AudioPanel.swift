@@ -705,7 +705,7 @@ struct AudioPanel: View {
   }
 
   private var dictationShortcutLabel: String {
-    model.modeBindings.first { $0.mode == .dictation }?.bindingLabel
+    model.modeBindings.first { $0.mode == .dictation }?.binding.visibleName
       ?? String(localized: "your Dictation shortcut")
   }
 

@@ -26,16 +26,25 @@ enum PermissionState: Equatable {
 
   /// Short mono label shown on the right of a permission row.
   var label: String {
+    label(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
+  }
+
+  func label(locale: Locale) -> String {
     switch self {
     case .granted:
-      return String(localized: "granted", comment: "Permission row status, lower case")
+      return String(
+        localized: LocalizedStringResource(
+          "granted", locale: locale, comment: "Permission row status, lower case"))
     case .denied:
-      return String(localized: "denied", comment: "Permission row status, lower case")
+      return String(
+        localized: LocalizedStringResource(
+          "denied", locale: locale, comment: "Permission row status, lower case"))
     case .notDetermined:
       return String(
-        localized: "not determined",
-        comment: "Permission row status, lower case: the user has not decided yet"
-      )
+        localized: LocalizedStringResource(
+          "not determined", locale: locale,
+          comment: "Permission row status, lower case: the user has not decided yet"
+        ))
     }
   }
 }
@@ -60,13 +69,21 @@ enum PermissionKind: String, CaseIterable, Identifiable {
   /// Display name for the privacy scope. The identity (`rawValue`) is the
   /// System Settings pane name and must never reach the screen directly.
   var displayName: String {
+    displayName(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
+  }
+
+  func displayName(locale: Locale) -> String {
     switch self {
-    case .microphone: String(localized: "Microphone")
-    case .accessibility: String(localized: "Accessibility")
-    case .inputMonitoring: String(localized: "Input Monitoring")
-    case .screenRecording: String(localized: "Screen Recording")
-    case .speechRecognition: String(localized: "Speech Recognition")
-    case .fullDiskAccess: String(localized: "Full Disk Access")
+    case .microphone: String(localized: LocalizedStringResource("Microphone", locale: locale))
+    case .accessibility: String(localized: LocalizedStringResource("Accessibility", locale: locale))
+    case .inputMonitoring:
+      String(localized: LocalizedStringResource("Input Monitoring", locale: locale))
+    case .screenRecording:
+      String(localized: LocalizedStringResource("Screen Recording", locale: locale))
+    case .speechRecognition:
+      String(localized: LocalizedStringResource("Speech Recognition", locale: locale))
+    case .fullDiskAccess:
+      String(localized: LocalizedStringResource("Full Disk Access", locale: locale))
     }
   }
 

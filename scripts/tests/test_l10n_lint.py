@@ -285,6 +285,66 @@ class PluralCategoryTests(unittest.TestCase):
         self.assertEqual(digest, PLURAL_RULES_SHA256, "refresh from cldr-json, never edit by hand")
 
 
+class CoverageTests(unittest.TestCase):
+    """A language the bundle carries is owed in full, in both catalogs."""
+
+    def lint(self, strings: dict, allow_partial: bool = False, languages=None) -> list[str]:
+        errors: list[str] = []
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Localizable.xcstrings"
+            catalog = {"sourceLanguage": "en", "strings": strings, "version": "1.0"}
+            path.write_text(json.dumps(catalog), encoding="utf-8")
+            lint.lint_catalog(path, errors, [], languages, allow_partial)
+        return errors
+
+    def test_a_partly_translated_language_is_refused(self):
+        strings = {"Save": {"localizations": {"pl": unit("Zapisz")}}, "Cancel": {}}
+        errors = self.lint(strings)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("partly translated (1/2)", errors[0])
+
+    def test_allow_partial_turns_the_refusal_into_a_report(self):
+        strings = {"Save": {"localizations": {"pl": unit("Zapisz")}}, "Cancel": {}}
+        self.assertEqual(self.lint(strings, allow_partial=True), [])
+
+    def test_a_complete_language_passes(self):
+        strings = {
+            "Save": {"localizations": {"pl": unit("Zapisz")}},
+            "Cancel": {"localizations": {"pl": unit("Anuluj")}},
+            "Lab": {"shouldTranslate": False},
+        }
+        self.assertEqual(self.lint(strings), [])
+
+    def test_a_language_declared_elsewhere_is_owed_here_too(self):
+        errors = self.lint({"Save": {}}, languages={"pl"})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("carries no translations", errors[0])
+
+    def test_catalog_languages_names_what_a_catalog_carries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "InfoPlist.xcstrings"
+            strings = {"NSMicrophoneUsageDescription": {"localizations": {"en": unit("a"), "pl": unit("b")}}}
+            path.write_text(json.dumps({"sourceLanguage": "en", "strings": strings}), encoding="utf-8")
+            self.assertEqual(lint.catalog_languages(path), {"pl"})
+
+
+class SpellingTests(unittest.TestCase):
+    def test_the_wrong_product_spelling_is_refused_in_any_language(self):
+        errors = problems({"Open CodeScribe": {"localizations": {"pl": unit("Otwórz Codescribe")}}})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("en: spells `CodeScribe`", errors[0])
+        errors = problems({"Open Codescribe": {"localizations": {"pl": unit("Otwórz CodeScribe")}}})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("pl: spells `CodeScribe`", errors[0])
+
+    def test_the_spelling_is_checked_inside_plural_forms_and_substitutions(self):
+        entry = trash_entry()
+        entry["localizations"]["en"]["substitutions"]["files"]["variations"]["plural"]["other"] = unit("%arg CodeScribe files")
+        errors = problems({TRASH: entry})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("[files.plural.other]", errors[0])
+
+
 class ShippedCatalogTests(unittest.TestCase):
     def test_shipped_catalogs_pass(self):
         errors: list[str] = []

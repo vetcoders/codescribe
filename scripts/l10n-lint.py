@@ -21,9 +21,16 @@ wrong or missing string:
      this file names no language but the source; one CLDR has no rules for is
      refused, not held to less. A string varied as a whole has exactly one
      integer argument, since nothing else can name the count;
-  5. no language is declared without translations — a bundle that claims a
-     language it does not carry gives a mixed interface;
-  6. the permission prompts in InfoPlist.xcstrings match macos/project.yml word
+  5. every language the bundle carries is complete: a language declared in
+     either catalog must translate every translatable key of both, because a
+     bundle that claims a language it only partly carries gives a mixed
+     interface. `--allow-partial` turns that into a report while a translation
+     is being built up in the tree; the default is the gate a release needs.
+     A unit in state `needs_review` (a draft written with the code, owed a
+     reviewer — scripts/l10n-sheet.py import --draft) counts as present here
+     and is reported as awaiting review;
+  6. no string, in any language, spells the product other than `Codescribe`;
+  7. the permission prompts in InfoPlist.xcstrings match macos/project.yml word
      for word, so the catalog cannot drift from the plist it overrides.
 
 It reports, without failing, translation coverage per language and count-bearing
@@ -34,8 +41,9 @@ the Swift sources is a different question, answered by scripts/l10n-sync.sh
 against a real build.
 
 Usage:
-  scripts/l10n-lint.py            # validate (exit 1 on any failure)
-  scripts/l10n-lint.py --report   # also list untranslated keys and plural candidates
+  scripts/l10n-lint.py                 # validate (exit 1 on any failure)
+  scripts/l10n-lint.py --report        # also list untranslated keys and plural candidates
+  scripts/l10n-lint.py --allow-partial # report, not refuse, a partly translated language
 
 Contract: docs/LOCALIZATION.md.
 
@@ -53,8 +61,14 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 CATALOG_DIR = REPO / "macos" / "Codescribe" / "Resources" / "Localization"
+# States that satisfy coverage: a reviewed translation, and a draft that ships
+# while it waits for its reviewer (worksheet `--pending` lists the drafts).
+COVERED_STATES = ("translated", "needs_review")
 PROJECT_SPEC = REPO / "macos" / "project.yml"
 SOURCE_LANGUAGE = "en"
+
+# Spellings no string may carry, in any language, with the reason.
+FORBIDDEN_SPELLINGS = {"CodeScribe": "the product is spelled Codescribe"}
 
 # Unicode CLDR cardinal plural rules, byte for byte as published in cldr-json
 # (cldr-core/supplemental/plurals.json). Provenance and licence: NOTICE.
@@ -282,7 +296,29 @@ def lint_arguments(key: str, entry: dict, complain) -> None:
                 )
 
 
-def lint_catalog(path: Path, errors: list[str], report: list[str]) -> None:
+def catalog_languages(path: Path) -> set[str]:
+    """The languages one catalog carries, besides the source."""
+    try:
+        catalog = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    return {
+        language
+        for entry in catalog.get("strings", {}).values()
+        for language in entry.get("localizations", {})
+    } - {SOURCE_LANGUAGE}
+
+
+def lint_catalog(
+    path: Path,
+    errors: list[str],
+    report: list[str],
+    languages: set[str] | None = None,
+    allow_partial: bool = False,
+) -> None:
+    """Lint one catalog. `languages` is every language the bundle carries (the
+    union over both catalogs); each is held to full coverage here. None means
+    the languages this catalog declares itself."""
     name = path.name
     try:
         catalog = json.loads(path.read_text(encoding="utf-8"))
@@ -296,9 +332,12 @@ def lint_catalog(path: Path, errors: list[str], report: list[str]) -> None:
     translatable = 0
     translated = Counter()
     untranslated: dict[str, list[str]] = {}
-    languages = {
-        language for entry in strings.values() for language in entry.get("localizations", {})
-    }
+    reviewing: dict[str, list[str]] = {}
+    if languages is None:
+        languages = {
+            language for entry in strings.values() for language in entry.get("localizations", {})
+        }
+    languages = set(languages) - {SOURCE_LANGUAGE}
     plural_candidates = []
     unruled = set()
 
@@ -306,6 +345,16 @@ def lint_catalog(path: Path, errors: list[str], report: list[str]) -> None:
         if entry.get("extractionState") == "stale":
             errors.append(f"{name}: stale key (no longer in code): {key!r}")
         localizations = entry.get("localizations", {})
+        spelled = [(SOURCE_LANGUAGE, "", key)]
+        for language, localization in localizations.items():
+            spelled += [(language, label, unit.get("value", "")) for label, unit in leaf_units(localization)]
+            for sub, rule in localization.get("substitutions", {}).items():
+                spelled += [(language, f"{sub}.{label}", unit.get("value", "")) for label, unit in leaf_units(rule)]
+        for language, label, text in spelled:
+            for spelling, reason in FORBIDDEN_SPELLINGS.items():
+                if spelling in text:
+                    where = f" [{label}]" if label else ""
+                    errors.append(f"{name}: {language}{where}: spells `{spelling}` ({reason}) in {key!r}")
         if entry.get("shouldTranslate") is False:
             continue
         translatable += 1
@@ -339,13 +388,15 @@ def lint_catalog(path: Path, errors: list[str], report: list[str]) -> None:
                 if absent:
                     complain(language, where, f"plural forms missing ({', '.join(absent)})")
             if language != SOURCE_LANGUAGE:
-                if units and all(unit.get("state") == "translated" for _, unit in units):
+                if units and all(unit.get("state") in COVERED_STATES for _, unit in units):
                     translated[language] += 1
+                    if any(unit.get("state") == "needs_review" for _, unit in units):
+                        reviewing.setdefault(language, []).append(key)
 
-        for language in languages - {SOURCE_LANGUAGE}:
+        for language in languages:
             localization = localizations.get(language)
             units = leaf_units(localization) if localization else []
-            if not units or any(unit.get("state") != "translated" for _, unit in units):
+            if not units or any(unit.get("state") not in COVERED_STATES for _, unit in units):
                 untranslated.setdefault(language, []).append(key)
 
     for language in sorted(unruled):
@@ -354,15 +405,27 @@ def lint_catalog(path: Path, errors: list[str], report: list[str]) -> None:
             f"{PLURAL_RULES.relative_to(REPO)} has no plural rules for it "
             "(check the language code, or refresh the CLDR data)"
         )
-    for language in sorted(languages - {SOURCE_LANGUAGE}):
+    for language in sorted(languages):
         done = translated[language]
         if done == 0:
             errors.append(
                 f"{name}: language '{language}' is declared but carries no translations"
             )
-        report.append(f"{name}: {language}: {done}/{translatable} translated")
+        elif done < translatable and not allow_partial:
+            errors.append(
+                f"{name}: language '{language}' is partly translated "
+                f"({done}/{translatable}); a language the bundle carries must be complete "
+                "(scripts/l10n-sheet.py import, or --allow-partial while it is being built up)"
+            )
+        drafts = len(reviewing.get(language, []))
+        report.append(
+            f"{name}: {language}: {done}/{translatable} translated"
+            + (f", {drafts} awaiting review" if drafts else "")
+        )
         for key in sorted(untranslated.get(language, [])):
             report.append(f"  untranslated ({language}): {key!r}")
+        for key in sorted(reviewing.get(language, [])):
+            report.append(f"  awaiting review ({language}): {key!r}")
     report.append(f"{name}: {len(strings)} keys, {translatable} translatable")
     for key in sorted(plural_candidates):
         report.append(f"  count without plural variations: {key!r}")
@@ -396,9 +459,10 @@ def lint_usage_descriptions(errors: list[str]) -> None:
 
 def main(argv: list[str]) -> int:
     verbose = "--report" in argv[1:]
-    unknown = [arg for arg in argv[1:] if arg != "--report"]
+    allow_partial = "--allow-partial" in argv[1:]
+    unknown = [arg for arg in argv[1:] if arg not in ("--report", "--allow-partial")]
     if unknown:
-        print("usage: scripts/l10n-lint.py [--report]", file=sys.stderr)
+        print("usage: scripts/l10n-lint.py [--report] [--allow-partial]", file=sys.stderr)
         return 2
 
     try:
@@ -413,8 +477,13 @@ def main(argv: list[str]) -> int:
     catalogs = sorted(CATALOG_DIR.glob("*.xcstrings"))
     if not catalogs:
         errors.append(f"no catalogs under {CATALOG_DIR.relative_to(REPO)}")
+    # A language is a property of the bundle, not of one table: declared in
+    # either catalog, it is owed in both.
+    languages: set[str] = set()
     for path in catalogs:
-        lint_catalog(path, errors, report)
+        languages |= catalog_languages(path)
+    for path in catalogs:
+        lint_catalog(path, errors, report, languages, allow_partial)
     lint_usage_descriptions(errors)
 
     for line in report:

@@ -34,10 +34,7 @@ final class OnboardingWindowController {
       model.onFinished = { [weak self] in self?.close() }
       let hosting = NSHostingController(rootView: OnboardingView(model: model))
       let window = NSWindow(contentViewController: hosting)
-      window.title = String(
-        localized: "Welcome to codescribe",
-        comment: "Setup wizard window title; codescribe is the product name, kept lowercase"
-      )
+      window.title = model.windowTitle
       window.setContentSize(NSSize(width: 720, height: 620))
       window.styleMask = [.titled, .closable, .fullSizeContentView]
       window.titlebarAppearsTransparent = true

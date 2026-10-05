@@ -1,68 +1,49 @@
 import Foundation
 import SwiftUI
 
-// Individual step bodies for the first-run wizard. Welcome, Permission (reused
-// for all five scopes), ApiKey, and Done landed in B3a; B3b fills the four
-// choice steps (Mode / Language / HotkeyMode / AgenticReadiness) with real
-// controls backed by the shared config / hotkeys / agent-status seams.
+// Individual step bodies for the first-run wizard, backed by the shared
+// config, hotkeys, permissions, and agent-status seams.
 // Navigation (Back / Continue / Skip / Finish) lives in the footer in
 // OnboardingView.swift — these bodies only render content and step-local actions.
 
-// MARK: - Welcome
+// MARK: - Interface language
 
-struct WelcomeStepView: View {
+struct InterfaceLanguageStepView: View {
+  @ObservedObject var model: OnboardingViewModel
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: String(localized: "Welcome", comment: "Setup step eyebrow"))
-      Text("Think it. Say it. Keep your flow.")
-        .font(.title2.weight(.semibold))
-        .foregroundStyle(.primary)
-        .fixedSize(horizontal: false, vertical: true)
-      Text(
-        "Bring your words into the apps you already use. We’ll connect your microphone, choose your language and shortcuts, and optionally add an AI assistant. Every choice can be changed later in Settings."
+    VStack(alignment: .leading, spacing: 20) {
+      OnboardingStepHeader(
+        eyebrow: String(
+          localized: LocalizedStringResource(
+            "Interface language", locale: model.interfaceLocale, comment: "First setup step eyebrow"
+          )),
+        title: String(
+          localized: LocalizedStringResource(
+            "What language should Codescribe use?", locale: model.interfaceLocale,
+            comment: "First setup step heading")),
+        blurb: String(
+          localized: LocalizedStringResource(
+            "This changes the app’s interface. You’ll choose your dictation language later.",
+            locale: model.interfaceLocale,
+            comment: "Interface language is independent of speech recognition"))
       )
-      .font(.body)
-      .lineSpacing(3)
-      .foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
-
-      HStack(alignment: .top, spacing: 14) {
-        invitation(
-          "Speak naturally", symbol: "waveform", detail: "Capture a thought while it’s fresh.")
-        invitation(
-          "Shape your words", symbol: "text.alignleft", detail: "Review and refine your transcript."
-        )
-        invitation(
-          "Choose where it goes", symbol: "paperplane", detail: "Keep control of the destination.")
+      ForEach(InterfaceLanguage.allCases, id: \.self) { language in
+        OnboardingChoiceCard(
+          title: language.nativeName,
+          subtitle: nil,
+          isSelected: model.interfaceLanguage == language
+        ) { model.selectInterfaceLanguage(language) }
+        .accessibilityIdentifier("onboarding-interface-language-\(language.rawValue)")
       }
-      .padding(.top, 20)
     }
-  }
-
-  private func invitation(
-    _ title: LocalizedStringKey,
-    symbol: String,
-    detail: LocalizedStringKey
-  ) -> some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Image(systemName: symbol)
-        .font(.system(size: 26, weight: .medium))
-        .accessibilityHidden(true)
-      Text(title).font(.headline)
-      Text(detail).font(.callout).foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    .frame(maxWidth: .infinity, minHeight: 135, alignment: .topLeading)
-    .padding(18)
-
-    .accessibilityElement(children: .combine)
   }
 }
 
 // MARK: - Step scaffold + selectable choice card (shared by Mode / Language / Hotkey)
 
 /// Shared heading (eyebrow + title + blurb) for the choice steps, matching the
-/// Welcome/Permission typography.
+/// permission-step typography.
 private struct OnboardingStepHeader: View {
   let eyebrow: String
   let title: String
@@ -85,7 +66,7 @@ private struct OnboardingStepHeader: View {
 }
 
 /// A single radio-style selectable card: title + optional subtitle, with a
-/// System-accent ring + filled dot when selected. Reused by the choice steps.
+/// Brand-colored checkmark when selected. Reused by the choice steps.
 struct OnboardingChoiceCard: View {
   let title: String
   let subtitle: String?
@@ -96,7 +77,7 @@ struct OnboardingChoiceCard: View {
     Button(action: action) {
       HStack(alignment: .top, spacing: 12) {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-          .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+          .foregroundStyle(isSelected ? CSColor.terracotta : Color.secondary)
         VStack(alignment: .leading, spacing: 3) {
           Text(title).font(.body.weight(.semibold))
           if let subtitle {
@@ -137,33 +118,43 @@ struct ModeStepView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       OnboardingStepHeader(
-        eyebrow: String(localized: "Operating lane", comment: "Setup step eyebrow"),
-        title: String(localized: "Where should your words go?", comment: "Setup step heading"),
+        eyebrow: String(
+          localized: LocalizedStringResource(
+            "Operating lane", locale: model.interfaceLocale, comment: "Setup step eyebrow")),
+        title: String(
+          localized: LocalizedStringResource(
+            "Where should your words go?", locale: model.interfaceLocale,
+            comment: "Setup step heading")),
         blurb: String(
-          localized:
+          localized: LocalizedStringResource(
             "Start with dictation, or bring an assistant into the conversation. Change this any time in Settings.",
-          comment: "Setup step blurb")
+            locale: model.interfaceLocale,
+            comment: "Setup step blurb"))
       )
 
       VStack(spacing: 10) {
         OnboardingChoiceCard(
           title: String(
-            localized: "Basic — dictation only",
-            comment: "Operating lane choice; Basic is the lane name"),
+            localized: LocalizedStringResource(
+              "Basic — dictation only", locale: model.interfaceLocale,
+              comment: "Operating lane choice; Basic is the lane name")),
           subtitle: String(
-            localized: "Voice-to-text anywhere. The simplest, fastest setup.",
-            comment: "Operating lane choice detail"),
+            localized: LocalizedStringResource(
+              "Voice-to-text anywhere. The simplest, fastest setup.", locale: model.interfaceLocale,
+              comment: "Operating lane choice detail")),
           isSelected: model.onboardingMode == .basic
         ) { model.selectMode(.basic) }
 
         OnboardingChoiceCard(
           title: String(
-            localized: "Agentic — dictation + AI agent",
-            comment: "Operating lane choice; Agentic is the lane name"),
+            localized: LocalizedStringResource(
+              "Agentic — dictation + AI agent", locale: model.interfaceLocale,
+              comment: "Operating lane choice; Agentic is the lane name")),
           subtitle: String(
-            localized:
+            localized: LocalizedStringResource(
               "Talk with an AI assistant and connect its tools, so your voice can drive an AI assistant, not just type.",
-            comment: "Operating lane choice detail"),
+              locale: model.interfaceLocale,
+              comment: "Operating lane choice detail")),
           isSelected: model.onboardingMode == .agentic
         ) { model.selectMode(.agentic) }
       }
@@ -171,8 +162,10 @@ struct ModeStepView: View {
 
       OnboardingStepNote(
         text: String(
-          localized: "Agentic adds one more setup step (readiness check). Basic skips it.",
-          comment: "Setup step footnote; Agentic and Basic are the two lane names"))
+          localized: LocalizedStringResource(
+            "Agentic adds one more setup step (readiness check). Basic skips it.",
+            locale: model.interfaceLocale,
+            comment: "Setup step footnote; Agentic and Basic are the two lane names")))
     }
   }
 }
@@ -187,12 +180,18 @@ struct LanguageStepView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       OnboardingStepHeader(
-        eyebrow: String(localized: "Language", comment: "Setup step eyebrow"),
-        title: String(localized: "Pick your dictation language.", comment: "Setup step heading"),
+        eyebrow: String(
+          localized: LocalizedStringResource(
+            "Language", locale: model.interfaceLocale, comment: "Setup step eyebrow")),
+        title: String(
+          localized: LocalizedStringResource(
+            "Pick your dictation language.", locale: model.interfaceLocale,
+            comment: "Setup step heading")),
         blurb: String(
-          localized:
+          localized: LocalizedStringResource(
             "Sets the transcription language. Auto-detect handles mixed or multilingual speech. Change it any time in Settings.",
-          comment: "Setup step blurb; Auto-detect is the name of the first language choice"))
+            locale: model.interfaceLocale,
+            comment: "Setup step blurb; Auto-detect is the name of the first language choice")))
 
       VStack(spacing: 10) {
         ForEach(choices, id: \.self) { language in
@@ -211,12 +210,17 @@ struct LanguageStepView: View {
     switch language {
     case .auto:
       return String(
-        localized: "Auto-detect",
-        comment: "Dictation language choice: let the engine detect the language")
+        localized: LocalizedStringResource(
+          "Auto-detect", locale: model.interfaceLocale,
+          comment: "Dictation language choice: let the engine detect the language"))
     case .english:
-      return String(localized: "English", comment: "Dictation language choice")
+      return String(
+        localized: LocalizedStringResource(
+          "English", locale: model.interfaceLocale, comment: "Dictation language choice"))
     case .polish:
-      return String(localized: "Polish", comment: "Dictation language choice")
+      return String(
+        localized: LocalizedStringResource(
+          "Polish", locale: model.interfaceLocale, comment: "Dictation language choice"))
     }
   }
 
@@ -224,8 +228,9 @@ struct LanguageStepView: View {
     switch language {
     case .auto:
       return String(
-        localized: "Multilingual — detects the language as you speak.",
-        comment: "Detail under the Auto-detect dictation language choice")
+        localized: LocalizedStringResource(
+          "Multilingual — detects the language as you speak.", locale: model.interfaceLocale,
+          comment: "Detail under the Auto-detect dictation language choice"))
     default: return nil
     }
   }
@@ -239,18 +244,24 @@ struct HotkeyModeStepView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       OnboardingStepHeader(
-        eyebrow: String(localized: "Hotkeys", comment: "Setup step eyebrow"),
-        title: String(localized: "How do you trigger recording?", comment: "Setup step heading"),
+        eyebrow: String(
+          localized: LocalizedStringResource(
+            "Hotkeys", locale: model.interfaceLocale, comment: "Setup step eyebrow")),
+        title: String(
+          localized: LocalizedStringResource(
+            "How do you trigger recording?", locale: model.interfaceLocale,
+            comment: "Setup step heading")),
         blurb: String(
-          localized:
+          localized: LocalizedStringResource(
             "Pick a starting preset. This sets the Dictation, Formatting, and Assistive shortcuts for you.",
-          comment: "Setup step blurb; Dictation, Formatting and Assistive are the three modes"))
+            locale: model.interfaceLocale,
+            comment: "Setup step blurb; Dictation, Formatting and Assistive are the three modes")))
 
       VStack(spacing: 10) {
         ForEach(HotkeyModeChoice.allCases, id: \.self) { mode in
           OnboardingChoiceCard(
-            title: mode.label,
-            subtitle: mode.summary,
+            title: mode.label(locale: model.interfaceLocale),
+            subtitle: mode.summary(locale: model.interfaceLocale),
             isSelected: model.hotkeyMode == mode
           ) { model.selectHotkeyMode(mode) }
         }
@@ -259,8 +270,10 @@ struct HotkeyModeStepView: View {
 
       OnboardingStepNote(
         text: String(
-          localized: "Fine-tune the exact keys later in Settings › Shortcuts.",
-          comment: "Setup step footnote; Settings › Shortcuts is a navigation path in the app"))
+          localized: LocalizedStringResource(
+            "Fine-tune the exact keys later in Settings › Shortcuts.",
+            locale: model.interfaceLocale,
+            comment: "Setup step footnote; Settings › Shortcuts is a navigation path in the app")))
     }
   }
 }
@@ -292,8 +305,13 @@ struct AgenticReadinessStepView: View {
               .font(.caption.monospaced())
               .textSelection(.enabled)
           }
-          if model.providerAccessResolved, model.providerAccessError == nil, let readiness = model.readiness {
-            SettingsSectionLabel(String(localized: "Agent readiness"))
+          if model.providerAccessResolved, model.providerAccessError == nil,
+            let readiness = model.readiness
+          {
+            SettingsSectionLabel(
+              String(
+                localized: LocalizedStringResource("Agent readiness", locale: model.interfaceLocale)
+              ))
             readinessPill(ready: readiness.ready)
             Text(
               "Agent readiness covers Assistive access and native tools. Cloud Formatting is configured separately in Settings › Agent › LLM lanes."
@@ -309,7 +327,9 @@ struct AgenticReadinessStepView: View {
             .font(.callout)
             .foregroundStyle(.secondary)
           if let mcpStatus = model.mcpStatus {
-            SettingsSectionLabel(String(localized: "MCP servers"))
+            SettingsSectionLabel(
+              String(
+                localized: LocalizedStringResource("MCP servers", locale: model.interfaceLocale)))
             statusCard(rows: mcpStatus.rows)
               .accessibilityIdentifier("onboarding-mcp-status")
           }
@@ -330,8 +350,10 @@ struct AgenticReadinessStepView: View {
 
       OnboardingStepNote(
         text: String(
-          localized: "This connection is optional. You can continue and set it up later.",
-          comment: "Setup step footnote on the agent-readiness step"))
+          localized: LocalizedStringResource(
+            "This connection is optional. You can continue and set it up later.",
+            locale: model.interfaceLocale,
+            comment: "Setup step footnote on the agent-readiness step")))
     }
   }
 
@@ -362,8 +384,9 @@ struct AgenticReadinessStepView: View {
           OnboardingChoiceCard(
             title: client.displayName,
             subtitle: String(
-              localized: "Connect a live coding session",
-              comment: "Detail under a coding-assistant checkbox"),
+              localized: LocalizedStringResource(
+                "Connect a live coding session", locale: model.interfaceLocale,
+                comment: "Detail under a coding-assistant checkbox")),
             isSelected: model.selectedAgentClients.contains(client)
           ) { model.toggleAgentClient(client) }
         }
@@ -393,8 +416,12 @@ struct AgenticReadinessStepView: View {
     let accentLight = ready ? CSColor.oliveLight : CSColor.terracottaLight
     return Text(
       ready
-        ? String(localized: "Agent capabilities ready")
-        : String(localized: "Agent capabilities not ready")
+        ? String(
+          localized: LocalizedStringResource(
+            "Agent capabilities ready", locale: model.interfaceLocale))
+        : String(
+          localized: LocalizedStringResource(
+            "Agent capabilities not ready", locale: model.interfaceLocale))
     )
     .textCase(.uppercase)
     .font(CSFont.mono(9, .semibold))
@@ -451,25 +478,29 @@ struct PermissionStepView: View {
   private var primaryTitle: String {
     if state == .notDetermined, kind.supportsInAppPermissionRequest {
       return String(
-        localized: "Allow \(kind.displayName)",
-        comment: "Button on a permission step; %@ is a privacy scope such as Microphone")
+        localized: LocalizedStringResource(
+          "Allow \(kind.displayName(locale: model.interfaceLocale))", locale: model.interfaceLocale,
+          comment: "Button on a permission step; %@ is a privacy scope such as Microphone"))
     }
     return String(
-      localized: "Open System Settings",
-      comment: "Button that deep-links into the macOS System Settings privacy pane")
+      localized: LocalizedStringResource(
+        "Open System Settings", locale: model.interfaceLocale,
+        comment: "Button that deep-links into the macOS System Settings privacy pane"))
   }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       EyebrowLabel(
         text: String(
-          localized: "Permission · \(kind.displayName)",
-          comment: "Eyebrow on a permission step; %@ is a privacy scope such as Microphone"))
-      Text(kind.onboardingTitle)
+          localized: LocalizedStringResource(
+            "Permission · \(kind.displayName(locale: model.interfaceLocale))",
+            locale: model.interfaceLocale,
+            comment: "Eyebrow on a permission step; %@ is a privacy scope such as Microphone")))
+      Text(kind.onboardingTitle(locale: model.interfaceLocale))
         .font(.title2.weight(.semibold))
         .foregroundStyle(.primary)
         .fixedSize(horizontal: false, vertical: true)
-      Text(kind.onboardingReason)
+      Text(kind.onboardingReason(locale: model.interfaceLocale))
         .font(.body)
         .lineSpacing(3)
         .foregroundStyle(.secondary)
@@ -512,7 +543,7 @@ struct PermissionStepView: View {
   private var statusRow: some View {
     HStack(spacing: 10) {
       Circle().fill(statusColor.opacity(0.9)).frame(width: 8, height: 8)
-      Text(state.label)
+      Text(state.label(locale: model.interfaceLocale))
         .font(CSFont.mono(12, .semibold))
         .foregroundStyle(statusColor)
     }
@@ -537,7 +568,10 @@ struct ApiKeyStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: String(localized: "AI provider", comment: "Setup step eyebrow"))
+      EyebrowLabel(
+        text: String(
+          localized: LocalizedStringResource(
+            "AI provider", locale: model.interfaceLocale, comment: "Setup step eyebrow")))
       Text("Connect an AI provider.")
         .font(.title2.weight(.semibold))
         .foregroundStyle(.primary)
@@ -560,15 +594,23 @@ struct ApiKeyStepView: View {
         .font(.callout)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
-      if model.providerAccessResolved, model.providerAccessError == nil, model.selectedProviderHasAccountAccess {
+      if model.providerAccessResolved, model.providerAccessError == nil,
+        model.selectedProviderHasAccountAccess
+      {
         HStack {
           Text("Provider account")
           Spacer(minLength: 0)
           Text(
             model.selectedProviderAccountError != nil
-              ? String(localized: "Account access unavailable")
+              ? String(
+                localized: LocalizedStringResource(
+                  "Account access unavailable", locale: model.interfaceLocale))
               : model.selectedProviderAccountConnected
-              ? String(localized: "connected") : String(localized: "not connected")
+                ? String(
+                  localized: LocalizedStringResource("connected", locale: model.interfaceLocale))
+                : String(
+                  localized: LocalizedStringResource("not connected", locale: model.interfaceLocale)
+                )
           )
         }
         .font(.callout)
@@ -625,8 +667,8 @@ struct ApiKeyStepView: View {
       !model.providerAccessResolved || model.providerAccessError != nil
       ? CSColor.textFaint
       : isSet
-      ? CSColor.oliveLight
-      : (isOptional ? CSColor.textFaint : CSColor.terracottaLight)
+        ? CSColor.oliveLight
+        : (isOptional ? CSColor.textFaint : CSColor.terracottaLight)
     return VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 10) {
         Circle()
@@ -639,17 +681,30 @@ struct ApiKeyStepView: View {
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textFaint)
         Spacer(minLength: 0)
-        Text(!model.providerAccessResolved
-          ? String(localized: "Checking provider access…")
-          : model.providerAccessError != nil
-            ? String(localized: "Provider access unavailable")
-            : isSet ? String(localized: "set") : String(localized: "not set"))
-          .font(CSFont.mono(10, .semibold))
-          .foregroundStyle(statusColor)
+        Text(
+          !model.providerAccessResolved
+            ? String(
+              localized: LocalizedStringResource(
+                "Checking provider access…", locale: model.interfaceLocale))
+            : model.providerAccessError != nil
+              ? String(
+                localized: LocalizedStringResource(
+                  "Provider access unavailable", locale: model.interfaceLocale))
+              : isSet
+                ? String(localized: LocalizedStringResource("set", locale: model.interfaceLocale))
+                : String(
+                  localized: LocalizedStringResource("not set", locale: model.interfaceLocale))
+        )
+        .font(CSFont.mono(10, .semibold))
+        .foregroundStyle(statusColor)
       }
       HStack(spacing: 8) {
         SecureField(
-          isSet ? String(localized: "Replace key…") : String(localized: "Paste key…"),
+          isSet
+            ? String(
+              localized: LocalizedStringResource("Replace key…", locale: model.interfaceLocale))
+            : String(
+              localized: LocalizedStringResource("Paste key…", locale: model.interfaceLocale)),
           text: $model.apiKeyDraft
         )
         .focused($keyFocused)
@@ -662,10 +717,12 @@ struct ApiKeyStepView: View {
       if !model.apiKeySaveAvailable,
         !model.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       {
-        Text("This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available.")
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
+        Text(
+          "This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available."
+        )
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
       }
     }
     .padding(.vertical, 13)
@@ -687,7 +744,10 @@ struct DoneStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: String(localized: "All set", comment: "Setup step eyebrow"))
+      EyebrowLabel(
+        text: String(
+          localized: LocalizedStringResource(
+            "All set", locale: model.interfaceLocale, comment: "Setup step eyebrow")))
       Text("You're ready to talk.")
         .font(.title2.weight(.semibold))
         .foregroundStyle(.primary)
@@ -702,24 +762,33 @@ struct DoneStepView: View {
       VStack(alignment: .leading, spacing: 8) {
         ForEach(summaryOrder) { kind in
           summaryRow(
-            kind.displayName,
+            kind.displayName(locale: model.interfaceLocale),
             done: model.permissions.state(kind).isGranted,
             doneLabel: String(
-              localized: "granted", comment: "Permission status: this permission is granted"))
+              localized: LocalizedStringResource(
+                "granted", locale: model.interfaceLocale,
+                comment: "Permission status: this permission is granted")))
         }
         if model.providerAccessResolved, model.providerAccessError == nil {
           summaryRow(
             String(
-              localized: "Provider API key",
-              comment: "Summary row: whether an API key is stored for the chosen AI provider"),
+              localized: LocalizedStringResource(
+                "Provider API key", locale: model.interfaceLocale,
+                comment: "Summary row: whether an API key is stored for the chosen AI provider")),
             done: model.selectedProviderKeySet,
-            doneLabel: String(localized: "set", comment: "Status chip: a value is stored"))
+            doneLabel: String(
+              localized: LocalizedStringResource(
+                "set", locale: model.interfaceLocale, comment: "Status chip: a value is stored")))
           if model.selectedProviderHasAccountAccess, model.selectedProviderAccountError == nil {
             summaryRow(
-              String(localized: "Provider account"),
+              String(
+                localized: LocalizedStringResource(
+                  "Provider account", locale: model.interfaceLocale)),
               done: model.selectedProviderAccountConnected,
-              doneLabel: String(localized: "connected"),
-              missingLabel: String(localized: "not connected"))
+              doneLabel: String(
+                localized: LocalizedStringResource("connected", locale: model.interfaceLocale)),
+              missingLabel: String(
+                localized: LocalizedStringResource("not connected", locale: model.interfaceLocale)))
           }
         }
       }
@@ -737,7 +806,7 @@ struct DoneStepView: View {
 
   private func summaryRow(
     _ label: String, done: Bool, doneLabel: String,
-    missingLabel: String = String(localized: "optional")
+    missingLabel: String? = nil
   ) -> some View {
     HStack(spacing: 10) {
       CSIconView(
@@ -750,9 +819,14 @@ struct DoneStepView: View {
         .font(CSFont.ui(13))
         .foregroundStyle(CSColor.textBody)
       Spacer(minLength: 0)
-      Text(done ? doneLabel : missingLabel)
-        .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(done ? CSColor.oliveLight : CSColor.textFaint)
+      Text(
+        done
+          ? doneLabel
+          : (missingLabel
+            ?? String(localized: LocalizedStringResource("optional", locale: model.interfaceLocale)))
+      )
+      .font(CSFont.mono(10, .semibold))
+      .foregroundStyle(done ? CSColor.oliveLight : CSColor.textFaint)
     }
   }
 }
@@ -761,52 +835,71 @@ struct DoneStepView: View {
 
 extension PermissionKind {
   /// Wizard heading, mirroring the excised AppKit `PermissionKind::title`.
-  var onboardingTitle: String {
+  func onboardingTitle(locale: Locale) -> String {
     switch self {
     case .microphone:
-      return String(localized: "Microphone Access", comment: "Permission step heading")
+      return String(
+        localized: LocalizedStringResource(
+          "Microphone Access", locale: locale, comment: "Permission step heading"))
     case .accessibility:
-      return String(localized: "Accessibility Access", comment: "Permission step heading")
+      return String(
+        localized: LocalizedStringResource(
+          "Accessibility Access", locale: locale, comment: "Permission step heading"))
     case .inputMonitoring:
-      return String(localized: "Input Monitoring Access", comment: "Permission step heading")
+      return String(
+        localized: LocalizedStringResource(
+          "Input Monitoring Access", locale: locale, comment: "Permission step heading"))
     case .screenRecording:
-      return String(localized: "Screen Recording Access", comment: "Permission step heading")
+      return String(
+        localized: LocalizedStringResource(
+          "Screen Recording Access", locale: locale, comment: "Permission step heading"))
     case .speechRecognition:
-      return String(localized: "Speech Recognition Access", comment: "Permission step heading")
+      return String(
+        localized: LocalizedStringResource(
+          "Speech Recognition Access", locale: locale, comment: "Permission step heading"))
     case .fullDiskAccess:
-      return String(localized: "Full Disk Access", comment: "Permission step heading")
+      return String(
+        localized: LocalizedStringResource(
+          "Full Disk Access", locale: locale, comment: "Permission step heading"))
     }
   }
 
   /// Why codescribe needs the scope, mirroring `PermissionKind::reason`.
-  var onboardingReason: String {
+  func onboardingReason(locale: Locale) -> String {
     switch self {
     case .microphone:
       return String(
-        localized: "Transcribe your voice into text. Audio is processed locally on your Mac.",
-        comment: "Why the app asks for the Microphone scope")
+        localized: LocalizedStringResource(
+          "Transcribe your voice into text. Audio is processed locally on your Mac.",
+          locale: locale,
+          comment: "Why the app asks for the Microphone scope"))
     case .accessibility:
       return String(
-        localized: "Type transcribed text into any application and control text insertion.",
-        comment: "Why the app asks for the Accessibility scope")
+        localized: LocalizedStringResource(
+          "Type transcribed text into any application and control text insertion.", locale: locale,
+          comment: "Why the app asks for the Accessibility scope"))
     case .inputMonitoring:
       return String(
-        localized: "Detect keyboard shortcuts to start and stop voice recording.",
-        comment: "Why the app asks for the Input Monitoring scope")
+        localized: LocalizedStringResource(
+          "Detect keyboard shortcuts to start and stop voice recording.", locale: locale,
+          comment: "Why the app asks for the Input Monitoring scope"))
     case .screenRecording:
       return String(
-        localized:
+        localized: LocalizedStringResource(
           "Capture screen context to give the AI assistant visual awareness of what you're working on.",
-        comment: "Why the app asks for the Screen Recording scope")
+          locale: locale,
+          comment: "Why the app asks for the Screen Recording scope"))
     case .speechRecognition:
       return String(
-        localized: "Power Apple live dictation on-device. Speech never leaves your Mac.",
-        comment: "Why the app asks for the Speech Recognition scope")
+        localized: LocalizedStringResource(
+          "Power Apple live dictation on-device. Speech never leaves your Mac.", locale: locale,
+          comment: "Why the app asks for the Speech Recognition scope"))
     case .fullDiskAccess:
       return String(
-        localized:
+        localized: LocalizedStringResource(
           "Read project files for AI context. Optional — limits file-aware features if skipped.",
-        comment: "Why the app asks for the Full Disk Access scope")
+          locale: locale,
+          comment: "Why the app asks for the Full Disk Access scope"))
     }
   }
 }

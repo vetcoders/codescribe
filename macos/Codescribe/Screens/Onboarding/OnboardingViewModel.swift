@@ -24,11 +24,19 @@ enum OnboardingModeChoice: String, CaseIterable {
   var value: String { rawValue }
 
   var label: String {
+    label(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
+  }
+
+  func label(locale: Locale) -> String {
     switch self {
     case .basic:
-      return String(localized: "Basic", comment: "Operating lane: dictation only")
+      return String(
+        localized: LocalizedStringResource(
+          "Basic", locale: locale, comment: "Operating lane: dictation only"))
     case .agentic:
-      return String(localized: "Agentic", comment: "Operating lane: dictation plus an AI agent")
+      return String(
+        localized: LocalizedStringResource(
+          "Agentic", locale: locale, comment: "Operating lane: dictation plus an AI agent"))
     }
   }
 
@@ -47,30 +55,47 @@ enum HotkeyModeChoice: String, CaseIterable {
   case both
 
   var label: String {
+    label(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
+  }
+
+  func label(locale: Locale) -> String {
     switch self {
     case .hold:
-      return String(localized: "Hold to talk", comment: "Hotkey preset name")
+      return String(
+        localized: LocalizedStringResource(
+          "Hold to talk", locale: locale, comment: "Hotkey preset name"))
     case .toggle:
-      return String(localized: "Hands-off (toggle)", comment: "Hotkey preset name")
+      return String(
+        localized: LocalizedStringResource(
+          "Hands-off (toggle)", locale: locale, comment: "Hotkey preset name"))
     case .both:
-      return String(localized: "Hybrid (both)", comment: "Hotkey preset name: hold and toggle")
+      return String(
+        localized: LocalizedStringResource(
+          "Hybrid (both)", locale: locale, comment: "Hotkey preset name: hold and toggle"))
     }
   }
 
   var summary: String {
+    summary(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
+  }
+
+  func summary(locale: Locale) -> String {
     switch self {
     case .hold:
       return String(
-        localized: "Press and hold Fn/Globe while you speak; release to stop.",
-        comment: "Hotkey preset detail; Fn and Globe are the key caps on a Mac keyboard")
+        localized: LocalizedStringResource(
+          "Press and hold Fn/Globe while you speak; release to stop.", locale: locale,
+          comment: "Hotkey preset detail; Fn and Globe are the key caps on a Mac keyboard"))
     case .toggle:
       return String(
-        localized: "Double-tap Left/Right Option to start, tap again to stop.",
-        comment: "Hotkey preset detail; Option is the key cap on a Mac keyboard")
+        localized: LocalizedStringResource(
+          "Double-tap Left/Right Option to start, tap again to stop.", locale: locale,
+          comment: "Hotkey preset detail; Option is the key cap on a Mac keyboard"))
     case .both:
       return String(
-        localized: "Hold Fn/Globe to dictate, or double-tap Option to toggle.",
-        comment: "Hotkey preset detail; Fn, Globe and Option are Mac key caps")
+        localized: LocalizedStringResource(
+          "Hold Fn/Globe to dictate, or double-tap Option to toggle.", locale: locale,
+          comment: "Hotkey preset detail; Fn, Globe and Option are Mac key caps"))
     }
   }
 
@@ -117,6 +142,10 @@ final class OnboardingViewModel: ObservableObject {
   @Published private(set) var permissions: PermissionSnapshot
   @Published private(set) var keyStatus: CsKeyStatus
 
+  @Published private(set) var interfaceLanguage: InterfaceLanguage
+  var interfaceLocale: Locale { interfaceLanguage.locale }
+  private let languagePreferences: UserDefaults
+
   // Mode step state.
   @Published private(set) var onboardingMode: OnboardingModeChoice
 
@@ -162,7 +191,9 @@ final class OnboardingViewModel: ObservableObject {
     hotkeys: HotkeysEngine = RealHotkeysEngine(),
     agentStatus: AgentStatusEngine = RealAgentStatusEngine(),
     agentBridge: AgentBridgeInstalling = RealAgentBridgeInstaller(),
-    probe: PermissionProbing = NativePermissionProbe()
+    probe: PermissionProbing = NativePermissionProbe(),
+    languagePreferences: UserDefaults = .standard,
+    preferredLanguages: [String] = Locale.preferredLanguages
   ) {
     let bridgeStatus = agentBridge.status()
     self.engine = engine
@@ -170,6 +201,10 @@ final class OnboardingViewModel: ObservableObject {
     self.agentStatus = agentStatus
     self.agentBridge = agentBridge
     self.probe = probe
+    self.languagePreferences = languagePreferences
+    self.interfaceLanguage = InterfaceLanguage.preferred(
+      from: languagePreferences.stringArray(forKey: "AppleLanguages") ?? preferredLanguages
+    )
     // Resume from the persisted step; `onboardingProgress` is already clamped
     // to a valid index by the Rust side.
     self.stepIndex = Int(engine.onboardingProgress())
@@ -188,7 +223,19 @@ final class OnboardingViewModel: ObservableObject {
 
   // MARK: - Derived
 
+  func selectInterfaceLanguage(_ language: InterfaceLanguage) {
+    interfaceLanguage = language
+    languagePreferences.set([language.rawValue], forKey: "AppleLanguages")
+  }
+
   var step: OnboardingStep { OnboardingStep.step(at: stepIndex) }
+  var windowTitle: String {
+    String(
+      localized: LocalizedStringResource(
+        "Welcome to codescribe", locale: interfaceLocale,
+        comment: "Setup wizard window title; codescribe is the product name, kept lowercase"
+      ))
+  }
   var totalSteps: Int { OnboardingStep.count }
   var canGoBack: Bool { stepIndex > 0 }
 
@@ -196,9 +243,10 @@ final class OnboardingViewModel: ObservableObject {
   /// absolute flow index so the bar never jumps.
   var progressLabel: String {
     String(
-      localized: "Step \(stepIndex + 1) of \(totalSteps)",
-      comment: "Setup wizard progress; first %lld is the current step, second the total"
-    )
+      localized: LocalizedStringResource(
+        "Step \(stepIndex + 1) of \(totalSteps)", locale: interfaceLocale,
+        comment: "Setup wizard progress; first %lld is the current step, second the total"
+      ))
   }
 
   var isDone: Bool { step == .done }
@@ -206,8 +254,12 @@ final class OnboardingViewModel: ObservableObject {
   /// Primary-button label: "Finish" on Done, "Continue" everywhere else.
   var primaryLabel: String {
     isDone
-      ? String(localized: "Finish", comment: "Setup wizard button: close the wizard")
-      : String(localized: "Continue", comment: "Setup wizard button: go to the next step")
+      ? String(
+        localized: LocalizedStringResource(
+          "Finish", locale: interfaceLocale, comment: "Setup wizard button: close the wizard"))
+      : String(
+        localized: LocalizedStringResource(
+          "Continue", locale: interfaceLocale, comment: "Setup wizard button: go to the next step"))
   }
 
   var selectedProvider: CsProviderOption? {
@@ -216,26 +268,30 @@ final class OnboardingViewModel: ObservableObject {
 
   var agentBridgeTitle: String {
     String(
-      localized: "Connect Codescribe to your agent.",
-      comment: "Setup step heading; Codescribe is the product name")
+      localized: LocalizedStringResource(
+        "Connect Codescribe to your agent.", locale: interfaceLocale,
+        comment: "Setup step heading; Codescribe is the product name"))
   }
 
   var agentBridgeExplanation: String {
     String(
-      localized:
+      localized: LocalizedStringResource(
         "The named agent can hear live drafts and reply during the pause. Installation, commits, deletion, and every other state-changing action wait for transcript_sealed.",
-      comment: "Setup step explanation; transcript_sealed is an event name, keep it verbatim"
-    )
+        locale: interfaceLocale,
+        comment: "Setup step explanation; transcript_sealed is an event name, keep it verbatim"
+      ))
   }
 
   var agentBridgeButtonTitle: String {
     agentBridgeStatus.installedClients.isEmpty
       ? String(
-        localized: "Install selected",
-        comment: "Button: install the bridge for the checked coding assistants")
+        localized: LocalizedStringResource(
+          "Install selected", locale: interfaceLocale,
+          comment: "Button: install the bridge for the checked coding assistants"))
       : String(
-        localized: "Update selected",
-        comment: "Button: update the bridge for the checked coding assistants")
+        localized: LocalizedStringResource(
+          "Update selected", locale: interfaceLocale,
+          comment: "Button: update the bridge for the checked coding assistants"))
   }
 
   // MARK: - Lifecycle refresh
@@ -318,7 +374,10 @@ final class OnboardingViewModel: ObservableObject {
   }
 
   private func refreshProviders() {
-    if providerMutationPending { providerRefreshRequested = true; return }
+    if providerMutationPending {
+      providerRefreshRequested = true
+      return
+    }
     guard !providerAccessPending else { return }
     // This read consumes the queued request; later mutations may queue another.
     providerRefreshRequested = false
@@ -336,7 +395,10 @@ final class OnboardingViewModel: ObservableObject {
         let snapshot = try await engine.providerAccessSnapshot()
         guard generation == providerAccessGeneration,
           snapshot.revision == engine.providerAccessRevision()
-        else { providerRefreshRequested = true; return }
+        else {
+          providerRefreshRequested = true
+          return
+        }
         providers = snapshot.providers
         providerAccountErrors = snapshot.accountErrors
         keyStatus = snapshot.keyStatus
@@ -428,6 +490,7 @@ final class OnboardingViewModel: ObservableObject {
   /// pressed Continue without touching a radio.
   private func commitCurrentChoice() {
     switch step {
+    case .interfaceLanguage: selectInterfaceLanguage(interfaceLanguage)
     case .mode: persistMode()
     case .language: persistLanguage()
     case .hotkeyMode: persistHotkeyMode()
@@ -577,49 +640,58 @@ final class OnboardingViewModel: ObservableObject {
   /// Account sign-in does not promise a Formatting credential or a model catalog.
   var providerAccessDescription: String {
     if let error = providerAccessError {
-      return String(localized: "Provider access is unavailable. Retry to check account and API key status.") + " " + error
+      return String(
+        localized: LocalizedStringResource(
+          "Provider access is unavailable. Retry to check account and API key status.",
+          locale: interfaceLocale)) + " " + error
     }
     if !providerAccessResolved {
-      return String(localized: "Checking provider access… You can continue with Basic dictation.")
+      return String(
+        localized: LocalizedStringResource(
+          "Checking provider access… You can continue with Basic dictation.",
+          locale: interfaceLocale))
     }
 
     if selectedProviderAccountError != nil {
-      return String(localized: "Provider account access is unavailable. Remove the stored account in Settings › Providers, then sign in again.")
+      return String(
+        localized: LocalizedStringResource(
+          "Provider account access is unavailable. Remove the stored account in Settings › Providers, then sign in again.",
+          locale: interfaceLocale))
     }
     if selectedProviderAccountConnected && selectedProviderKeySet {
       return String(
-        localized:
-          "Account connected and API key configured. Supported Assistive requests can use the account; Formatting and model discovery use the provider API key."
-      )
+        localized: LocalizedStringResource(
+          "Account connected and API key configured. Supported Assistive requests can use the account; Formatting and model discovery use the provider API key.",
+          locale: interfaceLocale))
     }
     if selectedProviderAccountConnected {
       return String(
-        localized:
-          "Account connected for supported Assistive requests. No API key is configured. You can continue without adding one; cloud Formatting and model discovery require a provider API key."
-      )
+        localized: LocalizedStringResource(
+          "Account connected for supported Assistive requests. No API key is configured. You can continue without adding one; cloud Formatting and model discovery require a provider API key.",
+          locale: interfaceLocale))
     }
     if selectedProviderKeySet {
       return String(
-        localized:
-          "API key configured. Supported Assistive requests, cloud Formatting and model discovery can use this provider's key. No account is connected."
-      )
+        localized: LocalizedStringResource(
+          "API key configured. Supported Assistive requests, cloud Formatting and model discovery can use this provider's key. No account is connected.",
+          locale: interfaceLocale))
     }
     if selectedProvider?.keyRequired == false {
       return String(
-        localized:
-          "This provider does not require an API key. Choose a model in Settings › Agent › LLM lanes."
-      )
+        localized: LocalizedStringResource(
+          "This provider does not require an API key. Choose a model in Settings › Agent › LLM lanes.",
+          locale: interfaceLocale))
     }
     if selectedProviderHasAccountAccess {
       return String(
-        localized:
-          "No account or API key is configured for this provider. Connect a supported account for Assistive, or add an API key in Settings › Providers. You can skip this step for dictation."
-      )
+        localized: LocalizedStringResource(
+          "No account or API key is configured for this provider. Connect a supported account for Assistive, or add an API key in Settings › Providers. You can skip this step for dictation.",
+          locale: interfaceLocale))
     }
     return String(
-      localized:
-        "No API key is configured for this provider. Add one in Settings › Providers, choose another provider, or skip this step for dictation."
-    )
+      localized: LocalizedStringResource(
+        "No API key is configured for this provider. Add one in Settings › Providers, choose another provider, or skip this step for dictation.",
+        locale: interfaceLocale))
   }
 
   func saveApiKey(advanceOnSuccess: Bool = false) {
@@ -634,12 +706,12 @@ final class OnboardingViewModel: ObservableObject {
     Task { @MainActor [self] in
       defer {
         providerMutationPending = false
-        if providerAccessPending { providerRefreshRequested = true }
-        else { refreshProviders() }
+        if providerAccessPending { providerRefreshRequested = true } else { refreshProviders() }
       }
       do {
         try await engine.setApiKeyAsync(account: account, secret: trimmed)
-        let stillCurrent = apiKeyDraft == submitted
+        let stillCurrent =
+          apiKeyDraft == submitted
           && selectedProviderId == providerId
           && selectedProvider?.apiKeyAccount == account
         if stillCurrent { apiKeyDraft = "" }

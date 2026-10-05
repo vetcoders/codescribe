@@ -31,14 +31,18 @@ website, the docs, the CLI and model prompts are outside this ledger.
 
 ## 2. Where the app stands
 
-`Localizable.xcstrings` holds **1311 keys** (1288 translatable). Before this
+`Localizable.xcstrings` holds **1417 keys** (1394 translatable). Before this
 work the compiler extracted 468 — the literals SwiftUI localizes by itself; the
-rest was plain `String` and invisible to any translation.
+rest was plain `String` and invisible to any translation. **Polish is complete**
+in both catalogs (1394/1394 and 4/4), imported from the translator worksheet
+(`scripts/l10n-sheet.py`); the catalog is the source of the translation from
+here on.
 
 | Measure                                       | Count    |
 | --------------------------------------------- | -------- |
-| Keys in `Localizable.xcstrings`               | 1311     |
-| Keys with a translator comment                | 412      |
+| Keys in `Localizable.xcstrings`               | 1417     |
+| Keys translated to Polish                     | 1394     |
+| Keys with a translator comment                | 441      |
 | Keys with English plural forms                | 26       |
 | Keys written as identifiers (`defaultValue:`) | 37       |
 | Permission prompts in `InfoPlist.xcstrings`   | 4        |
@@ -113,6 +117,19 @@ Swift now derives every tray phrase from `(kind, assistive)` in
 `TrayStatusStore`. The two string fields and the four Rust methods that filled
 them are removed, so the wording has one author. This is the model for the
 seams below: the payload says what happened, Swift says it.
+
+### B1a — Shortcuts screen labels (done)
+
+`CsModeBinding.{modeLabel, modeDescription, bindingLabel}`,
+`CsBindingOption.label` and `CsHotkeyConflict.gestureLabel` still cross the
+bridge, but the Shortcuts and Audio panels no longer show them. Swift derives
+the mode name, the mode blurb and every gesture name from the `CsWorkMode` /
+`CsShortcutBinding` enums in `Screens/Settings/HotkeysPresentation.swift`
+(keys `hotkeys.mode.*`, `hotkeys.binding.*`); a conflict's gesture is mapped
+back to its enum through the option list. `CsHotkeyConflict.message` is still
+Rust prose (B3 territory). The agent lane is named **Agent** on this screen in
+every language (Founder decision 2026-10-04); the Rust `WorkMode::label()`
+"Assistive" is wire presentation only.
 
 ### B2 — Machine meaning carried inside prose (do this before touching the sentences)
 
@@ -262,9 +279,8 @@ copy. The fields that look authored by the program:
 
 `CsAccountLoginResult.message` · `CsAdmissionReadiness.message` ·
 `CsAgentAvailability.detail` · `CsAnnotationKind.label` ·
-`CsApiKeyProbeResult.message` · `CsBindingOption.label` ·
-`CsCapabilityRow.reason` · `CsHotkeyConflict.{gestureLabel, message}` ·
-`CsModeBinding.{modeLabel, modeDescription, bindingLabel}` ·
+`CsApiKeyProbeResult.message` ·
+`CsCapabilityRow.reason` · `CsHotkeyConflict.message` ·
 `CsModelDirectory.detail` · `CsModelDiscovery.message` ·
 `CsPresentationStatusEvent.{statusLabel, message}` ·
 `CsProviderOption.accountStatusMessage` · `CsRuntimeLlmLane.unavailableReason` ·
@@ -273,12 +289,12 @@ copy. The fields that look authored by the program:
 
 Rendered today, by screen (established while preparing the Swift side):
 
-| Screen     | Bridge text shown as it arrives                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Settings   | `CsAdmissionReadiness.message` · `CsMcpTestResult.error` · `CsMcpStatusRow.{label, value}` · `CsCapabilityRow.{op, tier, nativeTool, provider}` · `CsSttLane.{title, accepts, placeholder}` · `CsProviderOption.{displayName, accountStatusMessage}` · `CsApiKeyProbeResult.message` · `CsModeBinding.{modeLabel, modeDescription, bindingLabel}` · `CsBindingOption.label` · `CsHotkeyConflict.{gestureLabel, message}` · `CsModelDirectory.status` · `CsWhisperModelStatus.sizeHint` · `CsPromptSnapshot.readError` · `CsRuntimeLlmLane.unavailableReason` · `CsModelDiscovery.message` · `CsVoiceLabTeachResult.acknowledgement` · `CsVoiceLabSaveResult.lexiconError` · `CsAccountLoginResult.message` |
-| Overlay    | `CsPresentationStatusEvent.{headline, message, statusLabel}` (the status pill, the toast, the error card) · `CsTranscriptProjectionEvent.label` · `CsQualityTeachResult.acknowledgement`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Agent chat | `agent.availability().detail` (shown as the assistant reply) · `speechAvailability()` · `CsAgentListener.onError` and delivery errors (after an `[error]` marker) · `CsToolApprovalRequest.{risk, summary}`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Onboarding | `CsMcpStatusRow.{label, value}` · `CsProviderOption.displayName`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Screen     | Bridge text shown as it arrives                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Settings   | `CsAdmissionReadiness.message` · `CsMcpTestResult.error` · `CsMcpStatusRow.{label, value}` · `CsCapabilityRow.{op, tier, nativeTool, provider}` · `CsSttLane.{title, accepts, placeholder}` · `CsProviderOption.{displayName, accountStatusMessage}` · `CsApiKeyProbeResult.message` · `CsHotkeyConflict.message` · `CsModelDirectory.status` · `CsWhisperModelStatus.sizeHint` · `CsPromptSnapshot.readError` · `CsRuntimeLlmLane.unavailableReason` · `CsModelDiscovery.message` · `CsVoiceLabTeachResult.acknowledgement` · `CsVoiceLabSaveResult.lexiconError` · `CsAccountLoginResult.message` |
+| Overlay    | `CsPresentationStatusEvent.{headline, message, statusLabel}` (the status pill, the toast, the error card) · `CsTranscriptProjectionEvent.label` · `CsQualityTeachResult.acknowledgement`                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Agent chat | `agent.availability().detail` (shown as the assistant reply) · `speechAvailability()` · `CsAgentListener.onError` and delivery errors (after an `[error]` marker) · `CsToolApprovalRequest.{risk, summary}`                                                                                                                                                                                                                                                                                                                                                                                         |
+| Onboarding | `CsMcpStatusRow.{label, value}` · `CsProviderOption.displayName`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 Vendor and model names in these fields are proper names and need no change.
 Two fields are shown with Swift casing applied to Rust text
@@ -361,7 +377,7 @@ shows the same in every language until it moves to a format style.
 | Protocol names                   | `Responses`, `Messages` in the provider editor are wire names                                                                                                                                                         | **Decided:** verbatim.                                                                                                                                                                                                                        |
 | Active STT row                   | `Apple` and `Whisper` are proper names and stay verbatim; `Streaming Whisper`, `Cloud`, `Whisper (fallback)` and `Not yet served` are copy. An engine id the app does not know is shown as received                   | **Open.** Map every id, or show `Unknown` for the rest.                                                                                                                                                                                       |
 | Developer-only copy              | The Lab pane, its section title, the `Voice Lab…` tray row and the power-mode corner mark exist only on a developer build; `DesignGallery` is reachable only from its preview. Their copy is extracted like any other | **Decided:** these 22 keys are marked `shouldTranslate: false` (13 used only by `LabPanel`, 3 shown only behind `DeveloperSurface`, 6 gallery samples), so no translator sees them. A key that a shipped screen starts to use loses the mark. |
-| Coverage before a language ships | `make verify-l10n-catalog` fails a language only when it has no translations; a partly translated one passes and would ship a mixed interface                                                                         | **Decided:** a gate requiring full coverage of each declared language lands with the Polish import, before the first localized release.                                                                                                       |
+| Coverage before a language ships | `make verify-l10n-catalog` fails a language that is partly translated in either catalog; `--allow-partial` reports instead while a language is built up on a branch                                                   | **Done** with the Polish import: every language the bundle carries must be complete, and `CodeScribe` is refused in any string. New English copy now needs its Polish before `make check` passes.                                             |
 
 ### 5.4 Found on the way (not localization, not changed)
 

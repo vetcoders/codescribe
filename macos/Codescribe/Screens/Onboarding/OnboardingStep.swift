@@ -16,7 +16,8 @@ import Foundation
 
 /// One step of the first-run onboarding wizard.
 enum OnboardingStep: Equatable {
-  case welcome
+  /// Interface language. This keeps the initial resume slot at index zero.
+  case interfaceLanguage
   /// Basic vs Agentic operating lane.
   case mode
   /// Privacy scopes in `PERMISSION_STEP_ORDER` (mic → … → speech → full-disk).
@@ -33,7 +34,7 @@ enum OnboardingStep: Equatable {
   /// Fixed 13-step flow. Indices are the persisted resume contract — see the
   /// file header. Permission order matches `PERMISSION_STEP_ORDER`.
   static let flow: [OnboardingStep] = [
-    .welcome,
+    .interfaceLanguage,
     .mode,
     .permission(.microphone),
     .permission(.accessibility),
@@ -53,9 +54,25 @@ enum OnboardingStep: Equatable {
   static var count: Int { flow.count }
 
   /// Step at a persisted resume index, clamped to the valid range so a stale
-  /// or out-of-range marker can never crash the wizard (falls back to Welcome).
+  /// or out-of-range marker can never crash the wizard (falls back to the interface language step).
   static func step(at index: Int) -> OnboardingStep {
-    guard flow.indices.contains(index) else { return .welcome }
+    guard flow.indices.contains(index) else { return .interfaceLanguage }
     return flow[index]
+  }
+}
+
+/// Interface copy follows the macOS per-app language preference, independently
+/// of the language passed to speech recognition.
+enum InterfaceLanguage: String, CaseIterable {
+  case polish = "pl"
+  case english = "en"
+
+  var nativeName: String { self == .polish ? "Polski" : "English" }
+  var locale: Locale { Locale(identifier: rawValue) }
+
+  static func preferred(from languages: [String]) -> InterfaceLanguage {
+    let supported = [InterfaceLanguage.english, .polish].map(\.rawValue)
+    let match = Bundle.preferredLocalizations(from: supported, forPreferences: languages).first
+    return match.flatMap(InterfaceLanguage.init(rawValue:)) ?? .english
   }
 }

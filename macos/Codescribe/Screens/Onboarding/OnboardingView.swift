@@ -30,8 +30,12 @@ struct OnboardingView: View {
       }
       .csFocusPolicy()
       .controlSize(.regular)
+      .environment(\.locale, model.interfaceLocale)
       .background(OnboardingWindowReader { hostWindow = $0 })
       .onAppear { model.refreshForCurrentStep() }
+      .onChange(of: model.interfaceLanguage) { _, _ in
+        hostWindow?.title = model.windowTitle
+      }
       .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) {
         notification in
         guard let window = notification.object as? NSWindow, window === hostWindow else { return }
@@ -55,43 +59,75 @@ struct OnboardingView: View {
 
   private var chapter: (title: String, symbol: String, purpose: String) {
     switch model.step {
-    case .welcome, .mode:
+    case .interfaceLanguage:
       return (
-        String(localized: "Your voice, a new possibility", comment: "Setup chapter heading"),
+        String(
+          localized: LocalizedStringResource(
+            "Choose your language", locale: model.interfaceLocale,
+            comment: "First setup chapter heading")),
+        "globe",
+        String(
+          localized: LocalizedStringResource(
+            "Start with the language of the app.", locale: model.interfaceLocale,
+            comment: "First setup chapter subtitle"))
+      )
+    case .mode:
+      return (
+        String(
+          localized: LocalizedStringResource(
+            "Your voice, a new possibility", locale: model.interfaceLocale,
+            comment: "Setup chapter heading")),
         "waveform",
-        String(localized: "First, choose what you want to do.", comment: "Setup chapter subtitle")
+        String(
+          localized: LocalizedStringResource(
+            "First, choose what you want to do.", locale: model.interfaceLocale,
+            comment: "Setup chapter subtitle"))
       )
     case .permission:
       return (
-        String(localized: "Make the connection", comment: "Setup chapter heading"),
+        String(
+          localized: LocalizedStringResource(
+            "Make the connection", locale: model.interfaceLocale, comment: "Setup chapter heading")),
         "hand.raised",
         String(
-          localized: "You decide what Codescribe can access.",
-          comment: "Setup chapter subtitle; Codescribe is the product name")
+          localized: LocalizedStringResource(
+            "You decide what Codescribe can access.", locale: model.interfaceLocale,
+            comment: "Setup chapter subtitle; Codescribe is the product name"))
       )
     case .language, .apiKey, .hotkeyMode:
       return (
-        String(localized: "Make it yours", comment: "Setup chapter heading"),
+        String(
+          localized: LocalizedStringResource(
+            "Make it yours", locale: model.interfaceLocale, comment: "Setup chapter heading")),
         "slider.horizontal.3",
         String(
-          localized: "Your language. Your shortcuts. Your way of working.",
-          comment: "Setup chapter subtitle")
+          localized: LocalizedStringResource(
+            "Your language. Your shortcuts. Your way of working.", locale: model.interfaceLocale,
+            comment: "Setup chapter subtitle"))
       )
     case .agenticReadiness:
       return (
-        String(localized: "Give your voice tools", comment: "Setup chapter heading"),
+        String(
+          localized: LocalizedStringResource(
+            "Give your voice tools", locale: model.interfaceLocale, comment: "Setup chapter heading"
+          )),
         "sparkles",
         String(
-          localized: "Connect the assistants you want to work with.",
-          comment: "Setup chapter subtitle")
+          localized: LocalizedStringResource(
+            "Connect the assistants you want to work with.", locale: model.interfaceLocale,
+            comment: "Setup chapter subtitle"))
       )
     case .done:
       return (
-        String(localized: "Your next thought starts here", comment: "Setup chapter heading"),
+        String(
+          localized: LocalizedStringResource(
+            "Your next thought starts here", locale: model.interfaceLocale,
+            comment: "Setup chapter heading")),
         "checkmark",
         String(
-          localized: "Setup is complete. Your voice takes it from here.",
-          comment: "Setup chapter subtitle")
+          localized: LocalizedStringResource(
+            "Setup is complete. Your voice takes it from here.", locale: model.interfaceLocale,
+            comment: "Setup chapter subtitle"))
       )
     }
   }
@@ -128,8 +164,8 @@ struct OnboardingView: View {
 
   @ViewBuilder private var stepBody: some View {
     switch model.step {
-    case .welcome:
-      WelcomeStepView()
+    case .interfaceLanguage:
+      InterfaceLanguageStepView(model: model)
     case .mode:
       ModeStepView(model: model)
     case .permission(let kind):
@@ -170,7 +206,7 @@ struct OnboardingView: View {
 }
 
 #if DEBUG
-  #Preview("Onboarding — Welcome") {
+  #Preview("Onboarding — Interface language") {
     OnboardingView(
       model: OnboardingViewModel(
         engine: MockOnboardingEngine(progress: 0),
