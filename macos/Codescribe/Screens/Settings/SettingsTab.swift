@@ -69,7 +69,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentStatus: String(localized: "Capabilities.")
     case .agentTools: String(localized: "Tool permissions.")
     case .agentMcp: String(localized: "MCP servers.")
-    case .dictationEngine: String(localized: "What's actually running.")
+    case .dictationEngine: String(localized: "Active speech engine.")
     case .dictationWhisper: String(localized: "Local Whisper model.")
     case .dictationPreview: String(localized: "Preview timing.")
     case .dictationHandsFree: String(localized: "Hands-free silence.")

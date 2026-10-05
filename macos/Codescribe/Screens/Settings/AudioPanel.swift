@@ -411,7 +411,7 @@ struct AudioPanel: View {
           Text("Off").tag("off")
         }
         .pickerStyle(.menu)
-        Text("Off applies to new takes after processing finishes. Text history stays available. A take already in progress keeps its starting choice.")
+        Text("Off discards the audio of new takes once processing finishes. Text history stays available. A take already in progress keeps the choice it started with.")
           .font(CSFont.ui(12))
           .foregroundStyle(Color.secondary)
       }
@@ -452,7 +452,7 @@ struct AudioPanel: View {
       }
 
       HStack {
-        Text("Reset removes the preference; it never writes an empty device name.")
+        Text("Restores the system default microphone.")
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(Color.secondary)
         Spacer(minLength: 12)

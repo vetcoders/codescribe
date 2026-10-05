@@ -1690,6 +1690,16 @@
         }
       }
     },
+    "Active speech engine." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Aktywny silnik rozpoznawania mowy"
+          }
+        }
+      }
+    },
     "Active · Agentic unlocked" : {
       "localizations" : {
         "pl" : {
@@ -1790,6 +1800,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zaawansowane · identyfikator klienta OAuth…"
+          }
+        }
+      }
+    },
+    "After this much silence Apple recognition pauses. It resumes when you speak again, and Whisper can refine the finished passage." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Po tej przerwie rozpoznawanie mowy Apple zostaje wstrzymane. Wznawia się, gdy znów zaczniesz mówić, a Whisper może dopracować zakończony fragment."
           }
         }
       }
@@ -2278,22 +2298,22 @@
         }
       }
     },
-    "Apple only = live Apple without Layer 1. Local power = Apple-first with mandatory on-device Whisper refinement. Cloud uses its consent-gated provider, not local Whisper." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tryb Tylko Apple korzysta z rozpoznawania Apple na żywo, bez dodatkowego doprecyzowania. Local Power używa Apple na żywo i obowiązkowo doprecyzowuje wynik lokalnym Whisperem. Tryb Chmura korzysta z dostawcy chmurowego po wyrażeniu zgody, bez lokalnego Whispera."
-          }
-        }
-      }
-    },
     "Apple only — on-device Apple Speech plus your dictionary. The default, and the mode every failure falls back to." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tylko Apple — rozpoznawanie mowy Apple na tym Macu i Twój słownik. Tryb domyślny, do którego aplikacja wraca po każdym błędzie."
+          }
+        }
+      }
+    },
+    "Apple only: live Apple recognition. Local power: live Apple recognition refined by the on-device Whisper model. Cloud: the cloud provider you agreed to, without local Whisper." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Tylko Apple: rozpoznawanie Apple na żywo. Tryb lokalny: rozpoznawanie Apple na żywo doprecyzowane lokalnym modelem Whisper. Chmura: wybrany dostawca chmurowy po wyrażeniu zgody, bez lokalnego Whispera."
           }
         }
       }
@@ -2895,7 +2915,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "anuluj"
+            "value" : "Anuluj"
           }
         }
       }
@@ -3847,7 +3867,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Określa, czy zatwierdzone wypowiedzi mogą zostać zapieczętowane."
+            "value" : "Określa, czy zakończone wypowiedzi są zatwierdzane."
           }
         }
       }
@@ -5962,8 +5982,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ile sekund nagrania Whisper słyszy przy każdym fragmencie. Krótsze okno działa szybciej, ale może uciąć krótkie zakończenie."
+            "state" : "needs_review",
+            "value" : "Długość nagrania analizowana przy każdym fragmencie. Krótsze fragmenty przyspieszają przetwarzanie, ale mogą pominąć końcówkę wypowiedzi."
           }
         }
       }
@@ -6202,7 +6222,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Zachowuj ukończone nagrania"
+            "value" : "Zachowuj zakończone nagrania"
           }
         }
       }
@@ -6402,16 +6422,6 @@
         }
       }
     },
-    "Light+ sentence pause" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przerwa między zdaniami w Light+"
-          }
-        }
-      }
-    },
     "Live Whisper refinement" : {
       "localizations" : {
         "pl" : {
@@ -6508,7 +6518,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Lokalny model FP16 (%@) do pracy bezpośrednio z silnikiem Whisper lub do doprecyzowania w trybie Local Power."
+            "value" : "Lokalny model FP16 (%@) do pracy bezpośrednio z silnikiem Whisper lub do doprecyzowania w trybie lokalnym."
           }
         }
       }
@@ -6569,7 +6579,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Local Power"
+            "value" : "Tryb lokalny"
           }
         }
       }
@@ -6579,7 +6589,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Local Power — opcjonalny model działający na tym Macu w osobnym procesie pomocniczym. Jego pliki są pobierane dopiero po wybraniu tej opcji."
+            "value" : "Tryb lokalny — opcjonalny model działający na tym Macu w osobnym procesie pomocniczym. Jego pliki są pobierane dopiero po wybraniu tej opcji."
           }
         }
       }
@@ -6947,7 +6957,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brakujące lub nieprawidłowe pliki modelu FP16 · Local Power niedostępny"
+            "value" : "Brakujące lub nieprawidłowe pliki modelu FP16 · Tryb lokalny niedostępny"
           }
         }
       }
@@ -7507,7 +7517,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "W trybie Tylko Apple nie ma procesu pomocniczego — wybierz Local Power lub tryb Chmura."
+            "value" : "W trybie Tylko Apple nie ma procesu pomocniczego — wybierz Tryb lokalny lub Chmurę."
           }
         }
       }
@@ -7788,16 +7798,6 @@
         }
       }
     },
-    "Off applies to new takes after processing finishes. Text history stays available. A take already in progress keeps its starting choice." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wyłączenie dotyczy nowych nagrań rozpoczętych po zakończeniu bieżącego przetwarzania. Historia tekstu pozostaje dostępna. Trwające nagranie zachowuje ustawienie wybrane przy jego rozpoczęciu."
-          }
-        }
-      }
-    },
     "Off by default. The event contains only the app version and macOS version — never audio or transcript text." : {
       "localizations" : {
         "pl" : {
@@ -7814,6 +7814,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Domyślnie wyłączone. Po włączeniu oba pliki promptów zostaną przeniesione do kosza wraz z pozostałymi danymi aplikacji."
+          }
+        }
+      }
+    },
+    "Off discards the audio of new takes once processing finishes. Text history stays available. A take already in progress keeps the choice it started with." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Przy ustawieniu «Wyłączone» pliki dźwiękowe nowych nagrań są usuwane po zakończeniu przetwarzania. Historia tekstu pozostaje dostępna. Trwające nagranie zachowuje ustawienie wybrane przy jego rozpoczęciu."
           }
         }
       }
@@ -8198,7 +8208,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wklej po dyktowaniu"
+            "value" : "Wklejaj po dyktowaniu"
           }
         }
       }
@@ -9685,7 +9695,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wymagany do pracy bezpośrednio z silnikiem Whisper lub do doprecyzowania na żywo w trybie Local Power"
+            "value" : "Wymagany do pracy bezpośrednio z silnikiem Whisper lub do doprecyzowania na żywo w trybie lokalnym"
           }
         }
       }
@@ -9715,7 +9725,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wymagany lokalny model FP16 (%@). Brakujące lub nieprawidłowe pliki blokują tryb Local Power."
+            "value" : "Wymagany lokalny model FP16 (%@). Brakujące lub nieprawidłowe pliki blokują Tryb lokalny."
           }
         }
       }
@@ -9734,8 +9744,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "reset"
+            "state" : "needs_review",
+            "value" : "Przywróć domyślny"
           }
         }
       }
@@ -9810,16 +9820,6 @@
         }
       }
     },
-    "Reset removes the preference; it never writes an empty device name." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Reset usuwa zapisany wybór urządzenia; nie zapisuje pustej nazwy urządzenia."
-          }
-        }
-      }
-    },
     "Reset to defaults" : {
       "localizations" : {
         "pl" : {
@@ -9856,16 +9856,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Responses (/v1/responses)"
-          }
-        }
-      }
-    },
-    "Rest the Apple engine after this much silence; the next speech edge wakes a fresh epoch so Whisper can patch the sealed span" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Po takiej przerwie silnik Apple odpoczywa; gdy znów zaczniesz mówić, rusza od nowa, a Whisper może poprawić zapieczętowany fragment."
           }
         }
       }
@@ -9941,6 +9931,16 @@
         }
       }
     },
+    "Restores the system default microphone." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Przywraca domyślny mikrofon systemu."
+          }
+        }
+      }
+    },
     "Restores the transcript this retranscribe replaced, as a new revision" : {
       "localizations" : {
         "pl" : {
@@ -9975,8 +9975,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Transkrybuj ponownie to nagranie przy użyciu silnika pomocniczego"
+            "state" : "needs_review",
+            "value" : "Rozpoznaj mowę z tego nagrania ponownie w procesie pomocniczym"
           }
         }
       }
@@ -10505,7 +10505,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pieczętowanie wypowiedzi"
+            "value" : "Zatwierdzanie zakończonych wypowiedzi"
           }
         }
       }
@@ -10515,7 +10515,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zatwierdzanie wypowiedzi włączone"
+            "value" : "Zatwierdzanie zakończonych wypowiedzi włączone"
           }
         }
       }
@@ -10526,7 +10526,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ustawienie %@ wymusza wyłączenie zatwierdzania wypowiedzi."
+            "value" : "Ustawienie %@ wymusza wyłączenie zatwierdzania zakończonych wypowiedzi."
           }
         }
       }
@@ -10536,7 +10536,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zatwierdzanie wypowiedzi jest wyłączone w Ustawieniach › Dźwięk."
+            "value" : "Zatwierdzanie zakończonych wypowiedzi jest wyłączone w Ustawieniach › Dźwięk."
           }
         }
       }
@@ -10546,7 +10546,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zatwierdzanie wypowiedzi musi być włączone"
+            "value" : "Zatwierdzanie zakończonych wypowiedzi musi być włączone"
           }
         }
       }
@@ -10669,6 +10669,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wysyła bieżącą wersję transkrypcji do wybranego miejsca docelowego"
+          }
+        }
+      }
+    },
+    "Sentence pause" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Przerwa uznawana za koniec zdania"
           }
         }
       }
@@ -12356,7 +12366,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brakuje lokalnych plików modelu FP16 lub są one nieprawidłowe. Local Power będzie niedostępny, dopóki weryfikacja nie zakończy się pomyślnie."
+            "value" : "Brakuje lokalnych plików modelu FP16 lub są one nieprawidłowe. Tryb lokalny będzie niedostępny, dopóki weryfikacja nie zakończy się pomyślnie."
           }
         }
       }
@@ -12387,7 +12397,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Model działający na tym Macu, używany przez silnik Whisper i do poprawiania transkrypcji w trybie Local power."
+            "value" : "Model działający na tym Macu, używany przez silnik Whisper i do doprecyzowania transkrypcji w trybie lokalnym."
           }
         }
       }
@@ -13688,16 +13698,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Co Agent może teraz zrobić lokalnie — i od czego to zależy."
-          }
-        }
-      }
-    },
-    "What's actually running." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Co jest teraz faktycznie używane."
           }
         }
       }
