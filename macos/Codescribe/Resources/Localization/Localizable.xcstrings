@@ -187,7 +187,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tekst nie obejmuje %1$@ s wykrytej mowy · %2$@"
+            "value" : "%1$@ s bez transkrypcji · %2$@"
           }
         }
       }
@@ -1611,7 +1611,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Klucz API jest skonfigurowany. Obsługiwane żądania Agenta, formatowanie w chmurze i pobieranie listy modeli mogą korzystać z klucza tego dostawcy. Żadne konto nie jest połączone."
+            "value" : "Klucz API jest skonfigurowany. Możesz korzystać z formatowania w chmurze i pobierać listę modeli. Podłącz konto, żeby zacząć."
           }
         }
       }
@@ -1693,7 +1693,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Konto jest połączone, a klucz API skonfigurowany. Obsługiwane żądania Agenta mogą korzystać z konta; formatowanie i pobieranie listy modeli korzystają z klucza API dostawcy."
+            "value" : "Konto i klucz API są skonfigurowane."
           }
         }
       }
@@ -1703,7 +1703,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Konto jest połączone i może obsługiwać żądania Agenta. Nie skonfigurowano klucza API. Możesz kontynuować bez niego; formatowanie w chmurze i pobieranie listy modeli wymagają klucza API dostawcy."
+            "value" : "Konto jest połączone. Dodaj klucz API."
           }
         }
       }
@@ -1713,7 +1713,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Logowanie na konto i klucz API to dwa niezależne sposoby dostępu. Agent może korzystać z zalogowanego konta; formatowanie w chmurze i pobieranie listy modeli wymagają klucza API. Klucze są przechowywane w pęku kluczy macOS i nigdy nie są ponownie wyświetlane. Możesz pominąć ten krok i skonfigurować dostęp później w Ustawieniach › Dostawcy."
+            "value" : "Zaloguj się na konto, aby korzystać z funkcji agentowych. Dodaj klucz API, aby włączyć formatowanie w chmurze i pobrać listę modeli."
           }
         }
       }
@@ -1723,7 +1723,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Agent może korzystać z zalogowanego konta, ale pobieranie listy modeli wymaga klucza API dostawcy. Zachowaj bieżący model albo wpisz ID modelu w Ustawieniach › Agent › Ścieżki modeli AI."
+            "value" : "Twoje konto ma dostęp do funkcji agentowych. Lista modeli wymaga klucza API."
           }
         }
       }
@@ -1769,6 +1769,16 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
+            "value" : "Aktywny silnik rozpoznawania mowy"
+          }
+        }
+      }
+    },
+    "Active speech engine." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
             "value" : "Aktywny silnik rozpoznawania mowy"
           }
         }
@@ -1853,7 +1863,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dodaj klucz API tego dostawcy w Ustawieniach › Dostawcy, aby pobrać listę modeli, albo wpisz ID modelu w Ustawieniach › Agent › Ścieżki modeli AI."
+            "value" : "Dodaj klucz API, aby przeglądać listę modeli lub wpisz nazwę modelu ręcznie."
           }
         }
       }
@@ -1890,6 +1900,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zaawansowane · identyfikator klienta OAuth…"
+          }
+        }
+      }
+    },
+    "After this much silence Apple recognition pauses. It resumes when you speak again, and Whisper can refine the finished passage." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Po tej przerwie rozpoznawanie mowy Apple zostaje wstrzymane. Wznawia się, gdy znów zaczniesz mówić, a Whisper może dopracować zakończony fragment."
           }
         }
       }
@@ -1941,7 +1961,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Agent nie jest jeszcze gotowy"
+            "value" : "Agent nie jest jeszcze gotowy."
           }
         }
       }
@@ -1951,7 +1971,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Agent gotowy"
+            "value" : "Agent jest gotowy."
           }
         }
       }
@@ -2062,7 +2082,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Gotowość Agenta obejmuje dostęp do konta i narzędzia lokalne. Formatowanie w chmurze konfigurujesz osobno w Ustawieniach › Agent › Ścieżki modeli AI."
+            "value" : "Agent jest gotowy. Formatowanie w chmurze ustaw osobno w Ustawieniach › Agent › Ścieżki modeli AI."
           }
         }
       }
@@ -2093,6 +2113,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Foldery z projektami agenta"
+          }
+        }
+      }
+    },
+    "Agent · one-time purchase" : {
+      "comment" : "License plan name",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent · zakup jednorazowy"
           }
         }
       }
@@ -2362,7 +2394,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wybrano lokalne formatowanie Apple. Żądania chmurowe nadal wymagają danych dostępowych. %@"
+            "value" : "Formatowanie działa lokalnie przez Apple. Funkcje chmurowe wymagają osobnych danych dostępowych. %@"
           }
         }
       }
@@ -2378,22 +2410,22 @@
         }
       }
     },
-    "Apple only = live Apple without Layer 1. Local power = Apple-first with mandatory on-device Whisper refinement. Cloud uses its consent-gated provider, not local Whisper." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tryb Tylko Apple korzysta z rozpoznawania Apple na żywo, bez dodatkowego doprecyzowania. Local Power używa Apple na żywo i obowiązkowo doprecyzowuje wynik lokalnym Whisperem. Tryb Chmura korzysta z dostawcy chmurowego po wyrażeniu zgody, bez lokalnego Whispera."
-          }
-        }
-      }
-    },
     "Apple only — on-device Apple Speech plus your dictionary. The default, and the mode every failure falls back to." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tylko Apple — rozpoznawanie mowy Apple na tym Macu i Twój słownik. Tryb domyślny, do którego aplikacja wraca po każdym błędzie."
+          }
+        }
+      }
+    },
+    "Apple only: live Apple recognition. Local power: live Apple recognition refined by the on-device Whisper model. Cloud: the cloud provider you agreed to, without local Whisper." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Tylko Apple: rozpoznawanie Apple na żywo. Tryb lokalny: rozpoznawanie Apple na żywo doprecyzowane lokalnym modelem Whisper. Chmura: wybrany dostawca chmurowy po wyrażeniu zgody, bez lokalnego Whispera."
           }
         }
       }
@@ -2563,7 +2595,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dźwięk tego nagrania jest dostępny, ale ponowna transkrypcja nie jest tutaj możliwa."
+            "value" : "Nagranie jest dostępne. Wybierz „Więcej działań” → „Transkrybuj ponownie”."
           }
         }
       }
@@ -2573,7 +2605,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dźwięk tego nagrania jest dostępny. Użyj opcji „Transkrybuj to nagranie ponownie” w menu „Więcej działań”."
+            "value" : "Dźwięk tego nagrania jest dostępny. Użyj opcji „Transkrybuj ponownie” w menu „Więcej działań”."
           }
         }
       }
@@ -2866,7 +2898,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ustawienie zmiennej środowiskowej CODESCRIBE_MODEL_PATH ma pierwszeństwo przed wyborem modelu w aplikacji."
+            "value" : "CODESCRIBE_MODEL_PATH ma pierwszeństwo przed modelem wybranym w aplikacji."
           }
         }
       }
@@ -2985,7 +3017,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "anuluj"
+            "value" : "Anuluj"
           }
         }
       }
@@ -3215,7 +3247,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sprawdzanie licencji… Podstawowe dyktowanie pozostaje bezpłatne."
+            "value" : "Sprawdzanie licencji… Podstawowe dyktowanie jest zawsze dostępne."
           }
         }
       }
@@ -3225,7 +3257,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sprawdzanie danych dostępowych dostawcy…"
+            "value" : "Sprawdzanie dostępu..."
           }
         }
       }
@@ -3235,7 +3267,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sprawdzanie danych dostępowych dostawcy… Możesz kontynuować z podstawowym dyktowaniem."
+            "value" : "Sprawdzanie konta… Podstawowe funkcje pozostają dostępne."
           }
         }
       }
@@ -3275,7 +3307,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wybierz „Zatrzymaj nagrywanie” albo użyj skrótu nagrywania, aby zakończyć to nagranie."
+            "value" : "Wybierz „Zatrzymaj nagrywanie” albo użyj skrótu nagrywania, aby zakończyć."
           }
         }
       }
@@ -3570,7 +3602,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się zapisać pliku Markdown dla „%@”. Sprawdź folder Transkrypcje wskazany w Ustawieniach › Użytkownik › Dane lokalne i spróbuj ponownie."
+            "value" : "Nie udało się zapisać pliku Markdown dla „%@”. Sprawdź wskazany w ustawieniach folder Transkrypcje i spróbuj ponownie."
           }
         }
       }
@@ -3776,7 +3808,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zatwierdzony tekst nie obejmuje mowy wykrytej we fragmentach: %@. Możesz przejrzeć dostępny tekst i spróbować go odzyskać."
+            "value" : "Przy %@ brakuje części transkrypcji. Dostępny tekst możesz przejrzeć i odzyskać."
           }
         }
       }
@@ -3972,7 +4004,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Określa, czy zatwierdzone wypowiedzi mogą zostać zapieczętowane."
+            "value" : "Określa, czy zakończone wypowiedzi są zatwierdzane."
           }
         }
       }
@@ -4379,7 +4411,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się dokończyć transkrypcji"
+            "value" : "Nie udało się dokończyć transkrypcji."
           }
         }
       }
@@ -4484,7 +4516,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się ponownie transkrybować tego nagrania"
+            "value" : "Ponowna transkrypcja nie powiodła się."
           }
         }
       }
@@ -5674,7 +5706,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Formatowanie jest wyłączone. Nie wpływa to na gotowość Agenta."
+            "value" : "Formatowanie jest wyłączone. Nie wpływa to na pracę Agenta."
           }
         }
       }
@@ -5684,7 +5716,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Formatowanie wymaga klucza API tego dostawcy — samo konto Agenta nie wystarczy. Dodaj klucz w Ustawieniach › Dostawcy."
+            "value" : "Aby korzystać z trybu formatowania, dodaj klucz API."
           }
         }
       }
@@ -6098,8 +6130,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ile sekund nagrania Whisper słyszy przy każdym fragmencie. Krótsze okno działa szybciej, ale może uciąć krótkie zakończenie."
+            "state" : "needs_review",
+            "value" : "Długość nagrania analizowana przy każdym fragmencie. Krótsze fragmenty przyspieszają przetwarzanie, ale mogą pominąć końcówkę wypowiedzi."
           }
         }
       }
@@ -6398,7 +6430,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zachowuj ukończone nagrania"
+            "value" : "Zachowuj nagrania"
           }
         }
       }
@@ -6563,7 +6595,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie można teraz sprawdzić licencji. Ostatnio zweryfikowana licencja nadal obowiązuje do swojej pierwotnej daty wygaśnięcia."
+            "value" : "Sprawdzenie licencji jest niedostępne. Data wygaśnięcia licencji pozostaje bez zmian."
           }
         }
       }
@@ -6573,7 +6605,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie można sprawdzić licencji"
+            "value" : "Nie można sprawdzić licencji."
           }
         }
       }
@@ -6584,16 +6616,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Stan licencji"
-          }
-        }
-      }
-    },
-    "Light+ sentence pause" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przerwa między zdaniami w Light+"
           }
         }
       }
@@ -6694,7 +6716,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Lokalny model FP16 (%@) do pracy bezpośrednio z silnikiem Whisper lub do doprecyzowania w trybie Local Power."
+            "value" : "Lokalny model FP16 (%@) do pracy bezpośrednio z silnikiem Whisper lub do doprecyzowania w trybie lokalnym."
           }
         }
       }
@@ -6755,7 +6777,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Local Power"
+            "value" : "Tryb lokalny"
           }
         }
       }
@@ -6765,7 +6787,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Local Power — opcjonalny model działający na tym Macu w osobnym procesie pomocniczym. Jego pliki są pobierane dopiero po wybraniu tej opcji."
+            "value" : "Tryb lokalny — opcjonalny model działający na tym Macu w osobnym procesie pomocniczym. Jego pliki są pobierane dopiero po wybraniu tej opcji."
           }
         }
       }
@@ -6878,7 +6900,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zarządzaj połączeniem z dostawcą…"
+            "value" : "Zarządzaj kontem i kluczem API…"
           }
         }
       }
@@ -7098,12 +7120,12 @@
         }
       }
     },
-    "Microphone active · channel %@" : {
+    "Microphone active" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Mikrofon aktywny · kanał %@"
+            "state" : "needs_review",
+            "value" : "Mikrofon aktywny"
           }
         }
       }
@@ -7153,7 +7175,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brakujące lub nieprawidłowe pliki modelu FP16 · Local Power niedostępny"
+            "value" : "Brakujące lub nieprawidłowe pliki modelu FP16 · Tryb lokalny niedostępny"
           }
         }
       }
@@ -7184,7 +7206,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się pobrać listy modeli. Sprawdź Ustawienia › Dostawcy, a następnie odśwież modele w Ustawieniach › Agent › Ścieżki modeli AI."
+            "value" : "Nie udało się pobrać listy modeli. Sprawdź Ustawienia › Dostawcy, oraz odśwież listę modeli w Ustawienia › Agent › Ścieżki modeli AI."
           }
         }
       }
@@ -7582,7 +7604,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dla tego dostawcy nie skonfigurowano klucza API. Dodaj go w Ustawieniach › Dostawcy, wybierz innego dostawcę albo pomiń ten krok, jeśli chcesz tylko dyktować."
+            "value" : "Brak klucza API dla tego dostawcy. Dodaj go w Ustawienia › Dostawcy albo wybierz innego dostawcę. Ten krok możesz pominąć, jeśli chcesz tylko dyktować."
           }
         }
       }
@@ -7633,7 +7655,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dla tego dostawcy nie skonfigurowano konta ani klucza API. Zaloguj się na obsługiwane konto, aby korzystać z Agenta, albo dodaj klucz API w Ustawieniach › Dostawcy. Jeśli chcesz tylko dyktować, możesz pominąć ten krok."
+            "value" : "Aby korzystać z trybu agentowego, zaloguj się na swoje konto."
           }
         }
       }
@@ -7745,7 +7767,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "W trybie Tylko Apple nie ma procesu pomocniczego — wybierz Local Power lub tryb Chmura."
+            "value" : "W trybie Tylko Apple nie ma procesu pomocniczego — wybierz Tryb lokalny lub Chmurę."
           }
         }
       }
@@ -7785,7 +7807,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie znaleziono modeli. Wpisz ID modelu w Ustawieniach › Agent › Ścieżki modeli AI."
+            "value" : "Nie znaleziono modeli. Wpisz ID modelu w Ustawienia › Agent › Ścieżki modeli AI."
           }
         }
       }
@@ -8026,16 +8048,6 @@
         }
       }
     },
-    "Off applies to new takes after processing finishes. Text history stays available. A take already in progress keeps its starting choice." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wyłączenie dotyczy nowych nagrań rozpoczętych po zakończeniu bieżącego przetwarzania. Historia tekstu pozostaje dostępna. Trwające nagranie zachowuje ustawienie wybrane przy jego rozpoczęciu."
-          }
-        }
-      }
-    },
     "Off by default. The event contains only the app version and macOS version — never audio or transcript text." : {
       "localizations" : {
         "pl" : {
@@ -8052,6 +8064,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Domyślnie wyłączone. Po włączeniu oba pliki promptów zostaną przeniesione do kosza wraz z pozostałymi danymi aplikacji."
+          }
+        }
+      }
+    },
+    "Off discards the audio of new takes once processing finishes. Text history stays available. A take already in progress keeps the choice it started with." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wyłączenie zadziała od następnego nagrania. Historia tekstu pozostanie dostępna."
           }
         }
       }
@@ -8436,7 +8458,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wklej po dyktowaniu"
+            "value" : "Wklejaj po dyktowaniu"
           }
         }
       }
@@ -8623,6 +8645,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przypięte: %@"
+          }
+        }
+      }
+    },
+    "Plan" : {
+      "comment" : "License status row: the purchased plan",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plan"
           }
         }
       }
@@ -8995,7 +9029,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Trwa aktualizowanie dostępu do usług dostawcy."
+            "value" : "Aktualizowanie dostępu do usług dostawcy."
           }
         }
       }
@@ -9005,7 +9039,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie można sprawdzić dostępu do usług dostawcy. Nie potwierdzono stanu konta ani klucza API."
+            "value" : "Nie udało się sprawdzić konta ani klucza API."
           }
         }
       }
@@ -9015,7 +9049,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie można sprawdzić dostępu do usług dostawcy. Spróbuj ponownie, aby sprawdzić konto i klucz API."
+            "value" : "Nie można teraz sprawdzić dostępu do dostawcy. Spróbuj ponownie, aby sprawdzić stan konta i klucza API."
           }
         }
       }
@@ -9025,7 +9059,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie można sprawdzić dostępu do usług dostawcy. Poniżej pokazano ostatnio sprawdzone wartości."
+            "value" : "Nie można teraz sprawdzić dostępu do dostawcy. Poniżej widzisz ostatni znany stan."
           }
         }
       }
@@ -9035,7 +9069,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dostęp do usług dostawcy niedostępny"
+            "value" : "Brak dostępu do usług dostawcy."
           }
         }
       }
@@ -9657,7 +9691,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Odśwież dostęp do usług dostawcy"
+            "value" : "Odśwież dostęp"
           }
         }
       }
@@ -9987,7 +10021,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wymagany do pracy bezpośrednio z silnikiem Whisper lub do doprecyzowania na żywo w trybie Local Power"
+            "value" : "Wymagany do pracy bezpośrednio z silnikiem Whisper lub do doprecyzowania na żywo w trybie lokalnym"
           }
         }
       }
@@ -10017,7 +10051,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wymagany lokalny model FP16 (%@). Brakujące lub nieprawidłowe pliki blokują tryb Local Power."
+            "value" : "Wymagany lokalny model FP16 (%@). Brakujące lub nieprawidłowe pliki blokują Tryb lokalny."
           }
         }
       }
@@ -10036,8 +10070,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "reset"
+            "state" : "needs_review",
+            "value" : "Przywróć domyślny"
           }
         }
       }
@@ -10112,16 +10146,6 @@
         }
       }
     },
-    "Reset removes the preference; it never writes an empty device name." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Reset usuwa zapisany wybór urządzenia; nie zapisuje pustej nazwy urządzenia."
-          }
-        }
-      }
-    },
     "Reset to defaults" : {
       "localizations" : {
         "pl" : {
@@ -10158,16 +10182,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Responses (/v1/responses)"
-          }
-        }
-      }
-    },
-    "Rest the Apple engine after this much silence; the next speech edge wakes a fresh epoch so Whisper can patch the sealed span" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Po takiej przerwie silnik Apple odpoczywa; gdy znów zaczniesz mówić, rusza od nowa, a Whisper może poprawić zapieczętowany fragment."
           }
         }
       }
@@ -10254,6 +10268,16 @@
         }
       }
     },
+    "Restores the system default microphone." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Przywraca domyślny mikrofon systemu."
+          }
+        }
+      }
+    },
     "Restores the transcript this retranscribe replaced, as a new revision" : {
       "localizations" : {
         "pl" : {
@@ -10288,8 +10312,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Transkrybuj ponownie to nagranie przy użyciu silnika pomocniczego"
+            "state" : "needs_review",
+            "value" : "Rozpoznaj mowę z tego nagrania ponownie w procesie pomocniczym"
           }
         }
       }
@@ -10329,7 +10353,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sprawdź ponownie dostęp do usług dostawcy"
+            "value" : "Sprawdź ponownie dostęp do usług."
           }
         }
       }
@@ -10402,16 +10426,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Bieżący stan · tylko do odczytu"
-          }
-        }
-      }
-    },
-    "SKU" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wariant produktu"
           }
         }
       }
@@ -10591,7 +10605,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zapisano odpowiedzi agenta w folderze %2$@ jako plik %1$@."
+            "value" : "Odpowiedzi agenta zapisano w folderze %2$@ jako plik %1$@."
           }
         }
       }
@@ -10608,7 +10622,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zapisano cały wątek w folderze %2$@ jako plik %1$@."
+            "value" : "Cały wątek zapisano w folderze %2$@ jako plik %1$@."
           }
         }
       }
@@ -10641,7 +10655,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zapisano · model określa zmienna środowiskowa (zobacz uwagę poniżej)"
+            "value" : "Zapisano · aktywny model ustawia zmienna środowiskowa."
           }
         }
       }
@@ -10652,7 +10666,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zapisano · zacznie obowiązywać od następnego nagrania"
+            "value" : "Zapisano · od następnego nagrania"
           }
         }
       }
@@ -10663,7 +10677,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zapisano · zacznie obowiązywać po zakończeniu bieżącego nagrania"
+            "value" : "Zapisano · po zakończeniu bieżącego nagrania"
           }
         }
       }
@@ -10778,7 +10792,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zapisywanie ustawień dostawcy…"
+            "value" : "Zapisywanie ustawień…"
           }
         }
       }
@@ -10819,7 +10833,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pieczętowanie wypowiedzi"
+            "value" : "Zatwierdzanie zakończonych wypowiedzi"
           }
         }
       }
@@ -10829,7 +10843,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zatwierdzanie wypowiedzi włączone"
+            "value" : "Zatwierdzanie zakończonych wypowiedzi włączone"
           }
         }
       }
@@ -10840,7 +10854,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ustawienie %@ wymusza wyłączenie zatwierdzania wypowiedzi."
+            "value" : "Ustawienie %@ wymusza wyłączenie zatwierdzania zakończonych wypowiedzi."
           }
         }
       }
@@ -10850,7 +10864,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zatwierdzanie wypowiedzi jest wyłączone w Ustawieniach › Dźwięk."
+            "value" : "Zatwierdzanie zakończonych wypowiedzi jest wyłączone w Ustawieniach › Dźwięk."
           }
         }
       }
@@ -10860,7 +10874,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zatwierdzanie wypowiedzi musi być włączone"
+            "value" : "Zatwierdzanie zakończonych wypowiedzi musi być włączone"
           }
         }
       }
@@ -10993,6 +11007,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wysyła bieżącą wersję transkrypcji do wybranego miejsca docelowego"
+          }
+        }
+      }
+    },
+    "Sentence pause" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Przerwa uznawana za koniec zdania"
           }
         }
       }
@@ -11442,7 +11466,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zatwierdzony tekst nie obejmuje części wykrytej mowy. Nie można ustalić, w których momentach tego nagrania występują te fragmenty. Możesz przejrzeć dostępny tekst i spróbować go odzyskać."
+            "value" : "Część wykrytej mowy nie trafiła do zapisanej transkrypcji."
           }
         }
       }
@@ -12594,7 +12618,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Niepełna weryfikacja tekstu"
+            "value" : "Tekst nie został zweryfikowany."
           }
         }
       }
@@ -12604,7 +12628,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Weryfikacja tekstu jest niepełna. Nie można wskazać, które fragmenty wykrytej mowy nie zostały uwzględnione w tekście. Możesz przejrzeć dostępny tekst i spróbować go odzyskać."
+            "value" : "Weryfikacja tekstu jest niepełna. Nie można wskazać dokładnego fragmentu, którego brakuje w transkrypcji."
           }
         }
       }
@@ -12636,7 +12660,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ustawienie zmiennej środowiskowej LOCAL_MODEL ma pierwszeństwo przed wyborem modelu w aplikacji."
+            "value" : "LOCAL_MODEL ma pierwszeństwo przed modelem wybranym w aplikacji."
           }
         }
       }
@@ -12737,7 +12761,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dotychczasowa transkrypcja pozostaje dostępna."
+            "value" : "Transkrypcja jest nadal dostępna."
           }
         }
       }
@@ -12757,7 +12781,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brakuje lokalnych plików modelu FP16 lub są one nieprawidłowe. Local Power będzie niedostępny, dopóki weryfikacja nie zakończy się pomyślnie."
+            "value" : "Brakuje lokalnych plików modelu FP16 lub są one nieprawidłowe. Tryb lokalny będzie niedostępny, dopóki weryfikacja nie zakończy się pomyślnie."
           }
         }
       }
@@ -12788,7 +12812,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Model działający na tym Macu, używany przez silnik Whisper i do poprawiania transkrypcji w trybie Local power."
+            "value" : "Model działający na tym Macu, używany przez silnik Whisper i do doprecyzowania transkrypcji w trybie lokalnym."
           }
         }
       }
@@ -12818,7 +12842,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Przygotowywanie nagrania…"
+            "value" : "Przetwarzanie nagrania…"
           }
         }
       }
@@ -12848,7 +12872,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dotychczasowy tekst pozostaje dostępny. Może być niepełny."
+            "value" : "Dotychczasowy tekst jest dostępny, ale może być niepełny."
           }
         }
       }
@@ -12920,7 +12944,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ta wersja aplikacji korzysta z wbudowanego modelu Whisper. Nie używa modelu wybranego z dysku."
+            "value" : "Ta wersja aplikacji korzysta z wbudowanego modelu Whisper. Nie używa modelu z dysku."
           }
         }
       }
@@ -12958,7 +12982,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ten szkic nie został zapisany. Możesz kontynuować dyktowanie. Gdy dostęp do usług dostawcy będzie już działać, cofnij się w tym samym kreatorze konfiguracji i zapisz szkic."
+            "value" : "Szkic nie został zapisany. Możesz kontynuować i wrócić do tego kroku później."
           }
         }
       }
@@ -12978,7 +13002,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ten dostawca nie wymaga klucza API. Wybierz model w Ustawieniach › Agent › Ścieżki modeli AI."
+            "value" : "Ten dostawca nie wymaga klucza API. Wybierz model w Ustawienia › Agent › Modele AI."
           }
         }
       }
@@ -12989,7 +13013,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Usunie „%@” wraz z zapisaną rozmową. Tej operacji nie można cofnąć."
+            "value" : "Usuń „%@” wraz z zapisaną rozmową. Tej operacji nie można cofnąć."
           }
         }
       }
@@ -13197,7 +13221,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Transkrybuj to nagranie ponownie"
+            "value" : "Retranskrybuj."
           }
         }
       }
@@ -13666,7 +13690,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Aktualizowanie dostępu do usług dostawcy…"
+            "value" : "Aktualizowanie dostępu…"
           }
         }
       }
@@ -13718,7 +13742,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Używa dźwięku z nagrania widocznego obecnie w overlayu."
+            "value" : "Używa dźwięku z nagrania widocznego w overlayu."
           }
         }
       }
@@ -13912,7 +13936,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Oczekiwanie na gotowość nagrywania."
+            "value" : "Przygotowywanie nagrywania…"
           }
         }
       }
@@ -14150,16 +14174,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Co Agent może teraz zrobić lokalnie — i od czego to zależy."
-          }
-        }
-      }
-    },
-    "What's actually running." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Co jest teraz faktycznie używane."
           }
         }
       }
@@ -16757,7 +16771,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Głos i Agent · Formatowanie w chmurze niewymagane"
+            "value" : "mowa i Agent gotowe · formatowanie w chmurze niewymagane"
           }
         }
       }
@@ -16779,7 +16793,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Głos, Agent i Formatowanie"
+            "value" : "mowa, Agent i formatowanie gotowe"
           }
         }
       }
@@ -16996,7 +17010,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "mniej niż 0,1 s wykrytej mowy bez odpowiadającego tekstu · %@"
+            "value" : "mniej niż 0,1 s bez transkrypcji · %@"
           }
         }
       }

@@ -28,8 +28,8 @@ struct LicensePanel: View {
           trailing: .none)
         divider
         RuntimeRow(
-          key: String(localized: "SKU"), value: model.licenseStatus.sku ?? "Basic", tint: false,
-          mono: true,
+          key: String(localized: "Plan"), value: planLabel, tint: false,
+          mono: planLabel == model.licenseStatus.sku,
           trailing: .none)
         divider
         RuntimeRow(
@@ -127,6 +127,16 @@ struct LicensePanel: View {
     }
     .padding(.horizontal, CSSpace.xl)
     .padding(.vertical, CSSpace.section)
+  }
+
+  /// Plan names from the offer. A SKU the offer does not name is shown as the
+  /// code itself so support can read it; nothing is invented for it.
+  private var planLabel: String {
+    switch model.licenseStatus.sku {
+    case nil: String(localized: "Basic", comment: "Operating lane: dictation only")
+    case "agentic-lifetime": String(localized: "Agent · one-time purchase", comment: "License plan name")
+    case let sku?: sku
+    }
   }
 
   private var stateLabel: String {
