@@ -1936,6 +1936,16 @@
         }
       }
     },
+    "Agent account" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konto Agenta"
+          }
+        }
+      }
+    },
     "Agent and voice-assistant requests" : {
       "localizations" : {
         "pl" : {
@@ -3214,6 +3224,16 @@
         }
       }
     },
+    "Change" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmień"
+          }
+        }
+      }
+    },
     "Changed" : {
       "comment" : "Dictionary: header above the words the correction changed",
       "localizations" : {
@@ -3331,7 +3351,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sprawdzanie dostępu..."
+            "value" : "Sprawdzanie dostępu…"
           }
         }
       }
@@ -3979,6 +3999,16 @@
         }
       }
     },
+    "Connect" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połącz"
+          }
+        }
+      }
+    },
     "Connect Codescribe to your agent." : {
       "comment" : "Setup step heading; Codescribe is the product name",
       "localizations" : {
@@ -4011,6 +4041,16 @@
         }
       }
     },
+    "Connect an AI provider" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połącz dostawcę AI"
+          }
+        }
+      }
+    },
     "Connect an AI provider." : {
       "localizations" : {
         "pl" : {
@@ -4038,6 +4078,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Połącz Codescribe z agentem"
+          }
+        }
+      }
+    },
+    "Connected" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połączono"
           }
         }
       }
@@ -7139,6 +7189,16 @@
         }
       }
     },
+    "Manage" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zarządzaj"
+          }
+        }
+      }
+    },
     "Manage MCP servers" : {
       "localizations" : {
         "pl" : {
@@ -8214,6 +8274,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "To nie jest poufna informacja. Wyczyść pole, aby usunąć adres dla tego połączenia. Codescribe nie zaakceptuje adresu z protokołem niezgodnym z tym typem połączenia."
+          }
+        }
+      }
+    },
+    "Not connected" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niepołączone"
           }
         }
       }
@@ -9365,7 +9435,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brak dostępu do usług dostawcy."
+            "value" : "Brak dostępu do dostawcy"
           }
         }
       }
@@ -11361,6 +11431,27 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Adres API używany do tworzenia sesji dla transkrypcji na żywo w trybie chmurowym. To nie jest adres połączenia na żywo podany wyżej. Wyczyść pole, aby usunąć to ustawienie."
+          }
+        }
+      }
+    },
+    "Set" : {
+      "comment" : "Status chip: a value is stored",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ustawiono"
+          }
+        }
+      }
+    },
+    "Set up an Agent account or an API key. You can also do this later." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skonfiguruj konto Agenta lub klucz API. Możesz zrobić to także później."
           }
         }
       }
@@ -13759,6 +13850,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Skróty uruchamiające"
+          }
+        }
+      }
+    },
+    "Try again" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spróbuj ponownie"
           }
         }
       }

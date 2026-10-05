@@ -571,6 +571,166 @@ struct PermissionStepView: View {
   }
 }
 
+  private var keyField: some View {
+    return VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 10) {
+        Circle()
+          .fill(keyStatusColor.opacity(0.85))
+          .frame(width: 7, height: 7)
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "API key", locale: model.interfaceLocale,
+              comment: "Setup provider API key row label"))
+        )
+        .font(CSFont.ui(13.5, .semibold))
+        .foregroundStyle(CSColor.textBody)
+        Spacer(minLength: 0)
+        Text(model.selectedProviderKeyStatus)
+          .font(CSFont.mono(10, .semibold))
+          .foregroundStyle(keyStatusColor)
+        Button(keyActionTitle) {
+          model.beginApiKeyEditing()
+          keyFocused = true
+        }
+        .csAction()
+        .disabled(model.providerMutationPending)
+      }
+      if model.apiKeyEditorExpanded {
+        HStack(spacing: 8) {
+          SecureField(
+            String(
+              localized: LocalizedStringResource(
+                "Paste key…", locale: model.interfaceLocale,
+                comment: "Setup API key editor placeholder")),
+            text: $model.apiKeyDraft
+          )
+          .focused($keyFocused)
+          .settingsInputChrome(isFocused: keyFocused)
+          .onSubmit { model.saveApiKey() }
+          Button(
+            String(
+              localized: LocalizedStringResource(
+                "Save key", locale: model.interfaceLocale,
+                comment: "Setup button: save the provider API key"))
+          ) { model.saveApiKey() }
+          .csAction(prominent: true)
+          .disabled(model.providerMutationPending || !canSubmitApiKey)
+          if model.providerMutationPending { ProgressView().controlSize(.small) }
+        }
+        if !model.apiKeySaveAvailable,
+          !model.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+          Text(
+            String(
+              localized: LocalizedStringResource(
+                "This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available.",
+                locale: model.interfaceLocale,
+                comment: "Setup API key editor note shown while provider access is unavailable"))
+          )
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+        }
+        if let error = model.lastError {
+          keySaveError(error)
+        }
+      }
+    }
+    .padding(.vertical, 13)
+    .overlay(alignment: .bottom) {
+      Rectangle().fill(CSColor.hairline(0.08)).frame(height: 1)
+    }
+  }
+
+  private var canSubmitApiKey: Bool {
+    model.apiKeySaveAvailable
+      && !model.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  private var accountStatusColor: Color {
+    if model.providerAccessPending || model.providerAccessError != nil
+      || model.selectedProviderAccountError != nil
+    {
+      return CSColor.textFaint
+    }
+    return model.selectedProviderAccountConnected ? CSColor.oliveLight : CSColor.terracottaLight
+  }
+
+  private var keyStatusColor: Color {
+    if model.providerAccessPending || model.providerAccessError != nil { return CSColor.textFaint }
+    return model.selectedProviderKeySet ? CSColor.oliveLight : CSColor.terracottaLight
+  }
+
+  private var accountActionTitle: String {
+    if model.selectedProviderAccountConnected {
+      return String(
+        localized: LocalizedStringResource(
+          "Manage", locale: model.interfaceLocale,
+          comment: "Setup Agent account row action for a connected account"))
+    }
+    return String(
+      localized: LocalizedStringResource(
+        "Connect", locale: model.interfaceLocale,
+        comment: "Setup Agent account row action for a disconnected account"))
+  }
+
+  private var keyActionTitle: String {
+    if model.selectedProviderKeySet {
+      return String(
+        localized: LocalizedStringResource(
+          "Change", locale: model.interfaceLocale,
+          comment: "Setup API key row action when a key is stored"))
+    }
+    return String(
+      localized: LocalizedStringResource(
+        "Add", locale: model.interfaceLocale,
+        comment: "Setup API key row action when no key is stored"))
+  }
+
+  private func openProviderSettings() {
+    model.prepareProviderSettingsDeepLink()
+    openWindow(id: SettingsView.windowID)
+  }
+
+  private func inlineError(_ message: String) -> some View {
+    HStack(spacing: 8) {
+      Text(message)
+        .font(.callout)
+        .foregroundStyle(CSColor.terracottaLight)
+        .lineLimit(1)
+        .help(message)
+      Spacer(minLength: 0)
+      Button(
+        String(
+          localized: LocalizedStringResource(
+            "Try again", locale: model.interfaceLocale,
+            comment: "Setup provider access retry button"))
+      ) { model.refreshProviderAccess() }
+      .csAction()
+      .disabled(model.providerAccessPending || model.providerMutationPending)
+    }
+  }
+
+  private func keySaveError(_ message: String) -> some View {
+    HStack(spacing: 8) {
+      Text(message)
+        .font(.callout)
+        .foregroundStyle(CSColor.terracottaLight)
+        .lineLimit(1)
+        .help(message)
+      Spacer(minLength: 0)
+      Button(
+        String(
+          localized: LocalizedStringResource(
+            "Try again", locale: model.interfaceLocale,
+            comment: "Setup API key save retry button"))
+      ) { model.saveApiKey() }
+      .csAction()
+      .disabled(model.providerMutationPending || !canSubmitApiKey)
+    }
+  }
+
 // MARK: - API key
 
 struct ApiKeyStepView: View {
@@ -580,15 +740,19 @@ struct ApiKeyStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(
-        text: String(
-          localized: LocalizedStringResource(
-            "AI provider", locale: model.interfaceLocale, comment: "Setup step eyebrow")))
-      Text("Connect an AI provider.")
-        .font(.title2.weight(.semibold))
-        .foregroundStyle(.primary)
       Text(
-        "Account sign-in and API keys are separate ways to connect. Account sign-in supports Assistive; cloud Formatting and model discovery use an API key. Keys are stored in the macOS Keychain and never shown back. You can skip this step and configure access later in Settings › Providers."
+        String(
+          localized: LocalizedStringResource(
+            "Connect an AI provider", locale: model.interfaceLocale,
+            comment: "Setup step heading"))
+      )
+      .font(.title2.weight(.semibold))
+      .foregroundStyle(.primary)
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "Set up an Agent account or an API key. You can also do this later.",
+            locale: model.interfaceLocale, comment: "Setup step description"))
       )
       .font(.body)
       .lineSpacing(3)
@@ -598,41 +762,17 @@ struct ApiKeyStepView: View {
       providerPicker
         .padding(.top, 4)
 
-      if model.providerAccessError != nil {
-        Button("Retry provider access") { model.refreshProviderAccess() }
-          .disabled(model.providerAccessPending || model.providerMutationPending)
+      if let error = model.providerAccessError {
+        inlineError(error)
       }
-      Text(model.providerAccessDescription)
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-      if model.providerAccessResolved, model.providerAccessError == nil,
-        model.selectedProviderHasAccountAccess
-      {
-        HStack {
-          Text("Provider account")
-          Spacer(minLength: 0)
-          Text(
-            model.selectedProviderAccountError != nil
-              ? String(
-                localized: LocalizedStringResource(
-                  "Account access unavailable", locale: model.interfaceLocale))
-              : model.selectedProviderAccountConnected
-                ? String(
-                  localized: LocalizedStringResource("connected", locale: model.interfaceLocale))
-                : String(
-                  localized: LocalizedStringResource("not connected", locale: model.interfaceLocale)
-                )
-          )
-        }
-        .font(.callout)
-      }
-      Button("Manage provider access…") {
-        model.prepareProviderSettingsDeepLink()
-        openWindow(id: SettingsView.windowID)
-      }.csAction()
 
-      keyField
+      if model.selectedProviderHasAccountAccess {
+        accountField
+      }
+
+      if model.selectedProviderRequiresApiKey {
+        keyField
+      }
     }
   }
 
@@ -669,72 +809,30 @@ struct ApiKeyStepView: View {
     }
   }
 
-  private var keyField: some View {
-    let account = model.selectedProvider?.apiKeyAccount ?? "LLM_OPENAI_API_KEY"
-    let isSet = model.selectedProviderKeySet
-    let isOptional =
-      model.selectedProviderAccountConnected
-      || model.selectedProvider?.keyRequired == false
-    let statusColor =
-      !model.providerAccessResolved || model.providerAccessError != nil
-      ? CSColor.textFaint
-      : isSet
-        ? CSColor.oliveLight
-        : (isOptional ? CSColor.textFaint : CSColor.terracottaLight)
-    return VStack(alignment: .leading, spacing: 10) {
+  private var accountField: some View {
+    VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 10) {
         Circle()
-          .fill(statusColor.opacity(0.85))
+          .fill(accountStatusColor.opacity(0.85))
           .frame(width: 7, height: 7)
-        Text(SettingsViewModel.keyLabel(for: account))
-          .font(CSFont.ui(13.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
-        Text(account)
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "Agent account", locale: model.interfaceLocale,
+              comment: "Setup provider account row label"))
+        )
+        .font(CSFont.ui(13.5, .semibold))
+        .foregroundStyle(CSColor.textBody)
         Spacer(minLength: 0)
-        Text(
-          !model.providerAccessResolved
-            ? String(
-              localized: LocalizedStringResource(
-                "Checking provider access…", locale: model.interfaceLocale))
-            : model.providerAccessError != nil
-              ? String(
-                localized: LocalizedStringResource(
-                  "Provider access unavailable", locale: model.interfaceLocale))
-              : isSet
-                ? String(localized: LocalizedStringResource("set", locale: model.interfaceLocale))
-                : String(
-                  localized: LocalizedStringResource("not set", locale: model.interfaceLocale))
-        )
-        .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(statusColor)
+        Text(model.selectedProviderAccountStatus)
+          .font(CSFont.mono(10, .semibold))
+          .foregroundStyle(accountStatusColor)
+        Button(accountActionTitle, action: openProviderSettings)
+          .csAction()
+          .disabled(model.providerMutationPending)
       }
-      HStack(spacing: 8) {
-        SecureField(
-          isSet
-            ? String(
-              localized: LocalizedStringResource("Replace key…", locale: model.interfaceLocale))
-            : String(
-              localized: LocalizedStringResource("Paste key…", locale: model.interfaceLocale)),
-          text: $model.apiKeyDraft
-        )
-        .focused($keyFocused)
-        .settingsInputChrome(isFocused: keyFocused)
-        .onSubmit { model.saveApiKey() }
-        Button("Save key") { model.saveApiKey() }.csAction(prominent: true)
-          .disabled(model.providerMutationPending || !model.apiKeySaveAvailable)
-        if model.providerMutationPending { ProgressView().controlSize(.small) }
-      }
-      if !model.apiKeySaveAvailable,
-        !model.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      {
-        Text(
-          "This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available."
-        )
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+      if let error = model.selectedProviderAccountError {
+        inlineError(error)
       }
     }
     .padding(.vertical, 13)

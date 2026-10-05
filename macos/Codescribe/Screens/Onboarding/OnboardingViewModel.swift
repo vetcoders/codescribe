@@ -169,8 +169,10 @@ final class OnboardingViewModel: ObservableObject {
   @Published private(set) var providerAccessResolved = false
   @Published private(set) var providerAccessError: String?
   @Published private(set) var providerAccountErrors: [String: String] = [:]
+  @Published private(set) var apiKeyEditorExpanded = false
   private var providerAccessGeneration: UInt64 = 0
   private var providerRefreshRequested = false
+  private var apiKeyDraftsByProviderId: [String: String] = [:]
   @Published var selectedProviderId: String
   @Published var apiKeyDraft: String = ""
 
@@ -653,7 +655,16 @@ final class OnboardingViewModel: ObservableObject {
   /// True when the currently selected provider's key is present in the Keychain.
   var selectedProviderKeySet: Bool {
     selectedProvider?.apiKeySet == true
+    guard id != selectedProviderId else { return }
+    if apiKeyDraft.isEmpty {
+      apiKeyDraftsByProviderId[selectedProviderId] = nil
+    } else {
+      apiKeyDraftsByProviderId[selectedProviderId] = apiKeyDraft
+    }
   }
+    apiKeyDraft = apiKeyDraftsByProviderId[id] ?? ""
+    apiKeyEditorExpanded = false
+    lastError = nil
 
   var apiKeySaveAvailable: Bool {
     providerAccessResolved && providerAccessError == nil
@@ -666,71 +677,77 @@ final class OnboardingViewModel: ObservableObject {
     selectedProvider?.accountSignedIn == true
   }
 
+  var selectedProviderRequiresApiKey: Bool {
+    selectedProvider?.keyRequired == true
+  }
+
   var selectedProviderHasAccountAccess: Bool {
     selectedProvider?.accountLoginEnabled == true || selectedProviderAccountConnected
+      && selectedProviderRequiresApiKey
+  }
+
+  var selectedProviderAccountStatus: String {
+    if providerAccessPending {
+      return String(
+        localized: LocalizedStringResource(
+          "Checking provider access…", locale: interfaceLocale,
+          comment: "Setup provider row status while credentials are loading"))
+    }
+    if providerAccessError != nil {
+      return String(
+        localized: LocalizedStringResource(
+          "Provider access unavailable", locale: interfaceLocale,
+          comment: "Setup provider row status when the credential snapshot failed"))
+    }
+    if selectedProviderAccountError != nil {
+      return String(
+        localized: LocalizedStringResource(
+          "Account access unavailable", locale: interfaceLocale,
+          comment: "Setup Agent account row status when account credentials cannot be read"))
+    }
+    return selectedProviderAccountConnected
+      ? String(
+        localized: LocalizedStringResource(
+          "Connected", locale: interfaceLocale,
+          comment: "Setup Agent account row status"))
+      : String(
+        localized: LocalizedStringResource(
+          "Not connected", locale: interfaceLocale,
+          comment: "Setup Agent account row status"))
+  }
+
+  var selectedProviderKeyStatus: String {
+    if providerAccessPending {
+      return String(
+        localized: LocalizedStringResource(
+          "Checking provider access…", locale: interfaceLocale,
+          comment: "Setup provider row status while credentials are loading"))
+    }
+    if providerAccessError != nil {
+      return String(
+        localized: LocalizedStringResource(
+          "Provider access unavailable", locale: interfaceLocale,
+          comment: "Setup provider row status when the credential snapshot failed"))
+    }
+    return selectedProviderKeySet
+      ? String(
+        localized: LocalizedStringResource(
+          "Set", locale: interfaceLocale,
+          comment: "Setup API key row status"))
+      : String(
+        localized: LocalizedStringResource(
+          "Not set", locale: interfaceLocale,
+          comment: "Setup API key row status"))
+  }
+
+  func beginApiKeyEditing() {
+    guard selectedProviderRequiresApiKey else { return }
+    apiKeyEditorExpanded = true
   }
 
   func refreshProviderAccess() {
     refreshProviders()
     keyStatus = engine.keyStatus()
-  }
-
-  /// Credential presence is presented separately from the core capability verdict.
-  /// Account sign-in does not promise a Formatting credential or a model catalog.
-  var providerAccessDescription: String {
-    if let error = providerAccessError {
-      return String(
-        localized: LocalizedStringResource(
-          "Provider access is unavailable. Retry to check account and API key status.",
-          locale: interfaceLocale)) + " " + error
-    }
-    if !providerAccessResolved {
-      return String(
-        localized: LocalizedStringResource(
-          "Checking provider access… You can continue with Basic dictation.",
-          locale: interfaceLocale))
-    }
-
-    if selectedProviderAccountError != nil {
-      return String(
-        localized: LocalizedStringResource(
-          "Provider account access is unavailable. Remove the stored account in Settings › Providers, then sign in again.",
-          locale: interfaceLocale))
-    }
-    if selectedProviderAccountConnected && selectedProviderKeySet {
-      return String(
-        localized: LocalizedStringResource(
-          "Account connected and API key configured. Supported Assistive requests can use the account; Formatting and model discovery use the provider API key.",
-          locale: interfaceLocale))
-    }
-    if selectedProviderAccountConnected {
-      return String(
-        localized: LocalizedStringResource(
-          "Account connected for supported Assistive requests. No API key is configured. You can continue without adding one; cloud Formatting and model discovery require a provider API key.",
-          locale: interfaceLocale))
-    }
-    if selectedProviderKeySet {
-      return String(
-        localized: LocalizedStringResource(
-          "API key configured. Supported Assistive requests, cloud Formatting and model discovery can use this provider's key. No account is connected.",
-          locale: interfaceLocale))
-    }
-    if selectedProvider?.keyRequired == false {
-      return String(
-        localized: LocalizedStringResource(
-          "This provider does not require an API key. Choose a model in Settings › Agent › LLM lanes.",
-          locale: interfaceLocale))
-    }
-    if selectedProviderHasAccountAccess {
-      return String(
-        localized: LocalizedStringResource(
-          "No account or API key is configured for this provider. Connect a supported account for Assistive, or add an API key in Settings › Providers. You can skip this step for dictation.",
-          locale: interfaceLocale))
-    }
-    return String(
-      localized: LocalizedStringResource(
-        "No API key is configured for this provider. Add one in Settings › Providers, choose another provider, or skip this step for dictation.",
-        locale: interfaceLocale))
   }
 
   func saveApiKey(advanceOnSuccess: Bool = false) {
@@ -751,9 +768,14 @@ final class OnboardingViewModel: ObservableObject {
         try await engine.setApiKeyAsync(account: account, secret: trimmed)
         let stillCurrent =
           apiKeyDraft == submitted
+    lastError = nil
           && selectedProviderId == providerId
           && selectedProvider?.apiKeyAccount == account
-        if stillCurrent { apiKeyDraft = "" }
+        if stillCurrent {
+          apiKeyDraft = ""
+          apiKeyDraftsByProviderId[providerId] = nil
+          apiKeyEditorExpanded = false
+        }
         lastError = nil
         if advanceOnSuccess, stillCurrent, step == .apiKey { advanceAfterCommit() }
       } catch { lastError = error.userFacingMessage }

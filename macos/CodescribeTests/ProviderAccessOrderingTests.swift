@@ -10,6 +10,7 @@ private final class ControlledProviderEngine: OnboardingEngine {
   var writes = 0
   var revision: UInt64 = 0
   var provider = CsProviderOption.sampleProviders[1]
+  var additionalProviders: [CsProviderOption] = []
   var read: CheckedContinuation<CsProviderAccessSnapshot, Error>?
   var write: CheckedContinuation<Void, Error>?
   func shouldShowOnboarding() -> Bool { true }
@@ -38,7 +39,8 @@ private final class ControlledProviderEngine: OnboardingEngine {
     read = nil
     continuation?.resume(
       returning: CsProviderAccessSnapshot(
-        providers: [provider], accountErrors: accountErrors, keyStatus: .sampleAllSet, sttLanes: [],
+        providers: [provider] + additionalProviders, accountErrors: accountErrors,
+        keyStatus: .sampleAllSet, sttLanes: [],
         revision: revision ?? self.revision))
   }
   func resolveWrite(success: Bool) {
@@ -104,6 +106,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
     let model = makeModel(engine)
     await load(model, engine)
     XCTAssertEqual(model.step, .apiKey)
+    model.beginApiKeyEditing()
     model.apiKeyDraft = "synthetic-key"
     model.advance()
     await awaitCondition { engine.write != nil }
@@ -118,6 +121,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
     engine.resolveRead()
     await awaitCondition { !model.providerAccessPending }
     XCTAssertEqual(model.apiKeyDraft, "synthetic-key")
+    XCTAssertTrue(model.apiKeyEditorExpanded)
     XCTAssertEqual(model.step, .apiKey)
     XCTAssertNotNil(model.lastError)
     model.advance()
@@ -128,6 +132,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
     await awaitCondition { !model.providerAccessPending }
     XCTAssertEqual(model.step, .hotkeyMode)
     XCTAssertEqual(model.apiKeyDraft, "")
+    XCTAssertFalse(model.apiKeyEditorExpanded)
     XCTAssertNil(model.lastError)
   }
 
@@ -135,6 +140,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
     let engine = ControlledProviderEngine()
     let model = makeModel(engine)
     await load(model, engine)
+    model.beginApiKeyEditing()
     model.apiKeyDraft = "submitted"
     model.saveApiKey()
     await awaitCondition { engine.write != nil }
@@ -144,6 +150,49 @@ final class ProviderAccessOrderingTests: XCTestCase {
     engine.resolveRead()
     await awaitCondition { !model.providerAccessPending }
     XCTAssertEqual(model.apiKeyDraft, "newer draft")
+    XCTAssertTrue(model.apiKeyEditorExpanded)
+  }
+
+  func testApiKeyEditorOpensExplicitlyAndCollapsesAfterSuccessfulSave() async {
+    let engine = ControlledProviderEngine()
+    let model = makeModel(engine)
+    await load(model, engine)
+    XCTAssertFalse(model.apiKeyEditorExpanded)
+    model.beginApiKeyEditing()
+    XCTAssertTrue(model.apiKeyEditorExpanded)
+    model.apiKeyDraft = "submitted"
+    model.saveApiKey()
+    await awaitCondition { engine.write != nil }
+    engine.resolveWrite(success: true)
+    await awaitCondition { !model.providerMutationPending && engine.read != nil }
+    engine.resolveRead()
+    await awaitCondition { !model.providerAccessPending }
+    XCTAssertFalse(model.apiKeyEditorExpanded)
+    XCTAssertEqual(model.apiKeyDraft, "")
+    XCTAssertEqual(model.step, .apiKey, "Save alone does not advance the wizard")
+  }
+
+  func testProviderSwitchKeepsDraftsSeparateAndReturnsToCollapsedEditor() async throws {
+    let engine = ControlledProviderEngine()
+    let second = try XCTUnwrap(
+      CsProviderOption.sampleProviders.first { $0.id != engine.provider.id && $0.keyRequired })
+    engine.additionalProviders = [second]
+    let model = makeModel(engine)
+    await load(model, engine)
+    let firstID = model.selectedProviderId
+    model.beginApiKeyEditing()
+    model.apiKeyDraft = "first-provider-draft"
+    model.selectProvider(second.id)
+    XCTAssertEqual(model.apiKeyDraft, "", "A draft cannot become another provider's credential")
+    XCTAssertFalse(model.apiKeyEditorExpanded)
+    model.beginApiKeyEditing()
+    model.apiKeyDraft = "second-provider-draft"
+    model.selectProvider(firstID)
+    XCTAssertEqual(model.apiKeyDraft, "first-provider-draft")
+    XCTAssertFalse(model.apiKeyEditorExpanded)
+    model.selectProvider(second.id)
+    XCTAssertEqual(model.apiKeyDraft, "second-provider-draft")
+    XCTAssertEqual(engine.writes, 0, "Changing the picker never writes a secret")
   }
 
   func testOldSnapshotAfterMutationIsRejectedAndFollowUpPublishesNewRevision() async {
