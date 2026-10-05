@@ -58,8 +58,10 @@ make install
 This matters because macOS TCC permissions are far more stable with a persistent code-signing identity than with ad-hoc signatures.
 
 For an isolated build/test bundle on a host whose signing keychain is locked,
-`CODESCRIBE_CODESIGN_IDENTITY=- make app` explicitly selects ad-hoc signing and
-does not query installed certificate identities. This is a test artifact;
+`CODESCRIBE_CODESIGN_IDENTITY=- make app` explicitly selects ad-hoc signing;
+the app build script preserves that choice instead of selecting a listed
+certificate. Make may still inspect public signing identities for its other
+targets, but this build does not require their private keys. This is a test artifact;
 Founder installs use the stable Developer ID signature and the signed prebuilt
 installation checks above.
 
