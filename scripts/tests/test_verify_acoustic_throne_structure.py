@@ -50,6 +50,26 @@ class OccurrenceScopeTests(unittest.TestCase):
 
         self.assertEqual(files, {"core/live.rs", "tests/oracle.rs"})
 
+    def test_payload_variant_does_not_duplicate_the_type_authority(self) -> None:
+        type_row = occurrence("OccurrenceLabelProposal", match_role="definition")
+        type_row["enclosing_symbol"] = {"kind": "struct"}
+        variant = occurrence("OccurrenceLabelProposal", file="core/contracts.rs", match_role="definition")
+        variant["enclosing_symbol"] = {"kind": "enum_variant"}
+        self.assertEqual(VERIFIER.definitions({"occurrences": [type_row, variant]}), [type_row])
+        self.assertEqual(VERIFIER.definitions({"occurrences": [variant]}), [],
+                         "a payload variant cannot satisfy missing type authority")
+
+    def test_second_type_and_unknown_kind_remain_definition_competitors(self) -> None:
+        first = occurrence("OccurrenceLabelProposal", match_role="definition")
+        first["enclosing_symbol"] = {"kind": "struct"}
+        for kind in ("struct", "unknown", None):
+            second = occurrence("OccurrenceLabelProposal", file="core/other.rs", match_role="definition")
+            if kind is not None:
+                second["enclosing_symbol"] = {"kind": kind}
+            with self.subTest(kind=kind):
+                self.assertEqual(VERIFIER.definitions({"occurrences": [first, second]}),
+                                 [first, second], "missing classification must fail closed")
+
 
 def occurrence(
     matched_identifier: str,

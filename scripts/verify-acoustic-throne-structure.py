@@ -1013,6 +1013,9 @@ def definitions(payload: dict[str, Any]) -> list[dict[str, Any]]:
         occurrence
         for occurrence in production_occurrences(payload)
         if occurrence.get("match_role") == "definition"
+        # A payload constructor is not a type/function authority. Unknown kinds
+        # remain counted: absent classification must never hide a competitor.
+        and (occurrence.get("enclosing_symbol") or {}).get("kind") != "enum_variant"
     ]
 
 
