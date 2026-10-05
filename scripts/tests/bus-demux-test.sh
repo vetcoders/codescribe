@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEMUX="$ROOT/scripts/bus-demux.py"
 WORKDIR="$(mktemp -d)"
+# Install guards include channel buses; fixtures must never inspect the user bridge.
+export CODESCRIBE_AGENT_BRIDGE_HOME="$WORKDIR/ambient-agent-bridge"
 trap 'rm -rf "$WORKDIR"' EXIT
 BUS="$WORKDIR/transcript-events.jsonl"
 chmod +x "$DEMUX"
