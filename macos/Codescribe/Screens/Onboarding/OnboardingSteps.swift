@@ -752,7 +752,10 @@ struct DoneStepView: View {
         .font(.title2.weight(.semibold))
         .foregroundStyle(.primary)
       Text(
-        "Press Finish to close setup and start using Codescribe. Anything you skipped is available in Settings."
+        String(
+          localized: LocalizedStringResource(
+            "Click Finish to close setup.", locale: model.interfaceLocale,
+            comment: "Setup completion explanation; Finish is the button label"))
       )
       .font(.body)
       .lineSpacing(3)
@@ -764,49 +767,41 @@ struct DoneStepView: View {
           summaryRow(
             kind.displayName(locale: model.interfaceLocale),
             done: model.permissions.state(kind).isGranted,
-            doneLabel: String(
-              localized: LocalizedStringResource(
-                "granted", locale: model.interfaceLocale,
-                comment: "Permission status: this permission is granted")))
+            doneLabel: model.permissions.state(kind).label(locale: model.interfaceLocale))
         }
-        if model.providerAccessResolved, model.providerAccessError == nil {
+        if model.selectedProviderRequiresApiKey {
           summaryRow(
             String(
               localized: LocalizedStringResource(
                 "Provider API key", locale: model.interfaceLocale,
                 comment: "Summary row: whether an API key is stored for the chosen AI provider")),
             done: model.selectedProviderKeySet,
-            doneLabel: String(
+            doneLabel: model.selectedProviderKeyStatus,
+            statusLabel: model.selectedProviderKeyStatus)
+        }
+        if model.selectedProviderHasAccountAccess {
+          summaryRow(
+            String(
               localized: LocalizedStringResource(
-                "set", locale: model.interfaceLocale, comment: "Status chip: a value is stored")))
-          if model.selectedProviderHasAccountAccess, model.selectedProviderAccountError == nil {
-            summaryRow(
-              String(
-                localized: LocalizedStringResource(
-                  "Provider account", locale: model.interfaceLocale)),
-              done: model.selectedProviderAccountConnected,
-              doneLabel: String(
-                localized: LocalizedStringResource("connected", locale: model.interfaceLocale)),
-              missingLabel: String(
-                localized: LocalizedStringResource("not connected", locale: model.interfaceLocale)))
-          }
+                "Agent account", locale: model.interfaceLocale,
+                comment: "Summary row: provider account used by Agent features")),
+            done: model.selectedProviderAccountConnected,
+            doneLabel: model.selectedProviderAccountStatus,
+            statusLabel: model.selectedProviderAccountStatus)
         }
       }
       .padding(.top, 6)
-      if model.providerAccessError != nil {
-        Button("Retry provider access") { model.refreshProviderAccess() }
-          .disabled(model.providerAccessPending || model.providerMutationPending)
-      }
-      Text(model.providerAccessDescription)
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+      OnboardingStepNote(
+        text: String(
+          localized: LocalizedStringResource(
+            "Anything you skipped is available later in Settings.",
+            locale: model.interfaceLocale, comment: "Setup completion footnote")))
     }
   }
 
   private func summaryRow(
     _ label: String, done: Bool, doneLabel: String,
-    missingLabel: String? = nil
+    missingLabel: String? = nil, statusLabel: String? = nil
   ) -> some View {
     HStack(spacing: 10) {
       CSIconView(
@@ -820,10 +815,13 @@ struct DoneStepView: View {
         .foregroundStyle(CSColor.textBody)
       Spacer(minLength: 0)
       Text(
-        done
-          ? doneLabel
-          : (missingLabel
-            ?? String(localized: LocalizedStringResource("optional", locale: model.interfaceLocale)))
+        statusLabel
+          ?? (done
+            ? doneLabel
+            : (missingLabel
+              ?? String(
+                localized: LocalizedStringResource(
+                  "Optional", locale: model.interfaceLocale, comment: "Status chip"))))
       )
       .font(CSFont.mono(10, .semibold))
       .foregroundStyle(done ? CSColor.oliveLight : CSColor.textFaint)

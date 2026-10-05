@@ -2416,6 +2416,16 @@
         }
       }
     },
+    "Anything you skipped is available later in Settings." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pominięte opcje znajdziesz później w Ustawieniach."
+          }
+        }
+      }
+    },
     "Apple dictation needs Speech Recognition access — grant it in Settings › Dictation or System Settings › Privacy & Security › Speech Recognition" : {
       "localizations" : {
         "pl" : {
@@ -3551,6 +3561,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Usuń własne ustawienie modelu"
+          }
+        }
+      }
+    },
+    "Click Finish to close setup." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kliknij „Gotowe”, aby zakończyć konfigurację."
           }
         }
       }
@@ -8792,6 +8812,16 @@
         }
       }
     },
+    "Optional" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opcjonalnie"
+          }
+        }
+      }
+    },
     "Optional override (settings.json) — empty restores the shipped default." : {
       "localizations" : {
         "pl" : {
@@ -11609,6 +11639,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kreator konfiguracji…"
+          }
+        }
+      }
+    },
+    "Setup is complete." : {
+      "comment" : "Setup chapter subtitle",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konfiguracja jest gotowa."
           }
         }
       }

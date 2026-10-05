@@ -111,13 +111,10 @@ struct OnboardingView: View {
       return (
         String(
           localized: LocalizedStringResource(
-            "Your next thought starts here", locale: model.interfaceLocale,
+            "Setup is complete.", locale: model.interfaceLocale,
             comment: "Setup chapter heading")),
         "checkmark",
-        String(
-          localized: LocalizedStringResource(
-            "Setup is complete. Your voice takes it from here.", locale: model.interfaceLocale,
-            comment: "Setup chapter subtitle"))
+        nil
       )
     }
   }
