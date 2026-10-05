@@ -73,6 +73,7 @@ trap 'rm -r "$WORK"' EXIT
 if ! python3 - "$REPO_ROOT" "$SOURCE_ROOT" "$OBJECTS" "$WORK/inputs" <<'PY'; then
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -81,6 +82,31 @@ repo = Path(repo).resolve()
 sources = {p.resolve() for p in (repo / source_root).rglob("*.swift")}
 
 
+def file_identity(path):
+    status = path.stat()
+    if not stat.S_ISREG(status.st_mode):
+        raise ValueError("not a regular file")
+    # The same device/inode comparison used by os.path.samefile. Path.resolve()
+    # resolves symlinks but does not canonicalize case on case-insensitive APFS.
+    return status.st_dev, status.st_ino
+
+
+source_identities = {}
+sources_by_identity = {}
+for source in sorted(sources):
+    try:
+        identity = file_identity(source)
+    except (OSError, ValueError) as error:
+        print(f"l10n-sync: cannot identify Swift source {source}: {error}", file=sys.stderr)
+        raise SystemExit(1)
+    if identity in sources_by_identity:
+        print(
+            f"l10n-sync: ambiguous Swift source identity: {sources_by_identity[identity]} and {source}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    source_identities[source] = identity
+    sources_by_identity[identity] = source
 
 def compiled_at(data):
     # The compiler leaves a .stringsdata file untouched when a recompile
@@ -97,23 +123,33 @@ def compiled_at(data):
 extracted = {}
 for data in Path(objects).rglob("*.stringsdata"):
     try:
-        source = Path(json.loads(data.read_text())["source"]).resolve()
-    except (OSError, ValueError, KeyError):
+        reported_source = Path(json.loads(data.read_text())["source"])
+        if not reported_source.is_absolute():
+            raise ValueError("compiler source path is not absolute")
+        source = sources_by_identity.get(file_identity(reported_source))
+    except (OSError, ValueError, KeyError, TypeError):
         continue
     # Intermediates can outlive a deleted or renamed source; those rows no
-    # longer describe anything in the tree.
-    if source not in sources:
+    # longer describe anything in the tree. Another worktree's source is not
+    # this source, even when its name, contents and timestamp are identical.
+    if source is None:
         continue
     previous = extracted.get(source)
     if previous is None or compiled_at(data) > compiled_at(previous):
         extracted[source] = data
 
 missing = sorted(str(p.relative_to(repo)) for p in sources - extracted.keys())
-outdated = sorted(
-    str(source.relative_to(repo))
-    for source, data in extracted.items()
-    if source.stat().st_mtime > compiled_at(data)
-)
+outdated = []
+for source, data in extracted.items():
+    try:
+        status = source.stat()
+        current_identity = status.st_dev, status.st_ino
+        changed = current_identity != source_identities[source] or status.st_mtime > compiled_at(data)
+    except OSError:
+        changed = True
+    if changed:
+        outdated.append(str(source.relative_to(repo)))
+outdated.sort()
 if missing or outdated:
     for label, paths in (("never compiled", missing), ("edited since the build", outdated)):
         if paths:

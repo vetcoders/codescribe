@@ -81,6 +81,12 @@ class LocalizationSyncTests(unittest.TestCase):
         result = self.sync()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def report_source(self, source):
+        data = self.objects / "Probe.stringsdata"
+        extraction = json.loads(data.read_text())
+        extraction["source"] = str(source)
+        data.write_text(json.dumps(extraction))
+
     def test_positive_and_formatting_only_changes(self):
         self.seed()
         strings = json.loads(self.catalog.read_text())["strings"]
@@ -88,6 +94,58 @@ class LocalizationSyncTests(unittest.TestCase):
         self.catalog.write_text(json.dumps(json.loads(self.catalog.read_text()), indent=4) + "\n")
         result = self.sync(check=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_case_or_filesystem_alias_matches_identity_and_still_checks_freshness(self):
+        self.seed()
+        alias = self.source.parent.with_name(self.source.parent.name.swapcase()) / self.source.name
+        if not alias.exists():
+            # Case-sensitive volumes cannot expose the same spelling alias.
+            # A hard link outside the source census exercises the same inode
+            # through a distinct absolute path without skipping the control.
+            alias = self.repo / "case-alias" / self.source.name
+            alias.parent.mkdir()
+            os.link(self.source, alias)
+        self.assertTrue(alias.samefile(self.source))
+        # Keep real compiler extraction; change only its filesystem coordinate
+        # to reproduce the observed case/alias spelling from an Xcode worktree.
+        self.report_source(alias)
+        result = self.sync(check=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        newer = (self.objects / "Probe.stringsdata").stat().st_mtime + 10
+        os.utime(self.source, (newer, newer))
+        result = self.sync(check=True)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("edited since the build", result.stderr)
+
+    def test_symlink_worktree_alias_matches_the_current_source(self):
+        self.seed()
+        alias = self.repo / "worktree-alias"
+        alias.symlink_to(self.repo, target_is_directory=True)
+        reported = alias / self.source.relative_to(self.repo)
+        self.assertTrue(reported.samefile(self.source))
+        self.report_source(reported)
+        result = self.sync(check=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_another_worktree_source_is_not_accepted_by_name_or_contents(self):
+        self.seed()
+        foreign = self.repo / "other-worktree" / self.source.name
+        foreign.parent.mkdir()
+        shutil.copy2(self.source, foreign)
+        self.assertEqual(foreign.read_bytes(), self.source.read_bytes())
+        self.assertFalse(foreign.samefile(self.source))
+        self.report_source(foreign)
+        result = self.sync(check=True)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("never compiled", result.stderr)
+
+    def test_ambiguous_current_source_identity_fails_closed(self):
+        self.seed()
+        os.link(self.source, self.source_root / "Alias.swift")
+        result = self.sync(check=True)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("ambiguous Swift source identity", result.stderr)
 
     def test_new_user_facing_swift_string_fails_without_catalog_sync(self):
         self.seed()
@@ -118,7 +176,13 @@ class LocalizationSyncTests(unittest.TestCase):
     def test_missing_or_malformed_extraction_fails_closed(self):
         self.seed()
         data = self.objects / "Probe.stringsdata"
-        for content in (None, "not JSON"):
+        for content in (
+            None,
+            "not JSON",
+            json.dumps({"source": None}),
+            json.dumps({"source": "macos/Codescribe/Probe.swift"}),
+            json.dumps({"source": str(self.source_root)}),
+        ):
             with self.subTest(content=content):
                 if content is None:
                     data.unlink()
