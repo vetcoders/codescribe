@@ -3295,7 +3295,11 @@ final class OverlayState {
   /// A new ordinary capture shows its own canvas. The controller's roster
   /// resolves a channel snapshot that still describes the preceding capture.
   private func followDictationCapturePresentation() {
-    if !hasOpenChannel, indicatorMode != .assistive {
+    // `preparing` already moved the canvas to dictation. The `started` beat of
+    // the same capture runs this again and must not re-select a canvas that is
+    // already showing, or every duplicate lifecycle bumps the focus revision
+    // (OverlayStateTests.testDuplicateLifecycleDoesNotSelectDictationRepeatedly).
+    if !hasOpenChannel, indicatorMode != .assistive, !showsMyDictation {
       selectConversation(nil)
     }
     guard let engine else { return }
