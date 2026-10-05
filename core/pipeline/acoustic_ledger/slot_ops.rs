@@ -2775,6 +2775,61 @@ mod slot_ops_tests {
     }
 
     #[test]
+    fn forensic_merge_complete_wide_pin_cannot_collapse_five_words_from_one_decode() {
+        let (mut ledger, owner, pcm) = forensic_merge_capture("merge-five-one-decode", 5);
+        let sources = ledger.slots_of(&owner).unwrap().to_vec();
+        assert_eq!(sources.len(), 5);
+        assert!(
+            sources
+                .iter()
+                .all(|word| word.observation == sources[0].observation)
+        );
+        assert!(sources.iter().all(|word| ledger.complete_word_slot(word)));
+        let exact_ranges = (0..5)
+            .map(|index| (3_200 + index * 1_280, 3_200 + (index + 1) * 1_280))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sources
+                .iter()
+                .map(|word| (word.sample_start, word.sample_end))
+                .collect::<Vec<_>>(),
+            exact_ranges
+        );
+        let lineage = sources
+            .iter()
+            .map(|word| ledger.slot_source_ranges(word))
+            .collect::<Vec<_>>();
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+        assert!(ledger.require_text_recovery(&owner));
+        let next = ledger.next_word_observation(ObservationProducer::Whisper, 707, &owner);
+        let decision = ledger.admit_word_slots(
+            &next,
+            &[WordPin::new(3_200, 9_600, "Iwo").with_decode_window(0, pcm.len() as u64)],
+        );
+        assert!(
+            !decision.grants_mutation(),
+            "one earlier observation does not authorize retiring five complete PCM words: {decision:?}; slots={:?}; rendered={:?}",
+            ledger.slots_of(&owner),
+            ledger.text_of(&owner)
+        );
+        assert_eq!(ledger.slots_of(&owner).unwrap(), sources);
+        assert_eq!(ledger.text_of(&owner), Some("Iwo Iwo Iwo Iwo Iwo"));
+        assert_eq!(
+            sources
+                .iter()
+                .map(|word| ledger.slot_source_ranges(word))
+                .collect::<Vec<_>>(),
+            lineage
+        );
+        assert!(ledger.text_recovery_pending(&owner));
+        assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+        assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+        assert!(ledger.word_deletions().is_empty());
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
     fn forensic_merge_complete_decode_alone_cannot_retire_complete_word_sources() {
         for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
             let (mut ledger, owner, pcm) = forensic_merge_capture("merge-actual-scope", 2);
