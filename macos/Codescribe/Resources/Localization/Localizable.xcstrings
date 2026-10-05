@@ -5247,6 +5247,17 @@
         }
       }
     },
+    "Double-tap left Option: dictation with formatting. Double-tap right Option: talk to the Agent. Tap again to stop." : {
+      "comment" : "Hotkey preset detail; Option is the key cap on a Mac keyboard",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dwa razy lewy Option: dyktowanie z formatowaniem. Dwa razy prawy Option: rozmowa z Agentem. Naciśnij ponownie, aby zakończyć."
+          }
+        }
+      }
+    },
     "Download" : {
       "localizations" : {
         "pl" : {
@@ -6322,6 +6333,17 @@
         }
       }
     },
+    "Hold Fn/Globe while you speak. Release to stop." : {
+      "comment" : "Hotkey preset detail; Fn and Globe are the key caps on a Mac keyboard",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przytrzymaj Fn/Globe podczas mówienia. Puść, aby zakończyć."
+          }
+        }
+      }
+    },
     "Hold to talk" : {
       "comment" : "Hotkey preset name",
       "localizations" : {
@@ -6361,7 +6383,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Twój sposób uruchamiania nagrywania."
+            "value" : "Jak chcesz rozpocząć nagrywanie?"
           }
         }
       }
@@ -14142,6 +14164,17 @@
         }
       }
     },
+    "Use both methods." : {
+      "comment" : "Hotkey preset detail; Fn, Globe and Option are Mac key caps",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Korzystaj z obu metod."
+          }
+        }
+      }
+    },
     "Use helper as correction" : {
       "localizations" : {
         "pl" : {
@@ -14835,6 +14868,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Ty"
+          }
+        }
+      }
+    },
+    "You can change the shortcuts later in Settings › Shortcuts." : {
+      "comment" : "Setup step footnote; Settings › Shortcuts is a navigation path in the app",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skróty możesz później zmienić w Ustawienia › Skróty."
           }
         }
       }

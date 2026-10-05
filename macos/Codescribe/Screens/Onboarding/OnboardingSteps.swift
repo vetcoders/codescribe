@@ -263,11 +263,7 @@ struct HotkeyModeStepView: View {
           localized: LocalizedStringResource(
             "How do you trigger recording?", locale: model.interfaceLocale,
             comment: "Setup step heading")),
-        blurb: String(
-          localized: LocalizedStringResource(
-            "Pick a starting preset. This sets the Dictation, Formatting, and Assistive shortcuts for you.",
-            locale: model.interfaceLocale,
-            comment: "Setup step blurb; Dictation, Formatting and Assistive are the three modes")))
+        blurb: nil)
 
       VStack(spacing: 10) {
         ForEach(HotkeyModeChoice.allCases, id: \.self) { mode in
@@ -283,7 +279,7 @@ struct HotkeyModeStepView: View {
       OnboardingStepNote(
         text: String(
           localized: LocalizedStringResource(
-            "Fine-tune the exact keys later in Settings › Shortcuts.",
+            "You can change the shortcuts later in Settings › Shortcuts.",
             locale: model.interfaceLocale,
             comment: "Setup step footnote; Settings › Shortcuts is a navigation path in the app")))
     }

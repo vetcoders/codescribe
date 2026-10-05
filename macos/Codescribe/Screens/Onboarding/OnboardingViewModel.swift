@@ -84,18 +84,19 @@ enum HotkeyModeChoice: String, CaseIterable {
     case .hold:
       return String(
         localized: LocalizedStringResource(
-          "Press and hold Fn/Globe while you speak; release to stop.", locale: locale,
+          "Hold Fn/Globe while you speak. Release to stop.", locale: locale,
           comment: "Hotkey preset detail; Fn and Globe are the key caps on a Mac keyboard"))
     case .toggle:
       return String(
         localized: LocalizedStringResource(
-          "Double-tap Left/Right Option to start, tap again to stop.", locale: locale,
-          comment: "Hotkey preset detail; Option is the key cap on a Mac keyboard"))
+          "Double-tap left Option: dictation with formatting. Double-tap right Option: talk to the Agent. Tap again to stop.",
+          locale: locale,
+          comment: "Hotkey preset detail; left and right Option activate different modes"))
     case .both:
       return String(
         localized: LocalizedStringResource(
-          "Hold Fn/Globe to dictate, or double-tap Option to toggle.", locale: locale,
-          comment: "Hotkey preset detail; Fn, Globe and Option are Mac key caps"))
+          "Use both methods.", locale: locale,
+          comment: "Hotkey preset detail: hold and toggle methods are both enabled"))
     }
   }
 
