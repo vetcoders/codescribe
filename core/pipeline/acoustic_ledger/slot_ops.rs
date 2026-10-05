@@ -2775,6 +2775,72 @@ mod slot_ops_tests {
     }
 
     #[test]
+    fn forensic_merge_coarse_phrase_split_cannot_license_five_word_contraction() {
+        let (mut ledger, owner, pcm) = forensic_split_empty_capture("coarse-parent-five");
+        let first = ObservationIdentity::new(ObservationProducer::Apple, 1001, 0, owner.clone());
+        assert!(
+            ledger
+                .admit(&first, "Iwo Iwo Iwo Iwo Iwo")
+                .grants_mutation()
+        );
+        let parent = ledger.slots_of(&owner).unwrap()[0].clone();
+        assert!(!ledger.complete_word_slot(&parent));
+        let split = ObservationIdentity::new(ObservationProducer::Whisper, 1002, 0, owner.clone());
+        let pins = (0..5)
+            .map(|i| {
+                WordPin::new(3200 + i * 1280, 3200 + (i + 1) * 1280, "Iwo")
+                    .with_decode_window(0, pcm.len() as u64)
+            })
+            .collect::<Vec<_>>();
+        let split_decision = ledger.admit_word_slots(&split, &pins);
+        println!(
+            "coarse split decision={split_decision:?} slots={:?} ops={:?}",
+            ledger.slots_of(&owner),
+            ledger.slot_operations()
+        );
+        let sources = ledger.slots_of(&owner).unwrap().to_vec();
+        assert_eq!(sources.len(), 5);
+        assert!(sources.iter().all(|s| ledger.complete_word_slot(s)));
+        let operation = ledger.slot_operations().last().unwrap();
+        assert_eq!(operation.kind, SlotOperationKind::Split);
+        assert!(operation.rule_id.starts_with("acoustic_resegmentation/"));
+        assert_eq!(operation.sources, vec![parent]);
+        assert_eq!(operation.outputs, sources);
+        let lineage = sources
+            .iter()
+            .map(|s| ledger.slot_source_ranges(s))
+            .collect::<Vec<_>>();
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+        assert!(ledger.require_text_recovery(&owner));
+        let next = ObservationIdentity::new(ObservationProducer::Whisper, 1002, 1, owner.clone());
+        let decision = ledger.admit_word_slots(
+            &next,
+            &[WordPin::new(3200, 9600, "Iwo").with_decode_window(0, pcm.len() as u64)],
+        );
+        assert!(
+            !decision.grants_mutation(),
+            "coarse phrase ancestry cannot retire five complete word ranges: {decision:?}; slots={:?}; text={:?}",
+            ledger.slots_of(&owner),
+            ledger.text_of(&owner)
+        );
+        assert_eq!(ledger.slots_of(&owner).unwrap(), sources);
+        assert_eq!(ledger.text_of(&owner), Some("Iwo Iwo Iwo Iwo Iwo"));
+        assert_eq!(
+            sources
+                .iter()
+                .map(|s| ledger.slot_source_ranges(s))
+                .collect::<Vec<_>>(),
+            lineage
+        );
+        assert!(ledger.text_recovery_pending(&owner));
+        assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+        assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+        assert!(ledger.word_deletions().is_empty());
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
     fn forensic_merge_complete_wide_pin_cannot_collapse_five_words_from_one_decode() {
         let (mut ledger, owner, pcm) = forensic_merge_capture("merge-five-one-decode", 5);
         let sources = ledger.slots_of(&owner).unwrap().to_vec();
