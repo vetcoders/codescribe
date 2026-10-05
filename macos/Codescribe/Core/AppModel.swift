@@ -217,7 +217,16 @@ final class OverlayController: ObservableObject {
       guard let self else { return }
       // A channel's live microphone must remain visible even when ordinary
       // dictation is hidden. This only paints evidence; it never opens capture.
-      if self.state.hasOpenChannel { self.show() } else { self.resizeForProjectedContent() }
+      // A qualified fresh reply asks this same cached panel to show. Every
+      // other conversation callback only resizes, so a dismissed panel stays
+      // dismissed. The overlay preference still decides that reply request.
+      let freshReplyRequestsPanel =
+        self.state.freshReplyPresentationRequested && self.readOverlayPreference()
+      if self.state.hasOpenChannel || freshReplyRequestsPanel {
+        self.show()
+      } else {
+        self.resizeForProjectedContent()
+      }
     }
     state.onSuccessfulDictation = {
       Task { @MainActor in
@@ -281,7 +290,7 @@ final class OverlayController: ObservableObject {
   /// Reads the persisted preference once and hands the same value to the
   /// state's pin logic. The read loads the settings snapshot, so it happens
   /// only where the preference decides something: a take start, a status card,
-  /// a preference write.
+  /// a preference write, or a qualified fresh-reply presentation.
   @discardableResult
   private func readOverlayPreference() -> Bool {
     let enabled = overlayEnabledProvider()

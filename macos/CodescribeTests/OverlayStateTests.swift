@@ -269,6 +269,429 @@ final class OverlayStateTests: XCTestCase {
       open: open, loud: open, autosealDeadlineUnixMs: nil, followerAlive: true)
   }
 
+  private func replyFocusConversation(
+    _ conversation: OverlayConversation, id: String = "reply:admission-1",
+    text: String = "Odpowiedź", owner: OverlayConversationOwner? = nil,
+    playback: OverlayReplyPlayback? = nil
+  ) -> OverlayConversation {
+    let message = OverlayConversationMessage(
+      id: id, kind: .reply, text: text, order: 1, emittedAt: "2026-10-05T18:50:00Z",
+      owner: owner ?? conversation.owner, recipients: [], deliveryID: nil,
+      replyTo: nil, unsolicited: true, playback: playback, busPath: "/fixture/owned-bus")
+    return OverlayConversation(
+      id: conversation.id, channel: conversation.channel, name: conversation.name,
+      owner: conversation.owner, messages: [message])
+  }
+
+  func testReplyAdmissionEmptyFirstSnapshotDoesNotHideFirstFreshReply() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [replyFocusConversation(lena)]))
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+    XCTAssertFalse(state.showsMyDictation)
+  }
+
+  func testReplyAdmissionPrunedHistoryReplayDoesNotRetakeManualFocus() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    let oldReply = replyFocusConversation(lena, id: "reply:old-history")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [oldReply, astra]))
+    state.selectConversation(astra.id)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    let focus = state.conversationFocusRevision
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [oldReply, astra]))
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    XCTAssertEqual(state.conversationFocusRevision, focus)
+  }
+
+  func testReplyAdmissionClosedHiddenPanelRequestsExistingPanelFront() throws {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    var fronted = 0
+    var factories = 0
+    let controller = OverlayController(
+      state: state, engine: engine, overlayEnabledProvider: { true },
+      assistiveStatusProvider: { false },
+      panelFactory: { _, _ in
+        factories += 1
+        return NSPanel()
+      },
+      orderPanelFront: { _ in fronted += 1 }, orderPanelOut: { _ in })
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    XCTAssertFalse(state.hasOpenChannel)
+    XCTAssertEqual(fronted, 0)
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [replyFocusConversation(lena)]))
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+    XCTAssertGreaterThan(
+      fronted, 0, "selection must request presentation on the actual AppModel seam")
+    XCTAssertEqual(factories, 1, "use the existing panel owner, never a separate window")
+    XCTAssertEqual(engine.startedRecordingCount, 0)
+    XCTAssertTrue(engine.toggledDigits.isEmpty)
+    withExtendedLifetime(controller) {}
+  }
+
+  func testReplyAdmissionFreshOwnerUsesSessionAndLeaseRatherThanChannelOrName() throws {
+    let state = OverlayState()
+    let old = try navigationConversation(session: "old", lease: "a")
+    let current = try navigationConversation(session: "current", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [old, current]))
+    state.selectConversation(old.id)
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [old, replyFocusConversation(current)]))
+    XCTAssertEqual(state.selectedConversationID, current.id)
+    XCTAssertEqual(state.conversations.first, old)
+  }
+
+  func testReplyAdmissionInitialHistoryIdenticalSnapshotAndPlaybackNeverStealFocus() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let old = replyFocusConversation(lena)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [old]))
+    XCTAssertTrue(state.showsMyDictation)
+    state.showAgentMonitor()
+    let focus = state.conversationFocusRevision
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [old]))
+    let playback = OverlayReplyPlayback(
+      replyID: "admission-1", ticket: String(repeating: "a", count: 24),
+      state: "spoken", reason: nil, spoken: true, emittedAt: "2026-10-05T18:51:00Z")
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [replyFocusConversation(lena, playback: playback)]))
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [
+          .init(
+            channel: "2", agent: "Lena", deliveryID: "ack",
+            stage: .received, isOpen: false)
+        ],
+        conversations: [replyFocusConversation(lena, playback: playback)]))
+    XCTAssertTrue(state.showsAgentMonitor)
+    XCTAssertNil(state.selectedConversationID)
+    XCTAssertEqual(state.conversationFocusRevision, focus)
+  }
+
+  func testReplyAdmissionEqualTextDistinctRepliesRemainDistinctAdmissions() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [], conversations: [replyFocusConversation(lena, id: "reply:first"), astra]))
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+    state.selectConversation(astra.id)
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [], conversations: [replyFocusConversation(lena, id: "reply:second"), astra]))
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+  }
+
+  func testReplyAdmissionAmbiguousOwnersPreserveManualViewAndUnread() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    state.showAgentMonitor()
+    let focus = state.conversationFocusRevision
+    let left = replyFocusConversation(lena, id: "reply:left")
+    let right = replyFocusConversation(astra, id: "reply:right")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [left, right]))
+    XCTAssertTrue(state.showsAgentMonitor)
+    XCTAssertEqual(state.conversationFocusRevision, focus)
+    XCTAssertEqual(state.unreadReplies(in: left), 1)
+    XCTAssertEqual(state.unreadReplies(in: right), 1)
+  }
+
+  func testReplyAdmissionWrongMessageOwnerCannotAcquireConversationFocus() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    state.showAgentMonitor()
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [],
+        conversations: [
+          replyFocusConversation(lena, owner: astra.owner), astra,
+        ]))
+    XCTAssertTrue(state.showsAgentMonitor)
+    XCTAssertNil(state.selectedConversationID)
+  }
+
+  func testReplyAdmissionBroadcastDuplicateFollowsPrivateExactOwner() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let broadcast = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
+    let reply = replyFocusConversation(lena)
+    let all = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil,
+      messages: reply.messages)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [all, reply]))
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+    XCTAssertEqual(state.conversations.first?.messages.count, 1)
+  }
+
+  func testReplyAdmissionCapturePhasesKeepDictationAndDoNotDeferFocusToReplay() throws {
+    for phase in ["preparing", "started", "warming", "processing"] {
+      let state = OverlayState()
+      let engine = OverlayStateTestEngine()
+      state.engine = engine
+      let lena = try navigationConversation()
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+      if phase == "preparing" { state.handleRecordingPreparing() }
+      if phase == "started" { state.handleRecordingStarted() }
+      if phase == "warming" { state.warmingUp = true }
+      if phase == "processing" { state.transcribing = true }
+      let focus = state.conversationFocusRevision
+      let reply = replyFocusConversation(lena)
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [reply]))
+      XCTAssertTrue(state.showsMyDictation, phase)
+      XCTAssertEqual(state.conversationFocusRevision, focus, phase)
+      XCTAssertEqual(state.unreadReplies(in: reply), 1, phase)
+      state.finishControllerRecording()
+      state.warmingUp = false
+      state.transcribing = false
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [reply]))
+      XCTAssertTrue(state.showsMyDictation, "old suppressed reply is not a delayed admission")
+      XCTAssertEqual(engine.startedRecordingCount, 0)
+      XCTAssertTrue(engine.toggledDigits.isEmpty)
+    }
+  }
+
+  func testReplyAdmissionHiddenFocusDoesNotMarkUnreadUntilVisibleAndExpanded() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    state.setConversationVisible(false)
+    if !state.isCollapsed { state.toggleCollapsed() }
+    let reply = replyFocusConversation(lena)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [reply]))
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+    XCTAssertEqual(state.unreadReplies(in: reply), 1)
+    if !state.isCollapsed { state.toggleCollapsed() }
+    state.setConversationVisible(true)
+    XCTAssertEqual(state.unreadReplies(in: reply), 1)
+    if state.isCollapsed { state.toggleCollapsed() }
+    state.setConversationVisible(true)
+    XCTAssertEqual(state.unreadReplies(in: reply), 0)
+  }
+
+  @MainActor
+  private final class ReplyPanelWitness {
+    var factories = 0
+    var fronted = 0
+    var orderedOut = 0
+    var enabled = false
+    var panels: [NSPanel] = []
+  }
+
+  private func replyPanelController(
+    state: OverlayState, engine: OverlayStateTestEngine, witness: ReplyPanelWitness,
+    enabled: @escaping @MainActor () -> Bool = { true }
+  ) -> OverlayController {
+    OverlayController(
+      state: state, engine: engine, overlayEnabledProvider: enabled,
+      assistiveStatusProvider: { false },
+      panelFactory: { _, _ in
+        witness.factories += 1
+        let panel = NSPanel()
+        witness.panels.append(panel)
+        return panel
+      },
+      orderPanelFront: { panel in
+        witness.fronted += 1
+        XCTAssertTrue(panel === witness.panels.first)
+      }, orderPanelOut: { _ in witness.orderedOut += 1 })
+  }
+
+  func testReplyPanelSeamReusesCachedPanelOnlyForDistinctAdmissions() throws {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    let witness = ReplyPanelWitness()
+    let controller = replyPanelController(state: state, engine: engine, witness: witness)
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    let first = replyFocusConversation(lena, id: "reply:panel-first")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [first]))
+    XCTAssertEqual(witness.factories, 1)
+    XCTAssertEqual(witness.fronted, 1)
+    controller.hide()
+    state.showAgentMonitor()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [first]))
+    let playback = OverlayReplyPlayback(
+      replyID: "panel-first", ticket: String(repeating: "a", count: 24),
+      state: "spoken", reason: nil, spoken: true, emittedAt: "2026-10-05T19:00:00Z")
+    let repainted = replyFocusConversation(lena, id: "reply:panel-first", playback: playback)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [repainted]))
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [
+          .init(
+            channel: "2", agent: "Lena", deliveryID: "late-ack",
+            stage: .received, isOpen: false)
+        ], conversations: [repainted]))
+    state.selectConversation(lena.id)
+    XCTAssertEqual(witness.fronted, 1)
+    XCTAssertFalse(state.freshReplyPresentationRequested)
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [],
+        conversations: [
+          replyFocusConversation(lena, id: "reply:panel-second")
+        ]))
+    XCTAssertEqual(witness.fronted, 2)
+    XCTAssertEqual(witness.factories, 1)
+    XCTAssertEqual(engine.startedRecordingCount, 0)
+    XCTAssertTrue(engine.toggledDigits.isEmpty)
+    withExtendedLifetime(controller) {}
+  }
+
+  func testReplyPanelSeamDisabledPreferenceDoesNotDeferPresentation() throws {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    let witness = ReplyPanelWitness()
+    let controller = replyPanelController(
+      state: state, engine: engine, witness: witness, enabled: { witness.enabled })
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    let old = replyFocusConversation(lena, id: "reply:disabled")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [old]))
+    XCTAssertEqual(witness.fronted, 0)
+    XCTAssertEqual(witness.factories, 0)
+    XCTAssertFalse(state.transcriptOverlayEnabled)
+    XCTAssertFalse(state.freshReplyPresentationRequested)
+    XCTAssertEqual(state.unreadReplies(in: old), 1)
+    witness.enabled = true
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [old]))
+    XCTAssertEqual(witness.fronted, 0, "preference enable never replays a suppressed admission")
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [],
+        conversations: [
+          replyFocusConversation(lena, id: "reply:enabled-new")
+        ]))
+    XCTAssertEqual(witness.fronted, 1)
+    XCTAssertEqual(witness.factories, 1)
+    XCTAssertEqual(engine.startedRecordingCount, 0)
+    withExtendedLifetime(controller) {}
+  }
+
+  func testReplyPanelSeamCapturePhasesNeverOpenOrDeferReplyPanel() throws {
+    for phase in ["recording", "warming", "transcribing"] {
+      let state = OverlayState()
+      let engine = OverlayStateTestEngine()
+      let witness = ReplyPanelWitness()
+      state.engine = engine
+      if phase == "recording" { state.handleRecordingStarted() }
+      let controller = replyPanelController(state: state, engine: engine, witness: witness)
+      let lena = try navigationConversation()
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+      state.warmingUp = phase == "warming"
+      state.transcribing = phase == "transcribing"
+      let reply = replyFocusConversation(lena, id: "reply:captured-" + phase)
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [reply]))
+      XCTAssertTrue(state.showsMyDictation, phase)
+      XCTAssertEqual(witness.factories, 0, phase)
+      XCTAssertEqual(witness.fronted, 0, phase)
+      XCTAssertEqual(state.unreadReplies(in: reply), 1, phase)
+      if phase != "recording" {
+        state.warmingUp = false
+        state.transcribing = false
+        state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+        state.applyConversationSnapshot(.init(deliveries: [], conversations: [reply]))
+      }
+      XCTAssertEqual(witness.fronted, 0, phase)
+      XCTAssertTrue(state.showsMyDictation, phase)
+      XCTAssertEqual(engine.startedRecordingCount, 0)
+      XCTAssertTrue(engine.toggledDigits.isEmpty)
+      withExtendedLifetime(controller) {}
+    }
+  }
+
+  func testReplyPanelSeamAmbiguousAndForeignOwnersNeverRequestPanel() throws {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    let witness = ReplyPanelWitness()
+    let controller = replyPanelController(state: state, engine: engine, witness: witness)
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    state.showAgentMonitor()
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [],
+        conversations: [
+          replyFocusConversation(lena, id: "reply:ambiguous-left"),
+          replyFocusConversation(astra, id: "reply:ambiguous-right"),
+        ]))
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [],
+        conversations: [
+          replyFocusConversation(lena, id: "reply:foreign", owner: astra.owner), astra,
+        ]))
+    XCTAssertTrue(state.showsAgentMonitor)
+    XCTAssertEqual(witness.fronted, 0)
+    XCTAssertEqual(witness.factories, 0)
+    XCTAssertFalse(state.freshReplyPresentationRequested)
+    XCTAssertTrue(engine.toggledDigits.isEmpty)
+    withExtendedLifetime(controller) {}
+  }
+
+  func testReplyPanelSeamAlreadySelectedCollapsedOwnerShowsOnceWithoutReadingHiddenReply() throws {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    let witness = ReplyPanelWitness()
+    let controller = replyPanelController(state: state, engine: engine, witness: witness)
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    state.selectConversation(lena.id)
+    if !state.isCollapsed { state.toggleCollapsed() }
+    state.setConversationVisible(false)
+    let reply = replyFocusConversation(lena, id: "reply:collapsed-owner")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [reply]))
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+    XCTAssertFalse(state.isCollapsed)
+    XCTAssertEqual(witness.fronted, 1)
+    XCTAssertEqual(witness.factories, 1)
+    XCTAssertEqual(state.unreadReplies(in: reply), 1)
+    XCTAssertFalse(state.freshReplyPresentationRequested)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [reply]))
+    XCTAssertEqual(witness.fronted, 1)
+    state.setConversationVisible(true)
+    XCTAssertEqual(state.unreadReplies(in: reply), 0)
+    withExtendedLifetime(controller) {}
+  }
+
+  func testReplyPanelSeamEmptyBaselineAndPrunedReplayRemainPassive() throws {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    let witness = ReplyPanelWitness()
+    let controller = replyPanelController(state: state, engine: engine, witness: witness)
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    XCTAssertEqual(witness.factories, 0)
+    let reply = replyFocusConversation(lena, id: "reply:after-empty")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [reply]))
+    XCTAssertEqual(witness.fronted, 1)
+    controller.hide()
+    state.showAgentMonitor()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [reply]))
+    XCTAssertTrue(state.showsAgentMonitor)
+    XCTAssertEqual(witness.fronted, 1)
+    XCTAssertEqual(witness.factories, 1)
+    withExtendedLifetime(controller) {}
+  }
+
   func testHeaderReceiptOpensFullMonitorWithoutChangingCaptureOrReceipt() {
     let engine = OverlayStateTestEngine()
     let state = OverlayState()

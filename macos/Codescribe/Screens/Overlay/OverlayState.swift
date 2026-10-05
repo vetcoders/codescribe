@@ -734,6 +734,18 @@ final class OverlayState {
   private(set) var replyControlErrors: [String: String] = [:]
   private(set) var pendingReplyControls: Set<String> = []
   private var viewedReplyIDs: Set<String> = []
+  /// Canonical reply message ids this surface has already loaded or admitted.
+  /// The first inventory is history. Later ids are admissions. Membership
+  /// survives pruning of the retained snapshot: replacing the set with whatever
+  /// is still retained makes a replay of the same id look new. This is
+  /// presentation knowledge for the life of this state, not message storage,
+  /// and it is not evicted — eviction would admit that replay again.
+  private var observedReplyIDs: Set<String> = []
+  private var replyInventoryBaselined = false
+  /// True only while the presentation callback for one qualified fresh reply
+  /// is still in flight. History, an identical snapshot, ACK, playback, and
+  /// manual navigation leave it false, so those repaints do not reopen a panel.
+  @ObservationIgnored private(set) var freshReplyPresentationRequested = false
   private var conversationIsVisible = false
 
   var selectedConversation: OverlayConversation? {
@@ -822,7 +834,18 @@ final class OverlayState {
 
   func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot) {
     applyChannelDelivery(snapshot.deliveries)
-    guard conversations != snapshot.conversations else { return }
+    guard conversations != snapshot.conversations else {
+      // The first snapshot can already match the stored inventory, including
+      // an empty one. That snapshot is still the baseline, so the next genuine
+      // reply is an admission. A later identical snapshot is already baselined
+      // and stays passive, including a first load that already holds history.
+      if !replyInventoryBaselined {
+        observedReplyIDs.formUnion(Set(conversations.flatMap(\.replyIDs)))
+        replyInventoryBaselined = true
+      }
+      return
+    }
+    let controllerPending = pendingChannelConversation != nil
     conversations = snapshot.conversations
     if let selectedConversationID,
       !conversations.contains(where: { $0.id == selectedConversationID })
@@ -833,8 +856,67 @@ final class OverlayState {
     let retained = Set(conversations.flatMap(\.replyIDs))
     viewedReplyIDs.formIntersection(retained)
     replyControlErrors = replyControlErrors.filter { retained.contains($0.key) }
+    followNewlyReceivedReply(preservingControllerFocus: controllerPending)
     markVisibleConversationRead()
     onChannelPresentationChanged?()
+    freshReplyPresentationRequested = false
+  }
+
+  /// Live controller capture keeps the canvas, including the moment before a
+  /// stale open-channel paint is corrected. A reply that arrives here stays
+  /// in the existing unread inventory and must not bump the capture's focus
+  /// revision out from under `followDictationCapturePresentation`.
+  private var activeCaptureOwnsPresentation: Bool {
+    recording || warmingUp || transcribing
+  }
+
+  /// Bring one newly admitted reply's owner into the existing surface.
+  /// History, a repeated id, playback or ACK of a known id, and an owner that
+  /// is not unique stay where the user already is. Channel number, display
+  /// name and reply text are not identity.
+  private func followNewlyReceivedReply(preservingControllerFocus: Bool) {
+    let current = Set(conversations.flatMap(\.replyIDs))
+    let fresh = replyInventoryBaselined ? current.subtracting(observedReplyIDs) : []
+    observedReplyIDs.formUnion(current)
+    let establishingInventory = !replyInventoryBaselined
+    replyInventoryBaselined = true
+    guard !establishingInventory, !fresh.isEmpty, !preservingControllerFocus,
+      !activeCaptureOwnsPresentation,
+      let conversation = ownedConversation(forNewReplies: fresh)
+    else { return }
+    if selectedConversationID == conversation.id {
+      if isCollapsed { expandAgentSurface() }
+    } else {
+      selectConversation(conversation.id)
+    }
+    // The selection callback above is an ordinary repaint. The snapshot's
+    // own callback, still ahead, is the one that may ask the panel to show.
+    freshReplyPresentationRequested = true
+  }
+
+  /// The reader places a causal broadcast reply on channel 0 and on its
+  /// private owner. Focus follows the private owner id (provider, session,
+  /// lease). Channel 0 is not a second owner, and two owners in one snapshot
+  /// are not a guess.
+  private func ownedConversation(forNewReplies fresh: Set<String>) -> OverlayConversation? {
+    var match: OverlayConversation?
+    for conversation in conversations {
+      guard let conversationOwner = conversation.owner else { continue }
+      let claimed = Set(
+        conversation.messages.compactMap { message -> String? in
+          guard message.kind == .reply, fresh.contains(message.id),
+            let owner = message.owner,
+            owner.id == conversationOwner.id,
+            owner.provider == conversationOwner.provider,
+            owner.providerSessionID == conversationOwner.providerSessionID
+          else { return nil }
+          return message.id
+        })
+      guard !claimed.isEmpty else { continue }
+      guard claimed == fresh, match == nil else { return nil }
+      match = conversation
+    }
+    return match
   }
 
   var conversationDrafts: [String: String] = [:]
