@@ -958,8 +958,7 @@ text in distinct document occurrences is never collapsed by string equality.
 The helper resolves a manifest-owned `runtime/bin/codescribe` first, then the
 existing `codescribe` on PATH and the known `~/.cargo/bin/codescribe` and
 `~/.local/bin/codescribe` install paths. Bundled ownership requires its recorded
-size and SHA-256 digest. It invokes `codescribe bus append-event --bus
-ABSOLUTE_PATH` with one JSON event on stdin. The Rust generation owner performs the private, chunked
+size and SHA-256 digest. It invokes `codescribe bus append-event --bus ABSOLUTE_PATH` with one JSON event on stdin. The Rust generation owner performs the private, chunked
 journal append and durability barrier. No helper opens the bus for writing.
 The publisher returns logical `offset` and `length`, plus `stream_dev`,
 `stream_inode` and `stream_id`. A refused publication or invalid receipt never

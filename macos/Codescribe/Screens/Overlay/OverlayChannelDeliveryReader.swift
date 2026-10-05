@@ -260,12 +260,16 @@ actor OverlayChannelDeliveryReader {
     if !cursor.headHash.isEmpty {
       let stale = !file.linked && size >= cursor.offset && size - cursor.offset > Self.tailWindow
       let headHash = try file.headHash(length: cursor.headLength)
-      if cursor.inode != inode || cursor.streamID != file.streamID || size < cursor.offset
+      let adoptsLinkedStream = file.linked && cursor.streamID == file.originalFileStreamID
+        && cursor.inode == inode && headHash == cursor.headHash
+      if cursor.inode != inode || (cursor.streamID != file.streamID && !adoptsLinkedStream) || size < cursor.offset
         || stale || headHash != cursor.headHash {
         // Unlinked rotation, truncation, or a gap larger than the window resets
         // to a fresh tail. A linked cursor keeps its logical offset: the stream
         // inode does not change when the hot file rolls over.
         cursor = Cursor()
+      } else if adoptsLinkedStream {
+        cursor.streamID = file.streamID
       }
     }
     if cursor.headHash.isEmpty {
@@ -477,6 +481,7 @@ actor OverlayChannelDeliveryReader {
     let size: UInt64
     let linked: Bool
     let streamID: String
+    let originalFileStreamID: String
     var headLength: Int { Int(min(256, segments.first(where: { $0.length > 0 })?.length ?? 0)) }
     let coldStart: UInt64
     var offset: UInt64 = 0
@@ -500,6 +505,7 @@ actor OverlayChannelDeliveryReader {
         size = current.2
         linked = false
         streamID = "\(current.1):\(current.0)"
+        originalFileStreamID = streamID
         coldStart =
           current.2 > OverlayChannelDeliveryReader.tailWindow
           ? current.2 - OverlayChannelDeliveryReader.tailWindow : 0
@@ -518,6 +524,7 @@ actor OverlayChannelDeliveryReader {
         manifest["schema"] as? String == "codescribe.bus-generations.v1",
         manifest["root"] as? String == root.path,
         let stream = manifest["stream_inode"] as? NSNumber,
+        let streamDevice = manifest["stream_dev"] as? NSNumber,
         let identity = manifest["stream_id"] as? String, !identity.isEmpty,
         var active = manifest["active"] as? [String: Any],
         var closed = manifest["segments"] as? [[String: Any]]
@@ -541,6 +548,7 @@ actor OverlayChannelDeliveryReader {
           throw CocoaError(.fileReadCorruptFile)
         }
       }
+      originalFileStreamID = "\(streamDevice.uint64Value):\(stream.uint64Value)"
       let events = root.deletingLastPathComponent().appendingPathComponent("events").path + "/"
       var expected: UInt64 = 0
       var inventory: [Segment] = []

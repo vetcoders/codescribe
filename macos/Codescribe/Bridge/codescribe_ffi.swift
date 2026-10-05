@@ -8842,6 +8842,11 @@ public func FfiConverterTypeCsCaptureHandle_lower(_ value: CsCaptureHandle) -> R
 public struct CsChannelRosterState: Equatable, Hashable {
     public var channel: String
     public var audience: String
+    /**
+     * The concrete captured or currently bound owner. Broadcast has none.
+     */
+    public var provider: String?
+    public var providerSessionId: String?
     public var `open`: Bool
     public var loud: Bool
     /**
@@ -8855,7 +8860,10 @@ public struct CsChannelRosterState: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(channel: String, audience: String, `open`: Bool, loud: Bool,
+    public init(channel: String, audience: String,
+        /**
+         * The concrete captured or currently bound owner. Broadcast has none.
+         */provider: String?, providerSessionId: String?, `open`: Bool, loud: Bool,
         /**
          * Milliseconds since the Unix epoch; `None` when no autoseal is armed.
          */autosealDeadlineUnixMs: Int64?,
@@ -8864,6 +8872,8 @@ public struct CsChannelRosterState: Equatable, Hashable {
          */followerAlive: Bool?) {
         self.channel = channel
         self.audience = audience
+        self.provider = provider
+        self.providerSessionId = providerSessionId
         self.`open` = `open`
         self.loud = loud
         self.autosealDeadlineUnixMs = autosealDeadlineUnixMs
@@ -8886,6 +8896,8 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
             try CsChannelRosterState(
                 channel: FfiConverterString.read(from: &buf),
                 audience: FfiConverterString.read(from: &buf),
+                provider: FfiConverterOptionString.read(from: &buf),
+                providerSessionId: FfiConverterOptionString.read(from: &buf),
                 open: FfiConverterBool.read(from: &buf),
                 loud: FfiConverterBool.read(from: &buf),
                 autosealDeadlineUnixMs: FfiConverterOptionInt64.read(from: &buf),
@@ -8896,6 +8908,8 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
     public static func write(_ value: CsChannelRosterState, into buf: inout [UInt8]) {
         FfiConverterString.write(value.channel, into: &buf)
         FfiConverterString.write(value.audience, into: &buf)
+        FfiConverterOptionString.write(value.provider, into: &buf)
+        FfiConverterOptionString.write(value.providerSessionId, into: &buf)
         FfiConverterBool.write(value.`open`, into: &buf)
         FfiConverterBool.write(value.loud, into: &buf)
         FfiConverterOptionInt64.write(value.autosealDeadlineUnixMs, into: &buf)
@@ -18475,6 +18489,15 @@ fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: In
     }
 }
 /**
+ * Passive conversation observation uses the existing runtime bus path owner.
+ */
+public func agentConversationBusPath() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_agent_conversation_bus_path($0
+    )
+})
+}
+/**
  * Content-free lifecycle snapshot used by diagnostics and delivery probes.
  */
 public func applicationRuntimeSnapshot()throws  -> CsApplicationRuntimeSnapshot  {
@@ -18824,6 +18847,9 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_codescribe_ffi_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_agent_conversation_bus_path() != 47889) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_application_runtime_snapshot() != 28624) {
         return InitializationResult.apiChecksumMismatch

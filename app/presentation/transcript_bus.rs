@@ -978,7 +978,7 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
         let session = text_field("provider_session_id").ok_or_else(invalid)?;
         let owner = format!("{}\0{session}", provider.to_lowercase());
         let lease = hex::encode(Sha256::digest(owner.as_bytes()));
-        if provider != provider.to_lowercase() || event["lease_id"] != &lease[..32] {
+        if provider != provider.to_lowercase() || event["lease_id"] != lease[..32] {
             return Err(invalid());
         }
     }

@@ -124,7 +124,11 @@ impl BindingEntry {
 
 /// Freeze only concrete bridge owners admitted before this capture starts.
 /// Reading this snapshot never acknowledges a delivery or starts a follower.
-fn frozen_channel_recipients(digit: u8, binding: &Path, shared_bus: &Path) -> Vec<serde_json::Value> {
+fn frozen_channel_recipients(
+    digit: u8,
+    binding: &Path,
+    shared_bus: &Path,
+) -> Vec<serde_json::Value> {
     let Ok(file) = load_binding(binding) else {
         return Vec::new();
     };
@@ -159,7 +163,10 @@ fn frozen_channel_recipients(digit: u8, binding: &Path, shared_bus: &Path) -> Ve
             serde_json::from_reader(file.take(16 << 20)).ok()
         })()
         .unwrap_or(serde_json::Value::Null);
-        let age = now - lease["heartbeat_unix"].as_f64().unwrap_or(f64::NEG_INFINITY);
+        let age = now
+            - lease["heartbeat_unix"]
+                .as_f64()
+                .unwrap_or(f64::NEG_INFINITY);
         let bus = entry.bus().unwrap_or_else(|| shared_bus.to_path_buf());
         let bus = bus.canonicalize().unwrap_or(bus);
         if lease["schema"] != "codescribe.agent-bridge.lease.v1"

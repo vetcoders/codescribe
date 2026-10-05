@@ -33,7 +33,8 @@ cd "$REPO_ROOT"
 stage_agent_bridge() {
   local destination="$1"
   local bundle_version="$2"
-  python3 - "$REPO_ROOT" "$destination" "$bundle_version" <<'PY'
+  local publisher="${3:-}"
+  python3 - "$REPO_ROOT" "$destination" "$bundle_version" "$publisher" <<'PY'
 import hashlib
 import json
 import os
@@ -47,6 +48,12 @@ from pathlib import Path, PurePosixPath
 repo = Path(sys.argv[1]).resolve()
 destination = Path(sys.argv[2]).resolve()
 bundle_version = sys.argv[3]
+publisher = Path(sys.argv[4]) if sys.argv[4] else None
+if publisher is not None and (
+    not publisher.is_absolute() or not publisher.is_file()
+    or publisher.is_symlink() or not os.access(publisher, os.X_OK)
+):
+    raise SystemExit("canonical publisher must be an ordinary executable artifact")
 skill_source = repo / "skills" / "codescribe"
 helper_source = repo / "scripts" / "bus-demux.py"
 entrypoints = [helper_source, repo / "scripts" / "cs-bus", repo / "scripts" / "cs-say"]
@@ -87,6 +94,9 @@ for source in entrypoints:
     target = stage / "bin" / source.name
     shutil.copy2(source, target)
     target.chmod(0o755)
+if publisher is not None:
+    shutil.copy2(publisher, stage / "bin" / "codescribe")
+    (stage / "bin" / "codescribe").chmod(0o755)
 
 files = []
 for path in sorted(candidate for candidate in stage.rglob("*") if candidate.is_file()):
@@ -148,11 +158,11 @@ PY
 
 if [[ "${1:-}" == "--stage-agent-bridge" ]]; then
   if [[ -z "${2:-}" ]]; then
-    echo "usage: $0 --stage-agent-bridge <destination> [bundle-version]" >&2
+    echo "usage: $0 --stage-agent-bridge <destination> [bundle-version] [publisher-artifact]" >&2
     exit 2
   fi
   BRIDGE_STAGE_VERSION="${3:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -1)}"
-  stage_agent_bridge "$2" "$BRIDGE_STAGE_VERSION"
+  stage_agent_bridge "$2" "$BRIDGE_STAGE_VERSION" "${4:-}"
   echo "==> Agent bridge staged: $2 (v$BRIDGE_STAGE_VERSION)"
   exit 0
 fi
@@ -315,7 +325,8 @@ import json, sys
 from pathlib import Path
 root, package = Path(sys.argv[1]), sys.argv[2]
 expected = ({"codescribe_ffi": "libcodescribe_ffi.dylib", "uniffi-bindgen": "uniffi-bindgen"}
-            if package == "codescribe-ffi" else {"codescribe-stt-sidecar": "codescribe-stt-sidecar"})
+            if package == "codescribe-ffi" else {"codescribe": "codescribe"}
+            if package == "codescribe" else {"codescribe-stt-sidecar": "codescribe-stt-sidecar"})
 seen = set()
 finished = False
 for line in sys.stdin:
@@ -340,6 +351,9 @@ if not finished or seen != set(expected):
 }
 build_cargo_artifacts codescribe-ffi
 build_cargo_artifacts codescribe-core --bin codescribe-stt-sidecar
+if [[ "${SKIP_XCODEBUILD:-0}" != "1" ]]; then
+  build_cargo_artifacts codescribe --bin codescribe
+fi
 
 echo "==> [2/7] Rewriting dylib install_name to @rpath (relocatable bundle)"
 install_name_tool -id @rpath/libcodescribe_ffi.dylib "$DYLIB"
@@ -451,7 +465,7 @@ for pack in (pack for root in roots for pack in sorted((root / "examples").glob(
 PY_PACK
 
 AGENT_BRIDGE_BUNDLE_DIR="$APP/Contents/Resources/agent-bridge"
-stage_agent_bridge "$AGENT_BRIDGE_BUNDLE_DIR" "$STAMP_VERSION"
+stage_agent_bridge "$AGENT_BRIDGE_BUNDLE_DIR" "$STAMP_VERSION" "$TARGET_DIR/codescribe"
 echo "    Agent bridge skill tree + session helper bundled at Contents/Resources/agent-bridge."
 STT_BRIDGE_BUNDLED=0
 # Same host-triple pin as Makefile ENGINE_BRIDGE_TARGET (W0-B / S-1): avoid
@@ -498,6 +512,10 @@ else
   echo "==> [7/7] Ad-hoc signing $SCHEME.app (no stable identity — TCC re-grants per build)"
   codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
 fi
+python3 "$REPO_ROOT/scripts/lib/refresh-agent-publisher-manifest.py" "$AGENT_BRIDGE_BUNDLE_DIR"
+# Deep signing changes the publisher's Mach-O bytes. Seal its refreshed digest
+# with the outer signature without signing that child a second time.
+codesign --force --sign "${SIGN_ID:--}" --identifier "$BUNDLE_ID" "$APP"
 if [ "$INSTALL_LANE" = "1" ]; then
   # The stamped plist must sit inside the seal, not beside it.
   codesign --verify --deep --strict "$APP"

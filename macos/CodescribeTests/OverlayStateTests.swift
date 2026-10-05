@@ -21,6 +21,7 @@ private final class OverlayStateTestEngine: DictationEngine {
     var level: FormattingPolicyOption? = nil
   }
 
+  var startedRecordingCount = 0
   var pastedText: String?
   var onStopRecording: (() -> Void)?
   var pasteCallCount = 0
@@ -110,7 +111,7 @@ private final class OverlayStateTestEngine: DictationEngine {
 
   func setListener(_ listener: CsTranscriptionListener) {}
   func startsInAssistiveMode() -> Bool { false }
-  func startRecording(assistive: Bool, language: CsLanguage?) async throws {}
+  func startRecording(assistive: Bool, language: CsLanguage?) async throws { startedRecordingCount += 1 }
   func stopRecording() async throws -> String {
     onStopRecording?()
     return ""
@@ -241,6 +242,46 @@ private final class OverlayStateTestClock {
 
 @MainActor
 final class OverlayStateTests: XCTestCase {
+  func testViewingConversationRetainsLiveCaptureAndDictationDraft() throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState.previewListening()
+    state.engine = engine
+    state.revisionDraft = "Mój niezapisany szkic"
+    var stopped = false
+    engine.onStopRecording = { stopped = true }
+    let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [all]))
+    state.selectConversation("0")
+    state.selectConversation(nil)
+    XCTAssertTrue(state.showsMyDictation)
+    XCTAssertEqual(state.mode, .listening)
+    XCTAssertEqual(state.revisionDraft, "Mój niezapisany szkic")
+    XCTAssertEqual(engine.startedRecordingCount, 0)
+    XCTAssertFalse(stopped)
+    XCTAssertTrue(engine.toggledDigits.isEmpty)
+    XCTAssertTrue(engine.revisionRequests.isEmpty)
+    XCTAssertEqual(engine.pasteCallCount, 0)
+  }
+
+  func testOffscreenReplyStaysUnreadUntilExpandedConversationIsVisible() throws {
+    let state = OverlayState()
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(["schema": "codescribe.agent-reply.v1", "kind": "agent_reply",
+                 "reply_id": String(repeating: "d", count: 24), "text": "Odpowiedź",
+                 "provider": "codex", "provider_session_id": "agent-a",
+                 "lease_id": String(repeating: "a", count: 32), "channel": "2", "name": "Lena",
+                 "association": "unsolicited"])
+    let snapshot = OverlayChannelDeliverySnapshot(deliveries: [], conversations: bus.conversations(busPath: "/fixture/bus"))
+    state.applyConversationSnapshot(snapshot)
+    let named = try XCTUnwrap(snapshot.conversations.first { $0.channel == "2" })
+    state.selectConversation(named.id)
+    XCTAssertEqual(state.unreadReplies(in: named), 1, "selection while hidden is not reading")
+    if state.isCollapsed { state.toggleCollapsed() }
+    state.setConversationVisible(true)
+    XCTAssertEqual(state.unreadReplies(in: named), 0)
+    XCTAssertTrue(state.pendingReplyControls.isEmpty, "reading does not request playback")
+  }
+
   func testRosterToggleUsesEngineOnceAndRefreshesItsOpenState() async {
     let engine = OverlayStateTestEngine()
     let state = OverlayState()
@@ -250,7 +291,7 @@ final class OverlayStateTests: XCTestCase {
     ])
     engine.rosterSnapshot = [
       .init(
-        channel: "2", audience: "miron", open: true, loud: false,
+        channel: "2", audience: "miron", provider: "codex", providerSessionId: "miron-session", open: true, loud: false,
         autosealDeadlineUnixMs: nil, followerAlive: true)
     ]
 
@@ -285,10 +326,10 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     state.applyChannelRoster([
       .init(
-        channel: "1", audience: "klaudiusz", open: false, loud: false,
+        channel: "1", audience: "klaudiusz", provider: "claude", providerSessionId: "klaudiusz-session", open: false, loud: false,
         autosealDeadlineUnixMs: 1_700_000_000_000, followerAlive: false),
       .init(
-        channel: "2", audience: "miron", open: false, loud: false,
+        channel: "2", audience: "miron", provider: "codex", providerSessionId: "miron-session", open: false, loud: false,
         autosealDeadlineUnixMs: nil, followerAlive: nil),
     ])
 

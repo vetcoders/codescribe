@@ -90,7 +90,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         "schema": "codescribe.transcript-evidence.v1", "session_id": "take-a",
         "audience": "james", "sequence": index + 10, "document_index": index,
         "reducer_revision": 7, "reducer_action": "record_ledger_terminal_seal",
-        "rendered_text": "Iwo Iwo Iwo Iwo Iwo",
+        "rendered_text": "Iwo Iwo Iwo Iwo Iwo", "recipients": [fixture.recipient()],
       ])
     }
     try fixture.lease(pending: [fixture.envelope(id)])
@@ -106,7 +106,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "schema": "codescribe.transcript-evidence.v1", "session_id": "take-a",
       "audience": "james", "sequence": 15, "document_index": 5,
       "reducer_revision": 7, "reducer_action": "record_ledger_terminal_seal",
-      "rendered_text": "Iwo Iwo Iwo Iwo Iwo",
+      "rendered_text": "Iwo Iwo Iwo Iwo Iwo", "recipients": [fixture.recipient()],
     ])
     statuses = try await OverlayChannelDeliveryReader(root: fixture.root).read()
     XCTAssertEqual(statuses.first?.deliveryID, id)
@@ -353,7 +353,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertTrue(status.contains("Microphone active"))
     XCTAssertTrue(status.contains(".popover(isPresented: $showsDetails"))
     XCTAssertTrue(status.contains("overlay-channel-delivery-"))
-    XCTAssertFalse(status.contains("Divider("))
+    XCTAssertTrue(status.contains("Divider("), "separate passive viewing from microphone controls")
     XCTAssertFalse(status.contains("glassEffect("))
     // The header shows one glyph, never the microphone: mic = recording only.
     XCTAssertFalse(status.contains("antenna.radiowaves"))
@@ -366,7 +366,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   func testRosterToggleAcceptsOnlyChannelDigitsAndForwardsEachClickOnce() {
     XCTAssertEqual(OverlayChannelStatusView.toggleDigit(for: "1"), 1)
     XCTAssertEqual(OverlayChannelStatusView.toggleDigit(for: "9"), 9)
-    for invalid in ["0", "10", "agent-1", ""] {
+    XCTAssertEqual(OverlayChannelStatusView.toggleDigit(for: "0"), 0)
+    for invalid in ["10", "agent-1", ""] {
       XCTAssertNil(OverlayChannelStatusView.toggleDigit(for: invalid))
     }
 
@@ -857,11 +858,15 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       return Data((row + "\n").utf8)
     }
     func envelope(_ id: String) -> [String: Any] { ["kind": "seal", "delivery_id": id] }
+    func recipient() -> [String: Any] {
+      ["provider": "codex", "provider_session_id": "agent-session",
+       "lease_id": Self.leaseID, "bus": bus.path, "channel": "1", "name": "james"]
+    }
     func seal(_ sequence: Int) -> [String: Any] {
       [
         "schema": "codescribe.transcript.v1", "session_id": "take-a", "sequence": sequence,
         "utterance_id": "u\(sequence)", "audience": "james", "status": "transcript_sealed",
-        "text": "Iwo",
+        "text": "Iwo", "recipients": [recipient()],
       ]
     }
     func ack(_ id: String, channel: String = "1") -> [String: Any] {

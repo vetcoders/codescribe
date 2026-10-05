@@ -45,10 +45,11 @@ class AgentReplyAdmissionTests(unittest.TestCase):
         publisher.start()
         self.addCleanup(publisher.stop)
 
-    def publish(self, bus, event):
+    def publish(self, bus, event, *, bridge_root=None):
         # A synchronous durable storage boundary. Rust CLI acceptance separately
         # exercises the real generation/chunk publisher; this fixture isolates
         # the helper's ordering, ownership and speech behavior.
+        self.assertEqual(bridge_root, self.home)
         raw = (json.dumps(event, ensure_ascii=False) + "\n").encode()
         with bus.open("ab") as handle:
             offset = handle.tell()
@@ -56,7 +57,7 @@ class AgentReplyAdmissionTests(unittest.TestCase):
             handle.flush()
             os.fsync(handle.fileno())
             stat = os.fstat(handle.fileno())
-        return {"stream_dev": stat.st_dev, "stream_inode": stat.st_ino,
+        return {"stream_id": "fixture-stream", "stream_dev": stat.st_dev, "stream_inode": stat.st_ino,
                 "offset": offset, "length": len(raw)}
 
     def admitted_delivery(self):
@@ -104,6 +105,10 @@ class AgentReplyAdmissionTests(unittest.TestCase):
         self.assertEqual(len(replies), 1)
         self.assertEqual(replies[0]["text"], self.args.say)
         self.assertFalse(replies[0]["spoken"])
+        outcomes = [row for row in self.rows() if row.get("kind") == "agent_reply_playback"]
+        self.assertTrue(outcomes)
+        self.assertEqual(outcomes[-1]["state"], "failed", "a dead speaker must not leave a playing ticket")
+        self.assertEqual(outcomes[-1]["reply_id"], replies[0]["reply_id"])
 
     def test_publication_failure_never_calls_the_speaker(self):
         self.bus.mkdir()

@@ -3196,6 +3196,10 @@ def speak_published_reply(args: argparse.Namespace, bus: Path, reply: dict[str, 
                  "refused" if reason in ("take_live", "take_started", "playback_busy") else "failed")
         control.publish(state, error=error, reason=reason)
         return 0 if spoken else 5
+    except Exception as error:
+        control.publish("failed", error=f"speech failed ({error.__class__.__name__})",
+                        reason="speech_exception")
+        raise
     finally:
         control.close()
 

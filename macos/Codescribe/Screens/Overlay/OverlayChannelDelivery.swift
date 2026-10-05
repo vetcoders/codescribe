@@ -26,6 +26,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     private var captureRecipients: [String: [OverlayConversationOwner]] = [:]
     private var historicalOwners: [String: OverlayConversationOwner] = [:]
     private var playbackByReply: [String: OverlayReplyPlayback] = [:]
+    private var retiredPlaybackTickets: [String: [String]] = [:]
     private var messageSequence: UInt64 = 0
     private(set) var revision: UInt64 = 0
     private var receiptCursor: Int = 0
@@ -41,7 +42,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     }
     private enum CodingKeys: String, CodingKey {
       case seals, sessions, endedSessions, receipts, sealOrder, seenSeals, messages, messageOrder
-      case captureRecipients, historicalOwners, playbackByReply, messageSequence, messageRevisions, deliveryOrigins, revision, sessionOpenedAt
+      case captureRecipients, historicalOwners, playbackByReply, retiredPlaybackTickets, messageSequence, messageRevisions, deliveryOrigins, revision, sessionOpenedAt
     }
     private static let historyLimit = 256
     private static let historyByteLimit = 16 << 20
@@ -349,9 +350,20 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           reason: row["reason"] as? String ?? row["tts_error"] as? String,
           spoken: row["spoken"] as? Bool == true,
           emittedAt: row["emitted_at"] as? String ?? "")
-        // A terminal event from a prior ticket cannot finish a newer playing ticket.
+        if retiredPlaybackTickets[replyID]?.contains(ticket) == true { return }
+        // Delayed observations cannot rewind playback or finish another ticket.
+        if let current = playbackByReply[replyID] {
+          if playback.emittedAt < current.emittedAt { return }
+          if current.ticket == ticket, current.state != "waiting" && current.state != "playing",
+            state == "waiting" || state == "playing" { return }
+        }
         if let current = playbackByReply[replyID], current.ticket != ticket,
           state != "waiting" && state != "playing" { return }
+        if let current = playbackByReply[replyID], current.ticket != ticket {
+          var retired = retiredPlaybackTickets[replyID] ?? []
+          retired.append(current.ticket)
+          retiredPlaybackTickets[replyID] = Array(retired.suffix(64))
+        }
         playbackByReply[replyID] = playback
         messages["reply:" + replyID]?.playback = playback
         return
@@ -526,6 +538,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       }
       let replies = Set(messages.values.compactMap { $0.playback?.replyID })
       playbackByReply = playbackByReply.filter { replies.contains($0.key) }
+      retiredPlaybackTickets = retiredPlaybackTickets.filter { replies.contains($0.key) }
       let ownerIDs = Set(messages.values.flatMap { row in
         row.recipients.map { $0.owner.id } + (row.owner.map { [$0.id] } ?? [])
       })

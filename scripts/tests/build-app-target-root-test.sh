@@ -4,7 +4,7 @@
 # Optional argument tests another revision (e.g. git show BASE:scripts/build-app.sh).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-python3 - "${1:-$ROOT/scripts/build-app.sh}" <<'PY'
+python3 - "${1:-$ROOT/scripts/build-app.sh}" "$ROOT" <<'PY'
 import json
 import os
 from pathlib import Path
@@ -14,6 +14,7 @@ import sys
 import tempfile
 
 source = Path(sys.argv[1]).resolve()
+helpers = Path(sys.argv[2]) / "scripts/lib"
 # Every external build/signing boundary is a stub, including git (no ancestor
 # checkout discovery), and security (must never reach a real keychain).
 stub = r'''
@@ -54,6 +55,8 @@ elif name == "cargo":
     expected = ["build", "-p", package]
     if package == "codescribe-core":
         expected += ["--bin", "codescribe-stt-sidecar"]
+    elif package == "codescribe":
+        expected += ["--bin", "codescribe"]
     expected += {"debug": [], "release": ["--release"], "local-release": ["--profile", "local-release"]}[profile]
     # The old-script witness must get through its unchanged Cargo invocation.
     assert args in [expected, expected + ["--message-format=json-render-diagnostics"]], args
@@ -62,7 +65,7 @@ elif name == "cargo":
         sys.exit(42)
     actual = root / "aarch64-unknown-linux-gnu" / profile if mode.startswith("cross-") else out
     actual.mkdir(parents=True, exist_ok=True)
-    names = [("codescribe_ffi", "libcodescribe_ffi.dylib"), ("uniffi-bindgen", "uniffi-bindgen")] if package == "codescribe-ffi" else [("codescribe-stt-sidecar", "codescribe-stt-sidecar")]
+    names = [("codescribe_ffi", "libcodescribe_ffi.dylib"), ("uniffi-bindgen", "uniffi-bindgen")] if package == "codescribe-ffi" else [("codescribe", "codescribe")] if package == "codescribe" else [("codescribe-stt-sidecar", "codescribe-stt-sidecar")]
     for target, filename in names:
         path = actual / filename
         if filename == "uniffi-bindgen":
@@ -71,6 +74,7 @@ elif name == "cargo":
             path.chmod(0o755)
         else:
             path.write_bytes(("fresh:" + filename).encode())
+            path.chmod(0o755)
         if mode == "missing-file" and filename == "libcodescribe_ffi.dylib":
             path.unlink()
         if mode == "missing-receipt" and filename == "uniffi-bindgen":
@@ -86,7 +90,10 @@ elif name == "install_name_tool":
 elif name == "uniffi-bindgen":
     assert Path(sys.argv[0]) == out / "uniffi-bindgen", sys.argv[0]
     assert Path(sys.argv[0]).read_bytes() == (Path(spec["tools"]) / "bindgen-template").read_bytes()
-    assert args == ["generate", "--library", str(out / "libcodescribe_ffi.dylib"), "--language", "swift", "--out-dir", "macos/Codescribe/Bridge"], args
+    assert args[:-1] == ["generate", "--library", str(out / "libcodescribe_ffi.dylib"), "--language", "swift", "--out-dir"], args
+    generated = Path(args[-1])
+    assert generated.parent == Path("macos/Codescribe/Bridge") and generated.name.startswith(".uniffi."), args
+    (generated / "codescribe_ffi.swift").write_text("// fixture binding\n")
     record(sha256=identity(args[2], "libcodescribe_ffi.dylib"), executable=str(Path(sys.argv[0])))
 elif name == "xcodegen":
     assert args == ["generate"] and Path.cwd() == repo / "macos"
@@ -117,13 +124,24 @@ elif name == "swiftc":
     dest.write_bytes(b"fresh:codescribe-stt-bridge")
 elif name == "codesign":
     expected_id = "com.vetcoders.codescribe.dev" if profile == "debug" else "com.vetcoders.codescribe"
-    assert args[:6] == ["--force", "--deep", "--sign", "fixture-identity", "--identifier", expected_id]
+    assert args[:-1] in [["--force", "--deep", "--sign", "fixture-identity", "--identifier", expected_id], ["--force", "--sign", "fixture-identity", "--identifier", expected_id]], args
     app = Path(args[-1])
     for folder, filename in [("Frameworks", "libcodescribe_ffi.dylib"), ("MacOS", "codescribe-stt-sidecar"), ("MacOS", "codescribe-stt-bridge")]:
         copied = app / "Contents" / folder / filename
         assert copied.read_bytes() == (out / filename).read_bytes() == ("fresh:" + filename).encode(), copied
         record(copy=str(copied), sha256=hashlib.sha256(copied.read_bytes()).hexdigest())
-    assert (app / "Contents/Resources/agent-bridge/manifest.json").is_file()
+    payload = app / "Contents/Resources/agent-bridge"
+    assert (payload / "manifest.json").is_file()
+    publisher = payload / "bin/codescribe"
+    if "--deep" in args:
+        assert publisher.read_bytes() == b"fresh:codescribe"
+        publisher.write_bytes(b"fresh:codescribe:signed")
+    else:
+        manifest = json.loads((payload / "manifest.json").read_text())
+        entry = next(row for row in manifest["files"] if row["path"] == "bin/codescribe")
+        assert publisher.read_bytes() == b"fresh:codescribe:signed"
+        assert entry["bytes"] == publisher.stat().st_size
+        assert entry["sha256"] == hashlib.sha256(publisher.read_bytes()).hexdigest()
 else:
     raise AssertionError("forbidden external boundary: " + name)
 '''
@@ -141,7 +159,11 @@ def run_case(base, profile, layout, mode="success", skip=False):
     shutil.copyfile(source, repo / "scripts/build-app.sh")
     (repo / "Cargo.toml").write_text('version = "9.8.7"\n')
     (repo / "skills/codescribe/SKILL.md").write_text("fixture skill\n")
-    (repo / "scripts/bus-demux.py").write_text("# fixture helper\n")
+    for entry in ["bus-demux.py", "cs-bus", "cs-say"]:
+        (repo / "scripts" / entry).write_text("# fixture helper\n")
+    (repo / "scripts/lib").mkdir()
+    for helper in ["generate-swift-bindings.sh", "refresh-agent-publisher-manifest.py"]:
+        shutil.copyfile(helpers / helper, repo / "scripts/lib" / helper)
     roots = {"default": repo / "target", "absolute": case / "shared", "spaces": case / "shared artifacts", "relative": repo / "relative artifacts", "config": case / "config artifacts"}
     root = roots[layout]
     spec = dict(repo=str(repo), root=str(root), profile=profile, mode=mode, tools=str(tools), log=str(case / "calls.jsonl"))
@@ -179,13 +201,13 @@ def run_case(base, profile, layout, mode="success", skip=False):
     names = [c["tool"] for c in calls]
     try:
         if mode == "stage":
-            assert result.returncode == 0 and not calls, (result.returncode, names)
+            assert result.returncode == 0 and set(names) <= {"git"}, (result.returncode, names)
             assert (case / "staged/manifest.json").is_file()
         elif mode in ("success", "fresh-receipt"):
             assert result.returncode == 0, f"script exit {result.returncode}"
             for name in ["install_name_tool", "uniffi-bindgen"] + ([] if skip else ["xcodebuild"]):
                 assert any(c["tool"] == name and "sha256" in c for c in calls), name
-            assert sum(c["tool"] == "codesign" and "copy" in c for c in calls) == (0 if skip else 3)
+            assert sum(c["tool"] == "codesign" and "copy" in c for c in calls) == (0 if skip else 6)
             assert sum(c["tool"] == "cp" and "sha256" in c for c in calls) == (0 if skip else 3)
             if skip:
                 assert not set(names) & {"xcodebuild", "swiftc", "codesign"}
