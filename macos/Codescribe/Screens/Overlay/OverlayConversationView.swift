@@ -18,7 +18,6 @@ struct OverlayConversationView: View {
   let onSend: () -> Void
 
   @State private var followsLatest = true
-  @State private var navigationHeight: CGFloat = 0
   @State private var composerHeight: CGFloat = 0
 
   var orderedMessages: [OverlayConversationMessage] { conversation.messages }
@@ -28,15 +27,11 @@ struct OverlayConversationView: View {
       ScrollViewReader { proxy in
         trackedMessages(maxBubbleWidth: max(0, min(660, (geometry.size.width - 40) * 0.82)))
           .overlay(alignment: .top) {
-            navigation
-              .padding(.vertical, 10)
-              .padding(.top, topInset)
+            Color.clear
+              .frame(height: topInset)
               .background { conversationChrome(top: true) }
-              .onGeometryChange(for: CGFloat.self) {
-                $0.size.height
-              } action: {
-                navigationHeight = $0
-              }
+              .allowsHitTesting(false)
+              .accessibilityHidden(true)
           }
           .overlay(alignment: .bottom) {
             composer
@@ -73,17 +68,19 @@ struct OverlayConversationView: View {
       }
     }
     .padding(.horizontal, 20)
-    .padding(.top, 10)
+    .padding(.top, 6)
     .padding(.bottom, bottomInset)
     .frame(maxWidth: .infinity)
   }
 
   private func conversationChrome(top: Bool) -> some View {
     GeometryReader { geometry in
-      let fade: CGFloat = 20
-      OverlayScrollMaterial(top: top, fade: fade)
-        .frame(height: geometry.size.height + fade)
-        .offset(y: top ? 0 : -fade)
+      let overlap: CGFloat = 8
+      let height = geometry.size.height + overlap
+      // Fade across all the chrome, rather than an opaque bar with a softened edge.
+      OverlayScrollMaterial(top: top, fade: height)
+        .frame(height: height)
+        .offset(y: top ? 0 : -overlap)
     }
     .allowsHitTesting(false)
     .accessibilityHidden(true)
@@ -106,7 +103,7 @@ struct OverlayConversationView: View {
           )
       }
     }
-    .padding(.horizontal, 20)
+    .accessibilityIdentifier("overlay-conversation-navigation")
   }
 
   @ViewBuilder
@@ -127,6 +124,8 @@ struct OverlayConversationView: View {
   private func messageList(maxBubbleWidth: CGFloat) -> some View {
     let list = ScrollView {
       LazyVStack(alignment: .leading, spacing: 12) {
+        navigation
+          .padding(.bottom, 4)
         if orderedMessages.isEmpty {
           Text("No conversation messages yet")
             .foregroundStyle(palette.mutedText.color)
@@ -140,7 +139,7 @@ struct OverlayConversationView: View {
       .padding(.vertical, 8)
       .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .contentMargins(.top, navigationHeight > 0 ? navigationHeight : topInset + 36)
+    .contentMargins(.top, topInset)
     .contentMargins(.bottom, composerHeight > 0 ? composerHeight : bottomInset + 54)
     if #available(macOS 26.0, *) {
       // The within-window material owns these edges; a second system shade doubles them.

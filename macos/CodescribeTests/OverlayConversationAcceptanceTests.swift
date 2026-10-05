@@ -180,7 +180,10 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
           material.hitTest(NSPoint(x: 10, y: 10)), "chrome must not steal editing or drag")
       }
       let topMaterial = try XCTUnwrap(materials.first { $0.top })
-      XCTAssertGreaterThan(topMaterial.bounds.height, 86, "blur must cover branding and navigation")
+      XCTAssertEqual(
+        topMaterial.bounds.height, 58, accuracy: 1,
+        "only branding and its small overlap may occupy the reading area")
+      XCTAssertEqual(topMaterial.fade, topMaterial.bounds.height, accuracy: 1)
       let viewport = scroll.convert(scroll.bounds, to: host)
       XCTAssertEqual(
         viewport.height, host.bounds.height, accuracy: 1,
@@ -226,6 +229,50 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       XCTAssertGreaterThan(warmX / Double(max(1, warmCount)), Double(bitmap.pixelsWide) / 2)
       XCTAssertLessThan(neutralX / Double(max(1, neutralCount)), Double(bitmap.pixelsWide) / 2)
 
+    }
+  }
+
+  @MainActor
+  func testCompactConversationLeavesReadingSpaceBetweenGlassEdges() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(occurrence(0, revision: 1, text: "Czytelna wiadomość w małym panelu."))
+    let conversation = try lenaConversation(bus)
+    for scheme in [ColorScheme.dark, .light] {
+      let view = OverlayConversationView(
+        conversation: conversation, palette: .resolve(scheme), topInset: 50, bottomInset: 20,
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in }, onShowMonitor: {},
+        draft: .constant(""), sending: false, sendError: nil, onSend: {})
+      let host = NSHostingView(rootView: view.preferredColorScheme(scheme))
+      host.frame = NSRect(x: 0, y: 0, width: 532, height: 260)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
+      func materials(_ root: NSView) -> [OverlayScrollEffectView] {
+        (root as? OverlayScrollEffectView).map { [$0] } ?? root.subviews.flatMap(materials)
+      }
+      let edges = materials(host)
+      XCTAssertEqual(edges.count, 2)
+      XCTAssertEqual(host.bounds.height, 260, "do not enlarge the window to hide excess chrome")
+      let top = try XCTUnwrap(edges.first { $0.top })
+      let bottom = try XCTUnwrap(edges.first { !$0.top })
+      XCTAssertEqual(top.bounds.height, 58, accuracy: 1)
+      for edge in edges {
+        XCTAssertEqual(edge.fade, edge.bounds.height, accuracy: 1, "gradient spans all chrome")
+        let bitmap = try XCTUnwrap(
+          NSBitmapImageRep(data: try XCTUnwrap(edge.maskImage?.tiffRepresentation)))
+        let center = try XCTUnwrap(
+          bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2))
+        XCTAssertGreaterThan(center.alphaComponent, 0.35)
+        XCTAssertLessThan(center.alphaComponent, 0.65, "the middle must not be an opaque slab")
+      }
+      XCTAssertLessThanOrEqual(bottom.bounds.height, 80, "one compact input, with a short fade")
+      XCTAssertGreaterThanOrEqual(
+        host.bounds.height - top.bounds.height - bottom.bounds.height, 120,
+        "at least the middle 120 points must remain clear for messages")
     }
   }
 
