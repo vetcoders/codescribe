@@ -8671,16 +8671,6 @@
         }
       }
     },
-    "Play again" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odtwórz ponownie"
-          }
-        }
-      }
-    },
     "Play original" : {
       "localizations" : {
         "pl" : {

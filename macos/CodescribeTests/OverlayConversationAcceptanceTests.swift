@@ -6,23 +6,28 @@ import XCTest
 @testable import Codescribe
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
-  func testCompletedReplyHasOneLocalizedReplayAction() throws {
-    // SwiftUI buttons/text do not expose an AX subtree to this hermetic host.
-    // Pin the presentation branches; existing playback tests exercise canonical tickets/owners.
+  func testPlayIconKeepsAdjacentPlaybackStateAndExactControls() throws {
+    // SwiftUI AX children are unavailable in the hermetic host; pin the visible branches.
+    // Existing bus tests separately exercise canonical playback ticket/owner authority.
     let macos = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
       .deletingLastPathComponent()
-    let rawSource = try String(
+    let raw = try String(
       contentsOf: macos.appendingPathComponent(
         "Codescribe/Screens/Overlay/OverlayConversationView.swift"), encoding: .utf8)
-    let source = rawSource.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
-      .joined(separator: " ").replacingOccurrences(of: " )", with: ")")
+    let source = raw.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(
+      separator: " "
+    ).replacingOccurrences(of: " )", with: ")")
     XCTAssertTrue(
-      source.contains("message.playback?.state == \"spoken\" ? String(localized: \"Play again\")"))
+      source.contains(
+        "Button { onControl(message, false) } label: { Image(systemName: \"play.fill\") }"))
+    XCTAssertTrue(source.contains(".accessibilityLabel(\"Play\")"))
+    XCTAssertTrue(source.contains(".help(\"Play\")"))
     XCTAssertTrue(
-      source.contains("if let playback = message.playback, playback.state != \"spoken\""))
+      source.contains("if let playback = message.playback { Text(playbackLabel(playback.state))"))
+    XCTAssertTrue(source.contains("case \"spoken\": String(localized: \"Spoken\")"))
+    XCTAssertFalse(source.contains("Play again"))
     XCTAssertTrue(
       source.contains("Button(\"Stop\", systemImage: \"stop.fill\") { onControl(message, true) }"))
-    XCTAssertTrue(source.contains("systemImage: \"play.fill\") { onControl(message, false) }"))
     XCTAssertTrue(
       source.contains(".disabled(pendingControls.contains(message.id) || message.owner == nil)"))
     let data = try Data(
@@ -30,11 +35,11 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         "Codescribe/Resources/Localization/Localizable.xcstrings"))
     let catalog = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     let strings = try XCTUnwrap(catalog["strings"] as? [String: Any])
-    let key = try XCTUnwrap(strings["Play again"] as? [String: Any])
-    let localizations = try XCTUnwrap(key["localizations"] as? [String: Any])
+    let spoken = try XCTUnwrap(strings["Spoken"] as? [String: Any])
+    let localizations = try XCTUnwrap(spoken["localizations"] as? [String: Any])
     let polish = try XCTUnwrap(localizations["pl"] as? [String: Any])
     let unit = try XCTUnwrap(polish["stringUnit"] as? [String: Any])
-    XCTAssertEqual(unit["value"] as? String, "Odtwórz ponownie")
+    XCTAssertEqual(unit["value"] as? String, "Odtworzono")
   }
 
   func testFollowerDeliveryIdentitySurvivesPrunedMailboxAndQuietRestart() throws {
