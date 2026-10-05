@@ -92,55 +92,60 @@ fn main() {
 
     if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
         let out_dir = env::var("OUT_DIR").unwrap();
-        let embed_model = env::var("CODESCRIBE_EMBED_MODEL")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| DEFAULT_MODEL_NAME.to_string());
-        let model_path =
-            resolve_whisper_embed_model_path(&manifest_dir, &embed_model, DEFAULT_WHISPER_REPO);
-        let model_exists = whisper_weights::validate_whisper_model_bundle(&model_path).is_ok();
-        let weights_path = model_exists
-            .then(|| {
-                let config = std::fs::read_to_string(model_path.join("config.json")).ok()?;
-                let architecture = whisper_weights::parse_whisper_config(
-                    &config,
-                    &model_path.join("config.json").display().to_string(),
-                )
-                .ok()?;
-                whisper_weights::resolve_compatible_whisper_weights_path(&model_path, architecture)
-                    .ok()
-            })
-            .flatten();
-        if model_exists {
-            let weights_path = weights_path.as_ref().expect("validated Whisper weights");
-            println!(
-                "cargo:rerun-if-changed={}",
-                model_path.join("config.json").display()
-            );
-            println!(
-                "cargo:rerun-if-changed={}",
-                model_path.join("tokenizer.json").display()
-            );
-            println!(
-                "cargo:rerun-if-changed={}",
-                model_path.join("mel_filters.npz").display()
-            );
-            println!("cargo:rerun-if-changed={}", weights_path.display());
-        }
-
-        // Whisper model embedding (OPT-IN: distribution builds only).
         let embed_whisper_requested = env_flag("CODESCRIBE_EMBED_WHISPER", false);
-        let whisper_dest_path = Path::new(&out_dir).join("embedded_model_data.rs");
-        let whisper_embedded = embed_whisper_requested && !no_embed && model_exists;
-        if whisper_embedded {
-            let weights_path = weights_path.as_ref().expect("validated Whisper weights");
-            println!(
-                "cargo:warning=Embedding Whisper model from: {}",
-                model_path.display()
-            );
-            let whisper_content = format!(
-                r#"
+        let whisper_embedded;
+        if embed_whisper_requested && !no_embed {
+            let embed_model = env::var("CODESCRIBE_EMBED_MODEL")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| DEFAULT_MODEL_NAME.to_string());
+            let model_path =
+                resolve_whisper_embed_model_path(&manifest_dir, &embed_model, DEFAULT_WHISPER_REPO);
+            let model_exists = whisper_weights::validate_whisper_model_bundle(&model_path).is_ok();
+            let weights_path = model_exists
+                .then(|| {
+                    let config = std::fs::read_to_string(model_path.join("config.json")).ok()?;
+                    let architecture = whisper_weights::parse_whisper_config(
+                        &config,
+                        &model_path.join("config.json").display().to_string(),
+                    )
+                    .ok()?;
+                    whisper_weights::resolve_compatible_whisper_weights_path(
+                        &model_path,
+                        architecture,
+                    )
+                    .ok()
+                })
+                .flatten();
+            if model_exists {
+                let weights_path = weights_path.as_ref().expect("validated Whisper weights");
+                println!(
+                    "cargo:rerun-if-changed={}",
+                    model_path.join("config.json").display()
+                );
+                println!(
+                    "cargo:rerun-if-changed={}",
+                    model_path.join("tokenizer.json").display()
+                );
+                println!(
+                    "cargo:rerun-if-changed={}",
+                    model_path.join("mel_filters.npz").display()
+                );
+                println!("cargo:rerun-if-changed={}", weights_path.display());
+            }
+
+            // Whisper model embedding (OPT-IN: distribution builds only).
+            let whisper_dest_path = Path::new(&out_dir).join("embedded_model_data.rs");
+            whisper_embedded = model_exists;
+            if whisper_embedded {
+                let weights_path = weights_path.as_ref().expect("validated Whisper weights");
+                println!(
+                    "cargo:warning=Embedding Whisper model from: {}",
+                    model_path.display()
+                );
+                let whisper_content = format!(
+                    r#"
                 /// Embedded Whisper config.json bytes (opt-in fat SKU only).
                 pub static CONFIG: &[u8] = include_bytes!(r"{}");
                 /// Embedded Whisper tokenizer.json bytes.
@@ -150,47 +155,56 @@ fn main() {
                 /// Embedded Whisper model weights (safetensors).
                 pub static WEIGHTS: &[u8] = include_bytes!(r"{}");
                 "#,
-                model_path.join("config.json").display(),
-                model_path.join("tokenizer.json").display(),
-                model_path.join("mel_filters.npz").display(),
-                weights_path.display(),
-            );
-            fs::write(&whisper_dest_path, whisper_content)
-                .expect("Failed to write embedded_model_data.rs");
-            println!("cargo:rustc-cfg=embed_model");
-        } else if embed_whisper_requested && !no_embed && !model_exists {
-            panic!(
-                "CODESCRIBE_EMBED_WHISPER=1 but no complete Whisper snapshot at {}. \
+                    model_path.join("config.json").display(),
+                    model_path.join("tokenizer.json").display(),
+                    model_path.join("mel_filters.npz").display(),
+                    weights_path.display(),
+                );
+                fs::write(&whisper_dest_path, whisper_content)
+                    .expect("Failed to write embedded_model_data.rs");
+                println!("cargo:rustc-cfg=embed_model");
+            } else {
+                panic!(
+                    "CODESCRIBE_EMBED_WHISPER=1 but no complete Whisper snapshot at {}. \
 Need config.json + tokenizer.json + mel_filters.npz + weights/model.safetensors. \
 The HF repo {} is weights-only; compose it with `make download-model` into \
 ~/.codescribe/models/{}, or set CODESCRIBE_MODEL_PATH to that directory.",
-                model_path.display(),
-                DEFAULT_WHISPER_REPO,
-                DEFAULT_MODEL_NAME
-            );
+                    model_path.display(),
+                    DEFAULT_WHISPER_REPO,
+                    DEFAULT_MODEL_NAME
+                );
+            }
+        } else {
+            whisper_embedded = false;
         }
 
         // TTS model embedding (optional, via CODESCRIBE_EMBED_TTS=1)
         let embed_tts = env_flag("CODESCRIBE_EMBED_TTS", false) && !no_embed;
-        let tts_model_path =
-            resolve_tts_embed_model_path(&manifest_dir, DEFAULT_TTS_MODEL_NAME, DEFAULT_TTS_REPO);
-        let tts_dest_path = Path::new(&out_dir).join("embedded_tts_data.rs");
-        let tts_model_exists = tts_model_path.join("config.json").exists();
-        let mimi_path_from_cache =
-            find_hf_snapshot(DEFAULT_MIMI_REPO).map(|p| p.join("model.safetensors"));
-        let mimi_weights_path = if tts_model_path.join("mimi.safetensors").exists() {
-            tts_model_path.join("mimi.safetensors")
-        } else {
-            mimi_path_from_cache.unwrap_or_else(|| tts_model_path.join("mimi.safetensors"))
-        };
-
-        if embed_tts && tts_model_exists && mimi_weights_path.exists() {
-            println!(
-                "cargo:warning=Embedding TTS model from: {}",
-                tts_model_path.display()
+        let tts_embedded;
+        if embed_tts {
+            let tts_model_path = resolve_tts_embed_model_path(
+                &manifest_dir,
+                DEFAULT_TTS_MODEL_NAME,
+                DEFAULT_TTS_REPO,
             );
-            let tts_content = format!(
-                r#"
+            let tts_dest_path = Path::new(&out_dir).join("embedded_tts_data.rs");
+            let tts_model_exists = tts_model_path.join("config.json").exists();
+            let mimi_path_from_cache =
+                find_hf_snapshot(DEFAULT_MIMI_REPO).map(|p| p.join("model.safetensors"));
+            let mimi_weights_path = if tts_model_path.join("mimi.safetensors").exists() {
+                tts_model_path.join("mimi.safetensors")
+            } else {
+                mimi_path_from_cache.unwrap_or_else(|| tts_model_path.join("mimi.safetensors"))
+            };
+
+            tts_embedded = tts_model_exists && mimi_weights_path.exists();
+            if tts_embedded {
+                println!(
+                    "cargo:warning=Embedding TTS model from: {}",
+                    tts_model_path.display()
+                );
+                let tts_content = format!(
+                    r#"
                 /// Embedded TTS config.json bytes.
                 pub static CONFIG: &[u8] = include_bytes!(r"{}");
                 /// Embedded TTS tokenizer.json bytes.
@@ -204,51 +218,60 @@ The HF repo {} is weights-only; compose it with `make download-model` into \
                 /// Optional voice-token blob (empty when unused).
                 pub static VOICE_TOKENS: &[u8] = &[]; // Optional voice tokens
                 "#,
-                tts_model_path.join("config.json").display(),
-                tts_model_path.join("tokenizer.json").display(),
-                tts_model_path.join("model.safetensors").display(),
-                mimi_weights_path.display(),
-            );
-            fs::write(&tts_dest_path, tts_content).expect("Failed to write embedded_tts_data.rs");
-            println!("cargo:rustc-cfg=embed_tts");
-        } else if embed_tts && (!tts_model_exists || !mimi_weights_path.exists()) {
-            println!(
-                "cargo:warning=CODESCRIBE_EMBED_TTS set but TTS model not found at: {}",
-                tts_model_path.display()
-            );
-            println!(
-                "cargo:warning=Download with: hf download {}",
-                DEFAULT_TTS_REPO
-            );
-            println!(
-                "cargo:warning=Download Mimi with: hf download {}",
-                DEFAULT_MIMI_REPO
-            );
+                    tts_model_path.join("config.json").display(),
+                    tts_model_path.join("tokenizer.json").display(),
+                    tts_model_path.join("model.safetensors").display(),
+                    mimi_weights_path.display(),
+                );
+                fs::write(&tts_dest_path, tts_content)
+                    .expect("Failed to write embedded_tts_data.rs");
+                println!("cargo:rustc-cfg=embed_tts");
+            } else {
+                println!(
+                    "cargo:warning=CODESCRIBE_EMBED_TTS set but TTS model not found at: {}",
+                    tts_model_path.display()
+                );
+                println!(
+                    "cargo:warning=Download with: hf download {}",
+                    DEFAULT_TTS_REPO
+                );
+                println!(
+                    "cargo:warning=Download Mimi with: hf download {}",
+                    DEFAULT_MIMI_REPO
+                );
+            }
+        } else {
+            tts_embedded = false;
         }
 
         // MiniLM embedder — runtime bundle/cache by default, matching Whisper.
         // Binary embedding is an explicit fat-SKU/debug request only.
         let embed_embedder_requested = env_flag("CODESCRIBE_EMBED_EMBEDDER", false);
-        let embedder_repo = env::var("CODESCRIBE_EMBEDDER_REPO")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| DEFAULT_EMBEDDER_REPO.to_string());
-        let embedder_model_path =
-            resolve_embedder_model_path(&manifest_dir, DEFAULT_EMBEDDER_MODEL_NAME, &embedder_repo);
-        let embedder_dest_path = Path::new(&out_dir).join("embedded_embedder_data.rs");
-        let embedder_model_exists = embedder_model_path.join("config.json").exists()
-            && embedder_model_path.join("tokenizer.json").exists()
-            && embedder_model_path.join("model.safetensors").exists();
-
-        let embedder_embedded = embed_embedder_requested && !no_embed && embedder_model_exists;
-        if embedder_embedded {
-            println!(
-                "cargo:warning=Embedding MiniLM model from: {}",
-                embedder_model_path.display()
+        let embedder_embedded;
+        if embed_embedder_requested && !no_embed {
+            let embedder_repo = env::var("CODESCRIBE_EMBEDDER_REPO")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| DEFAULT_EMBEDDER_REPO.to_string());
+            let embedder_model_path = resolve_embedder_model_path(
+                &manifest_dir,
+                DEFAULT_EMBEDDER_MODEL_NAME,
+                &embedder_repo,
             );
-            let embedder_content = format!(
-                r#"
+            let embedder_dest_path = Path::new(&out_dir).join("embedded_embedder_data.rs");
+            let embedder_model_exists = embedder_model_path.join("config.json").exists()
+                && embedder_model_path.join("tokenizer.json").exists()
+                && embedder_model_path.join("model.safetensors").exists();
+
+            embedder_embedded = embedder_model_exists;
+            if embedder_embedded {
+                println!(
+                    "cargo:warning=Embedding MiniLM model from: {}",
+                    embedder_model_path.display()
+                );
+                let embedder_content = format!(
+                    r#"
                 /// Embedded MiniLM embedder config.json bytes.
                 pub static CONFIG: &[u8] = include_bytes!(r"{}");
                 /// Embedded MiniLM tokenizer.json bytes.
@@ -256,22 +279,25 @@ The HF repo {} is weights-only; compose it with `make download-model` into \
                 /// Embedded MiniLM model.safetensors weights.
                 pub static WEIGHTS: &[u8] = include_bytes!(r"{}");
                 "#,
-                embedder_model_path.join("config.json").display(),
-                embedder_model_path.join("tokenizer.json").display(),
-                embedder_model_path.join("model.safetensors").display(),
-            );
-            fs::write(&embedder_dest_path, embedder_content)
-                .expect("Failed to write embedded_embedder_data.rs");
-            println!("cargo:rustc-cfg=embed_embedder");
-        } else if embed_embedder_requested && !no_embed && !embedder_model_exists {
-            println!(
-                "cargo:warning=Embedder model not found at: {}",
-                embedder_model_path.display()
-            );
-            println!(
-                "cargo:warning=Download with: huggingface-cli download {}",
-                embedder_repo
-            );
+                    embedder_model_path.join("config.json").display(),
+                    embedder_model_path.join("tokenizer.json").display(),
+                    embedder_model_path.join("model.safetensors").display(),
+                );
+                fs::write(&embedder_dest_path, embedder_content)
+                    .expect("Failed to write embedded_embedder_data.rs");
+                println!("cargo:rustc-cfg=embed_embedder");
+            } else {
+                println!(
+                    "cargo:warning=Embedder model not found at: {}",
+                    embedder_model_path.display()
+                );
+                println!(
+                    "cargo:warning=Download with: huggingface-cli download {}",
+                    embedder_repo
+                );
+            }
+        } else {
+            embedder_embedded = false;
         }
 
         // Silero VAD — always embedded from repo (2.3MB, non-negotiable)
@@ -348,7 +374,7 @@ The HF repo {} is weights-only; compose it with `make download-model` into \
         };
         let tts_summary = if qube_context {
             "not_used"
-        } else if embed_tts && tts_model_exists && mimi_weights_path.exists() {
+        } else if tts_embedded {
             "embedded"
         } else if embed_tts {
             "missing_at_build_time"

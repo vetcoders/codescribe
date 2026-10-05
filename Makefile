@@ -1104,6 +1104,8 @@ verify:
 	bash scripts/tests/test-isolation-not-shipped-test.sh; \
 	echo "=== Verify (Whisper model promotion) ==="; \
 	bash scripts/tests/download-model-test.sh; \
+	echo "=== Verify (optional build model discovery) ==="; \
+	python3 scripts/tests/test_build_optional_model_discovery.py; \
 	echo "=== Verify (bus demux: routing, lease, coalesce, attach) ==="; \
 	bash scripts/tests/bus-demux-test.sh; \
 	echo "=== Verify (bench STT stage fixture hard-links) ==="; \
@@ -1117,6 +1119,7 @@ verify:
 	python3 -m unittest scripts/tests/test_bus_demux_speech.py; \
 	python3 -m unittest scripts/tests/test_install_if_idle.py; \
 	python3 -m unittest scripts/tests/test_bus_native_queue.py; \
+	python3 -m unittest scripts/tests/test_agent_reply_admission.py; \
 	python3 -m unittest scripts/tests/test_cs_say_entry.py; \
 	bash scripts/validate-envs.sh; \
 	echo "=== Verify (String Catalog lint instrument) ==="; \
