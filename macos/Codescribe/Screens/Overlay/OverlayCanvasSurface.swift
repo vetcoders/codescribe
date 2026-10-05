@@ -73,3 +73,52 @@ final class OverlayDesktopGlassView: NSGlassEffectView {
 final class OverlayDesktopEffectView: NSVisualEffectView {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
+
+/// The desktop glass samples outside the window. Scroll chrome must instead
+/// sample the messages behind it inside the same window, including an inactive panel.
+struct OverlayScrollMaterial: NSViewRepresentable {
+  let top: Bool
+  let fade: CGFloat
+
+  func makeNSView(context: Context) -> OverlayScrollEffectView {
+    let view = OverlayScrollEffectView()
+    view.material = .headerView
+    view.blendingMode = .withinWindow
+    view.state = .active
+    view.setAccessibilityElement(false)
+    return view
+  }
+
+  func updateNSView(_ view: OverlayScrollEffectView, context: Context) {
+    view.top = top
+    view.fade = fade
+    view.needsLayout = true
+  }
+}
+
+final class OverlayScrollEffectView: NSVisualEffectView {
+  var top = true
+  var fade: CGFloat = 20
+
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  override func layout() {
+    super.layout()
+    guard bounds.width > 0, bounds.height > 0 else { return }
+    let length = min(max(0, fade), bounds.height)
+    let image = NSImage(size: bounds.size)
+    image.lockFocus()
+    NSColor.black.setFill()
+    NSRect(origin: .zero, size: bounds.size).fill()
+    if length > 0 {
+      let edge = NSRect(
+        x: 0, y: top ? 0 : bounds.height - length,
+        width: bounds.width, height: length)
+      NSColor.clear.setFill()
+      edge.fill(using: .copy)
+      NSGradient(starting: .black, ending: .clear)?.draw(in: edge, angle: top ? -90 : 90)
+    }
+    image.unlockFocus()
+    maskImage = image
+  }
+}

@@ -30,8 +30,8 @@ struct OverlayConversationView: View {
           .overlay(alignment: .top) {
             navigation
               .padding(.vertical, 10)
-              .background { conversationChrome(top: true) }
               .padding(.top, topInset)
+              .background { conversationChrome(top: true) }
               .onGeometryChange(for: CGFloat.self) {
                 $0.size.height
               } action: {
@@ -81,21 +81,9 @@ struct OverlayConversationView: View {
   private func conversationChrome(top: Bool) -> some View {
     GeometryReader { geometry in
       let fade: CGFloat = 20
-      let height = geometry.size.height + fade
-      // Match transcript scroll-edge material; the input keeps its interactive glass.
-      // Broad masked glassEffect surfaces can paint over the header's foreground.
-      Rectangle().fill(.regularMaterial)
-        .frame(height: height)
-        .mask {
-          LinearGradient(
-            stops: [
-              .init(color: .black, location: 0),
-              .init(color: .black, location: max(0, 1 - fade / height)),
-              .init(color: .clear, location: 1),
-            ], startPoint: top ? .top : .bottom, endPoint: top ? .bottom : .top)
-        }
+      OverlayScrollMaterial(top: top, fade: fade)
+        .frame(height: geometry.size.height + fade)
         .offset(y: top ? 0 : -fade)
-        .opacity(0.65)
     }
     .allowsHitTesting(false)
     .accessibilityHidden(true)
@@ -155,7 +143,8 @@ struct OverlayConversationView: View {
     .contentMargins(.top, navigationHeight > 0 ? navigationHeight : topInset + 36)
     .contentMargins(.bottom, composerHeight > 0 ? composerHeight : bottomInset + 54)
     if #available(macOS 26.0, *) {
-      list.scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+      // The within-window material owns these edges; a second system shade doubles them.
+      list.scrollEdgeEffectHidden(true, for: [.top, .bottom])
     } else {
       list
     }

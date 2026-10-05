@@ -376,7 +376,7 @@ final class OverlayStateTests: XCTestCase {
         ],
       ])
     }
-    let all = try XCTUnwrap(bus.conversations(busPath: "/fixture/bus").first)
+    let all = try XCTUnwrap(bus.conversations(busPath: "/fixture/bus").first { $0.channel == "2" })
     XCTAssertEqual(all.messages.count, 5)
     let view = OverlayConversationView(
       conversation: all, palette: .dark, topInset: 50,

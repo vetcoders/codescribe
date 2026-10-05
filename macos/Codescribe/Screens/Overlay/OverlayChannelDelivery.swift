@@ -244,8 +244,28 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         result.busPath = busPath
         return result
       }
-      var result = [OverlayConversation(id: "0", channel: "0", name: "All", owner: nil,
-        messages: ordered)]
+      let broadcastQuestions = ordered.filter {
+        $0.kind == .user && ($0.sourceChannel ?? deliveryOrigins[$0.id]?.channel) == "0"
+      }
+      let broadcastIDs = Set(broadcastQuestions.map(\.id))
+      let broadcastDeliveries = Set(
+        broadcastQuestions.flatMap { message in
+          message.recipients.compactMap { recipient in
+            recipient.deliveryID.map { recipient.owner.id + "\0" + $0 }
+          }
+        })
+      let broadcast = ordered.filter { message in
+        if message.kind == .user { return broadcastIDs.contains(message.id) }
+        guard let owner = message.owner, let delivery = message.replyTo,
+          broadcastDeliveries.contains(owner.id + "\0" + delivery)
+        else { return false }
+        return message.replyToOccurrenceID.map { broadcastIDs.contains($0) } ?? true
+      }
+      var result = [
+        OverlayConversation(
+          id: "0", channel: "0", name: "All", owner: nil,
+          messages: broadcast)
+      ]
       for owner in historicalOwners.values.sorted(by: { $0.id < $1.id }) {
         let rows = ordered.filter { row in
           row.owner?.id == owner.id || row.recipients.contains { $0.owner.id == owner.id }
@@ -345,11 +365,12 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
               Self.routedAudience(audience),
             ]), queued: false, accepted: false, acknowledged: false)
         }
-        store(
-          OverlayConversationMessage(
-            id: key, kind: .user, text: text, order: nextOrder(),
-            emittedAt: row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
-            deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: ""))
+        var message = OverlayConversationMessage(
+          id: key, kind: .user, text: text, order: nextOrder(),
+          emittedAt: row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
+          deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+        message.sourceChannel = row["channel"] as? String
+        store(message)
         return
       }
       if schema == "codescribe.channel-session.v1", let session = row["session_id"] as? String,
@@ -565,12 +586,17 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
               queued: false, accepted: false, acknowledged: false))
       }
       let order = messages[key]?.order ?? nextOrder()
-      store(
-        OverlayConversationMessage(
-          id: key, kind: .user,
-          text: text, order: order,
-          emittedAt: row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
-          deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: ""))
+      var message = OverlayConversationMessage(
+        id: key, kind: .user,
+        text: text, order: order,
+        emittedAt: row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
+        deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+      let components = session.split(separator: "-")
+      message.sourceChannel =
+        row["channel"] as? String
+        ?? (components.count > 2 && components[0] == "agent" && components[1] == "channel"
+          ? String(components[2]) : nil)
+      store(message)
     }
 
     private func admitsOpening(channel: String, session: String, openedAt: String) -> Bool {
@@ -765,6 +791,7 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   var playback: OverlayReplyPlayback?
   var busPath: String
   var replyToOccurrenceID: String? = nil
+  var sourceChannel: String? = nil
   var replyID: String? { kind == .reply ? String(id.dropFirst("reply:".count)) : nil }
 }
 
