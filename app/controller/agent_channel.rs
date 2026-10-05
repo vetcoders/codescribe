@@ -1840,6 +1840,143 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn detector_fn_prefix_then_channel_digit_never_admits_a_phantom_hold() {
+        use super::super::{HotkeyAction, HotkeyInput, HotkeyType, State};
+        use crate::os::hotkeys::{
+            HoldAction, HoldMode, HotkeyDetector, HotkeyDetectorInput, HotkeyEvent,
+            HotkeyModifierSnapshot, HotkeyPhysicalKey,
+        };
+
+        for channel_chord in [true, false] {
+            let controller = Arc::new(RecordingController::new_without_keychain());
+            let dir = tempfile::tempdir().expect("temp");
+            let (binding, channel_bus) = write_dedicated_binding(dir.path());
+            let shared_bus = dir.path().join("shared.jsonl");
+            open_stamped(
+                &controller,
+                &binding,
+                &shared_bus,
+                "agent-channel-3-fn-prefix",
+            )
+            .await;
+            let mut config = crate::os::hotkeys::get_hotkey_runtime_config();
+            config.mode_bindings.dictation = crate::config::ShortcutBinding::HoldFn;
+            config.channel_modifier = crate::config::ChannelModifier::Fn;
+            config.fn_tap_toggles_dictation = false;
+            let mut detector = HotkeyDetector::default();
+            let now = std::time::Instant::now();
+            let modifiers = |fn_key| HotkeyModifierSnapshot {
+                ctrl: false,
+                option: false,
+                shift: false,
+                cmd: false,
+                fn_key,
+            };
+            let input = |action| HotkeyInput {
+                key_type: HotkeyType::Hold,
+                action,
+                assistive: false,
+                hold_mode: HoldMode::Raw,
+                force_raw: false,
+                force_ai: false,
+            };
+            assert_eq!(
+                detector.feed(
+                    HotkeyDetectorInput::FlagsChanged {
+                        now,
+                        key: HotkeyPhysicalKey::Fn,
+                        modifiers: modifiers(true),
+                    },
+                    config
+                ),
+                Some(HotkeyEvent::Hold {
+                    action: HoldAction::Down,
+                    mode: HoldMode::Raw
+                })
+            );
+            controller
+                .handle_hotkey_event(input(HotkeyAction::Down))
+                .await
+                .expect("Fn prefix");
+            assert!(controller.agent_channel_snapshot(3).await.is_some());
+            assert!(
+                bus_rows(&channel_bus).is_empty(),
+                "prefix cannot hang up a channel"
+            );
+            if channel_chord {
+                let digit = HotkeyDetectorInput::KeyDown {
+                    now: now + Duration::from_millis(10),
+                    key: HotkeyPhysicalKey::Digit(3),
+                    modifiers: modifiers(true),
+                };
+                assert_eq!(
+                    detector.feed(digit, config),
+                    Some(HotkeyEvent::AgentChannel { digit: 3 })
+                );
+                // The bridge routes AgentChannel to this public controller entry.
+                controller
+                    .toggle_agent_channel(3)
+                    .await
+                    .expect("explicit channel toggle");
+                assert_eq!(
+                    detector.feed(
+                        HotkeyDetectorInput::KeyDown {
+                            now: now + Duration::from_millis(11),
+                            key: HotkeyPhysicalKey::Digit(3),
+                            modifiers: modifiers(true),
+                        },
+                        config
+                    ),
+                    None,
+                    "key repeat cannot toggle twice"
+                );
+            }
+            assert_eq!(
+                detector.feed(
+                    HotkeyDetectorInput::FlagsChanged {
+                        now: now + Duration::from_millis(20),
+                        key: HotkeyPhysicalKey::Fn,
+                        modifiers: modifiers(false),
+                    },
+                    config
+                ),
+                Some(HotkeyEvent::Hold {
+                    action: HoldAction::Up,
+                    mode: HoldMode::Raw
+                })
+            );
+            controller
+                .handle_hotkey_event(input(HotkeyAction::Up))
+                .await
+                .expect("quick release");
+            let delay = controller
+                .runtime_settings_arc()
+                .await
+                .values()
+                .hold_start_delay_ms;
+            tokio::time::sleep(Duration::from_millis(delay + 50)).await;
+            assert_eq!(controller.current_state().await, State::Idle);
+            assert!(
+                controller.session_id.read().await.is_none(),
+                "no phantom ordinary take"
+            );
+            assert!(controller.hold_start_task.lock().await.is_none());
+            let rows = bus_rows(&channel_bus);
+            if channel_chord {
+                assert!(controller.agent_channel_snapshot(3).await.is_none());
+                assert_eq!(rows.len(), 1, "only the explicit channel toggle closes");
+                assert_eq!(rows[0]["reason"], "hangup");
+                assert_eq!(rows[0]["session_id"], "agent-channel-3-fn-prefix");
+            } else {
+                assert!(controller.agent_channel_snapshot(3).await.is_some());
+                assert!(rows.is_empty(), "quick release preserves its channel");
+            }
+            assert!(!shared_bus.exists(), "no unrelated terminal publication");
+        }
+    }
+
     #[test]
     #[serial(agent_ack_duck)]
     fn channel_autoseal_knob_defaults_to_the_brief_and_zero_disables() {
