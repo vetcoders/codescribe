@@ -18,38 +18,72 @@ struct OverlayConversationView: View {
   let onSend: () -> Void
 
   @State private var followsLatest = true
+  @State private var composerHeight: CGFloat = 0
 
   var orderedMessages: [OverlayConversationMessage] { conversation.messages }
 
   var body: some View {
     GeometryReader { geometry in
-      VStack(spacing: 10) {
-        navigation
-          .padding(.top, topInset)
-        ScrollViewReader { proxy in
-          trackedMessages(maxBubbleWidth: max(0, min(660, (geometry.size.width - 40) * 0.82)))
-            .onAppear { scrollToLatest(proxy) }
-            .onChange(of: conversation.id) { _, _ in scrollToLatest(proxy) }
-            .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
-            .onChange(of: orderedMessages.last) { _, _ in
-              if followsLatest || followsLiveChannel { scrollToLatest(proxy) }
-            }
-        }
-        if conversation.owner != nil {
-          OverlayConversationComposer(
-            palette: palette, draft: $draft, sending: sending, onSubmit: submit
-          )
-          .padding(.horizontal, 20)
-          if let sendError {
-            Text(verbatim: sendError).font(.caption).foregroundStyle(palette.errorStatus.color)
-              .padding(.horizontal, 20)
+      ScrollViewReader { proxy in
+        trackedMessages(maxBubbleWidth: max(0, min(660, (geometry.size.width - 40) * 0.82)))
+          .overlay(alignment: .top) {
+            Color.clear
+              .frame(height: topInset)
+              .background { conversationChrome(top: true) }
+              .allowsHitTesting(false)
+              .accessibilityHidden(true)
           }
-        }
+          .overlay(alignment: .bottom) {
+            composer
+              .background { conversationChrome(top: false) }
+              .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+              } action: {
+                composerHeight = $0
+              }
+          }
+          .onAppear { scrollToLatest(proxy) }
+          .onChange(of: conversation.id) { _, _ in scrollToLatest(proxy) }
+          .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
+          .onChange(of: composerHeight) { _, _ in
+            if followsLatest { scrollToLatest(proxy) }
+          }
+          .onChange(of: orderedMessages.last) { _, _ in
+            if followsLatest || followsLiveChannel { scrollToLatest(proxy) }
+          }
       }
-      .padding(.bottom, bottomInset)
       .foregroundStyle(palette.primaryText.color)
     }
     .accessibilityIdentifier("overlay-conversation-body")
+  }
+
+  private var composer: some View {
+    VStack(spacing: 8) {
+      if conversation.owner != nil {
+        OverlayConversationComposer(
+          palette: palette, draft: $draft, sending: sending, onSubmit: submit)
+        if let sendError {
+          Text(verbatim: sendError).font(.caption).foregroundStyle(palette.errorStatus.color)
+        }
+      }
+    }
+    .padding(.horizontal, 20)
+    .padding(.top, 6)
+    .padding(.bottom, bottomInset)
+    .frame(maxWidth: .infinity)
+  }
+
+  private func conversationChrome(top: Bool) -> some View {
+    GeometryReader { geometry in
+      let overlap: CGFloat = 8
+      let height = geometry.size.height + overlap
+      // Fade across all the chrome, rather than an opaque bar with a softened edge.
+      OverlayScrollMaterial(top: top)
+        .frame(height: height)
+        .offset(y: top ? 0 : -overlap)
+    }
+    .allowsHitTesting(false)
+    .accessibilityHidden(true)
   }
 
   private var navigation: some View {
@@ -69,7 +103,7 @@ struct OverlayConversationView: View {
           )
       }
     }
-    .padding(.horizontal, 20)
+    .accessibilityIdentifier("overlay-conversation-navigation")
   }
 
   @ViewBuilder
@@ -86,9 +120,12 @@ struct OverlayConversationView: View {
     }
   }
 
+  @ViewBuilder
   private func messageList(maxBubbleWidth: CGFloat) -> some View {
-    ScrollView {
+    let list = ScrollView {
       LazyVStack(alignment: .leading, spacing: 12) {
+        navigation
+          .padding(.bottom, 4)
         if orderedMessages.isEmpty {
           Text("No conversation messages yet")
             .foregroundStyle(palette.mutedText.color)
@@ -101,6 +138,14 @@ struct OverlayConversationView: View {
       .padding(.horizontal, 20)
       .padding(.vertical, 8)
       .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .contentMargins(.top, topInset)
+    .contentMargins(.bottom, composerHeight > 0 ? composerHeight : bottomInset + 54)
+    if #available(macOS 26.0, *) {
+      // The within-window material owns these edges; a second system shade doubles them.
+      list.scrollEdgeEffectHidden(true, for: [.top, .bottom])
+    } else {
+      list
     }
   }
 

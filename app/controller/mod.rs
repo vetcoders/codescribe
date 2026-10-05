@@ -4218,6 +4218,9 @@ impl RecordingController {
         let Some(recorder) = recorder_guard.as_mut() else {
             return;
         };
+        if recorder.has_non_take_subscriber() {
+            return;
+        }
         if !recorder.recorder.is_active() {
             return;
         }
@@ -4449,6 +4452,9 @@ impl RecordingController {
     /// - **Toggle + force_ai=true**: force AI formatting (normal hands-off)
     /// - **Toggle + assistive=true**: force Assistive hands-off
     pub async fn handle_hotkey_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
+        let hold_generation = (event.key_type == HotkeyType::Hold
+            && event.action == HotkeyAction::Down)
+            .then(|| self.hold_start_generation.load(Ordering::SeqCst));
         let next_start = matches!(
             (event.key_type, event.action),
             (HotkeyType::Hold, HotkeyAction::Down) | (HotkeyType::Toggle, HotkeyAction::Press)
@@ -4486,6 +4492,13 @@ impl RecordingController {
         }
         let mut current_state = self.current_state().await;
 
+        if current_state == State::Idle
+            && event.key_type == HotkeyType::Hold
+            && event.action == HotkeyAction::Up
+        {
+            return self.handle_hold_event(event).await;
+        }
+
         if current_state == State::Idle {
             self.recover_stale_recorder_if_idle().await;
             current_state = self.current_state().await;
@@ -4509,6 +4522,21 @@ impl RecordingController {
         ) {
             info!("Agent response is still streaming; ignoring hotkey start");
             return Ok(());
+        }
+
+        if current_state == State::Idle
+            && next_start
+            && !event.assistive
+            && matches!(event.hold_mode, HoldMode::Raw)
+        {
+            let _serial = self.serial_lock.lock().await;
+            if self.shutdown_requested.load(Ordering::SeqCst) {
+                return Err(anyhow::anyhow!("capture admission closed for shutdown"));
+            }
+            current_state = self.current_state().await;
+            if current_state == State::Idle {
+                self.close_agent_channels_for_dictation().await?;
+            }
         }
 
         if current_state == State::Idle
@@ -4653,6 +4681,11 @@ impl RecordingController {
         }
 
         // Route to appropriate handler
+        if hold_generation.is_some_and(|generation| {
+            self.hold_start_generation.load(Ordering::SeqCst) != generation
+        }) {
+            return Ok(());
+        }
         match event.key_type {
             HotkeyType::Hold => self.handle_hold_event(event).await,
             HotkeyType::Toggle => self.handle_toggle_event(event).await,

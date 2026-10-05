@@ -695,12 +695,12 @@ rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
 kinds = [row["kind"] for row in rows]
 # The newer opening closes the earlier unsealed document before the next
 # draft. Reobserving the same document does not create another occurrence.
-assert kinds == ["attach", "revised", "revised", "revised", "seal", "revised", "seal"], kinds
+assert kinds == ["attach", "revised", "revised", "seal", "revised", "revised", "seal"], kinds
 healthy = rows[6]
 assert healthy["session_id"] == "agent-channel-2-good", healthy
 assert healthy.get("coverage") is None, healthy
 assert healthy["state_change_allowed"] is True, healthy
-flushed = rows[4]
+flushed = rows[3]
 assert flushed["session_id"] == "agent-channel-2-lost", flushed
 assert flushed["status"] == "transcript_sealed", flushed
 assert flushed["coverage"] == "refused", flushed
@@ -718,8 +718,13 @@ spec = importlib.util.spec_from_file_location("bus_demux_refused", sys.argv[2])
 module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(module)
-identity = module._identity(("coverage-refused-seal", "agent-channel-2-lost", 0))
-assert flushed["source_event_id"] == identity, flushed
+identity = module.channel_message_identity("agent-channel-2-lost")
+assert flushed["message_id"] == identity, flushed
+phase = module._identity(("channel-message-seal", "agent-channel-2-lost"))
+assert flushed["delivery_id"] == module._identity((
+    "native_bus_demux", flushed["lease_id"], phase, "seal", "james")), flushed
+assert flushed["reducer_revision"] == 2, flushed
+assert flushed["reducer_action"] == "seal_coverage", flushed
 PY
 
 # Hang-up net: a channel closed by a second digit / Fn press is never

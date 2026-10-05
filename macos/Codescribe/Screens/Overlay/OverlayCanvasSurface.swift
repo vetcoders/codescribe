@@ -73,3 +73,35 @@ final class OverlayDesktopGlassView: NSGlassEffectView {
 final class OverlayDesktopEffectView: NSVisualEffectView {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
+
+/// Native SwiftUI glass samples the scroll content in its own composition.
+struct OverlayScrollMaterial: View {
+  let top: Bool
+
+  var body: some View {
+    material
+      .mask(OverlayScrollFade(top: top))
+      .allowsHitTesting(false)
+      .accessibilityHidden(true)
+  }
+
+  @ViewBuilder
+  private var material: some View {
+    if #available(macOS 26.0, *) {
+      Color.clear.glassEffect(.regular, in: Rectangle())
+    } else {
+      Rectangle().fill(.regularMaterial)
+    }
+  }
+}
+
+/// Transparency changes continuously across the entire header or input region.
+struct OverlayScrollFade: View {
+  let top: Bool
+
+  var body: some View {
+    LinearGradient(
+      colors: top ? [.black, .clear] : [.clear, .black],
+      startPoint: .top, endPoint: .bottom)
+  }
+}

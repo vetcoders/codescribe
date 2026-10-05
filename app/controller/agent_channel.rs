@@ -585,6 +585,7 @@ impl RecordingController {
     /// session seals with `reason: hangup` and does not reopen. Dictation
     /// state is not changed.
     pub async fn toggle_agent_channel(&self, digit: u8) -> Result<()> {
+        let _serial = self.serial_lock.lock().await;
         let opened = self
             .dispatch_agent_channel(
                 digit,
@@ -1029,8 +1030,40 @@ impl RecordingController {
     }
 
     pub(crate) async fn poll_channel_autoseal(&self, now: SystemTime, bus: &Path) -> Vec<u8> {
+        let _serial = self.serial_lock.lock().await;
         self.seal_channels_silent_for(now, bus, channel_autoseal_secs(), Some(&binding_path()))
             .await
+    }
+
+    /// Ordinary capture admission holds the controller's serial lock. Join
+    /// each channel and publish its existing close receipt before that admission.
+    pub(crate) async fn close_agent_channels_for_dictation(&self) -> Result<()> {
+        let mut open: Vec<_> = self.agent_channels.lock().await.drain().collect();
+        open.sort_by_key(|(digit, _)| *digit);
+        let bus = crate::presentation::transcript_bus::transcript_bus_path();
+        let mut first_error = None;
+        for (digit, channel) in open {
+            let retained = channel.clone();
+            if let Err(error) = self
+                .close_open_channel(
+                    digit,
+                    channel,
+                    ChannelSealReason::Hangup,
+                    &bus,
+                    channel_autoseal_secs(),
+                )
+                .await
+            {
+                self.agent_channels.lock().await.insert(digit, retained);
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Quiet delivery contract (Founder seal cc6c8248): silence seals and

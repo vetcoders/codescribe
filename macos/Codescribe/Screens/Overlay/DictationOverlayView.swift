@@ -581,7 +581,7 @@ struct DictationOverlayView: View {
     // Keep the explicit drag region above the passive glass background.
     // OverlayResizeHitTests verifies header dragging across its width.
     .background { OverlayWindowDragRegion(identifier: "overlay-header-drag-region") }
-    .modifier(OverlayHeaderChrome())
+    .modifier(OverlayHeaderChrome(enabled: state.selectedConversation == nil))
     // The cached panel survives orderOut. Observe its window outside
     // ViewThatFits so hidden header candidates cannot compete for visibility.
     .background {
@@ -1128,29 +1128,32 @@ private struct OverlayRenderVisibility: NSViewRepresentable {
 }
 
 private struct OverlayHeaderChrome: ViewModifier {
+  var enabled = true
 
   func body(content: Content) -> some View {
     content.background {
-      GeometryReader { geometry in
-        let fade: CGFloat = 12
-        let height = geometry.size.height + fade
-        chrome
-          .frame(height: height)
-          .mask {
-            LinearGradient(
-              stops: [
-                .init(color: .black, location: 0),
-                .init(color: .black, location: max(0, 1 - fade / height)),
-                .init(color: .clear, location: 1),
-              ],
-              startPoint: .top,
-              endPoint: .bottom
-            )
-          }
-          .opacity(0.35)
+      if enabled {
+        GeometryReader { geometry in
+          let fade: CGFloat = 12
+          let height = geometry.size.height + fade
+          chrome
+            .frame(height: height)
+            .mask {
+              LinearGradient(
+                stops: [
+                  .init(color: .black, location: 0),
+                  .init(color: .black, location: max(0, 1 - fade / height)),
+                  .init(color: .clear, location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+              )
+            }
+            .opacity(0.35)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
       }
-      .allowsHitTesting(false)
-      .accessibilityHidden(true)
     }
   }
 

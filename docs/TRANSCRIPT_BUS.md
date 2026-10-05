@@ -196,14 +196,36 @@ not repeated in the array. This preserves Word evidence, decisions, seals,
 presentation pins and manual receipts while storing the full document, coverage,
 comparison and consultation payloads once per persisted publication.
 
-`bus-demux.py` expands these observations before its existing normalization and
-delivery path. It admits a complete encoded row before expanding any occurrence,
+`bus-demux.py` admits the complete encoded row before handling any occurrence,
 rejects unknown encoding versions or malformed occurrence members, and advances
-its durable byte cursor only after handling the row's envelopes. Existing pending
-delivery and ACK identities continue to use the original observation coordinates.
-Unencoded evidence rows remain readable. Snapshot readers that select one
+its durable byte cursor only after handling the row's envelopes. Unencoded
+evidence rows remain readable. Snapshot readers that select one
 projection per reducer revision can consume the top-level projection directly;
 receipt inventories must also read `occurrence_rows`.
+
+An addressed channel session is one evolving spoken message. The channel capture
+session selects its identity; its PCM entries select evidence within that message.
+The follower copies the full `rendered_text` once per reducer revision/action and
+keeps every occurrence's original coordinates, label and acoustic receipts in an
+additive `occurrences` inventory. `message_id` hashes `channel-message` plus the
+capture session. Draft delivery phases hash `channel-message-revision`, session,
+revision and action. The closing phase hashes `channel-message-seal` plus session,
+independent of occurrence count or text. Distinct captures with identical words
+remain distinct messages.
+
+Only the channel's close or its own `session_ended` releases the final envelope.
+A ledger terminal observation supplies certification but does not close capture.
+Without that observation, the final envelope retains `coverage: refused`.
+The conversation preview uses this same capture identity and copies the full
+render instead of rendering an entry label as a separate chat message. Receipt
+IDs for all physical entries stay observable; the ledger and reducer are unchanged.
+ACK markers retain occurrence coordinates without labels or acoustic payloads.
+The existing follower lease retains its last observed unclosed channel snapshot
+alongside the committed bus cursor. Acknowledging a preview does not erase that
+capture's final-delivery obligation. Restart restores these snapshots and pending
+envelopes; successful close delivery clears the unclosed snapshot together with
+the cursor commit. This is transport recovery of reducer bytes, not a new document
+authority or another configuration store.
 
 A shared logical revision below 512 KiB is one physical NDJSON row. Larger
 revisions use consecutive `codescribe.bus-chunk.v1` transport rows with 32 KiB

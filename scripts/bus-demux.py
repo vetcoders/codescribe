@@ -810,6 +810,9 @@ def slim(
     for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id"):
         if key in event:
             payload[key] = event[key]
+    for key in ("message_id", "occurrences"):
+        if key in event:
+            payload[key] = event[key]
     coverage = event.get("coverage")
     if isinstance(coverage, str) and coverage:
         payload["coverage"] = coverage
@@ -979,6 +982,19 @@ def normalized_revision_events(
     rows = evidence_revision_rows(parsed)
     if rows is None:
         raise ValueError("unverified revision encoding")
+    if (parsed.get("schema") == EVIDENCE_SCHEMA
+            and channel_of_session(str(parsed.get("session_id") or "")) is not None):
+        # The storage inventory describes one complete reducer snapshot. It
+        # does not turn its physical entries into separate spoken messages.
+        snapshot = dict(rows[0])
+        snapshot["occurrences"] = [
+            {key: row.get(key) for key in (
+                "sequence", "emitted_at", "occurrence_session_id", "capture_epoch",
+                "sample_start", "sample_end", "document_index", "label", "acoustic_receipts",
+            )}
+            for row in rows
+        ]
+        rows = [snapshot]
     events: list[dict[str, Any]] = []
     for row in rows:
         event = normalizer.normalize(row)
@@ -1040,6 +1056,19 @@ def channel_of_session(session_id: str) -> str | None:
     return match.group(1) if match else None
 
 
+def channel_message_identity(session: str) -> str:
+    """One manual channel take; PCM entries remain evidence inside it."""
+    return _identity(("channel-message", session))
+
+
+def channel_message_phase_identity(event: dict[str, Any]) -> str:
+    session = event.get("session_id")
+    if event.get("status") == SEALED:
+        return _identity(("channel-message-seal", session))
+    return _identity(("channel-message-revision", session,
+                      event.get("reducer_revision"), event.get("reducer_action")))
+
+
 class EvidenceNormalizer:
     """Translate ``transcript-evidence.v1`` rows into the shape the bridge speaks.
 
@@ -1051,13 +1080,14 @@ class EvidenceNormalizer:
 
     Channel safety net: a ledger that refuses terminal finality emits no
     terminal seal, so an addressed utterance would vanish without a trace.
-    The normalizer keeps the latest snapshot per document of each unsealed
+    The normalizer keeps the latest whole snapshot of each unsealed
     channel session and, when the session is over — a ``channel-session``
     receipt shows the channel moved on (any non-open state for the session,
     or a fresh open of the same channel), or the session's own
-    ``session_ended`` lifecycle row marks a hang-up — flushes those documents
-    as ``coverage: "refused"`` seal envelopes via :meth:`pop_flushes`.  The
-    words are delivered once; certification is honestly withheld.
+    ``session_ended`` lifecycle row marks a hang-up — flushes one message via
+    :meth:`pop_flushes`. A ledger terminal receipt carries certification;
+    without it the envelope keeps ``coverage: "refused"``. Physical occurrence
+    coordinates and receipts accompany the full render, never split its text.
     """
 
     #: Unsealed channel sessions retained for the flush net. The quiet
@@ -1072,14 +1102,30 @@ class EvidenceNormalizer:
         # the refused flush already carried their words. A late row for such
         # a session must not re-arm the net and deliver the take twice.
         self._settled_sessions: set[str] = set()
-        self._session_docs: dict[str, dict[Any, dict[str, Any]]] = {}
+        self._session_docs: dict[str, dict[str, Any]] = {}
         self._channel_open_times: dict[str, tuple[str, float]] = {}
         self._flushes: list[dict[str, Any]] = []
 
     def pop_flushes(self) -> list[dict[str, Any]]:
-        """Coverage-refused envelopes triggered by the last normalized row."""
+        """Final channel envelopes triggered by the last normalized row."""
         flushes, self._flushes = self._flushes, []
         return flushes
+
+    def restore_channel_documents(self, documents: list[dict[str, Any]]) -> None:
+        """Resume observed snapshots, including a queued row before cursor commit."""
+        for document in documents:
+            session = str(document.get("session_id") or "")
+            if (channel_of_session(session) is None
+                    or document.get("message_id") != channel_message_identity(session)):
+                continue
+            if document.get("status") == SEALED:
+                self._settled_sessions.add(session)
+                self._session_docs.pop(session, None)
+            elif session not in self._settled_sessions:
+                self._remember_channel_document(document, dict(document))
+
+    def channel_documents(self) -> dict[str, dict[str, Any]]:
+        return {session: dict(document) for session, document in self._session_docs.items()}
 
     def normalize(self, event: dict[str, Any] | None) -> dict[str, Any] | None:
         if event is None:
@@ -1093,11 +1139,23 @@ class EvidenceNormalizer:
                     str(event.get("session_id") or ""), event.get("emitted_at")
                 )
             return event
+        if event.get("reducer_action") == SESSION_ENDED:
+            self._flush_session(str(event.get("session_id") or ""), event.get("emitted_at"))
+            return None
         document = event.get("rendered_text")
         if not isinstance(document, str):
             return None
+        session = str(event.get("session_id") or "")
+        if event.get("audience") and channel_of_session(session) is not None:
+            if session in self._settled_sessions:
+                return None
+            clean = self._as_clean(event, LIVE_STATUSES[1], document)
+            clean["message_id"] = channel_message_identity(session)
+            if not self._remember_channel_document(event, clean):
+                return None
+            # Even a ledger terminal phase is a preview until capture ends.
+            return clean
         if str(event.get("reducer_action") or "") == TERMINAL_SEAL:
-            session = str(event.get("session_id") or "")
             self._settled_sessions.add(session)
             self._session_docs.pop(session, None)
             seal_id = terminal_seal_identity(event)
@@ -1106,21 +1164,50 @@ class EvidenceNormalizer:
             self._terminal_seals.add(seal_id)
             return self._as_clean(event, SEALED, document)
         clean = self._as_clean(event, LIVE_STATUSES[1], document)
-        self._remember_channel_document(event, clean)
         return clean
 
     def _remember_channel_document(
         self, event: dict[str, Any], clean: dict[str, Any]
-    ) -> None:
+    ) -> bool:
         session = str(event.get("session_id") or "")
         if not clean.get("audience") or channel_of_session(session) is None:
-            return
+            return False
         if session in self._settled_sessions:
-            return
-        docs = self._session_docs.setdefault(session, {})
-        docs[clean.get("document_index")] = clean
+            return False
+        previous = self._session_docs.get(session)
+        incoming_revision = event.get("reducer_revision")
+        older_snapshot = (previous is not None and type(incoming_revision) is int
+                and type(previous.get("reducer_revision")) is int
+                and incoming_revision < previous["reducer_revision"])
+        inventory = {
+            (item.get("occurrence_session_id"), item.get("capture_epoch"),
+             item.get("sample_start"), item.get("sample_end")): item
+            for item in (previous or {}).get("occurrences", [])
+        }
+        for item in event.get("occurrences", [
+            {key: event.get(key) for key in (
+                "sequence", "emitted_at", "occurrence_session_id", "capture_epoch",
+                "sample_start", "sample_end", "document_index", "label", "acoustic_receipts",
+            )}
+        ]):
+            key = (item.get("occurrence_session_id"), item.get("capture_epoch"),
+                   item.get("sample_start"), item.get("sample_end"))
+            if not older_snapshot or key not in inventory:
+                inventory[key] = item
+        clean["occurrences"] = list(inventory.values())
+        if older_snapshot:
+            previous["occurrences"] = clean["occurrences"]
+            return False
+        same_phase = previous is not None and (
+            previous.get("reducer_revision"), previous.get("reducer_action")
+        ) == (incoming_revision, event.get("reducer_action"))
+        if same_phase:
+            previous["occurrences"] = clean["occurrences"]
+        else:
+            self._session_docs[session] = clean
         while len(self._session_docs) > self.MAX_TRACKED_SESSIONS:
             self._session_docs.pop(next(iter(self._session_docs)))
+        return not same_phase
 
     def _consume_channel_row(self, row: dict[str, Any]) -> None:
         channel = str(row.get("channel") or "")
@@ -1159,28 +1246,17 @@ class EvidenceNormalizer:
 
     def _flush_session(self, session: str, emitted_at: Any) -> None:
         self._channel_open_times.pop(session, None)
-        docs = self._session_docs.pop(session, None)
-        if not docs or session in self._settled_sessions:
+        clean = self._session_docs.pop(session, None)
+        if not clean or session in self._settled_sessions:
             return
         self._settled_sessions.add(session)
-        for doc_index, clean in sorted(docs.items(), key=lambda item: str(item[0])):
-            text = clean.get("text") or ""
-            if not text.strip():
-                continue
-            # A stable per-document identity keys the delivery, so a bus
-            # replay after restart is the same refused phase, not a repeat.
-            identity = _identity(("coverage-refused-seal", session, doc_index))
-            refused = dict(clean)
-            refused.update(
-                {
-                    "status": SEALED,
-                    "coverage": COVERAGE_REFUSED,
-                    "utterance_id": identity,
-                    "source_event_id": identity,
-                    "emitted_at": emitted_at or clean.get("emitted_at"),
-                }
-            )
-            self._flushes.append(refused)
+        if not (clean.get("text") or "").strip():
+            return
+        final = dict(clean)
+        final.update(status=SEALED, emitted_at=emitted_at or clean.get("emitted_at"))
+        if clean.get("reducer_action") != TERMINAL_SEAL:
+            final["coverage"] = COVERAGE_REFUSED
+        self._flushes.append(final)
 
     def _as_clean(
         self, event: dict[str, Any], status: str, text: str
@@ -1615,6 +1691,7 @@ class SessionLease:
             self.cursor = 0
             self.last_sequence: Any = None
             self.pending: dict[str, dict[str, Any]] = {}
+            self.unclosed_channel_messages: dict[str, dict[str, Any]] = {}
             if previous and self._matches(previous):
                 heartbeat = previous.get("heartbeat_unix")
                 fresh = (
@@ -1659,6 +1736,21 @@ class SessionLease:
                     raise ValueError(
                         "duplicate pending identities; recovery state preserved"
                     )
+                documents = previous.get("unclosed_channel_messages", {})
+                if (not isinstance(documents, dict) or len(documents) > EvidenceNormalizer.MAX_TRACKED_SESSIONS
+                        or any(not isinstance(document, dict)
+                            or document.get("session_id") != session
+                            or channel_of_session(session) is None
+                            or document.get("message_id") != channel_message_identity(session)
+                            or document.get("status") not in LIVE_STATUSES
+                            or not isinstance(document.get("text"), str)
+                            or not isinstance(document.get("occurrences"), list)
+                            or any(not isinstance(item, dict) for item in document["occurrences"])
+                            or document.get("producer_schema") != EVIDENCE_SCHEMA
+                            or not self.admits_channel_event(document)
+                            for session, document in documents.items())):
+                    raise ValueError("invalid unclosed channel messages; recovery state preserved")
+                self.unclosed_channel_messages = documents
                 self.resumed = True
             elif follow_from_end:
                 try:
@@ -1723,6 +1815,7 @@ class SessionLease:
                 "cursor": self.cursor,
                 "last_sequence": self.last_sequence,
                 "pending": list(self.pending.values()),
+                "unclosed_channel_messages": self.unclosed_channel_messages,
                 "active": active,
                 "pid": os.getpid(),
                 "heartbeat_unix": time.time(),
@@ -1742,12 +1835,12 @@ class SessionLease:
             # Under coalescing the newest revision replaces its predecessors
             # in the mailbox instead of stacking toward the 256 cap; the seal
             # stays a separate envelope so terminal delivery is never merged.
-            key = (payload.get("session_id"), payload.get("document_index"))
+            key = (payload.get("session_id"), payload.get("message_id") or payload.get("document_index"))
             stale = [
                 queued_id
                 for queued_id, item in self.pending.items()
                 if item.get("kind") in ("draft", "revised")
-                and (item.get("session_id"), item.get("document_index")) == key
+                and (item.get("session_id"), item.get("message_id") or item.get("document_index")) == key
             ]
             for queued_id in stale:
                 del self.pending[queued_id]
@@ -1821,7 +1914,10 @@ class SessionLease:
         # source_event_id intact for provenance while keying that delivery by
         # the same reducer phase used by EvidenceNormalizer.
         phase_id = payload.get("source_event_id")
-        if (
+        if (payload.get("message_id") == channel_message_identity(str(payload.get("session_id") or ""))
+                and channel_of_session(str(payload.get("session_id") or "")) is not None):
+            phase_id = channel_message_phase_identity(payload)
+        elif (
             payload.get("producer_schema") == EVIDENCE_SCHEMA
             and payload.get("reducer_action") == TERMINAL_SEAL
             and payload.get("status") == SEALED
@@ -1866,6 +1962,18 @@ class SessionLease:
             self._release_lock()
 
 
+def receipt_envelope(payload: dict[str, Any], bus: str) -> dict[str, Any]:
+    """Retain causal coordinates without keeping transcript-bearing evidence."""
+    result = {key: value for key, value in payload.items() if key not in ("text", "wav", "occurrences")}
+    if "occurrences" in payload:
+        result["occurrences"] = [
+            {key: value for key, value in item.items() if key not in ("label", "acoustic_receipts")}
+            for item in payload["occurrences"]
+        ]
+    result["bus"] = bus
+    return result
+
+
 def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
                           expected_payload: dict[str, Any] | None = None) -> bool:
     path = root / "acknowledgments" / lease_id / f"{delivery_id}.json"
@@ -1902,10 +2010,7 @@ def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
     if original is None and isinstance(pending, list):
         original = next((item for item in pending if isinstance(item, dict)
                          and item.get("delivery_id") == delivery_id), None)
-    return original is None or envelope == {
-        **{key: value for key, value in original.items() if key not in ("text", "wav")},
-        "bus": state["bus"],
-    }
+    return original is None or envelope == receipt_envelope(original, state["bus"])
 
 
 def native_submission_id(receipt: dict[str, Any]) -> str | None:
@@ -2073,10 +2178,8 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
             {"lease_id": lease_id, "delivery_id": delivery_id,
              "provider": args.provider.casefold(), "provider_session_id": args.session,
              "bus": state["bus"],
-             "envelope": {**{key: value for key, value in
-                           next(payload for payload in pending
-                                if payload.get("delivery_id") == delivery_id).items()
-                           if key not in ("text", "wav")}, "bus": state["bus"]}},
+             "envelope": receipt_envelope(next(payload for payload in pending
+                                if payload.get("delivery_id") == delivery_id), state["bus"])},
         )
     for delivery_id in delivery_ids:
         withdrawn = withdraw_acknowledged_queue(args.bridge_home, lease_id, delivery_id, retry=True)
@@ -2297,6 +2400,9 @@ def run(args: argparse.Namespace) -> int:
     # remembers each session's document and whether its seal was reported), and
     # a fresh one per line would re-emit the entire document every time.
     normalizer = EvidenceNormalizer()
+    if lease:
+        normalizer.restore_channel_documents(list(lease.unclosed_channel_messages.values()))
+        normalizer.restore_channel_documents(list(lease.pending.values()))
     native = (
         NativeQueueWakeup(args.bridge_home, args.session, follower_channel)
         if lease and args.follow and args.provider == "codex"
@@ -2308,7 +2414,7 @@ def run(args: argparse.Namespace) -> int:
     human_drafts: dict[tuple[Any, Any], dict[str, Any]] = {}
 
     def draft_key(payload: dict[str, Any]) -> tuple[Any, Any]:
-        return payload.get("session_id"), payload.get("document_index")
+        return payload.get("session_id"), payload.get("message_id") or payload.get("document_index")
 
     def flush_human_drafts(key: tuple[Any, Any] | None = None) -> None:
         keys = [key] if key is not None else list(human_drafts)
@@ -2348,6 +2454,10 @@ def run(args: argparse.Namespace) -> int:
             deferred = (remaining, next_cursor)
             raise
         if lease and next_cursor is not None:
+            lease.unclosed_channel_messages = {
+                session: document for session, document in normalizer.channel_documents().items()
+                if lease.admits_channel_event(document)
+            }
             lease.persist(
                 active=True,
                 cursor=next_cursor,
@@ -2387,6 +2497,10 @@ def run(args: argparse.Namespace) -> int:
             payloads.append(payload)
         if not payloads:
             if lease and next_cursor is not None:
+                lease.unclosed_channel_messages = {
+                    session: document for session, document in normalizer.channel_documents().items()
+                    if lease.admits_channel_event(document)
+                }
                 lease.persist(
                     active=True,
                     cursor=next_cursor,
@@ -4001,7 +4115,7 @@ def watch_command(args: argparse.Namespace) -> int:
                 continue  # a restarted follower replays its pending mailbox
             seen.add(identity)
             if args.human:
-                key = (payload.get("session_id"), payload.get("document_index"))
+                key = (payload.get("session_id"), payload.get("message_id") or payload.get("document_index"))
                 if payload.get("kind") in ("draft", "revised"):
                     drafts[key] = payload
                     continue
