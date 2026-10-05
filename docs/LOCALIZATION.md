@@ -356,6 +356,41 @@ so a round is closed only when the whole pending sheet has been read.
 Editing the catalog JSON by hand with `"state": "translated"` skips the review;
 drafts written by hand or by a script should carry `"state": "needs_review"`.
 
+### How a review round is run
+
+The catalog in the repository is the only source of the translation. There is
+no translation platform, no shared spreadsheet that holds the truth, and no
+scheduled sync: a round is a pull request, and the worksheet exists only for
+the minutes between export and import. (A hosted platform was tried on a copy
+of the catalogs in October 2026 and rejected: its export could not carry the
+`needs_review` state back, and a string changed on both sides was overwritten
+without notice.)
+
+A round goes like this:
+
+1. The cut that adds or changes English copy adds the draft of every language
+   the bundle carries (`--draft`). Coverage stays green; the draft is marked.
+2. The reviewer reads the app, not the file: run the Debug or installed build
+   under the language (`open -a Codescribe --args -AppleLanguages '(pl)'`) and
+   go through the screens the pending export names in its `where` column.
+3. Corrections are given in whatever form is fastest — a sentence in chat, a
+   voice note, a screenshot with the wrong word circled, an edited pending
+   CSV. The developer or the agent turns them into the catalog change and
+   imports it without `--draft`; only a change that came from the reviewer is
+   imported as `translated`. A draft the agent wrote stays `needs_review`
+   until the reviewer has seen the screen it is on.
+4. The cut is reviewed like any other: lint, sync, Swift tests, and a look at
+   the screens whose layout the longer text could break (R9).
+
+A finding that is not a wrong word is still handled in the same round, routed
+by what it is: wrong English copy is fixed in the source and in every
+language together; text that reaches the screen from Rust is first moved into
+the localizable layer (section 5) and only then translated; a clipped or
+wrapped label is a view change, not a translation; a label that lies about
+what a control does is a product bug. Nothing is parked in a document: the
+round is closed when every finding is in the catalog, in the code, or
+rejected with a reason in the pull request.
+
 The tooling names no language but the English source, so none of it changes
 when a language is added. The plural forms a language owes are read from
 `scripts/data/cldr/plurals.json`, the cardinal rules Unicode CLDR publishes for
