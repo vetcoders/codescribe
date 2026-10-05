@@ -3394,6 +3394,17 @@
         }
       }
     },
+    "Choose how you want to use Codescribe." : {
+      "comment" : "Setup chapter subtitle",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz, jak chcesz używać Codescribe."
+          }
+        }
+      }
+    },
     "Choose the Agent model" : {
       "localizations" : {
         "pl" : {
@@ -4987,6 +4998,17 @@
         }
       }
     },
+    "Dictate, or work by voice with an AI agent." : {
+      "comment" : "Setup step blurb",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Możesz po prostu dyktować albo pracować głosem razem z agentem AI."
+          }
+        }
+      }
+    },
     "Dictation" : {
       "comment" : "Settings section",
       "localizations" : {
@@ -6246,6 +6268,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Twój sposób uruchamiania nagrywania."
+          }
+        }
+      }
+    },
+    "How do you want to work?" : {
+      "comment" : "Setup step heading",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jak chcesz pracować?"
           }
         }
       }
@@ -12590,6 +12623,17 @@
         }
       }
     },
+    "Talk with the Agent and use its tools." : {
+      "comment" : "Operating lane choice detail",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozmawiasz z Agentem i korzystasz z jego narzędzi."
+          }
+        }
+      }
+    },
     "Tap Fn to dictate" : {
       "localizations" : {
         "pl" : {
@@ -14622,6 +14666,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "To Ty decydujesz, do czego Codescribe ma dostęp."
+          }
+        }
+      }
+    },
+    "You speak, Codescribe turns it into text." : {
+      "comment" : "Operating lane choice detail",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mówisz, a Codescribe zamienia Twoją wypowiedź w tekst."
           }
         }
       }

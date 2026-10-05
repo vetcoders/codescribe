@@ -72,13 +72,10 @@ struct OnboardingView: View {
       return (
         String(
           localized: LocalizedStringResource(
-            "Your voice, a new possibility", locale: model.interfaceLocale,
+            "Choose how you want to use Codescribe.", locale: model.interfaceLocale,
             comment: "Setup chapter heading")),
         "waveform",
-        String(
-          localized: LocalizedStringResource(
-            "First, choose what you want to do.", locale: model.interfaceLocale,
-            comment: "Setup chapter subtitle"))
+        nil
       )
     case .permission:
       return (

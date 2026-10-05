@@ -143,12 +143,11 @@ struct ModeStepView: View {
             "Operating lane", locale: model.interfaceLocale, comment: "Setup step eyebrow")),
         title: String(
           localized: LocalizedStringResource(
-            "Where should your words go?", locale: model.interfaceLocale,
+            "How do you want to work?", locale: model.interfaceLocale,
             comment: "Setup step heading")),
         blurb: String(
           localized: LocalizedStringResource(
-            "Start with dictation, or bring an assistant into the conversation. Change this any time in Settings.",
-            locale: model.interfaceLocale,
+            "Dictate, or work by voice with an AI agent.", locale: model.interfaceLocale,
             comment: "Setup step blurb"))
       )
 
@@ -160,7 +159,7 @@ struct ModeStepView: View {
               comment: "Operating lane choice; Basic is the lane name")),
           subtitle: String(
             localized: LocalizedStringResource(
-              "Voice-to-text anywhere. The simplest, fastest setup.", locale: model.interfaceLocale,
+              "You speak, Codescribe turns it into text.", locale: model.interfaceLocale,
               comment: "Operating lane choice detail")),
           isSelected: model.onboardingMode == .basic
         ) { model.selectMode(.basic) }
@@ -172,20 +171,12 @@ struct ModeStepView: View {
               comment: "Operating lane choice; Agentic is the lane name")),
           subtitle: String(
             localized: LocalizedStringResource(
-              "Talk with an AI assistant and connect its tools, so your voice can drive an AI assistant, not just type.",
-              locale: model.interfaceLocale,
+              "Talk with the Agent and use its tools.", locale: model.interfaceLocale,
               comment: "Operating lane choice detail")),
           isSelected: model.onboardingMode == .agentic
         ) { model.selectMode(.agentic) }
       }
       .padding(.top, 4)
-
-      OnboardingStepNote(
-        text: String(
-          localized: LocalizedStringResource(
-            "Agentic adds one more setup step (readiness check). Basic skips it.",
-            locale: model.interfaceLocale,
-            comment: "Setup step footnote; Agentic and Basic are the two lane names")))
     }
   }
 }
