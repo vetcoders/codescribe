@@ -74,53 +74,34 @@ final class OverlayDesktopEffectView: NSVisualEffectView {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// The desktop glass samples outside the window. Scroll chrome must instead
-/// sample the messages behind it inside the same window, including an inactive panel.
-struct OverlayScrollMaterial: NSViewRepresentable {
+/// Native SwiftUI glass samples the scroll content in its own composition.
+struct OverlayScrollMaterial: View {
   let top: Bool
-  let fade: CGFloat
 
-  func makeNSView(context: Context) -> OverlayScrollEffectView {
-    let view = OverlayScrollEffectView()
-    // This is floating overlay chrome, like the desktop material above;
-    // inline table-header material adds an opaque white wash in Light appearance.
-    view.material = .hudWindow
-    view.blendingMode = .withinWindow
-    view.state = .active
-    view.setAccessibilityElement(false)
-    return view
+  var body: some View {
+    material
+      .mask(OverlayScrollFade(top: top))
+      .allowsHitTesting(false)
+      .accessibilityHidden(true)
   }
 
-  func updateNSView(_ view: OverlayScrollEffectView, context: Context) {
-    view.top = top
-    view.fade = fade
-    view.needsLayout = true
+  @ViewBuilder
+  private var material: some View {
+    if #available(macOS 26.0, *) {
+      Color.clear.glassEffect(.regular, in: Rectangle())
+    } else {
+      Rectangle().fill(.regularMaterial)
+    }
   }
 }
 
-final class OverlayScrollEffectView: NSVisualEffectView {
-  var top = true
-  var fade: CGFloat = 20
+/// Transparency changes continuously across the entire header or input region.
+struct OverlayScrollFade: View {
+  let top: Bool
 
-  override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-  override func layout() {
-    super.layout()
-    guard bounds.width > 0, bounds.height > 0 else { return }
-    let length = min(max(0, fade), bounds.height)
-    let image = NSImage(size: bounds.size)
-    image.lockFocus()
-    NSColor.black.setFill()
-    NSRect(origin: .zero, size: bounds.size).fill()
-    if length > 0 {
-      let edge = NSRect(
-        x: 0, y: top ? 0 : bounds.height - length,
-        width: bounds.width, height: length)
-      NSColor.clear.setFill()
-      edge.fill(using: .copy)
-      NSGradient(starting: .black, ending: .clear)?.draw(in: edge, angle: top ? -90 : 90)
-    }
-    image.unlockFocus()
-    maskImage = image
+  var body: some View {
+    LinearGradient(
+      colors: top ? [.black, .clear] : [.clear, .black],
+      startPoint: .top, endPoint: .bottom)
   }
 }

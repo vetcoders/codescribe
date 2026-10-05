@@ -78,7 +78,7 @@ struct OverlayConversationView: View {
       let overlap: CGFloat = 8
       let height = geometry.size.height + overlap
       // Fade across all the chrome, rather than an opaque bar with a softened edge.
-      OverlayScrollMaterial(top: top, fade: height)
+      OverlayScrollMaterial(top: top)
         .frame(height: height)
         .offset(y: top ? 0 : -overlap)
     }

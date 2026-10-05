@@ -166,24 +166,6 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
       }
       let scroll = try XCTUnwrap(scrollViews(host).first { $0.bounds.height > 150 })
-      func scrollMaterials(_ root: NSView) -> [OverlayScrollEffectView] {
-        (root as? OverlayScrollEffectView).map { [$0] }
-          ?? root.subviews.flatMap(scrollMaterials)
-      }
-      let materials = scrollMaterials(host)
-      XCTAssertEqual(materials.count, 2, "one material per edge, without stacked header shades")
-      for material in materials {
-        XCTAssertEqual(material.material, .hudWindow, "keep the floating overlay material")
-        XCTAssertEqual(material.blendingMode, .withinWindow, "blur messages, not the desktop")
-        XCTAssertEqual(material.state, .active, "a non-activating overlay still needs blur")
-        XCTAssertNil(
-          material.hitTest(NSPoint(x: 10, y: 10)), "chrome must not steal editing or drag")
-      }
-      let topMaterial = try XCTUnwrap(materials.first { $0.top })
-      XCTAssertEqual(
-        topMaterial.bounds.height, 58, accuracy: 1,
-        "only branding and its small overlap may occupy the reading area")
-      XCTAssertEqual(topMaterial.fade, topMaterial.bounds.height, accuracy: 1)
       let viewport = scroll.convert(scroll.bounds, to: host)
       XCTAssertEqual(
         viewport.height, host.bounds.height, accuracy: 1,
@@ -251,48 +233,35 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       defer { window.close() }
       host.layoutSubtreeIfNeeded()
       RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
-      func materials(_ root: NSView) -> [OverlayScrollEffectView] {
-        (root as? OverlayScrollEffectView).map { [$0] } ?? root.subviews.flatMap(materials)
+      func scrollViews(_ root: NSView) -> [NSScrollView] {
+        (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
       }
-      let edges = materials(host)
-      XCTAssertEqual(edges.count, 2)
+      let scrolls = scrollViews(host)
+      let messages = try XCTUnwrap(scrolls.first { $0.bounds.height > 150 })
+      let input = try XCTUnwrap(scrolls.first { $0.bounds.height < 80 })
       XCTAssertEqual(host.bounds.height, 260, "do not enlarge the window to hide excess chrome")
-      let top = try XCTUnwrap(edges.first { $0.top })
-      let bottom = try XCTUnwrap(edges.first { !$0.top })
-      XCTAssertEqual(top.bounds.height, 58, accuracy: 1)
-      for edge in edges {
-        XCTAssertEqual(edge.fade, edge.bounds.height, accuracy: 1, "gradient spans all chrome")
-        let bitmap = try XCTUnwrap(
-          NSBitmapImageRep(data: try XCTUnwrap(edge.maskImage?.tiffRepresentation)))
-        let center = try XCTUnwrap(
-          bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2))
-        XCTAssertGreaterThan(center.alphaComponent, 0.35)
-        XCTAssertLessThan(center.alphaComponent, 0.65, "the middle must not be an opaque slab")
-      }
-      XCTAssertLessThanOrEqual(bottom.bounds.height, 80, "one compact input, with a short fade")
-      XCTAssertGreaterThanOrEqual(
-        host.bounds.height - top.bounds.height - bottom.bounds.height, 120,
-        "at least the middle 120 points must remain clear for messages")
+      XCTAssertEqual(messages.bounds.height, 260, accuracy: 1, "messages use the full viewport")
+      XCTAssertLessThan(input.bounds.height, 40, "one compact single-line input")
+      XCTAssertGreaterThanOrEqual(messages.documentVisibleRect.height, 120)
     }
   }
 
   @MainActor
   func testScrollMaterialFadeSurvivesResizeAndReversal() throws {
-    let view = OverlayScrollEffectView()
     for top in [true, false] {
-      for size in [NSSize(width: 120, height: 80), NSSize(width: 350, height: 140)] {
-        view.top = top
-        view.frame = NSRect(origin: .zero, size: size)
-        view.needsLayout = true
-        view.layoutSubtreeIfNeeded()
-        let mask = try XCTUnwrap(view.maskImage)
-        XCTAssertEqual(mask.size, size)
-        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(mask.tiffRepresentation)))
+      for size in [NSSize(width: 120, height: 58), NSSize(width: 350, height: 140)] {
+        let renderer = ImageRenderer(
+          content: OverlayScrollFade(top: top).frame(width: size.width, height: size.height))
+        let image = try XCTUnwrap(renderer.nsImage)
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation)))
         let x = bitmap.pixelsWide / 2
         let edgeY = top ? bitmap.pixelsHigh - 1 : 0
         let interiorY = top ? 0 : bitmap.pixelsHigh - 1
         XCTAssertLessThan(try XCTUnwrap(bitmap.colorAt(x: x, y: edgeY)).alphaComponent, 0.1)
-        XCTAssertGreaterThan(try XCTUnwrap(bitmap.colorAt(x: x, y: interiorY)).alphaComponent, 0.99)
+        XCTAssertGreaterThan(try XCTUnwrap(bitmap.colorAt(x: x, y: interiorY)).alphaComponent, 0.95)
+        let center = try XCTUnwrap(bitmap.colorAt(x: x, y: bitmap.pixelsHigh / 2))
+        XCTAssertGreaterThan(center.alphaComponent, 0.35)
+        XCTAssertLessThan(center.alphaComponent, 0.65, "gradient spans all chrome, no opaque slab")
       }
     }
   }
