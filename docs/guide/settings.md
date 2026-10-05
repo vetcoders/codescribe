@@ -166,6 +166,9 @@ capability matrix, MCP status, and a single Refresh action. Native-tool or
 workspace failures remain visible there even when credentials are valid.
 Long diagnostic values wrap within the pane, keeping labels and controls
 visible when the sidebar is open.
+Managed skill status is read when Settings opens and after launch synchronization
+finishes, including direct links to Diagnostics. These inspections do not install
+skills or attach listeners.
 
 Setup keeps the Agent step to one decision: which clients to connect. It shows
 only a short ready state or an inline setup action and error. The preceding

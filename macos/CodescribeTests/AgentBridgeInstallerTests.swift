@@ -393,6 +393,36 @@ final class AgentBridgeInstallerTests: XCTestCase {
     }
   }
 
+  func testDirectDiagnosticsRefreshesInstalledStateAndLaunchChangesWithoutWriting() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("diagnostics-home")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let initialReceipt = try Data(contentsOf: receiptURL)
+    let model = SettingsViewModel(
+      creatorAgentBridge: installer,
+      permissionProbe: MockPermissionProbe(.allGranted),
+      servingStatusProvider: { nil }
+    )
+    model.select(SettingsTab.agentStatus)
+    model.refresh()
+    XCTAssertEqual(model.currentTab, .agentStatus)
+    XCTAssertEqual(model.creatorAgentBridgeStatus.installedClients, [.codex])
+    XCTAssertFalse(model.creatorAgentBridgeStatus.installedPaths.isEmpty)
+    XCTAssertEqual(try Data(contentsOf: receiptURL), initialReceipt)
+
+    // Launch synchronization changes disk state without visiting Creator.
+    _ = try installer.install(selectedClients: [.codex, .claudeCode])
+    let synchronizedReceipt = try Data(contentsOf: receiptURL)
+    XCTAssertEqual(model.creatorAgentBridgeStatus.installedClients, [.codex])
+    NotificationCenter.default.post(
+      name: SettingsViewModel.agentBridgeLaunchSynchronizationDidFinish, object: nil)
+    XCTAssertEqual(Set(model.creatorAgentBridgeStatus.installedClients), [.codex, .claudeCode])
+    XCTAssertEqual(try Data(contentsOf: receiptURL), synchronizedReceipt)
+  }
+
   func testCreatorInspectionIsPassiveAndInstallingOneClientPreservesTheOther() throws {
     let payload = try makePayload()
     let home = scratch.appendingPathComponent("creator-home")
