@@ -340,6 +340,8 @@ for line in sys.stdin:
     name = message.get("target", {}).get("name")
     if name not in expected:
         continue
+    if name == "codescribe" and "bin" not in message.get("target", {}).get("kind", []):
+        continue
     path = root / expected[name]
     emitted = message.get("filenames", []) if name == "codescribe_ffi" else [message.get("executable")]
     if str(path) not in emitted or not path.is_file():

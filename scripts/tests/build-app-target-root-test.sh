@@ -66,6 +66,11 @@ elif name == "cargo":
     actual = root / "aarch64-unknown-linux-gnu" / profile if mode.startswith("cross-") else out
     actual.mkdir(parents=True, exist_ok=True)
     names = [("codescribe_ffi", "libcodescribe_ffi.dylib"), ("uniffi-bindgen", "uniffi-bindgen")] if package == "codescribe-ffi" else [("codescribe", "codescribe")] if package == "codescribe" else [("codescribe-stt-sidecar", "codescribe-stt-sidecar")]
+    if package == "codescribe":
+        # Cargo emits the identically named library before the requested bin.
+        print(json.dumps({"reason": "compiler-artifact", "target": {"name": "codescribe", "kind": ["lib"]}, "filenames": [str(out / "libcodescribe.rlib")], "executable": None}))
+        if mode == "publisher-library-only":
+            names = []
     for target, filename in names:
         path = actual / filename
         if filename == "uniffi-bindgen":
@@ -80,7 +85,7 @@ elif name == "cargo":
         if mode == "missing-receipt" and filename == "uniffi-bindgen":
             continue
         if "--message-format=json-render-diagnostics" in args:
-            print(json.dumps({"reason": "compiler-artifact", "target": {"name": target}, "filenames": [str(path)], "executable": str(path) if target != "codescribe_ffi" else None, "fresh": mode == "fresh-receipt"}))
+            print(json.dumps({"reason": "compiler-artifact", "target": {"name": target, "kind": ["cdylib"] if target == "codescribe_ffi" else ["bin"]}, "filenames": [str(path)], "executable": str(path) if target != "codescribe_ffi" else None, "fresh": mode == "fresh-receipt"}))
     if mode == "malformed-receipt":
         print("{broken-json")
     print(json.dumps({"reason": "build-finished", "success": mode != "unfinished"}))
@@ -224,7 +229,7 @@ def run_case(base, profile, layout, mode="success", skip=False):
                 assert result.returncode == 42, result.stdout
             elif mode.startswith("metadata-"):
                 assert "cannot resolve Cargo artifact root" in result.stdout, result.stdout
-            elif mode in ("missing-receipt", "unfinished"):
+            elif mode in ("missing-receipt", "unfinished", "publisher-library-only"):
                 assert "incomplete Cargo artifact receipts" in result.stdout, result.stdout
             elif mode == "missing-file":
                 assert "Cargo artifact for codescribe_ffi is not" in result.stdout, result.stdout
@@ -248,7 +253,7 @@ with tempfile.TemporaryDirectory(prefix="build-app-target-root-") as tmp:
         for layout in ("default", "absolute", "spaces", "relative", "config"):
             run_case(base, profile, layout)
         run_case(base, profile, "spaces", skip=True)
-    for mode in ("metadata-error", "metadata-malformed", "metadata-relative", "ffi-error", "sidecar-error", "missing-receipt", "missing-file", "malformed-receipt", "unfinished", "cross-env", "cross-config", "fresh-receipt", "stage"):
+    for mode in ("metadata-error", "metadata-malformed", "metadata-relative", "ffi-error", "sidecar-error", "missing-receipt", "missing-file", "malformed-receipt", "unfinished", "cross-env", "cross-config", "fresh-receipt", "stage", "publisher-library-only"):
         run_case(base, "debug", "spaces", mode)
 print(f"build-app-target-root: scenarios={passed + failed} passed={passed} failed={failed}")
 sys.exit(1 if failed or not passed else 0)
