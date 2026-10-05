@@ -2840,6 +2840,173 @@ mod slot_ops_tests {
         assert_eq!(ledger.conservation().residue(), 0);
     }
 
+    fn forensic_merge_capture_with_parent_tail(
+        session: &str,
+    ) -> (AcousticLedger, OccurrenceIdentity, Vec<f32>) {
+        use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+        let owner = OccurrenceIdentity::new(session, 37, 3_200, 11_200);
+        let mut pcm = vec![0.0_f32; 16_000];
+        pcm[3_200..11_200].fill(0.2);
+        let energy = CaptureEnergyOwner::bind(session, 37);
+        let mut writer = CaptureLevelAccumulator::bound_to(&energy);
+        for chunk in pcm.chunks(320) {
+            writer.push_samples(chunk);
+        }
+        let speech = energy.session_active_speech_ranges(session, 37, 16_000);
+        assert_eq!(speech.availability().observed_samples(), Some(16_000));
+        assert_eq!(
+            speech
+                .ranges()
+                .iter()
+                .map(|range| (range.sample_start, range.sample_end))
+                .collect::<Vec<_>>(),
+            [(3_200, 11_200)]
+        );
+        let samples = &pcm[3_200..11_200];
+        let integral = samples
+            .iter()
+            .map(|sample| f64::from(*sample).powi(2))
+            .sum::<f64>();
+        let calibration = EnergyCalibration::new("forensic-parent-tail-pcm", 1.0, 1);
+        let mut ledger = AcousticLedger::new();
+        ledger.bind_capture_rate(16_000);
+        assert!(
+            ledger
+                .qualify(
+                    &AcousticEvidence {
+                        occurrence: owner.clone(),
+                        duration_ms: samples.len() as f64 / 16.0,
+                        energy_integral: integral,
+                        mean_rms_dbfs: 20.0 * (integral / samples.len() as f64).sqrt().log10(),
+                        peak_dbfs: 20.0 * f64::from(0.2_f32).log10(),
+                        vad_open_sample: Some(3_200),
+                        vad_close_sample: Some(11_200),
+                        evidence_calibration_version: calibration.version.clone(),
+                    },
+                    &calibration
+                )
+                .is_qualified()
+        );
+        ledger.record_speech_evidence(&speech);
+        (ledger, owner, pcm)
+    }
+
+    fn forensic_merge_preserve_five_split_children(
+        mut ledger: AcousticLedger,
+        owner: OccurrenceIdentity,
+        pcm: Vec<f32>,
+        parent: WordSlot,
+        parent_has_tail: bool,
+    ) {
+        let split = ObservationIdentity::new(ObservationProducer::Whisper, 1102, 0, owner.clone());
+        let pins = (0..5)
+            .map(|i| {
+                WordPin::new(3200 + i * 1280, 3200 + (i + 1) * 1280, "Iwo")
+                    .with_decode_window(0, pcm.len() as u64)
+            })
+            .collect::<Vec<_>>();
+        let split_decision = ledger.admit_word_slots(&split, &pins);
+        let sources = ledger.slots_of(&owner).unwrap().to_vec();
+        println!(
+            "parent-tail={parent_has_tail} actual split decision={split_decision:?}; sources={sources:?}; operations={:?}",
+            ledger.slot_operations()
+        );
+        assert_eq!(
+            sources.len(),
+            5,
+            "actual production path must produce five children before testing contraction"
+        );
+        assert!(
+            sources
+                .iter()
+                .all(|source| ledger.complete_word_slot(source))
+        );
+        assert_eq!(ledger.text_of(&owner), Some("Iwo Iwo Iwo Iwo Iwo"));
+        let operation = ledger.slot_operations().last().unwrap().clone();
+        assert_eq!(operation.kind, SlotOperationKind::Split);
+        assert!(operation.rule_id.starts_with("acoustic_resegmentation/"));
+        assert_eq!(operation.sources, vec![parent.clone()]);
+        assert_eq!(operation.outputs, sources);
+        if parent_has_tail {
+            assert!(
+                operation
+                    .source_ranges
+                    .iter()
+                    .any(|range| range.sample_end > 9_600)
+            );
+            assert_eq!(operation.outputs.last().unwrap().sample_end, 9_600);
+        } else {
+            assert!(ledger.complete_word_slot(&parent));
+        }
+        let lineage = sources
+            .iter()
+            .map(|source| ledger.slot_source_ranges(source))
+            .collect::<Vec<_>>();
+        let operations_before = ledger.slot_operations().len();
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+        assert!(ledger.require_text_recovery(&owner));
+        let next = ObservationIdentity::new(ObservationProducer::Whisper, 1102, 1, owner.clone());
+        let decision = ledger.admit_word_slots(
+            &next,
+            &[WordPin::new(3_200, 9_600, "Iwo").with_decode_window(0, pcm.len() as u64)],
+        );
+        let after = ledger.slots_of(&owner).unwrap().to_vec();
+        println!(
+            "parent-tail={parent_has_tail} contraction={decision:?}; after={after:?}; text={:?}; recovery={}",
+            ledger.text_of(&owner),
+            ledger.text_recovery_pending(&owner)
+        );
+        assert!(
+            !decision.grants_mutation(),
+            "parent debt/completeness cannot retire five complete Word anchors: {decision:?}; after={after:?}"
+        );
+        assert_eq!(after, sources);
+        assert_eq!(ledger.text_of(&owner), Some("Iwo Iwo Iwo Iwo Iwo"));
+        assert_eq!(
+            sources
+                .iter()
+                .map(|source| ledger.slot_source_ranges(source))
+                .collect::<Vec<_>>(),
+            lineage
+        );
+        assert_eq!(ledger.slot_operations().len(), operations_before);
+        assert!(ledger.text_recovery_pending(&owner));
+        assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+        assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+        assert!(ledger.word_deletions().is_empty());
+        assert_eq!(
+            ledger.len(),
+            1,
+            "one qualified owner contains five independent word ranges"
+        );
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn forensic_merge_partial_coarse_parent_tail_cannot_retire_five_complete_words() {
+        let (mut ledger, owner, pcm) =
+            forensic_merge_capture_with_parent_tail("partial-coarse-parent-five");
+        let first = ObservationIdentity::new(ObservationProducer::Apple, 1101, 0, owner.clone());
+        assert!(
+            ledger
+                .admit(&first, "Iwo Iwo Iwo Iwo Iwo")
+                .grants_mutation()
+        );
+        let parent = ledger.slots_of(&owner).unwrap()[0].clone();
+        assert!(!ledger.complete_word_slot(&parent));
+        assert_eq!((parent.sample_start, parent.sample_end), (3_200, 11_200));
+        forensic_merge_preserve_five_split_children(ledger, owner, pcm, parent, true);
+    }
+
+    #[test]
+    fn forensic_merge_complete_parent_split_cannot_retire_five_later_word_anchors() {
+        let (ledger, owner, pcm) = forensic_merge_capture("complete-parent-five", 1);
+        let parent = ledger.slots_of(&owner).unwrap()[0].clone();
+        assert!(ledger.complete_word_slot(&parent));
+        forensic_merge_preserve_five_split_children(ledger, owner, pcm, parent, false);
+    }
+
     #[test]
     fn forensic_merge_complete_wide_pin_cannot_collapse_five_words_from_one_decode() {
         let (mut ledger, owner, pcm) = forensic_merge_capture("merge-five-one-decode", 5);
