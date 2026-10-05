@@ -1769,14 +1769,21 @@ class SessionLease:
         self.persist(active=True)
         return True
 
-    def collect_acknowledgments(self) -> None:
+    def collect_acknowledgments(self, native: Any = None) -> None:
         completed = [
             delivery_id
             for delivery_id in self.pending
             if delivery_acknowledged(self.root, self.lease_id, delivery_id, self.pending[delivery_id])
         ]
-        if completed:
-            for delivery_id in completed:
+        settled = []
+        for delivery_id in completed:
+            receipt = read_json(self.root / "wakeups" / self.lease_id / f"{delivery_id}.json")
+            if self.provider != "codex" or receipt is None or receipt.get("queue_disposition") in ("removed", "not_pending"):
+                settled.append(delivery_id)
+            elif native:
+                native.enqueue_withdrawal(delivery_id)
+        if settled:
+            for delivery_id in settled:
                 del self.pending[delivery_id]
             self.persist(active=True)
 
@@ -1901,6 +1908,109 @@ def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
     }
 
 
+def native_submission_id(receipt: dict[str, Any]) -> str | None:
+    """Admit only the exact provider receipt for this thread, never message text."""
+    session = receipt.get("provider_session_id")
+    match = re.fullmatch(
+        r"Queued message ([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}) for thread "
+        + re.escape(str(session)) + r"\.", str(receipt.get("provider_receipt", "")),
+    )
+    identity = match.group(1) if match else None
+    recorded = receipt.get("queued_submission_id")
+    return identity if recorded is None or recorded == identity else None
+
+
+def delete_native_queue_submission(root: Path, session: str, submission: str) -> bool:
+    """Use the installed Rust transport and the running provider's own socket."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("codex")
+    if not executable:
+        raise ValueError("native provider unavailable")
+    version = subprocess.run([executable, "app-server", "daemon", "version"],
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+    if version.returncode != 0 or len(version.stdout) > 65536:
+        raise ValueError("native provider status unavailable")
+    status = json.loads(version.stdout)
+    socket_path = status.get("socketPath")
+    if status.get("status") != "running" or not isinstance(socket_path, str) or not Path(socket_path).is_absolute():
+        raise ValueError("running native provider socket unavailable")
+    result = subprocess.run(
+        [reply_publisher_command(root), "bus", "withdraw-queued-message", "--socket", socket_path,
+         "--thread", session, "--submission", submission],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=12,
+    )
+    if result.returncode != 0 or len(result.stdout) > 65536:
+        raise ValueError("native queue withdrawal unavailable")
+    value = json.loads(result.stdout)
+    if not isinstance(value, dict) or type(value.get("deleted")) is not bool:
+        raise ValueError("invalid native queue withdrawal receipt")
+    return value["deleted"]
+
+
+def withdraw_acknowledged_queue(root: Path, lease_id: str, identity: str, *,
+                               retry: bool = False, locked: bool = False) -> bool:
+    """Cancel this owned pending submission after ACK; preserve immutable history.
+
+    A busy sender owns the same lock and checks ACK after publishing its receipt.
+    The existing follower retries failures without blocking its bus reader.
+    """
+    import subprocess
+
+    if not re.fullmatch(r"[0-9a-f]{32}", lease_id) or not re.fullmatch(r"[0-9a-f]{24}", identity):
+        return False
+    if not delivery_acknowledged(root, lease_id, identity):
+        return False
+    directory = root / "wakeups" / lease_id
+    if not directory.exists():
+        return True
+    if not locked:
+        with (directory / f"{identity}.lock").open("a") as lock:
+            os.chmod(lock.name, 0o600)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            return withdraw_acknowledged_queue(root, lease_id, identity, retry=retry, locked=True)
+    path = directory / f"{identity}.json"
+    receipt = read_json(path)
+    if receipt is None:
+        return not path.exists()
+    state = read_json(root / "leases" / f"{lease_id}.json") or {}
+    expected = {"lease_id": lease_id, "provider": "codex", "provider_session_id": state.get("provider_session_id"),
+                "delivery_id": identity}
+    if (state.get("provider") != "codex" or lease_identifier("codex", str(expected["provider_session_id"])) != lease_id
+            or receipt.get("schema") != "codescribe.native-queue.receipt.v1"
+            or any(receipt.get(k) != v for k, v in expected.items())):
+        return False
+    if receipt.get("queue_disposition") in ("removed", "not_pending"):
+        return True
+    if receipt.get("disposition") in ("rejected", "unavailable"):
+        receipt["queue_disposition"] = "not_pending"
+        atomic_json(path, receipt)
+        return True
+    submission = native_submission_id(receipt)
+    if receipt.get("disposition") != "provider_accepted" or submission is None:
+        receipt["queue_disposition"] = "unresolved"
+        atomic_json(path, receipt)
+        return False
+    last_attempt = receipt.get("withdrawal_attempt_at", 0)
+    if not retry and isinstance(last_attempt, (int, float)) and time.time() - last_attempt < 30:
+        return False
+    receipt.update(queued_submission_id=submission, queue_disposition="pending",
+                   withdrawal_attempt_at=time.time())
+    atomic_json(path, receipt)
+    try:
+        deleted = delete_native_queue_submission(root, expected["provider_session_id"], submission)
+        receipt.update(queue_disposition="removed" if deleted else "not_pending",
+                       withdrawal_completed_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        receipt["withdrawal_reason"] = "provider withdrawal unavailable; retry retained"
+    atomic_json(path, receipt)
+    return receipt["queue_disposition"] in ("removed", "not_pending")
+
+
 def acknowledge_delivery(args: argparse.Namespace) -> int:
     """Record receipt of one or more deliveries, all or nothing.
 
@@ -1969,7 +2079,9 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
                            if key not in ("text", "wav")}, "bus": state["bus"]}},
         )
     for delivery_id in delivery_ids:
-        emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id})
+        withdrawn = withdraw_acknowledged_queue(args.bridge_home, lease_id, delivery_id, retry=True)
+        emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id,
+              "native_queue_settled": withdrawn})
     return 0
 
 
@@ -2004,6 +2116,25 @@ class NativeQueueWakeup:
         self.channel = channel
         self.lease_id = lease_identifier("codex", session)
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cs-native-queue")
+        import threading
+        self.withdrawals: set[str] = set()
+        self.withdrawal_lock = threading.Lock()
+
+    def enqueue_withdrawal(self, identity: str) -> None:
+        receipt = read_json(self.root / "wakeups" / self.lease_id / f"{identity}.json") or {}
+        last_attempt = receipt.get("withdrawal_attempt_at", 0)
+        if (receipt.get("queue_disposition") == "unresolved"
+                or isinstance(last_attempt, (int, float)) and time.time() - last_attempt < 30):
+            return
+        with self.withdrawal_lock:
+            if identity in self.withdrawals:
+                return
+            self.withdrawals.add(identity)
+        def complete(future: Any) -> None:
+            with self.withdrawal_lock:
+                self.withdrawals.discard(identity)
+            self._report_error(future)
+        self.executor.submit(withdraw_acknowledged_queue, self.root, self.lease_id, identity).add_done_callback(complete)
 
     def enqueue(self, payload: dict[str, Any], *, retry: bool = False) -> None:
         if payload.get("kind") not in ("seal", "message"):
@@ -2036,6 +2167,7 @@ class NativeQueueWakeup:
             os.chmod(lock.name, 0o600)
             fcntl.flock(lock, fcntl.LOCK_EX)
             if delivery_acknowledged(self.root, self.lease_id, identity, payload):
+                withdraw_acknowledged_queue(self.root, self.lease_id, identity, locked=True)
                 return
             state = read_json(self.root / "leases" / f"{self.lease_id}.json") or {}
             if state.get("schema") != LEASE_SCHEMA or any(state.get(k) != v for k, v in expected.items()):
@@ -2089,7 +2221,11 @@ class NativeQueueWakeup:
                 except OSError:
                     receipt.update(disposition="unavailable", reason="provider process could not start")
             receipt["completed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            if receipt["disposition"] == "provider_accepted":
+                receipt["queued_submission_id"] = native_submission_id(receipt)
             atomic_json(receipt_path, receipt)
+            if delivery_acknowledged(self.root, self.lease_id, identity, payload):
+                withdraw_acknowledged_queue(self.root, self.lease_id, identity, locked=True)
             if receipt["disposition"] != "provider_accepted":
                 sys.stderr.write(f"cs-bus: native wakeup {receipt['disposition']} for {identity}; retained, see --status\n")
 
@@ -2163,7 +2299,7 @@ def run(args: argparse.Namespace) -> int:
     normalizer = EvidenceNormalizer()
     native = (
         NativeQueueWakeup(args.bridge_home, args.session, follower_channel)
-        if lease and args.follow and effective_wakeup(args) == "codex-queue"
+        if lease and args.follow and args.provider == "codex"
         else None
     )
     event_trigger: BusEventTrigger | None = None
@@ -2200,7 +2336,7 @@ def run(args: argparse.Namespace) -> int:
                 payload = remaining[0]
                 if not lease or lease.queue_delivery(payload):
                     publish(payload)
-                    if native:
+                    if native and effective_wakeup(args) == "codex-queue":
                         native.enqueue(payload)
                     if args.on_seal and payload.get("kind") in ("seal", "message"):
                         fire_seal_hook(args.on_seal, payload)
@@ -2263,10 +2399,12 @@ def run(args: argparse.Namespace) -> int:
 
     try:
         if lease:
-            lease.collect_acknowledgments()
+            lease.collect_acknowledgments(native)
             for payload in lease.pending.values():
+                if delivery_acknowledged(lease.root, lease.lease_id, payload["delivery_id"], payload):
+                    continue
                 publish(payload)
-                if native:
+                if native and effective_wakeup(args) == "codex-queue":
                     native.enqueue(payload)
             flush_human_drafts()
         if args.once:
@@ -2320,7 +2458,7 @@ def run(args: argparse.Namespace) -> int:
         waiting_for_ack = False
         while True:
             if lease:
-                lease.collect_acknowledgments()
+                lease.collect_acknowledgments(native)
             try:
                 if deferred is not None:
                     deliver(*deferred)
@@ -3741,6 +3879,13 @@ def status_command(args: argparse.Namespace) -> int:
             "name": name,
             "follower_alive": follower_alive,
             "follower_pid": lease_pid if follower_alive else None,
+            "pending_native_withdrawals": [
+                {"delivery_id": item["delivery_id"],
+                 "queue_disposition": (read_json(root / "wakeups" / lease_id / f"{item['delivery_id']}.json") or {}).get("queue_disposition", "pending")}
+                for item in pending if isinstance(item, dict) and item.get("delivery_id") in markers
+                and (read_json(root / "wakeups" / lease_id / f"{item['delivery_id']}.json") or {}).get("disposition") in ("provider_accepted", "requesting", "uncertain")
+                and (read_json(root / "wakeups" / lease_id / f"{item['delivery_id']}.json") or {}).get("queue_disposition") not in ("removed", "not_pending")
+            ],
             "pending_file": len(pending),
             "acknowledged_markers": len(markers),
             "backlog": len(unacked),

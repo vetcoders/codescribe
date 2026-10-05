@@ -146,7 +146,13 @@ cs-bus \
 Use the actual provider/session and the same `--bus`/`--bridge-home` overrides
 as the follower. Several ids are all or nothing: one id that is not pending
 refuses the call and no marker is written. Each accepted id prints one
-`acknowledged` line. This command does not start another reader. A successful
+`acknowledged` line. For Codex, it also withdraws the exact pending native queue
+submission. `native_queue_settled: true` means removal was confirmed or no entry
+remains pending; false means the ACK was saved but provider withdrawal is still
+pending or unresolved. The existing follower retries transport failures in the
+background; `--status` exposes `pending_native_withdrawals`. A message already
+consumed by the model cannot be recalled. Original envelopes and transcript/audio
+history remain retained. This command does not start another reader. A successful
 `acknowledged` receipt proves acceptance was recorded, not that a command was
 executed. Keep execution disposition separately; do not repeat a completed
 action when its envelope is replayed.

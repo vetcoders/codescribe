@@ -1045,3 +1045,21 @@ The follower produces a `kind: message` envelope and uses its ordinary mailbox,
 ACK and native queue path. Agent replies retain the exact delivery association;
 written input never passes through acoustic finality or microphone ownership.
 Publication uncertainty is reported without automatic replay.
+
+## Native provider queue receipt
+
+A conversation ACK retains its immutable owned envelope, and also withdraws the
+matching pending Codex submission through `thread/queue/delete`. The transport
+receipt stores the exact queued submission ID and provider thread; text equality
+never selects messages for removal. An ACK before submission suppresses enqueue;
+an ACK during submission is rechecked under the sender's per-delivery lock after
+provider acceptance. Repeated ACKs do not enqueue or delete a second message.
+
+Withdrawal has its own disposition: `removed` means Codex confirmed deletion;
+`not_pending` means the submission was already consumed or absent. An ACK cannot
+recall text already admitted to an active model turn. A failed withdrawal remains
+`pending` and the existing follower retries in its single transport executor with
+a bounded cooldown, without blocking journal consumption. Missing or mismatched
+provider submission identity stays `unresolved`; no unrelated entry is removed.
+The mailbox, transcript journal, original ACK marker and retained audio remain
+independent of pending provider queue removal.
