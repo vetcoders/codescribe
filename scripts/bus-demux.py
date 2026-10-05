@@ -1176,12 +1176,12 @@ class EvidenceNormalizer:
             return False
         previous = self._session_docs.get(session)
         incoming_revision = event.get("reducer_revision")
-        if (previous is not None and type(incoming_revision) is int
+        older_snapshot = (previous is not None and type(incoming_revision) is int
                 and type(previous.get("reducer_revision")) is int
-                and incoming_revision < previous["reducer_revision"]):
-            return False
+                and incoming_revision < previous["reducer_revision"])
         inventory = {
-            (item.get("occurrence_session_id"), item.get("capture_epoch"), item.get("document_index")): item
+            (item.get("occurrence_session_id"), item.get("capture_epoch"),
+             item.get("sample_start"), item.get("sample_end")): item
             for item in (previous or {}).get("occurrences", [])
         }
         for item in event.get("occurrences", [
@@ -1190,9 +1190,14 @@ class EvidenceNormalizer:
                 "sample_start", "sample_end", "document_index", "label", "acoustic_receipts",
             )}
         ]):
-            key = (item.get("occurrence_session_id"), item.get("capture_epoch"), item.get("document_index"))
-            inventory[key] = item
+            key = (item.get("occurrence_session_id"), item.get("capture_epoch"),
+                   item.get("sample_start"), item.get("sample_end"))
+            if not older_snapshot or key not in inventory:
+                inventory[key] = item
         clean["occurrences"] = list(inventory.values())
+        if older_snapshot:
+            previous["occurrences"] = clean["occurrences"]
+            return False
         same_phase = previous is not None and (
             previous.get("reducer_revision"), previous.get("reducer_action")
         ) == (incoming_revision, event.get("reducer_action"))

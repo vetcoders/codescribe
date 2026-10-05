@@ -541,7 +541,18 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       let key = channelMessage ?? "utterance:" + occurrence
       let revision =
         (row[evidence ? "reducer_revision" : "sequence"] as? NSNumber)?.uint64Value ?? 0
-      guard revision >= (messageRevisions[key] ?? 0) else { return }
+      guard revision >= (messageRevisions[key] ?? 0) else {
+        // A stale render cannot replace newer text; its exact ledger entry
+        // still remains physical evidence when first observed on this reader.
+        if channelMessage != nil, var message = messages[key] {
+          var occurrences = message.occurrenceIDs ?? []
+          let identity = "utterance:" + occurrence
+          if !occurrences.contains(identity) { occurrences.append(identity) }
+          message.occurrenceIDs = occurrences
+          messages[key] = message
+        }
+        return
+      }
       messageRevisions[key] = revision
       let phase: String
       let terminal =
@@ -616,10 +627,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           : row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
         deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
       if channelMessage != nil {
-        var occurrences = messages[key]?.occurrenceIDs ?? [:]
-        let entry = [row["occurrence_session_id"] as? String ?? session,
-          Self.coordinate(row["capture_epoch"]), Self.coordinate(row["document_index"])].joined(separator: "\0")
-        occurrences[entry] = "utterance:" + occurrence
+        var occurrences = messages[key]?.occurrenceIDs ?? []
+        let identity = "utterance:" + occurrence
+        if !occurrences.contains(identity) { occurrences.append(identity) }
         message.occurrenceIDs = occurrences
       }
       let components = session.split(separator: "-")
@@ -838,7 +848,7 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   var playback: OverlayReplyPlayback?
   var busPath: String
   var replyToOccurrenceID: String? = nil
-  var occurrenceIDs: [String: String]? = nil
+  var occurrenceIDs: [String]? = nil
   var sourceChannel: String? = nil
   var replyID: String? { kind == .reply ? String(id.dropFirst("reply:".count)) : nil }
 }
