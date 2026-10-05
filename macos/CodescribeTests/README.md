@@ -51,6 +51,13 @@ compilation only" and no plan could cite them as evidence.
 
 Half of that was right.
 
+Mocking `SettingsEngine` does not isolate the view model's permission reads.
+Settings and Voice Lab tests that do not exercise macOS permission probing must
+also pass `permissionProbe: MockPermissionProbe()`. The production default is
+`NativePermissionProbe`, whose synchronous snapshot can wait on system services
+in a headless session; a refresh repeats that read. Keep permission-specific
+tests explicit about the probe they intend to exercise.
+
 **Right — the eager properties really do boot a second core in the test host.**
 The XCTest bundle uses the app as its host, so `AppDelegate` is instantiated in
 the test process, and stored properties initialise at instantiation — _before_
