@@ -1694,7 +1694,7 @@ mod tests {
 
     #[tokio::test]
     #[serial(agent_ack_duck)]
-    async fn hold_release_while_handover_waits_cancels_the_ordinary_take() {
+    async fn hold_release_while_scheduling_waits_preserves_channel_and_cancels_take() {
         use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
 
         let controller = Arc::new(RecordingController::new_without_keychain());
@@ -1712,9 +1712,10 @@ mod tests {
             force_raw: false,
             force_ai: false,
         };
-        let down = event(HotkeyAction::Down);
+        // Enter the real scheduling boundary directly so unrelated context
+        // archival awaits cannot turn this into an earlier release test.
         let pending =
-            tokio::spawn(async move { pending_controller.handle_hotkey_event(down).await });
+            tokio::spawn(async move { pending_controller.schedule_hold_start(false).await });
         for _ in 0..20 {
             tokio::task::yield_now().await;
         }
@@ -1735,11 +1736,10 @@ mod tests {
         assert_eq!(controller.current_state().await, State::Idle);
         assert!(controller.session_id.read().await.is_none());
         assert!(controller.hold_start_task.lock().await.is_none());
-        assert!(controller.agent_channel_snapshot(3).await.is_none());
-        assert_eq!(
-            bus_rows(&channel_bus).len(),
-            1,
-            "channel closure remains durable"
+        assert!(controller.agent_channel_snapshot(3).await.is_some());
+        assert!(
+            bus_rows(&channel_bus).is_empty(),
+            "cancelled admission cannot hang up the channel"
         );
     }
 
