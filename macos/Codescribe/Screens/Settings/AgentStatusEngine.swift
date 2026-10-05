@@ -70,10 +70,10 @@ extension CsAgenticReadiness {
     rows: [
       CsMcpStatusRow(
         label: "Agentic readiness:",
-        value: "ready — OpenAI (Responses) configured, key set, 10 native tool(s)",
+        value: "ready — OpenAI (Responses) configured, access available, 10 native tool(s)",
         tone: .good
       ),
-      CsMcpStatusRow(label: "Provider:", value: "OpenAI (Responses) — key set", tone: .good),
+      CsMcpStatusRow(label: "Provider:", value: "OpenAI (Responses) — access available", tone: .good),
       CsMcpStatusRow(label: "Native tools:", value: "10 tool(s) available", tone: .good),
       CsMcpStatusRow(
         label: "Vibecrafted runtime:", value: "not configured (optional)", tone: .neutral),

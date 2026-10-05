@@ -342,10 +342,13 @@ Codescribe.app/
 
 ## External Agent Bridge
 
-The existing 13-step Setup Wizard exposes the bridge inside **Agentic
-Readiness**. It does not write to the home directory merely because the step is
-shown. The operator must explicitly select Codex, Claude Code, or both and click
-Install/Reinstall.
+The existing 13-step Setup Wizard exposes the bridge on the **Agent** step. It
+does not write to the home directory merely because the step is shown,
+refreshed, skipped, or left with Back. The user selects Codex,
+Claude Code, or both; Continue installs or updates the selected managed skills
+only when that selection differs from the installer receipt. A failed install
+keeps Setup on the Agent step and shows the error below the client cards so the
+user can retry. Continuing from a fresh empty selection remains read-only.
 
 The installed runtime is stable across checkout moves and deletions:
 
@@ -367,9 +370,10 @@ use staged directory renames and an atomic receipt write. Existing unowned
 folders are visible conflicts and are never overwritten; deselection removes
 only a folder whose marker still matches the receipt.
 
-Polish dictation selection shows the bridge explanation in Polish. All other
-language selections use English fallback. Setup can be skipped and reopened
-later from the existing **Setup Wizard…** tray action.
+The full readiness report, managed installation paths, MCP status, and Refresh
+action live in **Settings › Agent › Diagnostics**. Setup keeps only the client
+choice and an inline setup failure. Setup can be reopened later from the
+existing **Setup Wizard…** tray action.
 
 ### Info.plist Keys
 

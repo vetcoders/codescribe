@@ -158,7 +158,6 @@ final class OnboardingViewModel: ObservableObject {
 
   // Agentic-readiness step state (lazy — probed when the step appears).
   @Published private(set) var readiness: CsAgenticReadiness?
-  @Published private(set) var mcpStatus: CsMcpStatusReport?
   @Published private(set) var agentBridgeStatus: AgentBridgeInstallationStatus
   @Published private(set) var selectedAgentClients: Set<AgentBridgeClient>
   @Published private(set) var agentBridgeError: String?
@@ -285,32 +284,25 @@ final class OnboardingViewModel: ObservableObject {
     providers.first { $0.id == selectedProviderId }
   }
 
-  var agentBridgeTitle: String {
-    String(
-      localized: LocalizedStringResource(
-        "Connect Codescribe to your agent.", locale: interfaceLocale,
-        comment: "Setup step heading; Codescribe is the product name"))
+  var agentBridgeReadyToGo: Bool {
+    readiness?.ready == true && agentBridgeError == nil
   }
 
-  var agentBridgeExplanation: String {
-    String(
-      localized: LocalizedStringResource(
-        "The named agent can hear live drafts and reply during the pause. Installation, commits, deletion, and every other state-changing action wait for transcript_sealed.",
-        locale: interfaceLocale,
-        comment: "Setup step explanation; transcript_sealed is an event name, keep it verbatim"
-      ))
+  func agentClientIsInstalled(_ client: AgentBridgeClient) -> Bool {
+    agentBridgeStatus.installedClients.contains(client)
   }
 
-  var agentBridgeButtonTitle: String {
-    agentBridgeStatus.installedClients.isEmpty
-      ? String(
-        localized: LocalizedStringResource(
-          "Install selected", locale: interfaceLocale,
-          comment: "Button: install the bridge for the checked coding assistants"))
-      : String(
-        localized: LocalizedStringResource(
-          "Update selected", locale: interfaceLocale,
-          comment: "Button: update the bridge for the checked coding assistants"))
+  func agentClientNeedsSetup(_: AgentBridgeClient) -> Bool {
+    !agentBridgeReadyToGo
+  }
+
+  func agentClientShowsError(_ client: AgentBridgeClient) -> Bool {
+    guard agentBridgeError != nil else { return false }
+    guard
+      let errorClient = selectedAgentClients.sorted(by: { $0.rawValue < $1.rawValue }).first
+        ?? AgentBridgeClient.allCases.first
+    else { return false }
+    return client == errorClient
   }
 
   // MARK: - Lifecycle refresh
@@ -358,7 +350,6 @@ final class OnboardingViewModel: ObservableObject {
       return
     }
     readiness = agentStatus.agenticReadiness()
-    mcpStatus = agentStatus.mcpStatus()
     agentBridgeStatus = agentBridge.status()
   }
 
@@ -368,10 +359,16 @@ final class OnboardingViewModel: ObservableObject {
     } else {
       selectedAgentClients.insert(client)
     }
+    // An installation error belongs to the selection that produced it. Once
+    // the user changes that decision, do not present the stale failure as the
+    // status of the new selection.
+    agentBridgeError = nil
   }
 
-  /// The only home-directory write on the readiness step. Merely visiting,
-  /// refreshing, skipping, or continuing never installs a client skill.
+  /// The only home-directory write on the readiness step. It runs from an
+  /// explicit Set up action or from Continue when the selected clients differ
+  /// from the managed receipt. Visiting, refreshing, Back, and Skip stay
+  /// read-only.
   func installAgentBridge() {
     do {
       agentBridgeStatus = try agentBridge.install(selectedClients: selectedAgentClients)
@@ -382,10 +379,15 @@ final class OnboardingViewModel: ObservableObject {
     }
   }
 
-  /// Select Agent settings before the view opens the shared Settings window.
-  /// The wizard stays open so the user can configure MCP and then return.
-  func prepareMcpSettingsDeepLink() {
-    SettingsDeepLink.shared.present(tab: .agentMcp)
+  func setUpAgentClient(_ client: AgentBridgeClient) {
+    selectedAgentClients.insert(client)
+    installAgentBridge()
+  }
+
+  /// Select Agent diagnostics before the view opens the shared Settings window.
+  /// The wizard stays open so the user can resolve readiness and then return.
+  func prepareAgentDiagnosticsDeepLink() {
+    SettingsDeepLink.shared.present(tab: .agentStatus)
   }
 
   func prepareProviderSettingsDeepLink() {
@@ -474,6 +476,14 @@ final class OnboardingViewModel: ObservableObject {
     {
       saveApiKey(advanceOnSuccess: true)
       return
+    }
+    if step == .agenticReadiness,
+      selectedAgentClients != Set(agentBridgeStatus.installedClients)
+    {
+      installAgentBridge()
+      guard agentBridgeError == nil,
+        selectedAgentClients == Set(agentBridgeStatus.installedClients)
+      else { return }
     }
     commitCurrentChoice()
     advanceAfterCommit()

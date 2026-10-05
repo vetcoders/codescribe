@@ -298,178 +298,72 @@ struct AgenticReadinessStepView: View {
   @Environment(\.openWindow) private var openWindow
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      agentBridgeSetup
-      DisclosureGroup("Connection details") {
-        VStack(alignment: .leading, spacing: 12) {
-          Text(model.agentBridgeExplanation)
-            .font(.callout)
-            .foregroundStyle(.secondary)
-          Text(model.agentBridgeStatus.detail)
-            .font(.callout)
-            .foregroundStyle(.secondary)
-          ForEach(model.agentBridgeStatus.installedPaths, id: \.self) { path in
-            Text(path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
-              .font(.caption.monospaced())
-              .textSelection(.enabled)
-          }
-          if model.providerAccessResolved, model.providerAccessError == nil,
-            let readiness = model.readiness
-          {
-            SettingsSectionLabel(
-              String(
-                localized: LocalizedStringResource("Agent readiness", locale: model.interfaceLocale)
-              ))
-            readinessPill(ready: readiness.ready)
-            Text(
-              "Agent readiness covers Assistive access and native tools. Cloud Formatting is configured separately in Settings › Agent › LLM lanes."
-            )
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            // Core orders verdict, provider, native tools and workspace roots first.
-            // Optional MCP has its own status report below.
-            statusCard(rows: Array(readiness.rows.prefix(4)), valueLineLimit: nil)
-              .accessibilityIdentifier("onboarding-agent-readiness-core-status")
-          }
-          Text(model.providerAccessDescription)
-            .font(.callout)
-            .foregroundStyle(.secondary)
-          if let mcpStatus = model.mcpStatus {
-            SettingsSectionLabel(
-              String(
-                localized: LocalizedStringResource("MCP servers", locale: model.interfaceLocale)))
-            statusCard(rows: mcpStatus.rows)
-              .accessibilityIdentifier("onboarding-mcp-status")
-          }
-          Button("Refresh") { model.refreshReadiness() }.csAction()
-        }.padding(.top, 8)
-      }
-
-      Text(
-        "MCP connects your assistant to additional tools. You can add servers later in Settings."
-      )
-      .font(.callout)
-      .foregroundStyle(.secondary)
-      Button("MCP settings…") {
-        model.prepareMcpSettingsDeepLink()
-        openWindow(id: SettingsView.windowID)
-      }.csAction()
-        .accessibilityIdentifier("onboarding-mcp-settings")
-
-      OnboardingStepNote(
-        text: String(
-          localized: LocalizedStringResource(
-            "This connection is optional. You can continue and set it up later.",
-            locale: model.interfaceLocale,
-            comment: "Setup step footnote on the agent-readiness step")))
-    }
-  }
-
-  /// Product install for the external named-session bridge. The checkboxes are
-  /// deliberately empty on first run; visiting this step performs no writes.
-  /// Reopening Setup seeds clients from the managed receipt for an explicit
-  /// reinstall/update or a safe deselection.
-  private var agentBridgeSetup: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text("Coding assistants", comment: "Setup: eyebrow above the coding-assistant choices")
-        .textCase(.uppercase)
-        .font(CSFont.mono(10, .semibold))
-        .tracking(0.4)
-        .foregroundStyle(CSColor.textFaint)
-      Text(model.agentBridgeTitle)
-        .font(CSFont.ui(15, .bold))
-        .foregroundStyle(.primary)
-      Text(
-        "Choose where to send your dictation. Your assistant can listen as you speak; changes wait until you finish."
-      )
-      .font(CSFont.ui(12.5))
-      .lineSpacing(3)
-      .foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
-
       VStack(spacing: 8) {
         ForEach(AgentBridgeClient.allCases) { client in
-          OnboardingChoiceCard(
-            title: client.displayName,
-            subtitle: String(
-              localized: LocalizedStringResource(
-                "Connect a live coding session", locale: model.interfaceLocale,
-                comment: "Detail under a coding-assistant checkbox")),
-            isSelected: model.selectedAgentClients.contains(client)
-          ) { model.toggleAgentClient(client) }
+          VStack(alignment: .leading, spacing: 6) {
+            OnboardingChoiceCard(
+              title: client.displayName,
+              subtitle: String(
+                localized: LocalizedStringResource(
+                  "Connect to the active session", locale: model.interfaceLocale,
+                  comment: "Detail under a coding-assistant checkbox")),
+              isSelected: model.selectedAgentClients.contains(client)
+            ) { model.toggleAgentClient(client) }
+
+            if model.agentClientNeedsSetup(client) {
+              HStack(spacing: 10) {
+                Text(
+                  String(
+                    localized: LocalizedStringResource(
+                      "\(client.displayName) needs setup", locale: model.interfaceLocale,
+                      comment: "Status below an agent client card; %@ is Codex or Claude Code"))
+                )
+                .font(CSFont.mono(10.5, .medium))
+                .foregroundStyle(CSColor.terracottaLight)
+                Spacer(minLength: 0)
+                Button(
+                  String(
+                    localized: LocalizedStringResource(
+                      "Set up", locale: model.interfaceLocale,
+                      comment: "Button below an agent client card"))
+                ) {
+                  if model.agentClientIsInstalled(client) {
+                    model.prepareAgentDiagnosticsDeepLink()
+                    openWindow(id: SettingsView.windowID)
+                  } else {
+                    model.setUpAgentClient(client)
+                  }
+                }
+                .csAction()
+              }
+              .padding(.horizontal, 12)
+            }
+
+            if model.agentClientShowsError(client), let error = model.agentBridgeError {
+              Text(error)
+                .font(CSFont.mono(10.5, .medium))
+                .foregroundStyle(CSColor.terracottaLight)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 12)
+            }
+          }
         }
       }
 
-      HStack(spacing: 10) {
-        Button(model.agentBridgeButtonTitle) {
-          model.installAgentBridge()
-        }.csAction(prominent: true)
-          .disabled(
-            model.selectedAgentClients.isEmpty || !model.agentBridgeStatus.payloadAvailable
-          )
+      if model.agentBridgeReadyToGo {
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "Ready to go ✓", locale: model.interfaceLocale,
+              comment: "Agent setup status below the client cards"))
+        )
+        .font(CSFont.mono(10.5, .semibold))
+        .foregroundStyle(CSColor.oliveLight)
       }
 
-      if let error = model.agentBridgeError {
-        Text(error)
-          .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.terracottaLight)
-          .fixedSize(horizontal: false, vertical: true)
-      }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  private func readinessPill(ready: Bool) -> some View {
-    let accent = ready ? CSColor.olive : CSColor.terracotta
-    let accentLight = ready ? CSColor.oliveLight : CSColor.terracottaLight
-    return Text(
-      ready
-        ? String(
-          localized: LocalizedStringResource(
-            "Agent capabilities ready", locale: model.interfaceLocale))
-        : String(
-          localized: LocalizedStringResource(
-            "Agent capabilities not ready", locale: model.interfaceLocale))
-    )
-    .textCase(.uppercase)
-    .font(CSFont.mono(9, .semibold))
-    .tracking(0.4)
-    .foregroundStyle(accentLight)
-    .padding(.horizontal, 8)
-    .padding(.vertical, 2)
-    .background(
-      RoundedRectangle(cornerRadius: 6, style: .continuous)
-        .fill(accent.opacity(0.12))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 6, style: .continuous)
-        .strokeBorder(accent.opacity(0.24), lineWidth: 1))
-  }
-
-  @ViewBuilder
-  private func statusCard(rows: [CsMcpStatusRow], valueLineLimit: Int? = 2) -> some View {
-    VStack(spacing: 0) {
-      ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-        if index > 0 {
-          Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
-        }
-        HStack(spacing: 12) {
-          Text(row.label)
-            .font(CSFont.mono(11.5, .medium))
-            .foregroundStyle(.secondary)
-            .frame(width: 150, alignment: .leading)
-          Text(row.value)
-            .font(CSFont.ui(12, .semibold))
-            .foregroundStyle(.primary)
-            .lineLimit(valueLineLimit)
-            .fixedSize(horizontal: false, vertical: valueLineLimit == nil)
-            .frame(maxWidth: .infinity, alignment: .leading)
-          Circle().fill(row.tone.dotColor).frame(width: 7, height: 7)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-      }
-    }
   }
 }
 

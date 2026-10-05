@@ -45,7 +45,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentWorkspace:
       String(localized: "Workspace", comment: "Settings tab: agent workspace roots")
     case .agentStatus:
-      String(localized: "Capabilities", comment: "Settings tab: agent capability matrix")
+      String(localized: "Diagnostics", comment: "Settings tab: agent connection diagnostics")
     case .agentTools: String(localized: "Tools", comment: "Settings tab: tool permissions")
     case .agentMcp: "MCP"
     case .dictationEngine:
@@ -66,7 +66,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentLanes: String(localized: "Request lanes.")
     case .agentPrompts: String(localized: "Prompts.")
     case .agentWorkspace: String(localized: "Workspace roots.")
-    case .agentStatus: String(localized: "Capabilities.")
+    case .agentStatus: String(localized: "Connection details.")
     case .agentTools: String(localized: "Tool permissions.")
     case .agentMcp: String(localized: "MCP servers.")
     case .dictationEngine: String(localized: "Active speech engine.")
@@ -96,7 +96,10 @@ enum SettingsTab: String, CaseIterable, Identifiable {
           "Directories the Agent may read and write. Everything outside them is out of reach."
       )
     case .agentStatus:
-      String(localized: "What the local agent substrate can currently do, and why.")
+      String(
+        localized:
+          "Readiness, installation paths, MCP status, and what the local agent substrate can currently do."
+      )
     case .agentTools:
       String(localized: "Allow, ask, or deny — per tool. Deny wins over everything.")
     case .agentMcp:
@@ -154,7 +157,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       settingsSearchTerms(
         localized: String(
           localized: "settings.search.tab.agentStatus",
-          defaultValue: "capability, native, enhanced, readiness",
+          defaultValue: "diagnostics, connection, installation path, capability, readiness",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))

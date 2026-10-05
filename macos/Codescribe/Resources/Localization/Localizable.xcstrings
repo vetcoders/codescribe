@@ -165,6 +165,16 @@
         }
       }
     },
+    "%@ needs setup" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ wymaga konfiguracji"
+          }
+        }
+      }
+    },
     "%@ provider" : {
       "localizations" : {
         "pl" : {
@@ -3457,6 +3467,17 @@
         }
       }
     },
+    "Choose the agents you want to work with by voice." : {
+      "comment" : "Setup chapter subtitle",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz agentów, z którymi chcesz pracować głosem."
+          }
+        }
+      }
+    },
     "Choose the assistant model" : {
       "localizations" : {
         "pl" : {
@@ -4009,6 +4030,17 @@
         }
       }
     },
+    "Connect Codescribe to an agent" : {
+      "comment" : "Setup chapter heading",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połącz Codescribe z agentem"
+          }
+        }
+      }
+    },
     "Connect Codescribe to your agent." : {
       "comment" : "Setup step heading; Codescribe is the product name",
       "localizations" : {
@@ -4072,6 +4104,17 @@
         }
       }
     },
+    "Connect to the active session" : {
+      "comment" : "Detail under a coding-assistant checkbox",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połącz z aktywną sesją"
+          }
+        }
+      }
+    },
     "Connect your coding agent" : {
       "localizations" : {
         "pl" : {
@@ -4098,6 +4141,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Szczegóły połączenia"
+          }
+        }
+      }
+    },
+    "Connection details." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szczegóły połączenia."
           }
         }
       }
@@ -9706,6 +9759,16 @@
         }
       }
     },
+    "Readiness, installation paths, MCP status, and what the local agent substrate can currently do." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gotowość, ścieżki instalacji, stan MCP i aktualne możliwości lokalnego środowiska Agenta."
+          }
+        }
+      }
+    },
     "Reading the controller's calibration and seal-lane verdict." : {
       "localizations" : {
         "pl" : {
@@ -9763,6 +9826,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Gotowy dla silnika Whisper · %@"
+          }
+        }
+      }
+    },
+    "Ready to go ✓" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gotowe do pracy ✓"
           }
         }
       }
@@ -11464,6 +11537,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ustawiono"
+          }
+        }
+      }
+    },
+    "Set up" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skonfiguruj"
           }
         }
       }
@@ -17118,13 +17201,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "capability, native, enhanced, readiness"
+            "value" : "settings.search.tab.agentStatus"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "capability, native, enhanced, readiness, możliwości, natywny, rozszerzony, gotowość, funkcje"
+            "value" : "diagnostyka, połączenie, ścieżka instalacji, możliwości, gotowość"
           }
         }
       }

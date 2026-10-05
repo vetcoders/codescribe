@@ -74,6 +74,11 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertEqual(claudeOnly.installedClients, [.claudeCode])
     XCTAssertFalse(FileManager.default.fileExists(atPath: codexSkill.path))
     XCTAssertTrue(FileManager.default.fileExists(atPath: claudeSkill.path))
+
+    let none = try installer.install(selectedClients: [])
+    XCTAssertTrue(none.installedClients.isEmpty)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: codexSkill.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: claudeSkill.path))
   }
 
   func testUnownedClientSkillIsVisibleConflictAndNeverMutated() throws {
@@ -169,7 +174,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
     )
   }
 
-  func testOnboardingUsesEnglishCopyWithPolishDictationAndNeverInstallsUntilSelectionAndClick() {
+  func testOnboardingContinueInstallsChangedSelectionAndDoesNotReinstallOnReturn() {
     let engine = MockOnboardingEngine(progress: 11)
     engine.mode = "agentic"
     engine.language = .polish
@@ -184,34 +189,83 @@ final class AgentBridgeInstallerTests: XCTestCase {
 
     XCTAssertEqual(bridge.installCalls, [])
     XCTAssertTrue(model.selectedAgentClients.isEmpty)
-    XCTAssertEqual(model.agentBridgeTitle, "Connect Codescribe to your agent.")
-    XCTAssertEqual(model.agentBridgeButtonTitle, "Install selected")
-    XCTAssertTrue(model.agentBridgeExplanation.contains("live drafts"))
-    XCTAssertTrue(model.agentBridgeExplanation.contains("transcript_sealed"))
-
-    let fallbackEngine = MockOnboardingEngine(progress: 11)
-    fallbackEngine.mode = "agentic"
-    fallbackEngine.language = .auto
-    let fallbackModel = OnboardingViewModel(
-      engine: fallbackEngine,
-      hotkeys: MockHotkeysEngine(),
-      agentStatus: MockAgentStatusEngine(),
-      agentBridge: RecordingAgentBridgeInstaller(),
-      probe: MockPermissionProbe(.allGranted)
-    )
-    XCTAssertEqual(fallbackModel.agentBridgeTitle, model.agentBridgeTitle)
-    XCTAssertTrue(fallbackModel.agentBridgeExplanation.contains("live drafts"))
-    XCTAssertTrue(fallbackModel.agentBridgeExplanation.contains("transcript_sealed"))
-
     model.refreshForCurrentStep()
     XCTAssertEqual(bridge.installCalls, [])
-
     model.toggleAgentClient(.codex)
     XCTAssertEqual(bridge.installCalls, [])
-    model.installAgentBridge()
-    XCTAssertEqual(model.agentBridgeButtonTitle, "Update selected")
+    model.advance()
     XCTAssertEqual(bridge.installCalls, [[.codex]])
     XCTAssertEqual(model.agentBridgeStatus.installedClients, [.codex])
+    XCTAssertEqual(model.step, .done)
+
+    model.back()
+    XCTAssertEqual(model.step, .agenticReadiness)
+    model.advance()
+    XCTAssertEqual(model.step, .done)
+    XCTAssertEqual(bridge.installCalls, [[.codex]], "An unchanged selection does not write again")
+  }
+
+  func testOnboardingBackDoesNotInstallAndEmptyUnchangedSelectionCanContinue() {
+    let engine = MockOnboardingEngine(progress: 11)
+    engine.mode = "agentic"
+    let bridge = RecordingAgentBridgeInstaller()
+    let model = OnboardingViewModel(
+      engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+      agentBridge: bridge, probe: MockPermissionProbe(.allGranted))
+    model.toggleAgentClient(.codex)
+    model.back()
+    XCTAssertEqual(model.step, .hotkeyMode)
+    XCTAssertTrue(bridge.installCalls.isEmpty)
+
+    model.advance()
+    XCTAssertEqual(model.step, .agenticReadiness)
+    XCTAssertTrue(bridge.installCalls.isEmpty)
+    model.toggleAgentClient(.codex)
+    model.advance()
+    XCTAssertEqual(model.step, .done)
+    XCTAssertTrue(
+      bridge.installCalls.isEmpty, "Skipping all clients on a fresh setup does not write")
+  }
+
+  func testOnboardingInstallationFailureRetainsStepAndSelectionForRetry() {
+    let engine = MockOnboardingEngine(progress: 11)
+    engine.mode = "agentic"
+    let bridge = RecordingAgentBridgeInstaller()
+    bridge.failInstallation = true
+    let model = OnboardingViewModel(
+      engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+      agentBridge: bridge, probe: MockPermissionProbe(.allGranted))
+    model.toggleAgentClient(.claudeCode)
+    model.advance()
+    XCTAssertEqual(model.step, .agenticReadiness)
+    XCTAssertEqual(model.selectedAgentClients, [.claudeCode])
+    XCTAssertNotNil(model.agentBridgeError)
+    XCTAssertEqual(bridge.installCalls, [[.claudeCode]])
+
+    bridge.failInstallation = false
+    model.advance()
+    XCTAssertEqual(model.step, .done)
+    XCTAssertNil(model.agentBridgeError)
+    XCTAssertEqual(model.agentBridgeStatus.installedClients, [.claudeCode])
+    XCTAssertEqual(bridge.installCalls, [[.claudeCode], [.claudeCode]])
+  }
+
+  func testOnboardingContinueAppliesDeselectionOfTheLastManagedClient() throws {
+    let engine = MockOnboardingEngine(progress: 11)
+    engine.mode = "agentic"
+    let bridge = RecordingAgentBridgeInstaller()
+    _ = try bridge.install(selectedClients: [.codex])
+    let model = OnboardingViewModel(
+      engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+      agentBridge: bridge, probe: MockPermissionProbe(.allGranted))
+    XCTAssertEqual(model.selectedAgentClients, [.codex])
+    model.toggleAgentClient(.codex)
+    XCTAssertEqual(
+      bridge.installCalls, [[.codex]], "Selection alone does not mutate the installation")
+    model.advance()
+    XCTAssertEqual(model.step, .done)
+    XCTAssertEqual(bridge.installCalls, [[.codex], []])
+    XCTAssertTrue(model.agentBridgeStatus.installedClients.isEmpty)
   }
 
   func testManagedFoldersRecoverFromMissingUnreadableOrForeignReceipt() throws {
@@ -1002,6 +1056,7 @@ private final class RecordingAgentBridgeInstaller: AgentBridgeInstalling {
     throw AgentBridgeInstallationError.transaction("manual adoption not configured in this fixture")
   }
   private(set) var installCalls: [Set<AgentBridgeClient>] = []
+  var failInstallation = false
   private var current = AgentBridgeInstallationStatus(
     payloadAvailable: true,
     bundleVersion: "9.8.7",
@@ -1014,6 +1069,9 @@ private final class RecordingAgentBridgeInstaller: AgentBridgeInstalling {
 
   func install(selectedClients: Set<AgentBridgeClient>) throws -> AgentBridgeInstallationStatus {
     installCalls.append(selectedClients)
+    if failInstallation {
+      throw AgentBridgeInstallationError.transaction("Installation refused by the test fixture")
+    }
     let clients = selectedClients.sorted { $0.rawValue < $1.rawValue }
     current = AgentBridgeInstallationStatus(
       payloadAvailable: true,

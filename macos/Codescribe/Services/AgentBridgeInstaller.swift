@@ -632,8 +632,10 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     runtimeOnly: Bool = false,
     initializing: Bool = false
   ) throws -> AgentBridgeAdoptionResult {
-    guard runtimeOnly || !selectedClients.isEmpty else {
-      throw AgentBridgeInstallationError.selectionRequired
+    if !runtimeOnly, selectedClients.isEmpty {
+      guard let receipt = validReceipt(), !receipt.selectedClients.isEmpty else {
+        throw AgentBridgeInstallationError.selectionRequired
+      }
     }
     let manifest = try verifiedManifest()
     guard let resourceRoot else {
@@ -655,6 +657,16 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     }
 
     let previousReceipt = validReceipt()
+    // Empty selection is an explicit teardown of an existing managed client
+    // selection, never a way to initialize an empty installation. Recheck
+    // after taking the lease so a concurrent receipt change cannot broaden
+    // the deletion target.
+    if !runtimeOnly, selectedClients.isEmpty {
+      guard let previousReceipt, !previousReceipt.selectedClients.isEmpty else {
+        throw AgentBridgeInstallationError.selectionRequired
+      }
+      try requireSynchronizationOwnership(previousReceipt)
+    }
     if initializing, expectedReceipt == nil,
       previousReceipt != nil || fileManager.fileExists(atPath: runtimeDirectory.path)
         || fileManager.fileExists(atPath: receiptURL.path)

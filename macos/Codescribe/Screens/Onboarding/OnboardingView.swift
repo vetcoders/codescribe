@@ -98,12 +98,13 @@ struct OnboardingView: View {
       return (
         String(
           localized: LocalizedStringResource(
-            "Give your voice tools", locale: model.interfaceLocale, comment: "Setup chapter heading"
+            "Connect Codescribe to an agent", locale: model.interfaceLocale,
+            comment: "Setup chapter heading"
           )),
         "sparkles",
         String(
           localized: LocalizedStringResource(
-            "Connect the assistants you want to work with.", locale: model.interfaceLocale,
+            "Choose the agents you want to work with by voice.", locale: model.interfaceLocale,
             comment: "Setup chapter subtitle"))
       )
     case .done:

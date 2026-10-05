@@ -89,7 +89,7 @@ impl From<McpStatusReport> for CsMcpStatusReport {
 }
 
 /// Agentic-lane readiness verdict + rows. `ready` reflects the CORE capability
-/// gate only (assistive provider configured + its API key set + native tools
+/// gate only (assistive provider access available + native tools
 /// available); the MCP rows (Vibecrafted + AICX + Loctree + PRView) are
 /// informational context and never flip `ready`. See the core
 /// `AgenticReadinessReport` for the C4 semantics decision.
@@ -152,7 +152,7 @@ impl CodescribeAgentStatus {
     }
 
     /// Agentic-lane readiness. `ready` is the core capability gate (assistive
-    /// provider + its API key + native tools); the MCP rows are informational.
+    /// provider request access + native tools); the MCP rows are informational.
     /// Projects files, env and the existing credential cache. The explicit
     /// background provider-access refresh acquires credentials before publication.
     pub fn agentic_readiness(&self) -> CsAgenticReadiness {

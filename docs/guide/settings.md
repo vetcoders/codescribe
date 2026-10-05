@@ -155,18 +155,16 @@ Palette labels and grant actions follow the macOS interface language through
 the app's String Catalog. Model IDs, provider IDs and tool grant keys remain
 unchanged.
 
-Open **Settings → AI & Prompts**.
+Open **Settings → Agent → Diagnostics** for the complete agent connection
+report: the core readiness rows, managed skill status and installation paths,
+capability matrix, MCP status, and a single Refresh action. Native-tool or
+workspace failures remain visible there even when credentials are valid.
 
-This tab owns the LLM side of the product:
-
-Agent capabilities readiness in Setup covers Assistive access and native tools.
-Expand **Connection details** to see the core verdict, provider access, native
-tools and workspace-root status with the complete reported reason. Native-tool
-or workspace failures remain visible even when credentials are valid. These core
-rows appear separately from **MCP servers**, whose status is optional. The wizard
-presents account/key presence separately from that capability verdict; it does
-not label an account as a key. While provider access is unresolved or unavailable,
-the wizard keeps its pending/error presentation instead of showing a core verdict.
+Setup keeps the Agent step to one decision: which clients to connect. It shows
+only a short ready state or an inline setup action and error. The preceding
+provider step presents account and API-key presence from the provider credential
+snapshot; diagnostic readiness describes usable provider access and must not be
+read as proof that an API key exists.
 
 Prompt files live in `~/.codescribe/prompts/`.
 
