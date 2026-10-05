@@ -581,7 +581,7 @@ struct DictationOverlayView: View {
     // Keep the explicit drag region above the passive glass background.
     // OverlayResizeHitTests verifies header dragging across its width.
     .background { OverlayWindowDragRegion(identifier: "overlay-header-drag-region") }
-    .modifier(OverlayHeaderChrome(enabled: state.selectedConversation == nil))
+    .modifier(OverlayControlGlass())
     // The cached panel survives orderOut. Observe its window outside
     // ViewThatFits so hidden header candidates cannot compete for visibility.
     .background {
@@ -1123,19 +1123,6 @@ private struct OverlayRenderVisibility: NSViewRepresentable {
         guard let self else { return }
         onChange?(window?.isVisible == true && window?.occlusionState.contains(.visible) == true)
       }
-    }
-  }
-}
-
-private struct OverlayHeaderChrome: ViewModifier {
-  var enabled = true
-
-  @ViewBuilder
-  func body(content: Content) -> some View {
-    if enabled {
-      content.modifier(OverlayControlGlass())
-    } else {
-      content
     }
   }
 }

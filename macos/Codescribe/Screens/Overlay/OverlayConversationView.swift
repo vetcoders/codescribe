@@ -42,7 +42,6 @@ struct OverlayConversationView: View {
                   navigationHeight = $0
                 }
             }
-            .modifier(OverlayControlGlass())
           }
           .overlay(alignment: .bottom) {
             composer

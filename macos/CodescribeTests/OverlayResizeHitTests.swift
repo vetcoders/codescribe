@@ -24,6 +24,52 @@ private struct MicrophoneFrameCapture: View {
 
 final class OverlayResizeHitTests: XCTestCase {
   @MainActor
+  func testConversationKeepsCommonHeaderControlsWhenFoldedAndReopened() throws {
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "header-test",
+        "lease_id": String(repeating: "a", count: 32),
+        "channel": "2", "name": "Lena",
+      ]))
+    let conversation = OverlayConversation(
+      id: owner.id, channel: "2", name: "Lena", owner: owner, messages: [])
+    for width: CGFloat in [320, 532] {
+      let state = OverlayState()
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+      state.selectConversation(conversation.id)
+      XCTAssertFalse(state.isCollapsed)
+      let recorder = MicrophoneFrameRecorder()
+      let host = NSHostingView(
+        rootView: MicrophoneFrameCapture(state: state, recorder: recorder)
+          .frame(width: width, height: 260))
+      host.frame = CGRect(x: 0, y: 0, width: width, height: 260)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      var transitions: [Bool] = []
+      state.onCollapseChanged = { transitions.append($0) }
+      for folded in [false, true, false] {
+        if state.isCollapsed != folded { state.toggleCollapsed() }
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let preview = try XCTUnwrap(recorder.frames.preview)
+        let microphone = try XCTUnwrap(recorder.frames.stop)
+        XCTAssertEqual(preview.width, OverlayRecordingControls.controlDiameter, accuracy: 1)
+        XCTAssertEqual(microphone.width, OverlayRecordingControls.controlDiameter, accuracy: 1)
+        XCTAssertEqual(preview.midY, microphone.midY, accuracy: 1, "one shared compact row")
+        XCTAssertGreaterThan(preview.minX, microphone.maxX)
+        XCTAssertLessThanOrEqual(preview.maxX, width)
+        XCTAssertEqual(
+          state.selectedConversationID, conversation.id, "folding preserves the chosen channel")
+        XCTAssertFalse(state.recording, "window folding must not start or end a take")
+      }
+      XCTAssertEqual(transitions, [true, false])
+    }
+  }
+
+  @MainActor
   func testMicrophoneHitRegionSurvivesBothHeaderWidths() throws {
     for width: CGFloat in [470, 320] {
       let state = OverlayState()
@@ -295,7 +341,8 @@ final class OverlayResizeHitTests: XCTestCase {
       XCTAssertTrue(panel.isVisible)
 
       // The dot is the leading 7 pt of the brand block's inert drag region.
-      let brand = try XCTUnwrap(descendant(identifier: "overlay-header-inert-drag-region", in: root))
+      let brand = try XCTUnwrap(
+        descendant(identifier: "overlay-header-inert-drag-region", in: root))
       let brandFrame = root.convert(brand.bounds, from: brand)
       let dot = NSPoint(x: brandFrame.minX + 3.5, y: brandFrame.midY)
       let hit = try XCTUnwrap(root.hitTest(dot))
