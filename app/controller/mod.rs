@@ -4525,21 +4525,6 @@ impl RecordingController {
         }
 
         if current_state == State::Idle
-            && next_start
-            && !event.assistive
-            && matches!(event.hold_mode, HoldMode::Raw)
-        {
-            let _serial = self.serial_lock.lock().await;
-            if self.shutdown_requested.load(Ordering::SeqCst) {
-                return Err(anyhow::anyhow!("capture admission closed for shutdown"));
-            }
-            current_state = self.current_state().await;
-            if current_state == State::Idle {
-                self.close_agent_channels_for_dictation().await?;
-            }
-        }
-
-        if current_state == State::Idle
             && event.key_type == HotkeyType::Hold
             && matches!(event.action, HotkeyAction::Down)
         {
@@ -5183,7 +5168,7 @@ impl RecordingController {
     }
 
     /// Schedule delayed recording start for hold mode
-    async fn schedule_hold_start(&self, assistive: bool) -> Result<()> {
+    async fn schedule_hold_start(self: &Arc<Self>, assistive: bool) -> Result<()> {
         // Scheduling selects the take generation. Refresh and every actual
         // start/stop transition cross this same boundary, while the spawned
         // task itself is never awaited under the guard.
@@ -5261,6 +5246,7 @@ impl RecordingController {
         let hold_start_generation = Arc::clone(&self.hold_start_generation);
         let shutdown_requested = Arc::clone(&self.shutdown_requested);
         let start_transition_in_flight = Arc::clone(&self.start_transition_in_flight);
+        let controller = Arc::clone(self);
         // Every exit after the start guard releases exactly these slots.
         let hold_session = HoldStartSession {
             session_id: Arc::clone(&self.session_id),
@@ -5314,6 +5300,17 @@ impl RecordingController {
                     current_state
                 );
                 return;
+            }
+
+            if !assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
+                if let Err(error) = controller.close_agent_channels_for_dictation().await {
+                    error!(%error, "Hold-start refused: agent channel did not close");
+                    return;
+                }
+                if hold_start_generation.load(Ordering::SeqCst) != task_generation {
+                    debug!("Hold-start cancelled while closing the preceding channels");
+                    return;
+                }
             }
 
             let _start_guard = AtomicFlagGuard::new(Arc::clone(&start_transition_in_flight));
@@ -5591,6 +5588,9 @@ impl RecordingController {
                 current_state
             );
             return Ok(CaptureAdmission::NotAdmitted);
+        }
+        if !is_assistive && matches!(capture_turn, CaptureTurnIntent::HandsFree) {
+            self.close_agent_channels_for_dictation().await?;
         }
         // A new take inherits no destination from the previous one.
         *self.delivery_disposition.write().await = TranscriptDelivery::Unattempted;

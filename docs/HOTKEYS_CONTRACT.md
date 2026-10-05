@@ -19,6 +19,9 @@ An explicit ordinary hold or toggle start closes active agent capture channels
 through their normal hangup path before admitting dictation (Founder delivery
 `f3cbd666a0d7d7e61d4d1971`, 2026-10-05).
 Each channel task joins and publishes its final receipt; its words are retained.
+For hold gestures, handover waits until the existing start delay has elapsed.
+The modifier alone can still become a channel chord or be released without a
+take; an explicit channel gesture cancels that pending ordinary hold.
 The same unified overlay then shows My dictation. Channel auto-reopening shares
 the controller's serial transition lock with this handover. Repeated lifecycle
 callbacks do not replace a view the user selected during the admitted capture.

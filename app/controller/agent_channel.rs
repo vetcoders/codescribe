@@ -586,6 +586,9 @@ impl RecordingController {
     /// state is not changed.
     pub async fn toggle_agent_channel(&self, digit: u8) -> Result<()> {
         let _serial = self.serial_lock.lock().await;
+        if self.current_state().await == super::State::Idle {
+            self.cancel_pending_hold_start().await;
+        }
         let opened = self
             .dispatch_agent_channel(
                 digit,
