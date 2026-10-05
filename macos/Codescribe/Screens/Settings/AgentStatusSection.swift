@@ -70,6 +70,7 @@ struct AgentStatusSection: View {
           .padding(.top, 8)
       }
     }
+    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
   }
 
   // MARK: Per-server probe
@@ -215,7 +216,8 @@ private struct AgentStatusRow: View {
         .font(CSFont.ui(12.5, .semibold))
         .foregroundStyle(Color.primary)
         .lineLimit(2)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       Circle().fill(row.tone.dotColor).frame(width: 7, height: 7)
     }
     .padding(.horizontal, 16)
@@ -254,6 +256,7 @@ private struct CapabilityMatrixRow: View {
           .font(CSFont.ui(12.5, .semibold))
           .foregroundStyle(Color.primary)
           .lineLimit(2)
+          .fixedSize(horizontal: false, vertical: true)
         if !row.nativeTool.isEmpty {
           Text(verbatim: "tool: \(row.nativeTool) · provider: \(row.provider)")
             .font(CSFont.mono(10, .medium))
@@ -266,7 +269,7 @@ private struct CapabilityMatrixRow: View {
             .lineLimit(1)
         }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
+      .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       Circle().fill(tierColor).frame(width: 7, height: 7).padding(.top, 5)
     }
     .padding(.horizontal, 16)

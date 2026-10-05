@@ -164,6 +164,8 @@ Open **Settings → Agent → Diagnostics** for the complete agent connection
 report: the core readiness rows, managed skill status and installation paths,
 capability matrix, MCP status, and a single Refresh action. Native-tool or
 workspace failures remain visible there even when credentials are valid.
+Long diagnostic values wrap within the pane, keeping labels and controls
+visible when the sidebar is open.
 
 Setup keeps the Agent step to one decision: which clients to connect. It shows
 only a short ready state or an inline setup action and error. The preceding
