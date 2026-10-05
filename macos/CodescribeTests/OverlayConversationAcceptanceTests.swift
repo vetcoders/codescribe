@@ -173,6 +173,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       let materials = scrollMaterials(host)
       XCTAssertEqual(materials.count, 2, "one material per edge, without stacked header shades")
       for material in materials {
+        XCTAssertEqual(material.material, .hudWindow, "keep the floating overlay material")
         XCTAssertEqual(material.blendingMode, .withinWindow, "blur messages, not the desktop")
         XCTAssertEqual(material.state, .active, "a non-activating overlay still needs blur")
         XCTAssertNil(

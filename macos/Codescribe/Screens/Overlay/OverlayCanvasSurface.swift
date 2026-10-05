@@ -82,7 +82,9 @@ struct OverlayScrollMaterial: NSViewRepresentable {
 
   func makeNSView(context: Context) -> OverlayScrollEffectView {
     let view = OverlayScrollEffectView()
-    view.material = .headerView
+    // This is floating overlay chrome, like the desktop material above;
+    // inline table-header material adds an opaque white wash in Light appearance.
+    view.material = .hudWindow
     view.blendingMode = .withinWindow
     view.state = .active
     view.setAccessibilityElement(false)
