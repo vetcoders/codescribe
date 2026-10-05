@@ -128,6 +128,36 @@ class AgentReplyAdmissionTests(unittest.TestCase):
         self.assertEqual(len({row["reply_id"] for row in replies}), 5)
         self.assertEqual({row["text"] for row in replies}, {self.args.say})
 
+    def test_stop_controls_only_the_running_owned_ticket_and_retains_text(self):
+        def speaker(*_args, **kwargs):
+            control = kwargs["control"]
+            self.args.stop_reply = control.reply["reply_id"]
+            self.args.playback_ticket = control.ticket
+            self.assertEqual(DEMUX.stop_reply_command(self.args), 0)
+            self.assertTrue(control.stopped())
+            return False, "stopped", "stopped"
+
+        self.assertEqual(self.say(speaker), 5)
+        rows = self.rows()
+        self.assertEqual(rows[0]["text"], self.args.say)
+        self.assertEqual(rows[-1]["state"], "stopped")
+        self.assertEqual(rows[0]["reply_id"], rows[-1]["reply_id"])
+
+    def test_foreign_session_cannot_stop_the_running_reply(self):
+        def speaker(*_args, **kwargs):
+            control = kwargs["control"]
+            foreign = argparse.Namespace(**vars(self.args))
+            foreign.session = "other-session"
+            foreign.stop_reply = control.reply["reply_id"]
+            foreign.playback_ticket = control.ticket
+            with self.assertRaises(ValueError):
+                DEMUX.stop_reply_command(foreign)
+            self.assertFalse(control.stopped())
+            return True, None, None
+
+        self.assertEqual(self.say(speaker), 0)
+        self.assertEqual(self.rows()[-1]["state"], "spoken")
+
     def test_no_reply_target_never_guesses_the_pending_question(self):
         self.admitted_delivery()
         self.assertEqual(self.say(lambda *_args, **_kwargs: (True, None, None)), 0)

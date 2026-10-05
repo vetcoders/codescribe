@@ -1841,19 +1841,75 @@ mod tests {
         let controller = RecordingController::new_without_keychain();
         let roster = controller.channel_roster_states_at(&binding, &bridge).await;
 
-        assert_eq!(roster.len(), 2, "{roster:?}");
-        assert_eq!(roster[0].channel, "1");
-        assert_eq!(roster[0].audience, "Ada");
-        assert!(!roster[0].open);
-        assert_eq!(roster[0].follower_alive, Some(true));
-        assert_eq!(roster[1].channel, "3");
-        assert_eq!(roster[1].audience, "Leon");
+        assert_eq!(roster.len(), 3, "{roster:?}");
+        assert_eq!(roster[0].channel, "0");
+        assert_eq!(roster[0].audience, "*");
+        assert!(roster[0].provider.is_none());
+        assert!(roster[0].provider_session_id.is_none());
+        assert_eq!(roster[1].channel, "1");
+        assert_eq!(roster[1].audience, "Ada");
         assert!(!roster[1].open);
+        assert_eq!(roster[1].follower_alive, Some(true));
+        assert_eq!(roster[2].channel, "3");
+        assert_eq!(roster[2].audience, "Leon");
+        assert!(!roster[2].open);
         assert_eq!(
-            roster[1].follower_alive,
+            roster[2].follower_alive,
             Some(false),
             "no lease means nobody is listening"
         );
+    }
+
+    #[test]
+    fn frozen_broadcast_keeps_original_owners_and_refuses_wrong_destinations() {
+        let dir = tempfile::tempdir().expect("temp");
+        let binding = dir.path().join("binding.json");
+        let bus = dir.path().join("bus.jsonl");
+        std::fs::write(&bus, "").expect("bus");
+        let canonical_bus = bus.canonicalize().expect("canonical bus");
+        std::fs::create_dir(dir.path().join("leases")).expect("leases");
+        let bindings = serde_json::json!({"schema": "vc.agent-audience-binding.v1", "bindings": {
+            "1": {"audience": "Lena", "provider": "codex", "provider_session_id": "agent-a"},
+            "2": {"audience": "Adam", "provider": "codex", "provider_session_id": "agent-b"},
+            "3": {"audience": "Astra", "provider": "codex", "provider_session_id": "agent-c"}
+        }});
+        std::fs::write(&binding, serde_json::to_vec(&bindings).expect("json")).expect("binding");
+        let admit = |session: &str, destination: &Path| {
+            let lease = hex::encode(Sha256::digest(format!("codex\0{session}").as_bytes()))[..32]
+                .to_string();
+            let receipt = serde_json::json!({
+                "schema": "codescribe.agent-bridge.lease.v1", "lease_id": lease,
+                "provider": "codex", "provider_session_id": session, "active": true,
+                "heartbeat_unix": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("clock").as_secs_f64(),
+                "bus": destination
+            });
+            std::fs::write(
+                dir.path().join("leases").join(format!("{lease}.json")),
+                serde_json::to_vec(&receipt).expect("json"),
+            )
+            .expect("lease");
+        };
+        admit("agent-a", &canonical_bus);
+        let frozen = frozen_channel_recipients(0, &binding, &bus);
+        assert_eq!(frozen.len(), 1);
+        admit("agent-b", &canonical_bus);
+        admit("agent-c", &dir.path().join("wrong.jsonl"));
+        assert_eq!(
+            frozen.len(),
+            1,
+            "a late attachment cannot inherit this question"
+        );
+        assert_eq!(frozen[0]["provider_session_id"], "agent-a");
+        let next = frozen_channel_recipients(0, &binding, &bus);
+        assert_eq!(
+            next.len(),
+            2,
+            "only concrete live owners of this destination"
+        );
+        let named = frozen_channel_recipients(2, &binding, &bus);
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0]["provider_session_id"], "agent-b");
+        assert!(frozen_channel_recipients(3, &binding, &bus).is_empty());
     }
 
     /// One closing throne: a session sealed by silence is never sealed again

@@ -34,9 +34,8 @@ const {
   path,
 } = Astro.props;
 
-// Absolute URLs for canonical / social cards. SITE = https://vetcoders.github.io,
-// base → canonical https://vetcoders.github.io/codescribe/
-const site = import.meta.env.SITE ?? 'https://vetcoders.github.io';
+// Absolute URLs follow the selected deployment: canonical Caddy or its Pages copy.
+const site = import.meta.env.SITE ?? 'https://codescribe.vetcoders.io';
 // astro.config sets `base: "/codescribe"` with NO trailing slash, so BASE_URL is
 // "/codescribe" — not "/codescribe/". The slash is load-bearing here: `new URL`
 // treats a slashless base as a FILE and replaces it, so resolving "privacy/"

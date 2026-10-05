@@ -7,9 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-- Prepare source version `0.15.3`. Agent conversation surfaces are undergoing
-  implementation and acceptance; this entry does not certify a published release.
-
 - Add the localization foundation for the macOS app: String Catalogs with English as the source language, catalog sync and lint tooling, and interface copy prepared for further languages (`docs/LOCALIZATION.md`). No translation ships yet. Tray status wording is now authored in the app; the Rust tray payload carries state only.
 - Turning the transcription overlay off closes an overlay already on screen (a take being corrected stays until its draft is committed or discarded), and a status card shown with the overlay off no longer stays up when "Keep visible between takes" is pinned.
 - A second click on the menu bar icon closes the menu; it no longer closes and reopens it within the same click.
@@ -27,6 +24,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The sections below distinguish code milestones from public releases. A version
 number in `Cargo.toml` is not evidence that a DMG, tag, appcast, or GitHub
 Release exists.
+
+## [0.15.3] - 2026-10-05
+
+Release candidate. Public DMG, notarization and installation receipts are recorded
+separately; these source notes alone do not certify publication.
+
+- View My dictation, 0 · All and named agent conversations in the existing
+  overlay. Viewing retains the editor and does not change microphone routing.
+- Keep agent replies as durable text before attempting speech. Queue admission,
+  acknowledgment and playback outcomes remain separate; failed speech retains
+  the reply. Explicit Play/Stop controls one reply and its playback ticket.
+- Preserve original question and recipient ownership across channel rebinding,
+  renaming and mailbox pruning. Broadcast recipients freeze at capture start;
+  late attachments do not inherit an earlier question.
+- Restore conversation and delivery projections on a quiet restart, and retain
+  logical cursors across managed bus rotation. Delayed playback receipts cannot
+  rearm a superseded ticket.
+- Bundle the canonical bus publisher with the app and verify its manifest after
+  signing, so installed helpers work outside a development checkout.
+- Avoid discovering unused optional model caches during slim builds. Silero
+  remains embedded; Whisper remains available through runtime download/cache.
+- Point search discovery at the canonical website and include Fleet, licensing
+  and Voice Lab routes in its sitemap.
 
 ## [0.15.2] - 2026-10-04
 
