@@ -7120,12 +7120,12 @@
         }
       }
     },
-    "Microphone active · channel %@" : {
+    "Microphone active" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Mikrofon aktywny · kanał %@"
+            "state" : "needs_review",
+            "value" : "Mikrofon aktywny"
           }
         }
       }
