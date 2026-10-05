@@ -4692,7 +4692,8 @@ impl RecordingController {
                     let Some(generation) = hold_generation else {
                         return Ok(());
                     };
-                    self.schedule_hold_start(event.assistive, generation).await?;
+                    self.schedule_hold_start(event.assistive, generation)
+                        .await?;
                     // Fn down with a live OS selection attaches `{selection_1}`
                     // immediately. Mid-hold arm pulses add `{selection_2..n}`.
                     // Destination stays dictation — do not arm Chat/Agent.
@@ -9915,7 +9916,13 @@ mod owned_capture_settlement_tests {
         operation.task.await.unwrap();
         assert!(controller.capture_shutdown_settled());
         assert!(controller.start_composer_turn_recording().await.is_err());
-        assert!(controller.schedule_hold_start(false).await.is_err());
+        let generation = controller.hold_start_generation.load(Ordering::SeqCst);
+        assert!(
+            controller
+                .schedule_hold_start(false, generation)
+                .await
+                .is_err()
+        );
         assert!(controller.start_conversation_mode().await.is_err());
         assert_eq!(rows(&dir).len(), 2);
     }
@@ -10728,7 +10735,10 @@ mod hold_start_terminal_lifecycle_falsifiers {
         *controller.hold_mode.write().await = HoldMode::Chat;
 
         controller
-            .handle_hold_event(hold_input(HotkeyAction::Down))
+            .handle_hold_event(
+                hold_input(HotkeyAction::Down),
+                Some(controller.hold_start_generation.load(Ordering::SeqCst)),
+            )
             .await
             .expect("hold down schedules a delayed start");
         let task = controller
@@ -10759,7 +10769,7 @@ mod hold_start_terminal_lifecycle_falsifiers {
         // The real key-up path: state is still Idle, so this cancels the
         // pending start by bumping the generation — without `serial_lock`.
         controller
-            .handle_hold_event(hold_input(HotkeyAction::Up))
+            .handle_hold_event(hold_input(HotkeyAction::Up), None)
             .await
             .expect("key-up while idle cancels");
         assert_ne!(

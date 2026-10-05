@@ -1714,8 +1714,12 @@ mod tests {
         };
         // Enter the real scheduling boundary directly so unrelated context
         // archival awaits cannot turn this into an earlier release test.
-        let pending =
-            tokio::spawn(async move { pending_controller.schedule_hold_start(false).await });
+        let requested_generation = controller.hold_start_generation.load(Ordering::SeqCst);
+        let pending = tokio::spawn(async move {
+            pending_controller
+                .schedule_hold_start(false, requested_generation)
+                .await
+        });
         for _ in 0..20 {
             tokio::task::yield_now().await;
         }
