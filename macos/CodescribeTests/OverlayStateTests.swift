@@ -500,6 +500,117 @@ final class OverlayStateTests: XCTestCase {
     state.finishControllerRecording()
   }
 
+  func testProductionLifecycleReturnsFromHistoryToExpandedDictationInTheSamePanel() async throws {
+    for monitor in [false, true] {
+      let engine = OverlayStateTestEngine()
+      let state = OverlayState()
+      let panel = NSPanel()
+      var factories = 0
+      var presented: [NSPanel] = []
+      let controller = OverlayController(
+        state: state, engine: engine,
+        overlayEnabledProvider: { true }, assistiveStatusProvider: { false },
+        panelFactory: { _, _ in
+          factories += 1
+          return panel
+        },
+        orderPanelFront: { presented.append($0) }, orderPanelOut: { _ in })
+      defer {
+        state.finishControllerRecording()
+        panel.orderOut(nil)
+      }
+      let lena = try navigationConversation()
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+      engine.rosterSnapshot = [navigationRoster()]
+      state.applyChannelRoster(engine.rosterSnapshot)
+      if monitor { state.showAgentMonitor() } else { state.selectConversation(lena.id) }
+      controller.show()
+      let beforePreparing = presented.count
+
+      // Keep the actual callbacks installed in AppModel.swift. Replacing them
+      // with showForRecording would miss composition/lifecycle regressions.
+      state.handleRecordingPreparing()
+      for _ in 0..<10 { await Task.yield() }
+      XCTAssertGreaterThan(presented.count, beforePreparing)
+      XCTAssertFalse(state.showsMyDictation, "the old controller roster still owns capture")
+      let beforeStarted = presented.count
+      engine.rosterSnapshot = []
+      state.handleRecordingStarted()
+      for _ in 0..<10 { await Task.yield() }
+      XCTAssertGreaterThan(presented.count, beforeStarted)
+      XCTAssertEqual(factories, 1, "ordinary admission reuses the existing panel")
+      XCTAssertTrue(presented.allSatisfy { $0 === panel })
+      XCTAssertTrue(state.transcriptOverlayEnabled)
+      XCTAssertTrue(state.expandedByDefault)
+      XCTAssertFalse(state.isCollapsed)
+      XCTAssertTrue(state.showsMyDictation)
+      XCTAssertFalse(state.showsAgentMonitor)
+      XCTAssertNil(state.selectedConversationID)
+      XCTAssertFalse(state.hasOpenChannel)
+      XCTAssertEqual(engine.startedRecordingCount, 0, "presentation never starts a recorder")
+      XCTAssertTrue(engine.toggledDigits.isEmpty)
+
+      state.selectConversation(lena.id)
+      let focus = state.conversationFocusRevision
+      state.handleRecordingPreparing()
+      state.handleRecordingStarted()
+      for _ in 0..<10 { await Task.yield() }
+      XCTAssertEqual(state.selectedConversationID, lena.id)
+      XCTAssertEqual(state.conversationFocusRevision, focus)
+      withExtendedLifetime(controller) {}
+    }
+  }
+
+  func testProductionLifecycleRetainsChannelAssistiveAndDisabledOverlayControls() async throws {
+    for control in ["channel", "assistive", "disabled"] {
+      let engine = OverlayStateTestEngine()
+      let state = OverlayState()
+      var presented = 0
+      var factories = 0
+      let controller = OverlayController(
+        state: state, engine: engine,
+        overlayEnabledProvider: { control != "disabled" },
+        assistiveStatusProvider: { control == "assistive" },
+        panelFactory: { _, _ in
+          factories += 1
+          return NSPanel()
+        },
+        orderPanelFront: { _ in presented += 1 }, orderPanelOut: { _ in })
+      defer { state.finishControllerRecording() }
+      let lena = try navigationConversation()
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+      state.selectConversation(lena.id)
+      if control == "channel" {
+        engine.rosterSnapshot = [navigationRoster()]
+        state.applyChannelRoster(engine.rosterSnapshot)
+      } else if control == "assistive" {
+        controller.handleIndicatorModeChange(.assistive)
+      }
+      state.handleRecordingPreparing()
+      state.handleRecordingStarted()
+      for _ in 0..<10 { await Task.yield() }
+      if control == "channel" {
+        XCTAssertEqual(state.selectedConversationID, lena.id)
+        XCTAssertTrue(state.hasOpenChannel)
+        XCTAssertGreaterThan(presented, 0)
+        XCTAssertEqual(factories, 1)
+      } else {
+        XCTAssertEqual(presented, 0)
+        XCTAssertEqual(factories, 0)
+        if control == "assistive" {
+          XCTAssertEqual(state.selectedConversationID, lena.id)
+          XCTAssertEqual(state.indicatorMode, .assistive)
+        } else {
+          XCTAssertTrue(state.showsMyDictation)
+          XCTAssertFalse(state.transcriptOverlayEnabled)
+        }
+      }
+      XCTAssertEqual(engine.startedRecordingCount, 0)
+      XCTAssertTrue(engine.toggledDigits.isEmpty)
+      withExtendedLifetime(controller) {}
+    }
+  }
+
   func testDuplicateStartedCallbackPreservesManualSelectionAfterOrdinaryHandover() async throws {
     let engine = OverlayStateTestEngine()
     let state = OverlayState()
