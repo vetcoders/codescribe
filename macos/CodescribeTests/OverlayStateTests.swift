@@ -532,6 +532,24 @@ final class OverlayStateTests: XCTestCase {
     state.finishControllerRecording()
   }
 
+  func testRepeatedPreparingPreservesManuallyViewedHistoryWithinSameCapture() throws {
+    for started in [false, true] {
+      let state = OverlayState()
+      let lena = try navigationConversation()
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+      state.handleRecordingPreparing()
+      if started { state.handleRecordingStarted() }
+      XCTAssertTrue(state.showsMyDictation)
+      state.selectConversation(lena.id)
+      let focus = state.conversationFocusRevision
+      state.handleRecordingPreparing()
+      XCTAssertEqual(state.selectedConversationID, lena.id)
+      XCTAssertEqual(state.conversationFocusRevision, focus)
+      XCTAssertTrue(state.recording, "history selection does not stop the existing capture")
+      state.finishControllerRecording()
+    }
+  }
+
   func testOpeningChannelBeforeObserverSnapshotWaitsForExactSession() throws {
     let state = OverlayState()
     let old = try navigationConversation(session: "old-session", lease: "b")
