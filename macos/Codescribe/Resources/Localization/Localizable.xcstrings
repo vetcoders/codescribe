@@ -5963,6 +5963,17 @@
         }
       }
     },
+    "Getting started" : {
+      "comment" : "Setup wizard window title; codescribe is the product name, kept lowercase",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pierwsze kroki"
+          }
+        }
+      }
+    },
     "GitHub token" : {
       "comment" : "GitHub is a product name",
       "localizations" : {
@@ -10355,7 +10366,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "Uruchom ponownie i kontynuuj"
           }
         }
@@ -14720,6 +14731,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Twój głos potrafi więcej"
+          }
+        }
+      }
+    },
+    "You’ll choose your dictation language later." : {
+      "comment" : "Interface language is independent of speech recognition",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "You’ll choose your dictation language later."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Język dyktowania wybierzesz później."
           }
         }
       }

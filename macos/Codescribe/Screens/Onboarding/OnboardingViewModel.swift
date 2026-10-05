@@ -242,8 +242,8 @@ final class OnboardingViewModel: ObservableObject {
   var windowTitle: String {
     String(
       localized: LocalizedStringResource(
-        "Welcome to codescribe", locale: interfaceLocale,
-        comment: "Setup wizard window title; codescribe is the product name, kept lowercase"
+        "Getting started", locale: interfaceLocale,
+        comment: "Setup wizard window title"
       ))
   }
   var totalSteps: Int { OnboardingStep.count }

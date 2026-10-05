@@ -22,11 +22,7 @@ struct InterfaceLanguageStepView: View {
           localized: LocalizedStringResource(
             "What language should Codescribe use?", locale: model.interfaceLocale,
             comment: "First setup step heading")),
-        blurb: String(
-          localized: LocalizedStringResource(
-            "This changes the app’s interface. You’ll choose your dictation language later.",
-            locale: model.interfaceLocale,
-            comment: "Interface language is independent of speech recognition"))
+        blurb: nil
       )
       ForEach(InterfaceLanguage.allCases, id: \.self) { language in
         OnboardingChoiceCard(
@@ -37,6 +33,15 @@ struct InterfaceLanguageStepView: View {
         .accessibilityIdentifier("onboarding-interface-language-\(language.rawValue)")
       }
       .disabled(model.applyingInterfaceLanguage)
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "You’ll choose your dictation language later.", locale: model.interfaceLocale,
+            comment: "Interface language is independent of speech recognition"))
+      )
+      .font(.body)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
       if model.interfaceLanguageNeedsRestart {
         Text(
           String(

@@ -57,7 +57,7 @@ struct OnboardingView: View {
     }
   }
 
-  private var chapter: (title: String, symbol: String, purpose: String) {
+  private var chapter: (title: String, symbol: String, purpose: String?) {
     switch model.step {
     case .interfaceLanguage:
       return (
@@ -66,10 +66,7 @@ struct OnboardingView: View {
             "Choose your language", locale: model.interfaceLocale,
             comment: "First setup chapter heading")),
         "globe",
-        String(
-          localized: LocalizedStringResource(
-            "Start with the language of the app.", locale: model.interfaceLocale,
-            comment: "First setup chapter subtitle"))
+        nil
       )
     case .mode:
       return (
@@ -146,7 +143,9 @@ struct OnboardingView: View {
           .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 5) {
           Text(chapter.title).font(.headline)
-          Text(chapter.purpose).font(.subheadline).foregroundStyle(.secondary)
+          if let purpose = chapter.purpose {
+            Text(purpose).font(.subheadline).foregroundStyle(.secondary)
+          }
         }
         Spacer(minLength: 0)
       }
