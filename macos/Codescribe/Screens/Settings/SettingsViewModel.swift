@@ -1811,9 +1811,9 @@ final class SettingsViewModel: ObservableObject {
   }
 
   private func select(_ target: SettingsSection, tab targetTab: SettingsTab?) {
-    guard target.availability == .available,
-      section != target || tab != targetTab
-    else { return }
+    guard target.availability == .available else { return }
+    if targetTab == .agentStatus { refreshCreatorAgentBridge() }
+    guard section != target || tab != targetTab else { return }
     if section != target { section = target }
     if tab != targetTab { tab = targetTab }
     if target == .agent {

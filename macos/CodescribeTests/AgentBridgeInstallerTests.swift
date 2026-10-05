@@ -481,13 +481,20 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertFalse(model.creatorAgentBridgeStatus.installedPaths.isEmpty)
     XCTAssertEqual(try Data(contentsOf: receiptURL), initialReceipt)
 
-    // Launch synchronization changes disk state without visiting Creator.
+    // A direct link must refresh even when Diagnostics is already selected.
     _ = try installer.install(selectedClients: [.codex, .claudeCode])
-    let synchronizedReceipt = try Data(contentsOf: receiptURL)
+    let revisitedReceipt = try Data(contentsOf: receiptURL)
     XCTAssertEqual(model.creatorAgentBridgeStatus.installedClients, [.codex])
+    model.select(SettingsTab.agentStatus)
+    XCTAssertEqual(Set(model.creatorAgentBridgeStatus.installedClients), [.codex, .claudeCode])
+    XCTAssertEqual(try Data(contentsOf: receiptURL), revisitedReceipt)
+
+    // Launch synchronization changes disk state without visiting Creator.
+    _ = try installer.install(selectedClients: [.claudeCode])
+    let synchronizedReceipt = try Data(contentsOf: receiptURL)
     NotificationCenter.default.post(
       name: SettingsViewModel.agentBridgeLaunchSynchronizationDidFinish, object: nil)
-    XCTAssertEqual(Set(model.creatorAgentBridgeStatus.installedClients), [.codex, .claudeCode])
+    XCTAssertEqual(model.creatorAgentBridgeStatus.installedClients, [.claudeCode])
     XCTAssertEqual(try Data(contentsOf: receiptURL), synchronizedReceipt)
   }
 
