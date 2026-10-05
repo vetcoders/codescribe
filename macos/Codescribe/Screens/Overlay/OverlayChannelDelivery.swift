@@ -112,6 +112,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       guard let audience = row["audience"] as? String, !audience.isEmpty else { return }
       let phaseID: String
       if schema == "codescribe.transcript-evidence.v1" {
+        // Channel documents become deliveries at capture closure. A ledger
+        // terminal observation still belongs to the same evolving message.
+        if Self.channelMessageKey(sessionID) != nil { return }
         guard row["reducer_action"] as? String == "record_ledger_terminal_seal",
           row["reducer_revision"] is NSNumber, row["rendered_text"] is String
         else { return }
@@ -308,6 +311,11 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       {
         key = "typed:" + identity
         revision = 0
+      } else if envelope["producer_schema"] as? String == "codescribe.transcript-evidence.v1",
+        let messageKey = Self.channelMessageKey(session)
+      {
+        key = messageKey
+        revision = (envelope["reducer_revision"] as? NSNumber)?.uint64Value ?? 0
       } else if envelope["producer_schema"] as? String == "codescribe.transcript-evidence.v1" {
         guard let occurrenceSession = envelope["occurrence_session_id"] as? String,
           let epoch = envelope["capture_epoch"] as? NSNumber,
@@ -473,7 +481,11 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           recipients: [], deliveryID: addressed ? row["delivery_id"] as? String : nil,
           replyTo: addressed ? row["delivery_id"] as? String : nil,
           unsolicited: !addressed, playback: playbackByReply[replyID], busPath: "")
-        if addressed, let occurrenceSession = row["occurrence_session_id"] as? String,
+        if addressed, let session = row["session_id"] as? String,
+          let messageKey = Self.channelMessageKey(session)
+        {
+          message.replyToOccurrenceID = messageKey
+        } else if addressed, let occurrenceSession = row["occurrence_session_id"] as? String,
           !occurrenceSession.isEmpty, let epoch = row["capture_epoch"] as? NSNumber,
           UInt64(epoch.stringValue) != nil, let start = row["sample_start"] as? NSNumber,
           let end = row["sample_end"] as? NSNumber,
@@ -504,11 +516,12 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       }
       // An audience label alone cannot choose a current provider session.
       guard !owners.isEmpty else { return }
-      let text =
-        row["label"] as? String ?? row["text"] as? String
-        ?? row["rendered_text"] as? String
-      guard let text, !text.isEmpty else { return }
       let evidence = schema == "codescribe.transcript-evidence.v1"
+      let channelMessage = evidence ? Self.channelMessageKey(session) : nil
+      let text = channelMessage != nil
+        ? row["rendered_text"] as? String
+        : row["label"] as? String ?? row["text"] as? String ?? row["rendered_text"] as? String
+      guard let text, !text.isEmpty else { return }
       if !evidence && !(row["utterance_id"] is NSNumber || row["utterance_id"] is String) { return }
       if evidence
         && (row["occurrence_session_id"] as? String == nil
@@ -525,7 +538,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           Self.coordinate(row["sample_end"]),
         ])
         : Self.identity(["utterance", session, Self.coordinate(row["utterance_id"])])
-      let key = "utterance:" + occurrence
+      let key = channelMessage ?? "utterance:" + occurrence
       let revision =
         (row[evidence ? "reducer_revision" : "sequence"] as? NSNumber)?.uint64Value ?? 0
       guard revision >= (messageRevisions[key] ?? 0) else { return }
@@ -545,7 +558,14 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           documentIndex: Self.coordinate(row["document_index"]), audience: audience,
           terminal: terminal)
       }
-      if evidence && terminal {
+      if channelMessage != nil {
+        phase = endedSessions.contains(session)
+          ? Self.identity(["channel-message-seal", session])
+          : Self.identity([
+            "channel-message-revision", session, Self.coordinate(row["reducer_revision"]),
+            row["reducer_action"] as? String ?? "",
+          ])
+      } else if evidence && terminal {
         phase = Self.identity([
           "terminal-seal", session, Self.coordinate(row["reducer_revision"]),
           "record_ledger_terminal_seal",
@@ -566,7 +586,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       }
       var recipients: [OverlayConversationRecipient] = []
       let kind =
-        terminal
+        channelMessage != nil
+        ? endedSessions.contains(session) ? "seal" : "revised"
+        : terminal
         ? "seal"
         : evidence || row["status"] as? String == "utterance_revised"
           ? "revised" : row["status"] as? String == "utterance_draft" ? "draft" : "event"
@@ -589,8 +611,17 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       var message = OverlayConversationMessage(
         id: key, kind: .user,
         text: text, order: order,
-        emittedAt: row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
+        emittedAt: channelMessage != nil
+          ? messages[key]?.emittedAt ?? sessionOpenedAt[session] ?? row["emitted_at"] as? String ?? ""
+          : row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
         deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+      if channelMessage != nil {
+        var occurrences = messages[key]?.occurrenceIDs ?? [:]
+        let entry = [row["occurrence_session_id"] as? String ?? session,
+          Self.coordinate(row["capture_epoch"]), Self.coordinate(row["document_index"])].joined(separator: "\0")
+        occurrences[entry] = "utterance:" + occurrence
+        message.occurrenceIDs = occurrences
+      }
       let components = session.split(separator: "-")
       message.sourceChannel =
         row["channel"] as? String
@@ -616,9 +647,12 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     }
 
     private mutating func finalizeRefused(session: String) {
-      for (id, origin) in deliveryOrigins where origin.captureSession == session && !origin.terminal {
+      for (id, origin) in deliveryOrigins
+      where origin.captureSession == session && (!origin.terminal || Self.channelMessageKey(session) != nil) {
         guard var message = messages[id] else { continue }
-        let phase = Self.identity(["coverage-refused-seal", session, origin.documentIndex])
+        let phase = Self.channelMessageKey(session) != nil
+          ? Self.identity(["channel-message-seal", session])
+          : Self.identity(["coverage-refused-seal", session, origin.documentIndex])
         for index in message.recipients.indices {
           let owner = message.recipients[index].owner
           let delivery = Self.identity(["native_bus_demux", owner.leaseID, phase, "seal", Self.routedAudience(origin.audience)])
@@ -628,6 +662,12 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           }
         }
         messages[id] = message
+        if Self.channelMessageKey(session) != nil,
+          seenSeals.insert(origin.audience + "\0" + phase).inserted {
+          sealOrder &+= 1
+          seals[origin.audience] = Seal(phaseID: phase, audience: origin.audience, order: sealOrder,
+            captureSessionID: session, recipientIDs: message.recipients.map { $0.owner.id })
+        }
       }
     }
 
@@ -717,6 +757,13 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       return ""
     }
 
+    private static func channelMessageKey(_ session: String) -> String? {
+      let parts = session.split(separator: "-")
+      guard parts.count > 2, parts[0] == "agent", parts[1] == "channel",
+        !parts[2].isEmpty, parts[2].allSatisfy({ $0.isNumber }) else { return nil }
+      return "utterance:" + identity(["channel-message", session])
+    }
+
     // Exact bus-demux.py _identity contract, including its NUL separator and
     // terminal phase coalescing. Fixed Python-produced vectors guard drift.
     private static func routedAudience(_ audience: String) -> String {
@@ -791,6 +838,7 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   var playback: OverlayReplyPlayback?
   var busPath: String
   var replyToOccurrenceID: String? = nil
+  var occurrenceIDs: [String: String]? = nil
   var sourceChannel: String? = nil
   var replyID: String? { kind == .reply ? String(id.dropFirst("reply:".count)) : nil }
 }
