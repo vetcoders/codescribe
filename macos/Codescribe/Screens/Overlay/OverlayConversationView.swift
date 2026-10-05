@@ -121,10 +121,14 @@ struct OverlayConversationView: View {
   ) -> OverlayConversationMessage? {
     guard reply.kind == .reply, let deliveryID = reply.replyTo, let owner = reply.owner
     else { return nil }
-    return conversation.messages.first { message in
+    let matches = conversation.messages.filter { message in
       message.kind == .user && message.recipients.contains {
         $0.deliveryID == deliveryID && $0.owner.id == owner.id
       }
     }
+    if let occurrenceID = reply.replyToOccurrenceID {
+      return matches.first { $0.id == occurrenceID }
+    }
+    return matches.count == 1 ? matches[0] : nil
   }
 }

@@ -31,6 +31,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     private var receiptCursor: Int = 0
     private var messageRevisions: [String: UInt64] = [:]
     private var deliveryOrigins: [String: DeliveryOrigin] = [:]
+    private var sessionOpenedAt: [String: String] = [:]
     private struct DeliveryOrigin: Codable {
       let captureSession: String
       let channel: String
@@ -40,7 +41,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     }
     private enum CodingKeys: String, CodingKey {
       case seals, sessions, endedSessions, receipts, sealOrder, seenSeals, messages, messageOrder
-      case captureRecipients, historicalOwners, playbackByReply, messageSequence, messageRevisions, deliveryOrigins, revision
+      case captureRecipients, historicalOwners, playbackByReply, messageSequence, messageRevisions, deliveryOrigins, revision, sessionOpenedAt
     }
     private static let historyLimit = 256
     private static let historyByteLimit = 16 << 20
@@ -89,6 +90,10 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           return
         }
         guard state == "open" || state == "sealed" else { return }
+        if state == "open" && !admitsOpening(channel: channel, session: sessionID, openedAt: openedAt) {
+          return
+        }
+        if state == "sealed" { endedSessions.insert(sessionID) }
         sessions[channel] = Session(
           provider: provider, providerSession: providerSession, sessionID: sessionID,
           openedAt: openedAt, isOpen: state == "open" && row["loud"] as? Bool == true)
@@ -184,7 +189,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         owner.provider == binding["provider"] as? String,
         owner.providerSessionID == binding["provider_session_id"] as? String
       else { return }
-      if historicalOwners[owner.id] == nil {
+      if historicalOwners[owner.id] == nil || historicalOwners[owner.id]?.channel.isEmpty == true {
+        // Completing missing roster metadata leaves each stored message's owner label intact.
         historicalOwners[owner.id] = owner
         revision &+= 1
       }
@@ -287,7 +293,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       guard revision >= (messageRevisions[key] ?? 0), var message = messages[key],
         let index = message.recipients.firstIndex(where: { $0.owner.id == owner.id }) else { return }
       if message.recipients[index].deliveryID != delivery {
-        revision &+= 1
+        self.revision &+= 1
         message.recipients[index] = OverlayConversationRecipient(owner: message.recipients[index].owner,
           deliveryID: delivery, queued: false, accepted: false, acknowledged: false)
       }
@@ -298,12 +304,20 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       let schema = row["schema"] as? String
       if schema == "codescribe.channel-session.v1", let session = row["session_id"] as? String,
         let channel = row["channel"] as? String {
-        let open = row["state"] as? String == "open"
-        if !open, let current = sessions[channel],
-          current.openedAt != row["opened_at"] as? String { return }
-        for origin in deliveryOrigins.values where origin.channel == channel
-          && (origin.captureSession != session || !open) {
-          finalizeRefused(session: origin.captureSession)
+        if row["state"] as? String == "open" {
+          guard let openedAt = row["opened_at"] as? String,
+            admitsOpening(channel: channel, session: session, openedAt: openedAt),
+            let opened = Self.openingDate(openedAt) else { return }
+          sessionOpenedAt[session] = openedAt
+          for origin in deliveryOrigins.values where origin.channel == channel
+            && origin.captureSession != session {
+            guard let previous = sessionOpenedAt[origin.captureSession],
+              let earlier = Self.openingDate(previous), earlier < opened else { continue }
+            finalizeRefused(session: origin.captureSession)
+          }
+        } else {
+          // A predecessor close can settle its own receipt, never its successor's.
+          finalizeRefused(session: session)
         }
       }
       if (schema == "codescribe.transcript.v1" || schema == "codescribe.transcript-evidence.v1"),
@@ -350,12 +364,21 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         let addressed = row["association"] as? String == "addressed"
           && row["delivery_id"] is String
         let order = messages[key]?.order ?? nextOrder()
-        store(OverlayConversationMessage(id: key, kind: .reply,
+        var message = OverlayConversationMessage(id: key, kind: .reply,
           text: text, order: order,
           emittedAt: row["emitted_at"] as? String ?? "", owner: historicalOwners[owner.id],
           recipients: [], deliveryID: addressed ? row["delivery_id"] as? String : nil,
           replyTo: addressed ? row["delivery_id"] as? String : nil,
-          unsolicited: !addressed, playback: playbackByReply[replyID], busPath: ""))
+          unsolicited: !addressed, playback: playbackByReply[replyID], busPath: "")
+        if addressed, let occurrenceSession = row["occurrence_session_id"] as? String,
+          !occurrenceSession.isEmpty, let epoch = row["capture_epoch"] as? NSNumber,
+          UInt64(epoch.stringValue) != nil, let start = row["sample_start"] as? NSNumber,
+          let end = row["sample_end"] as? NSNumber,
+          let first = UInt64(start.stringValue), let last = UInt64(end.stringValue), last > first {
+          message.replyToOccurrenceID = "utterance:" + Self.identity(["occurrence", occurrenceSession,
+            epoch.stringValue, start.stringValue, end.stringValue])
+        }
+        store(message)
         return
       }
       guard schema == "codescribe.transcript.v1" || schema == "codescribe.transcript-evidence.v1",
@@ -428,6 +451,22 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: ""))
     }
 
+    private func admitsOpening(channel: String, session: String, openedAt: String) -> Bool {
+      guard !endedSessions.contains(session), let incoming = Self.openingDate(openedAt) else { return false }
+      guard let current = sessions[channel] else { return true }
+      if current.sessionID == session { return current.openedAt == openedAt }
+      guard let previous = Self.openingDate(current.openedAt) else { return false }
+      return incoming > previous
+    }
+
+    private static func openingDate(_ value: String) -> Date? {
+      let formatter = ISO8601DateFormatter()
+      formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+      if let date = formatter.date(from: value) { return date }
+      formatter.formatOptions = [.withInternetDateTime]
+      return formatter.date(from: value)
+    }
+
     private mutating func finalizeRefused(session: String) {
       for (id, origin) in deliveryOrigins where origin.captureSession == session && !origin.terminal {
         guard var message = messages[id] else { continue }
@@ -497,6 +536,10 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         for key in captureRecipients.keys.sorted().prefix(captureRecipients.count - Self.historyLimit) {
           captureRecipients.removeValue(forKey: key)
         }
+      }
+      if sessionOpenedAt.count > Self.historyLimit {
+        let retained = Set(deliveryOrigins.values.map(\.captureSession) + sessions.values.map(\.sessionID))
+        sessionOpenedAt = sessionOpenedAt.filter { retained.contains($0.key) }
       }
       if receipts.count > Self.historyLimit * 2 {
         let deliveryIDs = Set(messages.values.flatMap { $0.recipients.compactMap(\.deliveryID) })
@@ -594,6 +637,7 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   let unsolicited: Bool
   var playback: OverlayReplyPlayback?
   var busPath: String
+  var replyToOccurrenceID: String? = nil
   var replyID: String? { kind == .reply ? String(id.dropFirst("reply:".count)) : nil }
 }
 
