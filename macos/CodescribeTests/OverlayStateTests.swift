@@ -387,6 +387,26 @@ final class OverlayStateTests: XCTestCase {
     state.finishControllerRecording()
   }
 
+  func testFreshEmptyControllerRosterOverridesOlderBusOpenPaintForCaptureFocus() async throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    let oldDelivery = OverlayChannelDelivery(
+      channel: "2", agent: "Lena", deliveryID: "old", stage: .received, isOpen: true)
+    state.applyChannelDelivery([oldDelivery])
+    state.selectConversation(lena.id)
+    XCTAssertTrue(state.hasOpenChannel, "old observer paint remains explicit")
+    engine.rosterSnapshot = []
+    state.handleRecordingPreparing()
+    for _ in 0..<10 { await Task.yield() }
+    XCTAssertTrue(state.showsMyDictation, "current controller ownership decides this capture")
+    XCTAssertEqual(state.channelDelivery, [oldDelivery], "focus does not rewrite bus evidence")
+    XCTAssertTrue(engine.toggledDigits.isEmpty)
+    state.finishControllerRecording()
+  }
+
   func testFreshActiveRosterOpensExactAgentInsteadOfOrdinaryCanvas() async throws {
     let engine = OverlayStateTestEngine()
     let state = OverlayState()
