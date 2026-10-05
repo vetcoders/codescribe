@@ -356,7 +356,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertFalse(status.contains(".popover("))
     XCTAssertTrue(view.contains("channelStatusView.monitorBody"))
     XCTAssertTrue(status.contains("overlay-channel-delivery-"))
-    XCTAssertTrue(status.contains("Divider("), "separate passive viewing from microphone controls")
+    XCTAssertTrue(status.contains("Divider("), "saved histories retain their own section")
     XCTAssertFalse(status.contains("glassEffect("))
     // The header shows one glyph, never the microphone: mic = recording only.
     XCTAssertFalse(status.contains("antenna.radiowaves"))
@@ -428,6 +428,114 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertNil(view.onToggleChannel)
     view.toggle(channel)
     XCTAssertFalse(view.isOpen(channel), "a click cannot optimistically open the channel")
+  }
+
+  func testUnifiedAgentRowKeepsViewingAndRecordingSeparate() throws {
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "current",
+        "lease_id": String(repeating: "b", count: 32),
+        "channel": "2", "name": "lena",
+      ]))
+    let current = OverlayConversation(
+      id: owner.id, channel: "2", name: "lena", owner: owner, messages: [])
+    let channel = OverlayChannelDelivery(
+      channel: "2", agent: "lena", deliveryID: nil, stage: nil, isOpen: false)
+    var selections: [String?] = []
+    var toggles: [UInt8] = []
+    let view = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "2": .init(
+          open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+          provider: "codex", providerSessionID: "current")
+      ],
+      onToggleChannel: { toggles.append($0) }, conversations: [current],
+      onSelectConversation: { selections.append($0) })
+    view.viewConversation(channel)
+    XCTAssertEqual(selections, [current.id])
+    XCTAssertTrue(toggles.isEmpty, "passive viewing never opens the microphone")
+    view.toggle(channel)
+    XCTAssertEqual(toggles, [2])
+    XCTAssertEqual(selections, [current.id], "capture uses its own controller intent")
+    XCTAssertFalse(view.isOpen(channel), "the controller, not a click, owns open state")
+  }
+
+  func testUnifiedAgentRowDoesNotChooseAnAmbiguousLease() throws {
+    let owners = try ["b", "c"].map { lease in
+      try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": "current",
+          "lease_id": String(repeating: lease, count: 32),
+          "channel": "2", "name": "lena",
+        ]))
+    }
+    let channel = OverlayChannelDelivery(
+      channel: "2", agent: "lena", deliveryID: nil, stage: nil, isOpen: false)
+    var selections: [String?] = []
+    let view = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "2": .init(
+          open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+          provider: "codex", providerSessionID: "current")
+      ],
+      conversations: owners.map {
+        .init(id: $0.id, channel: "2", name: "lena", owner: $0, messages: [])
+      },
+      onSelectConversation: { selections.append($0) })
+    view.viewConversation(channel)
+    XCTAssertTrue(selections.isEmpty)
+    XCTAssertEqual(view.savedConversations.map(\.id), owners.map(\.id))
+  }
+
+  func testRenderedUnifiedMonitorFitsCurrentAndSavedRowsWithoutDuplicatingCaptureList() throws {
+    func conversation(session: String, lease: String) throws -> OverlayConversation {
+      let owner = try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": session,
+          "lease_id": String(repeating: lease, count: 32),
+          "channel": "2", "name": "lena",
+        ]))
+      return .init(id: owner.id, channel: "2", name: "lena", owner: owner, messages: [])
+    }
+    let current = try conversation(session: "current", lease: "b")
+    let saved = try conversation(session: "previous", lease: "a")
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      var selections: [String?] = []
+      var toggles: [UInt8] = []
+      let view = OverlayChannelStatusView(
+        channels: [
+          .init(channel: "2", agent: "lena", deliveryID: "receipt", stage: .received, isOpen: true)
+        ],
+        unavailable: false, palette: palette, animates: false,
+        hudStates: [
+          "2": .init(
+            open: true, loud: false, autosealDeadline: nil, followerAlive: true,
+            provider: "codex", providerSessionID: "current")
+        ],
+        onToggleChannel: { toggles.append($0) }, conversations: [saved, current],
+        unreadCounts: [current.id: 3], onSelectConversation: { selections.append($0) })
+      let host = NSHostingView(rootView: view.monitorBody.frame(width: 440))
+      let window = NSWindow(
+        contentRect: .init(x: 0, y: 0, width: 440, height: 320),
+        styleMask: [.titled], backing: .buffered, defer: false)
+      window.contentView = host
+      window.orderFrontRegardless()
+      defer { window.orderOut(nil) }
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      host.layoutSubtreeIfNeeded()
+
+      XCTAssertEqual(view.currentConversations.map(\.id), [current.id])
+      XCTAssertEqual(view.savedConversations.map(\.id), [saved.id])
+      XCTAssertEqual(host.fittingSize.width, 440, accuracy: 1)
+      XCTAssertGreaterThan(host.fittingSize.height, 120, "saved history is still visible")
+      XCTAssertTrue(selections.isEmpty, "rendering does not navigate")
+      XCTAssertTrue(toggles.isEmpty, "rendering does not start recording")
+      XCTAssertLessThan(host.fittingSize.height, 220, "one compact row plus saved history")
+    }
   }
 
   func testDeadFollowerIsVisibleWithoutRewritingDeliveryOrOpenState() {

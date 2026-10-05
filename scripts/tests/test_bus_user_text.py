@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -180,6 +181,58 @@ class ChannelCaptureMessageTests(unittest.TestCase):
         self.assertEqual(recovered["message_id"], original["message_id"])
         self.assertEqual(recovered["text"], original["text"])
         self.assertEqual(recovered["occurrences"], original["occurrences"])
+
+    def test_real_follower_ack_and_reopen_keep_unclosed_capture_until_final_delivery(self):
+        self.lease.close()
+        rows = []
+        for index in range(5):
+            row = self.evidence(start=index * 3200, revision=index + 1)
+            row["recipients"] = [{"provider": "codex", "provider_session_id": "agent-a",
+                "lease_id": self.lease.lease_id, "bus": self.lease.bus, "channel": "2", "name": "lena"}]
+            row["acoustic_receipts"] = [{"receipt_id": f"pcm-{index}", "text": "private acoustic words"}]
+            rows.append(row)
+        self.bus.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        base = [sys.executable, str(SPEC.origin), "--bus", str(self.bus), "--bridge-home", str(self.root),
+                "--provider", "codex", "--session", "agent-a"]
+        def follow():
+            result = subprocess.run(base + ["--name", "lena", "--from-start", "--drafts", "--coalesce"],
+                                    capture_output=True, text=True, timeout=10, check=True)
+            return [json.loads(line) for line in result.stdout.splitlines()]
+        first = follow()
+        state = DEMUX.read_json(self.lease.path)
+        self.assertEqual(state["cursor"], self.bus.stat().st_size)
+        self.assertEqual(len(state["pending"]), 1)
+        preview = state["pending"][0]
+        self.assertNotEqual(preview["kind"], "seal")
+        self.assertEqual(len(self.ranges(preview)), 5)
+        self.assertTrue(first)
+        subprocess.run(base + ["--ack", preview["delivery_id"]], capture_output=True, timeout=10, check=True)
+        marker = DEMUX.read_json(self.root / "acknowledgments" / self.lease.lease_id / (preview["delivery_id"] + ".json"))
+        encoded = json.dumps(marker)
+        self.assertNotIn("private acoustic words", encoded)
+        self.assertNotIn(preview["text"], encoded)
+        self.assertEqual(len(self.ranges(marker["envelope"])), 5)
+        quiet = follow()
+        self.assertFalse(any(row.get("kind") in ("draft", "revised", "seal") for row in quiet))
+        state = DEMUX.read_json(self.lease.path)
+        self.assertEqual(state["pending"], [])
+        self.assertEqual(len(self.ranges(state["unclosed_channel_messages"][rows[0]["session_id"]])), 5)
+        with self.bus.open("a") as stream:
+            stream.write(json.dumps({"schema": DEMUX.CLEAN_SCHEMA, "session_id": rows[0]["session_id"],
+                                     "status": DEMUX.SESSION_ENDED}) + "\n")
+        final = [row for row in follow() if row.get("kind") == "seal"]
+        self.assertEqual(len(final), 1)
+        self.assertEqual(final[0]["text"], preview["text"])
+        self.assertEqual(self.ranges(final[0]), self.ranges(preview))
+        self.assertNotEqual(final[0]["delivery_id"], preview["delivery_id"])
+        state = DEMUX.read_json(self.lease.path)
+        self.assertEqual(state["unclosed_channel_messages"], {})
+        self.assertEqual(state["cursor"], self.bus.stat().st_size)
+        replay = [row for row in follow() if row.get("kind") == "seal"]
+        self.assertEqual([row["delivery_id"] for row in replay], [final[0]["delivery_id"]],
+                         "unread final delivery survives without acquiring a new identity")
+        subprocess.run(base + ["--ack", final[0]["delivery_id"]], capture_output=True, timeout=10, check=True)
+        self.assertFalse(any(row.get("kind") == "seal" for row in follow()), "acknowledged final is not replayed")
 
     def test_late_close_only_settles_its_named_predecessor(self):
         self.normalizer.normalize(self.evidence(session="agent-channel-2-old"))

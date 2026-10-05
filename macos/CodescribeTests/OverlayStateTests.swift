@@ -62,6 +62,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   var onRestore: (() -> Void)?
   var restoredSelections: [UInt64] = []
   var rosterSnapshot: [CsChannelRosterState] = []
+  var rosterSnapshotHandler: (() async -> [CsChannelRosterState])?
   var toggledDigits: [UInt8] = []
   var toggleFailure: Error?
   struct WordClipRequest: Equatable {
@@ -103,7 +104,10 @@ private final class OverlayStateTestEngine: DictationEngine {
       teachSeen: 1, teachRequired: 3)
   }
 
-  func channelRosterSnapshot() async -> [CsChannelRosterState] { rosterSnapshot }
+  func channelRosterSnapshot() async -> [CsChannelRosterState] {
+    if let rosterSnapshotHandler { return await rosterSnapshotHandler() }
+    return rosterSnapshot
+  }
   func toggleAgentChannel(digit: UInt8) async throws {
     toggledDigits.append(digit)
     if let toggleFailure { throw toggleFailure }
@@ -304,6 +308,169 @@ final class OverlayStateTests: XCTestCase {
     ])
     XCTAssertEqual(state.selectedConversationID, astra.id)
     XCTAssertTrue(state.pendingReplyControls.isEmpty)
+  }
+
+  func testOrdinaryCaptureLeavesSavedConversationAndMonitorForDictation() throws {
+    for monitor in [false, true] {
+      let state = OverlayState()
+      let lena = try navigationConversation()
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+      if monitor { state.showAgentMonitor() } else { state.selectConversation(lena.id) }
+      state.handleRecordingPreparing()
+      XCTAssertTrue(state.showsMyDictation)
+      XCTAssertNil(state.selectedConversationID)
+      XCTAssertTrue(state.recording)
+      XCTAssertEqual(state.conversations.map(\.id), [lena.id], "history is not removed")
+      state.finishControllerRecording()
+    }
+  }
+
+  func testManualReturnToDictationNotifiesPresentationOwnerWithoutRecording() throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    state.selectConversation(lena.id)
+    var notifications = 0
+    state.onChannelPresentationChanged = { notifications += 1 }
+    state.selectConversation(nil)
+    XCTAssertTrue(state.showsMyDictation)
+    XCTAssertEqual(notifications, 1)
+    XCTAssertEqual(engine.startedRecordingCount, 0)
+    XCTAssertTrue(engine.toggledDigits.isEmpty)
+  }
+
+  func testOrdinaryCaptureCorrectsStaleOpenRosterThroughController() async throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    state.applyChannelRoster([navigationRoster()])
+    let requested = expectation(description: "controller roster requested")
+    var response: CheckedContinuation<[CsChannelRosterState], Never>?
+    engine.rosterSnapshotHandler = {
+      await withCheckedContinuation {
+        response = $0
+        requested.fulfill()
+      }
+    }
+    state.handleRecordingPreparing()
+    XCTAssertEqual(state.selectedConversationID, lena.id, "stale roster is not guessed away")
+    await fulfillment(of: [requested], timeout: 1)
+    let applied = expectation(description: "ordinary canvas selected")
+    state.onChannelPresentationChanged = {
+      if state.showsMyDictation { applied.fulfill() }
+    }
+    response?.resume(returning: [])
+    await fulfillment(of: [applied], timeout: 1)
+    XCTAssertTrue(state.showsMyDictation)
+    XCTAssertFalse(state.hasOpenChannel)
+    XCTAssertTrue(engine.toggledDigits.isEmpty)
+    state.finishControllerRecording()
+  }
+
+  func testActiveChannelCaptureKeepsItsOwnedConversation() async throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    engine.rosterSnapshot = [navigationRoster()]
+    state.applyChannelRoster(engine.rosterSnapshot)
+    state.handleRecordingPreparing()
+    for _ in 0..<10 { await Task.yield() }
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+    XCTAssertTrue(state.hasOpenChannel)
+    XCTAssertTrue(engine.toggledDigits.isEmpty)
+    state.finishControllerRecording()
+  }
+
+  func testFreshActiveRosterOpensExactAgentInsteadOfOrdinaryCanvas() async throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    engine.rosterSnapshot = [navigationRoster()]
+    state.handleRecordingPreparing()
+    for _ in 0..<10 { await Task.yield() }
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+    XCTAssertTrue(state.hasOpenChannel)
+    state.finishControllerRecording()
+  }
+
+  func testLateCaptureRosterDoesNotStealManualConversationSelection() async throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    state.applyChannelRoster([navigationRoster()])
+    let requested = expectation(description: "old roster read started")
+    var response: CheckedContinuation<[CsChannelRosterState], Never>?
+    engine.rosterSnapshotHandler = {
+      await withCheckedContinuation {
+        response = $0
+        requested.fulfill()
+      }
+    }
+    state.handleRecordingPreparing()
+    await fulfillment(of: [requested], timeout: 1)
+    state.selectConversation(astra.id)
+    response?.resume(returning: [])
+    for _ in 0..<10 { await Task.yield() }
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    state.finishControllerRecording()
+  }
+
+  func testLatePreviousCaptureRosterCannotReplaceSuccessorChannel() async throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    state.applyChannelRoster([navigationRoster()])
+    var responses: [CheckedContinuation<[CsChannelRosterState], Never>] = []
+    let first = expectation(description: "first capture roster")
+    let second = expectation(description: "successor capture roster")
+    engine.rosterSnapshotHandler = {
+      await withCheckedContinuation {
+        responses.append($0)
+        if responses.count == 1 { first.fulfill() } else { second.fulfill() }
+      }
+    }
+    state.handleRecordingPreparing()
+    await fulfillment(of: [first], timeout: 1)
+    state.finishControllerRecording()
+    state.handleRecordingPreparing()
+    await fulfillment(of: [second], timeout: 1)
+    responses[1].resume(returning: [navigationRoster(channel: "3", session: "astra")])
+    for _ in 0..<10 { await Task.yield() }
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    responses[0].resume(returning: [])
+    for _ in 0..<10 { await Task.yield() }
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    XCTAssertTrue(state.hasOpenChannel)
+    state.finishControllerRecording()
+  }
+
+  func testDuplicateLifecycleDoesNotSelectDictationRepeatedly() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    state.selectConversation(lena.id)
+    state.handleRecordingPreparing()
+    let focus = state.conversationFocusRevision
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.handleRecordingStarted()
+    XCTAssertEqual(state.conversationFocusRevision, focus)
+    XCTAssertTrue(state.showsMyDictation)
+    state.finishControllerRecording()
   }
 
   func testOpeningChannelBeforeObserverSnapshotWaitsForExactSession() throws {
