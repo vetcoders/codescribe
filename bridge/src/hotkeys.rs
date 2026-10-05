@@ -1544,6 +1544,9 @@ impl CodescribeHotkeys {
 pub struct CsChannelRosterState {
     pub channel: String,
     pub audience: String,
+    /// The concrete captured or currently bound owner. Broadcast has none.
+    pub provider: Option<String>,
+    pub provider_session_id: Option<String>,
     pub open: bool,
     pub loud: bool,
     /// Milliseconds since the Unix epoch; `None` when no autoseal is armed.
@@ -1588,6 +1591,8 @@ impl CodescribeHotkeys {
                 .map(|state| CsChannelRosterState {
                     channel: state.channel,
                     audience: state.audience,
+                    provider: state.provider,
+                    provider_session_id: state.provider_session_id,
                     open: state.open,
                     loud: state.loud,
                     autoseal_deadline_unix_ms: state.autoseal_deadline.and_then(|deadline| {

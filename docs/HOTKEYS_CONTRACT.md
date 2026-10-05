@@ -1,5 +1,27 @@
 # Hotkeys Contract
 
+## Overlay conversation viewing and speech
+
+The overlay's channel menu separates **My dictation**, **0 · All**, and exact
+named-agent conversations from the explicit **Capture channels** controls.
+Selecting a conversation is passive: it does not open or close the microphone,
+change an admitted take's destination, acknowledge an envelope, or replay speech.
+Historical conversations retain their provider/session/lease identity and name
+after rebinding. Channel 0 remains viewable when capture is closed.
+
+My dictation keeps its native editor mounted across view changes, retaining its
+selection, scroll and local revision draft. A view change cancels pending
+commit-on-blur admission; explicit transcript actions still use the existing
+reducer compare-and-swap path. Conversation messages are selectable read-only
+text. Unread reply counts describe viewing only, independently of delivery ACK.
+
+Each reply's **Play** invokes the installed bus speech owner with its persisted
+reply ID and a fresh playback ticket. **Stop** names the exact emitted active
+ticket and provider session. These controls do not use the built-in chat player.
+The existing voice profiles, microphone interlock and serialization apply;
+failed or refused speech leaves reply text visible. Tab changes never schedule
+historical replay or start extra offscreen sound.
+
 > Technical specification for codescribe hotkey system.
 >
 > Created by Vetcoders (c)2026

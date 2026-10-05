@@ -86,8 +86,12 @@ manual attach saga and drive the engine:
 5. Verify with a fresh named take on the channel before claiming listening;
    the receipt alone is `attached_unverified`. Acknowledge accepted envelopes
    with `--ack <id> [<id> ...]`.
-6. Reply by voice with `--say "<text>" --provider <p> --session <id>`: the name
-   comes from the lease, the voice from its profile
+6. Reply by voice with `--say "<text>" --provider <p> --session <id>
+   --reply-to <accepted-delivery-id>`: the name comes from the original owned
+   envelope, the voice from its profile. Text lands durably before speech.
+   Omit `--reply-to` only for an explicitly unsolicited reply; never infer an
+   ID from the newest message. ACK can precede the reply because its receipt
+   preserves causal ownership without transcript text
    ([Voice reply](references/voice-reply.md)). Changing a stored profile is the
    Founder's call.
 
@@ -124,7 +128,13 @@ The app installs `cs-bus` and `cs-say` in `~/.local/bin` at first launch and
 updates them with its bundled runtime. `make install-app` uses the same
 installer. If that directory is not on this shell's PATH, use
 `~/.local/bin/cs-bus`; no checkout is needed. Client skills remain selected in
-Settings. `cs-say "<text>" --provider <p> --session <id>` uses the attached voice.
+Settings. `cs-say "<text>" --provider <p> --session <id> --reply-to <delivery-id>`
+uses the attached voice and validates the original delivery owner. A text reply
+and speech completion are separate receipts with the same stable reply ID.
+The app's Play is explicit per reply; switching views never triggers speech.
+`cs-bus --play-reply <reply-id> --playback-ticket <24-lowercase-hex> --provider <p>
+--session <id>` plays one stored reply. Stop uses `--stop-reply` with the exact
+same ticket and owner. Do not substitute the built-in AgentChat stop control.
 
 When helper installation is requested, `make install-bus` installs only helpers
 and already selected skills without replacing or restarting the app. Reattach

@@ -355,9 +355,18 @@ struct DictationOverlayView: View {
     ZStack {
       bodySection
         .frame(height: state.isCollapsed ? 0 : nil)
-        .opacity(state.isCollapsed ? 0 : 1)
-        .allowsHitTesting(!state.isCollapsed)
-        .accessibilityHidden(state.isCollapsed)
+        .opacity(state.isCollapsed || !state.showsMyDictation ? 0 : 1)
+        .allowsHitTesting(!state.isCollapsed && state.showsMyDictation)
+        .accessibilityHidden(state.isCollapsed || !state.showsMyDictation)
+      if let conversation = state.selectedConversation, !state.isCollapsed {
+        OverlayConversationView(
+          conversation: conversation, palette: palette,
+          topInset: headerHeight + 8, bottomInset: 20,
+          pendingControls: state.pendingReplyControls, controlErrors: state.replyControlErrors,
+          onControl: { message, stop in
+            Task { await state.controlReply(message, stop: stop) }
+          })
+      }
       VStack(spacing: 0) {
         header
         if !state.isCollapsed,
@@ -378,7 +387,7 @@ struct DictationOverlayView: View {
       }
       .frame(maxHeight: .infinity, alignment: .top)
       VStack(spacing: 0) {
-        if !state.isCollapsed {
+        if !state.isCollapsed && state.showsMyDictation {
           VStack(spacing: CSSpace.sm) {
             HStack(spacing: 6) {
               OverlayEvidenceChip(
@@ -562,12 +571,16 @@ struct DictationOverlayView: View {
     // ViewThatFits so hidden header candidates cannot compete for visibility.
     .background {
       OverlayRenderVisibility { visible in
+        state.setConversationVisible(visible)
         guard overlayVisible != visible else { return }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) { overlayVisible = visible }
       }
       .frame(width: 0, height: 0)
+    }
+    .onChange(of: state.isCollapsed) { _, _ in
+      state.setConversationVisible(overlayVisible)
     }
   }
 
@@ -654,7 +667,9 @@ struct DictationOverlayView: View {
             .accessibilityLabel(error)
             .accessibilityIdentifier("overlay-preference-save-error")
         }
-        if !state.visibleChannelRows.isEmpty || state.channelStatusUnavailable {
+        if !state.visibleChannelRows.isEmpty || !state.conversations.isEmpty
+          || state.channelStatusUnavailable
+        {
           OverlayChannelStatusView(
             channels: state.visibleChannelRows, unavailable: state.channelStatusUnavailable,
             palette: palette, animates: overlayVisible,
@@ -662,7 +677,13 @@ struct DictationOverlayView: View {
             onToggleChannel: { digit in
               Task { await state.toggleAgentChannel(digit) }
             },
-            toggleError: state.channelToggleError
+            toggleError: state.channelToggleError,
+            conversations: state.conversations,
+            selectedConversationID: state.selectedConversationID,
+            unreadCounts: Dictionary(uniqueKeysWithValues: state.conversations.map {
+              ($0.id, state.unreadReplies(in: $0))
+            }),
+            onSelectConversation: { state.selectConversation($0) }
           )
         }
         sessionTimer
