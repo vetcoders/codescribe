@@ -728,6 +728,9 @@ final class OverlayState {
   private(set) var channelToggleError: String?
   private(set) var conversations: [OverlayConversation] = []
   private(set) var selectedConversationID: String?
+  private(set) var showsAgentMonitor = false
+  private var channelRoster: [CsChannelRosterState] = []
+  private var pendingChannelConversation: CsChannelRosterState?
   private(set) var replyControlErrors: [String: String] = [:]
   private(set) var pendingReplyControls: Set<String> = []
   private var viewedReplyIDs: Set<String> = []
@@ -736,7 +739,7 @@ final class OverlayState {
   var selectedConversation: OverlayConversation? {
     conversations.first { $0.id == selectedConversationID }
   }
-  var showsMyDictation: Bool { selectedConversationID == nil }
+  var showsMyDictation: Bool { selectedConversationID == nil && !showsAgentMonitor }
 
   func unreadReplies(in conversation: OverlayConversation) -> Int {
     conversation.replyIDs.filter { !viewedReplyIDs.contains($0) }.count
@@ -744,9 +747,60 @@ final class OverlayState {
 
   /// Viewing only changes presentation metadata. Capture stays controller-owned.
   func selectConversation(_ id: String?) {
+    guard id == nil || conversations.contains(where: { $0.id == id }) else { return }
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
     selectedConversationID = id
+    showsAgentMonitor = false
+    pendingChannelConversation = nil
+    if id != nil { expandAgentSurface() }
+    markVisibleConversationRead()
+  }
+
+  func showAgentMonitor() {
+    revisionFocusCommitTask?.cancel()
+    revisionFocusCommitTask = nil
+    selectedConversationID = nil
+    pendingChannelConversation = nil
+    showsAgentMonitor = true
+    expandAgentSurface()
+  }
+
+  private func expandAgentSurface() {
+    cancelAutoHide()
+    if isCollapsed {
+      isCollapsed = false
+      onCollapseChanged?(false)
+    }
+    onChannelPresentationChanged?()
+  }
+
+  /// Follow controller intent, never a name guessed from transcript text.
+  /// A late observer snapshot may supply the matching conversation afterward.
+  private func followChannelConversation(_ row: CsChannelRosterState) {
+    pendingChannelConversation = row
+    resolveChannelConversation()
+    expandAgentSurface()
+  }
+
+  private func resolveChannelConversation() {
+    guard let row = pendingChannelConversation else { return }
+    let matches = conversations.filter { conversation in
+      guard conversation.channel == row.channel else { return false }
+      if row.channel == "0" { return conversation.owner == nil }
+      guard let provider = row.provider, let session = row.providerSessionId,
+        let owner = conversation.owner
+      else { return false }
+      return owner.provider == provider && owner.providerSessionID == session
+    }
+    guard matches.count == 1 else {
+      selectedConversationID = nil
+      showsAgentMonitor = true
+      return
+    }
+    selectedConversationID = matches[0].id
+    showsAgentMonitor = false
+    pendingChannelConversation = nil
     markVisibleConversationRead()
   }
 
@@ -769,6 +823,7 @@ final class OverlayState {
     {
       self.selectedConversationID = nil
     }
+    resolveChannelConversation()
     let retained = Set(conversations.flatMap(\.replyIDs))
     viewedReplyIDs.formIntersection(retained)
     replyControlErrors = replyControlErrors.filter { retained.contains($0.key) }
@@ -780,7 +835,7 @@ final class OverlayState {
     guard message.kind == .reply, let owner = message.owner, let replyID = message.replyID
     else { return }
     let active = message.playback.map { ["waiting", "playing"].contains($0.state) } ?? false
-    guard (stop ? active : !active && !pendingReplyControls.contains(message.id)) else { return }
+    guard stop ? active : !active && !pendingReplyControls.contains(message.id) else { return }
     let ticket: String
     if stop, let playback = message.playback {
       ticket = playback.ticket
@@ -859,10 +914,33 @@ final class OverlayState {
             followerAlive: row.followerAlive)
         )
       }, uniquingKeysWith: { _, latest in latest })
-    guard projected != channelHudStates || names != channelRosterNames else { return }
+    guard snapshot != channelRoster else { return }
+    let newlyOpened = snapshot.filter { row in
+      row.open
+        && !channelRoster.contains {
+          $0.open && $0.channel == row.channel && $0.provider == row.provider
+            && $0.providerSessionId == row.providerSessionId
+        }
+    }
     let wasOpen = hasOpenChannel
+    channelRoster = snapshot
     channelHudStates = projected
     channelRosterNames = names
+    if let pending = pendingChannelConversation,
+      !snapshot.contains(where: {
+        $0.open && $0.channel == pending.channel && $0.provider == pending.provider
+          && $0.providerSessionId == pending.providerSessionId
+      })
+    {
+      pendingChannelConversation = nil
+    }
+    if newlyOpened.count == 1, let row = newlyOpened.first {
+      followChannelConversation(row)
+    } else if newlyOpened.count > 1 {
+      // Simultaneous recipients belong to the existing aggregate conversation.
+      selectConversation(conversations.first { $0.channel == "0" }?.id)
+      if selectedConversationID == nil { showAgentMonitor() }
+    }
     if hasOpenChannel {
       cancelAutoHide()
     } else if wasOpen && terminal {

@@ -1000,6 +1000,28 @@ wait and playback, and terminates only its own `afplay` child. A stop request
 receipt is not completion; the terminal playback event supplies that fact.
 The app's built-in chat player is a separate owner and cannot stop this player.
 
+### Overlay conversation navigation
+
+The header receipt mark opens the agent monitor in the overlay canvas. It is
+a notification entry point, not a channel picker popover. The monitor separates
+viewing a conversation from opening or hanging up a capture channel. My dictation
+returns to the existing transcript canvas; selecting a conversation expands the
+same overlay without changing capture, submitting text, acknowledging delivery,
+or starting playback.
+
+Conversation messages are displayed newest first. Only the view reverses the
+observer's chronological projection; occurrence identities, reply associations
+and the retained history stay unchanged.
+
+When the controller opens a channel, the overlay follows the conversation with
+that channel's provider and provider session. A historical owner on the same
+digit cannot claim the new view. If the observer has not supplied that owner yet,
+the monitor remains visible until the matching snapshot arrives. Closing that
+channel or deliberately choosing a different view cancels this deferred
+selection. Routine roster polling does not override manual review. Simultaneous
+new recipients open the existing aggregate conversation, rather than choosing an
+arbitrary agent. Header and conversation navigation never request speech.
+
 ## C11 evidence boundary
 
 `484095ce` was the last executable-code cut before documentation successor

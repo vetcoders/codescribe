@@ -132,7 +132,7 @@ struct OverlayAgentStatusMark: View {
   }
 }
 
-/// A quiet header affordance. Delivery details belong to its popover, not the transcript.
+/// A quiet notification affordance opens the full monitor on the overlay canvas.
 struct OverlayChannelStatusView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -149,6 +149,7 @@ struct OverlayChannelStatusView: View {
   let selectedConversationID: String?
   let unreadCounts: [String: Int]
   let onSelectConversation: ((String?) -> Void)?
+  let onShowMonitor: (() -> Void)?
 
   init(
     channels: [OverlayChannelDelivery], unavailable: Bool,
@@ -157,7 +158,8 @@ struct OverlayChannelStatusView: View {
     onToggleChannel: ((UInt8) -> Void)? = nil,
     toggleError: String? = nil,
     conversations: [OverlayConversation] = [], selectedConversationID: String? = nil,
-    unreadCounts: [String: Int] = [:], onSelectConversation: ((String?) -> Void)? = nil
+    unreadCounts: [String: Int] = [:], onSelectConversation: ((String?) -> Void)? = nil,
+    onShowMonitor: (() -> Void)? = nil
   ) {
     self.channels = channels
     self.unavailable = unavailable
@@ -170,6 +172,7 @@ struct OverlayChannelStatusView: View {
     self.selectedConversationID = selectedConversationID
     self.unreadCounts = unreadCounts
     self.onSelectConversation = onSelectConversation
+    self.onShowMonitor = onShowMonitor
   }
 
   static func toggleDigit(for channel: String) -> UInt8? {
@@ -190,16 +193,14 @@ struct OverlayChannelStatusView: View {
     hudStates[channel.channel]?.followerAlive == false
   }
 
-  @State private var showsDetails = false
-
   var glyph: OverlayAgentGlyph {
     OverlayAgentGlyph.resolve(channels: channels, unavailable: unavailable) ?? .attached
   }
 
+  func showMonitor() { onShowMonitor?() }
+
   var body: some View {
-    Button {
-      showsDetails.toggle()
-    } label: {
+    Button(action: showMonitor) {
       OverlayAgentStatusMark(
         reduceMotion: reduceMotion, glyph: glyph, palette: palette, animates: animates, fontSize: 13
       )
@@ -224,15 +225,15 @@ struct OverlayChannelStatusView: View {
     .accessibilityLabel(glyph.label)
     .accessibilityHint("Shows agent channel details")
     .accessibilityIdentifier("overlay-agent-glyph")
-    .popover(isPresented: $showsDetails, arrowEdge: .bottom) {
-      ChannelRosterPopoverContent(palette: palette) {
-        details
-      }
-    }
   }
 
-  private var rosterStyle: ChannelRosterPopoverStyle {
-    ChannelRosterPopoverStyle(palette: palette)
+  var monitorBody: some View {
+    ChannelRosterContent(palette: palette) {
+      details
+        .font(.system(size: 14, weight: .medium))
+        .foregroundStyle(palette.primaryText.color)
+    }
+    .accessibilityIdentifier("overlay-agent-monitor")
   }
 
   private var details: some View {
@@ -240,7 +241,6 @@ struct OverlayChannelStatusView: View {
       if onSelectConversation != nil {
         Button {
           onSelectConversation?(nil)
-          showsDetails = false
         } label: {
           HStack {
             Text("My dictation")
@@ -249,15 +249,18 @@ struct OverlayChannelStatusView: View {
           }
         }
         .buttonStyle(.plain)
+        .padding(.vertical, 8)
         .accessibilityIdentifier("overlay-view-my-dictation")
         ForEach(conversations) { conversation in
           Button {
             onSelectConversation?(conversation.id)
-            showsDetails = false
           } label: {
             HStack {
-              if conversation.channel == "0" { Text("0 · All") }
-              else { Text(verbatim: "\(conversation.channel) · \(conversation.name)") }
+              if conversation.channel == "0" {
+                Text("0 · All")
+              } else {
+                Text(verbatim: "\(conversation.channel) · \(conversation.name)")
+              }
               Spacer()
               if let count = unreadCounts[conversation.id], count > 0 {
                 Text("\(count) unread")
@@ -267,17 +270,18 @@ struct OverlayChannelStatusView: View {
             }
           }
           .buttonStyle(.plain)
+          .padding(.vertical, 8)
           .help("View conversation without changing the microphone")
           .accessibilityIdentifier("overlay-view-conversation-\(conversation.id)")
         }
         Divider()
         Text("Capture channels")
-          .foregroundStyle(rosterStyle.mutedText.color)
+          .foregroundStyle(palette.mutedText.color)
       }
       ForEach(channels) { channel in
         if isOpen(channel) {
           Label("Microphone active · channel \(channel.channel)", systemImage: "mic.fill")
-            .font(.system(size: 11, weight: .medium))
+            .font(.system(size: 13, weight: .medium))
             .foregroundStyle(palette.listeningStatus.color)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("overlay-channel-open-\(channel.channel)")
@@ -290,7 +294,7 @@ struct OverlayChannelStatusView: View {
               .lineLimit(1)
               .truncationMode(.middle)
               .foregroundStyle(
-                (hasDeadFollower(channel) ? rosterStyle.bodyText : rosterStyle.primaryText).color)
+                (hasDeadFollower(channel) ? palette.bodyText : palette.primaryText).color)
             Spacer(minLength: 4)
             let rowGlyph =
               OverlayAgentGlyph.resolve(channels: [channel], unavailable: unavailable) ?? .attached
@@ -300,14 +304,15 @@ struct OverlayChannelStatusView: View {
             )
             .accessibilityHidden(true)
             Text(detail(for: channel))
-              .foregroundStyle(rosterStyle.bodyText.color)
+              .foregroundStyle(palette.bodyText.color)
               .accessibilityIdentifier("overlay-channel-delivery-\(channel.channel)")
           }
           .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .padding(.vertical, 6)
         .disabled(onToggleChannel == nil || Self.toggleDigit(for: channel.channel) == nil)
-        .font(.system(size: 11, weight: .medium))
+        .font(.system(size: 13, weight: .medium))
         .accessibilityLabel(
           Text(verbatim: "\(channel.channel) · \(channel.agent), \(detail(for: channel))")
         )
@@ -317,14 +322,14 @@ struct OverlayChannelStatusView: View {
       }
       if unavailable {
         Text("Channel status unavailable — last open state retained")
-          .font(.system(size: 11, weight: .medium))
+          .font(.system(size: 13, weight: .medium))
           .foregroundStyle(palette.processingStatus.color)
           .accessibilityIdentifier("overlay-channel-status-unavailable")
       }
       if let toggleError {
         // A refused toggle is an error, not a pending state (N roster palette).
         Text("Channel toggle failed: \(toggleError)")
-          .font(.system(size: 11, weight: .medium))
+          .font(.system(size: 13, weight: .medium))
           .foregroundStyle(palette.errorStatus.color)
           .accessibilityIdentifier("overlay-channel-toggle-error")
       }
@@ -348,9 +353,8 @@ struct OverlayChannelStatusView: View {
   }
 }
 
-/// A popover is hosted in its own presentation, so the overlay's palette must
-/// explicitly supply both its native appearance and its opaque content surface.
-struct ChannelRosterPopoverStyle: Equatable {
+/// The embedded monitor shares the overlay's appearance and readable palette.
+struct ChannelRosterStyle: Equatable {
   let surface: OverlayColorToken
   let border: OverlayColorToken
   let primaryText: OverlayColorToken
@@ -368,23 +372,22 @@ struct ChannelRosterPopoverStyle: Equatable {
   }
 }
 
-struct ChannelRosterPopoverContent<Content: View>: View {
+struct ChannelRosterContent<Content: View>: View {
   let palette: OverlayAppearancePalette
   @ViewBuilder let content: Content
 
-  var style: ChannelRosterPopoverStyle { ChannelRosterPopoverStyle(palette: palette) }
+  var style: ChannelRosterStyle { ChannelRosterStyle(palette: palette) }
 
   var body: some View {
     content
       .padding(16)
-      .frame(width: 300)
+      .frame(maxWidth: .infinity, alignment: .leading)
       .background(style.surface.color)
       .overlay {
         RoundedRectangle(cornerRadius: 10, style: .continuous)
           .strokeBorder(style.border.color, lineWidth: 1)
           .allowsHitTesting(false)
       }
-      .presentationBackground(style.surface.color)
       .preferredColorScheme(style.colorScheme)
   }
 }

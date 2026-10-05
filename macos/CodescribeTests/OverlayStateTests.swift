@@ -111,7 +111,9 @@ private final class OverlayStateTestEngine: DictationEngine {
 
   func setListener(_ listener: CsTranscriptionListener) {}
   func startsInAssistiveMode() -> Bool { false }
-  func startRecording(assistive: Bool, language: CsLanguage?) async throws { startedRecordingCount += 1 }
+  func startRecording(assistive: Bool, language: CsLanguage?) async throws {
+    startedRecordingCount += 1
+  }
   func stopRecording() async throws -> String {
     onStopRecording?()
     return ""
@@ -242,6 +244,170 @@ private final class OverlayStateTestClock {
 
 @MainActor
 final class OverlayStateTests: XCTestCase {
+  private func navigationConversation(
+    channel: String = "2", session: String = "lena-session", lease: String = "a"
+  ) throws -> OverlayConversation {
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": session,
+        "lease_id": String(repeating: lease, count: 32), "channel": channel, "name": "Lena",
+      ]))
+    return OverlayConversation(
+      id: owner.id, channel: channel, name: owner.name,
+      owner: owner, messages: [])
+  }
+
+  private func navigationRoster(
+    channel: String = "2", session: String = "lena-session", open: Bool = true
+  ) -> CsChannelRosterState {
+    .init(
+      channel: channel, audience: "Lena", provider: "codex", providerSessionId: session,
+      open: open, loud: open, autosealDeadlineUnixMs: nil, followerAlive: true)
+  }
+
+  func testHeaderReceiptOpensFullMonitorWithoutChangingCaptureOrReceipt() {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let channel = OverlayChannelDelivery(
+      channel: "2", agent: "Lena", deliveryID: "receipt",
+      stage: .sent, isOpen: false)
+    state.applyChannelDelivery([channel])
+    let header = OverlayChannelStatusView(
+      channels: [channel], unavailable: false,
+      palette: .dark, animates: false, onShowMonitor: state.showAgentMonitor)
+    header.showMonitor()
+    XCTAssertTrue(state.showsAgentMonitor)
+    XCTAssertFalse(state.showsMyDictation)
+    XCTAssertFalse(state.isCollapsed)
+    XCTAssertEqual(state.channelDelivery, [channel])
+    XCTAssertTrue(engine.toggledDigits.isEmpty)
+    XCTAssertEqual(engine.startedRecordingCount, 0)
+    state.selectConversation(nil)
+    XCTAssertTrue(state.showsMyDictation)
+    XCTAssertFalse(state.showsAgentMonitor)
+  }
+
+  func testOpeningChannelFollowsItsConversationButSteadyPollingPreservesManualReview() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra-session", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    state.applyChannelRoster([navigationRoster()])
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+    XCTAssertFalse(state.isCollapsed)
+    state.selectConversation(astra.id)
+    state.applyChannelRoster([navigationRoster()])
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    state.applyChannelRoster([
+      navigationRoster(), navigationRoster(channel: "3", session: "astra-session"),
+    ])
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    XCTAssertTrue(state.pendingReplyControls.isEmpty)
+  }
+
+  func testOpeningChannelBeforeObserverSnapshotWaitsForExactSession() throws {
+    let state = OverlayState()
+    let old = try navigationConversation(session: "old-session", lease: "b")
+    let current = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [old]))
+    state.applyChannelRoster([navigationRoster()])
+    XCTAssertTrue(state.showsAgentMonitor)
+    XCTAssertNil(
+      state.selectedConversationID, "an old owner on the same digit cannot become the active view")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [old, current]))
+    XCTAssertEqual(state.selectedConversationID, current.id)
+    XCTAssertFalse(state.showsAgentMonitor)
+  }
+
+  func testClosingPendingChannelOrExplicitReviewCancelsLateAutomaticSelection() throws {
+    for explicitlyChooseMonitor in [false, true] {
+      let state = OverlayState()
+      state.applyChannelRoster([navigationRoster()])
+      if explicitlyChooseMonitor {
+        state.showAgentMonitor()
+      } else {
+        state.applyChannelRoster([navigationRoster(open: false)])
+      }
+      state.applyConversationSnapshot(
+        .init(deliveries: [], conversations: [try navigationConversation()]))
+      XCTAssertNil(state.selectedConversationID)
+      XCTAssertTrue(state.showsAgentMonitor)
+    }
+  }
+
+  func testRebindingAnOpenChannelFollowsNewOwnerWithoutRelabelingHistory() throws {
+    let state = OverlayState()
+    let original = try navigationConversation()
+    let replacement = try navigationConversation(session: "replacement-session", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [original, replacement]))
+    state.applyChannelRoster([navigationRoster()])
+    XCTAssertEqual(state.selectedConversationID, original.id)
+    state.applyChannelRoster([navigationRoster(session: "replacement-session")])
+    XCTAssertEqual(state.selectedConversationID, replacement.id)
+    XCTAssertEqual(state.conversations.first, original)
+  }
+
+  func testSimultaneousChannelsOpenAggregateConversationWithoutArbitraryRecipient() throws {
+    let state = OverlayState()
+    let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [all, try navigationConversation()]))
+    state.applyChannelRoster([
+      navigationRoster(), navigationRoster(channel: "3", session: "astra-session"),
+    ])
+    XCTAssertEqual(state.selectedConversationID, "0")
+  }
+
+  func testNewestMessagesAppearFirstAndFivePhysicalOccurrencesRemainDistinct() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    for index in 0..<5 {
+      bus.consume([
+        "schema": "codescribe.transcript-evidence.v1",
+        "session_id": "agent-channel-2-test", "occurrence_session_id": "agent-channel-2-test",
+        "capture_epoch": 1, "sample_start": index * 3200, "sample_end": index * 3200 + 1600,
+        "document_index": 0, "reducer_revision": index + 1, "sequence": index + 1,
+        "reducer_action": "record_ledger_terminal_seal", "audience": "Lena", "rendered_text": "Iwo",
+        "recipients": [
+          [
+            "provider": "codex", "provider_session_id": "lena-session",
+            "lease_id": String(repeating: "a", count: 32), "channel": "2", "name": "Lena",
+          ]
+        ],
+      ])
+    }
+    let all = try XCTUnwrap(bus.conversations(busPath: "/fixture/bus").first)
+    XCTAssertEqual(all.messages.count, 5)
+    let view = OverlayConversationView(
+      conversation: all, palette: .dark, topInset: 50,
+      bottomInset: 20, pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+      onShowMonitor: {})
+    XCTAssertEqual(view.newestMessages.map(\.order), [5, 4, 3, 2, 1])
+    XCTAssertEqual(Set(view.newestMessages.map(\.id)).count, 5)
+    XCTAssertEqual(view.newestMessages.map(\.text), Array(repeating: "Iwo", count: 5))
+    XCTAssertEqual(
+      all.messages.map(\.order), [1, 2, 3, 4, 5],
+      "presentation must not reorder the canonical observer")
+  }
+
+  func testSelectingConversationExpandsTheCanvasWithoutChangingCapture() {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [],
+        conversations: [
+          OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+        ]))
+    XCTAssertTrue(state.isCollapsed)
+    state.selectConversation("0")
+    XCTAssertFalse(state.isCollapsed, "a chosen conversation must actually open on the canvas")
+    XCTAssertEqual(state.selectedConversation?.id, "0")
+    XCTAssertTrue(engine.toggledDigits.isEmpty)
+    XCTAssertEqual(engine.startedRecordingCount, 0)
+  }
+
   func testViewingConversationRetainsLiveCaptureAndDictationDraft() throws {
     let engine = OverlayStateTestEngine()
     let state = OverlayState.previewListening()
@@ -266,12 +432,15 @@ final class OverlayStateTests: XCTestCase {
   func testOffscreenReplyStaysUnreadUntilExpandedConversationIsVisible() throws {
     let state = OverlayState()
     var bus = OverlayChannelDelivery.Bus()
-    bus.consume(["schema": "codescribe.agent-reply.v1", "kind": "agent_reply",
-                 "reply_id": String(repeating: "d", count: 24), "text": "Odpowiedź",
-                 "provider": "codex", "provider_session_id": "agent-a",
-                 "lease_id": String(repeating: "a", count: 32), "channel": "2", "name": "Lena",
-                 "association": "unsolicited"])
-    let snapshot = OverlayChannelDeliverySnapshot(deliveries: [], conversations: bus.conversations(busPath: "/fixture/bus"))
+    bus.consume([
+      "schema": "codescribe.agent-reply.v1", "kind": "agent_reply",
+      "reply_id": String(repeating: "d", count: 24), "text": "Odpowiedź",
+      "provider": "codex", "provider_session_id": "agent-a",
+      "lease_id": String(repeating: "a", count: 32), "channel": "2", "name": "Lena",
+      "association": "unsolicited",
+    ])
+    let snapshot = OverlayChannelDeliverySnapshot(
+      deliveries: [], conversations: bus.conversations(busPath: "/fixture/bus"))
     state.applyConversationSnapshot(snapshot)
     let named = try XCTUnwrap(snapshot.conversations.first { $0.channel == "2" })
     state.selectConversation(named.id)
@@ -291,7 +460,8 @@ final class OverlayStateTests: XCTestCase {
     ])
     engine.rosterSnapshot = [
       .init(
-        channel: "2", audience: "miron", provider: "codex", providerSessionId: "miron-session", open: true, loud: false,
+        channel: "2", audience: "miron", provider: "codex", providerSessionId: "miron-session",
+        open: true, loud: false,
         autosealDeadlineUnixMs: nil, followerAlive: true)
     ]
 
@@ -326,10 +496,12 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     state.applyChannelRoster([
       .init(
-        channel: "1", audience: "klaudiusz", provider: "claude", providerSessionId: "klaudiusz-session", open: false, loud: false,
+        channel: "1", audience: "klaudiusz", provider: "claude",
+        providerSessionId: "klaudiusz-session", open: false, loud: false,
         autosealDeadlineUnixMs: 1_700_000_000_000, followerAlive: false),
       .init(
-        channel: "2", audience: "miron", provider: "codex", providerSessionId: "miron-session", open: false, loud: false,
+        channel: "2", audience: "miron", provider: "codex", providerSessionId: "miron-session",
+        open: false, loud: false,
         autosealDeadlineUnixMs: nil, followerAlive: nil),
     ])
 

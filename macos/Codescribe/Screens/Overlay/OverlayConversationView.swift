@@ -9,12 +9,21 @@ struct OverlayConversationView: View {
   let pendingControls: Set<String>
   let controlErrors: [String: String]
   let onControl: (OverlayConversationMessage, Bool) -> Void
+  let onShowMonitor: () -> Void
+
+  var newestMessages: [OverlayConversationMessage] { Array(conversation.messages.reversed()) }
 
   var body: some View {
     ScrollView {
       LazyVStack(alignment: .leading, spacing: 14) {
-        if conversation.channel == "0" { Text("0 · All").font(.headline) }
-        else { Text(verbatim: conversation.name).font(.headline) }
+        Button("Capture channels", systemImage: "chevron.left", action: onShowMonitor)
+          .buttonStyle(.plain)
+          .accessibilityIdentifier("overlay-conversation-back")
+        if conversation.channel == "0" {
+          Text("0 · All").font(.headline)
+        } else {
+          Text(verbatim: conversation.name).font(.headline)
+        }
         if let owner = conversation.owner {
           Text(verbatim: "\(owner.provider) · \(owner.providerSessionID)")
             .font(.caption)
@@ -25,7 +34,7 @@ struct OverlayConversationView: View {
           Text("No conversation messages yet")
             .foregroundStyle(palette.mutedText.color)
         }
-        ForEach(conversation.messages) { message in
+        ForEach(newestMessages) { message in
           messageRow(message)
         }
       }
@@ -41,8 +50,11 @@ struct OverlayConversationView: View {
   private func messageRow(_ message: OverlayConversationMessage) -> some View {
     VStack(alignment: .leading, spacing: 5) {
       HStack {
-        if message.kind == .user { Text("You").font(.caption.bold()) }
-        else { Text(verbatim: message.owner?.name ?? conversation.name).font(.caption.bold()) }
+        if message.kind == .user {
+          Text("You").font(.caption.bold())
+        } else {
+          Text(verbatim: message.owner?.name ?? conversation.name).font(.caption.bold())
+        }
         if message.unsolicited && message.kind == .reply {
           Text("Unsolicited reply").font(.caption)
         }
@@ -60,7 +72,10 @@ struct OverlayConversationView: View {
         .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
       ForEach(message.recipients, id: \.owner.id) { recipient in
         VStack(alignment: .leading, spacing: 2) {
-          Text(verbatim: "\(recipient.owner.name) · \(recipient.owner.provider) · \(recipient.owner.providerSessionID)")
+          Text(
+            verbatim:
+              "\(recipient.owner.name) · \(recipient.owner.provider) · \(recipient.owner.providerSessionID)"
+          )
           HStack(spacing: 8) {
             if recipient.queued { Text("Queued") }
             if recipient.accepted { Text("Queue accepted") }
@@ -100,7 +115,9 @@ struct OverlayConversationView: View {
       }
     }
     .padding(10)
-    .background(palette.desktopBackground.color.opacity(0.65), in: RoundedRectangle(cornerRadius: 8))
+    .background(
+      palette.desktopBackground.color.opacity(0.65), in: RoundedRectangle(cornerRadius: 8)
+    )
     .id(message.id)
   }
 
@@ -122,9 +139,10 @@ struct OverlayConversationView: View {
     guard reply.kind == .reply, let deliveryID = reply.replyTo, let owner = reply.owner
     else { return nil }
     let matches = conversation.messages.filter { message in
-      message.kind == .user && message.recipients.contains {
-        $0.deliveryID == deliveryID && $0.owner.id == owner.id
-      }
+      message.kind == .user
+        && message.recipients.contains {
+          $0.deliveryID == deliveryID && $0.owner.id == owner.id
+        }
     }
     if let occurrenceID = reply.replyToOccurrenceID {
       return matches.first { $0.id == occurrenceID }

@@ -351,7 +351,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift"), encoding: .utf8)
     XCTAssertTrue(status.contains("overlay-channel-open-"))
     XCTAssertTrue(status.contains("Microphone active"))
-    XCTAssertTrue(status.contains(".popover(isPresented: $showsDetails"))
+    XCTAssertFalse(status.contains(".popover("))
+    XCTAssertTrue(view.contains("channelStatusView.monitorBody"))
     XCTAssertTrue(status.contains("overlay-channel-delivery-"))
     XCTAssertTrue(status.contains("Divider("), "separate passive viewing from microphone controls")
     XCTAssertFalse(status.contains("glassEffect("))
@@ -359,8 +360,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertFalse(status.contains("antenna.radiowaves"))
     XCTAssertFalse(status.contains("hasOpenChannel ? \"mic.fill\""))
     // A click opens details and nothing else: it cannot light ␆.
-    XCTAssertTrue(status.contains("showsDetails.toggle()"))
-    XCTAssertEqual(status.components(separatedBy: "showsDetails.toggle()").count - 1, 1)
+    XCTAssertTrue(status.contains("Button(action: showMonitor)"))
+    XCTAssertEqual(status.components(separatedBy: "Button(action: showMonitor)").count - 1, 1)
   }
 
   func testRosterToggleAcceptsOnlyChannelDigitsAndForwardsEachClickOnce() {
@@ -583,12 +584,12 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     }
   }
 
-  func testRosterPopoverUsesOverlayAppearanceAndReadableTokens() {
+  func testEmbeddedRosterUsesOverlayAppearanceAndReadableTokens() {
     for palette in [OverlayAppearancePalette.light, .dark] {
-      let popover = ChannelRosterPopoverContent(palette: palette) {
+      let monitor = ChannelRosterContent(palette: palette) {
         Text("Channel receipt")
       }
-      let style = popover.style
+      let style = monitor.style
       XCTAssertEqual(style.surface, palette.desktopBackground)
       XCTAssertEqual(style.border, palette.border)
       XCTAssertEqual(style.colorScheme, palette.appearance == .dark ? .dark : .light)
@@ -859,8 +860,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     }
     func envelope(_ id: String) -> [String: Any] { ["kind": "seal", "delivery_id": id] }
     func recipient() -> [String: Any] {
-      ["provider": "codex", "provider_session_id": "agent-session",
-       "lease_id": Self.leaseID, "bus": bus.path, "channel": "1", "name": "james"]
+      [
+        "provider": "codex", "provider_session_id": "agent-session",
+        "lease_id": Self.leaseID, "bus": bus.path, "channel": "1", "name": "james",
+      ]
     }
     func seal(_ sequence: Int) -> [String: Any] {
       [

@@ -365,7 +365,14 @@ struct DictationOverlayView: View {
           pendingControls: state.pendingReplyControls, controlErrors: state.replyControlErrors,
           onControl: { message, stop in
             Task { await state.controlReply(message, stop: stop) }
-          })
+          }, onShowMonitor: state.showAgentMonitor)
+      } else if state.showsAgentMonitor, !state.isCollapsed {
+        ScrollView {
+          channelStatusView.monitorBody
+            .padding(.horizontal, 20)
+            .padding(.top, headerHeight + 8)
+            .padding(.bottom, 20)
+        }
       }
       VStack(spacing: 0) {
         header
@@ -670,21 +677,7 @@ struct DictationOverlayView: View {
         if !state.visibleChannelRows.isEmpty || !state.conversations.isEmpty
           || state.channelStatusUnavailable
         {
-          OverlayChannelStatusView(
-            channels: state.visibleChannelRows, unavailable: state.channelStatusUnavailable,
-            palette: palette, animates: overlayVisible,
-            hudStates: state.channelHudStates,
-            onToggleChannel: { digit in
-              Task { await state.toggleAgentChannel(digit) }
-            },
-            toggleError: state.channelToggleError,
-            conversations: state.conversations,
-            selectedConversationID: state.selectedConversationID,
-            unreadCounts: Dictionary(uniqueKeysWithValues: state.conversations.map {
-              ($0.id, state.unreadReplies(in: $0))
-            }),
-            onSelectConversation: { state.selectConversation($0) }
-          )
+          channelStatusView
         }
         sessionTimer
           .allowsHitTesting(false)
@@ -706,6 +699,26 @@ struct DictationOverlayView: View {
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("overlay-header-trailing")
     }
+  }
+
+  private var channelStatusView: OverlayChannelStatusView {
+    OverlayChannelStatusView(
+      channels: state.visibleChannelRows, unavailable: state.channelStatusUnavailable,
+      palette: palette, animates: overlayVisible,
+      hudStates: state.channelHudStates,
+      onToggleChannel: { digit in
+        Task { await state.toggleAgentChannel(digit) }
+      },
+      toggleError: state.channelToggleError,
+      conversations: state.conversations,
+      selectedConversationID: state.selectedConversationID,
+      unreadCounts: Dictionary(
+        uniqueKeysWithValues: state.conversations.map {
+          ($0.id, state.unreadReplies(in: $0))
+        }),
+      onSelectConversation: state.selectConversation,
+      onShowMonitor: state.showAgentMonitor
+    )
   }
 
   /// Audio-evidence strip in the primary bar. Amplitude/VAD only — word/PCM
