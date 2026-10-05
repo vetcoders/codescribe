@@ -3304,7 +3304,7 @@ final class OverlayState {
         conversationFocusRevision == focusRevision, recording, !finalized
       else { return }
       applyChannelRoster(roster)
-      guard !hasOpenChannel, indicatorMode != .assistive else { return }
+      guard !roster.contains(where: \.open), indicatorMode != .assistive else { return }
       selectConversation(nil)
     }
   }
