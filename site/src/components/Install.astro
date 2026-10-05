@@ -2,9 +2,8 @@
 // Install section (WEBSITE_SPEC §4.12). Repo URL brand-corrected to
 // github.com/vetcoders/codescribe (the reference render still had the old
 // camelCase path).
-// The download link is pinned so the button can never serve a different
-// artifact than the version it advertises (review P1-4). The pin now lives in
-// src/lib/release.ts so Hero and Install cannot drift apart.
+// The build resolves one published GitHub release for every download CTA.
+// Its pinned asset URL, version and size stay together in src/lib/release.ts.
 import { SITE_VERSION, DOWNLOAD_URL, DOWNLOAD_SIZE } from '../lib/release';
 ---
 
