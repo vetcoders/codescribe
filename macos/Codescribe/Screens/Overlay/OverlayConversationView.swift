@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Paints the passive observer's immutable conversation projection.
 struct OverlayConversationView: View {
+  @Environment(\.displayScale) private var displayScale
   let conversation: OverlayConversation
   let palette: OverlayAppearancePalette
   let topInset: CGFloat
@@ -241,16 +242,14 @@ struct OverlayConversationView: View {
     }
     .padding(12)
     .background(
-      message.kind == .user
-        ? CSColor.terracotta.opacity(palette.appearance == .dark ? 0.20 : 0.12)
-        : palette.primaryText.color.opacity(0.06),
+      palette.primaryText.color.opacity(0.06),
       in: RoundedRectangle(cornerRadius: 16, style: .continuous)
     )
     .overlay {
       RoundedRectangle(cornerRadius: 16, style: .continuous)
         .strokeBorder(
-          message.kind == .user ? CSColor.terracotta.opacity(0.28) : palette.border.color,
-          lineWidth: 1
+          message.kind == .user ? CSColor.terracotta.opacity(0.65) : palette.border.color,
+          lineWidth: 1 / max(displayScale, 1)
         )
         .allowsHitTesting(false)
     }

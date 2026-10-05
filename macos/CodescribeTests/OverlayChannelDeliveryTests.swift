@@ -361,9 +361,11 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     // The header shows one glyph, never the microphone: mic = recording only.
     XCTAssertFalse(status.contains("antenna.radiowaves"))
     XCTAssertFalse(status.contains("hasOpenChannel ? \"mic.fill\""))
-    // A click opens details and nothing else: it cannot light ␆.
-    XCTAssertTrue(status.contains("Button(action: showMonitor)"))
-    XCTAssertEqual(status.components(separatedBy: "Button(action: showMonitor)").count - 1, 1)
+    // Notification navigation stays passive; only the separate microphone toggles capture.
+    XCTAssertTrue(status.contains("Menu {"))
+    XCTAssertTrue(status.contains(".menuIndicator(.hidden)"))
+    XCTAssertTrue(
+      status.contains("Button(\"Capture channels\", systemImage: \"person.2\") { showMonitor() }"))
   }
 
   func testRosterToggleAcceptsOnlyChannelDigitsAndForwardsEachClickOnce() {
@@ -459,6 +461,52 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(toggles, [2])
     XCTAssertEqual(selections, [current.id], "capture uses its own controller intent")
     XCTAssertFalse(view.isOpen(channel), "the controller, not a click, owns open state")
+  }
+
+  func testNotificationNavigationRetainsOwnerAndUnreadCountWithoutOpeningMicrophone() throws {
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "current",
+        "lease_id": String(repeating: "b", count: 32), "channel": "2", "name": "lena",
+      ]))
+    let conversation = OverlayConversation(
+      id: owner.id, channel: "2", name: "lena", owner: owner, messages: [])
+    let channel = OverlayChannelDelivery(
+      channel: "2", agent: "lena", deliveryID: "confirmed", stage: .received, isOpen: false)
+    var selections: [String?] = []
+    var toggles: [UInt8] = []
+    var monitors = 0
+    let view = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "2": .init(
+          open: false, loud: false, autosealDeadline: nil,
+          followerAlive: true, provider: "codex", providerSessionID: "current")
+      ],
+      onToggleChannel: { toggles.append($0) }, conversations: [conversation],
+      unreadCounts: [owner.id: 3], onSelectConversation: { selections.append($0) },
+      onShowMonitor: { monitors += 1 })
+    XCTAssertEqual(view.notificationTitle(for: channel), "2 · lena (3)")
+    XCTAssertEqual(view.glyph, .acknowledged, "unread replies are separate from receipt state")
+    view.viewConversation(channel)
+    view.showMonitor()
+    XCTAssertEqual(selections, [owner.id])
+    XCTAssertEqual(monitors, 1)
+    XCTAssertTrue(toggles.isEmpty, "notification navigation never opens a microphone")
+    XCTAssertFalse(view.isOpen(channel))
+  }
+
+  func testHeaderAndChannelMicrophoneGlyphKeepOneCompactCircleInBothAppearances() {
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      for symbol in ["mic", "mic.fill", "stop.fill"] {
+        let host = NSHostingView(
+          rootView:
+            OverlayMicrophoneGlyph(symbol: symbol, tint: palette.listeningStatus.color))
+        let size = host.fittingSize
+        XCTAssertEqual(size.width, OverlayRecordingControls.controlDiameter, accuracy: 0.5)
+        XCTAssertEqual(size.height, OverlayRecordingControls.controlDiameter, accuracy: 0.5)
+      }
+    }
   }
 
   func testUnifiedAgentRowDoesNotChooseAnAmbiguousLease() throws {

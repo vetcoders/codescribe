@@ -190,8 +190,9 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       var warmCount = 0
       var warmX: Double = 0
       var neutralCount = 0
-      var neutralX: Double = 0
-      // Read actual rendered fills, including wrapping, at both appearance settings.
+      var neutralLeft = 0
+      var neutralRight = 0
+      // Rendered interiors must match; the user's brand hairline stays sparse and on the right.
       for y in stride(from: 90, to: bitmap.pixelsHigh - 30, by: 4) {
         for x in stride(from: 0, to: bitmap.pixelsWide, by: 4) {
           guard let color = bitmap.colorAt(x: x, y: y) else {
@@ -207,14 +208,15 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
           let agentFill = scheme == .dark ? 0.149 : 0.914
           if abs(r - agentFill) < 0.018 && abs(r - g) < 0.03 {
             neutralCount += 1
-            neutralX += Double(x)
+            if x < bitmap.pixelsWide / 2 { neutralLeft += 1 } else { neutralRight += 1 }
           }
         }
       }
-      XCTAssertGreaterThan(warmCount, 100)
-      XCTAssertGreaterThan(neutralCount, 100)
+      XCTAssertGreaterThan(warmCount, 10, "the human bubble retains its brand outline")
+      XCTAssertGreaterThan(neutralLeft, 100, "agent bubble has a neutral interior")
+      XCTAssertGreaterThan(neutralRight, 100, "human bubble has the same neutral interior")
+      XCTAssertLessThan(warmCount * 10, neutralCount, "orange is a hairline, never a filled bubble")
       XCTAssertGreaterThan(warmX / Double(max(1, warmCount)), Double(bitmap.pixelsWide) / 2)
-      XCTAssertLessThan(neutralX / Double(max(1, neutralCount)), Double(bitmap.pixelsWide) / 2)
 
     }
   }

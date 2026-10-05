@@ -186,16 +186,7 @@ struct OverlayRecordingControls: View {
   }
 
   private var recordingGlyph: some View {
-    Image(systemName: recordingSymbol)
-      .font(.system(size: 9, weight: .semibold))
-      .foregroundStyle(recordingTint)
-      .frame(width: Self.controlDiameter, height: Self.controlDiameter)
-      .background { Circle().fill(recordingTint.opacity(0.12)) }
-      .overlay {
-        Circle()
-          .strokeBorder(recordingTint.opacity(0.42), lineWidth: 1 / max(displayScale, 1))
-          .accessibilityHidden(true)
-      }
+    OverlayMicrophoneGlyph(symbol: recordingSymbol, tint: recordingTint)
   }
 
   private var previewButton: some View {

@@ -948,7 +948,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   func testRecordingControlMorphsBetweenIdleLiveAndFinalizing() throws {
     let source = try overlaySource()
     XCTAssertTrue(source.contains("HStack(spacing: compact ? 4 : 7) {\n      recordingButton"))
-    XCTAssertTrue(source.contains("Image(systemName: recordingSymbol)"))
+    XCTAssertTrue(
+      source.contains("OverlayMicrophoneGlyph(symbol: recordingSymbol, tint: recordingTint)"))
     XCTAssertTrue(source.contains(".accessibilityIdentifier(recordingIdentifier)"))
     XCTAssertTrue(source.contains(".disabled(recordingDisabled)"))
     XCTAssertTrue(source.contains("canFinish: state.recording && !state.transcribing"))

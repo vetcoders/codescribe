@@ -134,6 +134,27 @@ struct OverlayAgentStatusMark: View {
   }
 }
 
+/// One microphone treatment for the header and channel controls; actions stay with their owners.
+struct OverlayMicrophoneGlyph: View {
+  @Environment(\.displayScale) private var displayScale
+  let symbol: String
+  let tint: Color
+  static let diameter: CGFloat = 22
+
+  var body: some View {
+    Image(systemName: symbol)
+      .font(.system(size: 9, weight: .semibold))
+      .foregroundStyle(tint)
+      .frame(width: Self.diameter, height: Self.diameter)
+      .background { Circle().fill(tint.opacity(0.12)) }
+      .overlay {
+        Circle()
+          .strokeBorder(tint.opacity(0.42), lineWidth: 1 / max(displayScale, 1))
+          .accessibilityHidden(true)
+      }
+  }
+}
+
 /// A quiet notification affordance opens the full monitor on the overlay canvas.
 struct OverlayChannelStatusView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -201,31 +222,68 @@ struct OverlayChannelStatusView: View {
 
   func showMonitor() { onShowMonitor?() }
 
+  func notificationTitle(for channel: OverlayChannelDelivery) -> String {
+    let title = channel.channel + " · " + channel.agent
+    guard let conversation = conversation(for: channel),
+      let count = unreadCounts[conversation.id], count > 0
+    else { return title }
+    return title + " (" + String(count) + ")"
+  }
+
   var body: some View {
-    Button(action: showMonitor) {
+    Menu {
+      Button("My dictation", systemImage: "waveform") { onSelectConversation?(nil) }
+      ForEach(channels) { channel in
+        Button {
+          viewConversation(channel)
+        } label: {
+          Label {
+            Text(verbatim: notificationTitle(for: channel))
+          } icon: {
+            Image(systemName: "bubble.left")
+          }
+        }
+      }
+      if !savedConversations.isEmpty {
+        Menu("Saved conversations") {
+          ForEach(savedConversations) { conversation in
+            Button {
+              onSelectConversation?(conversation.id)
+            } label: {
+              Text(verbatim: conversation.name)
+            }
+          }
+        }
+      }
+      Divider()
+      Button("Capture channels", systemImage: "person.2") { showMonitor() }
+    } label: {
       OverlayAgentStatusMark(
         reduceMotion: reduceMotion, glyph: glyph, palette: palette, animates: animates, fontSize: 13
       )
       .contentShape(Rectangle())
       .overlay(alignment: .topTrailing) {
-        if let count = unreadCounts["0"], count > 0 {
+        if unreadCounts.values.contains(where: { $0 > 0 }) {
           Circle()
             .fill(palette.processingStatus.color)
             .frame(width: 5, height: 5)
             .offset(x: 2, y: -2)
-            .accessibilityLabel("\(count) unread replies")
+            .accessibilityLabel("Unread replies")
             .accessibilityIdentifier("overlay-unread-replies")
         }
       }
     }
-    .buttonStyle(.plain)
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .frame(width: OverlayAgentGlyph.slotSize.width, height: OverlayAgentGlyph.slotSize.height)
+    .fixedSize()
     .help(
       Text(
         "\(glyph.label) — show details",
         comment: "Agent glyph tooltip; the placeholder is the channel state label")
     )
     .accessibilityLabel(glyph.label)
-    .accessibilityHint("Shows agent channel details")
+    .accessibilityHint("Choose a conversation or show agent channel details")
     .accessibilityIdentifier("overlay-agent-glyph")
   }
 
@@ -334,12 +392,13 @@ struct OverlayChannelStatusView: View {
       Button {
         toggle(channel)
       } label: {
-        Image(systemName: open ? "mic.fill" : "mic")
-          .frame(width: 18, height: 20)
-          .foregroundStyle((open ? palette.listeningStatus : palette.mutedText).color)
+        OverlayMicrophoneGlyph(
+          symbol: open ? "mic.fill" : "mic", tint: palette.listeningStatus.color
+        )
+        .contentShape(Circle())
       }
-      .buttonStyle(.bordered)
-      .controlSize(.small)
+      .buttonStyle(.plain)
+      .csFocusOutline()
       .disabled(onToggleChannel == nil || Self.toggleDigit(for: channel.channel) == nil)
       .help(open ? "Hang up channel" : "Open channel")
       .accessibilityLabel(Text(verbatim: "\(channel.channel) · \(channel.agent)"))
