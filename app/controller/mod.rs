@@ -3845,7 +3845,7 @@ impl RecordingController {
     }
 
     /// Cancel any pending delayed hold-start task
-    async fn cancel_pending_hold_start(&self) {
+    async fn cancel_pending_hold_start(&self) -> u64 {
         let generation = self.hold_start_generation.fetch_add(1, Ordering::SeqCst) + 1;
         let mut task_guard = self.hold_start_task.lock().await;
         let pending_start_invalidated = match task_guard.take() {
@@ -3869,6 +3869,7 @@ impl RecordingController {
         if pending_start_invalidated {
             *self.pre_overlay_frontmost_app.write().await = None;
         }
+        generation
     }
 
     /// Detach every sink and callback from the recorder.
@@ -4496,7 +4497,7 @@ impl RecordingController {
             && event.key_type == HotkeyType::Hold
             && event.action == HotkeyAction::Up
         {
-            return self.handle_hold_event(event).await;
+            return self.handle_hold_event(event, None).await;
         }
 
         if current_state == State::Idle {
@@ -4672,19 +4673,26 @@ impl RecordingController {
             return Ok(());
         }
         match event.key_type {
-            HotkeyType::Hold => self.handle_hold_event(event).await,
+            HotkeyType::Hold => self.handle_hold_event(event, hold_generation).await,
             HotkeyType::Toggle => self.handle_toggle_event(event).await,
             HotkeyType::Conversation => self.handle_conversation_event(event).await,
         }
     }
 
     /// Handle hold-type hotkey events
-    async fn handle_hold_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
+    async fn handle_hold_event(
+        self: &Arc<Self>,
+        event: HotkeyInput,
+        hold_generation: Option<u64>,
+    ) -> Result<()> {
         match event.action {
             HotkeyAction::Down => {
                 let current_state = self.current_state().await;
                 if current_state == State::Idle {
-                    self.schedule_hold_start(event.assistive).await?;
+                    let Some(generation) = hold_generation else {
+                        return Ok(());
+                    };
+                    self.schedule_hold_start(event.assistive, generation).await?;
                     // Fn down with a live OS selection attaches `{selection_1}`
                     // immediately. Mid-hold arm pulses add `{selection_2..n}`.
                     // Destination stays dictation — do not arm Chat/Agent.
@@ -5168,7 +5176,11 @@ impl RecordingController {
     }
 
     /// Schedule delayed recording start for hold mode
-    async fn schedule_hold_start(self: &Arc<Self>, assistive: bool) -> Result<()> {
+    async fn schedule_hold_start(
+        self: &Arc<Self>,
+        assistive: bool,
+        requested_generation: u64,
+    ) -> Result<()> {
         // Scheduling selects the take generation. Refresh and every actual
         // start/stop transition cross this same boundary, while the spawned
         // task itself is never awaited under the guard.
@@ -5177,10 +5189,15 @@ impl RecordingController {
         if self.shutdown_requested.load(Ordering::SeqCst) {
             return Err(anyhow::anyhow!("capture admission closed for shutdown"));
         }
+        if self.hold_start_generation.load(Ordering::SeqCst) != requested_generation {
+            return Ok(());
+        }
         // Cancel any existing delayed start before selecting the next Arc.
-        self.cancel_pending_hold_start().await;
+        let task_generation = self.cancel_pending_hold_start().await;
+        if task_generation != requested_generation.wrapping_add(1) {
+            return Ok(());
+        }
         self.refresh_pending_runtime_settings_locked().await?;
-        let task_generation = self.hold_start_generation.load(Ordering::SeqCst);
         let runtime_settings = self.runtime_settings_arc().await;
         let config = runtime_settings.values().clone();
 
