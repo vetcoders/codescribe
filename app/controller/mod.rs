@@ -3845,7 +3845,7 @@ impl RecordingController {
     }
 
     /// Cancel any pending delayed hold-start task
-    async fn cancel_pending_hold_start(&self) {
+    async fn cancel_pending_hold_start(&self) -> u64 {
         let generation = self.hold_start_generation.fetch_add(1, Ordering::SeqCst) + 1;
         let mut task_guard = self.hold_start_task.lock().await;
         let pending_start_invalidated = match task_guard.take() {
@@ -3869,6 +3869,7 @@ impl RecordingController {
         if pending_start_invalidated {
             *self.pre_overlay_frontmost_app.write().await = None;
         }
+        generation
     }
 
     /// Detach every sink and callback from the recorder.
@@ -4496,7 +4497,7 @@ impl RecordingController {
             && event.key_type == HotkeyType::Hold
             && event.action == HotkeyAction::Up
         {
-            return self.handle_hold_event(event).await;
+            return self.handle_hold_event(event, None).await;
         }
 
         if current_state == State::Idle {
@@ -4522,21 +4523,6 @@ impl RecordingController {
         ) {
             info!("Agent response is still streaming; ignoring hotkey start");
             return Ok(());
-        }
-
-        if current_state == State::Idle
-            && next_start
-            && !event.assistive
-            && matches!(event.hold_mode, HoldMode::Raw)
-        {
-            let _serial = self.serial_lock.lock().await;
-            if self.shutdown_requested.load(Ordering::SeqCst) {
-                return Err(anyhow::anyhow!("capture admission closed for shutdown"));
-            }
-            current_state = self.current_state().await;
-            if current_state == State::Idle {
-                self.close_agent_channels_for_dictation().await?;
-            }
         }
 
         if current_state == State::Idle
@@ -4687,19 +4673,27 @@ impl RecordingController {
             return Ok(());
         }
         match event.key_type {
-            HotkeyType::Hold => self.handle_hold_event(event).await,
+            HotkeyType::Hold => self.handle_hold_event(event, hold_generation).await,
             HotkeyType::Toggle => self.handle_toggle_event(event).await,
             HotkeyType::Conversation => self.handle_conversation_event(event).await,
         }
     }
 
     /// Handle hold-type hotkey events
-    async fn handle_hold_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
+    async fn handle_hold_event(
+        self: &Arc<Self>,
+        event: HotkeyInput,
+        hold_generation: Option<u64>,
+    ) -> Result<()> {
         match event.action {
             HotkeyAction::Down => {
                 let current_state = self.current_state().await;
                 if current_state == State::Idle {
-                    self.schedule_hold_start(event.assistive).await?;
+                    let Some(generation) = hold_generation else {
+                        return Ok(());
+                    };
+                    self.schedule_hold_start(event.assistive, generation)
+                        .await?;
                     // Fn down with a live OS selection attaches `{selection_1}`
                     // immediately. Mid-hold arm pulses add `{selection_2..n}`.
                     // Destination stays dictation — do not arm Chat/Agent.
@@ -5183,7 +5177,11 @@ impl RecordingController {
     }
 
     /// Schedule delayed recording start for hold mode
-    async fn schedule_hold_start(&self, assistive: bool) -> Result<()> {
+    async fn schedule_hold_start(
+        self: &Arc<Self>,
+        assistive: bool,
+        requested_generation: u64,
+    ) -> Result<()> {
         // Scheduling selects the take generation. Refresh and every actual
         // start/stop transition cross this same boundary, while the spawned
         // task itself is never awaited under the guard.
@@ -5192,10 +5190,15 @@ impl RecordingController {
         if self.shutdown_requested.load(Ordering::SeqCst) {
             return Err(anyhow::anyhow!("capture admission closed for shutdown"));
         }
+        if self.hold_start_generation.load(Ordering::SeqCst) != requested_generation {
+            return Ok(());
+        }
         // Cancel any existing delayed start before selecting the next Arc.
-        self.cancel_pending_hold_start().await;
+        let task_generation = self.cancel_pending_hold_start().await;
+        if task_generation != requested_generation.wrapping_add(1) {
+            return Ok(());
+        }
         self.refresh_pending_runtime_settings_locked().await?;
-        let task_generation = self.hold_start_generation.load(Ordering::SeqCst);
         let runtime_settings = self.runtime_settings_arc().await;
         let config = runtime_settings.values().clone();
 
@@ -5261,6 +5264,7 @@ impl RecordingController {
         let hold_start_generation = Arc::clone(&self.hold_start_generation);
         let shutdown_requested = Arc::clone(&self.shutdown_requested);
         let start_transition_in_flight = Arc::clone(&self.start_transition_in_flight);
+        let controller = Arc::clone(self);
         // Every exit after the start guard releases exactly these slots.
         let hold_session = HoldStartSession {
             session_id: Arc::clone(&self.session_id),
@@ -5314,6 +5318,17 @@ impl RecordingController {
                     current_state
                 );
                 return;
+            }
+
+            if !assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
+                if let Err(error) = controller.close_agent_channels_for_dictation().await {
+                    error!(%error, "Hold-start refused: agent channel did not close");
+                    return;
+                }
+                if hold_start_generation.load(Ordering::SeqCst) != task_generation {
+                    debug!("Hold-start cancelled while closing the preceding channels");
+                    return;
+                }
             }
 
             let _start_guard = AtomicFlagGuard::new(Arc::clone(&start_transition_in_flight));
@@ -5591,6 +5606,9 @@ impl RecordingController {
                 current_state
             );
             return Ok(CaptureAdmission::NotAdmitted);
+        }
+        if !is_assistive && matches!(capture_turn, CaptureTurnIntent::HandsFree) {
+            self.close_agent_channels_for_dictation().await?;
         }
         // A new take inherits no destination from the previous one.
         *self.delivery_disposition.write().await = TranscriptDelivery::Unattempted;
@@ -9898,7 +9916,13 @@ mod owned_capture_settlement_tests {
         operation.task.await.unwrap();
         assert!(controller.capture_shutdown_settled());
         assert!(controller.start_composer_turn_recording().await.is_err());
-        assert!(controller.schedule_hold_start(false).await.is_err());
+        let generation = controller.hold_start_generation.load(Ordering::SeqCst);
+        assert!(
+            controller
+                .schedule_hold_start(false, generation)
+                .await
+                .is_err()
+        );
         assert!(controller.start_conversation_mode().await.is_err());
         assert_eq!(rows(&dir).len(), 2);
     }
@@ -10711,7 +10735,10 @@ mod hold_start_terminal_lifecycle_falsifiers {
         *controller.hold_mode.write().await = HoldMode::Chat;
 
         controller
-            .handle_hold_event(hold_input(HotkeyAction::Down))
+            .handle_hold_event(
+                hold_input(HotkeyAction::Down),
+                Some(controller.hold_start_generation.load(Ordering::SeqCst)),
+            )
             .await
             .expect("hold down schedules a delayed start");
         let task = controller
@@ -10742,7 +10769,7 @@ mod hold_start_terminal_lifecycle_falsifiers {
         // The real key-up path: state is still Idle, so this cancels the
         // pending start by bumping the generation — without `serial_lock`.
         controller
-            .handle_hold_event(hold_input(HotkeyAction::Up))
+            .handle_hold_event(hold_input(HotkeyAction::Up), None)
             .await
             .expect("key-up while idle cancels");
         assert_ne!(

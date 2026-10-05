@@ -74,34 +74,46 @@ final class OverlayDesktopEffectView: NSVisualEffectView {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// Native SwiftUI glass samples the scroll content in its own composition.
-struct OverlayScrollMaterial: View {
+/// Scroll chrome samples text inside the window; the desktop sheet remains behind it.
+/// Apply the fade to AppKit's material itself so SwiftUI does not flatten its backdrop.
+struct OverlayScrollMaterial: NSViewRepresentable {
   let top: Bool
 
-  var body: some View {
-    material
-      .mask(OverlayScrollFade(top: top))
-      .allowsHitTesting(false)
-      .accessibilityHidden(true)
+  func makeNSView(context: Context) -> OverlayScrollEffectView {
+    let view = OverlayScrollEffectView()
+    view.material = .headerView
+    view.blendingMode = .withinWindow
+    view.state = .active
+    view.setAccessibilityElement(false)
+    view.top = top
+    return view
   }
 
-  @ViewBuilder
-  private var material: some View {
-    if #available(macOS 26.0, *) {
-      Color.clear.glassEffect(.regular, in: Rectangle())
-    } else {
-      Rectangle().fill(.regularMaterial)
-    }
+  func updateNSView(_ view: OverlayScrollEffectView, context: Context) {
+    guard view.top != top else { return }
+    view.top = top
+    view.needsLayout = true
   }
 }
 
-/// Transparency changes continuously across the entire header or input region.
-struct OverlayScrollFade: View {
-  let top: Bool
+final class OverlayScrollEffectView: NSVisualEffectView {
+  var top = true
+  private var maskedSize = NSSize.zero
+  private var maskedTop = true
 
-  var body: some View {
-    LinearGradient(
-      colors: top ? [.black, .clear] : [.clear, .black],
-      startPoint: .top, endPoint: .bottom)
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  override func layout() {
+    super.layout()
+    guard bounds.width > 0, bounds.height > 0,
+      bounds.size != maskedSize || top != maskedTop || maskImage == nil
+    else { return }
+    let image = NSImage(size: bounds.size)
+    image.lockFocus()
+    NSGradient(starting: .black, ending: .clear)?.draw(in: bounds, angle: top ? -90 : 90)
+    image.unlockFocus()
+    maskImage = image
+    maskedSize = bounds.size
+    maskedTop = top
   }
 }
