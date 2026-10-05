@@ -136,6 +136,10 @@ in the API-key row to edit a key, or **Connect/Manage** in the Agent-account row
 to open Providers. A lane
 is usable only when its resolved runtime snapshot reports it available.
 
+Setup reuses the Providers sign-in flow so its callbacks, pending state and
+account errors stay with the Settings model. The wizard stays open and refreshes
+the account/key snapshot when it regains focus.
+
 ### Model discovery
 
 Model discovery queries the provider's model API with its provider API key.
