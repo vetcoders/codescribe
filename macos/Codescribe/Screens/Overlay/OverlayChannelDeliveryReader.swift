@@ -19,6 +19,17 @@ actor OverlayChannelDeliveryReader {
   private var buses: [URL: Cursor] = [:]
   private var persisted: [String: OverlayDeliveryCursorMark]?
   private var savedRevisions: [URL: UInt64] = [:]
+  private var persistenceAttempts: [URL: PersistenceAttempt] = [:]
+  private struct PersistenceAttempt: Equatable {
+    let offset: UInt64
+    let inode: UInt64
+    let headHash: String
+    let streamID: String?
+    let revision: UInt64
+    let headLength: Int
+    let discardsLeadingParts: Bool
+    let dropsCutRow: Bool
+  }
   /// Total bus bytes this reader consumed from disk. Tests use it to prove a
   /// restart reads only new bytes instead of replaying history.
   private(set) var consumedBytes: UInt64 = 0
@@ -72,7 +83,19 @@ actor OverlayChannelDeliveryReader {
     if FileManager.default.fileExists(atPath: leasesURL.path) {
       let files = try FileManager.default.contentsOfDirectory(
         at: leasesURL, includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }
-      for file in files.sorted(by: { $0.path < $1.path }).prefix(128) {
+      var selected: [URL] = []
+      for binding in bindings.values {
+        guard let provider = binding["provider"] as? String,
+          let session = binding["provider_session_id"] as? String else { continue }
+        let identity = SHA256.hash(data: Data([provider.lowercased(), session].joined(separator: "\0").utf8))
+          .prefix(16).map { String(format: "%02x", $0) }.joined()
+        let file = leasesURL.appendingPathComponent(identity + ".json")
+        if !selected.contains(file) { selected.append(file) }
+      }
+      for file in files.sorted(by: { $0.path < $1.path }).prefix(16) where !selected.contains(file) {
+        selected.append(file)
+      }
+      for file in selected {
         guard let lease = try? object(at: file) else { continue }
         guard lease["schema"] as? String == "codescribe.agent-bridge.lease.v1",
           lease["lease_id"] as? String == file.deletingPathExtension().lastPathComponent
@@ -81,6 +104,13 @@ actor OverlayChannelDeliveryReader {
       }
     }
     var paths: [String] = sharedBus.map { [$0.path] } ?? []
+    for channel in bindings.keys.sorted() {
+      guard let binding = bindings[channel], let lease = leases.first(where: {
+        $0["provider"] as? String == binding["provider"] as? String
+          && $0["provider_session_id"] as? String == binding["provider_session_id"] as? String
+      }), let path = lease["bus"] as? String, path.hasPrefix("/"), !paths.contains(path) else { continue }
+      paths.append(path)
+    }
     for lease in leases {
       if let path = lease["bus"] as? String, path.hasPrefix("/"), !paths.contains(path) {
         paths.append(path)
@@ -144,6 +174,8 @@ actor OverlayChannelDeliveryReader {
       deliveries[index] = status
     }
     buses = buses.filter { usedBuses.contains($0.key) }
+    persistenceAttempts = persistenceAttempts.filter { usedBuses.contains($0.key) }
+    savedRevisions = savedRevisions.filter { usedBuses.contains($0.key) }
     var named: [String: OverlayConversation] = [:]
     var all: [String: OverlayConversationMessage] = [:]
     for bus in buses.keys.sorted(by: { $0.path < $1.path }) {
@@ -312,6 +344,11 @@ actor OverlayChannelDeliveryReader {
   private func persist(_ url: URL, cursor: Cursor, size: UInt64) throws {
     var marks = persisted ?? [:]
     let offset = cursor.storageStart ?? (cursor.offset - UInt64(cursor.partial.count))
+    let attempt = PersistenceAttempt(offset: offset, inode: cursor.inode,
+      headHash: cursor.headHash, streamID: cursor.streamID, revision: cursor.projection.revision,
+      headLength: cursor.headLength, discardsLeadingParts: cursor.storage.discardsLeadingParts,
+      dropsCutRow: cursor.dropsCutRow)
+    if persistenceAttempts[url] == attempt { return }
     if let previous = marks[url.path], savedRevisions[url] == cursor.projection.revision,
       previous.offset == offset, previous.inode == cursor.inode,
       previous.headHash == cursor.headHash, previous.streamID == cursor.streamID { return }
@@ -334,6 +371,9 @@ actor OverlayChannelDeliveryReader {
       }
     }
     persisted = try OverlayDeliveryCursorStore.save(root: root, marks: marks)
+    // A successfully attempted unit may be evicted by the cache budget. Keep
+    // only this in-memory fingerprint to avoid re-encoding it on idle polls.
+    persistenceAttempts[url] = attempt
     if persisted?[url.path] != nil { savedRevisions[url] = cursor.projection.revision }
   }
 

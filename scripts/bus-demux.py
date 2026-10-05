@@ -1071,6 +1071,7 @@ class EvidenceNormalizer:
         # a session must not re-arm the net and deliver the take twice.
         self._settled_sessions: set[str] = set()
         self._session_docs: dict[str, dict[Any, dict[str, Any]]] = {}
+        self._channel_open_times: dict[str, tuple[str, float]] = {}
         self._flushes: list[dict[str, Any]] = []
 
     def pop_flushes(self) -> list[dict[str, Any]]:
@@ -1122,22 +1123,40 @@ class EvidenceNormalizer:
     def _consume_channel_row(self, row: dict[str, Any]) -> None:
         channel = str(row.get("channel") or "")
         session = str(row.get("session_id") or "")
-        due: list[str] = []
-        # Only "open" keeps a session alive; a silence seal or any closing
-        # state the app writes for this session ends it.
-        if str(row.get("state") or "") != "open" and session in self._session_docs:
-            due.append(session)
+        if not session or channel_of_session(session) != channel:
+            return
+        # A delayed predecessor close is evidence only for that named capture.
+        # It cannot terminate documents belonging to a newer admitted take.
+        if str(row.get("state") or "") != "open":
+            self._flush_session(session, row.get("emitted_at"))
+            return
+        opened_at = row.get("opened_at")
+        if not isinstance(opened_at, str):
+            return
+        try:
+            opened = datetime.datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+            if opened.tzinfo is None:
+                return
+            timestamp = opened.timestamp()
+        except (ValueError, OverflowError):
+            return
+        identity = (channel, timestamp)
+        previous = self._channel_open_times.get(session)
+        if previous is not None and previous != identity:
+            return
+        self._channel_open_times[session] = identity
         for cached in list(self._session_docs):
-            if (
-                cached != session
-                and cached not in due
-                and channel_of_session(cached) == channel
-            ):
-                due.append(cached)
-        for stale in due:
-            self._flush_session(stale, row.get("emitted_at"))
+            known = self._channel_open_times.get(cached)
+            if (cached != session and known is not None
+                    and known[0] == channel and known[1] < timestamp):
+                self._flush_session(cached, row.get("emitted_at"))
+        while len(self._channel_open_times) > self.MAX_TRACKED_SESSIONS:
+            oldest = min(self._channel_open_times,
+                         key=lambda key: self._channel_open_times[key][1])
+            del self._channel_open_times[oldest]
 
     def _flush_session(self, session: str, emitted_at: Any) -> None:
+        self._channel_open_times.pop(session, None)
         docs = self._session_docs.pop(session, None)
         if not docs or session in self._settled_sessions:
             return
@@ -3242,7 +3261,8 @@ def say_reply(args: argparse.Namespace) -> int:
         if owner:
             reply["channel"] = owner.get("channel")
         for key in ("source_event_id", "utterance_id", "session_id", "occurrence_session_id",
-                    "capture_epoch", "document_index", "audience", "broadcast_id", "recipients"):
+                    "capture_epoch", "sample_start", "sample_end", "document_index",
+                    "audience", "broadcast_id", "recipients"):
             if key in envelope:
                 reply[key] = envelope[key]
     receipt = publish_reply_event(bus, reply, bridge_root=args.bridge_home)

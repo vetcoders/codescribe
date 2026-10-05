@@ -86,12 +86,20 @@ enum OverlayDeliveryCursorStore {
       data = try encode(retained)
     }
     let temporary = directory.appendingPathComponent(".\(filename).\(UUID().uuidString).tmp")
-    guard FileManager.default.createFile(atPath: temporary.path, contents: data) else {
+    guard FileManager.default.createFile(
+      atPath: temporary.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
       throw CocoaError(.fileWriteUnknown)
     }
     do {
-      try FileManager.default.setAttributes(
-        [.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+      let handle = try FileHandle(forWritingTo: temporary)
+      do {
+        try handle.write(contentsOf: data)
+        try handle.synchronize()
+        try handle.close()
+      } catch {
+        try? handle.close()
+        throw error
+      }
       // rename(2) replaces an existing cursor atomically, unlike moveItem.
       guard rename(temporary.path, url(root: root).path) == 0 else {
         throw CocoaError(.fileWriteUnknown)
