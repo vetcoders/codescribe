@@ -1,0 +1,6 @@
+# GitHub-hosted preview image: https://github.com/actions/runner-images/issues/14404
+# actionlint's label extension is named self-hosted-runner; it is only a lint
+# allow-list and does not change this hosted image's scheduling or permissions.
+self-hosted-runner:
+  labels:
+    - xcode-27

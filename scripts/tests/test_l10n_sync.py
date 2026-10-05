@@ -84,7 +84,7 @@ class LocalizationSyncTests(unittest.TestCase):
     def test_positive_and_formatting_only_changes(self):
         self.seed()
         strings = json.loads(self.catalog.read_text())["strings"]
-        self.assertTrue({"Gate positive", "Gate tooltip", "Gate accessibility", "Gate Debug"} <= strings.keys())
+        self.assertLessEqual({"Gate positive", "Gate tooltip", "Gate accessibility", "Gate Debug"}, strings.keys())
         self.catalog.write_text(json.dumps(json.loads(self.catalog.read_text()), indent=4) + "\n")
         result = self.sync(check=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

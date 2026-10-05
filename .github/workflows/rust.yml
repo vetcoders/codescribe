@@ -1,7 +1,8 @@
 # Rust Code Quality CI
 # Created by Vetcoders (c)2026
 #
-# Runs on macos-latest (Xcode / CoreML / Metal available).
+# Rust-only jobs use macos-latest; quality needs the xcode-27 image because
+# the app already uses SDK 27 Foundation Models APIs.
 # format: cargo fmt --check
 # quality: compiler localization extraction + catalog gates, Clippy, `make verify`.
 # `Clippy + Tests` is required by ruleset 20429200 ("main porotection").
@@ -25,9 +26,9 @@ name: Rust Quality
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, feat/onboarding-language-picker]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, feat/onboarding-language-picker]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -71,7 +72,9 @@ jobs:
 
   quality:
     name: Clippy + Tests
-    runs-on: macos-latest
+    # macos-latest currently selects Xcode 26.6, which cannot compile the app's
+    # LanguageModelError API. Use GitHub's existing SDK 27 image, not a second target.
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
