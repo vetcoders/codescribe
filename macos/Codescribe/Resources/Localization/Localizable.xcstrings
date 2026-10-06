@@ -186,19 +186,13 @@
         }
       }
     },
-    "%@ s of speech not covered · %@" : {
-      "comment" : "“s” is seconds. First placeholder is a pre-formatted duration, e.g. “1.3”; second is a list of positions in the take, e.g. “0:12, 0:58”",
+    "Ledger: %@ s to verify · ranges: %lld" : {
+      "extractionState" : "manual",
       "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "%1$@ s of speech not covered · %2$@"
-          }
-        },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@ s bez transkrypcji · %2$@"
+            "value" : "Ledger: %@ s do weryfikacji · zakresy: %lld"
           }
         }
       }
@@ -3770,13 +3764,13 @@
         }
       }
     },
-    "Committed text does not cover measured speech at %@; you can review and recover the available text." : {
-      "comment" : "The placeholder is a list of time ranges within the take, e.g. “0:12–0:14, 0:58–1:00”",
+    "Unresolved ledger ranges: %@. This measures alignment coverage, not missing words. Review these audio intervals in Voice Lab." : {
+      "extractionState" : "manual",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Przy %@ brakuje części transkrypcji. Dostępny tekst możesz przejrzeć i odzyskać."
+            "value" : "Nierozliczone zakresy ledgera: %@. To pomiar pokrycia przypisaniami, a nie brakujących słów. Sprawdź te fragmenty audio w Voice Lab."
           }
         }
       }
@@ -12690,12 +12684,13 @@
         }
       }
     },
-    "The engine heard speech it has not transcribed yet and is running a recovery pass; this is the engine catching up, not your microphone." : {
+    "Word observations remain unresolved. This status does not measure missing words or prove that a recovery pass is running." : {
+      "extractionState" : "manual",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Silnik wykrył mowę, której nie zdążył jeszcze przetworzyć, i wykonuje dodatkową próbę transkrypcji. To opóźnienie transkrypcji, nie problem z mikrofonem."
+            "value" : "Obserwacje słów pozostają nierozstrzygnięte. Ten status nie mierzy brakujących słów ani nie potwierdza trwającej próby odzyskania."
           }
         }
       }
@@ -13133,12 +13128,13 @@
         }
       }
     },
-    "Transcriber catching up" : {
+    "Ledger observations unresolved" : {
+      "extractionState" : "manual",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Transkrypcja nadrabia zaległości…"
+            "value" : "Nierozstrzygnięte obserwacje ledgera"
           }
         }
       }
@@ -16816,17 +16812,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "niepewne"
-          }
-        }
-      }
-    },
-    "under 0.1 s of speech not covered · %@" : {
-      "comment" : "“s” is seconds. The placeholder is a list of positions in the take, e.g. “0:12, 0:58”",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "mniej niż 0,1 s bez transkrypcji · %@"
           }
         }
       }

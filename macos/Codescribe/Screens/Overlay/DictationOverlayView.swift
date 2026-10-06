@@ -27,8 +27,8 @@ struct OverlayBottomChromeSlots: Equatable {
     mode: OverlayMode, hasPresentationStatus: Bool, isCollapsed: Bool,
     hasLowInputSignal: Bool = false, showsDiagnostics: Bool = false
   ) {
-    // Seal refusal is a technical diagnostic and stays hidden unless the caller
-    // explicitly passes developer power mode. Quiet-mic advice is product copy.
+    // Ledger diagnostics belong to developer power mode. Measured quiet-mic
+    // advice remains available in production.
     let technicalCoverageRefused = mode == .coverageRefused && showsDiagnostics
     let lowInputAdvisory = mode == .listening && hasLowInputSignal
     if isCollapsed {
@@ -660,8 +660,8 @@ struct DictationOverlayView: View {
 
       HStack(spacing: compact ? 4 : 8) {
         if showsDiagnostics && state.compactProjection?.degraded == true {
-          Image(systemName: "exclamationmark.bubble.fill")
-            .foregroundStyle(palette.processingStatus.color)
+          Image(systemName: "waveform.badge.magnifyingglass")
+            .foregroundStyle(palette.mutedText.color)
             .help(OverlayWarningCopy.liveTranscriptBehind.sentence)
             .accessibilityLabel(OverlayWarningCopy.liveTranscriptBehind.sentence)
             .accessibilityIdentifier("overlay-acoustic-warning")

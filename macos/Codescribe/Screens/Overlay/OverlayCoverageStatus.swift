@@ -1,9 +1,8 @@
 import SwiftUI
 
 /// One overlay warning: a short chip and one sentence describing the detected
-/// event and, when measured, its place in the take. The chip tooltip, its
-/// VoiceOver label and the detail popover all read `sentence`, so the three
-/// cannot drift apart.
+/// event and, when measured, its place in the take. Hover stays compact; the
+/// VoiceOver label and opened details expose the complete evidence sentence.
 ///
 /// Seal coverage reports an observation, without assigning a cause or claiming
 /// delivery. Microphone and live-transcription advisories remain separate.
@@ -35,10 +34,10 @@ struct OverlayWarningCopy: Equatable, Sendable {
   /// stalled, recovering or unresolved.
   static let liveTranscriptBehind = OverlayWarningCopy(
     owner: .engine,
-    chip: String(localized: "Transcriber catching up"),
+    chip: String(localized: "Ledger observations unresolved"),
     sentence: String(
       localized:
-        "The engine heard speech it has not transcribed yet and is running a recovery pass; this is the engine catching up, not your microphone."
+        "Word observations remain unresolved. This status does not measure missing words or prove that a recovery pass is running."
     )
   )
 
@@ -109,8 +108,8 @@ struct OverlayWarningCopy: Equatable, Sendable {
   private static func incomplete(
     _ coverage: CsProjectedSealCoverageReceipt, sampleRateHz: UInt32?
   ) -> OverlayWarningCopy {
-    let ranges = coverage.uncoveredSpeechRanges.sorted { $0.sampleStart < $1.sampleStart }
-    guard !ranges.isEmpty, ranges.allSatisfy({ $0.sampleEnd > $0.sampleStart }) else {
+    let measured = coverage.uncoveredSpeechRanges.sorted { $0.sampleStart < $1.sampleStart }
+    guard !measured.isEmpty, measured.allSatisfy({ $0.sampleEnd > $0.sampleStart }) else {
       return OverlayWarningCopy(
         owner: .coverage,
         chip: String(localized: "Text verification incomplete"),
@@ -130,38 +129,39 @@ struct OverlayWarningCopy: Equatable, Sendable {
         )
       )
     }
+    // Coverage receipts can contain intersecting source ranges. Show their
+    // union once; summing overlaps inflates the diagnostic duration.
+    var ranges: [(sampleStart: UInt64, sampleEnd: UInt64)] = []
+    for range in measured {
+      if let last = ranges.last, range.sampleStart <= last.sampleEnd {
+        ranges[ranges.count - 1].sampleEnd = max(last.sampleEnd, range.sampleEnd)
+      } else {
+        ranges.append((range.sampleStart, range.sampleEnd))
+      }
+    }
     let rate = UInt64(sampleRateHz)
     let seconds = ranges.reduce(0.0) { $0 + Double($1.sampleEnd - $1.sampleStart) / Double(rate) }
-    let positions = ranges.map { timestamp($0.sampleStart / rate) }.joined(separator: ", ")
     let intervals = ranges.map { range in
       let end = range.sampleEnd / rate + (range.sampleEnd % rate == 0 ? 0 : 1)
       return "\(timestamp(range.sampleStart / rate))–\(timestamp(end))"
     }.joined(separator: ", ")
     return OverlayWarningCopy(
       owner: .coverage,
-      chip: durationChip(seconds: seconds, positions: positions),
+      chip: durationChip(seconds: seconds, rangeCount: ranges.count),
       sentence: String(
         localized:
-          "Committed text does not cover measured speech at \(intervals); you can review and recover the available text.",
+          "Unresolved ledger ranges: \(intervals). This measures alignment coverage, not missing words. Review these audio intervals in Voice Lab.",
         comment:
           "The placeholder is a list of time ranges within the take, e.g. “0:12–0:14, 0:58–1:00”")
     )
   }
 
-  /// Two whole phrases: “under 0.1” is wording, not a number, so it cannot be
-  /// slotted into the measured phrase. The measured figure is pre-formatted.
-  private static func durationChip(seconds: Double, positions: String) -> String {
-    guard seconds >= 0.1 else {
-      return String(
-        localized: "under 0.1 s of speech not covered · \(positions)",
-        comment:
-          "“s” is seconds. The placeholder is a list of positions in the take, e.g. “0:12, 0:58”")
-    }
-    let duration = String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), seconds)
+  private static func durationChip(seconds: Double, rangeCount: Int) -> String {
+    let duration = seconds < 0.1 ? "<0.1" : String(format: "%.1f", locale: Locale.current, seconds)
     return String(
-      localized: "\(duration) s of speech not covered · \(positions)",
+      localized: "Ledger: \(duration) s to verify · ranges: \(rangeCount)",
       comment:
-        "“s” is seconds. First placeholder is a pre-formatted duration, e.g. “1.3”; second is a list of positions in the take, e.g. “0:12, 0:58”"
+        "Developer diagnostic. Duration is the union of unresolved PCM ranges, not missing words."
     )
   }
 
@@ -184,54 +184,59 @@ struct OverlayCoverageStatus: View {
 
   var body: some View {
     OverlayHoverControl(
-      id: "overlay-coverage-status", title: warning.sentence, palette: palette,
+      id: "overlay-coverage-status", title: warning.chip, palette: palette,
       presented: $presented
     ) {
       Label(warning.chip, systemImage: warning.owner == .microphone ? "mic" : "info.circle")
         .font(CSFont.ui(11, .medium))
         .lineLimit(1)
         .truncationMode(.tail)
-        .foregroundStyle(palette.processingStatus.color)
+        .foregroundStyle(
+          warning.owner == .microphone ? palette.processingStatus.color : palette.mutedText.color)
     } detail: { close in
-      VStack(alignment: .leading, spacing: 10) {
-        Text(warning.sentence)
-          .fixedSize(horizontal: false, vertical: true)
-        if warning.owner == .microphone {
-          Button("Mic calibration in Settings…") {
-            close()
-            SettingsDeepLink.shared.present(.audio, anchor: .audioReadiness)
-            openWindow(id: SettingsView.windowID)
-            NSApp.activate(ignoringOtherApps: true)
-          }
-          .controlSize(.small)
-          .accessibilityIdentifier("overlay-open-mic-calibration-settings")
-        }
-        if let diagnosticDetail {
-          Divider()
-          Text(diagnosticDetail).font(CSFont.mono(10, .medium))
-        }
-        if canRetranscribe {
-          Text(String(localized: "Transcribe this take again"))
-          Text(String(localized: "Uses audio from the take currently shown in the overlay."))
+      ScrollView {
+        VStack(alignment: .leading, spacing: 10) {
+          Text(warning.sentence)
             .fixedSize(horizontal: false, vertical: true)
-          HStack {
-            Button(OverlayRetranscribeCopy.local) {
+          if warning.owner == .microphone {
+            Button("Mic calibration in Settings…") {
               close()
-              onRetranscribe(.fullHq)
+              SettingsDeepLink.shared.present(.audio, anchor: .audioReadiness)
+              openWindow(id: SettingsView.windowID)
+              NSApp.activate(ignoringOtherApps: true)
             }
-            if cloudConfigured {
-              Button(OverlayRetranscribeCopy.cloud) {
+            .controlSize(.small)
+            .accessibilityIdentifier("overlay-open-mic-calibration-settings")
+          }
+          if let diagnosticDetail {
+            Divider()
+            Text(diagnosticDetail).font(CSFont.mono(10, .medium))
+          }
+          if canRetranscribe {
+            Text(String(localized: "Transcribe this take again"))
+            Text(String(localized: "Uses audio from the take currently shown in the overlay."))
+              .fixedSize(horizontal: false, vertical: true)
+            HStack {
+              Button(OverlayRetranscribeCopy.local) {
                 close()
-                onRetranscribe(.cloud)
+                onRetranscribe(.fullHq)
+              }
+              if cloudConfigured {
+                Button(OverlayRetranscribeCopy.cloud) {
+                  close()
+                  onRetranscribe(.cloud)
+                }
               }
             }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .font(CSFont.ui(11, .medium))
           }
-          .buttonStyle(.borderless)
-          .controlSize(.small)
-          .font(CSFont.ui(11, .medium))
         }
       }
-      .frame(width: 250)
+      .frame(width: 280)
+      .frame(maxHeight: 320)
     }
+    .accessibilityLabel(warning.sentence)
   }
 }

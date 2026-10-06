@@ -266,18 +266,18 @@ final class OverlayRecordingLightTests: XCTestCase {
       return receipt
     }
     let one = OverlayWarningCopy.sealRefused(gaps([(576_000, 638_400)]), sampleRateHz: 48_000)
-    XCTAssertEqual(one.chip, "1.3 s of speech not covered · 0:12")
+    XCTAssertEqual(one.chip, "Ledger: 1.3 s to verify · ranges: 1")
     XCTAssertEqual(
       one.sentence,
-      "Committed text does not cover measured speech at 0:12–0:14; you can review and recover the available text."
+      "Unresolved ledger ranges: 0:12–0:14. This measures alignment coverage, not missing words. Review these audio intervals in Voice Lab."
     )
     let two = OverlayWarningCopy.sealRefused(
       gaps([(928_000, 939_200), (192_000, 208_000)]), sampleRateHz: 16_000)
-    XCTAssertEqual(two.chip, "1.7 s of speech not covered · 0:12, 0:58")
+    XCTAssertEqual(two.chip, "Ledger: 1.7 s to verify · ranges: 2")
     let long = OverlayWarningCopy.sealRefused(gaps([(1_040_000, 1_056_000)]), sampleRateHz: 16_000)
-    XCTAssertEqual(long.chip, "1.0 s of speech not covered · 1:05")
+    XCTAssertEqual(long.chip, "Ledger: 1.0 s to verify · ranges: 1")
     let tiny = OverlayWarningCopy.sealRefused(gaps([(0, 1_000)]), sampleRateHz: 48_000)
-    XCTAssertEqual(tiny.chip, "under 0.1 s of speech not covered · 0:00")
+    XCTAssertEqual(tiny.chip, "Ledger: <0.1 s to verify · ranges: 1")
     for rate in [nil, UInt32(0)] {
       XCTAssertEqual(
         OverlayWarningCopy.sealRefused(gaps([(0, 16_000)]), sampleRateHz: rate).chip,
@@ -306,9 +306,24 @@ final class OverlayRecordingLightTests: XCTestCase {
       reducerAction: "session_ended", canCopy: true, acousticReceipts: [acoustic],
       sealCoverage: receipt)
     state.applyTranscriptProjection(projection)
-    XCTAssertEqual(state.footerWarning?.chip, "1.3 s of speech not covered · 0:12")
+    XCTAssertEqual(state.footerWarning?.chip, "Ledger: 1.3 s to verify · ranges: 1")
     XCTAssertEqual(state.coverageRefusalNotice, state.footerWarning?.sentence)
     XCTAssertTrue(state.coverageRefusalNotice?.contains("0:12–0:14") == true)
+  }
+
+  func testOverlappingLedgerRangesAreCountedOnceAndStayOutOfTheChip() {
+    var receipt = coverage(.incomplete, speech: 160_000, covered: 0)
+    receipt.uncoveredSpeechRanges = [
+      CsProjectedSealCoverageRange(sampleStart: 80_000, sampleEnd: 96_000),
+      CsProjectedSealCoverageRange(sampleStart: 16_000, sampleEnd: 48_000),
+      CsProjectedSealCoverageRange(sampleStart: 32_000, sampleEnd: 64_000),
+      CsProjectedSealCoverageRange(sampleStart: 16_000, sampleEnd: 48_000),
+    ]
+    let copy = OverlayWarningCopy.sealRefused(receipt, sampleRateHz: 16_000)
+    XCTAssertEqual(copy.chip, "Ledger: 4.0 s to verify · ranges: 2")
+    XCTAssertFalse(copy.chip.contains("0:"), "intervals belong in the opened detail")
+    XCTAssertTrue(copy.sentence.contains("0:01–0:04, 0:05–0:06"))
+    XCTAssertTrue(copy.sentence.contains("not missing words"))
   }
 
   func testRefusedTakeShowsTheCoverageSentenceNotAMicrophoneHint() {
@@ -330,10 +345,11 @@ final class OverlayRecordingLightTests: XCTestCase {
     XCTAssertNil(state.recordingLight, "a settled take has no status light")
   }
 
-  func testLiveTranscriptWarningBlamesTheEngine() {
+  func testLiveDiagnosticDoesNotInventMissingWordsOrRecoveryWork() {
     let copy = OverlayWarningCopy.liveTranscriptBehind
     XCTAssertEqual(copy.owner, .engine)
-    XCTAssertTrue(copy.sentence.contains("not your microphone"))
+    XCTAssertTrue(copy.sentence.contains("does not measure missing words"))
+    XCTAssertTrue(copy.sentence.contains("or prove that a recovery pass is running"))
   }
 
   /// The header icon's tooltip and VoiceOver label are the same sentence.
