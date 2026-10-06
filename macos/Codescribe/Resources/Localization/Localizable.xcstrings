@@ -186,17 +186,6 @@
         }
       }
     },
-    "Ledger: %@ s to verify · ranges: %lld" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ledger: %@ s do weryfikacji · zakresy: %lld"
-          }
-        }
-      }
-    },
     "%@ seconds" : {
       "localizations" : {
         "pl" : {
@@ -3764,17 +3753,6 @@
         }
       }
     },
-    "Unresolved ledger ranges: %@. This measures alignment coverage, not missing words. Review these audio intervals in Voice Lab." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nierozliczone zakresy ledgera: %@. To pomiar pokrycia przypisaniami, a nie brakujących słów. Sprawdź te fragmenty audio w Voice Lab."
-          }
-        }
-      }
-    },
     "Committing revision…" : {
       "localizations" : {
         "pl" : {
@@ -6524,12 +6502,34 @@
         }
       }
     },
+    "Ledger observations unresolved" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nierozstrzygnięte obserwacje ledgera"
+          }
+        }
+      }
+    },
     "Ledger projection" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zatwierdzone w rejestrze"
+          }
+        }
+      }
+    },
+    "Ledger: %@ s to verify · ranges: %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ledger: %@ s do weryfikacji · zakresy: %lld"
           }
         }
       }
@@ -12684,17 +12684,6 @@
         }
       }
     },
-    "Word observations remain unresolved. This status does not measure missing words or prove that a recovery pass is running." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Obserwacje słów pozostają nierozstrzygnięte. Ten status nie mierzy brakujących słów ani nie potwierdza trwającej próby odzyskania."
-          }
-        }
-      }
-    },
     "The existing transcript is still here." : {
       "localizations" : {
         "pl" : {
@@ -13128,17 +13117,6 @@
         }
       }
     },
-    "Ledger observations unresolved" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nierozstrzygnięte obserwacje ledgera"
-          }
-        }
-      }
-    },
     "Transcribing" : {
       "comment" : "Recording light state",
       "localizations" : {
@@ -13482,6 +13460,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Nieprzeczytane odpowiedzi"
+          }
+        }
+      }
+    },
+    "Unresolved ledger ranges: %@. This measures alignment coverage, not missing words. Review these audio intervals in Voice Lab." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nierozliczone zakresy ledgera: %@. To pomiar pokrycia przypisaniami, a nie brakujących słów. Sprawdź te fragmenty audio w Voice Lab."
           }
         }
       }
@@ -14169,6 +14158,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nagranie tego słowa jest niedostępne"
+          }
+        }
+      }
+    },
+    "Word observations remain unresolved. This status does not measure missing words or prove that a recovery pass is running." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obserwacje słów pozostają nierozstrzygnięte. Ten status nie mierzy brakujących słów ani nie potwierdza trwającej próby odzyskania."
           }
         }
       }
