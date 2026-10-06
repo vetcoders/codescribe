@@ -119,6 +119,9 @@ compiles `#if DEBUG` code), so every string that ships has a row.
 
 `l10n-sync` refuses to run when any Swift source is newer than its last compile,
 because the extraction data describes the last build, not the working tree.
+The compile time of a source is the newest of its `.stringsdata`, `.o`,
+`.swiftdeps`, `.d` and `.dia` intermediates: a comment-only edit rewrites only
+the last two, and the extraction it leaves in place is still current.
 It matches the compiler's absolute source paths to current files by filesystem
 identity (device/inode, as in `samefile`), so case differences on APFS and
 worktree symlink aliases do not invalidate a build. Another worktree's files

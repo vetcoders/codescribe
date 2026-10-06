@@ -111,9 +111,12 @@ for source in sorted(sources):
 def compiled_at(data):
     # The compiler leaves a .stringsdata file untouched when a recompile
     # extracts the same strings, so its own mtime can predate the source. The
-    # object file beside it is rewritten by every compile of that source.
+    # object file beside it is rewritten by a compile that changes code; a
+    # comment-only edit leaves the object and .swiftdeps alone too, and only
+    # the dependency and diagnostics files (.d, .dia) record that the compiler
+    # read the current source.
     stamps = [data.stat().st_mtime]
-    for suffix in (".o", ".swiftdeps"):
+    for suffix in (".o", ".swiftdeps", ".d", ".dia"):
         sibling = data.with_suffix(suffix)
         if sibling.exists():
             stamps.append(sibling.stat().st_mtime)

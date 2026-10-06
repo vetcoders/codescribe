@@ -4,6 +4,13 @@ import SwiftUI
 // tri-state. Backed by the same registry the agent dispatcher uses
 // (`listToolCapabilities`) and durable settings.json agent.permissions via the
 // MCP admin bridge. Identity contract: `server:tool` / `native:name`.
+//
+// Every `Allow · Ask · Deny` picker sits at its own width (`fixedSize`): a
+// segmented control cannot shrink below its labels, and a frame narrower than
+// them lets it spill over both edges of its card. The Settings window follows
+// the content minimum, so a row of three such pickers also forced the window
+// wider than the screen and made it jump when this tab opened. Defaults are
+// therefore one row per scope, the same shape as the tool rows below.
 
 struct ToolPermissionsSection: View {
   @ObservedObject var model: SettingsViewModel
@@ -59,11 +66,9 @@ struct ToolPermissionsSection: View {
         .font(CSFont.ui(12.5, .semibold))
         .foregroundStyle(Color.primary)
 
-      HStack(spacing: 12) {
-        defaultPicker(title: "Read-only", selection: $model.readOnlyDefaultPicker)
-        defaultPicker(title: "Side effects", selection: $model.sideEffectDefaultPicker)
-        defaultPicker(title: "Global / unknown", selection: $model.globalDefaultPicker)
-      }
+      defaultRow(title: "Read-only", selection: $model.readOnlyDefaultPicker)
+      defaultRow(title: "Side effects", selection: $model.sideEffectDefaultPicker)
+      defaultRow(title: "Global / unknown", selection: $model.globalDefaultPicker)
     }
     .padding(CSSpace.card)
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -77,11 +82,12 @@ struct ToolPermissionsSection: View {
     )
   }
 
-  private func defaultPicker(title: LocalizedStringKey, selection: Binding<String>) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
+  private func defaultRow(title: LocalizedStringKey, selection: Binding<String>) -> some View {
+    HStack(spacing: 12) {
       Text(title)
-        .font(CSFont.mono(10, .medium))
-        .foregroundStyle(Color.secondary)
+        .font(CSFont.ui(12.5, .medium))
+        .foregroundStyle(Color.primary)
+      Spacer(minLength: 12)
       Picker(title, selection: selection) {
         Text("Allow", comment: "Tool permission level").tag("allow")
         Text("Ask", comment: "Tool permission level").tag("ask")
@@ -89,7 +95,7 @@ struct ToolPermissionsSection: View {
       }
       .labelsHidden()
       .pickerStyle(.segmented)
-      .frame(maxWidth: 180)
+      .fixedSize()
     }
   }
 
@@ -222,7 +228,7 @@ struct ToolCapabilityRow: View {
       }
       .labelsHidden()
       .pickerStyle(.segmented)
-      .frame(width: 180)
+      .fixedSize()
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 10)

@@ -124,6 +124,68 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(view.contains("minWidth: 880"))
   }
 
+  /// A segmented control cannot shrink below its labels, and the Settings
+  /// window follows the content minimum. `Allow · Ask · Deny` pinned to 180 pt
+  /// spilled over its card in Polish (255 pt) and, three abreast, forced the
+  /// window wider than the screen whenever Agent › Tools opened (Founder,
+  /// 2026-10-07). Tool-permission pickers sit at their own width, one default
+  /// per row; every picker that keeps a fixed frame is measured against its
+  /// Polish labels here.
+  @MainActor
+  func testSegmentedPickersFitTheirFramesInEnglishAndPolish() throws {
+    let sources = try settingsSources()
+    let polish = try polishCatalog()
+    func width(_ titles: [String]) -> CGFloat {
+      SettingsTabSegments.control(titles: titles).fittingSize.width
+    }
+
+    let tools = try XCTUnwrap(sources["ToolPermissionsSection.swift"])
+    XCTAssertEqual(tools.components(separatedBy: ".pickerStyle(.segmented)").count, 3)
+    XCTAssertEqual(tools.components(separatedBy: ".fixedSize()").count, 3)
+    XCTAssertFalse(tools.contains(".frame(width: 180)"))
+    XCTAssertFalse(tools.contains(".frame(maxWidth: 180)"))
+    XCTAssertEqual(tools.components(separatedBy: "defaultRow(title: \"").count, 4)
+    let levels = ["Allow", "Ask", "Deny"]
+    let polishLevels = try levels.map { try XCTUnwrap(polish[$0]) }
+    XCTAssertEqual(polishLevels, ["Zezwalaj", "Pytaj o zgodę", "Odmów"])
+    // The tools column at the minimum window: the detail column minus the pane
+    // padding, the 190 pt server column, the gap between them and the row's
+    // own padding. A row keeps at least 96 pt for the tool name.
+    let browser = try XCTUnwrap(sources["ToolOverridesBrowser.swift"])
+    XCTAssertTrue(browser.contains(".frame(width: 190)"))
+    let column = SettingsView.detailMinWidth - 2 * CSSpace.xl - 190 - CSSpace.md - 2 * 14
+    for titles in [levels, polishLevels] {
+      let picker = width(titles)
+      XCTAssertGreaterThan(picker, 0)
+      XCTAssertLessThanOrEqual(picker + 8 + 96, column, "\(titles)")
+    }
+
+    // Pickers that keep a fixed frame hold their Polish labels.
+    let fixed: [(file: String, picker: String, titles: [String?])] = [
+      (
+        "CreatorPanel.swift", "Picker(\"\", selection: formattingLevelBinding)",
+        [
+          polish["settings.formatting.level.off"], polish["Correction"], polish["Smart"],
+          polish["Max"],
+        ]
+      ),
+      ("ShortcutsPanel.swift", "Picker(\"Arm modifier\"", ["Shift", "Command"]),
+      (
+        "ShortcutsPanel.swift", "Picker(\"Pointer indicator\"",
+        [polish["settings.holdBadge.size.off"], "4px", "8px", "12px"]
+      ),
+      ("ShortcutsPanel.swift", "Picker(\"Agent channel modifier\"", ["Ctrl", "Fn"]),
+    ]
+    for entry in fixed {
+      let source = try XCTUnwrap(sources[entry.file])
+      let start = try XCTUnwrap(source.range(of: entry.picker), entry.picker)
+      let tail = String(source[start.upperBound...].prefix(600))
+      let frame = try XCTUnwrap(fixedFrameWidth(in: tail), "\(entry.picker): no fixed frame")
+      let titles = try entry.titles.map { try XCTUnwrap($0, entry.picker) }
+      XCTAssertLessThanOrEqual(width(titles), frame, "\(entry.picker): \(titles)")
+    }
+  }
+
   /// The sidebar footer is one sentence-case line per state, and empty while
   /// the state is undetermined. The healthy line must stay on one line in the
   /// narrowest sidebar, in English and Polish.
@@ -304,6 +366,18 @@ final class SettingsChromeContractTests: XCTestCase {
       polish[key] = value
     }
     return polish
+  }
+
+  /// The first fixed width (`frame(width:)` or `frame(maxWidth:)`) in `source`.
+  private func fixedFrameWidth(in source: String) -> CGFloat? {
+    let hits = [".frame(width: ", ".frame(maxWidth: "].compactMap {
+      key -> (String.Index, CGFloat)? in
+      guard let range = source.range(of: key) else { return nil }
+      let digits = String(source[range.upperBound...].prefix { $0.isNumber || $0 == "." })
+      guard let value = Double(digits) else { return nil }
+      return (range.lowerBound, CGFloat(value))
+    }
+    return hits.min { $0.0 < $1.0 }?.1
   }
 
   private func joinedSettingsSources() throws -> String {
