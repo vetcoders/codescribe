@@ -3239,8 +3239,9 @@ impl AppleSealState {
 
 
 
-    /// A fresh scheduled return offers every covered dispute its third witness
-    /// before ordinary admission. The ledger requires full source and freshness.
+    /// A scheduled return offers every covered dispute its third witness before
+    /// ordinary admission. The ledger requires full source and frame freshness
+    /// for each component, including owners qualified after the original return.
     fn complete_covered_word_trials(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -3827,7 +3828,8 @@ impl AppleSealState {
     }
 
     /// One authenticated returned frame, shared by physical owners. Replay
-    /// preserves request identity and bypasses the fresh-dispute opportunity.
+    /// preserves request identity; the ledger decides which components have
+    /// already observed this frame. Only its first return changes job counters.
     fn admit_completed_window(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -3843,9 +3845,7 @@ impl AppleSealState {
             .collect::<Vec<_>>();
         let mut mutation_admitted = false;
         if let Some(payload) = payload.as_ref() {
-            if fresh {
-                mutation_admitted |= self.complete_covered_word_trials(ev_tx, payload).1;
-            }
+            mutation_admitted |= self.complete_covered_word_trials(ev_tx, payload).1;
             self.acoustic_ledger
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
