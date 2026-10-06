@@ -18,7 +18,13 @@ const BRIDGE_HOME_ENV: &str = "CODESCRIBE_AGENT_BRIDGE_HOME";
 /// Mirrors the helper's `DEFAULT_LEASE_TTL_SECONDS`.
 pub const LEASE_TTL_SECONDS: f64 = 120.0;
 const MAX_LEASE_FILES: usize = 64;
-const MAX_LEASE_BYTES: u64 = 16 * 1024;
+/// A lease is not just a name: the helper also persists the follower's delivery
+/// mailbox and its unclosed channel documents in the same file, so a healthy
+/// lease routinely reaches hundreds of kilobytes. The bound mirrors the
+/// helper's own mailbox bound and the Swift overlay reader
+/// (`OverlayChannelDeliveryReader.object(at:)`); a smaller cap would make a
+/// live follower read as absent instead of rejecting a corrupt file.
+const MAX_LEASE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ACTIVE_NAMES: usize = 16;
 const CACHE_FOR: Duration = Duration::from_secs(1);
 
