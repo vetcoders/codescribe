@@ -1132,7 +1132,71 @@ impl AcousticLedger {
             self.close_word_trial(&trial, "admission_horizon_closed");
             closed += 1;
         }
+        if closed > 0 {
+            self.reconcile_returned_word_debt(owner);
+        }
         closed
+    }
+
+    /// An expired lexical dispute can account for a physical source only when
+    /// a retained original Whisper return covered that source. The held slot
+    /// and its unresolved word finality remain intact; this grants no label
+    /// mutation and no extra decoder visit. A rejected edge word additionally
+    /// needs a matching original word pin within that complete return.
+    pub(super) fn expired_local_word_dispute_covers(
+        &self,
+        owner: &OccurrenceIdentity,
+        sample_start: u64,
+        sample_end: u64,
+        rejected: Option<&WordSlot>,
+    ) -> bool {
+        sample_start < sample_end
+            && self.word_adjudication.components.iter().any(|component| {
+                component.owner == *owner
+                    && component.conflict
+                    && component.attempted
+                    && component.trial.is_none()
+                    && component
+                        .last_trial
+                        .as_ref()
+                        .is_some_and(|receipt| receipt.reason == "admission_horizon_closed")
+                    && component.targets.iter().any(|target| {
+                        target.sample_start <= sample_start
+                            && sample_end <= target.sample_end
+                            && self.slots_of(owner).is_some_and(|slots| {
+                                slots.iter().any(|slot| {
+                                    SlotTarget::from(slot) == *target
+                                        && self.word_pin_observations.contains(&slot.observation)
+                                })
+                            })
+                    })
+                    && component.whisper.iter().any(|hypothesis| {
+                        hypothesis.complete
+                            && hypothesis.original_text.is_some()
+                            && hypothesis.decode.is_some_and(|decode| {
+                                self.decoded_word_windows
+                                    .get(&hypothesis.observation)
+                                    .copied()
+                                    == Some(decode)
+                                    && decode.0 <= sample_start
+                                    && sample_end <= decode.1
+                            })
+                            && rejected.is_none_or(|rejected| {
+                                hypothesis.pins.iter().any(|pin| {
+                                    pin.original_text.as_deref().is_some_and(|text| {
+                                        same_word_pin(
+                                            pin.sample_start,
+                                            pin.sample_end,
+                                            text,
+                                            rejected.sample_start,
+                                            rejected.sample_end,
+                                            &rejected.text,
+                                        )
+                                    })
+                                })
+                            })
+                    })
+            })
     }
 
     fn open_word_trial(&mut self, index: usize) -> Option<WordTrial> {

@@ -761,6 +761,22 @@ impl AcousticLedger {
                         && alternative.reason == "decode_window_clipped"
                         && alternative.sources.contains(source)
                 });
+                // A clipped edge proposal remains visible as a rejected pin.
+                // Once the same physical source has a complete original return
+                // and its local dispute expires, it is lexical uncertainty,
+                // rather than speech for which no decoder returned.
+                if awaits_whole_word
+                    && source.producer == ObservationProducer::Whisper
+                    && self.decoded_word_windows.contains_key(&source.observation)
+                    && self.expired_local_word_dispute_covers(
+                        owner,
+                        source.sample_start,
+                        source.sample_end,
+                        Some(source),
+                    )
+                {
+                    return false;
+                }
                 let targets = held
                     .iter()
                     .filter(|pin| {
@@ -804,10 +820,57 @@ impl AcousticLedger {
             && self.slots_of(owner).is_some_and(|pins| {
                 pins.iter()
                     .any(|pin| self.returned_word_scope_accounted(&pin.observation))
+                    || self.expired_word_owner_accounted(owner, pins)
             })
         {
             self.pending_text_recovery.remove(owner);
         }
+    }
+
+    /// An expired local dispute leaves its selected label and uncertainty in
+    /// place. Clearing owner debt additionally requires every other held word
+    /// and the entire original owner scope to be backed by returned decodes.
+    fn expired_word_owner_accounted(
+        &self,
+        owner: &OccurrenceIdentity,
+        pins: &[WordSlot],
+    ) -> bool {
+        !pins.is_empty()
+            && self.frontiers.get(owner).is_some_and(|frontier| {
+                frontier.returned.contains(&ObservationProducer::Whisper)
+            })
+            && pins.iter().any(|pin| {
+                self.expired_local_word_dispute_covers(
+                    owner,
+                    pin.sample_start,
+                    pin.sample_end,
+                    None,
+                )
+            })
+            && pins.iter().all(|pin| {
+                self.expired_local_word_dispute_covers(
+                    owner,
+                    pin.sample_start,
+                    pin.sample_end,
+                    None,
+                )
+                    || (pin.producer == ObservationProducer::Whisper
+                        && self.complete_word_slot(pin)
+                        && self.decoded_source_scope_accounted(
+                            &pin.observation,
+                            &OccurrenceIdentity::new(
+                                &owner.session,
+                                owner.capture_epoch,
+                                pin.sample_start,
+                                pin.sample_end,
+                            ),
+                        ))
+            })
+            && self.decoded_word_windows.keys().any(|observation| {
+                observation.occurrence == *owner
+                    && observation.producer == ObservationProducer::Whisper
+                    && self.decoded_source_scope_accounted(observation, owner)
+            })
     }
 
     pub(super) fn retained_recovery_source(&self, owner: &OccurrenceIdentity) -> bool {
@@ -829,14 +892,12 @@ impl AcousticLedger {
                         && self
                             .slots_of(owner)
                             .is_some_and(|pins| pins.contains(source))
-                        // A complete held Word survives an unaccepted spelling
-                        // or timing proposal. That lexical dispute is retained
-                        // in word finality; it does not prove missing speech.
-                        // Both the actual refused decode and accepted work
-                        // covering this exact owner must exist, and the
-                        // scheduled producer must have returned. A stub alone,
-                        // a coarse source, or a refused partition cannot settle
-                        // the source's recovery obligation.
+                        // A held source survives an unaccepted spelling or
+                        // timing proposal. A complete word may settle during
+                        // admission; a coarse or Apple source needs an expired
+                        // local dispute backed by a complete original return.
+                        // Both the refused decode and accepted work covering
+                        // this owner must exist, and the producer must return.
                         && !(matches!(
                             alternative.reason,
                             "decode_window_clipped"
@@ -844,8 +905,14 @@ impl AcousticLedger {
                                 | "word_adjudication_held"
                                 | "lexical_disagreement"
                         )
-                            && self.complete_word_slot(source)
-                            && self.returned_word_scope_accounted(&source.observation)
+                            && ((self.complete_word_slot(source)
+                                && self.returned_word_scope_accounted(&source.observation))
+                                || self.expired_local_word_dispute_covers(
+                                    owner,
+                                    source.sample_start,
+                                    source.sample_end,
+                                    None,
+                                ))
                             && self
                                 .decoded_word_windows
                                 .contains_key(&alternative.observation)
