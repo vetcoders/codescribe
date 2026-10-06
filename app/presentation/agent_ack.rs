@@ -156,6 +156,17 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
             .collect();
         markers.sort();
         for marker_path in markers {
+            // A persisted or bus-recovered ack is already final. The canonical
+            // filename is enough to skip its body; new IDs still go through
+            // read_marker's file, lease, and envelope checks below.
+            if let Some(delivery_id) = marker_delivery_id(&marker_path)
+                && cursor.emitted.contains(delivery_id)
+            {
+                if cursor.known_seals.remove(delivery_id) {
+                    dirty = true;
+                }
+                continue;
+            }
             let Some(marker) = read_marker(&marker_path, lease, fallback_bus)? else {
                 continue;
             };
@@ -714,18 +725,17 @@ struct AckMarker {
     has_envelope: bool,
 }
 
+fn marker_delivery_id(path: &Path) -> Option<&str> {
+    let stem = path.file_name()?.to_str()?.strip_suffix(".json")?;
+    is_delivery_id(stem).then_some(stem)
+}
+
 fn read_marker(
     path: &Path,
     lease: &LeaseRecord,
     fallback_bus: &Path,
 ) -> io::Result<Option<AckMarker>> {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return Ok(None);
-    };
-    let Some(stem) = name.strip_suffix(".json") else {
-        return Ok(None);
-    };
-    if !is_delivery_id(stem) {
+    let Some(stem) = marker_delivery_id(path) else {
         return Ok(None);
     }
     let metadata = fs::symlink_metadata(path)?;
