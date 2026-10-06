@@ -40,30 +40,36 @@ impl CaptureWindowPlan {
     }
 
     /// Peeking never spends work. Backpressure retains the exact offered frame.
-    /// EOF freezes the capture head even while earlier full windows are queued.
+    /// The first Stop observation freezes the head. A later, larger sample
+    /// count neither hides that offer nor opens another grid past the freeze.
     pub(crate) fn next_due(
         &mut self,
         capture_end: u64,
         stopping: bool,
     ) -> Option<TailSampleRange> {
-        if self.finished
-            || capture_end < self.capture_end
-            || self.eof.is_some_and(|end| end != capture_end)
-        {
+        if self.finished {
             return None;
         }
-        self.capture_end = capture_end;
-        if stopping {
-            self.eof.get_or_insert(capture_end);
+        // A regressed head hides nothing permanently: the outstanding offer
+        // stays put and the next honest head sees it. Stop freezes above.
+        if self.eof.is_none() && capture_end < self.capture_end {
+            return None;
         }
+        self.observe_head(capture_end, stopping);
         if let Some(offered) = &self.offered {
             return Some(offered.clone());
         }
-        let full_end = self.next_start.checked_add(self.window_samples)?;
-        let end = if full_end <= capture_end {
+        let head = self.eof.unwrap_or(self.capture_end);
+        let Some(full_end) = self.next_start.checked_add(self.window_samples) else {
+            if self.eof.is_some() {
+                self.finished = true;
+            }
+            return None;
+        };
+        let end = if self.window_samples > 0 && full_end <= head {
             full_end
-        } else if self.eof.is_some() && capture_end > self.last_full_end {
-            capture_end
+        } else if self.eof.is_some() && head > self.last_full_end && self.next_start < head {
+            head
         } else {
             if self.eof.is_some() {
                 self.finished = true;
@@ -82,6 +88,18 @@ impl CaptureWindowPlan {
         };
         self.offered = Some(range.clone());
         Some(range)
+    }
+
+    fn observe_head(&mut self, capture_end: u64, stopping: bool) {
+        if self.eof.is_some() {
+            return;
+        }
+        if capture_end > self.capture_end {
+            self.capture_end = capture_end;
+        }
+        if stopping {
+            self.eof = Some(self.capture_end);
+        }
     }
 
     /// Account only the exact outstanding offer, after transport acceptance or

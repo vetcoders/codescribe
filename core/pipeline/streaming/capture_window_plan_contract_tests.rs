@@ -92,6 +92,32 @@ fn blocked_transport_does_not_discard_reanchor_or_duplicate_due_work() {
 }
 
 #[test]
+fn frozen_eof_drains_queued_work_despite_later_counter_changes() {
+    let mut owner = plan(100);
+    let first = owner.next_due(900, false).unwrap();
+    assert_eq!(owner.next_due(1700, true), Some(first.clone()));
+    assert_eq!(owner.next_due(2500, true), Some(first.clone()));
+    assert!(owner.account(&first));
+    assert_eq!(
+        bounds(&collect(&mut owner, 2500, true)),
+        vec![(300, 1200), (600, 1500), (900, 1700)]
+    );
+    assert!(owner.is_finished());
+    assert_eq!(owner.admission_horizon(), u64::MAX);
+}
+
+#[test]
+fn regressed_stop_head_cannot_revoke_the_outstanding_offer() {
+    let mut owner = plan(100);
+    let first = owner.next_due(900, false).unwrap();
+    assert!(owner.next_due(899, true).is_none());
+    assert_eq!(owner.next_due(900, true), Some(first.clone()));
+    assert!(owner.account(&first));
+    assert!(owner.next_due(1200, true).is_none());
+    assert!(owner.is_finished());
+}
+
+#[test]
 fn foreign_wrong_unoffered_and_stale_coordinates_cannot_advance_the_plan() {
     let mut owner = plan(100);
     let candidate = TailSampleRange {
