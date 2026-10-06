@@ -439,7 +439,7 @@ fn late_apple_respects_duplicate_and_sealed_fences_before_adjudication() {
     for producer in [ObservationProducer::Apple, ObservationProducer::Whisper] {
         ledger.note_frontier_return(&owner, producer);
     }
-    let seal = ledger.seal(&owner).unwrap();
+    let seal = ledger.seal(&owner).unwrap().clone();
     for generation in [1, 2] {
         let late =
             ObservationIdentity::new(ObservationProducer::Apple, 8, generation, owner.clone());

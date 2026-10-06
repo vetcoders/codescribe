@@ -16017,7 +16017,7 @@ mod rc_w2_test_rehab {
                                     EngineEvent::LedgerMutation { label,
                                         receipt: MutationReceipt::KeepVisibleUnanchored {
                                             reason: NoAuthorityReason::LateAppleWordSealedOwner, .. }, .. }
-                                        if label == "changed")));
+                                        if label == "alpha changed")));
                                 assert_eq!(document(&state), "alpha beta");
                                 let ledger = state.acoustic_ledger.lock().unwrap();
                                 assert_eq!(ledger.seal_of(&owner), seal_before.as_ref());
@@ -16030,20 +16030,20 @@ mod rc_w2_test_rehab {
                             }
                         }
                         _ => {
-                            for word in ["alpha", "beta"] {
-                                assert!(events.iter().any(|event| matches!(
-                                    event,
-                                    EngineEvent::LedgerMutation {
-                                        label,
-                                        receipt: MutationReceipt::Refuse {
-                                            reason: RefuseReason::ReplayedRangeIdentity,
-                                            ..
-                                        },
-                                        ..
-                                    } if label == word
-                                )));
-                            }
                             if observer_open {
+                                for word in ["alpha", "beta"] {
+                                    assert!(events.iter().any(|event| matches!(
+                                        event,
+                                        EngineEvent::LedgerMutation {
+                                            label,
+                                            receipt: MutationReceipt::Refuse {
+                                                reason: RefuseReason::ReplayedRangeIdentity,
+                                                ..
+                                            },
+                                            ..
+                                        } if label == word
+                                    )));
+                                }
                                 assert_eq!(document(&state), "alpha beta gamma");
                                 assert_eq!(
                                     state
@@ -16071,7 +16071,7 @@ mod rc_w2_test_rehab {
                                             ..
                                         },
                                         ..
-                                    } if label == "gamma"
+                                    } if label == "alpha beta gamma"
                                 )));
                             }
                         }
@@ -17144,40 +17144,59 @@ mod rc_w2_test_rehab {
             emit(&mut state, &tx, words);
             let events = drain(&mut rx);
             let ledger = state.acoustic_ledger.lock().unwrap();
-            for label in ["alpha", "beta"] {
-                assert_eq!(
-                    ledger
-                        .layer_trail_for(&owner)
-                        .filter(|entry| {
-                            entry.candidate_label == label
-                                && matches!(
-                                    entry.decision,
-                                    MutationReceipt::Refuse {
+            if armed {
+                for label in ["alpha", "beta"] {
+                    assert_eq!(
+                        ledger
+                            .layer_trail_for(&owner)
+                            .filter(|entry| {
+                                entry.candidate_label == label
+                                    && matches!(
+                                        entry.decision,
+                                        MutationReceipt::Refuse {
+                                            reason: RefuseReason::ReplayedRangeIdentity,
+                                            ..
+                                        }
+                                    )
+                            })
+                            .count(),
+                        1
+                    );
+                    assert_eq!(
+                        events
+                            .iter()
+                            .filter(|event| matches!(
+                                event,
+                                EngineEvent::LedgerMutation {
+                                    observation,
+                                    label: emitted,
+                                    receipt: MutationReceipt::Refuse {
                                         reason: RefuseReason::ReplayedRangeIdentity,
                                         ..
-                                    }
-                                )
-                        })
-                        .count(),
-                    1
-                );
-                assert_eq!(
-                    events
-                        .iter()
-                        .filter(|event| matches!(
-                            event,
-                            EngineEvent::LedgerMutation {
-                                observation,
-                                label: emitted,
-                                receipt: MutationReceipt::Refuse {
-                                    reason: RefuseReason::ReplayedRangeIdentity,
+                                    },
+                                } if observation.occurrence == owner && emitted == label
+                            ))
+                            .count(),
+                        1
+                    );
+                }
+            } else {
+                let kept = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        EngineEvent::LedgerMutation {
+                            observation,
+                            label,
+                            receipt:
+                                MutationReceipt::KeepVisibleUnanchored {
+                                    reason: NoAuthorityReason::LateAppleWordSealedOwner,
                                     ..
                                 },
-                            } if observation.occurrence == owner && emitted == label
-                        ))
-                        .count(),
-                    1
-                );
+                        } if observation.occurrence == owner => Some(label.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(kept, ["alpha", "alpha beta", "alpha beta gamma"]);
             }
             let slots = ledger.slots_of(&owner).unwrap();
             assert_eq!(&slots[..before.len()], before.as_slice());
@@ -17202,7 +17221,7 @@ mod rc_w2_test_rehab {
                             ..
                         },
                         ..
-                    } if label == "gamma"
+                    } if label == "alpha beta gamma"
                 )));
             }
             ledger.assert_slot_labels();
@@ -27965,7 +27984,9 @@ mod tc2_window_contract_tests {
                     &[word],
                     &[apple_word(text, 248_000, 266_000)],
                 );
-                let events = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+                let events = std::iter::from_fn(|| f.receiver.try_recv().ok())
+                    .filter(|event| matches!(event, EngineEvent::LedgerMutation { .. }))
+                    .collect::<Vec<_>>();
                 assert_eq!(events.len(), 1);
                 if sealed {
                     assert!(matches!(
