@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Translator worksheet (`scripts/l10n-sheet.py`, `make l10n-sheet`): exports a CSV per catalog and language and folds it back, refusing rows that drop an argument or misspell the product. The catalog lint now requires every language the bundle carries to be complete.
 - Turning the transcription overlay off closes an overlay already on screen (a take being corrected stays until its draft is committed or discarded), and a status card shown with the overlay off no longer stays up when "Keep visible between takes" is pinned.
 - A second click on the menu bar icon closes the menu; it no longer closes and reopens it within the same click.
+- Agent voice channel handover (`cs-bus`). `--detach` releases the channels of the calling session and stops its own reader; `--attach --takeover` claims a digit held by an ended session of the same agent name, also across providers, and never one bound to a different name. A refused or failed takeover leaves the binding file unchanged and its receipt states what happened to the previous reader. The previous session's unacknowledged takes are listed in the receipt and read on demand with `--read-delivery <id> --lease <previous-lease-id>`; nothing is replayed or acknowledged for it. `--attach` now fails when its reader exits during startup; it used to print a normal receipt for a reader that was gone (`skills/codescribe/references/attach.md`).
 
 ## Release reality
 
