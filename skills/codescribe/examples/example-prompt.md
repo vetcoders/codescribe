@@ -46,7 +46,8 @@ ended, its follower still runs, and a plain attach refuses with
 Expected: read `--status`, check for the running follower, then attach with the
 same name and `--takeover` for this session. Report the receipt's `previous`
 object — provider, session, lease id, follower state (`stopped` or
-`not_running`) — and the inherited unacknowledged delivery ids. Verify with a
+`not_running`) — and the inherited unacknowledged delivery ids, which are
+sealed takes and typed messages only, never draft revisions. Verify with a
 fresh named take before claiming listening. Name the inherited deliveries to
 the Founder and read one only on request with
 `--read-delivery <id> --lease <previous-lease-id>`; never execute them

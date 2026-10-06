@@ -58,17 +58,27 @@ cs-bus \
 ```
 
 `--detach` releases every channel bound to this provider session and stops this
-session's own follower first, verifying its identity exactly as `--attach` does
-(the lease names that pid and session, and its command line follows
-`--follow --session <this session>`) and waiting up to five seconds. The lease
-file, byte cursor, pending envelopes and acknowledgment markers stay: they are
-durable identity a later session reads on demand. Nothing bound and no follower
-is not an error — the receipt then reports `attached: false`.
+session's own follower, verifying its identity exactly as `--attach` does (the
+lease names that pid and session, and its command line follows
+`--follow --session <this session>`) and waiting up to five seconds. Like a
+takeover, it takes the binding lock and validates the file before anything is
+stopped: a binding file it cannot read refuses with
+`channel bindings are unreadable or invalid; nothing changed`, a non-zero exit,
+the file untouched and the follower still running. The lease file, byte cursor,
+pending envelopes and acknowledgment markers stay: they are durable identity a
+later session reads on demand. Nothing bound and no follower is not an error —
+the receipt then reports `was_attached: false`. `--detach` needs
+`--provider`/`--session` and combines with no other command, `--from-file`
+included.
 
 The `detach_receipt` (`codescribe.agent-bridge.detach-receipt.v1`) reports
 `released_channels`, `lease_id`, `follower_pid`, `follower_state`,
-`binding_changed`, `attached`, `unacked_deliveries` with
-`unacked_delivery_ids`, and `binding_path`. A follower that is alive but
+`binding_changed`, `was_attached` (the state this command found; `--status`
+owns `attached` for what is true now), `unacked_deliveries` with
+`unacked_delivery_ids`, and `binding_path`. That count and those ids are what
+`--status` reports as `unacked_seals`: pending sealed takes and typed messages
+with no acknowledgment marker, in mailbox order. A draft revision is not a
+delivery waiting for a reader and is never listed. A follower that is alive but
 unverifiable (`unverified_retained`) or does not exit (`did_not_exit`) refuses
 the detach with a non-zero exit and leaves the bindings untouched.
 
@@ -92,15 +102,27 @@ unchanged. The previous follower is verified against the previous session's
 lease and command line, with the same five-second wait. Follower states:
 `stopped` (SIGTERM accepted and the process exited), `not_running` (no live
 follower, which is fine), `unverified_retained` (alive but not provably that
-session's follower — refusal), `did_not_exit` (refusal). If the follower was
-stopped but the binding write then failed, the receipt says exactly that:
-follower `stopped`, `binding_changed: false`. Nothing is restarted.
+session's follower — refusal), `did_not_exit` (refusal).
+
+A takeover that rewrote the entry and then fails before its receipt — its own
+follower dies at startup, this session's existing follower cannot be verified
+or does not exit, the follower on an old bus does not exit, or the binding
+write itself failed — puts the previous owner's entry back under the binding
+lock, and only if the entry is still exactly what this command wrote. The file
+ends up byte-for-byte what it was, so the same command can simply be repeated.
+The receipt then says `binding_changed: false` with the measured
+`follower_state` in `previous` — it stays `stopped` or `not_running`: nothing
+is restarted and nothing pretends otherwise — and the stderr line ends with the
+reason followed by `; channel <channel> unchanged`.
 
 Both outcomes print a JSON receipt with a `previous` object — `provider`,
 `provider_session_id`, `lease_id`, `audience`, `follower_pid`,
 `follower_state`, `unacked_deliveries`, `unacked_delivery_ids` — plus
-`binding_changed`. Success extends the normal `attach_receipt` with those two
-fields; a refusal emits a `takeover_receipt`
+`binding_changed`. The unacknowledged count and ids are the ones `--status`
+reports as `unacked_seals`: pending sealed takes and typed messages with no
+acknowledgment marker, in mailbox order; draft revisions are not listed.
+Success extends the normal `attach_receipt` with those two fields; a refusal
+emits a `takeover_receipt`
 (`codescribe.agent-bridge.takeover-receipt.v1`), writes the one-line reason to
 stderr in the `bus-demux: attach failed: ...` form, and exits non-zero.
 `binding_changed` is true only when another session's entry was rewritten.

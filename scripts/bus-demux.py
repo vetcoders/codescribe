@@ -3837,14 +3837,20 @@ def lease_backlog(
 
 
 def retired_owner_report(root: Path, entry: dict[str, Any]) -> dict[str, Any]:
-    """Identity and backlog of the session a channel entry still points at."""
+    """Identity and backlog of the session a channel entry still points at.
+
+    The backlog named here is the one ``--status`` calls ``unacked_seals``:
+    sealed takes and typed messages nobody acknowledged. A draft revision is
+    not a delivery waiting for a reader, so it is never named to the Founder.
+    """
     provider = str(entry.get("provider") or "")
     session = str(entry.get("provider_session_id") or "")
     lease_id = lease_identifier(provider, session)
     unacked = [
         str(item.get("delivery_id"))
         for item in lease_backlog(root, lease_id)[2]
-        if isinstance(item.get("delivery_id"), str)
+        if item.get("kind") in ("seal", "message")
+        and isinstance(item.get("delivery_id"), str)
     ]
     return {
         "provider": provider,
@@ -3868,7 +3874,7 @@ def claim_channel_after_handover(
     provider: str,
     provider_session_id: str,
     bus: str,
-) -> tuple[bool, dict[str, Any] | None]:
+) -> tuple[bool, dict[str, Any] | None, dict[str, Any] | None]:
     """Rebind one channel from an ended session of the same agent name.
 
     The lock spans verify -> stop the previous follower -> rewrite, so a
@@ -3877,10 +3883,11 @@ def claim_channel_after_handover(
     session, which is the whole reason this path exists. The retired lease is
     durable identity and is never moved, replayed or acknowledged here.
 
-    Returns ``(claimed, previous)``. ``previous`` is ``None`` when the channel
-    is free or already this session's, which leaves the plain claim to
+    Returns ``(claimed, previous, replaced)``. ``previous`` is ``None`` when the
+    channel is free or already this session's, which leaves the plain claim to
     :func:`write_channel_binding`; a ``previous`` with ``claimed`` false is a
-    refusal whose reader state the caller must report.
+    refusal whose reader state the caller must report. ``replaced`` is the entry
+    this claim overwrote, so a caller that fails afterwards can put it back.
     """
     requested = {
         "audience": name.casefold(),
@@ -3888,13 +3895,14 @@ def claim_channel_after_handover(
         "provider_session_id": provider_session_id,
     }
     previous: dict[str, Any] | None = None
+    replaced: dict[str, Any] | None = None
     try:
         with channel_bindings(root) as bindings:
             current = bindings.get(str(channel))
             if not isinstance(current, dict) or all(
                 current.get(key) == value for key, value in requested.items()
             ):
-                return False, None
+                return False, None, None
             if current.get("audience") != requested["audience"]:
                 raise OSError(occupied_refusal(channel, current, bindings))
             previous = retired_owner_report(root, current)
@@ -3904,17 +3912,32 @@ def claim_channel_after_handover(
             previous["follower_pid"] = pid
             previous["follower_state"] = follower_state
             if follower_state not in HANDOVER_CLEAR_STATES:
-                return False, previous
+                return False, previous, None
             entry = dict(requested)
             entry["bus"] = bus
+            replaced = current
             bindings[str(channel)] = entry
     except OSError:
         if previous is not None and previous["follower_state"] in HANDOVER_CLEAR_STATES:
             # The reader is already down and the entry did not land. Say so;
             # nothing is restarted and nothing pretends this did not happen.
-            return False, previous
+            return False, previous, None
         raise
-    return True, previous
+    return True, previous, replaced
+
+
+def restore_channel_owner(
+    root: Path, channel: str, claimed: dict[str, Any], replaced: dict[str, Any]
+) -> None:
+    """Put back the entry a claim of this command overwrote.
+
+    Only this command's own claim is undone: if the digit already names anyone
+    else that owner stays. ``atomic_json`` sorts keys, so the restored file is
+    byte-for-byte the file the previous owner left behind.
+    """
+    with channel_bindings(root) as bindings:
+        if bindings.get(str(channel)) == claimed:
+            bindings[str(channel)] = replaced
 
 
 def detach_command(args: argparse.Namespace) -> int:
@@ -3923,14 +3946,16 @@ def detach_command(args: argparse.Namespace) -> int:
     The lease, its cursor, pending envelopes and acknowledgment markers stay:
     they are durable identity a later session of the same name reads on
     demand. The receipt names every released channel and the backlog left
-    behind, so a handoff can quote it.
+    behind, so a handoff can quote it. Like a takeover, the binding lock and
+    its validation come first and the follower is stopped inside the same
+    block, so a file this command cannot read costs nobody their reader.
     """
     root: Path = args.bridge_home
     lease_id = lease_identifier(args.provider, args.session)
-    pid, follower_state = stop_owned_follower(root, lease_id, args.session)
     released: list[str] = []
-    if follower_state in HANDOVER_CLEAR_STATES:
-        with channel_bindings(root) as bindings:
+    with channel_bindings(root) as bindings:
+        pid, follower_state = stop_owned_follower(root, lease_id, args.session)
+        if follower_state in HANDOVER_CLEAR_STATES:
             for slot, entry in sorted(bindings.items()):
                 if (
                     isinstance(entry, dict)
@@ -3940,7 +3965,13 @@ def detach_command(args: argparse.Namespace) -> int:
                     released.append(str(slot))
             for slot in released:
                 del bindings[slot]
-    unacked = lease_backlog(root, lease_id)[2]
+    # The backlog the Founder is handed is the one --status calls
+    # unacked_seals: drafts are not deliveries waiting for a reader.
+    unacked = [
+        item
+        for item in lease_backlog(root, lease_id)[2]
+        if item.get("kind") in ("seal", "message")
+    ]
     emit(
         {
             "schema": DETACH_RECEIPT_SCHEMA,
@@ -3952,7 +3983,9 @@ def detach_command(args: argparse.Namespace) -> int:
             "follower_pid": pid,
             "follower_state": follower_state,
             "binding_changed": bool(released),
-            "attached": bool(released) or follower_state != "not_running",
+            # The state this command found, not the state it leaves behind:
+            # --status owns the word "attached" for what is true now.
+            "was_attached": bool(released) or follower_state != "not_running",
             "unacked_deliveries": len(unacked),
             "unacked_delivery_ids": [
                 str(item.get("delivery_id"))
@@ -4064,27 +4097,57 @@ def attach_command(args: argparse.Namespace) -> int:
         args.bus = channel_bus
     resolved_bus = str(Path(args.bus).expanduser().resolve(strict=False))
     previous: dict[str, Any] | None = None
+    replaced: dict[str, Any] | None = None
     binding_changed = False
+
+    def takeover_retained(reason: str) -> int:
+        """Receipt for a claim that leaves the channel entry where it was."""
+        emit(
+            {
+                "schema": TAKEOVER_RECEIPT_SCHEMA,
+                "kind": "takeover_receipt",
+                "channel": str(args.channel),
+                "audience": name,
+                "provider": args.provider.casefold(),
+                "provider_session_id": args.session,
+                "binding_changed": False,
+                "previous": previous,
+                "binding_path": str(root / AUDIENCE_BINDING_FILENAME),
+            }
+        )
+        sys.stderr.write(
+            f"bus-demux: attach failed: {reason}; channel {args.channel} "
+            "unchanged\n"
+        )
+        return 3
+
+    def retained_after_claim(reason: str) -> int:
+        """Undo this command's own claim, then report the reader it stopped.
+
+        The previous owner's entry goes back under the binding lock, so the
+        digit still names the session a repeat of this command would retire.
+        Nothing is restarted: ``previous`` keeps the measured reader state.
+        """
+        restore_channel_owner(
+            root,
+            args.channel,
+            {
+                "audience": name,
+                "provider": args.provider.casefold(),
+                "provider_session_id": args.session,
+                "bus": resolved_bus,
+            },
+            replaced or {},
+        )
+        return takeover_retained(reason)
+
     if getattr(args, "takeover", False):
-        binding_changed, previous = claim_channel_after_handover(
+        binding_changed, previous, replaced = claim_channel_after_handover(
             root, args.channel, name, args.provider, args.session, resolved_bus
         )
         if previous is not None and not binding_changed:
             # The channel entry is untouched. Name the reader we tried to
             # stop so the Founder sees who still holds the digit.
-            emit(
-                {
-                    "schema": TAKEOVER_RECEIPT_SCHEMA,
-                    "kind": "takeover_receipt",
-                    "channel": str(args.channel),
-                    "audience": name,
-                    "provider": args.provider.casefold(),
-                    "provider_session_id": args.session,
-                    "binding_changed": False,
-                    "previous": previous,
-                    "binding_path": str(root / AUDIENCE_BINDING_FILENAME),
-                }
-            )
             reason = {
                 "unverified_retained": "previous follower identity could not be "
                 "verified; retained",
@@ -4095,11 +4158,7 @@ def attach_command(args: argparse.Namespace) -> int:
                 f"{previous['follower_state']} but the channel entry could not "
                 "be written",
             )
-            sys.stderr.write(
-                f"bus-demux: attach failed: {reason}; channel {args.channel} "
-                "unchanged\n"
-            )
-            return 3
+            return takeover_retained(reason)
     binding_path = (
         root / AUDIENCE_BINDING_FILENAME
         if binding_changed
@@ -4135,13 +4194,19 @@ def attach_command(args: argparse.Namespace) -> int:
             or "--follow" not in words
             or not any(words[i:i + 2] == ["--session", args.session] for i in range(len(words)))
         ):
-            raise OSError("existing follower identity could not be verified; retained")
+            reason = "existing follower identity could not be verified; retained"
+            if binding_changed:
+                return retained_after_claim(reason)
+            raise OSError(reason)
         os.kill(pid, signal.SIGTERM)
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and process_is_alive(pid):
             time.sleep(0.1)
         if process_is_alive(pid):
-            raise OSError("owned follower did not exit; retained")
+            reason = "owned follower did not exit; retained"
+            if binding_changed:
+                return retained_after_claim(reason)
+            raise OSError(reason)
         pid = None
     if (
         isinstance(lease_state, dict)
@@ -4157,9 +4222,11 @@ def attach_command(args: argparse.Namespace) -> int:
             while time.monotonic() < deadline and process_is_alive(pid):
                 time.sleep(0.1)
             if process_is_alive(pid):
+                reason = f"the follower on the old bus (pid={pid}) did not exit"
+                if binding_changed:
+                    return retained_after_claim(reason)
                 sys.stderr.write(
-                    "bus-demux: attach failed: the follower on the old bus "
-                    f"(pid={pid}) did not exit; nothing changed\n"
+                    f"bus-demux: attach failed: {reason}; nothing changed\n"
                 )
                 return 3
             pid = None
@@ -4225,11 +4292,13 @@ def attach_command(args: argparse.Namespace) -> int:
                 and events_path.exists()
             ):
                 break
-            if not process_is_alive(pid):
-                sys.stderr.write(
-                    "bus-demux: attach failed: follower exited during startup; "
-                    f"see {errors_path}\n"
-                )
+            # Ask the child itself: an unreaped one answers kill(pid, 0) as a
+            # zombie, which would print a receipt for a reader that is gone.
+            if child.poll() is not None:
+                reason = f"follower exited during startup; see {errors_path}"
+                if binding_changed:
+                    return retained_after_claim(reason)
+                sys.stderr.write(f"bus-demux: attach failed: {reason}\n")
                 return 3
             time.sleep(0.1)
     state = read_json(lease_path) or {}
@@ -4811,7 +4880,7 @@ def main() -> int:
             parser.error("--detach requires --provider/--session")
         if any((args.attach, args.channel is not None, args.status, args.watch,
                 args.follow, args.once, args.from_start, args.ack, args.lease,
-                args.say is not None)):
+                args.from_file is not None, args.say is not None)):
             parser.error("--detach combines with no other command")
         try:
             return detach_command(args)
