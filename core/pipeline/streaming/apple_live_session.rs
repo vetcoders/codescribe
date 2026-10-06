@@ -3383,10 +3383,10 @@ impl AppleSealState {
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
         trial: &WordTrial,
         payload: Option<&TailProviderPayload>,
-    ) {
+    ) -> bool {
         let Some(payload) = payload else {
             self.close_word_trial(trial, "inference_failed");
-            return;
+            return false;
         };
         if payload.validate().is_err()
             || payload.evidence.timing_quality
@@ -3394,6 +3394,8 @@ impl AppleSealState {
             || payload.evidence.source != crate::stt::tail_provider::TailEvidenceSource::Whisper
             || payload.identity.range.session != trial.owner.session
             || payload.identity.range.capture_epoch != trial.owner.capture_epoch
+            || payload.identity.range.session != self.session_id
+            || payload.identity.range.capture_epoch != self.capture_epoch
             || payload.segments.is_empty()
             || payload
                 .segments
@@ -3401,7 +3403,7 @@ impl AppleSealState {
                 .any(|segment| segment.grain != crate::stt::tail_provider::TailSegmentGrain::Word)
         {
             self.close_word_trial(trial, "invalid_trial_evidence");
-            return;
+            return false;
         }
         let words = payload
             .segments
@@ -3470,6 +3472,51 @@ impl AppleSealState {
             self.refresh_pending_label(id, &trial.owner);
         }
         self.publish_resolved_word_seals(ev_tx);
+        true
+    }
+
+    fn complete_word_trial_batch(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        trial: &WordTrial,
+        payload: Option<&TailProviderPayload>,
+        stopping: bool,
+    ) {
+        if !self.complete_word_trial(ev_tx, trial, payload) {
+            return;
+        }
+        let Some(payload) = payload else {
+            return;
+        };
+        let range = OccurrenceIdentity::new(
+            &payload.identity.range.session,
+            payload.identity.range.capture_epoch,
+            payload.identity.range.sample_start,
+            payload.identity.range.sample_end,
+        );
+        let mut words = 1;
+        // Bound synchronous ledger work too. Any remaining components retain
+        // their own trials; this never widens or crops the decoded PCM.
+        for _ in 1..32 {
+            let next = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .next_word_trial_in(stopping, Some(&range));
+            let Some(next) = next else {
+                break;
+            };
+            self.complete_word_trial(ev_tx, &next, Some(payload));
+            words += 1;
+        }
+        info!(
+            sample_start = range.sample_start,
+            sample_end = range.sample_end,
+            words_adjudicated = words,
+            request_id = payload.identity.request_id,
+            phase = if stopping { "stop" } else { "live" },
+            "shared_word_trial_decode"
+        );
     }
 
     fn publish_resolved_word_seals(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
@@ -4122,7 +4169,7 @@ impl AppleSealState {
             .remove(&inflight_key(submission_sequence, &job.request_identity))
         {
             self.word_trial_started = None;
-            self.complete_word_trial(ev_tx, &trial, payload.as_ref());
+            self.complete_word_trial_batch(ev_tx, &trial, payload.as_ref(), false);
             self.close_admission_horizon(ev_tx, self.admission_horizon);
             return;
         }
@@ -7290,7 +7337,7 @@ where
         match result {
             Ok(range) if execution.check().is_ok() => match attempt(state, range) {
                 StopRangeAttempt::Ready(payload) => {
-                    state.complete_word_trial(ev_tx, &trial, Some(&payload))
+                    state.complete_word_trial_batch(ev_tx, &trial, Some(&payload), true)
                 }
                 StopRangeAttempt::MissingPcm => state.close_word_trial(&trial, "pcm_unavailable"),
                 StopRangeAttempt::ForeignIdentity => {
@@ -12292,6 +12339,167 @@ mod rc_w2_acoustic_tests {
                 avg_logprob: None,
             },
         }
+    }
+
+    #[test]
+    fn stop_shares_one_provider_decode_between_covered_word_disputes() {
+        use crate::pipeline::acoustic_ledger::{AcousticEvidence, WordPin};
+        use crate::stt::tail_provider::{TailSegmentGrain, TailTimingQuality};
+        let mut state = state_for("shared-trial-decode", 0.0);
+        let mut pcm = vec![0.0f32; at(10.0) as usize];
+        let bounds = [(at(1.0), at(2.0)), (at(3.0), at(4.0)), (at(8.0), at(9.0))];
+        for (start, end) in bounds {
+            pcm[start as usize..end as usize].fill(0.25);
+        }
+        state.audio.push(&pcm);
+        let mut writer = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+        for chunk in pcm.chunks(320) {
+            writer.push_samples(chunk);
+        }
+        let owner = OccurrenceIdentity::new(&state.session_id, state.capture_epoch, 0, at(10.0));
+        let calibration = state.energy_calibration.clone().unwrap();
+        let trail_dir = tempfile::tempdir().unwrap();
+        let trail = crate::pipeline::trail::TrailSink::open_in(
+            trail_dir.path(),
+            &state.session_id,
+            state.capture_epoch,
+            512,
+        )
+        .unwrap();
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(
+                ledger
+                    .qualify(
+                        &AcousticEvidence {
+                            occurrence: owner.clone(),
+                            duration_ms: 10_000.0,
+                            energy_integral: 3_000.0,
+                            mean_rms_dbfs: -18.0,
+                            peak_dbfs: -12.0,
+                            vad_open_sample: Some(0),
+                            vad_close_sample: Some(at(10.0)),
+                            evidence_calibration_version: calibration.version
+                        },
+                        &state.energy_calibration.clone().unwrap()
+                    )
+                    .is_qualified()
+            );
+            ledger.schedule_frontier(owner.clone(), [LedgerObservationProducer::Whisper]);
+            ledger.record_speech_evidence(&coverage_speech_evidence(&state));
+            let pins = bounds
+                .iter()
+                .zip(["56", "tak", "7"])
+                .map(|(&(start, end), label)| WordPin::new(start, end, label))
+                .collect::<Vec<_>>();
+            ledger.admit_word_slots(
+                &LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Apple,
+                    1,
+                    0,
+                    owner.clone(),
+                ),
+                &pins,
+            );
+            for (generation, end) in [(0, at(10.0)), (1, at(9.5))] {
+                let pins = bounds
+                    .iter()
+                    .zip(["1286", "nie", "10"])
+                    .map(|(&(start, finish), label)| {
+                        WordPin::new(start, finish, label).with_decode_window(0, end)
+                    })
+                    .collect::<Vec<_>>();
+                ledger.admit_word_slots(
+                    &LedgerObservationIdentity::new(
+                        LedgerObservationProducer::Whisper,
+                        2,
+                        generation,
+                        owner.clone(),
+                    ),
+                    &pins,
+                );
+            }
+            assert!(ledger.has_word_conflicts());
+            ledger.note_frontier_return(&owner, LedgerObservationProducer::Whisper);
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = calls.clone();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            Some("pl"),
+            &LocalExecutionOwner::default(),
+            move |request, audio, control| {
+                control.check()?;
+                request.validate_pcm(audio)?;
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(request.identity.range.clone());
+                let mut payload = gap_payload(request);
+                payload.evidence.segment_grain = TailSegmentGrain::Word;
+                payload.evidence.timing_quality = TailTimingQuality::ExactSampleRange;
+                payload.segments = bounds
+                    .iter()
+                    .zip(["1286", "nie", "10"])
+                    .filter(|&(&(start, end), _)| {
+                        start >= request.identity.range.sample_start
+                            && end <= request.identity.range.sample_end
+                    })
+                    .map(|(&(start, end), label)| TimedTailSegment {
+                        text: label.into(),
+                        range: TailSampleRange {
+                            session: request.identity.range.session.clone(),
+                            capture_epoch: request.identity.range.capture_epoch,
+                            sample_start: start,
+                            sample_end: end,
+                        },
+                        grain: TailSegmentGrain::Word,
+                        confidence: None,
+                    })
+                    .collect();
+                payload.text = payload
+                    .segments
+                    .iter()
+                    .map(|segment| segment.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                Ok(payload)
+            },
+        );
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("1286 nie 10"));
+        assert!(!ledger.has_word_conflicts());
+        let calls = calls.lock().unwrap();
+        let decoded_samples = calls
+            .iter()
+            .map(|range| range.sample_end - range.sample_start)
+            .sum::<u64>();
+        eprintln!(
+            "shared_trial_cost: disputes=3 decode_calls={} decoded_seconds={}",
+            calls.len(),
+            decoded_samples as f64 / f64::from(RATE)
+        );
+        assert_eq!(
+            calls.len(),
+            2,
+            "two covered words share one decode; the outside word needs its own"
+        );
+        assert_eq!(decoded_samples, at(12.0));
+        assert_eq!(ledger.conservation().residue(), 0);
+        let expected_trail = ledger.layer_trail().to_vec();
+        let expected_seal = ledger.seal_of(&owner).cloned();
+        drop(ledger);
+        drop(trail);
+        let rows = crate::pipeline::trail::read_trail(
+            &crate::pipeline::trail::trail_path(trail_dir.path(), &state.session_id).unwrap(),
+        )
+        .unwrap();
+        let replayed = crate::pipeline::trail::replay_decisions(&rows, |_, _, _| {}).unwrap();
+        assert_eq!(replayed.text_of(&owner), Some("1286 nie 10"));
+        assert_eq!(replayed.layer_trail(), expected_trail);
+        assert_eq!(replayed.seal_of(&owner), expected_seal.as_ref());
     }
 
     /// A provider segment that starts before the uncovered gap is not speech

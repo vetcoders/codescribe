@@ -385,6 +385,9 @@ mod tests {
         use codescribe_core::pipeline::contracts::EventSink;
         use sha2::{Digest, Sha256};
         use std::sync::{Arc, Mutex};
+        let _ = tracing_subscriber::fmt().with_ansi(false).with_env_filter(
+            "codescribe_core::stt::tail_provider=info,codescribe_core::pipeline::streaming::apple_live_session=info,codescribe_core::pipeline::streaming::session=info"
+        ).try_init();
 
         struct LiveReplaySink {
             emitter: PresentationEmitter,

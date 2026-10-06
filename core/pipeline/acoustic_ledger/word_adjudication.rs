@@ -990,6 +990,17 @@ impl AcousticLedger {
     }
 
     pub(crate) fn next_word_trial(&mut self, stopping: bool) -> Option<WordTrial> {
+        self.next_word_trial_in(stopping, None)
+    }
+
+    /// An actual trial decode can adjudicate other disputed words only when
+    /// its PCM covers their complete source lineage. It is one new witness
+    /// for each physical word, never repeated votes for the same component.
+    pub(crate) fn next_word_trial_in(
+        &mut self,
+        stopping: bool,
+        coverage: Option<&OccurrenceIdentity>,
+    ) -> Option<WordTrial> {
         let index = self
             .word_adjudication
             .components
@@ -1000,6 +1011,21 @@ impl AcousticLedger {
                     && !c.attempted
                     && !self.is_sealed(&c.owner)
                     && (stopping || c.whisper.iter().filter(|h| h.complete).count() >= 2)
+                    && coverage.is_none_or(|coverage| {
+                        let sources = self
+                            .slots_of(&c.owner)
+                            .unwrap_or(&[])
+                            .iter()
+                            .filter(|slot| c.targets.contains(&SlotTarget::from(*slot)))
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        !sources.is_empty()
+                            && self.word_source_ranges(&sources).iter().all(|range| {
+                                range.same_capture(coverage)
+                                    && range.sample_start >= coverage.sample_start
+                                    && range.sample_end <= coverage.sample_end
+                            })
+                    })
             })
             .max_by_key(|(_, c)| c.whisper.iter().map(|h| h.q).max().unwrap_or(0))
             .map(|(index, _)| index)?;

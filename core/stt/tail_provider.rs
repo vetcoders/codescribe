@@ -521,6 +521,10 @@ impl InProcessTailProvider {
         tracing::info!(
             segment_count = segments.len(),
             grain = segment_grain.as_str(),
+            request_id = request.identity.request_id,
+            sample_start = request.identity.range.sample_start,
+            sample_end = request.identity.range.sample_end,
+            sample_rate = request.sample_rate,
             elapsed_ms = started.elapsed().as_millis() as u64,
             "tail_provider_segment_grain"
         );
