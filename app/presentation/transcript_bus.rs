@@ -138,7 +138,8 @@ pub struct TranscriptCoverageReceipt {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectedAcousticReceipt {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub word_finality: Vec<codescribe_core::pipeline::acoustic_ledger::word_adjudication::WordFinality>,
+    pub word_finality:
+        Vec<codescribe_core::pipeline::acoustic_ledger::word_adjudication::WordFinality>,
     pub acoustic_serial_version: u16,
     pub acoustic_serial: String,
     pub session_id: String,
@@ -1213,7 +1214,9 @@ impl TranscriptBus {
         seal_receipt: Option<String>,
         manual_edit_receipt: Option<String>,
         presentation_receipt: Option<&IncrementalShapingReceipt>,
-        word_finality: Vec<codescribe_core::pipeline::acoustic_ledger::word_adjudication::WordFinality>,
+        word_finality: Vec<
+            codescribe_core::pipeline::acoustic_ledger::word_adjudication::WordFinality,
+        >,
     ) -> ProjectedAcousticReceipt {
         ProjectedAcousticReceipt {
             word_finality,
@@ -1507,7 +1510,9 @@ impl TranscriptBus {
                     entry.seal_receipt.clone(),
                     entry.manual_edit_receipt.clone(),
                     entry.presentation_receipt.as_ref(),
-                    ledger.seal_of(&entry.occurrence).map_or_else(Vec::new, |seal| seal.word_finality.clone()),
+                    ledger
+                        .seal_of(&entry.occurrence)
+                        .map_or_else(Vec::new, |seal| seal.word_finality.clone()),
                 )],
                 document_revision_receipt: match &revision.action {
                     ReducerAction::ApplyUserRevision { receipt } => Some(receipt.clone()),

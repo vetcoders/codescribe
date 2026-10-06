@@ -12,7 +12,9 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
-use super::acoustic_ledger::word_adjudication::{WordChoiceReceipt, WordEvidenceInput, WordTrialReceipt, WordTrial, WordFinality, WORD_POLICY};
+use super::acoustic_ledger::word_adjudication::{
+    WORD_POLICY, WordChoiceReceipt, WordEvidenceInput, WordFinality, WordTrial, WordTrialReceipt,
+};
 use super::acoustic_ledger::{
     AcousticEvidence, AcousticLedger, DictionarySlotRule, EnergyCalibration, LayerDecisionReceipt,
     MutationReceipt, ObservationIdentity, OccurrenceIdentity, SlotAlternative, SlotOperationKind,
@@ -835,13 +837,39 @@ pub fn read_trail(path: &Path) -> io::Result<Vec<TrailRecord>> {
 
 /// Evidence availability is independent of persistence integrity.
 pub fn word_evidence_coverage(records: &[TrailRecord]) -> &'static str {
-    let inputs = records.iter().filter_map(|row| match &row.event {
-        TrailEvent::SlotStart { operation } if matches!(operation.input, TrailSlotInput::Words { .. } | TrailSlotInput::Split { .. }) => Some(operation),
-        _ => None,
-    }).collect::<Vec<_>>();
-    let recorded = inputs.iter().filter(|input| input.word_policy.as_deref() == Some(WORD_POLICY)
-        && input.word_evidence.as_ref().is_some_and(|evidence| evidence.words.iter().all(|word| word.original_text.is_some()))).count();
-    if recorded == 0 { "absent" } else if recorded == inputs.len() { "recorded" } else { "partial" }
+    let inputs = records
+        .iter()
+        .filter_map(|row| match &row.event {
+            TrailEvent::SlotStart { operation }
+                if matches!(
+                    operation.input,
+                    TrailSlotInput::Words { .. } | TrailSlotInput::Split { .. }
+                ) =>
+            {
+                Some(operation)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let recorded = inputs
+        .iter()
+        .filter(|input| {
+            input.word_policy.as_deref() == Some(WORD_POLICY)
+                && input.word_evidence.as_ref().is_some_and(|evidence| {
+                    evidence
+                        .words
+                        .iter()
+                        .all(|word| word.original_text.is_some())
+                })
+        })
+        .count();
+    if recorded == 0 {
+        "absent"
+    } else if recorded == inputs.len() {
+        "recorded"
+    } else {
+        "partial"
+    }
 }
 
 /// Per-pin fate, keyed by PCM geometry. Identical words remain separate rows.
@@ -857,8 +885,12 @@ pub fn render_trace(records: &[TrailRecord], word: Option<&str>) -> String {
     });
     output.push_str(match word_evidence_coverage(records) {
         "recorded" => "Word source inputs recorded; unknown producer metadata remains explicit.\n",
-        "partial" => "PARTIAL SOURCE HYPOTHESES: some original producer labels were not recorded.\n",
-        _ => "ARCHIVE WITHOUT SOURCE HYPOTHESES: Apple cannot be reconstructed from rendered text.\n",
+        "partial" => {
+            "PARTIAL SOURCE HYPOTHESES: some original producer labels were not recorded.\n"
+        }
+        _ => {
+            "ARCHIVE WITHOUT SOURCE HYPOTHESES: Apple cannot be reconstructed from rendered text.\n"
+        }
     });
     for row in records {
         match &row.event {
@@ -1091,7 +1123,11 @@ fn replay_slot_operation(
         if policy != WORD_POLICY {
             return Err(io::Error::other("unsupported word adjudication policy"));
         }
-        if matches!(start.input, TrailSlotInput::Words { .. } | TrailSlotInput::Split { .. }) && start.word_evidence.is_none() {
+        if matches!(
+            start.input,
+            TrailSlotInput::Words { .. } | TrailSlotInput::Split { .. }
+        ) && start.word_evidence.is_none()
+        {
             return Err(io::Error::other("word source input missing"));
         }
         if let Some(input) = &start.word_evidence {
@@ -1101,11 +1137,16 @@ fn replay_slot_operation(
                 _ => None,
             };
             if let Some(pins) = pins
-                && (pins.len() != input.words.len() || !pins.iter().zip(&input.words).all(|(pin, source)|
-                    pin.sample_start == source.sample_start && pin.sample_end == source.sample_end
-                        && pin.text == source.surface && pin.confidence == source.confidence
-                        && pin.surface_rewritten == source.surface_rewritten
-                        && pin.decode_sample_start.zip(pin.decode_sample_end) == source.decode)) {
+                && (pins.len() != input.words.len()
+                    || !pins.iter().zip(&input.words).all(|(pin, source)| {
+                        pin.sample_start == source.sample_start
+                            && pin.sample_end == source.sample_end
+                            && pin.text == source.surface
+                            && pin.confidence == source.confidence
+                            && pin.surface_rewritten == source.surface_rewritten
+                            && pin.decode_sample_start.zip(pin.decode_sample_end) == source.decode
+                    }))
+            {
                 return Err(io::Error::other("word source and admission pins differ"));
             }
             if input.observation != start.observation {
@@ -1158,7 +1199,8 @@ fn replay_slot_operation(
         TrailSlotInput::Split { target, children } => {
             // Refusals are replayable inputs too. The exact choices, operations,
             // decisions and resulting slots are checked below before projection.
-            let result = ledger.split_word_slot(observation, &target.target(), &word_pins(children));
+            let result =
+                ledger.split_word_slot(observation, &target.target(), &word_pins(children));
             if start.word_policy.is_none() && result.is_err() {
                 return Err(io::Error::other("recorded split refused"));
             }
@@ -1187,7 +1229,8 @@ fn replay_slot_operation(
         || operations != end.operations
         || alternatives != end.alternatives
         || (start.word_policy.is_some()
-            && ledger.word_choices().get(start.word_choices_before..) != Some(end.word_choices.as_slice()))
+            && ledger.word_choices().get(start.word_choices_before..)
+                != Some(end.word_choices.as_slice()))
     {
         return Err(io::Error::other(
             "replay slot operation, lineage or decisions differ",
@@ -1324,8 +1367,14 @@ fn replay_validated(
                     "document revision replay needs its reducer action",
                 ));
             }
-            TrailEvent::OccurrenceSealed { occurrence, receipt_id, word_finality } => {
-                let seal = ledger.seal(occurrence).map_err(|reason| io::Error::other(format!("recorded seal refused: {reason:?}")))?;
+            TrailEvent::OccurrenceSealed {
+                occurrence,
+                receipt_id,
+                word_finality,
+            } => {
+                let seal = ledger.seal(occurrence).map_err(|reason| {
+                    io::Error::other(format!("recorded seal refused: {reason:?}"))
+                })?;
                 if seal.receipt_id != *receipt_id || seal.word_finality != *word_finality {
                     return Err(io::Error::other("recorded lexical finality differs"));
                 }
@@ -1334,7 +1383,9 @@ fn replay_validated(
                 ledger.restore_word_trial(trial).map_err(io::Error::other)?;
             }
             TrailEvent::WordTrialClosed { receipt } => {
-                ledger.restore_word_trial(&receipt.trial).map_err(io::Error::other)?;
+                ledger
+                    .restore_word_trial(&receipt.trial)
+                    .map_err(io::Error::other)?;
                 ledger.close_word_trial(&receipt.trial, &receipt.reason);
             }
             TrailEvent::Start { .. } | TrailEvent::End { .. } | TrailEvent::Checkpoint { .. } => {}

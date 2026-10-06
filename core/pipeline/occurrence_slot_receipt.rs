@@ -139,7 +139,9 @@ pub(super) fn emit(ledger: &AcousticLedger, occurrence: &OccurrenceIdentity) {
         return;
     };
     let mut receipt = build_receipt(occurrence, slots, sink.sample_rate_hz);
-    receipt.word_finality = ledger.seal_of(occurrence).map_or_else(Vec::new, |seal| seal.word_finality.clone());
+    receipt.word_finality = ledger
+        .seal_of(occurrence)
+        .map_or_else(Vec::new, |seal| seal.word_finality.clone());
     let result = serde_json::to_vec(&receipt)
         .map_err(io::Error::other)
         .and_then(|mut bytes| {

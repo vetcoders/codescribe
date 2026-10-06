@@ -1942,6 +1942,7 @@ mod tests {
                 ],
             }],
             acoustic_receipts: vec![ProjectedAcousticReceipt {
+            word_finality: Vec::new(),
                 acoustic_serial_version: 2,
                 acoustic_serial: "sha256:acoustic".to_string(),
                 session_id: "occurrence-session".to_string(),

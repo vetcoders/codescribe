@@ -152,7 +152,8 @@ pub enum ReducerAction {
         entry: TranscriptDocumentEntry,
     },
     RecordLedgerSeal {
-        word_finality: Vec<codescribe_core::pipeline::acoustic_ledger::word_adjudication::WordFinality>,
+        word_finality:
+            Vec<codescribe_core::pipeline::acoustic_ledger::word_adjudication::WordFinality>,
         occurrence: OccurrenceIdentity,
         seal_receipt: String,
         terminal: bool,
