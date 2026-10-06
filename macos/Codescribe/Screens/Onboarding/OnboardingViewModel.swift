@@ -682,7 +682,7 @@ final class OnboardingViewModel: ObservableObject {
 
   func selectProvider(_ id: String) {
     guard !providerMutationPending else { return }
-    guard id != selectedProviderId else { return }
+    guard id != selectedProviderId || id != engine.assistiveProvider() else { return }
     if apiKeyDraft.isEmpty {
       apiKeyDraftsByProviderId[selectedProviderId] = nil
     } else {

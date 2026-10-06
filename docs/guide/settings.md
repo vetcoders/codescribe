@@ -186,6 +186,9 @@ Provider selection is projected only after its configuration write succeeds.
 Selection errors and their retry stay beside the provider picker; key-save
 errors and their retry stay beside the key editor. Earlier setup errors do not
 become key-save errors.
+If a configured provider disappears from the registry, Setup can display an
+available provider without persisting that choice. Explicitly selecting the
+displayed provider writes it; refresh, Back and Skip do not normalize configuration.
 
 The Agent step distinguishes a selected client's missing or damaged installation
 from a global provider or native-readiness problem. Global issues open Diagnostics
@@ -193,6 +196,9 @@ without selecting or installing another client. An installation error belongs
 to the single client affected by the attempted change; errors spanning multiple
 clients appear beneath the selection instead of being assigned to an arbitrary
 card.
+Managed installation health includes the receipt-owned skill files, so missing
+or altered instructions also expose repair. An empty selection can forget a
+folder already absent; it never deletes an existing unowned or unreadable path.
 
 Prompt files live in `~/.codescribe/prompts/`.
 

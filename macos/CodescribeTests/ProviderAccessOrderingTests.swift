@@ -11,6 +11,7 @@ private final class ControlledProviderEngine: OnboardingEngine {
   var revision: UInt64 = 0
   var failProviderSelection = false
   var providerSelectionAttempts: [String] = []
+  var configuredProviderId: String?
   var provider = CsProviderOption.sampleProviders[1]
   var additionalProviders: [CsProviderOption] = []
   var read: CheckedContinuation<CsProviderAccessSnapshot, Error>?
@@ -22,7 +23,7 @@ private final class ControlledProviderEngine: OnboardingEngine {
   func onboardingMode() -> String? { "agentic" }
   func setOnboardingMode(_ mode: String) throws {}
   func currentLanguage() -> CsLanguage { .auto }
-  func assistiveProvider() -> String? { provider.id }
+  func assistiveProvider() -> String? { configuredProviderId ?? provider.id }
   func keyStatus() -> CsKeyStatus { .sampleAllSet }
   func availableProviders() -> [CsProviderOption] { [provider] }
   func setApiKey(account: String, secret: String) throws { XCTFail("sync mutation must not run") }
@@ -30,6 +31,7 @@ private final class ControlledProviderEngine: OnboardingEngine {
     if key == "LLM_ASSISTIVE_PROVIDER" {
       providerSelectionAttempts.append(value)
       if failProviderSelection { throw Failure.denied }
+      configuredProviderId = value
     }
   }
   func providerAccessRevision() -> UInt64 { revision }
@@ -242,6 +244,45 @@ final class ProviderAccessOrderingTests: XCTestCase {
     XCTAssertEqual(
       Array(engine.providerSelectionAttempts.suffix(3)), [second.id, second.id, second.id])
     XCTAssertEqual(engine.writes, 0)
+  }
+
+  func testDisplayedFallbackRequiresExplicitPersistenceAndRetainsFailedDraftForRetry() async {
+    let engine = ControlledProviderEngine()
+    engine.configuredProviderId = "custom:removed"
+    let model = makeModel(engine)
+    await load(model, engine)
+    let fallback = engine.provider.id
+    XCTAssertEqual(model.selectedProviderId, fallback)
+    XCTAssertEqual(engine.assistiveProvider(), "custom:removed")
+    XCTAssertTrue(engine.providerSelectionAttempts.isEmpty, "Registry refresh is read-only")
+    model.advance()
+    model.back()
+    await awaitCondition { engine.read != nil }
+    engine.resolveRead()
+    await awaitCondition { !model.providerAccessPending }
+    XCTAssertTrue(engine.providerSelectionAttempts.isEmpty, "Continue and Back do not normalize")
+
+    model.beginApiKeyEditing()
+    model.apiKeyDraft = "fallback-provider-draft"
+    engine.failProviderSelection = true
+    model.selectProvider(fallback)
+    XCTAssertEqual(engine.providerSelectionAttempts, [fallback])
+    XCTAssertEqual(engine.assistiveProvider(), "custom:removed")
+    XCTAssertEqual(model.selectedProviderId, fallback)
+    XCTAssertEqual(model.apiKeyDraft, "fallback-provider-draft")
+    XCTAssertNotNil(model.providerSelectionError)
+    XCTAssertNil(model.apiKeySaveError)
+
+    engine.failProviderSelection = false
+    model.retryProviderSelection()
+    XCTAssertEqual(engine.providerSelectionAttempts, [fallback, fallback])
+    XCTAssertEqual(engine.assistiveProvider(), fallback)
+    XCTAssertEqual(model.apiKeyDraft, "fallback-provider-draft")
+    XCTAssertNil(model.providerSelectionError)
+    XCTAssertEqual(engine.writes, 0, "Selection retry never submits the key draft")
+    model.selectProvider(fallback)
+    XCTAssertEqual(
+      engine.providerSelectionAttempts, [fallback, fallback], "Persisted choice is a no-op")
   }
 
   func testKeySaveFailureAndRetryDoNotChangeProviderSelectionOrGeneralError() async {
