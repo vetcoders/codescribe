@@ -30,17 +30,7 @@ use std::collections::VecDeque;
 /// f32 is ~7.7 MB, which is the ceiling we are willing to hold per session.
 pub(crate) const DEFAULT_RETENTION_SECS: f32 = 120.0;
 
-/// How far past the last captured sample an upper bound may land and still be
-/// treated as chunk quantisation rather than a disagreeing clock.
-///
-/// A capture chunk is ~64 ms at 16 kHz, so a boundary reported at the very end
-/// of the audio can round a fraction of a chunk past it. Anything beyond this
-/// is not rounding — it is a timestamp that does not describe this session's
-/// PCM, and truncating it would hand a caller audio that is not the span it
-/// asked for. Deliberately well under the ±0.2 s boundary-mapping tolerance.
-const CLAMP_TOLERANCE_SECS: f32 = 0.1;
-
-/// Bounded ring of session PCM, addressable by session-time seconds.
+/// Bounded ring of session PCM with an absolute capture-sample clock.
 pub(crate) struct LiveAudioBuffer {
     /// Capture rate, and the unit second↔index conversions are expressed in.
     sample_rate: u32,
@@ -110,37 +100,6 @@ impl LiveAudioBuffer {
             .map(|window| window.samples)
     }
 
-    /// Timestamp-safe variant of [`window`](Self::window) that keeps the exact
-    /// integer PCM bounds used to cut the returned samples.
-    pub(crate) fn window_with_range(
-        &self,
-        from_secs: f32,
-        to_secs: f32,
-    ) -> Option<ResolvedAudioWindow> {
-        let from = self.index_for(from_secs)?;
-        let to = self.index_for(to_secs)?;
-        if to < from || from < self.start_index || from > self.end_index {
-            return None;
-        }
-        let to = if to <= self.end_index {
-            to
-        } else {
-            let overshoot = to - self.end_index;
-            let tolerance = ((CLAMP_TOLERANCE_SECS as f64) * (self.sample_rate as f64)).round();
-            if (overshoot as f64) > tolerance {
-                return None;
-            }
-            self.end_index
-        };
-        let lo = (from - self.start_index) as usize;
-        let hi = (to - self.start_index) as usize;
-        Some(ResolvedAudioWindow {
-            samples: self.samples.range(lo..hi).copied().collect(),
-            sample_start: from,
-            sample_end: to,
-        })
-    }
-
     /// Release everything before `secs` — audio already committed downstream
     /// can never be re-cut, so holding it is pure footprint.
     #[cfg(test)]
@@ -189,8 +148,7 @@ impl LiveAudioBuffer {
     /// Cut `[sample_start, sample_end)` on the capture PCM clock.
     ///
     /// `None` when the range is inverted or has already fallen off retention.
-    /// Unlike [`window_with_range`](Self::window_with_range) this never
-    /// converts through seconds.
+    /// Both bounds address the capture sample clock directly.
     pub(crate) fn window_by_samples(
         &self,
         sample_start: u64,
@@ -212,18 +170,6 @@ impl LiveAudioBuffer {
         })
     }
 
-    /// Absolute session-sample index for a session-time second, or `None` when
-    /// the value cannot address audio at all.
-    fn index_for(&self, secs: f32) -> Option<u64> {
-        if !secs.is_finite() || secs < 0.0 {
-            return None;
-        }
-        let index = ((secs as f64) * (self.sample_rate as f64)).round();
-        if !index.is_finite() || index < 0.0 || index > u64::MAX as f64 {
-            return None;
-        }
-        Some(index as u64)
-    }
 }
 
 /// Retention, window honesty, commit release, and F3 end_ts mapping fixtures.
