@@ -42,7 +42,85 @@ An occupied channel refuses a different provider, session or name before startin
 any follower. The error identifies the owner and free slots. Repeating the same
 binding is idempotent. Claims use an exclusive lock around read/check/write, so
 simultaneous callers cannot replace each other or lose distinct-slot updates.
-Unreadable bindings refuse writes; they are never treated as an empty map.
+Unreadable bindings refuse writes; they are never treated as an empty map. When
+the channel is held by the same name in a different session, the refusal also
+names `--takeover` (below): that is the ended-session case, not a reason to edit
+the binding file by hand or to kill a follower manually.
+
+### Handover between sessions of one name
+
+A follower outlives the session that spawned it, and the binding stays with it.
+Two flags move a channel from an ended session to the next one of the same name.
+
+```bash
+cs-bus \
+  --detach --provider <provider> --session <provider-session-id>
+```
+
+`--detach` releases every channel bound to this provider session and stops this
+session's own follower first, verifying its identity exactly as `--attach` does
+(the lease names that pid and session, and its command line follows
+`--follow --session <this session>`) and waiting up to five seconds. The lease
+file, byte cursor, pending envelopes and acknowledgment markers stay: they are
+durable identity a later session reads on demand. Nothing bound and no follower
+is not an error — the receipt then reports `attached: false`.
+
+The `detach_receipt` (`codescribe.agent-bridge.detach-receipt.v1`) reports
+`released_channels`, `lease_id`, `follower_pid`, `follower_state`,
+`binding_changed`, `attached`, `unacked_deliveries` with
+`unacked_delivery_ids`, and `binding_path`. A follower that is alive but
+unverifiable (`unverified_retained`) or does not exit (`did_not_exit`) refuses
+the detach with a non-zero exit and leaves the bindings untouched.
+
+```bash
+cs-bus \
+  --attach --channel <channel> --name <same-name> \
+  --provider <provider> --session <provider-session-id> --takeover
+```
+
+`--takeover` is valid only with `--attach`. It claims the channel only when the
+current entry carries the same `audience` name (case-insensitive) and a
+different provider/session identity; the provider may differ, because the name
+is what the Founder speaks to. A different name refuses exactly like any
+occupied channel. A free channel, or one this session already owns, is a plain
+idempotent attach. The authorization is the explicit flag plus the matching
+name, never a dead reader.
+
+The claim holds the binding lock across verify, stopping the previous follower
+and rewriting the entry, so a refusal leaves the channel entry byte-for-byte
+unchanged. The previous follower is verified against the previous session's
+lease and command line, with the same five-second wait. Follower states:
+`stopped` (SIGTERM accepted and the process exited), `not_running` (no live
+follower, which is fine), `unverified_retained` (alive but not provably that
+session's follower — refusal), `did_not_exit` (refusal). If the follower was
+stopped but the binding write then failed, the receipt says exactly that:
+follower `stopped`, `binding_changed: false`. Nothing is restarted.
+
+Both outcomes print a JSON receipt with a `previous` object — `provider`,
+`provider_session_id`, `lease_id`, `audience`, `follower_pid`,
+`follower_state`, `unacked_deliveries`, `unacked_delivery_ids` — plus
+`binding_changed`. Success extends the normal `attach_receipt` with those two
+fields; a refusal emits a `takeover_receipt`
+(`codescribe.agent-bridge.takeover-receipt.v1`), writes the one-line reason to
+stderr in the `bus-demux: attach failed: ...` form, and exits non-zero.
+`binding_changed` is true only when another session's entry was rewritten.
+
+The previous lease is never moved, replayed, acknowledged or rewound. Read one
+inherited envelope explicitly, only when the Founder asks for it:
+
+```bash
+cs-bus \
+  --read-delivery <delivery-id> --lease <previous-lease-id> \
+  --provider <provider> --session <provider-session-id>
+```
+
+This succeeds only while the caller's session owns a channel bound to the same
+name as that lease. It acknowledges nothing, advances no cursor and mutates
+nothing; the envelope is marked with `inherited_from` (previous provider,
+session, lease id, name) so it is never mistaken for a fresh request. Report
+inherited unacknowledged deliveries to the Founder; never execute them
+automatically. Acknowledging a delivery on behalf of the previous lease is not
+supported.
 
 Read the channel's one truthful state at any time:
 
@@ -136,3 +214,11 @@ Reverify the monitor separately.
 Preserve the established delivery identity when recovering; do not execute a
 previously handled command again. On an explicit stop, close the owned monitor
 and follower using their handles. Do not broadly kill the app or other readers.
+
+End of work or handoff: run `--detach` so the digit is free for the next
+session, or state in the handoff that the channel stays bound and to which
+provider and session. Entering a session from a handoff that names a channel:
+read `--status`, check for a running follower, then attach with the same name
+and `--takeover`, and verify with a fresh named take before claiming anything
+is heard. Takeover is for the same agent name only; another agent's channel is
+never claimed this way.

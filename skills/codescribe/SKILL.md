@@ -96,6 +96,28 @@ manual attach saga and drive the engine:
    ([Voice reply](references/voice-reply.md)). Changing a stored profile is the
    Founder's call.
 
+## Channel Handover Between Sessions
+
+A follower outlives the session that started it, and the channel stays bound to
+that session. Two rules keep a digit usable across sessions of one name.
+
+1. **End of work or handoff.** Release the channel with
+   `cs-bus --detach --provider <p> --session <id>`, or state explicitly in the
+   handoff that the channel stays bound, naming the provider and session that
+   hold it. The lease, cursor, pending envelopes and acknowledgment markers
+   survive a detach.
+2. **Entering a session from a handoff that names an agent channel.** Read
+   `--status`, check for a running follower, then attach with the same name:
+   `cs-bus --attach --channel <n> --name <same-name> --provider <p> --session
+   <id> --takeover`. Verify with a fresh named take before claiming listening.
+   Inherited unacknowledged deliveries are reported to the Founder and read on
+   demand with `--read-delivery <id> --lease <previous-lease-id>`; they are
+   never executed automatically.
+
+Takeover is for the same agent name only. Never claim another agent's channel
+with it, and never edit the binding file or kill a follower by hand
+([Attach](references/attach.md#handover-between-sessions-of-one-name)).
+
 For app or skill edits, use the repository's implementation workflow.
 For screencast analysis, use `vc-screenscribe`. In-app Agent and Assistive
 are separate product surfaces; this skill attaches the current chat.

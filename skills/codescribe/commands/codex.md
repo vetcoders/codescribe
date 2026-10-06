@@ -17,8 +17,8 @@ explain the skill or print commands for the user to run.
    this session's existing follower and monitor when present.
 3. Verify the installed helper at
    `~/.codescribe/agent-bridge/runtime/bin/bus-demux.py` has the occupied-slot
-   protection in `write_channel_binding`: a stable sibling lock, owner check,
-   and refusal before any follower starts. If absent, stop with
+   protection in `write_channel_binding` and its `channel_bindings` lock: a
+   stable sibling lock, owner check, and refusal before any follower starts. If absent, stop with
    `connection_refused: installed helper lacks channel ownership protection`.
    Do not substitute a racy read-before-write check in this prompt.
 4. Invoke the helper once with `--attach --channel <channel> --name <name>
@@ -26,7 +26,11 @@ explain the skill or print commands for the user to run.
    when a voice was supplied. Use structured subprocess arguments or proper
    shell quoting. On an occupied slot, report its owner and available slots.
    Never overwrite, detach another agent, silently choose another slot, or
-   retry with a different identity.
+   retry with a different identity. A slot held by this same name in an ended
+   session is the one exception: repeat the call with `--takeover`, which stops
+   that session's leftover follower under the binding lock and reports the
+   previous owner in the receipt. Release this session's own slot at the end of
+   work with `--detach --provider codex --session <actual-session-id>`.
 5. Retain the attach receipt: `wakeup: "codex-queue"` arms native delivery
    for its one follower automatically. No separate hook or polling is needed. Verify the mechanism actually delivers into this conversation.
    If only active-turn polling is available, keep the listening turn open

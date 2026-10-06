@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import datetime
 import fcntl
 import hashlib
@@ -79,6 +80,11 @@ REPLY_READ_LIMIT = 32 << 20
 AUDIENCE_BINDING_SCHEMA = "vc.agent-audience-binding.v1"
 AUDIENCE_BINDING_FILENAME = "vc.agent-audience-binding.v1.json"
 ATTACH_RECEIPT_SCHEMA = "codescribe.agent-bridge.attach-receipt.v1"
+DETACH_RECEIPT_SCHEMA = "codescribe.agent-bridge.detach-receipt.v1"
+TAKEOVER_RECEIPT_SCHEMA = "codescribe.agent-bridge.takeover-receipt.v1"
+#: Follower states a handover reports. Only these two authorize rebinding a
+#: channel; the other two mean the previous reader is still sitting on it.
+HANDOVER_CLEAR_STATES = ("stopped", "not_running")
 STATUS_SCHEMA = "codescribe.agent-bridge.status.v1"
 DEFAULT_LEASE_TTL_SECONDS = 120.0
 PLAYBACK_WAIT_SECONDS = 120.0
@@ -3670,15 +3676,16 @@ def live_follower_pid(root: Path, lease_id: str) -> int | None:
     return None
 
 
-def write_channel_binding(
-    root: Path,
-    channel: str,
-    name: str,
-    provider: str,
-    provider_session_id: str,
-    bus: str | None = None,
-) -> Path:
-    """Claim a channel without replacing another session's routing."""
+@contextlib.contextmanager
+def channel_bindings(root: Path) -> Iterator[dict[str, Any]]:
+    """The binding file's only writer: one lock, one validation, one write.
+
+    Yields the mutable bindings map under an exclusive lock and writes it back
+    atomically when, and only when, the caller actually changed it. Every
+    operation on the file — claim, handover, release — runs inside this block,
+    so verification and rewrite never straddle a window another session can
+    use.
+    """
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = root / AUDIENCE_BINDING_FILENAME
     # Lock a stable sibling: atomic_json replaces the data file's inode.
@@ -3693,6 +3700,42 @@ def write_channel_binding(
         ):
             raise OSError("channel bindings are unreadable or invalid; nothing changed")
         bindings = state["bindings"] if state else {}
+        before = json.dumps(bindings, sort_keys=True)
+        yield bindings
+        if json.dumps(bindings, sort_keys=True) != before:
+            atomic_json(path, {"schema": AUDIENCE_BINDING_SCHEMA, "bindings": bindings})
+
+
+def occupied_refusal(
+    channel: str, current: Any, bindings: dict[str, Any], same_name: bool = False
+) -> str:
+    """The one wording for a channel another session already owns."""
+    owner = (
+        current.get("audience", "unknown") if isinstance(current, dict) else "unknown"
+    )
+    free = ", ".join(str(slot) for slot in range(1, 10) if str(slot) not in bindings)
+    message = (
+        f"channel {channel} is occupied by {owner}; "
+        f"free channels: {free or 'none'}; nothing changed"
+    )
+    if same_name:
+        message += (
+            "; --takeover claims it for the same name once that session has ended"
+        )
+    return message
+
+
+def write_channel_binding(
+    root: Path,
+    channel: str,
+    name: str,
+    provider: str,
+    provider_session_id: str,
+    bus: str | None = None,
+) -> Path:
+    """Claim a channel without replacing another session's routing."""
+    path = root / AUDIENCE_BINDING_FILENAME
+    with channel_bindings(root) as bindings:
         requested = {
             "audience": name.casefold(),
             "provider": provider.casefold(),
@@ -3708,23 +3751,281 @@ def write_channel_binding(
             if not isinstance(current, dict) or any(
                 current.get(key) != value for key, value in requested.items()
             ):
-                owner = (
-                    current.get("audience", "unknown")
-                    if isinstance(current, dict)
-                    else "unknown"
-                )
-                free = ", ".join(
-                    str(slot) for slot in range(1, 10) if str(slot) not in bindings
-                )
                 raise OSError(
-                    f"channel {channel} is occupied by {owner}; "
-                    f"free channels: {free or 'none'}; nothing changed"
+                    occupied_refusal(
+                        channel,
+                        current,
+                        bindings,
+                        same_name=isinstance(current, dict)
+                        and current.get("audience") == requested["audience"],
+                    )
                 )
             if not bus or current.get("bus") == bus:
                 return path
         bindings[str(channel)] = entry
-        atomic_json(path, {"schema": AUDIENCE_BINDING_SCHEMA, "bindings": bindings})
     return path
+
+
+def stop_owned_follower(root: Path, lease_id: str, session: str) -> tuple[int | None, str]:
+    """SIGTERM one provider session's verified follower and wait for it.
+
+    Identity is the proof ``--attach`` already demands before retiring a
+    follower: the lease names this pid and this session, and the command line
+    follows that exact session. Anything else is retained, never killed. The
+    lease, its cursor and its envelopes are untouched either way.
+    """
+    import shlex
+    import signal
+    import subprocess
+
+    pid = live_follower_pid(root, lease_id)
+    if pid is None:
+        return None, "not_running"
+    lease_state = read_json(root / "leases" / f"{lease_id}.json")
+    words = shlex.split(
+        subprocess.run(
+            ["/bin/ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, check=False,
+        ).stdout
+    )
+    if (
+        not isinstance(lease_state, dict) or lease_state.get("pid") != pid
+        or lease_state.get("provider_session_id") != session
+        or "--follow" not in words
+        or not any(words[i:i + 2] == ["--session", session] for i in range(len(words)))
+    ):
+        return pid, "unverified_retained"
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return pid, "stopped"
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and process_is_alive(pid):
+        time.sleep(0.1)
+    return (pid, "did_not_exit") if process_is_alive(pid) else (pid, "stopped")
+
+
+def lease_backlog(
+    root: Path, lease_id: str
+) -> tuple[list[Any], set[str], list[dict[str, Any]]]:
+    """Pending envelopes, acknowledgment markers and the unacknowledged rest.
+
+    The lease file keeps acknowledged envelopes until the follower's next
+    sweep, so its raw pending length overstates the backlog; the marker store
+    is the receipt truth and the backlog is pending minus markers.
+    """
+    state = read_json(root / "leases" / f"{lease_id}.json")
+    pending = state.get("pending") if isinstance(state, dict) else None
+    if not isinstance(pending, list):
+        pending = []
+    try:
+        markers = {
+            entry[: -len(".json")]
+            for entry in os.listdir(root / "acknowledgments" / lease_id)
+            if entry.endswith(".json")
+            and re.fullmatch(r"[0-9a-f]{24}", entry[:-len(".json")])
+            and delivery_acknowledged(root, lease_id, entry[:-len(".json")])
+        }
+    except OSError:
+        markers = set()
+    unacked = [
+        item
+        for item in pending
+        if isinstance(item, dict) and item.get("delivery_id") not in markers
+    ]
+    return pending, markers, unacked
+
+
+def retired_owner_report(root: Path, entry: dict[str, Any]) -> dict[str, Any]:
+    """Identity and backlog of the session a channel entry still points at."""
+    provider = str(entry.get("provider") or "")
+    session = str(entry.get("provider_session_id") or "")
+    lease_id = lease_identifier(provider, session)
+    unacked = [
+        str(item.get("delivery_id"))
+        for item in lease_backlog(root, lease_id)[2]
+        if isinstance(item.get("delivery_id"), str)
+    ]
+    return {
+        "provider": provider,
+        "provider_session_id": session,
+        "lease_id": lease_id,
+        "audience": entry.get("audience"),
+        "follower_pid": None,
+        # Replaced by the measured state; "unknown" never reaches a receipt,
+        # it only keeps an error on the way to the caller from reading as a
+        # cleanly stopped reader.
+        "follower_state": "unknown",
+        "unacked_deliveries": len(unacked),
+        "unacked_delivery_ids": unacked,
+    }
+
+
+def claim_channel_after_handover(
+    root: Path,
+    channel: str,
+    name: str,
+    provider: str,
+    provider_session_id: str,
+    bus: str,
+) -> tuple[bool, dict[str, Any] | None]:
+    """Rebind one channel from an ended session of the same agent name.
+
+    The lock spans verify -> stop the previous follower -> rewrite, so a
+    refusal leaves the entry exactly as it was. Authorization is the explicit
+    flag plus the spoken name, never a dead reader: a follower outlives its
+    session, which is the whole reason this path exists. The retired lease is
+    durable identity and is never moved, replayed or acknowledged here.
+
+    Returns ``(claimed, previous)``. ``previous`` is ``None`` when the channel
+    is free or already this session's, which leaves the plain claim to
+    :func:`write_channel_binding`; a ``previous`` with ``claimed`` false is a
+    refusal whose reader state the caller must report.
+    """
+    requested = {
+        "audience": name.casefold(),
+        "provider": provider.casefold(),
+        "provider_session_id": provider_session_id,
+    }
+    previous: dict[str, Any] | None = None
+    try:
+        with channel_bindings(root) as bindings:
+            current = bindings.get(str(channel))
+            if not isinstance(current, dict) or all(
+                current.get(key) == value for key, value in requested.items()
+            ):
+                return False, None
+            if current.get("audience") != requested["audience"]:
+                raise OSError(occupied_refusal(channel, current, bindings))
+            previous = retired_owner_report(root, current)
+            pid, follower_state = stop_owned_follower(
+                root, previous["lease_id"], previous["provider_session_id"]
+            )
+            previous["follower_pid"] = pid
+            previous["follower_state"] = follower_state
+            if follower_state not in HANDOVER_CLEAR_STATES:
+                return False, previous
+            entry = dict(requested)
+            entry["bus"] = bus
+            bindings[str(channel)] = entry
+    except OSError:
+        if previous is not None and previous["follower_state"] in HANDOVER_CLEAR_STATES:
+            # The reader is already down and the entry did not land. Say so;
+            # nothing is restarted and nothing pretends this did not happen.
+            return False, previous
+        raise
+    return True, previous
+
+
+def detach_command(args: argparse.Namespace) -> int:
+    """Release this session's channels and stop its own follower.
+
+    The lease, its cursor, pending envelopes and acknowledgment markers stay:
+    they are durable identity a later session of the same name reads on
+    demand. The receipt names every released channel and the backlog left
+    behind, so a handoff can quote it.
+    """
+    root: Path = args.bridge_home
+    lease_id = lease_identifier(args.provider, args.session)
+    pid, follower_state = stop_owned_follower(root, lease_id, args.session)
+    released: list[str] = []
+    if follower_state in HANDOVER_CLEAR_STATES:
+        with channel_bindings(root) as bindings:
+            for slot, entry in sorted(bindings.items()):
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("provider") == args.provider.casefold()
+                    and entry.get("provider_session_id") == args.session
+                ):
+                    released.append(str(slot))
+            for slot in released:
+                del bindings[slot]
+    unacked = lease_backlog(root, lease_id)[2]
+    emit(
+        {
+            "schema": DETACH_RECEIPT_SCHEMA,
+            "kind": "detach_receipt",
+            "provider": args.provider.casefold(),
+            "provider_session_id": args.session,
+            "lease_id": lease_id,
+            "released_channels": released,
+            "follower_pid": pid,
+            "follower_state": follower_state,
+            "binding_changed": bool(released),
+            "attached": bool(released) or follower_state != "not_running",
+            "unacked_deliveries": len(unacked),
+            "unacked_delivery_ids": [
+                str(item.get("delivery_id"))
+                for item in unacked
+                if isinstance(item.get("delivery_id"), str)
+            ],
+            "binding_path": str(root / AUDIENCE_BINDING_FILENAME),
+        }
+    )
+    if follower_state not in HANDOVER_CLEAR_STATES:
+        reason = (
+            "existing follower identity could not be verified; retained"
+            if follower_state == "unverified_retained"
+            else "owned follower did not exit; retained"
+        )
+        sys.stderr.write(f"bus-demux: detach failed: {reason}\n")
+        return 3
+    return 0
+
+
+def read_inherited_delivery(args: argparse.Namespace) -> int:
+    """Read one envelope from a handed-over lease without touching it.
+
+    Authorization is current ownership: the caller's session holds a channel
+    bound to the same spoken name as the named lease. Nothing is
+    acknowledged, no cursor moves, and the retired lease stays exactly as its
+    own session left it.
+    """
+    root: Path = args.bridge_home
+    state = read_json(root / "leases" / f"{args.lease}.json") or {}
+    name = state.get("name")
+    if (
+        state.get("schema") != LEASE_SCHEMA
+        or state.get("lease_id") != args.lease
+        or not isinstance(name, str)
+        or not name
+    ):
+        raise ValueError("named lease is unreadable or carries no name")
+    bindings = (read_json(root / AUDIENCE_BINDING_FILENAME) or {}).get("bindings")
+    if not isinstance(bindings, dict) or not any(
+        isinstance(entry, dict)
+        and entry.get("provider") == args.provider.casefold()
+        and entry.get("provider_session_id") == args.session
+        and entry.get("audience") == name.casefold()
+        for entry in bindings.values()
+    ):
+        raise ValueError(
+            f"this session owns no channel bound to {name.casefold()}; "
+            "the inherited mailbox stays closed"
+        )
+    payload = next(
+        (
+            item
+            for item in state.get("pending", [])
+            if isinstance(item, dict) and item.get("delivery_id") == args.read_delivery
+        ),
+        None,
+    )
+    if payload is None:
+        raise ValueError("delivery is not pending in the inherited mailbox")
+    emit(
+        {
+            **payload,
+            "inherited_from": {
+                "provider": state.get("provider"),
+                "provider_session_id": state.get("provider_session_id"),
+                "lease_id": args.lease,
+                "name": name,
+                "acknowledgment": "not_available",
+            },
+        }
+    )
+    return 0
 
 
 def attach_command(args: argparse.Namespace) -> int:
@@ -3762,8 +4063,49 @@ def attach_command(args: argparse.Namespace) -> int:
             os.close(descriptor)
         args.bus = channel_bus
     resolved_bus = str(Path(args.bus).expanduser().resolve(strict=False))
-    binding_path = write_channel_binding(
-        root, args.channel, name, args.provider, args.session, bus=resolved_bus
+    previous: dict[str, Any] | None = None
+    binding_changed = False
+    if getattr(args, "takeover", False):
+        binding_changed, previous = claim_channel_after_handover(
+            root, args.channel, name, args.provider, args.session, resolved_bus
+        )
+        if previous is not None and not binding_changed:
+            # The channel entry is untouched. Name the reader we tried to
+            # stop so the Founder sees who still holds the digit.
+            emit(
+                {
+                    "schema": TAKEOVER_RECEIPT_SCHEMA,
+                    "kind": "takeover_receipt",
+                    "channel": str(args.channel),
+                    "audience": name,
+                    "provider": args.provider.casefold(),
+                    "provider_session_id": args.session,
+                    "binding_changed": False,
+                    "previous": previous,
+                    "binding_path": str(root / AUDIENCE_BINDING_FILENAME),
+                }
+            )
+            reason = {
+                "unverified_retained": "previous follower identity could not be "
+                "verified; retained",
+                "did_not_exit": "previous follower did not exit; retained",
+            }.get(
+                previous["follower_state"],
+                "previous follower is "
+                f"{previous['follower_state']} but the channel entry could not "
+                "be written",
+            )
+            sys.stderr.write(
+                f"bus-demux: attach failed: {reason}; channel {args.channel} "
+                "unchanged\n"
+            )
+            return 3
+    binding_path = (
+        root / AUDIENCE_BINDING_FILENAME
+        if binding_changed
+        else write_channel_binding(
+            root, args.channel, name, args.provider, args.session, bus=resolved_bus
+        )
     )
     if persist_voice:
         write_voice_profile(
@@ -3916,6 +4258,10 @@ def attach_command(args: argparse.Namespace) -> int:
             if (root / VOICES_FILENAME).exists()
             else "missing",
             "binding_path": str(binding_path),
+            # True only when another session's entry was rewritten for this
+            # name; a free or already-owned digit changes no owner.
+            "binding_changed": binding_changed,
+            "previous": previous,
         }
     )
     return 0
@@ -3932,24 +4278,7 @@ def status_command(args: argparse.Namespace) -> int:
     lease_id = lease_identifier(args.provider, args.session)
     log_path, events_path = follower_paths(root, lease_id)
     state = read_json(root / "leases" / f"{lease_id}.json")
-    pending = state.get("pending") if isinstance(state, dict) else None
-    if not isinstance(pending, list):
-        pending = []
-    try:
-        markers = {
-            entry[: -len(".json")]
-            for entry in os.listdir(root / "acknowledgments" / lease_id)
-            if entry.endswith(".json")
-            and re.fullmatch(r"[0-9a-f]{24}", entry[:-len(".json")])
-            and delivery_acknowledged(root, lease_id, entry[:-len(".json")])
-        }
-    except OSError:
-        markers = set()
-    unacked = [
-        item
-        for item in pending
-        if isinstance(item, dict) and item.get("delivery_id") not in markers
-    ]
+    pending, markers, unacked = lease_backlog(root, lease_id)
     seals = [item for item in unacked if item.get("kind") in ("seal", "message")]
     last_seal = max(
         seals, key=lambda item: str(item.get("emitted_at") or ""), default=None
@@ -4161,6 +4490,9 @@ def main() -> int:
         description="Codescribe messages, live notifications and voice replies for your agent.\n\n"
                "Quick start:\n"
                "  cs-bus --attach --channel 2 --name lena --provider codex --session THREAD\n"
+               "  cs-bus --attach --channel 2 --name lena --provider codex --session THREAD --takeover\n"
+               "  cs-bus --detach --provider codex --session THREAD\n"
+               "  cs-bus --read-delivery ID --lease PREVIOUS_LEASE --provider codex --session THREAD\n"
                "  cs-bus --watch --provider codex --session THREAD\n"
                "  cs-bus --read-delivery ID --provider codex --session THREAD\n"
                "  cs-bus --ack ID --provider codex --session THREAD\n"
@@ -4244,6 +4576,18 @@ def main() -> int:
     )
     parser.add_argument(
         "--channel", default=None, help="agent channel digit (1-9) for --attach"
+    )
+    parser.add_argument(
+        "--takeover",
+        action="store_true",
+        help="with --attach: claim the channel from an ended session of the "
+        "same name, stopping its leftover follower first",
+    )
+    parser.add_argument(
+        "--detach",
+        action="store_true",
+        help="release this session's channels, stop its own follower, print a "
+        "detach receipt, and exit; the lease and its backlog stay",
     )
     parser.add_argument(
         "--status",
@@ -4377,6 +4721,8 @@ def main() -> int:
         )
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.takeover and not args.attach:
+        parser.error("--takeover requires --attach")
     if args.send_text:
         if (not args.provider or args.channel not in tuple(str(n) for n in range(1, 10))
                 or not args.lease or not args.bus_overridden
@@ -4411,8 +4757,18 @@ def main() -> int:
     if args.read_delivery:
         if not args.provider or not re.fullmatch(r"[0-9a-f]{24}", args.read_delivery):
             parser.error("--read-delivery requires --provider/--session and a delivery id")
-        if any((args.ack, args.attach, args.status, args.watch, args.follow, args.once, args.retry_wakeup, args.say is not None)):
+        if any((args.ack, args.attach, args.detach, args.status, args.watch, args.follow, args.once, args.retry_wakeup, args.say is not None)):
             parser.error("--read-delivery combines with no other command")
+        if args.lease and args.lease != lease_identifier(args.provider, args.session):
+            # An inherited mailbox is read, never consumed: the retired lease
+            # keeps its envelopes, markers and cursor.
+            if not re.fullmatch(r"[0-9a-f]{32}", args.lease):
+                parser.error("--lease takes a lease id")
+            try:
+                return read_inherited_delivery(args)
+            except (OSError, ValueError) as error:
+                sys.stderr.write(f"bus-demux: inherited read refused: {error}\n")
+                return 3
         lease_id = lease_identifier(args.provider, args.session)
         state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
         if state.get("lease_id") != lease_id or state.get("provider") != args.provider or state.get("provider_session_id") != args.session:
@@ -4427,7 +4783,7 @@ def main() -> int:
     if args.retry_wakeup:
         if args.provider != "codex" or not re.fullmatch(r"[0-9a-f]{24}", args.retry_wakeup):
             parser.error("--retry-wakeup requires --provider codex, --session and a delivery id")
-        if any((args.ack, args.attach, args.status, args.watch, args.follow, args.once, args.say is not None)):
+        if any((args.ack, args.attach, args.detach, args.status, args.watch, args.follow, args.once, args.say is not None)):
             parser.error("--retry-wakeup combines with no other command")
         lease_id = lease_identifier(args.provider, args.session)
         state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
@@ -4450,6 +4806,18 @@ def main() -> int:
         parser.error("--full requires --watch")
     if args.bell and (not args.watch or args.human):
         parser.error("--bell requires --watch and no --human")
+    if args.detach:
+        if not args.provider:
+            parser.error("--detach requires --provider/--session")
+        if any((args.attach, args.channel is not None, args.status, args.watch,
+                args.follow, args.once, args.from_start, args.ack, args.lease,
+                args.say is not None)):
+            parser.error("--detach combines with no other command")
+        try:
+            return detach_command(args)
+        except OSError as error:
+            sys.stderr.write(f"bus-demux: detach refused: {error}\n")
+            return 3
     if args.watch or args.from_file is not None:
         if not args.watch:
             parser.error("--from-file travels with --watch")
