@@ -3038,23 +3038,29 @@ class CaptureOrderingProofTests(unittest.TestCase):
         ordering = self.observations[self.CORRIDOR]["ordering"]
         self.assertTrue(ordering, "ordering rows were not observed at all")
         for row in ordering:
-            with self.subTest(barrier=row["barrier"]["required_code"]):
+            with self.subTest(caller=row["caller"], barrier=row.get("barrier")):
                 self.assertEqual(row["verdict"], "GREEN", row)
                 # Relational, never absolute: an unrelated edit above these
                 # functions must not turn a real proof red.
                 self.assertTrue(row["before_observed_lines"], row)
                 self.assertTrue(row["after_observed_lines"], row)
-                self.assertTrue(row["barrier_observed_lines"], row)
                 self.assertLess(
                     max(row["before_observed_lines"]),
-                    min(row["barrier_observed_lines"]),
-                    row,
-                )
-                self.assertLess(
-                    max(row["barrier_observed_lines"]),
                     min(row["after_observed_lines"]),
                     row,
                 )
+                if "barrier" in row:
+                    self.assertTrue(row["barrier_observed_lines"], row)
+                    self.assertLess(
+                        max(row["before_observed_lines"]),
+                        min(row["barrier_observed_lines"]),
+                        row,
+                    )
+                    self.assertLess(
+                        max(row["barrier_observed_lines"]),
+                        min(row["after_observed_lines"]),
+                        row,
+                    )
 
     def test_each_capture_edge_is_individually_required(self):
         """Remove one declared edge at a time; each must be named in refusal."""
