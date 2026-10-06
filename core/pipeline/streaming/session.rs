@@ -36,10 +36,6 @@ pub(crate) struct LocalExecutionOwner {
 }
 
 impl LocalExecutionOwner {
-    pub(super) fn check(&self) -> Result<()> {
-        self.control.check()
-    }
-
     pub(super) fn begin_drain(&self, budget: std::time::Duration) -> std::time::Instant {
         let deadline = std::time::Instant::now() + budget;
         self.control.limit_until(deadline)
