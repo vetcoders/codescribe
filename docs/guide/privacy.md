@@ -1,302 +1,97 @@
 # Privacy & Security
 
-Codescribe is designed with privacy as a core principle. Your audio is processed locally by default.
+Codescribe supports local speech recognition and optional configured services.
+This document describes the data boundaries implemented in the app and website;
+see the [public privacy page](https://codescribe.vetcoders.io/privacy/).
 
----
+## Local speech and storage
 
-## Privacy Summary
+Once local models and macOS permissions are ready, recording, local speech
+recognition, hotkeys, and text delivery can run without a cloud AI service.
+Downloading a speech model, checking for updates, and issuing a website licence
+are separate network operations.
 
-| Data            | Where It Goes        | Your Control                             |
-| --------------- | -------------------- | ---------------------------------------- |
-| **Audio**       | Your Mac only        | Never leaves unless you enable cloud STT |
-| **Transcripts** | Your Mac only        | Stored in ~/.codescribe/transcriptions/  |
-| **AI requests** | Your chosen provider | Only if AI formatting enabled            |
-| **Telemetry**   | Nowhere              | No tracking, no analytics, no phone-home |
+| Data        | Local storage                                                           | Optional outgoing use                                              |
+| ----------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Audio       | Takes, session WAVs, daily archive                                      | Cloud transcription when enabled                                   |
+| Transcripts | `~/.codescribe/transcriptions/` and conversation history                | Formatting, agent requests, or speech synthesis when used          |
+| Settings    | `settings.json` and optional `.env`                                     | Configured services use the corresponding endpoint and credentials |
+| API keys    | macOS Keychain; explicit environment/config imports may contain secrets | Provider authentication                                            |
+| Prompts     | `~/.codescribe/prompts/`                                                | Included in configured AI requests                                 |
 
----
+## Configured services
 
-## What Stays Local
+- **AI formatting:** transcript text and formatting instructions go to the
+  configured model endpoint.
+- **Agents:** a request can include conversation history, selected text, attached
+  files, screenshots, and tool results relevant to the task. An external runtime
+  has its own provider configuration and data policy.
+- **Cloud transcription:** captured audio goes to the configured STT service
+  when that path is enabled.
+- **Spoken replies:** a remote speech provider receives the reply text to generate
+  audio. A locally configured speech path has a different boundary.
 
-### Always Local (Cannot Be Changed)
+Built-in remote providers use HTTPS. A custom endpoint uses the transport the
+user configures. Data retention depends on the selected service and account
+contract; Codescribe does not promise one retention period for all providers.
+Choosing a local AI endpoint keeps that inference on the selected local service,
+but does not disable update checks or other independently configured services.
 
-| Component       | Location                                         | Notes                                  |
-| --------------- | ------------------------------------------------ | -------------------------------------- |
-| Whisper model   | Runtime-resolved local path/cache                | Local STT still runs on-device         |
-| Audio recording | ~/.codescribe/takes/ + sessions/ + daily archive | Complete local audio; default Forever  |
-| Transcripts     | ~/.codescribe/transcriptions/                    | You control retention                  |
-| Configuration   | settings.json + optional ~/.codescribe/.env      | GUI defaults plus power-user overrides |
-| API keys        | macOS Keychain                                   | Secrets stay out of plaintext config   |
-| Prompts         | ~/.codescribe/prompts/                           | Your custom prompts                    |
+## System permissions
 
-### No Network Required For
+| Permission         | Purpose                                               |
+| ------------------ | ----------------------------------------------------- |
+| Microphone         | Capture speech during a recording session             |
+| Speech Recognition | Apple's speech recognition path                       |
+| Accessibility      | Read selected text and deliver text to supported apps |
+| Input Monitoring   | Detect configured shortcuts and modifier state        |
+| Screen Recording   | Screenshots when used as context                      |
 
-- Recording audio
-- Running Whisper transcription
-- Pasting text to applications
-- Storing transcripts
-- All hotkey operations
+Agent file access follows the configured workspace and tool permissions. Do not
+describe the product as unable to read outside `~/.codescribe/`: explicitly
+attached files and agent tools can address other locations.
 
-**Codescribe works completely offline in Raw mode.**
-
----
-
-## What Can Leave Your Mac
-
-### Optional: AI Formatting
-
-**When enabled** (`AI_FORMATTING_ENABLED=1`):
-
-- Transcribed text is sent to your configured AI provider
-- This is the text, not the audio
-- Uses HTTPS encryption
-
-**Data sent to AI**:
-
-```
-- Your transcript text
-- System prompt (formatting/assistive)
-- Language hint
-```
-
-**Not sent**:
-
-```
-- Audio files
-- File paths
-- System information
-- Other transcripts
-- Your API key (sent as auth header only)
-```
-
-### Optional: Cloud STT
-
-**When enabled** (`USE_LOCAL_STT=0` plus `STT_ENDPOINT` / `STT_API_KEY`):
-
-- Audio may be sent after capture to replace the committed transcript
-- Live preview still stays local in the current build
-
-**To disable**:
-
-```bash
-USE_LOCAL_STT=1
-```
-
----
-
-## AI Provider Comparison
-
-| Provider         | Data Retention                   | Privacy        |
-| ---------------- | -------------------------------- | -------------- |
-| **Local Ollama** | None (your machine)              | ★★★★★ Maximum  |
-| **OpenAI**       | 30 days (API), opt-out available | ★★★☆☆ Standard |
-| **Anthropic**    | 30 days (API), opt-out available | ★★★☆☆ Standard |
-| **LibraxisAI**   | Custom (your instance)           | ★★★★☆ Good     |
-
-### Maximum Privacy Configuration
-
-For zero cloud communication:
-
-```bash
-# ~/.codescribe/.env
-
-# Disable AI formatting
-AI_FORMATTING_ENABLED=0
-
-# Force local STT
-USE_LOCAL_STT=1
-
-# Disable cloud fallback
-CODESCRIBE_QUALITY_DISABLE_CLOUD=1
-
-# No LLM configuration needed
-# LLM_ENDPOINT=
-# LLM_API_KEY=
-```
-
-### Using Local Ollama
-
-Run AI completely on your Mac:
-
-```bash
-# Install Ollama
-brew install ollama
-
-# Start Ollama
-ollama serve
-
-# Pull a model
-ollama pull llama3.2
-
-# Configure codescribe
-LLM_ENDPOINT=http://localhost:11434/v1
-LLM_API_KEY=ollama
-LLM_MODEL=llama3.2
-AI_FORMATTING_ENABLED=1
-```
-
-Now AI formatting runs 100% locally.
-
----
-
-## System Permissions
-
-Codescribe requests these permissions:
-
-| Permission           | Why                        | Risk Level                            |
-| -------------------- | -------------------------- | ------------------------------------- |
-| **Microphone**       | Record your speech         | Medium - only during recording        |
-| **Accessibility**    | Detect hotkeys, paste text | Low - standard automation             |
-| **Input Monitoring** | Detect modifier keys       | Low - only key states, not keystrokes |
-
-### What We Don't Access
-
-- ❌ Keylogger capability (we detect Ctrl/Shift states only)
-- ❌ Screen recording
-- ❌ Camera
-- ❌ Location
-- ❌ Contacts
-- ❌ Files outside ~/.codescribe/
-
----
-
-## Data Retention
-
-### Transcripts
-
-By default, transcripts are saved to `~/.codescribe/transcriptions/`:
-
-```
-~/.codescribe/transcriptions/
-├── 2026-01-22/
-│   ├── 143052_hello-world_raw.txt
-│   ├── 143052_hello-world_ai.txt
-│   └── 143200_meeting-notes_raw.txt
-```
-
-**To disable history**:
-
-```bash
-HISTORY_ENABLED=0
-```
-
-**To clear history**:
-
-```bash
-rm -rf ~/.codescribe/transcriptions/*
-```
-
-### Audio Files
+## Audio retention
 
 Complete captured audio is saved locally by default, including takes whose
-recognition, formatting, seal or delivery failed. Settings > Audio > Audio
+recognition, formatting, seal, or delivery failed. Settings > Audio > Audio
 retention offers **Forever / 30 days / 7 days / 24h / Off**. Missing or unknown
-settings preserve audio (Forever). This is a settings choice, with no automatic
-environment opt-out.
+settings preserve audio (Forever).
 
 Full WAVs live under `~/.codescribe/takes/`, session WAVs under
 `~/.codescribe/sessions/`, and daily audio under
 `~/.codescribe/transcriptions/YYYY-MM-DD/`. Finite retention expires eligible
-completed owned audio across those locations. Active captures, processing/read
-leases and protected retry evidence are preserved. A take keeps the choice it
-started with; Off applies to new takes after processing settles and does not
-purge existing recordings. Unknown completion times and failed deletions stay
-preserved and are reported. Audio expiration never deletes transcript text.
+completed owned audio across these locations. Active captures, processing/read
+leases, and protected retry evidence are preserved. A take keeps the choice it
+started with; Off applies to new takes and does not purge existing recordings.
+Unknown completion times and failed deletions remain visible as errors. Audio
+expiration does not delete transcript text.
 
-Older captures without a trustworthy completion/ownership receipt remain
-preserved; the application does not guess completion from filenames. See
-[Take audio retention](../TAKE_AUDIO_RETENTION.md) for the storage contract.
+See [Take audio retention](../TAKE_AUDIO_RETENTION.md) for the storage contract.
+Transcript history is controlled separately; `HISTORY_ENABLED=0` disables that
+history path, rather than erasing every app or external-agent record.
 
----
+## Updates, analytics, and website services
 
-## Network Connections
+The desktop app does not ship a third-party transcript analytics SDK. Sparkle
+update checks contact the configured feed according to the updater's settings.
+Model downloads contact their download hosts. Website analytics are disabled in
+the default build and can be explicitly enabled for a deployment.
 
-### Codescribe Makes No Connections If:
+The website licence form sends the entered email over HTTPS to the issuer.
+The signed licence contains its SHA-256 hash; the issuance log records that hash,
+client IP, and timestamp. This is pseudonymous data, not an anonymity guarantee.
+The app verifies the signed licence locally. No activation call is needed for
+that verification.
 
-- AI formatting is disabled
-- Using only Raw mode (Ctrl hold)
-- No LLM_ENDPOINT configured
+For licence-service data questions, contact
+[hello@vetcoders.io](mailto:hello@vetcoders.io). Remote agent and AI service records
+remain subject to those services' policies; deleting local app files does not
+erase their records.
 
-### Codescribe Connects To:
+## Source availability
 
-| Destination    | When                   | Data                             |
-| -------------- | ---------------------- | -------------------------------- |
-| `LLM_ENDPOINT` | AI formatting          | Text transcript                  |
-| `STT_ENDPOINT` | Cloud final transcript | Audio after capture (if enabled) |
-
-### Verify Network Activity
-
-```bash
-# Monitor connections
-sudo lsof -i -P | grep codescribe
-
-# Check what's configured
-cat ~/.codescribe/.env | grep -E "(URL|ENDPOINT)"
-```
-
----
-
-## API Key Storage
-
-API keys are stored in `~/.codescribe/.env`:
-
-```bash
-# File permissions
-ls -la ~/.codescribe/.env
-# Should show: -rw------- (600)
-```
-
-**Secure your config**:
-
-```bash
-chmod 600 ~/.codescribe/.env
-```
-
-**Never commit .env to git** - it's in .gitignore by default.
-
----
-
-## Source Availability
-
-Codescribe is source-available under FSL-1.1-ALv2:
-
-- **Repository**: github.com/vetcoders/codescribe
-- **License**: Functional Source License 1.1, ALv2 Future License (FSL-1.1-ALv2)
-- **Audit**: You can inspect all code
-
-No hidden functionality, no obfuscation.
-
----
-
-## Security Considerations
-
-### Potential Risks
-
-| Risk                         | Mitigation                                   |
-| ---------------------------- | -------------------------------------------- |
-| Sensitive audio recorded     | Only records when hotkey active              |
-| Transcript stored insecurely | Files only readable by you (700 permissions) |
-| API key exposure             | .env file with restricted permissions        |
-| Man-in-middle on AI requests | HTTPS enforced                               |
-
-### Recommendations
-
-1. **Don't dictate passwords** - obvious but important
-2. **Review transcripts** - clear sensitive ones periodically
-3. **Use local AI** - Ollama for maximum privacy
-4. **Secure .env** - check file permissions
-5. **Lock screen** - prevent others from using your hotkeys
-
----
-
-## GDPR / Data Subject Rights
-
-For EU users:
-
-- **Right to access**: All your data is in ~/.codescribe/
-- **Right to erasure**: `rm -rf ~/.codescribe/`
-- **Right to portability**: Files are plain text, easily exported
-- **No third-party sharing**: Unless you configure AI providers
-
----
-
-_Created by Vetcoders (c)2026_
+Codescribe is source-available under FSL-1.1-ALv2. The
+[repository](https://github.com/vetcoders/codescribe) contains the implementation;
+source availability does not by itself certify an installed artifact or a
+provider's behavior.

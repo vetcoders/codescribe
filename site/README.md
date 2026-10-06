@@ -1,12 +1,26 @@
 # codescribe — marketing website
 
-Static, dark, cinematic marketing site for **codescribe** (a macOS voice control
-layer for text, code & AI agents). Built with **Astro** + TypeScript, plain CSS
+Static product website for **Codescribe**: dictation, text editing, and
+connected agent conversations on macOS. Built with **Astro** + TypeScript, plain CSS
 with custom properties, self-hosted fonts, and exactly two tiny interactive
 islands. No Tailwind, no UI libraries.
 
-Design source of truth: `WEBSITE_SPEC.md` in the design handoff. The approved
-render is `reference/site-a-cinematic.html`.
+## Product copy and evidence
+
+The public copy describes user actions and setup requirements. It must not
+turn a source invariant, a single demo, or a delivery acknowledgment into an
+accuracy, latency, privacy, or task-completion guarantee. Animated examples
+are labeled as illustrations and carry no measured performance numbers.
+
+Local speech recognition, optional AI processing, remote agent sessions,
+spoken replies, and website licence issuance have separate data boundaries.
+Keep the privacy page consistent with those paths. The licence issuer receives
+the email over HTTPS and logs its hash, client IP, and issue time. The Pages
+copy links to the canonical licence form rather than posting to a missing API.
+
+The homepage presents the workflow, product controls, actual screenshots,
+setup, and a published download. `/fleet/` explains agent channels and their
+prerequisites. Transport and internal ledger machinery are engineering details.
 
 ## Run / build / preview
 
@@ -94,10 +108,7 @@ site/
         ├── Formatting.astro      # verbatim Polish copy (needs latin-ext)
         ├── Selection.astro
         ├── AgentChat.astro
-        ├── VoiceDrawer.astro
         ├── Prompts.astro
-        ├── AgentStack.astro
-        ├── ControlLayer.astro
         ├── MacNative.astro
         ├── Install.astro
         └── Footer.astro
@@ -119,17 +130,15 @@ site/
    `src` via `asset('shots/your-shot.webp')` and set the new `width`/`height`.
 4. `npm run build` and spot-check.
 
-Two image slots are known placeholders (see `WEBSITE_SPEC.md` §5): the "Lives
-over your work" overlay-over-another-app shot and the dedicated Voice Drawer
-capture (`VoiceDrawer.astro` currently reuses `agent-threads-transparent.webp`).
-Swap 1:1 when real captures land; alt text is already correct.
+Product screenshots must describe what the image actually shows. Do not reuse
+an agent-thread capture as evidence of a different history interface.
 
 ## Interactive islands
 
 Both live as small inline `<script type="module">` blocks (Astro bundles them):
 
 - **Hero live console** (`Hero.astro`) — word-by-word reveal of raw speech →
-  structured intent, on a loop. Server-renders the resolved frame.
+  a punctuation example, on a loop. Server-renders the readable frame.
 - **Modes spotlight** (`Modes.astro`) — color-cycling pill + rotating example.
 
 Both honor `prefers-reduced-motion`: the script bails out and leaves the

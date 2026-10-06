@@ -8,7 +8,7 @@
   <div class="container">
     <div class="head">
       <p class="eyebrow">ONE INTERFACE</p>
-      <h2 id="modes-title">Every way you want to speak.</h2>
+      <h2 id="modes-title">One overlay. Four ways to work.</h2>
     </div>
 
     <!-- spotlight -->
@@ -18,7 +18,7 @@
         <span class="pill__name" data-name style="color:#e9b79f">DICTATION</span>
       </div>
       <p class="quote" data-quote>“just get this thought down before I lose it”</p>
-      <p class="outcome" data-outcome>pasted into your editor · live preview</p>
+      <p class="outcome" data-outcome>live transcript · paste or copy</p>
     </div>
 
     <!-- mode rail -->
@@ -26,12 +26,12 @@
       <div class="card">
         <span class="card__dot" style="background:#d97757"></span>
         <h3>Dictation</h3>
-        <p>Hold Fn, speak. Live preview, then it pastes into the app you're in.</p>
+        <p>Use your recording shortcut, review the live transcript, then paste or copy the result.</p>
       </div>
       <div class="card">
         <span class="card__dot" style="background:#5f6b3e"></span>
         <h3>Formatting</h3>
-        <p>An AI pass cleans punctuation and structure — your meaning untouched.</p>
+        <p>Choose light punctuation cleanup or ask your configured AI provider to revise the text.</p>
       </div>
       <div class="card">
         <span class="card__dot" style="background:#d6b24e"></span>
@@ -41,7 +41,7 @@
       <div class="card">
         <span class="card__dot" style="background:#c98a6e"></span>
         <h3>Selection-aware</h3>
-        <p>Highlight anything, say what to do, get the result back in place.</p>
+        <p>Select text in a supported app and speak an instruction to your configured AI provider.</p>
       </div>
     </div>
   </div>
@@ -147,10 +147,10 @@
     out: string;
   }
   const MODES: Mode[] = [
-    { name: 'DICTATION', color: '#d97757', ink: '#e9b79f', ex: 'just get this thought down before I lose it', out: 'pasted into your editor · live preview' },
-    { name: 'FORMATTING', color: '#5f6b3e', ink: '#9db178', ex: 'clean this up but keep exactly what I meant', out: 'punctuation + structure fixed · meaning intact' },
+    { name: 'DICTATION', color: '#d97757', ink: '#e9b79f', ex: 'just get this thought down before I lose it', out: 'live transcript · paste or copy' },
+    { name: 'FORMATTING', color: '#5f6b3e', ink: '#9db178', ex: 'clean this up but keep exactly what I meant', out: 'choose the formatting level · review the result' },
     { name: 'AGENT CHAT', color: '#d6b24e', ink: '#d6b24e', ex: 'what is causing this race condition?', out: 'a thread that stays with your work' },
-    { name: 'SELECTION', color: '#c98a6e', ink: '#c98a6e', ex: 'make this paragraph more formal', out: 'rewritten in place · 0.8s · local' },
+    { name: 'SELECTION', color: '#c98a6e', ink: '#c98a6e', ex: 'make this paragraph more formal', out: 'selection + spoken instruction · AI provider' },
   ];
 
   const pill = document.querySelector<HTMLElement>('[data-pill]');

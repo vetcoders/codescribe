@@ -35,7 +35,10 @@ a {
 
 /* Visible focus rings for keyboard navigation (a11y) */
 a:focus-visible,
-button:focus-visible {
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 3px;
   border-radius: 4px;
