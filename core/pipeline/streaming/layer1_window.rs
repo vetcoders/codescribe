@@ -7,6 +7,10 @@
 //! only: every member occurrence keeps its own PCM identity, and the
 //! returned candidate is admitted per occurrence by the acoustic ledger.
 
+#[cfg(test)]
+#[path = "capture_window_plan_contract_tests.rs"]
+mod capture_window_plan_contract_tests;
+
 use std::time::{Duration, Instant};
 
 use crate::pipeline::acoustic_ledger::OccurrenceIdentity;
