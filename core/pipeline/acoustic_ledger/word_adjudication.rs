@@ -1029,6 +1029,32 @@ impl AcousticLedger {
             })
             .max_by_key(|(_, c)| c.whisper.iter().map(|h| h.q).max().unwrap_or(0))
             .map(|(index, _)| index)?;
+        self.open_word_trial(index)
+    }
+
+    /// The live scheduler proved that every window able to own these words
+    /// returned. Keep unresolved incumbents and record expiry through the
+    /// existing trial receipts; expiry supplies no new acoustic witness.
+    pub(crate) fn close_word_adjudication_horizon(&mut self, owner: &OccurrenceIdentity) -> usize {
+        let mut closed = 0;
+        while let Some(index) = self
+            .word_adjudication
+            .components
+            .iter()
+            .position(|component| {
+                &component.owner == owner && component.conflict && !component.attempted
+            })
+        {
+            let Some(trial) = self.open_word_trial(index) else {
+                break;
+            };
+            self.close_word_trial(&trial, "admission_horizon_closed");
+            closed += 1;
+        }
+        closed
+    }
+
+    fn open_word_trial(&mut self, index: usize) -> Option<WordTrial> {
         let component = &self.word_adjudication.components[index];
         let sources = self
             .slots_of(&component.owner)

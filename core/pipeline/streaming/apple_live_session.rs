@@ -4820,6 +4820,7 @@ impl AppleSealState {
     ) {
         self.admission_horizon = self.admission_horizon.max(sample_start);
         let owners = self.unsealed_word_owners();
+        let mut expired_words = false;
         for (id, owner) in owners {
             if owner.sample_end > self.admission_horizon {
                 continue;
@@ -4835,37 +4836,55 @@ impl AppleSealState {
             if still_possible || self.layer1_coalesce.holds_occurrence(&owner) {
                 continue;
             }
-            let is_open = self
-                .acoustic_ledger
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .frontier_of(&owner)
-                .is_some_and(|frontier| {
-                    frontier
-                        .open_producers()
-                        .contains(&LedgerObservationProducer::Whisper)
-                });
-            if !is_open {
+            let (is_open, has_return) = {
+                let ledger = self
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (
+                    ledger.frontier_of(&owner).is_some_and(|frontier| {
+                        frontier
+                            .open_producers()
+                            .contains(&LedgerObservationProducer::Whisper)
+                    }),
+                    ledger
+                        .layer_trail_for(&owner)
+                        .any(|entry| entry.producer() == LedgerObservationProducer::Whisper),
+                )
+            };
+            if !has_return {
+                if is_open && sample_start == u64::MAX {
+                    self.fail_refinement(ev_tx, id, &owner, RefinementFailure::NotScheduled);
+                }
                 continue;
             }
-            {
-                let has_return = self
+            // Only the actual live frontier expires old disputes. The terminal
+            // MAX sentinel leaves the open tail eligible for bounded recovery.
+            if sample_start != u64::MAX {
+                let expired = self
                     .acoustic_ledger
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .layer_trail_for(&owner)
-                    .any(|entry| entry.producer() == LedgerObservationProducer::Whisper);
-                if !has_return {
-                    if sample_start != u64::MAX {
-                        continue;
-                    }
-                    self.fail_refinement(ev_tx, id, &owner, RefinementFailure::NotScheduled);
-                    continue;
+                    .close_word_adjudication_horizon(&owner);
+                expired_words |= expired > 0;
+                if expired > 0 {
+                    info!(
+                        sample_start = owner.sample_start,
+                        sample_end = owner.sample_end,
+                        words_expired = expired,
+                        "word_adjudication_horizon_closed"
+                    );
                 }
+            }
+            if !is_open {
+                continue;
             }
             self.refinement_receipt(&owner, "admission_horizon_closed");
             self.return_whisper_without_label(ev_tx, id, &owner);
             self.emit_pending_seal(ev_tx, id);
+        }
+        if expired_words {
+            self.publish_resolved_word_seals(ev_tx);
         }
     }
 
@@ -12339,6 +12358,170 @@ mod rc_w2_acoustic_tests {
                 avg_logprob: None,
             },
         }
+    }
+
+    #[test]
+    fn completed_live_horizon_keeps_incumbents_and_never_redecodes_them_at_stop() {
+        use crate::pipeline::acoustic_ledger::{AcousticEvidence, WordPin};
+        let mut state = state_for("expired-live-word-horizon", 10.0);
+        let mut writer = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+        for chunk in vec![0.25; at(10.0) as usize].chunks(320) {
+            writer.push_samples(chunk);
+        }
+        let owner = OccurrenceIdentity::new(&state.session_id, state.capture_epoch, 0, at(10.0));
+        let trail_dir = tempfile::tempdir().unwrap();
+        let trail = crate::pipeline::trail::TrailSink::open_in(
+            trail_dir.path(),
+            &state.session_id,
+            state.capture_epoch,
+            512,
+        )
+        .unwrap();
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            let calibration = state.energy_calibration.as_ref().unwrap();
+            assert!(
+                ledger
+                    .qualify(
+                        &AcousticEvidence {
+                            occurrence: owner.clone(),
+                            duration_ms: 10_000.0,
+                            energy_integral: 10_000.0,
+                            mean_rms_dbfs: -12.0,
+                            peak_dbfs: -12.0,
+                            vad_open_sample: Some(0),
+                            vad_close_sample: Some(at(10.0)),
+                            evidence_calibration_version: calibration.version.clone(),
+                        },
+                        calibration
+                    )
+                    .is_qualified()
+            );
+            ledger.schedule_frontier(owner.clone(), [LedgerObservationProducer::Whisper]);
+            ledger.record_speech_evidence(&coverage_speech_evidence(&state));
+            ledger.admit_word_slots(
+                &LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Apple,
+                    1,
+                    0,
+                    owner.clone(),
+                ),
+                &[
+                    WordPin::new(at(1.0), at(2.0), "1286"),
+                    WordPin::new(at(3.0), at(4.0), "nie"),
+                ],
+            );
+            for (generation, end) in [(0, at(10.0)), (1, at(9.5))] {
+                ledger.admit_word_slots(
+                    &LedgerObservationIdentity::new(
+                        LedgerObservationProducer::Whisper,
+                        2,
+                        generation,
+                        owner.clone(),
+                    ),
+                    &[
+                        WordPin::new(at(1.0), at(2.0), "56").with_decode_window(0, end),
+                        WordPin::new(at(3.0), at(4.0), "tak").with_decode_window(0, end),
+                    ],
+                );
+            }
+            assert!(ledger.has_word_conflicts());
+            assert_eq!(ledger.text_of(&owner), Some("1286 nie"));
+        }
+        state.pending_events.insert(
+            1,
+            PendingAppleSeal {
+                occurrence: owner.clone(),
+                raw_text: "1286 nie".into(),
+                layer1_baseline: "1286 nie".into(),
+                start_ts: 0.0,
+                end_ts: 10.0,
+                segments: Vec::new(),
+            },
+        );
+        let (tx, _rx) = mpsc::unbounded_channel();
+        state.close_admission_horizon(&tx, owner.sample_end - 1);
+        assert!(
+            state.acoustic_ledger.lock().unwrap().has_word_conflicts(),
+            "a future window can still cover this word"
+        );
+        let identity = TailRequestIdentity {
+            request_id: 3,
+            range: TailSampleRange {
+                session: owner.session.clone(),
+                capture_epoch: owner.capture_epoch,
+                sample_start: 0,
+                sample_end: owner.sample_end,
+            },
+        };
+        let key = inflight_key(1, &identity);
+        state.refinement_submitted.insert(
+            key,
+            TailPatchInFlight {
+                submission_sequence: 1,
+                utterance_id: 1,
+                request_identity: identity,
+                admit_sample_start: 0,
+                admit_sample_end: owner.sample_end,
+                member_occurrences: vec![(1, owner.clone())],
+            },
+        );
+        state.close_admission_horizon(&tx, owner.sample_end);
+        assert!(
+            state.acoustic_ledger.lock().unwrap().has_word_conflicts(),
+            "an older accepted request must return before expiry"
+        );
+        assert!(!state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
+        state.refinement_submitted.remove(&key);
+        state.close_admission_horizon(&tx, owner.sample_end);
+        let expected_seal = {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(
+                ledger.is_sealed(&owner),
+                "expired disputes must not hold the old owner open"
+            );
+            assert_eq!(ledger.text_of(&owner), Some("1286 nie"));
+            assert!(ledger.next_word_trial(true).is_none());
+            let seal = ledger.seal_of(&owner).unwrap().clone();
+            assert_eq!(seal.word_finality.len(), 2);
+            assert!(seal.word_finality.iter().all(|word| {
+                word.unresolved
+                    && word
+                        .trial
+                        .as_ref()
+                        .is_some_and(|trial| trial.reason == "admission_horizon_closed")
+            }));
+            assert_eq!(ledger.conservation().residue(), 0);
+            seal
+        };
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = calls.clone();
+        repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            Some("pl"),
+            &LocalExecutionOwner::default(),
+            move |request, pcm, control| {
+                control.check()?;
+                request.validate_pcm(pcm)?;
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(gap_payload(request))
+            },
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "Stop must never decode disputes whose live horizon already ended"
+        );
+        drop(trail);
+        let rows = crate::pipeline::trail::read_trail(
+            &crate::pipeline::trail::trail_path(trail_dir.path(), &state.session_id).unwrap(),
+        )
+        .unwrap();
+        let replayed = crate::pipeline::trail::replay_decisions(&rows, |_, _, _| {}).unwrap();
+        assert_eq!(replayed.text_of(&owner), Some("1286 nie"));
+        assert_eq!(replayed.seal_of(&owner), Some(&expected_seal));
+        assert_eq!(replayed.conservation().residue(), 0);
     }
 
     #[test]
