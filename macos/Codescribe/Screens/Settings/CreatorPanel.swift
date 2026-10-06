@@ -90,13 +90,11 @@ struct CreatorPanel: View {
         QuickStartCard(
           icon: .mic,
           title: "Test mic",
-          subtitle: "Levels and recognition",
           accessibilityId: "settings-quickstart-test-mic"
         ) { model.performQuickStart(.testMic) }
         QuickStartCard(
           icon: .overlay,
           title: "Open overlay",
-          subtitle: "Start a dictation session",
           accessibilityId: "settings-quickstart-open-overlay"
         ) { model.performQuickStart(.openOverlay) }
         QuickStartCard(
@@ -160,21 +158,12 @@ struct CreatorPanel: View {
         }
       }
       Button("Refresh status", action: model.refreshCreatorAgentBridge)
-      // Installer diagnostics stay collapsed; the launch synchronization result
-      // is written to the app log by `App.swift`, never to the panel's notices.
-      DisclosureGroup("Details") {
-        VStack(alignment: .leading, spacing: 6) {
-          Text(model.creatorAgentBridgeStatus.detail)
-          if let launchDetail = model.creatorAgentBridgeLaunchDetail {
-            Text(launchDetail)
-          }
-        }
-        .font(CSFont.mono(10.5, .medium))
-        .textSelection(.enabled)
-        .frame(maxWidth: .infinity, alignment: .leading)
+      if !model.creatorAgentBridgeStatus.payloadAvailable {
+        Text(model.creatorAgentBridgeStatus.detail)
+          .font(.callout)
+          .foregroundStyle(Color.secondary)
+          .fixedSize(horizontal: false, vertical: true)
       }
-      .font(CSFont.ui(11.5))
-      .foregroundStyle(Color.secondary)
       if let notice = model.creatorAgentBridgeNotice {
         Text(notice).font(.callout).foregroundStyle(Color.primary).textSelection(.enabled)
       }
@@ -468,24 +457,12 @@ private struct PermissionChecklistRow: View {
 private struct QuickStartCard: View {
   let icon: CSIcon
   let title: LocalizedStringKey
-  /// Omitted when the title already says everything the card does.
-  var subtitle: LocalizedStringKey? = nil
   let accessibilityId: String
   let action: () -> Void
 
   @State private var hovered = false
 
-  @ViewBuilder
   var body: some View {
-    let card = cardButton
-    if let subtitle {
-      card.accessibilityHint(subtitle)
-    } else {
-      card
-    }
-  }
-
-  private var cardButton: some View {
     Button(action: action) {
       VStack(alignment: .leading, spacing: 0) {
         CSIconView(icon: icon, size: 16, color: Color.primary)
@@ -493,13 +470,6 @@ private struct QuickStartCard: View {
           .font(CSFont.ui(13, .semibold))
           .foregroundStyle(Color.primary)
           .padding(.top, 9)
-        if let subtitle {
-          Text(subtitle)
-            .font(CSFont.ui(11.5))
-            .lineSpacing(2)
-            .foregroundStyle(Color.secondary)
-            .padding(.top, 3)
-        }
         Spacer(minLength: 0)
       }
       .frame(maxWidth: .infinity, alignment: .leading)

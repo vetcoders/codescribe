@@ -1143,7 +1143,8 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var creatorAgentBridgeError: String?
   @Published private(set) var creatorAgentBridgeNotice: String?
   /// Launch-synchronization diagnostics, not a user-facing notice: `App.swift`
-  /// writes this detail to the app log and Creator keeps it collapsed.
+  /// writes this detail to the app log, and Agent Diagnostics → Connection
+  /// details shows it under the installed paths.
   @Published private(set) var creatorAgentBridgeLaunchDetail: String?
   @Published private(set) var settings: CsSettings
   @Published private(set) var newMaxConsultationPending = false

@@ -6678,16 +6678,6 @@
         }
       }
     },
-    "Levels and recognition" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Poziom dźwięku i rozpoznawanie"
-          }
-        }
-      }
-    },
     "Libraxis API key" : {
       "comment" : "Libraxis is a company name",
       "localizations" : {
@@ -9652,7 +9642,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sprawdź ponownie"
+            "value" : "Odśwież stan"
           }
         }
       }
@@ -11734,16 +11724,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Odtworzono"
-          }
-        }
-      }
-    },
-    "Start a dictation session" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozpocznij dyktowanie"
           }
         }
       }

@@ -67,19 +67,25 @@ The Setup Wizard copy revision removes nine keys the screen no longer shows
 (the permission-checklist label, the language-chooser subtitle, the AI
 formatting and formatting-level subtitles, the agent-section blurb, the agent
 client subtitle, the installation-status button, the Test mic subtitle, and the
-placeholder form of the language footnote) and adds six with Founder-provided
+placeholder form of the language footnote) and adds five with Founder-provided
 Polish: `Recognition language`, `Formatting level`, the footnote
 `Domain vocabulary and Dictionary entries improve speech recognition.`,
-`Install or update the skill directly from Codescribe.`,
-`Levels and recognition`, and the identifier key
+`Install or update the skill directly from Codescribe.`, and the identifier key
 `creator.agentBridge.clientInstalled` (English `Installed`, Polish
 `Zainstalowano`) — an explicit key under `LOCALIZATION.md` §R7, because the
 shared `Installed` key carries the Whisper-model wording `Zainstalowany`. The
-screen reuses the existing `Permissions`, `Refresh status` and `Details` keys
-rather than retranslating them. `Whisper language`, `Auto Format` and
-`Hotkeys` stay in the catalog for the runtime rows, the tray and the settings
-rail. All six new Polish entries are `translated`: the wording is the
-Founder's own.
+screen reuses the existing `Permissions` and `Refresh status` keys rather than
+retranslating them. `Whisper language`, `Auto Format` and `Hotkeys` stay in the
+catalog for the runtime rows, the tray and the settings rail. All new Polish
+entries are `translated`: the wording is the Founder's own.
+
+A follow-up Founder review of the installed build removed the Creator screen's
+collapsed `Details` disclosure — the key itself stays in the catalog, since
+`LicensePanel.swift` still uses it — and dropped the two remaining quick-start
+card subtitles. `Levels and recognition` and `Start a dictation session` are
+removed from the catalog entirely: no Swift source references either any
+longer. The same review corrected the Polish value of `Refresh status` from
+„Sprawdź ponownie” to „Odśwież stan”.
 
 By area:
 

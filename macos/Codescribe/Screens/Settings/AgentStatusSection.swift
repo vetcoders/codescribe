@@ -32,6 +32,14 @@ struct AgentStatusSection: View {
           .textSelection(.enabled)
           .padding(.top, 4)
       }
+      if let launchDetail = model.creatorAgentBridgeLaunchDetail {
+        Text(verbatim: launchDetail)
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(Color.secondary)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.top, 4)
+      }
 
       SettingsSectionLabel(String(localized: "Capability matrix"))
         .padding(.top, CSSpace.section)
