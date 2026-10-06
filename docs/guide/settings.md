@@ -94,7 +94,7 @@ key is missing. An access error remains visible with **Retry provider access**;
 a previous successful snapshot is labeled as the last checked state. Settings
 also offers **Refresh provider access**. Returning focus refreshes only the
 owning Settings or Setup window, and repeated requests share the pending read.
-Permission checklist changes refresh permissions and hotkeys separately.
+Permission changes refresh permissions and hotkeys separately.
 
 Saving or removing credentials and custom providers shows pending work. A
 successful storage operation precedes publication of the new credential state;

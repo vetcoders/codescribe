@@ -3201,16 +3201,6 @@
         }
       }
     },
-    "Check levels & engine" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdź poziom dźwięku i rozpoznawanie mowy"
-          }
-        }
-      }
-    },
     "Checking acoustic admission…" : {
       "localizations" : {
         "pl" : {
@@ -3308,16 +3298,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wybierz stałą pozycję na ekranie albo pozwól na swobodne przeciąganie"
-          }
-        }
-      }
-    },
-    "Choose automatic detection or a language-specialized path" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybierz automatyczne wykrywanie albo model dopasowany do języka"
           }
         }
       }
@@ -4238,16 +4218,6 @@
         }
       }
     },
-    "Correction, balanced editing, or a tool-enabled Max consultation" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Korekta, Smart lub konsultacja Max z dostępem do narzędzi"
-          }
-        }
-      }
-    },
     "Could not load threads. Try refreshing the list." : {
       "localizations" : {
         "pl" : {
@@ -5125,6 +5095,17 @@
         }
       }
     },
+    "Domain vocabulary and Dictionary entries improve speech recognition." : {
+      "comment" : "Dictionary is the name of the Voice Lab settings section",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Słownictwo branżowe i wpisy w Słowniku poprawiają rozpoznawanie mowy."
+          }
+        }
+      }
+    },
     "Done!" : {
       "comment" : "Tray status: the last session finished",
       "localizations" : {
@@ -5785,6 +5766,16 @@
         }
       }
     },
+    "Formatting level" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poziom formatowania"
+          }
+        }
+      }
+    },
     "Formatting requires this provider's API key; an Assistive account does not authorize it. Add the key in Settings › Providers." : {
       "localizations" : {
         "pl" : {
@@ -6373,6 +6364,16 @@
         }
       }
     },
+    "Install or update the skill directly from Codescribe." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zainstaluj lub zaktualizuj skill bezpośrednio z Codescribe."
+          }
+        }
+      }
+    },
     "Install skill" : {
       "localizations" : {
         "pl" : {
@@ -6389,16 +6390,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Stan instalacji"
-          }
-        }
-      }
-    },
-    "Install the Codescribe skill and bus helper from this app. No repository clone or manual file copying is needed." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zainstaluj skill Codescribe i proces pomocniczy prosto z tej aplikacji. Nie trzeba klonować repozytorium ani ręcznie kopiować plików."
           }
         }
       }
@@ -6683,6 +6674,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pozwala korzystać z obrazu ekranu jako kontekstu dla Agenta."
+          }
+        }
+      }
+    },
+    "Levels and recognition" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poziom dźwięku i rozpoznawanie"
           }
         }
       }
@@ -6980,16 +6981,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zarządzaj serwerami MCP"
-          }
-        }
-      }
-    },
-    "Master switch. The Off level below always skips the LLM." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Główny przełącznik. Poziom „Wyłączone” poniżej zawsze pomija model językowy."
           }
         }
       }
@@ -7580,16 +7571,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nazwa"
-          }
-        }
-      }
-    },
-    "Named voice messages to your existing conversation" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wysyłaj wiadomości głosowe bezpośrednio do agenta"
           }
         }
       }
@@ -8586,16 +8567,6 @@
         }
       }
     },
-    "Permission checklist" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lista uprawnień"
-          }
-        }
-      }
-    },
     "Permission for %@" : {
       "localizations" : {
         "pl" : {
@@ -8968,17 +8939,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tego ustawienia nie można teraz zmienić, ponieważ %@ wymusza wyłączenie zatwierdzania wypowiedzi. Usuń to wymuszenie w konfiguracji zaawansowanej, aby edytować ustawienie tutaj."
-          }
-        }
-      }
-    },
-    "Programming vocabulary and your %@ entries enrich the selected language." : {
-      "comment" : "The placeholder is the name of the Voice Lab settings section",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Słownictwo programistyczne i Twoje wpisy w sekcji %@ poprawiają rozpoznawanie wybranego języka."
           }
         }
       }
@@ -9432,6 +9392,16 @@
         }
       }
     },
+    "Recognition language" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Język rozpoznawania"
+          }
+        }
+      }
+    },
     "Recording" : {
       "comment" : "Recording light state\nTray status: a recording is live",
       "localizations" : {
@@ -9653,16 +9623,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odśwież listę urządzeń wejściowych audio"
-          }
-        }
-      }
-    },
-    "Refresh installation status" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdź ponownie stan instalacji"
           }
         }
       }
@@ -14792,6 +14752,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "kopiowanie niedostępne"
+          }
+        }
+      }
+    },
+    "creator.agentBridge.clientInstalled" : {
+      "comment" : "Status on an agent client row: the Codescribe skill is installed",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Installed"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zainstalowano"
           }
         }
       }

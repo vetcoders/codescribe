@@ -31,23 +31,23 @@ website, the docs, the CLI and model prompts are outside this ledger.
 
 ## 2. Where the app stands
 
-`Localizable.xcstrings` holds **1423 keys** (1401 translatable, source inventory
+`Localizable.xcstrings` holds **1420 keys** (1398 translatable, source inventory
 2026-10-06). Before the initial localization work the compiler extracted 468 —
 the literals SwiftUI localizes by itself; the
 rest was plain `String` and invisible to any translation. **Polish copy covers
-every translatable key** in both catalogs (1401/1401 and 4/4), initially imported from the translator worksheet
+every translatable key** in both catalogs (1398/1398 and 4/4), initially imported from the translator worksheet
 (`scripts/l10n-sheet.py`); the catalog is the source of the translation from
 here on.
 
 | Measure                                        | Count    |
 | ---------------------------------------------- | -------- |
-| Keys in `Localizable.xcstrings`                | 1423     |
-| Keys with Polish copy                          | 1401     |
+| Keys in `Localizable.xcstrings`                | 1420     |
+| Keys with Polish copy                          | 1398     |
 | License keys awaiting Polish review            | 19       |
 | Tray keys awaiting Polish review               | 6        |
-| Keys with a translator comment                 | 470      |
+| Keys with a translator comment                 | 471      |
 | Keys with English plural forms                 | 27       |
-| Keys written as identifiers (`defaultValue:`)  | 52       |
+| Keys written as identifiers (`defaultValue:`)  | 53       |
 | Permission prompts in `InfoPlist.xcstrings`    | 4        |
 | Swift sources in the original census / touched | 128 / 77 |
 
@@ -62,6 +62,24 @@ and the copy/save transcript actions. Exact Founder-provided labels are
 `translated`. The Settings disclosure contains the seven existing toggles and
 ends with Open Settings; its previous standalone row was removed. Action
 routing and Notes Mode behavior are unchanged by this menu revision.
+
+The Setup Wizard copy revision removes nine keys the screen no longer shows
+(the permission-checklist label, the language-chooser subtitle, the AI
+formatting and formatting-level subtitles, the agent-section blurb, the agent
+client subtitle, the installation-status button, the Test mic subtitle, and the
+placeholder form of the language footnote) and adds six with Founder-provided
+Polish: `Recognition language`, `Formatting level`, the footnote
+`Domain vocabulary and Dictionary entries improve speech recognition.`,
+`Install or update the skill directly from Codescribe.`,
+`Levels and recognition`, and the identifier key
+`creator.agentBridge.clientInstalled` (English `Installed`, Polish
+`Zainstalowano`) — an explicit key under `LOCALIZATION.md` §R7, because the
+shared `Installed` key carries the Whisper-model wording `Zainstalowany`. The
+screen reuses the existing `Permissions`, `Refresh status` and `Details` keys
+rather than retranslating them. `Whisper language`, `Auto Format` and
+`Hotkeys` stay in the catalog for the runtime rows, the tray and the settings
+rail. All six new Polish entries are `translated`: the wording is the
+Founder's own.
 
 By area:
 

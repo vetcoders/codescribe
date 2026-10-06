@@ -1142,6 +1142,9 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var creatorAgentBridgeStatus = AgentBridgeInstallationStatus.unavailable
   @Published private(set) var creatorAgentBridgeError: String?
   @Published private(set) var creatorAgentBridgeNotice: String?
+  /// Launch-synchronization diagnostics, not a user-facing notice: `App.swift`
+  /// writes this detail to the app log and Creator keeps it collapsed.
+  @Published private(set) var creatorAgentBridgeLaunchDetail: String?
   @Published private(set) var settings: CsSettings
   @Published private(set) var newMaxConsultationPending = false
   @Published private(set) var maxConsultationNotice: String?
@@ -1355,9 +1358,7 @@ final class SettingsViewModel: ObservableObject {
   /// Passive inspection of the bundled installer; never attaches an agent.
   func refreshCreatorAgentBridge() {
     creatorAgentBridgeStatus = creatorAgentBridge.status()
-    if creatorAgentBridgeNotice == nil {
-      creatorAgentBridgeNotice = Self.agentBridgeLaunchNotice
-    }
+    creatorAgentBridgeLaunchDetail = Self.agentBridgeLaunchNotice
   }
 
   /// Add/update one client while preserving other managed clients. Creator
