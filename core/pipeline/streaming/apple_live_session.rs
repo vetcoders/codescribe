@@ -3185,10 +3185,25 @@ impl AppleSealState {
                 pin
             })
             .collect::<Vec<_>>();
+        let merge_sources = super::live_lexicon::registered_merges(
+            &words
+                .iter()
+                .map(|pin| pin.text.as_str())
+                .collect::<Vec<_>>(),
+            &self.lexicon_custom_path,
+        )
+        .0;
         let rewritten = words
             .iter()
-            .map(|pin| {
+            .enumerate()
+            .map(|(index, pin)| {
                 let mut output = pin.clone();
+                if merge_sources
+                    .iter()
+                    .any(|merge| merge.start <= index && index < merge.end)
+                {
+                    return output;
+                }
                 let (surface, counts) =
                     super::live_lexicon::rewrite(&pin.text, &self.lexicon_custom_path);
                 self.lexicon_entries_custom = counts.custom;
@@ -3228,6 +3243,7 @@ impl AppleSealState {
             label,
             receipt,
         });
+        self.apply_lexicon_merges(ev_tx, &trial.owner, payload.identity.request_id);
         if let Some(id) = self
             .pending_events
             .iter()
@@ -4273,6 +4289,67 @@ impl AppleSealState {
         }
     }
 
+    /// Dictionary shape changes are separate from ASR admission. Only settled
+    /// committed sources can be merged; the ledger retains their exact PCM and
+    /// refuses sealed, stale, or protected targets. No new ASR witness is minted.
+    fn apply_lexicon_merges(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        owner: &OccurrenceIdentity,
+        request: u64,
+    ) {
+        use crate::pipeline::acoustic_ledger::SlotTarget;
+        let mut ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ledger.is_sealed(owner) || !ledger.word_labels_settled(owner) {
+            return;
+        }
+        let sources = ledger.slots_of(owner).unwrap_or(&[]).to_vec();
+        let (merges, counts) = super::live_lexicon::registered_merges(
+            &sources
+                .iter()
+                .map(|slot| slot.text.as_str())
+                .collect::<Vec<_>>(),
+            &self.lexicon_custom_path,
+        );
+        self.lexicon_entries_custom = counts.custom;
+        for merge in merges {
+            let targets = sources[merge.start..merge.end]
+                .iter()
+                .map(SlotTarget::from)
+                .collect::<Vec<_>>();
+            if sources[merge.start..merge.end]
+                .iter()
+                .any(|source| source.producer == LedgerObservationProducer::ManualHuman)
+            {
+                continue;
+            }
+            let observation =
+                ledger.next_word_observation(LedgerObservationProducer::Lexicon, request, owner);
+            if ledger
+                .merge_word_slots(&observation, &targets, &merge.rule)
+                .is_err()
+            {
+                continue;
+            }
+            let receipt = ledger
+                .layer_trail()
+                .last()
+                .expect("dictionary merge decision")
+                .decision
+                .clone();
+            let label = ledger.text_of(owner).unwrap_or("").to_string();
+            self.lexicon_rewrites = self.lexicon_rewrites.saturating_add(1);
+            let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                observation,
+                label,
+                receipt,
+            });
+        }
+    }
+
     fn admit_routed_words_with_decode_window(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -4284,12 +4361,26 @@ impl AppleSealState {
     ) -> bool {
         let (request, decode_window) = request_window;
         let RoutedWords { pins, neighbours } = batch;
+        let merge_sources = super::live_lexicon::registered_merges(
+            &pins.iter().map(|pin| pin.text.as_str()).collect::<Vec<_>>(),
+            &self.lexicon_custom_path,
+        )
+        .0;
         let words = pins
             .iter()
-            .map(|pin| {
-                let (text, counts) =
-                    super::live_lexicon::rewrite(&pin.text, &self.lexicon_custom_path);
-                self.lexicon_entries_custom = counts.custom;
+            .enumerate()
+            .map(|(index, pin)| {
+                let text = if merge_sources
+                    .iter()
+                    .any(|merge| merge.start <= index && index < merge.end)
+                {
+                    pin.text.clone()
+                } else {
+                    let (text, counts) =
+                        super::live_lexicon::rewrite(&pin.text, &self.lexicon_custom_path);
+                    self.lexicon_entries_custom = counts.custom;
+                    text
+                };
                 // d5: a lexicon-rewritten surface keeps its acoustic
                 // confidence; the span is marked, not dropped.
                 let surface_rewritten = text != pin.text;
@@ -4372,6 +4463,7 @@ impl AppleSealState {
             receipt,
         });
         self.adjudicate_current_word_slots(ev_tx, owner, request);
+        self.apply_lexicon_merges(ev_tx, owner, request);
         self.refresh_pending_label(id, owner);
         self.refinement_receipt(owner, "completed");
         admitted
@@ -5958,11 +6050,25 @@ fn admit_ledger_label<'a>(
         && !ledger.is_sealed(&occurrence)
     {
         use crate::pipeline::acoustic_ledger::{DictionarySlotRule, SlotTarget};
-        let rewrites = ledger
-            .slots_of(&occurrence)
-            .unwrap_or(&[])
+        let sources = ledger.slots_of(&occurrence).unwrap_or(&[]);
+        let merge_sources = super::live_lexicon::registered_merges(
+            &sources
+                .iter()
+                .map(|source| source.text.as_str())
+                .collect::<Vec<_>>(),
+            &state.lexicon_custom_path,
+        )
+        .0;
+        let rewrites = sources
             .iter()
-            .filter_map(|source| {
+            .enumerate()
+            .filter_map(|(index, source)| {
+                if merge_sources
+                    .iter()
+                    .any(|merge| merge.start <= index && index < merge.end)
+                {
+                    return None;
+                }
                 let canonical =
                     super::live_lexicon::rewrite(&source.text, &state.lexicon_custom_path).0;
                 (canonical != source.text
@@ -6000,6 +6106,9 @@ fn admit_ledger_label<'a>(
     });
     drop(ledger);
     state.adjudicate_current_word_slots(ev_tx, &occurrence, request);
+    if producer == LedgerObservationProducer::Lexicon {
+        state.apply_lexicon_merges(ev_tx, &occurrence, request);
+    }
     let mut ledger = state
         .acoustic_ledger
         .lock()
@@ -15940,6 +16049,56 @@ mod rc_w2_test_rehab {
             EngineEvent::LedgerMutation { observation, label, receipt }
             if observation.producer == LedgerObservationProducer::Lexicon
                 && label == "Acepromazyna" && receipt.grants_mutation()
+        )));
+    }
+
+    #[test]
+    fn fusion_lexicon_registered_merge_conserves_disjoint_source_pcm() {
+        use crate::pipeline::acoustic_ledger::SlotOperationKind;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = physical_state("embedded-phrase", 2.0, &[(0.0, 1.0)]);
+        state.lexicon_custom_path = dir.path().join("absent.jsonl");
+        emit(
+            &mut state,
+            &tx,
+            vec![segment("code", 0.1, 0.3), segment("scribe", 0.5, 0.8)],
+        );
+        assert_eq!(document(&state), "Codescribe");
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        let operation = ledger
+            .slot_operations()
+            .iter()
+            .find(|op| op.kind == SlotOperationKind::Merge && op.outputs[0].text == "Codescribe")
+            .expect("registered phrase must use the explicit source-conserving merge");
+        assert_eq!(operation.sources.len(), 2);
+        assert_eq!(
+            operation.source_ranges,
+            vec![
+                OccurrenceIdentity::new(
+                    "embedded-phrase",
+                    state.capture_epoch,
+                    sample(0.1),
+                    sample(0.3)
+                ),
+                OccurrenceIdentity::new(
+                    "embedded-phrase",
+                    state.capture_epoch,
+                    sample(0.5),
+                    sample(0.8)
+                ),
+            ]
+        );
+        assert_eq!(
+            ledger.slot_source_ranges(&operation.outputs[0]),
+            operation.source_ranges
+        );
+        assert_eq!(ledger.conservation().residue(), 0);
+        drop(ledger);
+        assert!(drain(&mut rx).iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation { observation, label, receipt }
+            if observation.producer == LedgerObservationProducer::Lexicon
+                && label == "Codescribe" && receipt.grants_mutation()
         )));
     }
 

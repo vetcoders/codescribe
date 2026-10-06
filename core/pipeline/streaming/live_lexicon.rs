@@ -284,9 +284,209 @@ pub(super) fn bundled_count() -> usize {
     BUNDLED.rules.len()
 }
 
+/// A registered many-to-one label, naming every complete source slot. The
+/// caller must submit these targets to the ledger; this is never a string edit.
+pub(super) struct RegisteredMerge {
+    pub start: usize,
+    pub end: usize,
+    pub rule: crate::pipeline::acoustic_ledger::DictionarySlotRule,
+}
+
+pub(super) fn registered_merges(
+    words: &[&str],
+    custom_path: &Path,
+) -> (Vec<RegisteredMerge>, LexiconCounts) {
+    let bundled = &*BUNDLED;
+    let custom = custom_rules(custom_path);
+    let counts = LexiconCounts {
+        custom: custom.len(),
+    };
+    if words.len() < 2 {
+        return (Vec::new(), counts);
+    }
+    let text = words.join(" ");
+    let lower = text.to_lowercase();
+    let mut offsets = Vec::with_capacity(words.len());
+    let mut offset = 0;
+    for word in words {
+        offsets.push((offset, offset + word.len()));
+        offset += word.len() + 1;
+    }
+    let word_char = |ch: char| ch.is_alphanumeric() || ch == '_';
+    let mut candidates = Vec::new();
+    for (rank, rule) in custom.iter().map(|rule| (0, rule)).chain(
+        bundled
+            .rules
+            .iter()
+            .map(|rule| (if rule.protected { 1 } else { 2 }, rule)),
+    ) {
+        if rule.variant.split_whitespace().count() < 2
+            || rule.canonical.split_whitespace().count() != 1
+            || !lower.contains(rule.lower_variant.split_whitespace().next().unwrap_or(""))
+        {
+            continue;
+        }
+        let Some(pattern) = rule.pattern() else {
+            continue;
+        };
+        for found in pattern.find_iter(&text) {
+            if !whole_word_match(&text, found.start(), found.end()) {
+                continue;
+            }
+            let Some(start) = offsets
+                .iter()
+                .position(|&(start, end)| start <= found.start() && found.start() < end)
+            else {
+                continue;
+            };
+            let Some(last) = offsets
+                .iter()
+                .position(|&(start, end)| start < found.end() && found.end() <= end)
+            else {
+                continue;
+            };
+            if start == last {
+                continue;
+            }
+            let prefix = &text[offsets[start].0..found.start()];
+            let suffix = &text[found.end()..offsets[last].1];
+            // A match may keep attached punctuation, but must consume all
+            // words in each named source. No substring can hide another word.
+            if prefix.chars().any(word_char) || suffix.chars().any(word_char) {
+                continue;
+            }
+            let input = &words[start..=last];
+            if bundled.protected_canonicals.iter().any(|canonical| {
+                if canonical == &rule.canonical {
+                    return false;
+                }
+                let Ok(pattern) = RegexBuilder::new(&regex::escape(canonical))
+                    .case_insensitive(true)
+                    .build()
+                else {
+                    return false;
+                };
+                pattern.find_iter(&text).any(|protected| {
+                    whole_word_match(&text, protected.start(), protected.end())
+                        && protected.start() < found.end()
+                        && found.start() < protected.end()
+                })
+            }) || rewrite_once(&rule.canonical, &custom, bundled) != rule.canonical
+            {
+                continue;
+            }
+            candidates.push((
+                start,
+                last + 1,
+                found.len(),
+                rank,
+                RegisteredMerge {
+                    start,
+                    end: last + 1,
+                    rule: crate::pipeline::acoustic_ledger::DictionarySlotRule {
+                        id: format!(
+                            "registered-lexicon/merge/v1/{}=>{}",
+                            rule.variant, rule.canonical,
+                        ),
+                        input: input.iter().map(|word| (*word).to_string()).collect(),
+                        canonical: format!("{prefix}{}{suffix}", rule.canonical),
+                    },
+                },
+            ));
+        }
+    }
+    candidates.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| left.3.cmp(&right.3))
+    });
+    let mut selected = Vec::new();
+    let mut cursor = 0;
+    for (start, end, _, _, candidate) in candidates {
+        if start >= cursor {
+            cursor = end;
+            selected.push(candidate);
+        }
+    }
+    (selected, counts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registered_merge_uses_embedded_defaults_and_keeps_punctuation() {
+        let absent = Path::new("/nonexistent/codescribe-lexicon-test.jsonl");
+        for (words, expected) in [
+            (["postgre", "sql"], "PostgreSQL"),
+            (["code", "scribe"], "Codescribe"),
+            (["[CODE", "SCRIBE.]"], "[Codescribe.]"),
+            (["log", "tree"], "Loctree"),
+        ] {
+            let (merges, counts) = registered_merges(&words, absent);
+            assert_eq!(counts.custom, 0);
+            assert_eq!(merges.len(), 1, "{words:?}");
+            let proposal = &merges[0];
+            assert_eq!((proposal.start, proposal.end), (0, 2));
+            assert_eq!(proposal.rule.input, words);
+            assert_eq!(proposal.rule.canonical, expected);
+            assert!(registered_merges(&[expected], absent).0.is_empty());
+        }
+    }
+
+    #[test]
+    fn registered_merge_cannot_consume_unmatched_source_words_or_sentence_edges() {
+        let absent = Path::new("/nonexistent/codescribe-lexicon-test.jsonl");
+        for words in [
+            ["the log", "tree"],
+            ["log", "tree works"],
+            ["log.", "tree"],
+            ["xlog", "tree"],
+            ["postgra", "SQL"],
+            ["metty", "mazur"],
+        ] {
+            assert!(registered_merges(&words, absent).0.is_empty(), "{words:?}");
+        }
+    }
+
+    #[test]
+    fn registered_merge_prefers_longest_complete_alias_without_hiding_neighbours() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lexicon.custom.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"term\":\"ShortName\",\"mispronunciations\":[\"lux tree\"]}\n",
+                "{\"term\":\"LongName\",\"mispronunciations\":[\"lux tree house\"]}\n",
+            ),
+        )
+        .unwrap();
+        let words = ["before", "lux", "tree", "house", "after"];
+        let (merges, _) = registered_merges(&words, &path);
+        assert_eq!(merges.len(), 1);
+        assert_eq!((merges[0].start, merges[0].end), (1, 4));
+        assert_eq!(merges[0].rule.input, ["lux", "tree", "house"]);
+        assert_eq!(merges[0].rule.canonical, "LongName");
+    }
+
+    #[test]
+    fn registered_merge_refuses_protected_canonical_and_rewrite_chains() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lexicon.custom.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"term\":\"WrongName\",\"mispronunciations\":[\"Loctree label\"]}\n",
+                "{\"term\":\"AlphaName\",\"mispronunciations\":[\"two parts\"]}\n",
+                "{\"term\":\"BetaName\",\"mispronunciations\":[\"AlphaName\"]}\n",
+            ),
+        )
+        .unwrap();
+        assert!(registered_merges(&["Loctree", "label"], &path).0.is_empty());
+        assert!(registered_merges(&["two", "parts"], &path).0.is_empty());
+    }
 
     #[test]
     fn bundled_rules_preserve_ordinary_polish_words() {
