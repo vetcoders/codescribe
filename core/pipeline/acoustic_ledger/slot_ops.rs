@@ -563,6 +563,14 @@ impl AcousticLedger {
             return false;
         }
         self.successful_empty_decodes.insert(observation.clone());
+        let history = self
+            .owner_history
+            .entry(owner.clone())
+            .or_default()
+            .producers
+            .entry(observation.producer)
+            .or_default();
+        Self::reserve_generation(history, observation.generation);
         self.decoded_word_windows.insert(
             observation.clone(),
             (decode.sample_start, decode.sample_end),
@@ -1649,7 +1657,7 @@ impl AcousticLedger {
             });
         }
         self.offered_observations += 1;
-        self.answered.push(observation.clone());
+        self.note_answered(observation);
         self.word_pin_observations.insert(observation.clone());
         self.record_layer_decision(observation, &label, &decision, None);
         let observation = observation.clone();

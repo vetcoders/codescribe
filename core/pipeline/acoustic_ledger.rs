@@ -760,6 +760,19 @@ struct DecodeFenceEnergy {
     quiet_range: Option<OccurrenceIdentity>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ProducerHistory {
+    latest_answered: Option<(u64, u64)>,
+    highest_generation: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OwnerHistory {
+    answered: usize,
+    producers: BTreeMap<ObservationProducer, ProducerHistory>,
+    trail_ordinals: Vec<usize>,
+}
+
 /// Ledger of committed acoustic occurrences.
 ///
 /// Text is never a key here. The only key is [`OccurrenceIdentity`].
@@ -788,9 +801,12 @@ pub struct AcousticLedger {
     decoded_word_windows: std::collections::HashMap<ObservationIdentity, (u64, u64)>,
     /// Matched successful empty finals; these observations mint no Word.
     successful_empty_decodes: std::collections::HashSet<ObservationIdentity>,
-    answered: Vec<ObservationIdentity>,
+    answered: std::collections::HashSet<ObservationIdentity>,
+    owner_history: BTreeMap<OccurrenceIdentity, OwnerHistory>,
     kept_visible: usize,
     evidence: BTreeMap<OccurrenceIdentity, AcousticSerial>,
+    qualified_by_end: BTreeMap<u64, BTreeSet<OccurrenceIdentity>>,
+    unsealed_qualified: BTreeSet<OccurrenceIdentity>,
     frontiers: BTreeMap<OccurrenceIdentity, ObservationFrontier>,
     seals: BTreeMap<OccurrenceIdentity, LedgerSealReceipt>,
     terminal_seals: Vec<LedgerSealReceipt>,
@@ -800,6 +816,7 @@ pub struct AcousticLedger {
     /// One opened capture capability; no acoustic evidence is minted here.
     manual_document_capture: Option<ManualDocumentCaptureReceipt>,
     incremental_shapings: Vec<IncrementalShapingReceipt>,
+    latest_incremental_shaping: BTreeMap<OccurrenceIdentity, usize>,
     consultation_presentations: Vec<ConsultationPresentationReceipt>,
     derivations: Vec<OccurrenceDerivation>,
     latest_seal_coverage: Option<SealCoverageReceipt>,
@@ -1124,20 +1141,15 @@ impl AcousticLedger {
         request: u64,
         occurrence: &OccurrenceIdentity,
     ) -> ObservationIdentity {
-        let prior = self
-            .answered
-            .iter()
-            .filter(|prior| prior.producer == producer && &prior.occurrence == occurrence)
-            .max_by_key(|prior| prior.generation);
+        let history = self
+            .owner_history
+            .get(occurrence)
+            .and_then(|owner| owner.producers.get(&producer));
+        let prior = history.and_then(|history| history.latest_answered.as_ref());
         // Successful non-mutating work reserves its generation without
         // becoming an answered lexical observation or changing its request.
-        let generation = self
-            .answered
-            .iter()
-            .chain(self.successful_empty_decodes.iter())
-            .filter(|prior| prior.producer == producer && &prior.occurrence == occurrence)
-            .map(|prior| prior.generation)
-            .max()
+        let generation = history
+            .and_then(|history| history.highest_generation)
             .map_or(0, |generation| {
                 generation
                     .checked_add(1)
@@ -1145,10 +1157,38 @@ impl AcousticLedger {
             });
         ObservationIdentity::new(
             producer,
-            prior.map_or(request, |prior| prior.request),
+            prior.map_or(request, |(_, request)| *request),
             generation,
             occurrence.clone(),
         )
+    }
+
+    /// Membership is unique; every offered answer still counts, including
+    /// duplicate refusals. Equal-generation arrivals retain the last request.
+    fn note_answered(&mut self, observation: &ObservationIdentity) {
+        self.answered.insert(observation.clone());
+        let owner = self
+            .owner_history
+            .entry(observation.occurrence.clone())
+            .or_default();
+        owner.answered += 1;
+        let history = owner.producers.entry(observation.producer).or_default();
+        if history
+            .latest_answered
+            .as_ref()
+            .is_none_or(|(generation, _)| *generation <= observation.generation)
+        {
+            history.latest_answered = Some((observation.generation, observation.request));
+        }
+        Self::reserve_generation(history, observation.generation);
+    }
+
+    fn reserve_generation(history: &mut ProducerHistory, generation: u64) {
+        history.highest_generation = Some(
+            history
+                .highest_generation
+                .map_or(generation, |held| held.max(generation)),
+        );
     }
 
     /// A replay requires both geometric overlap (at least half the shorter
@@ -1517,7 +1557,7 @@ impl AcousticLedger {
                 self.retain_slot_alternative(observation, &word.text, sources, "clock_lie");
                 self.retain_rejected_word_pin(observation, word);
                 self.offered_observations += 1;
-                self.answered.push(rejected.clone());
+                self.note_answered(&rejected);
                 let decision = MutationReceipt::Refuse {
                     occurrence: rejected.occurrence.clone(),
                     reason: RefuseReason::ClockLie,
@@ -2568,7 +2608,7 @@ impl AcousticLedger {
         // them (the D3 poisoning mode).
         if !observation.occurrence.is_anchored() {
             self.kept_visible += 1;
-            self.answered.push(observation.clone());
+            self.note_answered(observation);
             return MutationReceipt::KeepVisibleUnanchored {
                 occurrence: observation.occurrence.clone(),
                 label: text.to_string(),
@@ -2577,13 +2617,13 @@ impl AcousticLedger {
         }
 
         if self.answered.contains(observation) {
-            self.answered.push(observation.clone());
+            self.note_answered(observation);
             return MutationReceipt::Refuse {
                 occurrence: observation.occurrence.clone(),
                 reason: RefuseReason::BatchDuplicate,
             };
         }
-        self.answered.push(observation.clone());
+        self.note_answered(observation);
 
         // Formatter authors derived presentation only. Every Raw label and
         // slot admission reaches this decision owner, regardless of pin shape,
@@ -3114,7 +3154,7 @@ impl AcousticLedger {
     ) -> MutationReceipt {
         self.offered_observations += 1;
         self.kept_visible += 1;
-        self.answered.push(observation.clone());
+        self.note_answered(observation);
         let decision = MutationReceipt::KeepVisibleUnanchored {
             occurrence: observation.occurrence.clone(),
             label: text.to_string(),
@@ -3164,7 +3204,7 @@ impl AcousticLedger {
         reason: RefuseReason,
     ) -> MutationReceipt {
         self.offered_observations += 1;
-        self.answered.push(observation.clone());
+        self.note_answered(observation);
         let decision = MutationReceipt::Refuse {
             occurrence: observation.occurrence.clone(),
             reason,
@@ -3208,6 +3248,13 @@ impl AcousticLedger {
         }
         let serial = AcousticSerial::mint(evidence);
         self.evidence.insert(occurrence.clone(), serial.clone());
+        self.qualified_by_end
+            .entry(occurrence.sample_end)
+            .or_default()
+            .insert(occurrence.clone());
+        if !self.is_sealed(&occurrence) {
+            self.unsealed_qualified.insert(occurrence.clone());
+        }
         super::trail::record(
             &occurrence,
             super::trail::TrailEvent::Qualification {
@@ -3231,6 +3278,38 @@ impl AcousticLedger {
     /// Qualified occurrences, in capture order.
     pub fn qualified_occurrences(&self) -> impl Iterator<Item = &OccurrenceIdentity> {
         self.evidence.keys()
+    }
+
+    /// Only owners that can still do live work. Sealed evidence remains in
+    /// `qualified_occurrences` for late-input refusal and replay authentication.
+    pub(crate) fn unsealed_qualified_occurrences(
+        &self,
+    ) -> impl Iterator<Item = &OccurrenceIdentity> {
+        self.unsealed_qualified.iter()
+    }
+
+    /// Lookup current-window owners by their acoustic end, retaining coarse
+    /// owners that began before the window and sealed owners that must refuse
+    /// late words. Normal live windows never walk the completed prefix.
+    pub(crate) fn qualified_occurrences_overlapping<'a>(
+        &'a self,
+        range: &'a OccurrenceIdentity,
+    ) -> impl Iterator<Item = &'a OccurrenceIdentity> {
+        let mut owners = self
+            .qualified_by_end
+            .range((
+                std::ops::Bound::Excluded(range.sample_start),
+                std::ops::Bound::Unbounded,
+            ))
+            .flat_map(|(_, owners)| owners.iter())
+            .filter(move |owner| {
+                range.is_anchored()
+                    && owner.same_capture(range)
+                    && owner.sample_start < range.sample_end
+            })
+            .collect::<Vec<_>>();
+        owners.sort_unstable();
+        owners.into_iter()
     }
 
     // -- observation frontier ----------------------------------------------
@@ -3312,7 +3391,7 @@ impl AcousticLedger {
             &coverage,
             super::trail::TrailEvent::Frontier {
                 occurrence: coverage.clone(),
-                operation: "observer".into(),
+                operation: "settled_formatter".into(),
                 producers: vec![ObservationProducer::Formatter],
             },
         );
@@ -3423,17 +3502,9 @@ impl AcousticLedger {
         {
             return Err(SealRefusal::LabelMissing);
         }
-        let answered = self
-            .answered
-            .iter()
-            .filter(|observation| &observation.occurrence == occurrence)
-            .count();
-        let ordinals: Vec<usize> = self
-            .trail
-            .iter()
-            .filter(|entry| &entry.observation.occurrence == occurrence)
-            .map(|entry| entry.ordinal)
-            .collect();
+        let owner = self.owner_history.get(occurrence);
+        let answered = owner.map_or(0, |owner| owner.answered);
+        let ordinals = owner.map_or_else(Vec::new, |owner| owner.trail_ordinals.clone());
         if ordinals.len() != answered {
             return Err(SealRefusal::ObservationsWithoutReceipts);
         }
@@ -3467,6 +3538,7 @@ impl AcousticLedger {
                 },
             );
             self.seals.insert(occurrence.clone(), receipt);
+            self.unsealed_qualified.remove(occurrence);
             super::occurrence_slot_receipt::emit(self, occurrence);
             self.close_word_components(occurrence);
         }
@@ -3621,9 +3693,11 @@ impl AcousticLedger {
         &'a self,
         occurrence: &'a OccurrenceIdentity,
     ) -> impl Iterator<Item = &'a LayerDecisionReceipt> {
-        self.trail
-            .iter()
-            .filter(move |entry| &entry.observation.occurrence == occurrence)
+        self.owner_history
+            .get(occurrence)
+            .into_iter()
+            .flat_map(|owner| owner.trail_ordinals.iter())
+            .map(|ordinal| &self.trail[*ordinal])
     }
 
     /// Decisions taken on an occurrence after it was sealed.
@@ -4009,10 +4083,9 @@ impl AcousticLedger {
             return Err("incremental_shaping_not_deterministic");
         }
         if self
-            .incremental_shapings
-            .iter()
-            .rev()
-            .find(|held| &held.occurrence == occurrence)
+            .latest_incremental_shaping
+            .get(occurrence)
+            .map(|index| &self.incremental_shapings[*index])
             .is_some_and(|held| {
                 held.source_label == source_label
                     && held.shaped_text == shaped_text
@@ -4042,6 +4115,8 @@ impl AcousticLedger {
             left_context_sha256: hex::encode(Sha256::digest(left_context.as_bytes())),
             shaped_text: shaped_text.to_string(),
         };
+        self.latest_incremental_shaping
+            .insert(occurrence.clone(), ordinal);
         self.incremental_shapings.push(receipt.clone());
         Ok(receipt)
     }
@@ -4049,6 +4124,19 @@ impl AcousticLedger {
     /// Every authenticated per-occurrence shaping, in arrival order.
     pub fn incremental_shapings(&self) -> &[IncrementalShapingReceipt] {
         &self.incremental_shapings
+    }
+
+    /// Authenticate the exact stored receipt without comparing every prior
+    /// owner's strings. The receipt's trailing ordinal is a lookup hint only;
+    /// equality with the ledger-owned record remains the authority.
+    pub fn authenticates_incremental_shaping(&self, receipt: &IncrementalShapingReceipt) -> bool {
+        receipt
+            .receipt_id
+            .rsplit('-')
+            .next()
+            .and_then(|ordinal| ordinal.parse::<usize>().ok())
+            .and_then(|ordinal| self.incremental_shapings.get(ordinal))
+            == Some(receipt)
     }
 
     /// Record the decision the ledger just took. Called for every observation
@@ -4062,10 +4150,10 @@ impl AcousticLedger {
     ) {
         let ordinal = self.trail.len();
         let predecessor_ordinal = self
-            .trail
-            .iter()
-            .rposition(|entry| entry.observation.occurrence == observation.occurrence)
-            .map(|position| self.trail[position].ordinal);
+            .owner_history
+            .get(&observation.occurrence)
+            .and_then(|owner| owner.trail_ordinals.last())
+            .copied();
         let serials: Vec<AcousticSerial> = self
             .evidence
             .get(&observation.occurrence)
@@ -4107,6 +4195,11 @@ impl AcousticLedger {
             clock_lie,
             clock_lie_blocker,
         });
+        self.owner_history
+            .entry(observation.occurrence.clone())
+            .or_default()
+            .trail_ordinals
+            .push(ordinal);
         let trail_input = self.trail_input.take();
         if let Some(entry) = self.trail.last() {
             super::trail::decision(self, entry, trail_input);
@@ -5638,6 +5731,151 @@ impl OccurrenceComposition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_owner_index_keeps_coarse_sealed_owners_and_half_open_bounds() {
+        let mut ledger = AcousticLedger::new();
+        let calibration = EnergyCalibration::new("owner-index-test", 1.0, 1);
+        let owners = [
+            ("index", 1, 0, 100_000),
+            ("index", 1, 20_000, 50_000),
+            ("index", 1, 40_000, 70_000),
+            ("index", 1, 60_000, 80_000),
+            ("index", 1, 0, 40_000),
+            ("index", 2, 40_000, 60_000),
+            ("foreign", 1, 40_000, 60_000),
+        ]
+        .map(|(session, epoch, start, end)| OccurrenceIdentity::new(session, epoch, start, end));
+        for owner in &owners {
+            assert!(
+                ledger
+                    .qualify(
+                        &AcousticEvidence {
+                            occurrence: owner.clone(),
+                            duration_ms: 1_000.0,
+                            energy_integral: 100.0,
+                            mean_rms_dbfs: -20.0,
+                            peak_dbfs: -10.0,
+                            vad_open_sample: Some(owner.sample_start),
+                            vad_close_sample: Some(owner.sample_end),
+                            evidence_calibration_version: calibration.version.clone()
+                        },
+                        &calibration
+                    )
+                    .is_qualified()
+            );
+        }
+        ledger.schedule_frontier(owners[0].clone(), [ObservationProducer::Whisper]);
+        ledger.admit(
+            &ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owners[0].clone()),
+            "nie",
+        );
+        ledger.note_frontier_return(&owners[0], ObservationProducer::Whisper);
+        ledger.seal(&owners[0]).unwrap();
+        let window = OccurrenceIdentity::new("index", 1, 40_000, 60_000);
+        assert_eq!(
+            ledger
+                .qualified_occurrences_overlapping(&window)
+                .cloned()
+                .collect::<Vec<_>>(),
+            owners[..3]
+        );
+        let empty = OccurrenceIdentity::new("index", 1, 40_000, 40_000);
+        assert_eq!(ledger.qualified_occurrences_overlapping(&empty).count(), 0);
+    }
+
+    #[test]
+    fn producer_index_preserves_out_of_order_ties_and_duplicate_receipts() {
+        let (mut ledger, owner) = whisper_only_qualified_ledger();
+        for (request, generation) in [(90, 9), (30, 3), (91, 9), (90, 9), (20, 2)] {
+            ledger.admit(
+                &ObservationIdentity::new(
+                    ObservationProducer::Whisper,
+                    request,
+                    generation,
+                    owner.clone(),
+                ),
+                "nie",
+            );
+        }
+        let next = ledger.next_word_observation(ObservationProducer::Whisper, 999, &owner);
+        assert_eq!((next.request, next.generation), (90, 10));
+        let entries = ledger.layer_trail_for(&owner).collect::<Vec<_>>();
+        assert_eq!(entries.len(), 5);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.predecessor_ordinal)
+                .collect::<Vec<_>>(),
+            [None, Some(0), Some(1), Some(2), Some(3)]
+        );
+        ledger.note_frontier_return(&owner, ObservationProducer::Whisper);
+        let seal = ledger.seal(&owner).unwrap();
+        assert_eq!(seal.layer_trail_ordinals, [0, 1, 2, 3, 4]);
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn closed_history_does_not_expand_live_owner_work() {
+        let mut ledger = AcousticLedger::new();
+        let calibration = EnergyCalibration::new("bounded-history-test", 1.0, 1);
+        let mut checkpoints = Vec::new();
+        for index in 0..4_096u64 {
+            let start = index * 16_000;
+            let owner = OccurrenceIdentity::new("bounded-history", 1, start, start + 16_000);
+            let evidence = AcousticEvidence {
+                occurrence: owner.clone(),
+                duration_ms: 1_000.0,
+                energy_integral: 100.0,
+                mean_rms_dbfs: -20.0,
+                peak_dbfs: -10.0,
+                vad_open_sample: Some(start),
+                vad_close_sample: Some(start + 16_000),
+                evidence_calibration_version: calibration.version.clone(),
+            };
+            assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+            ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+            assert!(
+                ledger
+                    .admit(
+                        &ObservationIdentity::new(
+                            ObservationProducer::Whisper,
+                            index,
+                            0,
+                            owner.clone()
+                        ),
+                        "nie"
+                    )
+                    .is_insert()
+            );
+            assert_eq!(ledger.unsealed_qualified_occurrences().count(), 1);
+            if index == 63 || index == 4_095 {
+                let started = std::time::Instant::now();
+                for _ in 0..10_000 {
+                    std::hint::black_box(ledger.next_word_observation(
+                        ObservationProducer::Whisper,
+                        9999,
+                        &owner,
+                    ));
+                    assert_eq!(ledger.layer_trail_for(&owner).count(), 1);
+                    assert_eq!(ledger.unsealed_qualified_occurrences().count(), 1);
+                    assert_eq!(ledger.qualified_occurrences_overlapping(&owner).count(), 1);
+                }
+                checkpoints.push((index + 1, started.elapsed().as_micros()));
+            }
+            ledger.note_frontier_return(&owner, ObservationProducer::Whisper);
+            ledger.seal(&owner).unwrap();
+            assert_eq!(ledger.unsealed_qualified_occurrences().count(), 0);
+            // Requalification must never reopen a closed owner.
+            assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+            assert_eq!(ledger.unsealed_qualified_occurrences().count(), 0);
+        }
+        assert_eq!(ledger.qualified_occurrences().count(), 4_096);
+        assert_eq!(ledger.conservation().residue(), 0);
+        eprintln!(
+            "bounded_history: queries=10000 checkpoints={checkpoints:?} live_owners=0 archive_owners=4096"
+        );
+    }
     use crate::audio::capture_receipt::CaptureEvidenceIdentity;
 
     fn occ(start: u64, end: u64) -> OccurrenceIdentity {

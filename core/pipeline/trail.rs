@@ -21,7 +21,8 @@ use super::acoustic_ledger::{
     SlotOperationReceipt, SlotTarget, WordPin, WordSlot,
 };
 
-const SCHEMA: &str = "codescribe.decision-trail.v2";
+const SCHEMA: &str = "codescribe.decision-trail.v3";
+const UNPRUNED_SCHEMA: &str = "codescribe.decision-trail.v2";
 const ADMISSION_SCHEMA: &str = "codescribe.decision-trail.v1";
 type CaptureKey = (String, u64);
 static SINKS: OnceLock<Mutex<BTreeMap<CaptureKey, Weak<SenderState>>>> = OnceLock::new();
@@ -823,10 +824,13 @@ pub fn read_trail(path: &Path) -> io::Result<Vec<TrailRecord>> {
     let mut line = String::new();
     while reader.read_line(&mut line)? != 0 {
         let record: TrailRecord = serde_json::from_str(&line).map_err(io::Error::other)?;
-        if record.schema == SCHEMA && !line.ends_with('\n') {
+        if (record.schema == SCHEMA || record.schema == UNPRUNED_SCHEMA) && !line.ends_with('\n') {
             return Err(io::Error::other("truncated decision trail line"));
         }
-        if record.schema != SCHEMA && record.schema != ADMISSION_SCHEMA {
+        if record.schema != SCHEMA
+            && record.schema != UNPRUNED_SCHEMA
+            && record.schema != ADMISSION_SCHEMA
+        {
             return Err(io::Error::other("unsupported decision trail schema"));
         }
         records.push(record);
@@ -1020,7 +1024,7 @@ fn validate_envelope(records: &[TrailRecord]) -> io::Result<()> {
     else {
         return Err(io::Error::other("trail lacks complete end"));
     };
-    if first.schema == SCHEMA {
+    if first.schema == SCHEMA || first.schema == UNPRUNED_SCHEMA {
         if !matches!(records.get(records.len().saturating_sub(2)).map(|row| &row.event),
             Some(TrailEvent::Checkpoint { record_count }) if *record_count == records.len().saturating_sub(3) as u64)
         {
@@ -1257,6 +1261,12 @@ fn replay_validated(
     mut project: impl FnMut(&AcousticLedger, &ObservationIdentity, &MutationReceipt),
 ) -> io::Result<AcousticLedger> {
     let mut ledger = AcousticLedger::new();
+    if records
+        .first()
+        .is_some_and(|row| row.schema == UNPRUNED_SCHEMA)
+    {
+        ledger.retain_closed_word_history_for_legacy_replay();
+    }
     let mut pending: Option<PendingSlotReplay<'_>> = None;
     let mut effects_due = false;
     for row in records {
@@ -1275,7 +1285,7 @@ fn replay_validated(
                 });
             }
             TrailEvent::Decision { decision } => {
-                effects_due = row.schema == SCHEMA;
+                effects_due = row.schema == SCHEMA || row.schema == UNPRUNED_SCHEMA;
                 if let Some(pending) = &mut pending {
                     pending.decisions.push(decision);
                     continue;
@@ -1355,6 +1365,14 @@ fn replay_validated(
                         ledger.schedule_observer(occurrence.clone(), *producer);
                     }
                 }
+                "settled_formatter" => {
+                    if producers.as_slice()
+                        != [super::acoustic_ledger::ObservationProducer::Formatter]
+                        || !ledger.schedule_settled_formatter(occurrence.clone())
+                    {
+                        return Err(io::Error::other("recorded settled formatter refused"));
+                    }
+                }
                 "return" => {
                     for producer in producers {
                         ledger.note_frontier_return(occurrence, *producer);
@@ -1402,6 +1420,7 @@ mod tests {
     use super::super::acoustic_ledger::word_adjudication_tests::corroborate_candidate;
     use super::super::acoustic_ledger::{ObservationProducer, WordPin};
     use super::*;
+    use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
 
     // Root-owned controls: measured fixture PCM, actual admissions and disk replay.
     fn forensic_trail_measured_ledger(owner: &OccurrenceIdentity) -> AcousticLedger {
@@ -1483,6 +1502,144 @@ mod tests {
         }
         assert_eq!(replayed.conservation().residue(), 0);
         assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn sealed_choice_cleanup_replays_v3_and_keeps_v2_cursors() {
+        for legacy in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let owner = OccurrenceIdentity::new(
+                if legacy {
+                    "legacy-choice-replay"
+                } else {
+                    "bounded-choice-replay"
+                },
+                17,
+                0,
+                16_000,
+            );
+            let sink =
+                TrailSink::open_in(dir.path(), &owner.session, owner.capture_epoch, 256).unwrap();
+            let mut ledger = forensic_trail_measured_ledger(&owner);
+            if legacy {
+                ledger.retain_closed_word_history_for_legacy_replay();
+            }
+            ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+            let first = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+            ledger.admit_word_slots(
+                &first,
+                &[WordPin::new(2_000, 6_000, "1286").with_decode_window(0, 16_000)],
+            );
+            ledger.admit_word_slots(
+                &ObservationIdentity::new(ObservationProducer::Apple, 2, 1, owner.clone()),
+                &[WordPin::new(2_000, 6_000, "1286")],
+            );
+            ledger.note_frontier_return(&owner, ObservationProducer::Whisper);
+            let seal = ledger.seal(&owner).unwrap().clone();
+            let retained = ledger.word_choices().len();
+            assert_eq!(retained > 0, legacy);
+            // An independent capture owner exercises a later SlotStart cursor
+            // after closure. It carries the same measured quiet/speech proof.
+            let second =
+                OccurrenceIdentity::new(&owner.session, owner.capture_epoch, 16_000, 32_000);
+            let mut pcm = vec![0.0f32; 32_000];
+            for range in [2_000..6_000, 8_000..12_000, 18_000..22_000, 24_000..28_000] {
+                pcm[range].fill(0.2);
+            }
+            let energy = CaptureEnergyOwner::bind(&owner.session, owner.capture_epoch);
+            let mut writer = CaptureLevelAccumulator::bound_to(&energy);
+            for chunk in pcm.chunks(1_000) {
+                writer.push_samples(chunk);
+            }
+            let speech =
+                energy.session_active_speech_ranges(&owner.session, owner.capture_epoch, 32_000);
+            ledger.record_speech_evidence(&speech);
+            let calibration = EnergyCalibration::new("forensic-trail-fixture", 1.0, 1);
+            assert!(
+                ledger
+                    .qualify(
+                        &AcousticEvidence {
+                            occurrence: second.clone(),
+                            duration_ms: 1_000.0,
+                            energy_integral: 320.0,
+                            mean_rms_dbfs: -17.0,
+                            peak_dbfs: -13.0,
+                            vad_open_sample: Some(16_000),
+                            vad_close_sample: Some(32_000),
+                            evidence_calibration_version: calibration.version.clone()
+                        },
+                        &calibration
+                    )
+                    .is_qualified()
+            );
+            ledger.schedule_frontier(second.clone(), [ObservationProducer::Whisper]);
+            let next = ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, second.clone());
+            assert!(
+                ledger
+                    .admit_word_slots(
+                        &next,
+                        &[WordPin::new(18_000, 22_000, "nie").with_decode_window(16_000, 32_000)]
+                    )
+                    .is_insert()
+            );
+            ledger.note_frontier_return(&second, ObservationProducer::Whisper);
+            let second_seal = ledger.seal(&second).unwrap().clone();
+            drop(sink);
+            let mut rows = read_trail(&trail_path(dir.path(), &owner.session).unwrap()).unwrap();
+            if legacy {
+                for row in &mut rows {
+                    row.schema = UNPRUNED_SCHEMA.into();
+                }
+            }
+            let replayed = replay_decisions(&rows, |_, _, _| {}).unwrap();
+            assert_eq!(replayed.seal_of(&owner), Some(&seal));
+            assert_eq!(replayed.seal_of(&second), Some(&second_seal));
+            assert_eq!(replayed.word_choices(), ledger.word_choices());
+            assert_eq!(replayed.text_of(&owner), Some("1286"));
+            assert_eq!(replayed.text_of(&second), Some("nie"));
+            forensic_trail_assert_exact_replay(&ledger, &owner, &rows);
+        }
+    }
+
+    #[test]
+    fn settled_formatter_after_closed_asr_frontier_roundtrips_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = OccurrenceIdentity::new("settled-formatter-replay", 17, 0, 16_000);
+        let sink =
+            TrailSink::open_in(dir.path(), &owner.session, owner.capture_epoch, 128).unwrap();
+        let mut ledger = forensic_trail_measured_ledger(&owner);
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+        let heard = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        ledger.admit_word_slots(
+            &heard,
+            &[WordPin::new(2_000, 6_000, "1286").with_decode_window(0, 16_000)],
+        );
+        ledger.note_frontier_return(&owner, ObservationProducer::Whisper);
+        assert!(ledger.schedule_settled_formatter(owner.clone()));
+        let formatter =
+            ObservationIdentity::new(ObservationProducer::Formatter, 2, 0, owner.clone());
+        ledger.admit(&formatter, "1286");
+        ledger.note_frontier_return(&owner, ObservationProducer::Formatter);
+        let seal = ledger.seal(&owner).unwrap().clone();
+        drop(sink);
+        let rows = read_trail(&trail_path(dir.path(), &owner.session).unwrap()).unwrap();
+        let replayed = replay_decisions(&rows, |_, _, _| {}).unwrap();
+        assert_eq!(replayed.seal_of(&owner), Some(&seal));
+        forensic_trail_assert_exact_replay(&ledger, &owner, &rows);
+        let mut forged = rows.clone();
+        let producers = forged
+            .iter_mut()
+            .find_map(|row| match &mut row.event {
+                TrailEvent::Frontier {
+                    operation,
+                    producers,
+                    ..
+                } if operation == "settled_formatter" => Some(producers),
+                _ => None,
+            })
+            .unwrap();
+        *producers = vec![ObservationProducer::Whisper];
+        assert_replay_refused_before_projection(&forged);
     }
 
     #[test]

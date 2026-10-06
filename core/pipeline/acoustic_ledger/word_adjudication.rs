@@ -106,7 +106,8 @@ pub(super) struct WordAdjudicationState {
     input: Option<WordEvidenceInput>,
     components: Vec<WordAdjudication>,
     pub(super) choices: Vec<WordChoiceReceipt>,
-    trials: Vec<WordTrialReceipt>,
+    closed_trials: BTreeMap<u64, [u8; 32]>,
+    retain_closed_history: bool,
     active_trials: Vec<WordTrial>,
     next_trial: u64,
     provider: Option<(
@@ -120,6 +121,10 @@ pub(super) struct WordAdjudicationState {
 fn acoustic_pair(a: ObservationProducer, b: ObservationProducer) -> bool {
     matches!(a, ObservationProducer::Apple | ObservationProducer::Whisper)
         && matches!(b, ObservationProducer::Apple | ObservationProducer::Whisper)
+}
+
+fn trial_digest(trial: &WordTrial) -> [u8; 32] {
+    Sha256::digest(serde_json::to_vec(trial).expect("serializable word trial")).into()
 }
 
 fn label_equal(a: &str, b: &str) -> bool {
@@ -570,6 +575,8 @@ impl AcousticLedger {
         });
     }
 
+    /// Revision proofs for open owners. Closed-owner proofs live in the disk
+    /// trail, while their selected hypothesis lives in the immutable seal.
     pub fn word_choices(&self) -> &[WordChoiceReceipt] {
         &self.word_adjudication.choices
     }
@@ -1029,12 +1036,7 @@ impl AcousticLedger {
     }
 
     pub(crate) fn close_word_trial(&mut self, trial: &WordTrial, reason: &str) {
-        if self
-            .word_adjudication
-            .trials
-            .iter()
-            .any(|receipt| receipt.trial.id == trial.id)
-        {
+        if self.word_adjudication.closed_trials.contains_key(&trial.id) {
             return;
         }
         self.word_adjudication
@@ -1050,10 +1052,9 @@ impl AcousticLedger {
                 });
             }
         }
-        self.word_adjudication.trials.push(WordTrialReceipt {
-            trial: trial.clone(),
-            reason: reason.into(),
-        });
+        self.word_adjudication
+            .closed_trials
+            .insert(trial.id, trial_digest(trial));
         super::super::trail::record(
             &trial.owner,
             super::super::trail::TrailEvent::WordTrialClosed {
@@ -1069,13 +1070,12 @@ impl AcousticLedger {
         if self.word_adjudication.active_trials.contains(trial) {
             return Ok(());
         }
-        if self
-            .word_adjudication
-            .trials
-            .iter()
-            .any(|r| r.trial == *trial)
-        {
-            return Ok(());
+        if let Some(digest) = self.word_adjudication.closed_trials.get(&trial.id) {
+            return if *digest == trial_digest(trial) {
+                Ok(())
+            } else {
+                Err("closed trial identity differs")
+            };
         }
         let current = self.slots_of(&trial.owner).unwrap_or(&[]);
         let sources = current
@@ -1242,6 +1242,11 @@ impl AcousticLedger {
         self.word_adjudication
             .components
             .retain(|c| &c.owner != owner);
+        if !self.word_adjudication.retain_closed_history {
+            self.word_adjudication
+                .choices
+                .retain(|choice| &choice.observation.occurrence != owner);
+        }
         if self
             .word_adjudication
             .input
@@ -1250,6 +1255,12 @@ impl AcousticLedger {
         {
             self.word_adjudication.input = None;
         }
+    }
+
+    /// v2 trails used an unpruned choice-vector cursor. Preserve that historic
+    /// replay contract without retaining closed revision payloads in live runs.
+    pub(crate) fn retain_closed_word_history_for_legacy_replay(&mut self) {
+        self.word_adjudication.retain_closed_history = true;
     }
 }
 

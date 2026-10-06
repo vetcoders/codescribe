@@ -340,7 +340,7 @@ impl TranscriptRevision {
                     || receipt.left_context != left_context
                     || receipt.left_context_sha256
                         != hex::encode(Sha256::digest(left_context.as_bytes()))
-                    || !ledger.incremental_shapings().contains(receipt)
+                    || !ledger.authenticates_incremental_shaping(receipt)
                     || receipt.source_seal_receipt.as_ref().is_some_and(|id| {
                         ledger
                             .seal_of(&entry.occurrence)

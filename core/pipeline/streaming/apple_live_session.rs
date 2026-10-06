@@ -2717,7 +2717,7 @@ impl AppleSealState {
         segments: &[TimedTailSegment],
         word_grain: bool,
     ) {
-        let owners = self.word_owners();
+        let owners = self.word_owners_in_window(commit.sample_start, commit.sample_end, segments);
         let routes = self.route_overlap_pins(
             ev_tx,
             AdmitWindow {
@@ -3473,7 +3473,7 @@ impl AppleSealState {
     }
 
     fn publish_resolved_word_seals(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
-        let owners = self.word_owners();
+        let owners = self.unsealed_word_owners();
         for (id, owner) in owners {
             let (scheduled, seal) = {
                 let mut ledger = self
@@ -4154,7 +4154,7 @@ impl AppleSealState {
             return;
         }
         let owners = if word_grain {
-            self.word_owners()
+            self.word_owners_in_window(admit_sample_start, admit_sample_end, segments)
         } else {
             exact_open_members.clone()
         };
@@ -4393,24 +4393,68 @@ impl AppleSealState {
         }
     }
 
-    /// Qualified PCM owners, including sealed owners and those not in the
-    /// completing window. A sealed owner must still answer each offered word.
-    fn word_owners(&self) -> Vec<(u64, OccurrenceIdentity)> {
+    fn unsealed_word_owners(&self) -> Vec<(u64, OccurrenceIdentity)> {
         let ledger = self
             .acoustic_ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        ledger
-            .qualified_occurrences()
+        self.map_word_owners(ledger.unsealed_qualified_occurrences())
+    }
+
+    fn word_owners_overlapping(
+        &self,
+        sample_start: u64,
+        sample_end: u64,
+    ) -> Vec<(u64, OccurrenceIdentity)> {
+        let range = OccurrenceIdentity::new(
+            &self.session_id,
+            self.capture_epoch,
+            sample_start,
+            sample_end,
+        );
+        let ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.map_word_owners(ledger.qualified_occurrences_overlapping(&range))
+    }
+
+    fn word_owners_in_window(
+        &self,
+        sample_start: u64,
+        sample_end: u64,
+        segments: &[TimedTailSegment],
+    ) -> Vec<(u64, OccurrenceIdentity)> {
+        let start = segments
+            .iter()
+            .map(|segment| segment.range.sample_start)
+            .min()
+            .map_or(sample_start, |start| start.min(sample_start));
+        let end = segments
+            .iter()
+            .map(|segment| segment.range.sample_end)
+            .max()
+            .map_or(sample_end, |end| end.max(sample_end));
+        self.word_owners_overlapping(start, end)
+    }
+
+    fn map_word_owners<'a>(
+        &self,
+        owners: impl Iterator<Item = &'a OccurrenceIdentity>,
+    ) -> Vec<(u64, OccurrenceIdentity)> {
+        let pending_ids =
+            self.pending_events
+                .iter()
+                .fold(BTreeMap::new(), |mut ids, (id, pending)| {
+                    ids.entry(&pending.occurrence).or_insert(*id);
+                    ids
+                });
+        owners
             .filter(|owner| {
                 owner.session == self.session_id && owner.capture_epoch == self.capture_epoch
             })
             .map(|owner| {
-                let id = self
-                    .pending_events
-                    .iter()
-                    .find_map(|(id, pending)| (&pending.occurrence == owner).then_some(*id))
-                    .unwrap_or(0);
+                let id = pending_ids.get(owner).copied().unwrap_or(0);
                 (id, owner.clone())
             })
             .collect()
@@ -4728,7 +4772,7 @@ impl AppleSealState {
         sample_start: u64,
     ) {
         self.admission_horizon = self.admission_horizon.max(sample_start);
-        let owners = self.word_owners();
+        let owners = self.unsealed_word_owners();
         for (id, owner) in owners {
             if owner.sample_end > self.admission_horizon {
                 continue;
@@ -5433,7 +5477,14 @@ fn admit_late_apple_words(
     current_slice: &[TranscriptSegment],
 ) -> LateAppleAdmission {
     let mut outcome = LateAppleAdmission::default();
-    let owners = state.word_owners();
+    let owners = state.word_owners_overlapping(
+        words
+            .iter()
+            .map(|word| word.sample_start)
+            .min()
+            .unwrap_or(0),
+        words.iter().map(|word| word.sample_end).max().unwrap_or(0),
+    );
     let owner_ranges = owners
         .iter()
         .map(|(_, owner)| owner.clone())
@@ -6852,7 +6903,11 @@ fn admit_debt_occurrence_recovery(
             );
             return false;
         }
-        let owners = state.word_owners();
+        let owners = state.word_owners_in_window(
+            occurrence.sample_start,
+            occurrence.sample_end,
+            &payload.segments,
+        );
         let routes = state.route_overlap_pins(
             ev_tx,
             AdmitWindow {
@@ -18594,7 +18649,7 @@ mod rc_w2_test_rehab {
             },
             grain: crate::stt::tail_provider::TailSegmentGrain::Word,
         };
-        let owners = cloud.word_owners();
+        let owners = cloud.word_owners_overlapping(0, u64::MAX);
         cloud.route_overlap_pins(
             &tx,
             AdmitWindow {
@@ -18621,7 +18676,7 @@ mod rc_w2_test_rehab {
                 sample_start: 0,
                 sample_end: sample(1.0),
             },
-            &whisper.word_owners(),
+            &whisper.word_owners_overlapping(0, u64::MAX),
             &[whisper_pin],
             LedgerObservationProducer::Whisper,
         );

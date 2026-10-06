@@ -710,6 +710,7 @@ pub async fn replay_buffered_engine_session(
     let chunk_size = ((config.sample_rate as f32) * 0.1).round().max(1.0) as usize;
     let (tx, rx) = mpsc::channel::<Vec<f32>>(8);
     let session = tokio::spawn(transcription_session(rx, event_sink, config));
+    let replay_started = std::time::Instant::now();
 
     for chunk in samples.chunks(chunk_size) {
         if tx.send(chunk.to_vec()).await.is_err() {
@@ -725,10 +726,16 @@ pub async fn replay_buffered_engine_session(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     drop(tx);
+    let capture_finished = std::time::Instant::now();
 
     session
         .await
         .map_err(|e| anyhow!("Transcription session join error: {}", e))?;
+    tracing::info!(
+        feed_ms = capture_finished.duration_since(replay_started).as_millis(),
+        closure_ms = capture_finished.elapsed().as_millis(),
+        "buffered live replay timing"
+    );
 
     Ok(())
 }

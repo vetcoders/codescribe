@@ -440,6 +440,7 @@ fn late_apple_respects_duplicate_and_sealed_fences_before_adjudication() {
         ledger.note_frontier_return(&owner, producer);
     }
     let seal = ledger.seal(&owner).unwrap().clone();
+    let choices = ledger.word_choices().len();
     for generation in [1, 2] {
         let late =
             ObservationIdentity::new(ObservationProducer::Apple, 8, generation, owner.clone());
@@ -455,4 +456,58 @@ fn late_apple_respects_duplicate_and_sealed_fences_before_adjudication() {
         assert_eq!(ledger.slots_of(&owner).unwrap(), before);
         assert_eq!(ledger.seal_of(&owner), Some(&seal));
     }
+}
+
+#[test]
+fn sealed_words_release_revision_hypotheses_and_keep_finality() {
+    let (mut ledger, first) = fixture();
+    let calibration = EnergyCalibration::new("trial-test", 1.0, 1);
+    for index in 0..256u64 {
+        let start = index * 160_000;
+        let owner = OccurrenceIdentity::new(&first.session, 1, start, start + 160_000);
+        if index != 0 {
+            assert!(
+                ledger
+                    .qualify(
+                        &AcousticEvidence {
+                            occurrence: owner.clone(),
+                            duration_ms: 10_000.0,
+                            energy_integral: 100.0,
+                            mean_rms_dbfs: -20.0,
+                            peak_dbfs: -10.0,
+                            vad_open_sample: Some(start),
+                            vad_close_sample: Some(start + 160_000),
+                            evidence_calibration_version: calibration.version.clone(),
+                        },
+                        &calibration
+                    )
+                    .is_qualified()
+            );
+            ledger.schedule_frontier(
+                owner.clone(),
+                [ObservationProducer::Apple, ObservationProducer::Whisper],
+            );
+        }
+        let pin = WordPin::new(start + 48_000, start + 64_000, "1286");
+        let apple = ObservationIdentity::new(ObservationProducer::Apple, index, 0, owner.clone());
+        ledger.admit_word_slots(&apple, std::slice::from_ref(&pin));
+        let whisper =
+            ObservationIdentity::new(ObservationProducer::Whisper, index, 0, owner.clone());
+        ledger.admit_word_slots(&whisper, &[pin.with_decode_window(start, start + 160_000)]);
+        assert!(!ledger.word_choices().is_empty());
+        for producer in [ObservationProducer::Apple, ObservationProducer::Whisper] {
+            ledger.note_frontier_return(&owner, producer);
+        }
+        let seal = ledger.seal(&owner).unwrap().clone();
+        assert!(!seal.word_finality.is_empty());
+        assert_eq!(ledger.text_of(&owner), Some("1286"));
+        assert!(
+            ledger.word_choices().is_empty(),
+            "closed word {index} kept revision payloads"
+        );
+        assert!(!ledger.has_word_conflicts());
+        assert_eq!(ledger.seal_of(&owner), Some(&seal));
+    }
+    assert_eq!(ledger.len(), 256);
+    assert_eq!(ledger.conservation().residue(), 0);
 }
