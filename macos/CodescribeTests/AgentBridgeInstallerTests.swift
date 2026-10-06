@@ -472,6 +472,250 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
   }
 
+  func testManagedSkillContentDamageRequiresRepairAndContinueRestoresIt() throws {
+    let payload = try makePayload(extraFiles: ["skills/codescribe/scripts/fixture.py": "fixture\n"])
+    for drift in ["missing-skill", "changed-readme", "missing-script", "changed-mode"] {
+      let home = scratch.appendingPathComponent("content-repair-" + drift)
+      let installer = RealAgentBridgeInstaller(
+        resourceRoot: payload, homeDirectory: home, environment: [:])
+      _ = try installer.install(selectedClients: [.codex])
+      XCTAssertTrue(installer.status().clientsNeedingRepair.isEmpty)
+      let folder = home.appendingPathComponent(".codex/skills/codescribe")
+      switch drift {
+      case "missing-skill":
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("SKILL.md"))
+      case "changed-readme":
+        try Data("corrupted instructions\n".utf8).write(
+          to: folder.appendingPathComponent("README.md"))
+      case "missing-script":
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("scripts/fixture.py"))
+      default:
+        try FileManager.default.setAttributes(
+          [.posixPermissions: 0o600], ofItemAtPath: folder.appendingPathComponent("SKILL.md").path)
+      }
+      let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+      let receiptBeforeInspection = try Data(contentsOf: receiptURL)
+      let inodeBeforeInspection = try fileNumber(receiptURL)
+      XCTAssertEqual(installer.status().clientsNeedingRepair, [.codex], drift)
+      XCTAssertEqual(try Data(contentsOf: receiptURL), receiptBeforeInspection)
+      XCTAssertEqual(try fileNumber(receiptURL), inodeBeforeInspection, "Inspection is passive")
+      let engine = MockOnboardingEngine(progress: 11)
+      engine.mode = "agentic"
+      let model = OnboardingViewModel(
+        engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+        agentBridge: installer, probe: MockPermissionProbe(.allGranted))
+      XCTAssertTrue(model.agentClientNeedsSetup(.codex), drift)
+      model.advance()
+      XCTAssertEqual(model.step, .done, drift)
+      XCTAssertNil(model.agentBridgeError, drift)
+      XCTAssertTrue(installer.status().clientsNeedingRepair.isEmpty, drift)
+      for path in ["SKILL.md", "README.md", "scripts/fixture.py"] {
+        XCTAssertEqual(
+          try Data(contentsOf: folder.appendingPathComponent(path)),
+          try Data(contentsOf: payload.appendingPathComponent("skills/codescribe/" + path)),
+          path)
+      }
+      let repairedReceipt = try Data(contentsOf: receiptURL)
+      let repairedInode = try fileNumber(receiptURL)
+      model.back()
+      model.advance()
+      XCTAssertEqual(try Data(contentsOf: receiptURL), repairedReceipt)
+      XCTAssertEqual(try fileNumber(receiptURL), repairedInode)
+    }
+  }
+
+  func testIntactInstalledSkillUsesReceiptTruthWhenSameVersionBundleChanges() throws {
+    let originalPayload = try makePayload()
+    let home = scratch.appendingPathComponent("same-version-skill")
+    let originalInstaller = RealAgentBridgeInstaller(
+      resourceRoot: originalPayload, homeDirectory: home, environment: [:])
+    _ = try originalInstaller.install(selectedClients: [.codex])
+    let nextPayload = try makePayload(
+      skillContent: "---\nname: codescribe\n---\nnew instructions\n")
+    let nextInstaller = RealAgentBridgeInstaller(
+      resourceRoot: nextPayload, homeDirectory: home, environment: [:])
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let originalReceipt = try Data(contentsOf: receiptURL)
+    XCTAssertTrue(nextInstaller.status().clientsNeedingRepair.isEmpty)
+    XCTAssertEqual(try Data(contentsOf: receiptURL), originalReceipt)
+    XCTAssertEqual(
+      try Data(contentsOf: home.appendingPathComponent(".codex/skills/codescribe/SKILL.md")),
+      try Data(contentsOf: originalPayload.appendingPathComponent("skills/codescribe/SKILL.md")))
+  }
+
+  func testEmptySelectionCanForgetAnAlreadyMissingManagedFolderWithoutTouchingRuntimeState() throws
+  {
+    let payload = try makePayload()
+    for shape in ["leaf", "parents", "alias-leaf", "alias-parents"] {
+      let realHome = scratch.appendingPathComponent("missing-last-client-" + shape)
+      var home = realHome
+      if shape.hasPrefix("alias-") {
+        try FileManager.default.createDirectory(at: realHome, withIntermediateDirectories: true)
+        // This witness starts from an existing managed installation; keep the
+        // command-directory setup independent of the missing client path.
+        try FileManager.default.createDirectory(
+          at: realHome.appendingPathComponent(".local/bin", isDirectory: true),
+          withIntermediateDirectories: true)
+        home = scratch.appendingPathComponent("home-link-" + shape)
+        try FileManager.default.createSymbolicLink(at: home, withDestinationURL: realHome)
+      }
+      let installer = RealAgentBridgeInstaller(
+        resourceRoot: payload, homeDirectory: home, environment: [:])
+      _ = try installer.install(selectedClients: [.codex])
+      let folder = home.appendingPathComponent(".codex/skills/codescribe")
+      let removed = shape.hasSuffix("parents") ? home.appendingPathComponent(".codex") : folder
+      try FileManager.default.removeItem(at: removed)
+      let runtime = home.appendingPathComponent(".codescribe/agent-bridge/runtime")
+      let state = runtime.appendingPathComponent("operator-state.txt")
+      let preserved = Data("retained runtime state\n".utf8)
+      try preserved.write(to: state)
+      let runtimeInode = try fileNumber(runtime)
+      let engine = MockOnboardingEngine(progress: 11)
+      engine.mode = "agentic"
+      let model = OnboardingViewModel(
+        engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+        agentBridge: installer, probe: MockPermissionProbe(.allGranted))
+      XCTAssertEqual(model.selectedAgentClients, [.codex], shape)
+      model.toggleAgentClient(.codex)
+      model.advance()
+      XCTAssertEqual(model.step, .done, shape)
+      XCTAssertNil(model.agentBridgeError, shape)
+      XCTAssertTrue(installer.status().installedClients.isEmpty, shape)
+      let receipt = try jsonObject(
+        home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"))
+      XCTAssertEqual(receipt["selected_clients"] as? [String], [], shape)
+      XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path), shape)
+      XCTAssertEqual(try Data(contentsOf: state), preserved, shape)
+      XCTAssertEqual(try fileNumber(runtime), runtimeInode, shape)
+    }
+  }
+
+  func testEmptySelectionStillRefusesAnExistingFolderWithoutItsMarker() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("unmarked-last-client")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let folder = home.appendingPathComponent(".codex/skills/codescribe")
+    try FileManager.default.removeItem(
+      at: folder.appendingPathComponent(".codescribe-managed.json"))
+    let personalFile = folder.appendingPathComponent("operator.txt")
+    let personalBytes = Data("do not remove\n".utf8)
+    try personalBytes.write(to: personalFile)
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receipt = try Data(contentsOf: receiptURL)
+    XCTAssertThrowsError(try installer.install(selectedClients: []))
+    XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
+    XCTAssertEqual(try Data(contentsOf: personalFile), personalBytes)
+  }
+
+  func testEmptySelectionStillRefusesABrokenSymlinkAtTheMissingFolderPath() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("symlink-last-client")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let folder = home.appendingPathComponent(".codex/skills/codescribe")
+    try FileManager.default.removeItem(at: folder)
+    let outside = scratch.appendingPathComponent("nonexistent-outside")
+    try FileManager.default.createSymbolicLink(at: folder, withDestinationURL: outside)
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receipt = try Data(contentsOf: receiptURL)
+    XCTAssertThrowsError(try installer.install(selectedClients: []))
+    XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
+    XCTAssertEqual(
+      try FileManager.default.destinationOfSymbolicLink(atPath: folder.path), outside.path)
+  }
+
+  func testEmptySelectionDoesNotTreatAnUnreadableClientPathAsMissing() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("unreadable-last-client")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let parent = home.appendingPathComponent(".codex/skills")
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receipt = try Data(contentsOf: receiptURL)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: parent.path)
+    defer {
+      try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent.path)
+    }
+    XCTAssertThrowsError(try installer.install(selectedClients: []))
+    XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
+  }
+
+  func testEmptySelectionRefusesAMissingDestinationRedirectedThroughItsParent() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("redirected-missing-client")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let parent = home.appendingPathComponent(".codex/skills")
+    try FileManager.default.removeItem(at: parent)
+    let outside = scratch.appendingPathComponent("outside-client-parent")
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+    let personalFile = outside.appendingPathComponent("operator.txt")
+    let personalBytes = Data("outside content\n".utf8)
+    try personalBytes.write(to: personalFile)
+    try FileManager.default.createSymbolicLink(at: parent, withDestinationURL: outside)
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receipt = try Data(contentsOf: receiptURL)
+    XCTAssertThrowsError(try installer.install(selectedClients: []))
+    XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
+    XCTAssertEqual(try Data(contentsOf: personalFile), personalBytes)
+    XCTAssertEqual(
+      try FileManager.default.destinationOfSymbolicLink(atPath: parent.path), outside.path)
+  }
+
+  func testLaunchSynchronizationStillRefusesAMissingSelectedFolderWithoutWriting() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("missing-startup-client")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let folder = home.appendingPathComponent(".codex/skills/codescribe")
+    try FileManager.default.removeItem(at: folder)
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receipt = try Data(contentsOf: receiptURL)
+    let inode = try fileNumber(receiptURL)
+    let helper = home.appendingPathComponent(".codescribe/agent-bridge/runtime/bin/bus-demux.py")
+    let helperBytes = try Data(contentsOf: helper)
+    XCTAssertTrue(installer.synchronizeManagedPayload().contains("skipped"))
+    XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
+    XCTAssertEqual(try fileNumber(receiptURL), inode)
+    XCTAssertEqual(try Data(contentsOf: helper), helperBytes)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
+  }
+
+  func testLateDeselectionRefusesAForeignManagedIdentityRestoredDuringStaging() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("late-foreign-client")
+    let initialInstaller = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try initialInstaller.install(selectedClients: [.codex])
+    let folder = home.appendingPathComponent(".codex/skills/codescribe")
+    let markerURL = folder.appendingPathComponent(".codescribe-managed.json")
+    var restoredMarker = try jsonObject(markerURL)
+    restoredMarker["managed_id"] = "another-managed-generation"
+    let restoredMarkerBytes = try JSONSerialization.data(withJSONObject: restoredMarker)
+    try FileManager.default.removeItem(at: folder)
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receipt = try Data(contentsOf: receiptURL)
+    let inode = try fileNumber(receiptURL)
+    let fileManager = RestoringForeignFolderFileManager(
+      folder: folder, marker: restoredMarkerBytes)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, fileManager: fileManager, environment: [:])
+    XCTAssertThrowsError(try installer.install(selectedClients: []))
+    XCTAssertTrue(fileManager.didRestore, "The foreign folder appears only after preflight")
+    XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
+    XCTAssertEqual(try fileNumber(receiptURL), inode)
+    XCTAssertEqual(try Data(contentsOf: markerURL), restoredMarkerBytes)
+    XCTAssertEqual(
+      try Data(contentsOf: folder.appendingPathComponent("operator.txt")),
+      Data("restored foreign content\n".utf8))
+  }
+
   func testInvalidOwnershipMarkersRefuseUpdateWithoutMutation() throws {
     let payload = try makePayload()
     for field in ["schema", "client", "agent_bridge_root"] {
@@ -1085,6 +1329,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
   private func makePayload(
     bundleVersion: String = "9.8.7",
     helperContent: String = "#!/usr/bin/env python3\nprint('bridge')\n",
+    skillContent: String = "---\nname: codescribe\n---\n",
     extraFiles: [String: String] = [:]
   ) throws -> URL {
     let payload = scratch.appendingPathComponent("payload-\(UUID().uuidString)", isDirectory: true)
@@ -1097,7 +1342,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
     try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
     try Data(helperContent.utf8).write(to: helper)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
-    try Data("---\nname: codescribe\n---\n".utf8).write(
+    try Data(skillContent.utf8).write(
       to: skill.appendingPathComponent("SKILL.md")
     )
     try Data("reference\n".utf8).write(to: skill.appendingPathComponent("README.md"))
@@ -1196,6 +1441,29 @@ private final class RefusingRollbackFileManager: FileManager, @unchecked Sendabl
       throw CocoaError(.fileWriteNoPermission)
     }
     try super.moveItem(at: source, to: target)
+  }
+}
+
+private final class RestoringForeignFolderFileManager: FileManager, @unchecked Sendable {
+  private let folder: URL
+  private let marker: Data
+  private(set) var didRestore = false
+
+  init(folder: URL, marker: Data) {
+    self.folder = folder
+    self.marker = marker
+    super.init()
+  }
+
+  override func copyItem(at source: URL, to destination: URL) throws {
+    if !didRestore {
+      didRestore = true
+      try super.createDirectory(at: folder, withIntermediateDirectories: true)
+      try marker.write(to: folder.appendingPathComponent(".codescribe-managed.json"))
+      try Data("restored foreign content\n".utf8).write(
+        to: folder.appendingPathComponent("operator.txt"))
+    }
+    try super.copyItem(at: source, to: destination)
   }
 }
 

@@ -355,7 +355,7 @@ does not write to the home directory merely because the step is shown,
 refreshed, skipped, or left with Back. The user selects Codex,
 Claude Code, or both; Continue installs or updates the selected managed skills
 when that selection differs from the installer receipt or a selected client's
-managed receipt/folder evidence needs repair. A healthy unchanged selection
+managed receipt/folder/file evidence needs repair. A healthy unchanged selection
 does not write. Repair reuses the ownership checks and refuses an unowned
 replacement. A failed install
 keeps Setup on the Agent step and shows the error below the client cards so the
@@ -384,6 +384,13 @@ managed client folder carries a matching `.codescribe-managed.json`. Updates
 use staged directory renames and an atomic receipt write. Existing unowned
 folders are visible conflicts and are never overwritten; deselection removes
 only a folder whose marker still matches the receipt.
+Health checks cover every receipt-owned skill file's content and mode, including
+`SKILL.md`. The installed receipt owns these hashes; a different current bundle
+with the same version does not invalidate an intact older installation.
+Explicitly deselecting the last client can forget an already absent folder.
+Existing entries, including broken symlinks, must still prove marker ownership;
+unreadable paths refuse teardown. Ownership is checked against the same captured
+receipt again before removal. Startup synchronization keeps its strict checks.
 
 The full readiness report, managed installation paths, MCP status, and Refresh
 action live in **Settings › Agent › Diagnostics**. Setup keeps only the client
