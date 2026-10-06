@@ -1060,14 +1060,14 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(
       healthState(stt: true, recording: true, keys: .available, agent: true, formatting: true),
       SettingsHealthState(
-        level: .healthy, message: "speech, assistive and formatting setup ready", targetSection: nil
+        level: .healthy, message: "Everything is ready", targetSection: nil
       )
     )
     XCTAssertEqual(
       healthState(stt: true, recording: true, keys: .missing, agent: false, formatting: true),
       SettingsHealthState(
         level: .degraded,
-        message: "assistive lane: credential missing",
+        message: "Agent: no key or account",
         targetSection: .keys
       )
     )
@@ -1075,7 +1075,7 @@ final class SettingsTruthTests: XCTestCase {
       healthState(stt: false, recording: true, keys: .available, agent: true, formatting: true),
       SettingsHealthState(
         level: .offline,
-        message: "speech engine: unavailable",
+        message: "Transcription engine unavailable",
         targetSection: .engine
       )
     )
@@ -1083,7 +1083,7 @@ final class SettingsTruthTests: XCTestCase {
       healthState(stt: true, recording: true, keys: .available, agent: false, formatting: true),
       SettingsHealthState(
         level: .offline,
-        message: "assistive lane: not ready",
+        message: "Agent not ready",
         targetSection: .agent
       )
     )
@@ -1091,7 +1091,7 @@ final class SettingsTruthTests: XCTestCase {
       healthState(stt: nil, recording: true, keys: .available, agent: true, formatting: true),
       SettingsHealthState(
         level: .unknown,
-        message: "system health: unknown",
+        message: "Status unknown",
         targetSection: .engine
       )
     )
@@ -1099,7 +1099,7 @@ final class SettingsTruthTests: XCTestCase {
       healthState(stt: true, recording: false, keys: .available, agent: true, formatting: true),
       SettingsHealthState(
         level: .offline,
-        message: "recording setup: action needed",
+        message: "Recording not ready",
         targetSection: .audio
       )
     )
@@ -1107,7 +1107,7 @@ final class SettingsTruthTests: XCTestCase {
       healthState(stt: true, recording: nil, keys: .available, agent: true, formatting: true),
       SettingsHealthState(
         level: .unknown,
-        message: "recording setup: checking",
+        message: "Checking recording…",
         targetSection: .audio
       )
     )
@@ -1125,8 +1125,7 @@ final class SettingsTruthTests: XCTestCase {
       stt: true, recording: true, keys: .available, agent: true,
       formatting: false, formattingRequired: false)
     XCTAssertEqual(disabled.level, .healthy)
-    XCTAssertEqual(
-      disabled.message, "speech and assistive setup ready · cloud formatting not required")
+    XCTAssertEqual(disabled.message, "Everything is ready")
     XCTAssertEqual(
       healthState(stt: false, recording: true, keys: .available, agent: true, formatting: false)
         .level,

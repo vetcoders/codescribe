@@ -547,7 +547,8 @@ struct SettingsHealthState: Equatable {
 
 /// Pure aggregate used by the rail footer and its XCTest matrix. Known failures
 /// beat unknown inputs so the footer never hides a concrete problem behind a
-/// muted "unknown" state.
+/// muted "unknown" state. Every message is one sentence-case line: the healthy
+/// state says so in two words, a problem names only the area that owns it.
 func healthState(
   stt: Bool?,
   recording: Bool?,
@@ -560,8 +561,8 @@ func healthState(
     return SettingsHealthState(
       level: .offline,
       message: String(
-        localized: "speech engine: unavailable",
-        comment: "Settings health footer, lower case"
+        localized: "Transcription engine unavailable",
+        comment: "Settings health footer, sentence case"
       ),
       targetSection: .engine
     )
@@ -570,8 +571,8 @@ func healthState(
     return SettingsHealthState(
       level: .offline,
       message: String(
-        localized: "recording setup: action needed",
-        comment: "Settings health footer, lower case"
+        localized: "Recording not ready",
+        comment: "Settings health footer, sentence case"
       ),
       targetSection: .audio
     )
@@ -580,8 +581,8 @@ func healthState(
     return SettingsHealthState(
       level: .degraded,
       message: String(
-        localized: "assistive lane: credential missing",
-        comment: "Settings health footer, lower case: no supported account or API key"
+        localized: "Agent: no key or account",
+        comment: "Settings health footer, sentence case: no supported account or API key"
       ),
       targetSection: .keys
     )
@@ -590,8 +591,8 @@ func healthState(
     return SettingsHealthState(
       level: .offline,
       message: String(
-        localized: "assistive lane: not ready",
-        comment: "Settings health footer, lower case"
+        localized: "Agent not ready",
+        comment: "Settings health footer, sentence case"
       ),
       targetSection: .agent
     )
@@ -599,7 +600,10 @@ func healthState(
   if formattingRequired && formatting == false {
     return SettingsHealthState(
       level: .degraded,
-      message: String(localized: "formatting lane: unavailable", comment: "Settings health footer"),
+      message: String(
+        localized: "Formatting unavailable",
+        comment: "Settings health footer, sentence case"
+      ),
       targetSection: .agent
     )
   }
@@ -610,25 +614,22 @@ func healthState(
       level: .unknown,
       message: recording == nil
         ? String(
-          localized: "recording setup: checking",
-          comment: "Settings health footer, lower case"
+          localized: "Checking recording…",
+          comment: "Settings health footer, sentence case"
         )
         : String(
-          localized: "system health: unknown",
-          comment: "Settings health footer, lower case"
+          localized: "Status unknown",
+          comment: "Settings health footer, sentence case"
         ),
       targetSection: recording == nil ? .audio : .engine
     )
   }
   return SettingsHealthState(
     level: .healthy,
-    message: formattingRequired
-      ? String(
-        localized: "speech, assistive and formatting setup ready", comment: "Settings health footer"
-      )
-      : String(
-        localized: "speech and assistive setup ready · cloud formatting not required",
-        comment: "Settings health footer"),
+    message: String(
+      localized: "Everything is ready",
+      comment: "Settings health footer, sentence case: nothing needs attention"
+    ),
     targetSection: nil
   )
 }

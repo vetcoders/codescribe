@@ -2065,6 +2065,17 @@
         }
       }
     },
+    "Agent not ready" : {
+      "comment" : "Settings health footer, sentence case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent niegotowy"
+          }
+        }
+      }
+    },
     "Agent pinned, disable Always on Top" : {
       "localizations" : {
         "pl" : {
@@ -2142,6 +2153,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Agent — %@"
+          }
+        }
+      }
+    },
+    "Agent: no key or account" : {
+      "comment" : "Settings health footer, sentence case: no supported account or API key",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent: brak klucza lub konta"
           }
         }
       }
@@ -3247,6 +3269,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdzanie gotowości do nagrywania…"
+          }
+        }
+      }
+    },
+    "Checking recording…" : {
+      "comment" : "Settings health footer, sentence case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdzanie nagrywania…"
           }
         }
       }
@@ -5473,6 +5506,17 @@
         }
       }
     },
+    "Everything is ready" : {
+      "comment" : "Settings health footer, sentence case: nothing needs attention",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wszystko gotowe"
+          }
+        }
+      }
+    },
     "Expand sidebar (⌃⌘S)" : {
       "localizations" : {
         "pl" : {
@@ -5781,6 +5825,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Formatowanie wersji…"
+          }
+        }
+      }
+    },
+    "Formatting unavailable" : {
+      "comment" : "Settings health footer, sentence case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie niedostępne"
           }
         }
       }
@@ -9454,6 +9509,17 @@
         }
       }
     },
+    "Recording not ready" : {
+      "comment" : "Settings health footer, sentence case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nagrywanie niegotowe"
+          }
+        }
+      }
+    },
     "Recording readiness" : {
       "localizations" : {
         "pl" : {
@@ -11874,6 +11940,17 @@
         }
       }
     },
+    "Status unknown" : {
+      "comment" : "Settings health footer, sentence case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stan nieznany"
+          }
+        }
+      }
+    },
     "Status: %@" : {
       "comment" : "Tray detail row; %@ is a status phrase such as Error or Hotkey conflict",
       "localizations" : {
@@ -13208,6 +13285,17 @@
         }
       }
     },
+    "Transcription engine unavailable" : {
+      "comment" : "Settings health footer, sentence case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silnik transkrypcji niedostępny"
+          }
+        }
+      }
+    },
     "Transcription failed" : {
       "localizations" : {
         "pl" : {
@@ -14396,28 +14484,6 @@
         }
       }
     },
-    "assistive lane: credential missing" : {
-      "comment" : "Settings health footer, lower case: no supported account or API key",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent: brak danych dostępowych"
-          }
-        }
-      }
-    },
-    "assistive lane: not ready" : {
-      "comment" : "Settings health footer, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent: niegotowy"
-          }
-        }
-      }
-    },
     "attach file / image" : {
       "comment" : "Composer hint: what can be attached",
       "localizations" : {
@@ -14966,17 +15032,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "sformatowano"
-          }
-        }
-      }
-    },
-    "formatting lane: unavailable" : {
-      "comment" : "Settings health footer",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "formatowanie: niedostępne"
           }
         }
       }
@@ -15895,28 +15950,6 @@
         }
       }
     },
-    "recording setup: action needed" : {
-      "comment" : "Settings health footer, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "konfiguracja nagrywania: do dokończenia"
-          }
-        }
-      }
-    },
-    "recording setup: checking" : {
-      "comment" : "Settings health footer, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "konfiguracja nagrywania: sprawdzanie"
-          }
-        }
-      }
-    },
     "recover failed — kept" : {
       "localizations" : {
         "pl" : {
@@ -16553,39 +16586,6 @@
         }
       }
     },
-    "speech and assistive setup ready · cloud formatting not required" : {
-      "comment" : "Settings health footer",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "mowa i Agent gotowe · formatowanie w chmurze niewymagane"
-          }
-        }
-      }
-    },
-    "speech engine: unavailable" : {
-      "comment" : "Settings health footer, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "silnik rozpoznawania mowy: niedostępny"
-          }
-        }
-      }
-    },
-    "speech, assistive and formatting setup ready" : {
-      "comment" : "Settings health footer",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "mowa, Agent i formatowanie gotowe"
-          }
-        }
-      }
-    },
     "status" : {
       "comment" : "Tool inspect field",
       "localizations" : {
@@ -16636,17 +16636,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zakończono pomyślnie"
-          }
-        }
-      }
-    },
-    "system health: unknown" : {
-      "comment" : "Settings health footer, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "stan systemu: nieznany"
           }
         }
       }
