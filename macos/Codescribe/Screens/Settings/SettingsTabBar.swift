@@ -35,7 +35,7 @@ struct SettingsTabBar: View {
 /// otherwise set a width no 880 pt window can show. The control is always
 /// reported at its fitting size — fit or scroll is decided in SwiftUI, never
 /// by squeezing the control.
-private struct SettingsTabSegments: NSViewRepresentable {
+struct SettingsTabSegments: NSViewRepresentable {
   @ObservedObject var model: SettingsViewModel
   let section: SettingsSection
 
@@ -47,7 +47,10 @@ private struct SettingsTabSegments: NSViewRepresentable {
 
   func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
-  func makeNSView(context: Context) -> NSSegmentedControl {
+  /// The control exactly as the bar shows it, minus target and accessibility
+  /// name. Its fitting width is the bar's width, so the fit contract can be
+  /// measured without a hosting view.
+  static func control(titles: [String]) -> NSSegmentedControl {
     let control = NSSegmentedControl()
     control.segmentStyle = .automatic
     control.trackingMode = .selectOne
@@ -57,10 +60,15 @@ private struct SettingsTabSegments: NSViewRepresentable {
     // AppKit from stretching or squeezing it on its own.
     control.setContentHuggingPriority(.defaultHigh, for: .horizontal)
     control.setContentCompressionResistancePriority(.required, for: .horizontal)
+    apply(titles: titles, to: control)
+    return control
+  }
+
+  func makeNSView(context: Context) -> NSSegmentedControl {
+    let control = Self.control(titles: tabs.map(\.title))
     control.setAccessibilityLabel(accessibilityName)
     control.target = context.coordinator
     control.action = #selector(Coordinator.segmentPicked(_:))
-    apply(titles: tabs.map(\.title), to: control)
     return control
   }
 
@@ -68,7 +76,7 @@ private struct SettingsTabSegments: NSViewRepresentable {
     context.coordinator.parent = self
     // Titles and the label change when the interface language does; the
     // control itself survives that without being rebuilt.
-    apply(titles: tabs.map(\.title), to: control)
+    Self.apply(titles: tabs.map(\.title), to: control)
     control.setAccessibilityLabel(accessibilityName)
     // Projection only — the model is never mutated during a view update. A
     // current tab from another section leaves this bar with no selection.
@@ -89,7 +97,7 @@ private struct SettingsTabSegments: NSViewRepresentable {
 
   /// Writes labels only where they differ, so a redraw does not reset segments
   /// that already read correctly.
-  private func apply(titles: [String], to control: NSSegmentedControl) {
+  private static func apply(titles: [String], to control: NSSegmentedControl) {
     if control.segmentCount != titles.count {
       control.segmentCount = titles.count
     }

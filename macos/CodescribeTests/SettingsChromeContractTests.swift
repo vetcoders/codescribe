@@ -1,4 +1,7 @@
+import AppKit
 import XCTest
+
+@testable import Codescribe
 
 /// Source contract for the Settings appearance cut. The compiler is embargoed
 /// for this worker, so these checks lock the structure a later build will compile:
@@ -44,8 +47,13 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(view.contains("focusEffectDisabled"))
 
     let tabBar = try XCTUnwrap(sources["SettingsTabBar.swift"])
-    XCTAssertTrue(tabBar.contains(".pickerStyle(.segmented)"))
+    XCTAssertTrue(tabBar.contains("NSSegmentedControl()"))
+    XCTAssertTrue(tabBar.contains("control.segmentDistribution = .fit"))
+    XCTAssertTrue(tabBar.contains("ScrollView(.horizontal, showsIndicators: false) { bar }"))
     XCTAssertTrue(tabBar.contains(".controlSize(.regular)"))
+    // A bar pinned to its natural width widens the pane past the window.
+    XCTAssertFalse(tabBar.contains(".fixedSize()"))
+    XCTAssertFalse(tabBar.contains(".pickerStyle(.segmented)"))
 
     let pane = try XCTUnwrap(sources["SettingsTabbedPane.swift"])
     let scroll = try XCTUnwrap(pane.range(of: "ScrollView {"))
@@ -65,6 +73,39 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(containsToken(joined, "CSColor.olive"))
     XCTAssertGreaterThan(joined.components(separatedBy: "SettingsPageHeader(").count, 2)
     XCTAssertGreaterThan(joined.components(separatedBy: ".settingsGroupedInset(").count, 2)
+  }
+
+  /// The six tabs of a tabbed section fit the detail column of the smallest
+  /// Settings window with the sidebar at its ideal width, in English and in
+  /// Polish. A language that breaks this still gets the scrolling bar, but the
+  /// label is then too long and should be shortened before it ships.
+  @MainActor
+  func testTabBarsFitTheMinimumWindowInEnglishAndPolish() throws {
+    let sources = try settingsSources()
+    let view = try XCTUnwrap(sources["SettingsView.swift"])
+    XCTAssertTrue(view.contains(".frame(minWidth: 880,"))
+    XCTAssertTrue(view.contains(".navigationSplitViewColumnWidth(min: 196, ideal: 216, max: 300)"))
+    let pane = try XCTUnwrap(sources["SettingsTabbedPane.swift"])
+    XCTAssertTrue(pane.contains(".padding(.horizontal, CSSpace.xl)"))
+    // Window, minus sidebar and its divider, minus the bar's horizontal padding.
+    let column: CGFloat = 880 - 216 - 1 - 2 * CSSpace.xl
+
+    let polish = try polishCatalog()
+    let tabbed = SettingsSection.allCases.filter { !SettingsTab.tabs(in: $0).isEmpty }
+    XCTAssertEqual(tabbed.count, 2)
+    for section in tabbed {
+      let english = SettingsTab.tabs(in: section).map(\.title)
+      XCTAssertEqual(english.count, 6, "\(section.rawValue)")
+      // Brand names ("MCP", "Whisper") are not catalog keys and read the same.
+      let translated = english.map { polish[$0] ?? $0 }
+      XCTAssertNotEqual(translated, english, "\(section.rawValue): no Polish labels resolved")
+      for (language, titles) in [("en", english), ("pl", translated)] {
+        let width = SettingsTabSegments.control(titles: titles).fittingSize.width
+        XCTAssertGreaterThan(width, 0)
+        XCTAssertLessThanOrEqual(
+          width, column, "\(section.rawValue) tabs in \(language): \(titles)")
+      }
+    }
   }
 
   func testAvailabilityTintsUseSolidTerracotta() throws {
@@ -92,6 +133,26 @@ final class SettingsChromeContractTests: XCTestCase {
       sources[file.lastPathComponent] = try String(contentsOf: file, encoding: .utf8)
     }
     return sources
+  }
+
+  /// English key to Polish value, straight from the source catalog.
+  private func polishCatalog() throws -> [String: String] {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Resources/Localization/Localizable.xcstrings")
+    let catalog = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    let strings = try XCTUnwrap(catalog["strings"] as? [String: Any])
+    var polish: [String: String] = [:]
+    for (key, entry) in strings {
+      guard let localizations = (entry as? [String: Any])?["localizations"] as? [String: Any],
+        let unit = (localizations["pl"] as? [String: Any])?["stringUnit"] as? [String: Any],
+        let value = unit["value"] as? String
+      else { continue }
+      polish[key] = value
+    }
+    return polish
   }
 
   private func joinedSettingsSources() throws -> String {
