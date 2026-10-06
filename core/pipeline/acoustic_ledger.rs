@@ -1199,12 +1199,6 @@ impl AcousticLedger {
     ) -> MutationReceipt {
         self.prepare_word_evidence(observation, words);
         let trace = super::trail::SlotTrace::words(self, observation, words, self.capture_rate_hz);
-        if self.word_trial_input_refusal(observation, words).is_some() {
-            return trace.finish(
-                self.refuse_replacement(observation, "", RefuseReason::SlotAdmissionRejected),
-                self,
-            );
-        }
         let owner = &observation.occurrence;
         if self.is_sealed(owner) && observation.producer != ObservationProducer::ManualHuman {
             let reason = match observation.producer {
@@ -1245,6 +1239,12 @@ impl AcousticLedger {
                 .collect::<Vec<_>>()
                 .join(" ");
             return self.refuse_replacement(observation, &candidate, RefuseReason::BatchDuplicate);
+        }
+        if self.word_trial_input_refusal(observation, words).is_some() {
+            return trace.finish(
+                self.refuse_replacement(observation, "", RefuseReason::SlotAdmissionRejected),
+                self,
+            );
         }
         let admission_trail_start = self.trail.len();
         let offered_words = words;

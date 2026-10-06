@@ -108,13 +108,9 @@ fn late_correct_apple_survives_rank_refusal_and_can_win_a_trial() {
         "56",
         Some((0, 128_000)),
     );
-    offer(
-        &mut ledger,
-        &owner,
-        ObservationProducer::Apple,
-        2,
-        "1286",
-        None,
+    ledger.observe_retained_apple_word(
+        &ObservationIdentity::new(ObservationProducer::Apple, 8, 2, owner.clone()),
+        &WordPin::new(48_000, 64_000, "1286"),
     );
     assert_eq!(ledger.text_of(&owner), Some("56"));
     let trial = ledger

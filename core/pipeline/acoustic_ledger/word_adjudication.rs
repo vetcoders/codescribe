@@ -198,6 +198,43 @@ impl WordAdjudication {
 }
 
 impl AcousticLedger {
+    /// A late Apple replay remains lexical evidence, without acquiring
+    /// permission to insert a second token or change a sealed word.
+    pub(crate) fn observe_retained_apple_word(
+        &mut self,
+        observation: &ObservationIdentity,
+        pin: &WordPin,
+    ) {
+        if observation.producer != ObservationProducer::Apple
+            || self.is_sealed(&observation.occurrence)
+        {
+            return;
+        }
+        let output = WordSlot {
+            sample_start: pin.sample_start,
+            sample_end: pin.sample_end,
+            text: pin.text.clone(),
+            producer: observation.producer,
+            observation: observation.clone(),
+            witness: SlotWitness::Unwitnessed,
+            confidence: pin.confidence,
+            surface_rewritten: false,
+        };
+        let sources = self
+            .slots_of(&observation.occurrence)
+            .unwrap_or(&[])
+            .iter()
+            .filter(|source| self.pin_targets_source(source, &output))
+            .cloned()
+            .collect::<Vec<_>>();
+        // Apple live word timestamps carry no decoder-window claim.
+        let mut original = pin.clone();
+        original.decode_sample_start = None;
+        original.decode_sample_end = None;
+        self.stage_word_evidence(observation, &[original], None, "unknown");
+        self.adjudicate_word_sources(observation, &sources, &[output]);
+    }
+
     pub(super) fn record_word_decode_bounds(
         &mut self,
         observation: &ObservationIdentity,

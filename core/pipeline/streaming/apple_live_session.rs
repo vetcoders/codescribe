@@ -118,6 +118,40 @@ enum LiveConsultationRequest {
     Finish(PendingConsultationGroup),
 }
 
+/// Positive geometry/transport fixtures explicitly supply a resolving decode.
+/// The original completion remains a separate observation; real admission and
+/// trial completion both run, with context leased from this fixture's PCM.
+#[cfg(test)]
+fn complete_confirmed_test_window(
+    state: &mut AppleSealState,
+    tx: &mpsc::UnboundedSender<EngineEvent>,
+    completion: TailPatchCompletion,
+    elapsed: f32,
+) {
+    let payload = completion.payload.clone().expect("fixture word payload");
+    state.complete_whisper_window(tx, completion, elapsed);
+    loop {
+        let trial = state.acoustic_ledger.lock().unwrap().next_word_trial(true);
+        let Some(trial) = trial else {
+            break;
+        };
+        let mut confirmed = payload.clone();
+        confirmed.identity.range = state.word_trial_range(&trial).expect("fixture trial PCM");
+        confirmed.identity.request_id = u64::MAX - trial.id;
+        confirmed.segments.retain(|segment| {
+            segment.range.sample_start >= confirmed.identity.range.sample_start
+                && segment.range.sample_end <= confirmed.identity.range.sample_end
+        });
+        confirmed.text = confirmed
+            .segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        state.complete_word_trial(tx, &trial, Some(&confirmed));
+    }
+}
+
 #[cfg(test)]
 mod retroactive_split_delivery_tests {
     use super::*;
@@ -5416,6 +5450,53 @@ fn admit_late_apple_words(
                     &text,
                     NoAuthorityReason::LateAppleWordNotCurrent,
                 );
+                let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                    observation,
+                    label: text,
+                    receipt,
+                });
+                continue;
+            }
+            let consumed_span = ledger.slots_of(&owner).is_some_and(|slots| {
+                slots.iter().any(|slot| {
+                    let overlap = end
+                        .min(slot.sample_end)
+                        .saturating_sub(start.max(slot.sample_start));
+                    let shorter =
+                        (end - start).min(slot.sample_end.saturating_sub(slot.sample_start));
+                    shorter > 0 && overlap >= shorter / 2 + shorter % 2
+                })
+            });
+            let higher_rank_owns_span = ledger.slots_of(&owner).is_some_and(|slots| {
+                slots.iter().any(|slot| {
+                    let overlap = end
+                        .min(slot.sample_end)
+                        .saturating_sub(start.max(slot.sample_start));
+                    overlap > 0
+                        && slot.producer.authority_rank()
+                            > LedgerObservationProducer::Apple.authority_rank()
+                })
+            });
+            if higher_rank_owns_span
+                || (consumed_span && ledger.matching_word_slot(&owner, &pin, &text, false))
+            {
+                // Retain Apple's original alternative before the range replay
+                // fence. Evidence does not grant another insertion.
+                let mut hypothesis =
+                    crate::pipeline::acoustic_ledger::WordPin::new(start, end, &text);
+                hypothesis.confidence = confidence;
+                ledger.observe_retained_apple_word(&observation, &hypothesis);
+                outcome.dropped_by_slot_rules += 1;
+                // A replay or a higher-rank witness cannot add a second word.
+                // A fresh Apple correction of an Apple-owned slot continues to
+                // the ledger's replacement path below.
+                let receipt = if ledger.matching_word_slot(&owner, &pin, &text, false) {
+                    ledger.refuse_replayed_range(&observation, &text)
+                } else {
+                    // The higher layer already owns this physical range.
+                    // Keep the same refusal for open and sealed owners.
+                    ledger.refuse_replacement(&observation, &text, RefuseReason::SealedReplay)
+                };
                 let _ = ev_tx.send(EngineEvent::LedgerMutation {
                     observation,
                     label: text,
@@ -19462,7 +19543,7 @@ mod live_refinement_admission_tests {
             state.flush_layer1_coalesce(&events);
             let request = requests.try_recv().unwrap();
             let completion = forensic_live_transport_words_completion(&request, whisper);
-            state.complete_whisper_window(&events, completion, 20.0);
+            complete_confirmed_test_window(&mut state, &events, completion, 20.0);
             state.close_admission_horizon(&events, u64::MAX);
             let ledger = state.acoustic_ledger.lock().unwrap();
             assert_eq!(ledger.text_of(&occurrence), Some(whisper));
@@ -20045,7 +20126,8 @@ mod live_refinement_admission_tests {
             state.acoustic_ledger.lock().unwrap().text_of(occurrence),
             Some("hello")
         );
-        state.complete_whisper_window(
+        complete_confirmed_test_window(
+            &mut state,
             &events,
             forensic_live_transport_word_completion(&request),
             20.0,
@@ -22108,8 +22190,12 @@ mod relay_l1_overlap_admission_tests {
         ];
         let mut events = Vec::new();
         for (request, segments) in requests.iter().zip(windows) {
-            lane.state
-                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+            complete_confirmed_test_window(
+                &mut lane.state,
+                &lane.tx,
+                completion(request, segments),
+                8.0,
+            );
             events.extend(drain(&mut lane.rx));
         }
         assert!(
@@ -22203,8 +22289,12 @@ mod relay_l1_overlap_admission_tests {
         ];
         let mut events = Vec::new();
         for (request, segments) in requests.iter().zip(windows) {
-            lane.state
-                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+            complete_confirmed_test_window(
+                &mut lane.state,
+                &lane.tx,
+                completion(request, segments),
+                8.0,
+            );
             events.extend(drain(&mut lane.rx));
         }
         assert!(
@@ -23778,7 +23868,8 @@ mod relay_l1_overlap_admission_tests {
             range.sample_start,
             range.sample_end
         );
-        lane.state.complete_whisper_window(
+        complete_confirmed_test_window(
+            &mut lane.state,
             &lane.tx,
             completion(
                 &requests[0],
@@ -24634,7 +24725,8 @@ mod relay_l1_overlap_admission_tests {
         }
         let range = &requests[0].provider_request.identity.range;
         assert!(range.sample_start <= 10_000 && range.sample_end >= 60_000);
-        lane.state.complete_whisper_window(
+        complete_confirmed_test_window(
+            &mut lane.state,
             &lane.tx,
             completion(
                 &requests[0],
@@ -24975,7 +25067,8 @@ mod relay_l1_overlap_admission_tests {
             // block-aligned so the new pins can cover all of it.
             &[(base + 1_000, base + 15_000)],
         );
-        lane.state.complete_whisper_window(
+        complete_confirmed_test_window(
+            &mut lane.state,
             &lane.tx,
             completion(
                 &requests[0],
@@ -24983,7 +25076,8 @@ mod relay_l1_overlap_admission_tests {
             ),
             12.5,
         );
-        lane.state.complete_whisper_window(
+        complete_confirmed_test_window(
+            &mut lane.state,
             &lane.tx,
             completion(
                 &requests[1],
@@ -28208,7 +28302,8 @@ mod tc2_window_contract_tests {
                 &[apple_word("apple", 246_464, 262_784)]
             ));
             while let Ok(request) = f.requests.try_recv() {
-                f.state.complete_whisper_window(
+                complete_confirmed_test_window(
+                    &mut f.state,
                     &f.events,
                     completion(&request, vec![pin("whisper", 246_464, 262_784)]),
                     10.7,
@@ -28406,7 +28501,7 @@ mod tc2_window_contract_tests {
                 results.reverse();
             }
             for result in results {
-                f.state.complete_whisper_window(&f.events, result, 10.7);
+                complete_confirmed_test_window(&mut f.state, &f.events, result, 10.7);
             }
             let (winner, loser) = if reversed {
                 ("Alpha, delta", "alpha")

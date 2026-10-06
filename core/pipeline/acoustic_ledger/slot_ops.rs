@@ -830,7 +830,7 @@ impl AcousticLedger {
                         // scheduled producer's return. Accepted decode coverage
                         // must still account for that producer's owner scope.
                         // Other refusals still own their retained-source debt.
-                        && !(alternative.reason == "decode_window_clipped"
+                        && !(matches!(alternative.reason, "decode_window_clipped" | "incomplete_source_scope")
                             && self.complete_word_slot(source)
                             && self.returned_word_scope_accounted(&source.observation)
                             && self
@@ -2996,7 +2996,7 @@ mod slot_ops_tests {
         let operations_before = ledger.slot_operations().len();
         ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
         assert!(ledger.require_text_recovery(&owner));
-        let next = ObservationIdentity::new(ObservationProducer::Whisper, 1102, 1, owner.clone());
+        let next = ledger.next_word_observation(ObservationProducer::Whisper, 1102, &owner);
         let decision = ledger.admit_word_slots(
             &next,
             &[WordPin::new(3_200, 9_600, "Iwo").with_decode_window(0, pcm.len() as u64)],
@@ -3262,7 +3262,7 @@ mod slot_ops_tests {
                 assert!(ledger.complete_word_slot(&source));
                 ledger.schedule_frontier(owner.clone(), [producer]);
                 assert!(ledger.require_text_recovery(&owner));
-                let next = ledger.next_word_observation(producer, 801, &owner);
+                let mut next = ledger.next_word_observation(producer, 801, &owner);
                 let mut pins = [
                     WordPin::new(3_200, 6_400, "I"),
                     WordPin::new(7_000, 9_600, "wo"),
@@ -3287,7 +3287,11 @@ mod slot_ops_tests {
                     .collect::<Vec<_>>()
                     .join(" ");
                 let before = ledger.slot_operations().len();
-                let receipt = ledger.admit_word_slots(&next, &pins);
+                let receipt = if proof == "complete" {
+                    corroborate_candidate(&mut ledger, &mut next, &pins)
+                } else {
+                    ledger.admit_word_slots(&next, &pins)
+                };
                 if proof == "complete" {
                     assert!(
                         receipt.grants_mutation(),
@@ -4984,7 +4988,12 @@ mod slot_ops_tests {
         );
 
         let mut group = pinned(&[WordPin::new(0, 2_000, "naprawdę")]);
-        group.admit_word_slots(&next, &[WordPin::new(0, 2_000, "na prawdę")]);
+        let mut next = next;
+        corroborate_candidate(
+            &mut group,
+            &mut next,
+            &[WordPin::new(0, 2_000, "na prawdę").with_decode_window(0, 16_000)],
+        );
         assert_eq!(group.slots_of(&owner()).unwrap().len(), 1);
         assert_eq!(group.text_of(&owner()), Some("na prawdę"));
     }
