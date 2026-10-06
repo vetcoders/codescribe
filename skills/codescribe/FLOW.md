@@ -19,7 +19,9 @@ flowchart TD
 ```
 
 Recovery preserves the provider session, lease and cursor and rechecks monitor
-delivery. Explicit stop closes owned handles. Neither recovery nor an observer
+delivery. Explicit stop closes owned handles and releases the channel with
+`--detach`; the lease and its backlog stay for the next session of the same
+name, which attaches with `--takeover`. Neither recovery nor an observer
 creates a second microphone.
 
 Procedures: [attach](references/attach.md), [monitor](references/monitor.md),

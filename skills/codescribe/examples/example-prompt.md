@@ -36,3 +36,19 @@ The provider loses the follower handle during recovery.
 Expected: check whether the original follower still lives, reuse it or resume
 the same provider/session/lease, retain the name and cursor, then verify the
 monitor again. Do not replay an already handled operation.
+
+## Take over the channel after a previous session
+
+A handoff says the Founder speaks to "igor" on channel 3. That session has
+ended, its follower still runs, and a plain attach refuses with
+`channel 3 is occupied by igor`.
+
+Expected: read `--status`, check for the running follower, then attach with the
+same name and `--takeover` for this session. Report the receipt's `previous`
+object — provider, session, lease id, follower state (`stopped` or
+`not_running`) — and the inherited unacknowledged delivery ids, which are
+sealed takes and typed messages only, never draft revisions. Verify with a
+fresh named take before claiming listening. Name the inherited deliveries to
+the Founder and read one only on request with
+`--read-delivery <id> --lease <previous-lease-id>`; never execute them
+automatically, and never claim a channel bound to a different name.

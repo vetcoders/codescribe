@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Turning the transcription overlay off closes an overlay already on screen (a take being corrected stays until its draft is committed or discarded), and a status card shown with the overlay off no longer stays up when "Keep visible between takes" is pinned.
 - A second click on the menu bar icon closes the menu; it no longer closes and reopens it within the same click.
 - `make install-bus` builds again. The installer source compiles on its own, so helpers and already selected skills install from source without rebuilding the app. `make verify-install-bus` compiles that source by itself and runs in CI, so an app-only type in the installer file fails the build instead of the next helper install.
+- Agent voice channel handover (`cs-bus`). `--detach` releases the channels of the calling session; `--attach --takeover` claims a digit held by a previous session of the same agent name, also across providers, and never one bound to a different name. Retirement requires a verified reader and a drained source cursor; unread work or uncertain identity leaves ownership intact. The new binding is published only after reader readiness. Failure receipts distinguish unchanged routing from an uncertain binding write and report the measured reader state. Previous unacknowledged takes are listed and read on demand with `--read-delivery <id> --lease <previous-lease-id>`; nothing is replayed or acknowledged for them (`skills/codescribe/references/attach.md`).
 
 ## Release reality
 
