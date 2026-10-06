@@ -3289,6 +3289,36 @@ impl AcousticLedger {
         scheduled
     }
 
+    /// A completed lexical trial can make words ready after the acoustic
+    /// producers have all returned. Register only this optional formatter;
+    /// ordinary producers retain the no-reopening rule in `schedule_observer`.
+    pub(crate) fn schedule_settled_formatter(&mut self, coverage: OccurrenceIdentity) -> bool {
+        if self.is_sealed(&coverage)
+            || self.text_recovery_pending(&coverage)
+            || !self.word_labels_settled(&coverage)
+            || !self
+                .text_of(&coverage)
+                .is_some_and(|label| !label.trim().is_empty())
+        {
+            return false;
+        }
+        let Some(frontier) = self.frontiers.get_mut(&coverage) else {
+            return false;
+        };
+        if !frontier.is_closed() || !frontier.schedule(ObservationProducer::Formatter) {
+            return false;
+        }
+        super::trail::record(
+            &coverage,
+            super::trail::TrailEvent::Frontier {
+                occurrence: coverage.clone(),
+                operation: "observer".into(),
+                producers: vec![ObservationProducer::Formatter],
+            },
+        );
+        true
+    }
+
     /// Account for real Apple words arriving after all earlier jobs returned
     /// without a label. Only this exact qualified occurrence may gain its first
     /// Apple and slice-local Lexicon observations. No old return is removed and

@@ -402,7 +402,12 @@ fn recovery_formatter_created_by_gap_closes_before_coverage_and_terminal_seal() 
     }
     let (ack, done) = std_mpsc::channel();
     ack.send(completion.clone()).unwrap();
-    drain_formatter_observers(&mut state, &tx, &done).unwrap();
+    drain_formatter_observers(
+        &mut state,
+        &tx,
+        &done,
+        Instant::now() + Duration::from_secs(1),
+    );
     assert!(
         !state.complete_formatter(&tx, completion),
         "duplicate completion cannot close twice"

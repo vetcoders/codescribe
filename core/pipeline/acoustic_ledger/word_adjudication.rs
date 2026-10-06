@@ -1207,6 +1207,16 @@ impl AcousticLedger {
             .any(|c| c.conflict && (!c.attempted || c.trial.is_some()))
     }
 
+    /// Formatting consumes settled words; it cannot choose an alternative
+    /// or turn an inconclusive acoustic trial into a semantic decision.
+    pub(crate) fn word_labels_settled(&self, owner: &OccurrenceIdentity) -> bool {
+        !self
+            .word_adjudication
+            .components
+            .iter()
+            .any(|c| &c.owner == owner && c.conflict)
+    }
+
     pub(super) fn word_finality(&self, owner: &OccurrenceIdentity) -> Vec<WordFinality> {
         self.word_adjudication
             .components

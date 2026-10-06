@@ -688,14 +688,27 @@ pub async fn collect_buffered_engine_events_with_config(
     samples: &[f32],
     config: SessionConfig,
 ) -> Result<Vec<EngineEvent>> {
+    let collector = Arc::new(SessionEventCollector::new());
+    replay_buffered_engine_session(samples, config, collector.clone()).await?;
+    Ok(collector.events())
+}
+
+/// Replay paced PCM through the live dispatcher with its presentation owner.
+///
+/// Formatter obligations must be returned synchronously by the live emitter;
+/// collecting events for later projection cannot exercise that protocol.
+/// Audio ingress is the only replaced boundary. This opens no capture device.
+pub async fn replay_buffered_engine_session(
+    samples: &[f32],
+    config: SessionConfig,
+    event_sink: Arc<dyn EventSink>,
+) -> Result<()> {
     if samples.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let chunk_size = ((config.sample_rate as f32) * 0.1).round().max(1.0) as usize;
     let (tx, rx) = mpsc::channel::<Vec<f32>>(8);
-    let collector = Arc::new(SessionEventCollector::new());
-    let event_sink: Arc<dyn EventSink> = collector.clone();
     let session = tokio::spawn(transcription_session(rx, event_sink, config));
 
     for chunk in samples.chunks(chunk_size) {
@@ -717,7 +730,7 @@ pub async fn collect_buffered_engine_events_with_config(
         .await
         .map_err(|e| anyhow!("Transcription session join error: {}", e))?;
 
-    Ok(collector.events())
+    Ok(())
 }
 
 #[cfg(test)]
