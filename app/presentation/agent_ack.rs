@@ -166,16 +166,9 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
                 }
                 continue;
             }
-            // Pending or bus-recovered delivery proof can arrive on a later
-            // pass. Until then, the marker body cannot authorize an ack.
-            let pending_kind = lease
-                .pending
-                .iter()
-                .find(|pending| pending.id.as_str() == delivery_id)
-                .and_then(|pending| pending.kind.as_deref());
-            let proven = matches!(pending_kind, Some("seal" | "message"))
-                || cursor.known_seals.contains(delivery_id);
-            if !proven {
+            // Bus and pending delivery proof were folded into known_seals
+            // before traversal. The marker body cannot authorize an ack alone.
+            if !cursor.known_seals.contains(delivery_id) {
                 // This counts canonical candidates lacking delivery proof.
                 stats.skipped_unproven += 1;
                 continue;
