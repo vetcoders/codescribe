@@ -108,8 +108,7 @@ that session. Two rules keep a digit usable across sessions of one name.
    survive a detach.
 2. **Entering a session from a handoff that names an agent channel.** Read
    `--status`, check for a running follower, then attach with the same name:
-   `cs-bus --attach --channel <n> --name <same-name> --provider <p> --session
-   <id> --takeover`. Verify with a fresh named take before claiming listening.
+   `cs-bus --attach --channel <n> --name <same-name> --provider <p> --session <id> --takeover`. Verify with a fresh named take before claiming listening.
    Inherited unacknowledged deliveries are reported to the Founder and read on
    demand with `--read-delivery <id> --lease <previous-lease-id>`; they are
    never executed automatically.
