@@ -1900,15 +1900,6 @@ class SessionLease:
                 "this same lease; the unread bus cursor is preserved"
             )
         self.pending[delivery_id] = payload
-        if payload.get("kind") in TERMINAL_KINDS:
-            # The terminal envelope is durable from here on, so the drafts it
-            # closes can leave in the same transition. Nothing ever acknowledges
-            # a draft, so otherwise the last preview of every message stays in
-            # the mailbox for the life of the lease: the lease file grows, the
-            # 256-envelope cap approaches, and every resume re-publishes a
-            # preview the reducer has already superseded.
-            for queued_id in self._drafts_of(draft_key(payload)):
-                del self.pending[queued_id]
         self.persist(active=True)
         return True
 
@@ -1920,10 +1911,11 @@ class SessionLease:
         ]
 
     def prune_settled_drafts(self) -> None:
-        """Drop drafts whose terminal envelope was acknowledged in an earlier run.
+        """Apply the same rule across runs: an acknowledged terminal envelope
+        settles the drafts of its message.
 
-        A lease written before drafts were retired with their message can hold
-        previews whose seal left the mailbox long ago. The acknowledgment marker
+        A lease can hold previews whose terminal envelope was acknowledged and
+        left the mailbox in an earlier process. The acknowledgment marker
         keeps the terminal envelope's causal coordinates (`receipt_envelope`
         drops only transcript-bearing fields), so a settled message is provable
         from the marker store rather than guessed.
@@ -1970,7 +1962,19 @@ class SessionLease:
             elif native:
                 native.enqueue_withdrawal(delivery_id)
         if settled:
-            for delivery_id in settled:
+            # An acknowledged terminal envelope settles the drafts of its
+            # message: the consumer has seen the whole take, so its previews
+            # can leave with it instead of holding the mailbox for the life of
+            # the lease. Read the key before the envelope is deleted. A
+            # terminal acknowledged but still awaiting a native queue
+            # withdrawal is not in `settled`, so it retires nothing yet.
+            retired = [
+                queued_id
+                for delivery_id in settled
+                if self.pending[delivery_id].get("kind") in TERMINAL_KINDS
+                for queued_id in self._drafts_of(draft_key(self.pending[delivery_id]))
+            ]
+            for delivery_id in dict.fromkeys(settled + retired):
                 del self.pending[delivery_id]
             self.persist(active=True)
 

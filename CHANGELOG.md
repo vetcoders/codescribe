@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-- The channel roster no longer reports a listening agent as absent once its session file grows past a few kilobytes, and the previews of a finished message now leave the agent's mailbox together with the message itself instead of piling up for the rest of the session.
+- The channel roster no longer reports a listening agent as absent once its session file grows past a few kilobytes, and the previews of a message now leave the agent's mailbox once that message is acknowledged, instead of piling up for the rest of the session.
 - Add the localization foundation for the macOS app: String Catalogs with English as the source language, catalog sync and lint tooling, and interface copy prepared for further languages (`docs/LOCALIZATION.md`). Tray status wording is now authored in the app; the Rust tray payload carries state only.
 - Polish interface. The app follows the macOS language; every interface string and permission prompt has a Polish translation. Text that Rust produces (status rows, error causes, notifications, thread export) stays English in this cut (`docs/LOCALIZATION_LEDGER.md` §4).
 - Translator worksheet (`scripts/l10n-sheet.py`, `make l10n-sheet`): exports a CSV per catalog and language and folds it back, refusing rows that drop an argument or misspell the product. The catalog lint now requires every language the bundle carries to be complete.
