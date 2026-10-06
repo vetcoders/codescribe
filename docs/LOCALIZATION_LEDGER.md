@@ -488,12 +488,13 @@ Polish is recorded here for the Polish Handbook.
 
 ## 7. Layout that will meet longer text
 
-No layout was changed. These are the slots where a translation 15–30 % longer
-than English clips or truncates first.
+Only the settings tab bar changed: its segments now hug their own labels and the
+bar scrolls horizontally instead of widening the pane. These are the slots where
+a translation 15–30 % longer than English clips or truncates first.
 
 | Surface                          | Slot                                                                                                                         |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Settings tab bar                 | Segmented control sized to its widest segment, up to six segments at the 880 pt minimum window                               |
+| Settings tab bar                 | Segments hug their own labels; the bar scrolls horizontally once six of them exceed the pane at 880 pt                       |
 | Settings sidebar                 | 196–300 pt; health footer is two lines in 196 pt                                                                             |
 | Tool permissions                 | `Allow · Ask · Deny` in a picker pinned to 180 pt — the tightest slot in Settings                                            |
 | Agent status                     | Label column 160 pt, capability columns 120 / 96 pt, one-line rows                                                           |
