@@ -1460,7 +1460,7 @@ pub(crate) fn cloud_file_lane(
     let lane = config
         .stt_lane(codescribe_core::stt::lanes::SttLane::File)
         .ok_or_else(|| CsError::Recording {
-            msg: "Cloud pass needs a file transcription endpoint (Providers › Speech-to-text)"
+            msg: "Cloud pass needs a file transcription endpoint (Providers › Cloud transcription)"
                 .into(),
         })?;
     if lane.key_missing() {

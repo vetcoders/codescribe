@@ -3,10 +3,15 @@ import SwiftUI
 
 // Settings › Providers. "URLs live where the API keys are; models live where
 // the Agent is." Vendors (OpenAI, xAI, Anthropic) are factory-pinned: the
-// endpoint is shown, never edited. A custom provider is any host speaking the
-// Responses or Messages wire; its endpoint sits next to its (optional) key.
-// Speech-to-text is two atomic lanes (File, Live), each an endpoint + key row.
-// Models are chosen per request lane under Agent › Request lanes.
+// endpoint is never edited and sits under the card's Advanced disclosure. A
+// custom provider is any host speaking the Responses or Messages wire; its
+// endpoint shows next to its (optional) key. Cloud transcription is two atomic
+// lanes (File, Live), each an endpoint + key row. Models are chosen per
+// request lane under Agent › LLM lanes.
+//
+// The first level shows what a user acts on — account, key, address — and
+// nothing that explains the architecture: Keychain account names, wire keys,
+// vendor endpoints and the OAuth client-id override live under Advanced.
 
 struct ProvidersPanel: View {
   static let ownedCapabilities: Set<SettingsPanelCapability> = [.providers]
@@ -17,11 +22,10 @@ struct ProvidersPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(
-        String(localized: "Providers."),
+        String(localized: "Providers"),
         blurb: String(
-          localized:
-            "Keys and endpoints. Vendors always use their factory endpoint; a custom provider is any host that speaks /v1/responses or /v1/messages. Which model each lane sends lives under Agent › Request lanes."
-        )
+          localized: "Connect accounts or add API keys. Models are chosen under Agent › LLM lanes.",
+          comment: "Providers panel blurb; `LLM lanes` is the Agent tab title")
       )
 
       if let notice = model.laneResetNotice {
@@ -46,18 +50,16 @@ struct ProvidersPanel: View {
           .padding(.top, 12)
         Text(error).font(CSFont.mono(10.5)).textSelection(.enabled)
       }
-      Button("Refresh provider access") { model.refreshProviderAccess() }
+      Button("Refresh status") { model.refreshProviderAccess() }
         .disabled(model.providerAccessPending || model.providerMutationPending)
         .padding(.top, 12)
       if model.providerAccessResolved {
-        SettingsSectionLabel(String(localized: "Vendors"))
-          .padding(.top, CSSpace.section)
         VStack(spacing: 8) {
           ForEach(model.vendorProviders, id: \.id) { provider in
             ProviderCard(model: model, provider: provider)
           }
         }
-        .padding(.top, CSSpace.control)
+        .padding(.top, CSSpace.section)
         .disabled(model.providerMutationPending)
 
         CustomProvidersSection(
@@ -78,13 +80,11 @@ struct ProvidersPanel: View {
 
       }
 
-      HStack(spacing: 8) {
-        Text(verbatim: "●").font(CSFont.mono(11, .medium)).foregroundStyle(CSColor.olive)
-        Text("secrets live only in the Keychain — presence shown, value hidden")
-          .font(CSFont.mono(11, .medium))
-          .foregroundStyle(Color.secondary)
-      }
-      .padding(.top, 16)
+      Text("Keys are stored securely in the macOS Keychain.")
+        .font(CSFont.ui(11.5))
+        .foregroundStyle(Color.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.top, CSSpace.section)
     }
     .padding(.horizontal, CSSpace.xl)
     .padding(.vertical, CSSpace.section)
@@ -128,10 +128,12 @@ struct LaneResetNotice: View {
 
 // MARK: - Provider card (vendor and custom share one shell)
 
-/// One registry row: name, wire, read-only endpoint (selectable, never edited
-/// here), key row. A vendor adds its OAuth account row; a custom row adds
-/// Edit / Remove — the endpoint moves only through `CustomProviderForm`.
-/// There is no endpoint setter on the view-model for a vendor — by design.
+/// One registry row: name, wire, key row; a vendor adds its OAuth account row,
+/// a custom row shows its endpoint and adds Edit / Remove — the endpoint moves
+/// only through `CustomProviderForm`. Everything else (a vendor's factory
+/// endpoint, the Keychain account name, the OAuth client-id override) sits
+/// under Advanced. There is no endpoint setter on the view-model for a vendor
+/// — by design.
 struct ProviderCard: View {
   @ObservedObject var model: SettingsViewModel
   let provider: CsProviderOption
@@ -140,6 +142,10 @@ struct ProviderCard: View {
   @State private var confirmRemove = false
 
   private var isCustom: Bool { provider.kind == "custom" }
+  /// Vendors that ship an OAuth flow, or still hold tokens from one.
+  private var hasAccount: Bool {
+    !isCustom && (provider.accountLoginEnabled || provider.accountSignedIn)
+  }
   /// "Responses" / "Messages" — the one thing every provider declares.
   private var wireLabel: String {
     ["responses": "Responses", "messages": "Messages"][provider.wire] ?? provider.wire
@@ -167,20 +173,9 @@ struct ProviderCard: View {
             .accessibilityLabel("Remove custom provider \(provider.displayName)")
         }
       }
-      HStack(spacing: 8) {
-        Text(isCustom ? "endpoint" : "factory endpoint")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(Color.secondary)
-        Text(provider.endpoint)
-          .font(CSFont.mono(11.5, .medium))
-          .foregroundStyle(Color.primary)
-          .lineLimit(1)
-          .truncationMode(.middle)
-          .textSelection(.enabled)
-        Spacer(minLength: 0)
+      if isCustom {
+        endpointRow
       }
-      .accessibilityElement(children: .combine)
-      .accessibilityLabel("endpoint \(provider.endpoint)")
       // Custom hosts are key-optional: an absent key there is neutral, not an error.
       KeyRow(
         model: model, account: provider.apiKeyAccount, label: String(localized: "API key"),
@@ -193,16 +188,33 @@ struct ProviderCard: View {
           model.signOutAccount(providerId: provider.id)
         }
         .accessibilityLabel("Sign out \(provider.displayName)")
-      } else if !isCustom, provider.accountLoginEnabled || provider.accountSignedIn {
+      } else if hasAccount {
         AccountLoginRow(
           provider: provider,
           loginPending: model.accountLoginPending.contains(provider.id),
           loginNotice: model.accountLoginNotices[provider.id],
           onStart: { model.startAccountLogin(providerId: provider.id) },
-          onSignOut: { model.signOutAccount(providerId: provider.id) },
-          onSaveClientId: { model.saveOauthClientId(providerId: provider.id, value: $0) }
+          onSignOut: { model.signOutAccount(providerId: provider.id) }
         )
       }
+      DisclosureGroup("Advanced") {
+        VStack(alignment: .leading, spacing: 8) {
+          if !isCustom {
+            endpointRow
+          }
+          SettingsDetailRow(
+            title: String(localized: "Keychain account"), value: provider.apiKeyAccount)
+          if hasAccount {
+            OAuthClientIdButton(provider: provider) {
+              model.saveOauthClientId(providerId: provider.id, value: $0)
+            }
+          }
+        }
+        .padding(.top, 6)
+      }
+      .font(CSFont.ui(11.5))
+      .foregroundStyle(Color.secondary)
+      .accessibilityIdentifier("provider-advanced")
     }
     .settingsGroupedInset()
     .accessibilityElement(children: .contain)
@@ -226,6 +238,11 @@ struct ProviderCard: View {
       )
     }
   }
+
+  private var endpointRow: some View {
+    SettingsDetailRow(title: String(localized: "Endpoint"), value: provider.endpoint)
+      .accessibilityLabel("endpoint \(provider.endpoint)")
+  }
 }
 
 // MARK: - Custom providers
@@ -241,7 +258,7 @@ struct CustomProvidersSection: View {
         SettingsSectionLabel(String(localized: "Custom providers"))
         Spacer()
         Button(action: onAdd) {
-          Label("Add custom provider", systemImage: "plus")
+          Label("Add provider", systemImage: "plus")
             .font(CSFont.ui(12, .semibold))
         }
         .csFocusRing()
@@ -249,9 +266,7 @@ struct CustomProvidersSection: View {
         .accessibilityIdentifier("providers-add-custom")
       }
 
-      Text(
-        "Any host speaking the OpenAI Responses or Anthropic Messages wire — a local model server, a gateway, a relay. The key is optional; add as many as you need."
-      )
+      Text("Add a server that speaks OpenAI Responses or Anthropic Messages.")
       .font(CSFont.ui(11.5))
       .lineSpacing(2)
       .foregroundStyle(Color.secondary)
@@ -452,7 +467,7 @@ struct CustomProviderForm: View {
   }
 }
 
-// MARK: - Speech-to-text Cloud Service (stt-lanes-v1 §D)
+// MARK: - Cloud transcription (stt-lanes-v1 §D)
 
 /// Two lanes, File then Live, in `sttLanes()` order. Each lane is one atomic endpoint +
 /// key row (ADR Tier 3): the key is never shown apart from the address it authenticates.
@@ -461,12 +476,13 @@ struct SpeechToTextSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel(String(localized: "Speech-to-text Cloud Service"))
+      SettingsSectionLabel(
+        String(localized: "Cloud transcription", comment: "Providers section: cloud STT lanes"))
       Text("Your recordings leave your machine.")
         .font(CSFont.ui(12.5, .semibold))
         .foregroundStyle(CSColor.amber)
         .padding(.top, 8)
-      Text("Cloud mode and consent stay on Dictation; endpoints and keys live here.")
+      Text("Cloud mode is switched on under Dictation. The connection is set up here.")
         .font(CSFont.ui(11.5))
         .lineSpacing(2)
         .foregroundStyle(Color.secondary)
@@ -481,32 +497,60 @@ struct SpeechToTextSection: View {
   }
 }
 
-/// One lane card: title, what the lane accepts, its endpoint row and its key
-/// row (with Test). The Live card also hosts the session-mint URL, moved here
-/// from Dictation because URLs live where the keys are.
+/// One lane card: title, endpoint row, key row (with Test behind `Change`).
+/// The Live card also hosts the session-mint URL, moved here from Dictation
+/// because URLs live where the keys are. What the lane accepts on the wire and
+/// its settings keys sit under Advanced; the wire line only on a developer build.
 struct SttLaneCard: View {
   @ObservedObject var model: SettingsViewModel
   let lane: CsSttLane
 
+  /// The bridge titles lanes in English for the CLI; the panel names them by id.
+  static func title(for lane: CsSttLane) -> String {
+    switch lane.id {
+    case "file":
+      return String(localized: "File transcription", comment: "Cloud transcription lane: recorded files")
+    case "live":
+      return String(localized: "Live transcription", comment: "Cloud transcription lane: live socket")
+    default:
+      return lane.title
+    }
+  }
+
+  /// One sentence under the field when a save was rejected. The bridge names
+  /// the transport the lane requires; anything else is shown as it came.
+  static func saveMessage(for error: Error) -> String {
+    let message = error.userFacingMessage
+    if message.contains("endpoint requires http(s)") {
+      return String(
+        localized: "This address needs http:// or https://.",
+        comment: "File transcription endpoint rejected for its scheme")
+    }
+    if message.contains("endpoint requires ws(s)") {
+      return String(
+        localized: "This address needs ws:// or wss://.",
+        comment: "Live transcription endpoint rejected for its scheme")
+    }
+    return message
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text(lane.title)
+      Text(Self.title(for: lane))
         .font(CSFont.ui(14.5, .bold))
         .foregroundStyle(Color.primary)
-      Text(lane.accepts)
-        .font(CSFont.mono(10.5, .medium))
-        .foregroundStyle(Color.secondary)
-        .fixedSize(horizontal: false, vertical: true)
       SettingsUrlRow(
         title: String(localized: "Endpoint"),
-        keyLabel: lane.endpointWireKey,
         current: lane.endpoint ?? "",
         placeholder: lane.placeholder,
-        help: String(
-          localized:
-            "Not a secret. Blank clears the lane; the bridge rejects a URL whose scheme does not fit this lane."
-        ),
-        onSave: { model.setSttLaneEndpoint(lane.id, $0) }
+        onSave: { value in
+          do {
+            try model.setSttLaneEndpoint(lane.id, value)
+            return nil
+          } catch {
+            return Self.saveMessage(for: error)
+          }
+        }
       )
       KeyRow(
         model: model, account: lane.keyAccount, label: String(localized: "API key"),
@@ -514,38 +558,54 @@ struct SttLaneCard: View {
       if lane.id == "live" {
         SettingsUrlRow(
           title: String(localized: "Gateway session URL"),
-          keyLabel: "CODESCRIBE_ASR_GATEWAY_URL",
           current: model.asrGatewayUrl,
           placeholder: "https://…/session",
-          help: String(
-            localized:
-              "Session-mint endpoint for live Cloud Layer 1. Not the live socket above. Clearing restores unset."
-          ),
-          onSave: { model.setAsrGatewayUrl($0) }
+          caption: String(localized: "Optional. Used for live transcription."),
+          onSave: { value in
+            do {
+              try model.setAsrGatewayUrl(value)
+              return nil
+            } catch {
+              return error.userFacingMessage
+            }
+          }
         )
       }
+      DisclosureGroup("Advanced") {
+        VStack(alignment: .leading, spacing: 8) {
+          if DeveloperSurface.isEnabled() {
+            Text(lane.accepts)
+              .font(CSFont.mono(10.5, .medium))
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          SettingsDetailRow(
+            title: String(localized: "Settings keys"),
+            value: ([lane.endpointWireKey, lane.keyAccount]
+              + (lane.id == "live" ? ["CODESCRIBE_ASR_GATEWAY_URL"] : []))
+              .joined(separator: " · "))
+        }
+        .padding(.top, 6)
+      }
+      .font(CSFont.ui(11.5))
+      .foregroundStyle(Color.secondary)
+      .accessibilityIdentifier("stt-lane-advanced")
     }
     .settingsGroupedInset()
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("\(lane.title) lane")
+    .accessibilityLabel("\(Self.title(for: lane)) lane")
   }
 }
 
 // MARK: - Service keys
 
-/// Keys that are not LLM providers and not speech-to-text: GitHub. Only the
-/// secret is edited here.
+/// Keys that are not LLM providers and not cloud transcription: GitHub. Only
+/// the secret is edited here; the row label says what the key is for.
 struct ServiceKeysSection: View {
   @ObservedObject var model: SettingsViewModel
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsSectionLabel(String(localized: "Service keys"))
-      Text("GitHub token. Speech-to-text endpoints and keys live in the section above.")
-        .font(CSFont.ui(11.5))
-        .lineSpacing(2)
-        .foregroundStyle(Color.secondary)
-        .padding(.top, 8)
       VStack(spacing: 8) {
         ForEach(model.serviceKeyAccounts, id: \.self) { account in
           KeyRow(

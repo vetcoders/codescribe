@@ -235,7 +235,7 @@ hits minus doc comments, pattern matches and test code).
 
 - **User-actionable (20)** tell the person what is wrong with their input or
   setup, e.g. "Cloud pass needs a file transcription endpoint (Providers ›
-  Speech-to-text)".
+  Cloud transcription)".
 - **Internal failure (55)** are lock, IO and invariant failures the person can
   only retry or report, e.g. "account login state lock poisoned" (the same
   literal four times in `config.rs`).
@@ -492,19 +492,19 @@ Only the settings tab bar changed: its segments now hug their own labels and the
 bar scrolls horizontally instead of widening the pane. These are the slots where
 a translation 15–30 % longer than English clips or truncates first.
 
-| Surface                          | Slot                                                                                                                         |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Settings tab bar                 | Segments hug their own labels; the bar scrolls horizontally once six of them exceed the pane at 880 pt                       |
-| Settings sidebar                 | 196–300 pt; health footer is one sentence-case line (`Ready to work`), absent while undetermined; a problem line may wrap    |
-| Settings detail column           | Never narrower than 664 pt: an 880 pt window with the sidebar open, 664 pt with it hidden                                    |
-| Tool permissions                 | `Allow · Ask · Deny` in a picker pinned to 180 pt — the tightest slot in Settings                                            |
-| Agent status                     | Label column 160 pt, capability columns 120 / 96 pt, one-line rows                                                           |
-| Providers, MCP servers, key rows | One-line status chips and rows; editor sheet 480 pt                                                                          |
-| Shortcuts, Creator, Audio        | Pickers pinned to 230–330 pt; a 92 pt readout                                                                                |
-| Tray                             | Panel is 300 pt; status pills are one line and fixed-size; `Status: %@` and banners are one line                             |
-| Onboarding                       | Welcome cards `minHeight` 135; readiness label column 150 pt                                                                 |
-| Overlay                          | Footer notice is one line (the tightest slot in the app); coverage chip one line; popovers 250–300 pt; minimum window 320 pt |
-| Agent chat                       | Thread title is one line beside the status pill; inspect labels in a 64 pt column; collapsed rail section titles             |
+| Surface                          | Slot                                                                                                                                                                                              |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Settings tab bar                 | Segments hug their own labels; the bar scrolls horizontally once six of them exceed the pane at 880 pt                                                                                            |
+| Settings sidebar                 | 196–300 pt; health footer is one sentence-case line (`Ready to work`), absent while undetermined; a problem line may wrap                                                                         |
+| Settings detail column           | Never narrower than 664 pt: an 880 pt window with the sidebar open, 664 pt with it hidden                                                                                                         |
+| Tool permissions                 | `Allow · Ask · Deny` in a picker pinned to 180 pt — the tightest slot in Settings                                                                                                                 |
+| Agent status                     | Label column 160 pt, capability columns 120 / 96 pt, one-line rows                                                                                                                                |
+| Providers, MCP servers, key rows | One-line status chips and rows; a key row is label + `Set` + `Change`, the editor opens behind the chip; account names, factory endpoints and wire keys sit under `Advanced`; editor sheet 480 pt |
+| Shortcuts, Creator, Audio        | Pickers pinned to 230–330 pt; a 92 pt readout                                                                                                                                                     |
+| Tray                             | Panel is 300 pt; status pills are one line and fixed-size; `Status: %@` and banners are one line                                                                                                  |
+| Onboarding                       | Welcome cards `minHeight` 135; readiness label column 150 pt                                                                                                                                      |
+| Overlay                          | Footer notice is one line (the tightest slot in the app); coverage chip one line; popovers 250–300 pt; minimum window 320 pt                                                                      |
+| Agent chat                       | Thread title is one line beside the status pill; inspect labels in a 64 pt column; collapsed rail section titles                                                                                  |
 
 ---
 

@@ -1813,12 +1813,12 @@
         }
       }
     },
-    "Add custom provider" : {
+    "Add a server that speaks OpenAI Responses or Anthropic Messages." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dodaj własnego dostawcę"
+            "value" : "Dodaj serwer zgodny z OpenAI Responses lub Anthropic Messages."
           }
         }
       }
@@ -1896,16 +1896,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zaawansowane"
-          }
-        }
-      }
-    },
-    "Advanced · OAuth client id…" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zaawansowane · identyfikator klienta OAuth…"
           }
         }
       }
@@ -2357,16 +2347,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz API Anthropic"
-          }
-        }
-      }
-    },
-    "Any host speaking the OpenAI Responses or Anthropic Messages wire — a local model server, a gateway, a relay. The key is optional; add as many as you need." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Możesz dodać dowolny serwer obsługujący API OpenAI Responses lub Anthropic Messages, np. lokalny serwer modeli, bramę lub serwer pośredniczący. Klucz jest opcjonalny. Dodaj tylu dostawców, ilu potrzebujesz."
           }
         }
       }
@@ -3545,12 +3525,12 @@
         }
       }
     },
-    "Cloud mode and consent stay on Dictation; endpoints and keys live here." : {
+    "Cloud mode is switched on under Dictation. The connection is set up here." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tryb chmurowy i zgodę na przesyłanie nagrań ustawisz w sekcji Dyktowanie. Tutaj znajdziesz adresy API i klucze dostępu."
+            "value" : "Tryb chmurowy włączysz w Dyktowanie. Tutaj konfigurujesz połączenie."
           }
         }
       }
@@ -3567,6 +3547,17 @@
     },
     "Cloud provider" : {
       "shouldTranslate" : false
+    },
+    "Cloud transcription" : {
+      "comment" : "Providers section: cloud STT lanes",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcje w chmurze"
+          }
+        }
+      }
     },
     "Cloud — live refinement through the Libraxis gateway. Requires your explicit consent to send audio off this Mac; the app stores no vendor keys." : {
       "localizations" : {
@@ -3889,6 +3880,17 @@
         }
       }
     },
+    "Connect accounts or add API keys. Models are chosen under Agent › LLM lanes." : {
+      "comment" : "Providers panel blurb; `LLM lanes` is the Agent tab title",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połącz konta lub dodaj klucze API. Modele wybierzesz w Agent › Ścieżki modeli AI."
+          }
+        }
+      }
+    },
     "Connect an AI provider" : {
       "comment" : "Setup step heading",
       "localizations" : {
@@ -3928,6 +3930,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Połączono"
+          }
+        }
+      }
+    },
+    "Connected as %@" : {
+      "comment" : "Provider account row; the placeholder is the signed-in email",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połączono jako %@"
           }
         }
       }
@@ -5402,12 +5415,12 @@
         }
       }
     },
-    "Endpoints and keys live on Providers › Speech-to-text Cloud Service." : {
+    "Endpoints and keys live on Providers › Cloud transcription." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Adresy API i klucze ustawisz w: Dostawcy › Usługa rozpoznawania mowy w chmurze."
+            "value" : "Adresy API i klucze ustawisz w: Dostawcy › Transkrypcje w chmurze."
           }
         }
       }
@@ -5605,6 +5618,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Brak pliku na dysku"
+          }
+        }
+      }
+    },
+    "File transcription" : {
+      "comment" : "Cloud transcription lane: recorded files",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcja plików"
           }
         }
       }
@@ -5945,16 +5969,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Token GitHub"
-          }
-        }
-      }
-    },
-    "GitHub token. Speech-to-text endpoints and keys live in the section above." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Token GitHub. Adresy API i klucze do rozpoznawania mowy są w sekcji powyżej."
           }
         }
       }
@@ -6574,6 +6588,16 @@
         }
       }
     },
+    "Keychain account" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konto w pęku kluczy"
+          }
+        }
+      }
+    },
     "Keychain error %@" : {
       "comment" : "Fallback when macOS has no message; the placeholder is the status code",
       "localizations" : {
@@ -6585,12 +6609,12 @@
         }
       }
     },
-    "Keys and endpoints. Vendors always use their factory endpoint; a custom provider is any host that speaks /v1/responses or /v1/messages. Which model each lane sends lives under Agent › Request lanes." : {
+    "Keys are stored securely in the macOS Keychain." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Klucze i adresy API. Wbudowani dostawcy zawsze korzystają ze swoich domyślnych adresów. Dostawcą niestandardowym może być dowolny host obsługujący /v1/responses lub /v1/messages. Model używany przez każdą ścieżkę ustawisz w Agent › Ścieżki żądań."
+            "value" : "Klucze są bezpiecznie przechowywane w pęku kluczy macOS."
           }
         }
       }
@@ -6819,6 +6843,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz do transkrypcji na żywo"
+          }
+        }
+      }
+    },
+    "Live transcription" : {
+      "comment" : "Cloud transcription lane: live socket",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcja na żywo"
           }
         }
       }
@@ -7986,16 +8021,6 @@
         }
       }
     },
-    "Not a secret. Blank clears the lane; the bridge rejects a URL whose scheme does not fit this lane." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "To nie jest poufna informacja. Wyczyść pole, aby usunąć adres dla tego połączenia. Codescribe nie zaakceptuje adresu z protokołem niezgodnym z tym typem połączenia."
-          }
-        }
-      }
-    },
     "Not connected" : {
       "comment" : "Setup Agent account row status",
       "localizations" : {
@@ -8098,6 +8123,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tryb notatek"
+          }
+        }
+      }
+    },
+    "OAuth client id…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Identyfikator klienta OAuth…"
           }
         }
       }
@@ -8423,6 +8458,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Opcjonalne — możesz pominąć ten krok; ograniczy to tylko funkcje korzystające z plików."
+          }
+        }
+      }
+    },
+    "Optional. Used for live transcription." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opcjonalny. Używany do transkrypcji na żywo."
           }
         }
       }
@@ -9079,16 +9124,6 @@
         }
       }
     },
-    "Providers." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dostawcy."
-          }
-        }
-      }
-    },
     "Pulsing red" : {
       "comment" : "Recording light colour",
       "localizations" : {
@@ -9667,16 +9702,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdź oczekujące prośby o zgodę"
-          }
-        }
-      }
-    },
-    "Refresh provider access" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odśwież dostęp"
           }
         }
       }
@@ -10997,16 +11022,6 @@
         }
       }
     },
-    "Session-mint endpoint for live Cloud Layer 1. Not the live socket above. Clearing restores unset." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Adres API używany do tworzenia sesji dla transkrypcji na żywo w trybie chmurowym. To nie jest adres połączenia na żywo podany wyżej. Wyczyść pole, aby usunąć to ustawienie."
-          }
-        }
-      }
-    },
     "Set" : {
       "comment" : "Setup API key row status",
       "localizations" : {
@@ -11046,6 +11061,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ustawienia"
+          }
+        }
+      }
+    },
+    "Settings keys" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucze ustawień"
           }
         }
       }
@@ -11742,16 +11767,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozpoznawanie mowy niedostępne"
-          }
-        }
-      }
-    },
-    "Speech-to-text Cloud Service" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Usługa rozpoznawania mowy w chmurze"
           }
         }
       }
@@ -12882,6 +12897,28 @@
         }
       }
     },
+    "This address needs http:// or https://." : {
+      "comment" : "File transcription endpoint rejected for its scheme",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten adres wymaga http:// lub https://."
+          }
+        }
+      }
+    },
+    "This address needs ws:// or wss://." : {
+      "comment" : "Live transcription endpoint rejected for its scheme",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten adres wymaga ws:// lub wss://."
+          }
+        }
+      }
+    },
     "This build embeds Whisper (fat SKU). Runtime download is not required." : {
       "localizations" : {
         "pl" : {
@@ -13640,16 +13677,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Używane zastępczo domyślne urządzenie systemowe: %@"
-          }
-        }
-      }
-    },
-    "Vendors" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dostawcy"
           }
         }
       }
@@ -14901,16 +14928,6 @@
         }
       }
     },
-    "endpoint" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "adres API"
-          }
-        }
-      }
-    },
     "endpoint %@" : {
       "localizations" : {
         "pl" : {
@@ -14938,16 +14955,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "błąd"
-          }
-        }
-      }
-    },
-    "factory endpoint" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "wbudowany adres API"
           }
         }
       }
@@ -15658,16 +15665,6 @@
         }
       }
     },
-    "not set" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "nie ustawiono"
-          }
-        }
-      }
-    },
     "not tested" : {
       "localizations" : {
         "pl" : {
@@ -15757,16 +15754,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "otwórz Ustawienia systemowe"
-          }
-        }
-      }
-    },
-    "optional" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "opcjonalnie"
           }
         }
       }
@@ -16083,33 +16070,12 @@
         }
       }
     },
-    "secrets live only in the Keychain — presence shown, value hidden" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "dane uwierzytelniające są przechowywane tylko w pęku kluczy. Widać, czy są zapisane, ale ich wartości są ukryte"
-          }
-        }
-      }
-    },
     "sent · waiting for receipt" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "wysłano · oczekiwanie na potwierdzenie odbioru"
-          }
-        }
-      }
-    },
-    "set" : {
-      "comment" : "Status chip: a value is stored",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ustawiono"
           }
         }
       }
@@ -16832,7 +16798,7 @@
       }
     },
     "unset" : {
-      "comment" : "Model row: no model preference stored, lower case\nStatus chip: no value stored",
+      "comment" : "Model row: no model preference stored, lower case",
       "localizations" : {
         "pl" : {
           "stringUnit" : {

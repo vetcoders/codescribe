@@ -169,6 +169,96 @@ final class SettingsChromeContractTests: XCTestCase {
     }
   }
 
+  /// Providers shows what a user acts on and nothing that explains the
+  /// architecture: Keychain account names, factory endpoints, wire keys and
+  /// the OAuth client-id override sit under one `Advanced` disclosure per
+  /// card; a key row is one line with `Change` / `Add`; the account row has
+  /// one action; URL rows carry no pre-emptive help text. Every first-level
+  /// string has a Polish row.
+  func testProvidersPanelKeepsTheFirstLevelPlain() throws {
+    let sources = try settingsSources()
+    let panel = try XCTUnwrap(sources["ProvidersPanel.swift"])
+    let rows = try XCTUnwrap(sources["KeyRows.swift"])
+
+    XCTAssertEqual(panel.components(separatedBy: "DisclosureGroup(\"Advanced\")").count, 3)
+    XCTAssertTrue(panel.contains("String(localized: \"Providers\")"))
+    XCTAssertFalse(panel.contains("\"Providers.\""))
+    XCTAssertFalse(panel.contains("factory endpoint"))
+    XCTAssertFalse(panel.contains("SettingsSectionLabel(String(localized: \"Vendors\"))"))
+    XCTAssertFalse(panel.contains("help:"), "URL rows do not warn ahead of a rejected save")
+    XCTAssertFalse(panel.contains("Text(lane.title)"), "lane titles are named by id")
+    // The wire line is a developer-build fact, and only under Advanced.
+    let accepts = try XCTUnwrap(panel.range(of: "Text(lane.accepts)"))
+    let gate = try XCTUnwrap(panel.range(of: "if DeveloperSurface.isEnabled() {"))
+    XCTAssertLessThan(gate.lowerBound, accepts.lowerBound)
+    XCTAssertLessThan(
+      accepts.lowerBound.utf16Offset(in: panel) - gate.lowerBound.utf16Offset(in: panel), 80)
+
+    // Key row: label and state on one line, the editor behind the chip, no account name.
+    let keyRow = try XCTUnwrap(rows.range(of: "struct KeyRow: View"))
+    let keyRowEnd = try XCTUnwrap(rows.range(of: "extension KeyRow {"))
+    let keyRowSource = rows[keyRow.lowerBound..<keyRowEnd.lowerBound]
+    XCTAssertFalse(keyRowSource.contains("Text(account)"))
+    XCTAssertTrue(keyRowSource.contains("isSet ? \"Change\" : \"Add\""))
+    XCTAssertTrue(
+      keyRowSource.contains("isSet ? \"Set\" : (optional ? \"Optional\" : \"Not set\")"))
+    let chip = try XCTUnwrap(keyRowSource.range(of: "editing.toggle()"))
+    let field = try XCTUnwrap(keyRowSource.range(of: "if editing {"))
+    XCTAssertLessThan(chip.lowerBound, field.lowerBound)
+
+    // Account row: Sign out XOR Sign in.
+    let account = try XCTUnwrap(rows.range(of: "struct AccountLoginRow: View"))
+    let accountSource = rows[account.lowerBound...]
+    XCTAssertTrue(
+      accountSource.contains("if signedIn {\n        SettingsChipButton(\n          \"Sign out\""))
+    XCTAssertTrue(
+      accountSource.contains(
+        "} else {\n        SettingsChipButton(\n          enabled: provider.accountLoginEnabled"))
+    XCTAssertFalse(accountSource.contains("Advanced · OAuth client id…"))
+
+    let polish = try polishCatalog()
+    for key in [
+      "Providers",
+      "Connect accounts or add API keys. Models are chosen under Agent › LLM lanes.",
+      "Refresh status",
+      "Add provider",
+      "Add a server that speaks OpenAI Responses or Anthropic Messages.",
+      "Cloud transcription",
+      "Your recordings leave your machine.",
+      "Cloud mode is switched on under Dictation. The connection is set up here.",
+      "File transcription",
+      "Live transcription",
+      "Endpoint",
+      "API key",
+      "Gateway session URL",
+      "Optional. Used for live transcription.",
+      "Keys are stored securely in the macOS Keychain.",
+      "Advanced",
+      "Keychain account",
+      "Settings keys",
+      "OAuth client id…",
+      "Set", "Not set", "Optional", "Change", "Add",
+      "%@ account", "Connected", "Connected as %@", "Not connected", "Sign out", "Sign in with %@",
+      "This address needs http:// or https://.",
+      "This address needs ws:// or wss://.",
+    ] {
+      let translated = try XCTUnwrap(polish[key], "no Polish row: \(key)")
+      XCTAssertEqual(translated.first?.isUppercase, true, "\(key) → \(translated)")
+    }
+    XCTAssertEqual(polish["Providers"], "Dostawcy")
+    XCTAssertEqual(polish["Cloud transcription"], "Transkrypcje w chmurze")
+    XCTAssertEqual(polish["File transcription"], "Transkrypcja plików")
+    XCTAssertEqual(polish["Live transcription"], "Transkrypcja na żywo")
+    XCTAssertEqual(polish["Connected as %@"], "Połączono jako %@")
+    for retired in [
+      "Providers.", "Refresh provider access", "factory endpoint",
+      "Speech-to-text Cloud Service", "Advanced · OAuth client id…",
+      "secrets live only in the Keychain — presence shown, value hidden",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
   func testAvailabilityTintsUseSolidTerracotta() throws {
     let model = try XCTUnwrap(settingsSources()["SettingsViewModel.swift"])
     XCTAssertEqual(

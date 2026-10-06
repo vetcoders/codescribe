@@ -78,9 +78,18 @@ The same tab also owns:
 
 ## Providers and Agent
 
-Open **Settings → Providers** to manage accounts, API keys and provider
-endpoints. Vendor endpoints are factory-defined; custom hosts have editable
-endpoints. Secrets are stored separately from account sign-in.
+Open **Settings → Providers** to connect accounts and add API keys. Each
+provider card shows its key as one line — **API key · Set** with **Change**
+(or **Add**) opening the editor — and, for vendors with a sign-in flow, one
+account line with a single action: **Sign out** while connected (the line
+names the account, e.g. **Connected as name@example.com**), **Sign in with …**
+otherwise. Vendor endpoints are factory-defined and sit under each card's
+**Advanced** disclosure together with the Keychain account name and the OAuth
+client-id override; custom hosts show their endpoint on the card and edit it
+through **Edit**. **Cloud transcription** holds the File and Live lanes
+(endpoint, key, and for Live the optional gateway session URL); a rejected
+address reads as one sentence under the field, e.g. **This address needs
+ws:// or wss://.** Secrets are stored separately from account sign-in.
 
 Open **Settings → Agent → LLM lanes** to select a provider and model separately
 for **Assistive** (Agent and voice-assistant requests) and **Formatting**
@@ -90,9 +99,9 @@ for **Assistive** (Agent and voice-assistant requests) and **Formatting**
 
 Settings and Setup read provider credentials in the background. The initial
 read shows **Checking provider access…** rather than claiming an account or
-key is missing. An access error remains visible with **Retry provider access**;
+key is missing. An access error remains visible with **Try again** in Setup;
 a previous successful snapshot is labeled as the last checked state. Settings
-also offers **Refresh provider access**. Returning focus refreshes only the
+also offers **Refresh status**. Returning focus refreshes only the
 owning Settings or Setup window, and repeated requests share the pending read.
 Permission changes refresh permissions and hotkeys separately.
 

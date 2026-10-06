@@ -41,7 +41,7 @@ final class SettingsSnapshotOrderingTests: XCTestCase {
       runtimeLlmLaneProvider: { store.runtimeLane($0) })
   }
 
-  func testOldAccessSnapshotCannotReplaceNewerCommittedSttEndpoint() async {
+  func testOldAccessSnapshotCannotReplaceNewerCommittedSttEndpoint() async throws {
     let snapshot = PendingSettingsSnapshot()
     let oldEndpoint = "https://old.example.test/v1/audio/transcriptions"
     let newEndpoint = "https://new.example.test/v1/audio/transcriptions"
@@ -49,7 +49,7 @@ final class SettingsSnapshotOrderingTests: XCTestCase {
     let model = makeModel(snapshot)
     model.refreshProviderAccess()
     await awaitCondition { snapshot.continuation != nil }
-    model.setSttLaneEndpoint("file", newEndpoint)
+    try model.setSttLaneEndpoint("file", newEndpoint)
     XCTAssertEqual(snapshot.settings.sttFileEndpoint, newEndpoint)
     XCTAssertEqual(model.sttLanes.first?.endpoint, newEndpoint)
     snapshot.resolve(endpoint: oldEndpoint)

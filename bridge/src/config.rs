@@ -445,6 +445,8 @@ pub struct CsModelDiscovery {
 }
 
 /// Provider identity and credential presence; never a returned secret.
+/// `account_identity` is who the stored id token says is signed in (email,
+/// else subject) — `None` while signed out or without such a claim.
 #[derive(uniffi::Record)]
 pub struct CsProviderOption {
     pub id: String,
@@ -458,6 +460,7 @@ pub struct CsProviderOption {
     pub account_signed_in: bool,
     pub account_login_enabled: bool,
     pub account_status_message: String,
+    pub account_identity: Option<String>,
     pub oauth_client_id: Option<String>,
 }
 
@@ -2582,6 +2585,7 @@ fn provider_option(provider: ResolvedProvider) -> CsProviderOption {
         account_login_enabled: status
             .as_ref()
             .is_some_and(|status| status.client_id_configured),
+        account_identity: status.as_ref().and_then(|status| status.identity.clone()),
         account_status_message: status.map(|status| status.message).unwrap_or_default(),
         oauth_client_id: provider
             .oauth_vendor

@@ -2635,8 +2635,9 @@ final class SettingsViewModel: ObservableObject {
 
   var asrGatewayUrl: String { settings.asrGatewayUrl ?? "" }
 
-  func setAsrGatewayUrl(_ value: String) {
-    persist("CODESCRIBE_ASR_GATEWAY_URL", value.trimmingCharacters(in: .whitespaces))
+  /// Throws the bridge's rejection so the row can show it under the field.
+  func setAsrGatewayUrl(_ value: String) throws {
+    try persistOrThrow("CODESCRIBE_ASR_GATEWAY_URL", value.trimmingCharacters(in: .whitespaces))
   }
 
   var localWhisperRuntimeState: LocalWhisperRuntimeState {
@@ -2790,11 +2791,13 @@ final class SettingsViewModel: ObservableObject {
 
   /// Persist one lane's endpoint (`STT_FILE_ENDPOINT` / `STT_LIVE_ENDPOINT`). Blank
   /// clears; the bridge validates the scheme per lane and a rejection lands in `lastError`.
-  func setSttLaneEndpoint(_ id: String, _ value: String) {
+  /// Throws the bridge's rejection (wrong scheme for the lane, plaintext off
+  /// loopback, credentials in the URL) so the row can show it under the field.
+  func setSttLaneEndpoint(_ id: String, _ value: String) throws {
     guard let lane = sttLanes.first(where: { $0.id == id }) else { return }
     providerAccessGeneration &+= 1
-    persist(lane.endpointWireKey, value.trimmingCharacters(in: .whitespaces))
-    if let engine { sttLanes = engine.sttLanes() }
+    defer { if let engine { sttLanes = engine.sttLanes() } }
+    try persistOrThrow(lane.endpointWireKey, value.trimmingCharacters(in: .whitespaces))
   }
 
   func setWhisperAdaptiveBuffer(_ enabled: Bool) {
@@ -2808,13 +2811,18 @@ final class SettingsViewModel: ObservableObject {
   }
 
   private func persist(_ key: String, _ value: String) {
-    guard let engine else { return }
     do {
-      try engine.updateConfig(key: key, value: value)
-      applyLoadedSettings(engine.loadSettings())
+      try persistOrThrow(key, value)
     } catch {
       lastError = String(describing: error)
     }
+  }
+
+  /// `persist` for rows that present the rejection inline instead of as `lastError`.
+  private func persistOrThrow(_ key: String, _ value: String) throws {
+    guard let engine else { return }
+    try engine.updateConfig(key: key, value: value)
+    applyLoadedSettings(engine.loadSettings())
   }
 
   private func persistMany(_ entries: [CsConfigEntry]) {

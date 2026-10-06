@@ -1632,7 +1632,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(model.activeSTT, "Apple")
   }
 
-  func testAsrModePickerPersistsPromotedKeysAndRequiresCloudConsent() {
+  func testAsrModePickerPersistsPromotedKeysAndRequiresCloudConsent() throws {
     var writes: [(String, String)] = []
     var persisted = CsSettings.sample
     persisted.asrMode = "cloud"
@@ -1681,13 +1681,13 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(writes.map(\.1), ["apple_only"])
     XCTAssertEqual(model.asrModeId, "apple_only")
 
-    model.setSttLaneEndpoint("live", "wss://asr.example/v1/audio/transcribe")
+    try model.setSttLaneEndpoint("live", "wss://asr.example/v1/audio/transcribe")
     XCTAssertEqual(writes.last?.0, "STT_LIVE_ENDPOINT")
     XCTAssertEqual(model.sttLanes.last?.endpoint, "wss://asr.example/v1/audio/transcribe")
-    model.setSttLaneEndpoint("file", "https://asr.example/v1/audio/transcriptions")
+    try model.setSttLaneEndpoint("file", "https://asr.example/v1/audio/transcriptions")
     XCTAssertEqual(writes.last?.0, "STT_FILE_ENDPOINT")
     XCTAssertEqual(model.sttLanes.first?.endpoint, "https://asr.example/v1/audio/transcriptions")
-    model.setAsrGatewayUrl("https://gateway.example/session")
+    try model.setAsrGatewayUrl("https://gateway.example/session")
     XCTAssertEqual(writes.last?.0, "CODESCRIBE_ASR_GATEWAY_URL")
   }
 
