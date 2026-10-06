@@ -28558,22 +28558,6 @@ mod forensic_word_conservation_fixture {
         }
     }
 
-    fn piece(utterance_id: u64, occurrence: &OccurrenceIdentity, text: &str) -> CoalescedPiece {
-        let start_ts = occurrence.sample_start as f32 / RATE as f32;
-        let end_ts = occurrence.sample_end as f32 / RATE as f32;
-        CoalescedPiece {
-            utterance_id,
-            occurrence: occurrence.clone(),
-            committed_text: text.to_string(),
-            audio: vec![0.2; occurrence.sample_len() as usize],
-            sample_start: occurrence.sample_start,
-            sample_end: occurrence.sample_end,
-            start_ts,
-            covered_through_secs: end_ts,
-            segment_count: 1,
-        }
-    }
-
     fn segment(session: &str, text: &str, start: u64, end: u64) -> TimedTailSegment {
         TimedTailSegment {
             confidence: None,
@@ -28658,24 +28642,29 @@ mod forensic_word_conservation_fixture {
     }
 
     pub fn capture_trace(
-        adaptive: bool,
+        fragmented_ingress: bool,
         contracted: bool,
     ) -> Vec<(
         crate::pipeline::acoustic_ledger::AcousticLedger,
         Vec<EngineEvent>,
     )> {
-        let session = match (adaptive, contracted) {
+        let session = match (fragmented_ingress, contracted) {
             (false, false) => "B45-coarse-windows",
-            (true, false) => "B45-coarse-adaptive",
+            (true, false) => "B45-coarse-fragmented",
             (false, true) => "B45-pinned-windows",
-            (true, true) => "B45-pinned-adaptive",
+            (true, true) => "B45-pinned-fragmented",
         };
         let mut lane = open(session);
-        if adaptive {
-            lane.state.layer1_coalesce = Layer1Coalesce::adaptive();
-        }
         let pcm = vec![0.2_f32; 200_000];
-        lane.state.audio.push(&pcm);
+        if fragmented_ingress {
+            for block in pcm.chunks(320) {
+                lane.state.audio.push(block);
+                lane.state.pump_capture_windows(&lane.tx);
+            }
+        } else {
+            lane.state.audio.push(&pcm);
+            lane.state.pump_capture_windows(&lane.tx);
+        }
         record_energy(
             &lane,
             &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
@@ -28705,14 +28694,14 @@ mod forensic_word_conservation_fixture {
                 segments: Vec::new(),
             },
         );
-        let mut input = piece(1, &owner, "");
-        input.audio = pcm.clone();
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        assert!(lane.state.register_whisper_owner(&lane.tx, 1, &owner));
+        lane.state.capture_stopping = true;
+        lane.state.pump_capture_windows(&lane.tx);
         let requests = take_requests(&mut lane.tail_rx);
         assert_eq!(
             requests.len(),
-            if adaptive { 2 } else { 4 },
-            "actual request set determines whether any work is cancelled"
+            3,
+            "12.5s capture has two full grid windows and one EOF residual"
         );
 
         for request in &requests {
@@ -28809,13 +28798,13 @@ mod forensic_word_conservation_fixture {
 }
 #[cfg(feature = "test-isolation")]
 pub fn forensic_word_conservation_trace(
-    adaptive: bool,
+    fragmented_ingress: bool,
     contracted: bool,
 ) -> Vec<(
     crate::pipeline::acoustic_ledger::AcousticLedger,
     Vec<EngineEvent>,
 )> {
-    forensic_word_conservation_fixture::capture_trace(adaptive, contracted)
+    forensic_word_conservation_fixture::capture_trace(fragmented_ingress, contracted)
 }
 
 #[cfg(test)]
