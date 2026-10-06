@@ -145,6 +145,33 @@ belongs only after verified installation and launch.
 
 ## Definition of Undone for this cut
 
+### Goal continuation: current-source acceptance inventory
+
+The objective attachment was reread after checkpoint
+`3c1d183b8f64ed8019b156f854120285955bd912`. The worktree was clean and that
+commit remained HEAD. The previous turn made source progress; it did not
+complete installed-product acceptance. No integrator designation has arrived.
+
+| Explicit requirement | Current source evidence | Remaining proof |
+| --- | --- | --- |
+| Concise embedded agent list, without dictation | `OverlayChannelStatusView.details`, `channelRow`, filtered channels in `DictationOverlayView.channelStatusView` | Complete live roster, narrow/wide layout and Polish rendering |
+| Microphone and persistent mute for each agent | Shared `OverlayAgentAudioControls`, exact playback identity/receipt, automatic `say_reply` route | Isolation, mute during speech, preserved reply history and later manual replay |
+| Same controls beside conversation name and hamburger | `OverlayConversationView.navigation` | Correct session, keyboard and accessibility behavior |
+| Larger close dot and waveform | 9-point `closeButton`, doubled `WaveformView.maxBarHeight` | Rendered appearance and hit target |
+| Timer near waveform and circular header controls | `justifiedHeader`, `OverlayPlacementMenu` and shared glyph | Layout at supported widths |
+| Diagonal fold into minimal floating widget | 45-degree chevron, `miniHeader`, 180 × 46 `collapsedSize`, saved expanded size, `.floating` rest level and all-Spaces collection behavior | Actual collapse, hover, drag, restore and display transitions |
+
+Source review also identified an existing test that contradicts the new
+Founder-requested interface:
+`OverlayChannelDeliveryTests.testChannelChromeIsOutsideCollapseGateAndDragStillPrecedesGlass`
+asserts the old native `Menu`, hidden menu indicator, `Capture channels` button
+and `overlay-channel-open-` marker. The integrator must replace those old-shape
+assertions with evidence for the embedded sidebar and shared audio controls,
+while preserving passive navigation and microphone ownership. Tests were read,
+not changed or executed by the worker. Existing collapsed-height checks do not
+establish the new 180-point width; the integrator must add that assertion and
+restoration coverage. Source agreement is not a runtime verdict.
+
 | Surface | State |
 | --- | --- |
 | Source and Polish draft copy | Authored; static review only |
