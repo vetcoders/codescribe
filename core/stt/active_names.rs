@@ -292,6 +292,59 @@ mod tests {
         );
     }
 
+    /// A lease shaped like the helper's: identity plus a mailbox of `padding`
+    /// bytes of transcript-bearing envelopes this reader never looks at.
+    fn write_lease_with_mailbox(root: &Path, file: &str, session: &str, padding: usize) -> u64 {
+        let dir = root.join("leases");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(file);
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "name": "igor",
+                "active": true,
+                "heartbeat_unix": 995.0,
+                "provider": "claude-code",
+                "provider_session_id": session,
+                "pending": [{"kind": "revised", "text": "x".repeat(padding)}],
+                "unclosed_channel_messages": {},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::metadata(&path).unwrap().len()
+    }
+
+    #[test]
+    fn a_follower_with_a_full_mailbox_is_still_listening() {
+        let temp = tempfile::tempdir().unwrap();
+        // 891 KB is the largest lease measured on a live session on 2026-10-06.
+        let bytes = write_lease_with_mailbox(temp.path(), "busy.json", "sess-busy", 891 * 1024);
+        assert!(bytes > 891 * 1024);
+
+        assert_eq!(
+            live_follower_sessions_at(temp.path(), 1_000.0, 120.0),
+            HashSet::from([("claude-code".to_string(), "sess-busy".to_string())])
+        );
+        assert_eq!(read_active_names_at(temp.path(), 1_000.0, 120.0), ["Igor"]);
+    }
+
+    #[test]
+    fn a_lease_larger_than_the_helper_can_write_is_not_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes = write_lease_with_mailbox(
+            temp.path(),
+            "runaway.json",
+            "sess-runaway",
+            MAX_LEASE_BYTES as usize,
+        );
+        assert!(bytes > MAX_LEASE_BYTES);
+
+        assert!(live_follower_sessions_at(temp.path(), 1_000.0, 120.0).is_empty());
+        assert!(read_active_names_at(temp.path(), 1_000.0, 120.0).is_empty());
+    }
+
     #[test]
     fn malformed_or_future_lease_fails_open() {
         let temp = tempfile::tempdir().unwrap();
