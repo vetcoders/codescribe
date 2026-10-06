@@ -8,6 +8,7 @@ private final class ControlledProviderEngine: OnboardingEngine {
   var progress: UInt32 = 9
   var reads = 0
   var writes = 0
+  var keySaveAccounts: [String] = []
   var revision: UInt64 = 0
   var failProviderSelection = false
   var providerSelectionAttempts: [String] = []
@@ -41,6 +42,7 @@ private final class ControlledProviderEngine: OnboardingEngine {
   }
   func setApiKeyAsync(account: String, secret: String) async throws {
     writes += 1
+    keySaveAccounts.append(account)
     try await withCheckedThrowingContinuation { write = $0 }
   }
   func resolveRead(revision: UInt64? = nil, accountErrors: [String: String] = [:]) {
@@ -184,6 +186,68 @@ final class ProviderAccessOrderingTests: XCTestCase {
     XCTAssertFalse(model.apiKeyEditorExpanded)
     XCTAssertEqual(model.apiKeyDraft, "")
     XCTAssertEqual(model.step, .apiKey, "Save alone does not advance the wizard")
+  }
+
+  func testOptionalCustomProviderKeyCanBeEditedSavedAndRetriedWithoutChangingProvider() async {
+    let engine = ControlledProviderEngine()
+    engine.provider.id = "custom:optional-fixture"
+    engine.provider.kind = "custom"
+    engine.provider.apiKeyAccount = "LLM_CUSTOM_OPTIONAL_FIXTURE_API_KEY"
+    engine.provider.keyRequired = false
+    engine.provider.apiKeySet = false
+    engine.provider.accountSignedIn = false
+    engine.provider.accountLoginEnabled = false
+    let model = makeModel(engine)
+    await load(model, engine)
+    guard model.apiKeySaveAvailable else {
+      XCTFail("An optional custom-provider key must remain editable and saveable")
+      return
+    }
+    XCTAssertFalse(model.selectedProviderKeySet)
+    model.beginApiKeyEditing()
+    XCTAssertTrue(model.apiKeyEditorExpanded)
+    model.apiKeyDraft = "synthetic-optional-key"
+    model.saveApiKey()
+    await awaitCondition { engine.write != nil }
+    engine.resolveWrite(success: false)
+    await awaitCondition { !model.providerMutationPending && engine.read != nil }
+    engine.resolveRead()
+    await awaitCondition { !model.providerAccessPending }
+    XCTAssertEqual(model.apiKeyDraft, "synthetic-optional-key")
+    XCTAssertTrue(model.apiKeyEditorExpanded)
+    XCTAssertNotNil(model.apiKeySaveError)
+    XCTAssertEqual(engine.keySaveAccounts, [engine.provider.apiKeyAccount])
+    model.saveApiKey()
+    await awaitCondition { engine.write != nil }
+    engine.resolveWrite(success: true)
+    engine.provider.apiKeySet = true
+    await awaitCondition { !model.providerMutationPending && engine.read != nil }
+    engine.resolveRead()
+    await awaitCondition { !model.providerAccessPending }
+    XCTAssertEqual(
+      engine.keySaveAccounts, [engine.provider.apiKeyAccount, engine.provider.apiKeyAccount])
+    XCTAssertEqual(model.apiKeyDraft, "")
+    XCTAssertFalse(model.apiKeyEditorExpanded)
+    XCTAssertTrue(model.selectedProviderKeySet)
+    XCTAssertNil(model.apiKeySaveError)
+    XCTAssertEqual(model.selectedProviderId, engine.provider.id)
+    XCTAssertTrue(engine.providerSelectionAttempts.isEmpty)
+    XCTAssertEqual(model.step, .apiKey)
+  }
+
+  func testProviderWithoutAnApiKeyAccountCannotOpenOrSaveAKey() async {
+    let engine = ControlledProviderEngine()
+    engine.provider.apiKeyAccount = ""
+    engine.provider.keyRequired = false
+    let model = makeModel(engine)
+    await load(model, engine)
+    XCTAssertFalse(model.apiKeySaveAvailable)
+    model.beginApiKeyEditing()
+    XCTAssertFalse(model.apiKeyEditorExpanded)
+    model.apiKeyDraft = "synthetic-unsupported-key"
+    model.saveApiKey()
+    XCTAssertEqual(engine.writes, 0)
+    XCTAssertTrue(engine.keySaveAccounts.isEmpty)
   }
 
   func testProviderSwitchKeepsDraftsSeparateAndReturnsToCollapsedEditor() async throws {

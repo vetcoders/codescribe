@@ -712,14 +712,17 @@ final class OnboardingViewModel: ObservableObject {
     selectedProvider?.apiKeySet == true
   }
 
+  var selectedProviderHasApiKeyAccount: Bool {
+    selectedProvider?.apiKeyAccount.isEmpty == false
+  }
+
   var selectedProviderRequiresApiKey: Bool {
     selectedProvider?.keyRequired == true
   }
 
   var apiKeySaveAvailable: Bool {
     providerAccessResolved && providerAccessError == nil
-      && selectedProviderRequiresApiKey
-      && selectedProvider?.apiKeyAccount.isEmpty == false
+      && selectedProviderHasApiKeyAccount
   }
 
   var selectedProviderAccountError: String? { providerAccountErrors[selectedProviderId] }
@@ -787,7 +790,7 @@ final class OnboardingViewModel: ObservableObject {
   }
 
   func beginApiKeyEditing() {
-    guard selectedProviderRequiresApiKey else { return }
+    guard selectedProviderHasApiKeyAccount else { return }
     apiKeyEditorExpanded = true
   }
 

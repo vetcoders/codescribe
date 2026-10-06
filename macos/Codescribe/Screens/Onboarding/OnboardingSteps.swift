@@ -542,7 +542,7 @@ struct ApiKeyStepView: View {
         accountField
       }
 
-      if model.selectedProviderRequiresApiKey {
+      if model.selectedProviderHasApiKeyAccount {
         keyField
       }
     }
@@ -701,7 +701,8 @@ struct ApiKeyStepView: View {
 
   private var keyStatusColor: Color {
     if model.providerAccessPending || model.providerAccessError != nil { return CSColor.textFaint }
-    return model.selectedProviderKeySet ? CSColor.oliveLight : CSColor.terracottaLight
+    if model.selectedProviderKeySet { return CSColor.oliveLight }
+    return model.selectedProviderRequiresApiKey ? CSColor.terracottaLight : CSColor.textFaint
   }
 
   private var accountActionTitle: String {

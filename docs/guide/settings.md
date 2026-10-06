@@ -176,6 +176,10 @@ only a short ready state or an inline setup action and error. The preceding
 provider step presents account and API-key presence from the provider credential
 snapshot; diagnostic readiness describes usable provider access and must not be
 read as proof that an API key exists.
+Setup shows the API-key row and editor whenever the provider has an API-key
+account, including optional keys for custom endpoints. Whether a key is required
+does not decide whether it can be edited or saved. Providers without an API-key
+account expose no editor or save action.
 Readiness also requires the loader's sealed lane to be usable, including a
 selected model for a custom provider. A key-optional endpoint alone is not ready.
 An unresolved, pending or failed provider read cannot show a ready verdict.
