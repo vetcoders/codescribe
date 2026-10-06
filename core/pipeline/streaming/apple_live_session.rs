@@ -3502,7 +3502,9 @@ impl AppleSealState {
         let Some(payload) = payload else {
             return;
         };
-        let words = 1 + self.complete_covered_word_trials(ev_tx, payload, stopping, 31, false).0;
+        let words = 1 + self
+            .complete_covered_word_trials(ev_tx, payload, stopping, 31, false)
+            .0;
         self.publish_resolved_word_seals(ev_tx);
         info!(
             sample_start = payload.identity.range.sample_start,
@@ -4231,8 +4233,9 @@ impl AppleSealState {
         }
         let mut mutation_admitted = false;
         if let Some(payload) = payload.as_ref() {
-            mutation_admitted |=
-                self.complete_covered_word_trials(ev_tx, payload, false, 32, true).1;
+            mutation_admitted |= self
+                .complete_covered_word_trials(ev_tx, payload, false, 32, true)
+                .1;
             self.acoustic_ledger
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
