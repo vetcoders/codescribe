@@ -1551,15 +1551,19 @@ def utc_now() -> str:
 
 
 def atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    atomic_bytes(path, encoded)
+
+
+def atomic_bytes(path: Path, encoded: bytes) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         path.parent.chmod(0o700)
     except OSError:
         pass
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
-    encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode(
-        "utf-8"
-    )
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, "wb") as handle:
@@ -1620,6 +1624,24 @@ def process_is_alive(pid: Any) -> bool:
     return True
 
 
+def process_identity(pid: int) -> dict[str, str] | None:
+    """Observe one process incarnation and its complete invocation, never TTL."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "-ww", "-p", str(pid), "-o", "lstart=", "-o", "state=", "-o", "command="],
+            capture_output=True, text=True, check=False, timeout=2,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    fields = result.stdout.strip().split(None, 6)
+    if result.returncode or len(fields) != 7 or fields[5].startswith(("T", "Z", "X")):
+        return None
+    return {"started": " ".join(fields[:5]), "command": fields[6]}
+
+
 def active_leases(root: Path, ttl_seconds: float) -> list[dict[str, Any]]:
     """Discover presence without deleting durable identity or recovery cursors.
 
@@ -1669,6 +1691,7 @@ class SessionLease:
         self.bus = str(bus.expanduser().resolve(strict=False))
         self.ttl_seconds = ttl_seconds
         self.coalesce = coalesce
+        self.process_identity = process_identity(os.getpid())
         canonical_lease_id = lease_identifier(provider, provider_session_id)
         if requested_id and requested_id != canonical_lease_id:
             raise ValueError(
@@ -1824,6 +1847,7 @@ class SessionLease:
                 "unclosed_channel_messages": self.unclosed_channel_messages,
                 "active": active,
                 "pid": os.getpid(),
+                "process_identity": self.process_identity,
                 "heartbeat_unix": time.time(),
                 "updated_at": utc_now(),
                 **({"wakeup_configuration": self.wakeup_configuration} if self.wakeup_configuration else {}),
@@ -3652,24 +3676,21 @@ def follower_pidfile(root: Path, lease_id: str) -> Path:
 
 
 def live_follower_pid(root: Path, lease_id: str) -> int | None:
-    """Live follower pid for a lease: pidfile first, then the lease heartbeat.
+    """Live follower pid for a lease; heartbeat freshness never proves death.
 
     A manually started follower has no pidfile but still owns the lease lock;
     spawning next to it would only produce a child that loses the lock and
-    dies, so the lease's own fresh heartbeat also counts as a live follower.
+    dies. Its recorded live process counts even when its heartbeat is stale.
     """
     value = read_json(follower_pidfile(root, lease_id))
     pid = value.get("pid") if isinstance(value, dict) else None
     if isinstance(pid, int) and process_is_alive(pid):
         return pid
     state = read_json(root / "leases" / f"{lease_id}.json")
-    if isinstance(state, dict) and state.get("active") is True:
-        heartbeat = state.get("heartbeat_unix")
+    if isinstance(state, dict):
         lease_pid = state.get("pid")
         if (
-            isinstance(heartbeat, (int, float))
-            and time.time() - float(heartbeat) <= DEFAULT_LEASE_TTL_SECONDS
-            and isinstance(lease_pid, int)
+            isinstance(lease_pid, int)
             and process_is_alive(lease_pid)
         ):
             return lease_pid
@@ -3693,6 +3714,7 @@ def channel_bindings(root: Path) -> Iterator[dict[str, Any]]:
         os.fchmod(lock.fileno(), 0o600)
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         state = read_json(path)
+        original = path.read_bytes() if path.exists() else None
         if path.exists() and (
             not isinstance(state, dict)
             or state.get("schema") != AUDIENCE_BINDING_SCHEMA
@@ -3703,7 +3725,28 @@ def channel_bindings(root: Path) -> Iterator[dict[str, Any]]:
         before = json.dumps(bindings, sort_keys=True)
         yield bindings
         if json.dumps(bindings, sort_keys=True) != before:
-            atomic_json(path, {"schema": AUDIENCE_BINDING_SCHEMA, "bindings": bindings})
+            attempted = {"schema": AUDIENCE_BINDING_SCHEMA, "bindings": bindings}
+            try:
+                atomic_json(path, attempted)
+            except OSError as error:
+                # Replacement can succeed before a durability operation fails.
+                # Restore only our exact attempted document, under the same lock.
+                if read_json(path) == attempted:
+                    try:
+                        if original is None:
+                            path.unlink()
+                        else:
+                            atomic_bytes(path, original)
+                    except OSError:
+                        pass
+                restored = (
+                    not path.exists() if original is None
+                    else path.exists() and path.read_bytes() == original
+                )
+                raise OSError(
+                    "binding write failed; "
+                    + ("original binding restored" if restored else "binding state uncertain")
+                ) from error
 
 
 def occupied_refusal(
@@ -3766,43 +3809,129 @@ def write_channel_binding(
     return path
 
 
-def stop_owned_follower(root: Path, lease_id: str, session: str) -> tuple[int | None, str]:
-    """SIGTERM one provider session's verified follower and wait for it.
-
-    Identity is the proof ``--attach`` already demands before retiring a
-    follower: the lease names this pid and this session, and the command line
-    follows that exact session. Anything else is retained, never killed. The
-    lease, its cursor and its envelopes are untouched either way.
-    """
-    import shlex
-    import signal
-    import subprocess
-
-    pid = live_follower_pid(root, lease_id)
-    if pid is None:
-        return None, "not_running"
-    lease_state = read_json(root / "leases" / f"{lease_id}.json")
-    words = shlex.split(
-        subprocess.run(
-            ["/bin/ps", "-p", str(pid), "-o", "command="],
-            capture_output=True, text=True, check=False,
-        ).stdout
-    )
-    if (
-        not isinstance(lease_state, dict) or lease_state.get("pid") != pid
-        or lease_state.get("provider_session_id") != session
-        or "--follow" not in words
-        or not any(words[i:i + 2] == ["--session", session] for i in range(len(words)))
-    ):
-        return pid, "unverified_retained"
+def require_drained_lease(root: Path, lease_id: str) -> None:
+    """A saved cursor must cover the source before its reader can be retired."""
+    path = root / "leases" / f"{lease_id}.json"
+    state = read_json(path)
+    if (not isinstance(state, dict) or state.get("schema") != LEASE_SCHEMA
+            or state.get("lease_id") != lease_id
+            or not isinstance(state.get("provider"), str)
+            or not isinstance(state.get("provider_session_id"), str)
+            or lease_identifier(state["provider"], state["provider_session_id"]) != lease_id
+            or type(state.get("cursor")) is not int
+            or not isinstance(state.get("bus"), str)
+            or not Path(state["bus"]).is_absolute()
+            or not isinstance(state.get("pending"), list)
+            or any(not isinstance(item, dict) for item in state["pending"])
+            or not isinstance(state.get("unclosed_channel_messages", {}), dict)):
+        raise OSError("unreadable retirement cursor; owner retained")
     try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return pid, "stopped"
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline and process_is_alive(pid):
-        time.sleep(0.1)
-    return (pid, "did_not_exit") if process_is_alive(pid) else (pid, "stopped")
+        end = generation_metadata(Path(state["bus"])).st_size
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        raise OSError("source extent unavailable; owner retained") from error
+    if state["cursor"] != end or state.get("unclosed_channel_messages"):
+        raise OSError("old source is undrained; resume its reader before retiring it")
+
+
+def verified_follower(root: Path, lease_id: str, session: str, pid: int) -> bool:
+    """Bind a live invocation to the incarnation recorded by the lease owner."""
+    import shlex
+
+    state = read_json(root / "leases" / f"{lease_id}.json") or {}
+    observed = process_identity(pid)
+    if (observed is None or state.get("process_identity") != observed
+            or state.get("schema") != LEASE_SCHEMA or state.get("lease_id") != lease_id
+            or state.get("pid") != pid or state.get("provider_session_id") != session
+            or not isinstance(state.get("provider"), str)
+            or lease_identifier(state["provider"], session) != lease_id):
+        return False
+    try:
+        words = shlex.split(observed["command"])
+        def argument(flag: str) -> str | None:
+            positions = [i for i, word in enumerate(words) if word == flag]
+            if len(positions) != 1 or positions[0] + 1 >= len(words):
+                return None
+            return words[positions[0] + 1]
+        return (
+            len(words) >= 2 and Path(words[0]).resolve() == Path(sys.executable).resolve()
+            and Path(words[1]).resolve() == Path(__file__).resolve()
+            and "--follow" in words and argument("--session") == session
+            and argument("--provider") == state["provider"]
+            and argument("--bridge-home") is not None
+            and Path(argument("--bridge-home")).resolve() == root.resolve()
+            and argument("--bus") is not None
+            and Path(argument("--bus")).resolve() == Path(state["bus"]).resolve()
+        )
+    except (ValueError, OSError, TypeError, KeyError):
+        return False
+
+
+@contextlib.contextmanager
+def retirement_guard(
+    root: Path, lease_id: str, session: str, *, bound: bool = True
+) -> Iterator[tuple[int | None, str]]:
+    """Keep the existing lease lock through a verified, drained handover."""
+    import signal
+
+    path = root / "leases" / f"{lease_id}.lock"
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    held = False
+    pid = live_follower_pid(root, lease_id)
+    stopped = False
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held = True
+        except BlockingIOError:
+            pass
+        if pid is not None:
+            if held or not verified_follower(root, lease_id, session, pid):
+                yield pid, "unverified_retained"
+                return
+            try:
+                require_drained_lease(root, lease_id)
+            except OSError:
+                yield pid, "undrained_retained"
+                return
+            # Observe the recorded incarnation again immediately before signaling.
+            if not verified_follower(root, lease_id, session, pid):
+                yield pid, "unverified_retained"
+                return
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if not process_is_alive(pid):
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        held = True
+                        stopped = True
+                        break
+                    except BlockingIOError:
+                        pass
+                time.sleep(0.1)
+            if not held:
+                yield pid, "did_not_exit"
+                return
+        elif not held:
+            yield None, "unverified_retained"
+            return
+        elif not bound and not (root / "leases" / f"{lease_id}.json").exists():
+            yield None, "not_running"
+            return
+        try:
+            require_drained_lease(root, lease_id)
+        except OSError:
+            yield pid, "undrained_stopped" if stopped else "undrained_retained"
+            return
+        yield pid, "stopped" if stopped else "not_running"
+    finally:
+        if held:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 def lease_backlog(
@@ -3858,149 +3987,71 @@ def retired_owner_report(root: Path, entry: dict[str, Any]) -> dict[str, Any]:
         "lease_id": lease_id,
         "audience": entry.get("audience"),
         "follower_pid": None,
-        # Replaced by the measured state; "unknown" never reaches a receipt,
-        # it only keeps an error on the way to the caller from reading as a
-        # cleanly stopped reader.
+        # Keep uncertainty explicit if inspection itself fails; never report
+        # a reader as stopped merely because retirement was requested.
         "follower_state": "unknown",
         "unacked_deliveries": len(unacked),
         "unacked_delivery_ids": unacked,
     }
 
 
-def claim_channel_after_handover(
-    root: Path,
-    channel: str,
-    name: str,
-    provider: str,
-    provider_session_id: str,
-    bus: str,
-) -> tuple[bool, dict[str, Any] | None, dict[str, Any] | None]:
-    """Rebind one channel from an ended session of the same agent name.
-
-    The lock spans verify -> stop the previous follower -> rewrite, so a
-    refusal leaves the entry exactly as it was. Authorization is the explicit
-    flag plus the spoken name, never a dead reader: a follower outlives its
-    session, which is the whole reason this path exists. The retired lease is
-    durable identity and is never moved, replayed or acknowledged here.
-
-    Returns ``(claimed, previous, replaced)``. ``previous`` is ``None`` when the
-    channel is free or already this session's, which leaves the plain claim to
-    :func:`write_channel_binding`; a ``previous`` with ``claimed`` false is a
-    refusal whose reader state the caller must report. ``replaced`` is the entry
-    this claim overwrote, so a caller that fails afterwards can put it back.
-    """
-    requested = {
-        "audience": name.casefold(),
-        "provider": provider.casefold(),
-        "provider_session_id": provider_session_id,
-    }
-    previous: dict[str, Any] | None = None
-    replaced: dict[str, Any] | None = None
-    try:
-        with channel_bindings(root) as bindings:
-            current = bindings.get(str(channel))
-            if not isinstance(current, dict) or all(
-                current.get(key) == value for key, value in requested.items()
-            ):
-                return False, None, None
-            if current.get("audience") != requested["audience"]:
-                raise OSError(occupied_refusal(channel, current, bindings))
-            previous = retired_owner_report(root, current)
-            pid, follower_state = stop_owned_follower(
-                root, previous["lease_id"], previous["provider_session_id"]
-            )
-            previous["follower_pid"] = pid
-            previous["follower_state"] = follower_state
-            if follower_state not in HANDOVER_CLEAR_STATES:
-                return False, previous, None
-            entry = dict(requested)
-            entry["bus"] = bus
-            replaced = current
-            bindings[str(channel)] = entry
-    except OSError:
-        if previous is not None and previous["follower_state"] in HANDOVER_CLEAR_STATES:
-            # The reader is already down and the entry did not land. Say so;
-            # nothing is restarted and nothing pretends this did not happen.
-            return False, previous, None
-        raise
-    return True, previous, replaced
-
-
-def restore_channel_owner(
-    root: Path, channel: str, claimed: dict[str, Any], replaced: dict[str, Any]
-) -> None:
-    """Put back the entry a claim of this command overwrote.
-
-    Only this command's own claim is undone: if the digit already names anyone
-    else that owner stays. ``atomic_json`` sorts keys, so the restored file is
-    byte-for-byte the file the previous owner left behind.
-    """
-    with channel_bindings(root) as bindings:
-        if bindings.get(str(channel)) == claimed:
-            bindings[str(channel)] = replaced
-
-
 def detach_command(args: argparse.Namespace) -> int:
-    """Release this session's channels and stop its own follower.
-
-    The lease, its cursor, pending envelopes and acknowledgment markers stay:
-    they are durable identity a later session of the same name reads on
-    demand. The receipt names every released channel and the backlog left
-    behind, so a handoff can quote it. Like a takeover, the binding lock and
-    its validation come first and the follower is stopped inside the same
-    block, so a file this command cannot read costs nobody their reader.
-    """
+    """Release a drained session under its binding and lease ownership locks."""
     root: Path = args.bridge_home
     lease_id = lease_identifier(args.provider, args.session)
     released: list[str] = []
-    with channel_bindings(root) as bindings:
-        pid, follower_state = stop_owned_follower(root, lease_id, args.session)
-        if follower_state in HANDOVER_CLEAR_STATES:
-            for slot, entry in sorted(bindings.items()):
-                if (
-                    isinstance(entry, dict)
+    original_entries: dict[str, Any] = {}
+    pid: int | None = None
+    follower_state = "unknown"
+    failure: str | None = None
+    binding_changed: bool | None = False
+    try:
+        with contextlib.ExitStack() as retirements:
+            with channel_bindings(root) as bindings:
+                original_entries = {
+                    slot: entry for slot, entry in bindings.items()
+                    if isinstance(entry, dict)
                     and entry.get("provider") == args.provider.casefold()
                     and entry.get("provider_session_id") == args.session
-                ):
-                    released.append(str(slot))
-            for slot in released:
-                del bindings[slot]
-    # The backlog the Founder is handed is the one --status calls
-    # unacked_seals: drafts are not deliveries waiting for a reader.
-    unacked = [
-        item
-        for item in lease_backlog(root, lease_id)[2]
-        if item.get("kind") in ("seal", "message")
-    ]
-    emit(
-        {
-            "schema": DETACH_RECEIPT_SCHEMA,
-            "kind": "detach_receipt",
-            "provider": args.provider.casefold(),
-            "provider_session_id": args.session,
-            "lease_id": lease_id,
-            "released_channels": released,
-            "follower_pid": pid,
-            "follower_state": follower_state,
-            "binding_changed": bool(released),
-            # The state this command found, not the state it leaves behind:
-            # --status owns the word "attached" for what is true now.
-            "was_attached": bool(released) or follower_state != "not_running",
-            "unacked_deliveries": len(unacked),
-            "unacked_delivery_ids": [
-                str(item.get("delivery_id"))
-                for item in unacked
-                if isinstance(item.get("delivery_id"), str)
-            ],
-            "binding_path": str(root / AUDIENCE_BINDING_FILENAME),
-        }
-    )
-    if follower_state not in HANDOVER_CLEAR_STATES:
-        reason = (
-            "existing follower identity could not be verified; retained"
-            if follower_state == "unverified_retained"
-            else "owned follower did not exit; retained"
-        )
+                }
+                pid, follower_state = retirements.enter_context(
+                    retirement_guard(root, lease_id, args.session, bound=bool(original_entries))
+                )
+                if follower_state in HANDOVER_CLEAR_STATES:
+                    if original_entries or (root / "leases" / f"{lease_id}.json").exists():
+                        require_drained_lease(root, lease_id)
+                    released = sorted(original_entries)
+                    for slot in released:
+                        del bindings[slot]
+            binding_changed = bool(released)
+    except OSError as error:
+        if follower_state == "unknown":
+            raise
+        failure = str(error)
+        current = read_json(root / AUDIENCE_BINDING_FILENAME)
+        current_bindings = current.get("bindings") if isinstance(current, dict) else None
+        unchanged = (isinstance(current_bindings, dict)
+                     and all(current_bindings.get(slot) == entry
+                             for slot, entry in original_entries.items()))
+        binding_changed = False if unchanged else None
+        released = []
+    unacked = [item for item in lease_backlog(root, lease_id)[2]
+               if item.get("kind") in ("seal", "message")]
+    emit({
+        "schema": DETACH_RECEIPT_SCHEMA, "kind": "detach_receipt",
+        "provider": args.provider.casefold(), "provider_session_id": args.session,
+        "lease_id": lease_id, "released_channels": released,
+        "follower_pid": pid, "follower_state": follower_state,
+        "binding_changed": binding_changed,
+        "binding_state": "uncertain" if binding_changed is None else "changed" if binding_changed else "unchanged",
+        "was_attached": bool(original_entries) or follower_state != "not_running",
+        "unacked_deliveries": len(unacked),
+        "unacked_delivery_ids": [str(item.get("delivery_id")) for item in unacked
+                                 if isinstance(item.get("delivery_id"), str)],
+        "binding_path": str(root / AUDIENCE_BINDING_FILENAME),
+    })
+    if failure is not None or follower_state not in HANDOVER_CLEAR_STATES:
+        reason = failure or f"follower {follower_state}; channel ownership retained"
         sys.stderr.write(f"bus-demux: detach failed: {reason}\n")
         return 3
     return 0
@@ -4062,18 +4113,7 @@ def read_inherited_delivery(args: argparse.Namespace) -> int:
 
 
 def attach_command(args: argparse.Namespace) -> int:
-    """One command from zero to a listening channel: binding, follower, receipt.
-
-    Writes the audience binding for the channel, ensures exactly one follower
-    owns this provider session's lease (spawning a coalescing one when none is
-    alive), and prints a receipt with the lease, cursor, voice profile and
-    follower pid. ``--voice`` / ``--speed`` / ``--tts-vendor`` persist into
-    this name's profile in voices.json, so every later ``--say`` speaks with
-    it. The receipt alone never proves listening — only a take that lands in
-    the mailbox does, so callers verify with a fresh seal before claiming
-    they hear anything.
-    """
-    import signal
+    """Publish a channel owner only after its verified reader is ready."""
     import subprocess
 
     root: Path = args.bridge_home
@@ -4081,258 +4121,166 @@ def attach_command(args: argparse.Namespace) -> int:
     persist_voice = bool(args.voice or args.speed is not None or args.tts_vendor)
     voice_source = voice_profile_with_source(root, name)[1]
     if persist_voice:
-        # Refuse an unreadable profile store before claiming the channel, so a
-        # refusal still means nothing changed.
         _voice_store(root / VOICES_FILENAME)
     if args.voice:
         voice_source = "flag"
     if not getattr(args, "bus_overridden", False):
-        # W5: every channel owns a dedicated bus so one follower never chews
-        # another audience's rows. An explicit --bus keeps the caller's word.
         channel_bus = root / "buses" / f"channel-{args.channel}.jsonl"
         channel_bus.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if not channel_bus.exists():
-            descriptor = os.open(channel_bus, os.O_WRONLY | os.O_CREAT, 0o600)
-            os.close(descriptor)
+        descriptor = os.open(channel_bus, os.O_WRONLY | os.O_CREAT, 0o600)
+        os.close(descriptor)
         args.bus = channel_bus
     resolved_bus = str(Path(args.bus).expanduser().resolve(strict=False))
+    binding_path = root / AUDIENCE_BINDING_FILENAME
+    requested = {"audience": name, "provider": args.provider.casefold(),
+                 "provider_session_id": args.session}
+    claimed = {**requested, "bus": resolved_bus}
     previous: dict[str, Any] | None = None
-    replaced: dict[str, Any] | None = None
-    binding_changed = False
-
-    def takeover_retained(reason: str) -> int:
-        """Receipt for a claim that leaves the channel entry where it was."""
-        emit(
-            {
-                "schema": TAKEOVER_RECEIPT_SCHEMA,
-                "kind": "takeover_receipt",
-                "channel": str(args.channel),
-                "audience": name,
-                "provider": args.provider.casefold(),
-                "provider_session_id": args.session,
-                "binding_changed": False,
-                "previous": previous,
-                "binding_path": str(root / AUDIENCE_BINDING_FILENAME),
-            }
-        )
-        sys.stderr.write(
-            f"bus-demux: attach failed: {reason}; channel {args.channel} "
-            "unchanged\n"
-        )
-        return 3
-
-    def retained_after_claim(reason: str) -> int:
-        """Undo this command's own claim, then report the reader it stopped.
-
-        The previous owner's entry goes back under the binding lock, so the
-        digit still names the session a repeat of this command would retire.
-        Nothing is restarted: ``previous`` keeps the measured reader state.
-        """
-        restore_channel_owner(
-            root,
-            args.channel,
-            {
-                "audience": name,
-                "provider": args.provider.casefold(),
-                "provider_session_id": args.session,
-                "bus": resolved_bus,
-            },
-            replaced or {},
-        )
-        return takeover_retained(reason)
-
-    if getattr(args, "takeover", False):
-        binding_changed, previous, replaced = claim_channel_after_handover(
-            root, args.channel, name, args.provider, args.session, resolved_bus
-        )
-        if previous is not None and not binding_changed:
-            # The channel entry is untouched. Name the reader we tried to
-            # stop so the Founder sees who still holds the digit.
-            reason = {
-                "unverified_retained": "previous follower identity could not be "
-                "verified; retained",
-                "did_not_exit": "previous follower did not exit; retained",
-            }.get(
-                previous["follower_state"],
-                "previous follower is "
-                f"{previous['follower_state']} but the channel entry could not "
-                "be written",
-            )
-            return takeover_retained(reason)
-    binding_path = (
-        root / AUDIENCE_BINDING_FILENAME
-        if binding_changed
-        else write_channel_binding(
-            root, args.channel, name, args.provider, args.session, bus=resolved_bus
-        )
-    )
-    if persist_voice:
-        write_voice_profile(
-            root, name, voice=args.voice, speed=args.speed, vendor=args.tts_vendor
-        )
+    original_entry: Any = None
+    child: Any = None
+    child_state = "not_started"
     lease_id = lease_identifier(args.provider, args.session)
     lease_path = root / "leases" / f"{lease_id}.json"
     resumed = lease_path.exists()
-    pid = live_follower_pid(root, lease_id)
-    lease_state = read_json(lease_path)
     configuration = wakeup_configuration(args)
-    pid_record = read_json(follower_pidfile(root, lease_id)) or {}
-    installed_configuration = pid_record.get("configuration") or (lease_state or {}).get("wakeup_configuration")
-    if pid is not None and installed_configuration != configuration:
-        # Retire only this session's actual follower. Its cursor and unread
-        # deliveries stay in place; no microphone or app process is touched.
-        command_line = subprocess.run(
-            ["/bin/ps", "-p", str(pid), "-o", "command="],
-            capture_output=True, text=True, check=False,
-        ).stdout
-        import shlex
-
-        words = shlex.split(command_line)
-        if (
-            not isinstance(lease_state, dict) or lease_state.get("pid") != pid
-            or lease_state.get("provider_session_id") != args.session
-            or "--follow" not in words
-            or not any(words[i:i + 2] == ["--session", args.session] for i in range(len(words)))
-        ):
-            reason = "existing follower identity could not be verified; retained"
-            if binding_changed:
-                return retained_after_claim(reason)
-            raise OSError(reason)
-        os.kill(pid, signal.SIGTERM)
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and process_is_alive(pid):
-            time.sleep(0.1)
-        if process_is_alive(pid):
-            reason = "owned follower did not exit; retained"
-            if binding_changed:
-                return retained_after_claim(reason)
-            raise OSError(reason)
-        pid = None
-    if (
-        isinstance(lease_state, dict)
-        and lease_state.get("schema") == LEASE_SCHEMA
-        and lease_state.get("bus") not in (None, resolved_bus)
-    ):
-        # The session migrates onto this channel's dedicated bus: retire the
-        # follower that sits on the old bus and restart the byte cursor on the
-        # new file. Pending deliveries and acknowledgment markers survive.
-        if pid is not None:
-            os.kill(pid, signal.SIGTERM)
-            deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline and process_is_alive(pid):
-                time.sleep(0.1)
-            if process_is_alive(pid):
-                reason = f"the follower on the old bus (pid={pid}) did not exit"
-                if binding_changed:
-                    return retained_after_claim(reason)
-                sys.stderr.write(
-                    f"bus-demux: attach failed: {reason}; nothing changed\n"
-                )
-                return 3
-            pid = None
-        lease_state["bus"] = resolved_bus
-        lease_state["cursor"] = 0
-        lease_state["active"] = False
-        atomic_json(lease_path, lease_state)
-    spawned = False
     log_path, events_path = follower_paths(root, lease_id)
     errors_path = log_path.with_suffix(".errors.log")
-    if pid is None:
-        command = [
-            sys.executable,
-            os.path.abspath(__file__),
-            "--bus",
-            str(args.bus),
-            "--bridge-home",
-            str(root),
-            "--provider",
-            args.provider,
-            "--session",
-            args.session,
-            "--name",
-            name,
-            "--drafts",
-            "--follow",
-            "--coalesce",
-            "--follower-events",
-            str(events_path),
-            "--follower-channel",
-            str(args.channel),
-            "--wakeup",
-            configuration["wakeup"],
-        ]
-        if args.on_seal:
-            command += ["--on-seal", args.on_seal]
-        log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        log_descriptor = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-        os.fchmod(log_descriptor, 0o600)
-        errors_descriptor = os.open(errors_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-        os.fchmod(errors_descriptor, 0o600)
-        with os.fdopen(log_descriptor, "ab") as log, os.fdopen(errors_descriptor, "ab") as errors:
-            child = subprocess.Popen(
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=errors,
-                start_new_session=True,
-            )
-        atomic_json(
-            follower_pidfile(root, lease_id),
-            {"lease_id": lease_id, "pid": child.pid, "started_at": utc_now(), "configuration": configuration},
-        )
-        pid = child.pid
-        spawned = True
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            state = read_json(lease_path)
-            if (
-                state
-                and state.get("schema") == LEASE_SCHEMA
-                and state.get("pid") == pid
-                and events_path.exists()
-            ):
-                break
-            # Ask the child itself: an unreaped one answers kill(pid, 0) as a
-            # zombie, which would print a receipt for a reader that is gone.
-            if child.poll() is not None:
-                reason = f"follower exited during startup; see {errors_path}"
-                if binding_changed:
-                    return retained_after_claim(reason)
-                sys.stderr.write(f"bus-demux: attach failed: {reason}\n")
-                return 3
-            time.sleep(0.1)
+    try:
+        # Old lease locks outlive the binding commit; the child owns its own
+        # distinct lease. No competing attach can observe a half-started owner.
+        with contextlib.ExitStack() as retirements:
+            with channel_bindings(root) as bindings:
+                original_entry = bindings.get(str(args.channel))
+                if str(args.channel) in bindings and (
+                    not isinstance(original_entry, dict)
+                    or any(original_entry.get(key) != value for key, value in requested.items())
+                ):
+                    same_name = (isinstance(original_entry, dict)
+                                 and original_entry.get("audience") == name)
+                    if not getattr(args, "takeover", False) or not same_name:
+                        raise OSError(occupied_refusal(args.channel, original_entry, bindings, same_name))
+                    previous = retired_owner_report(root, original_entry)
+                    old_pid, disposition = retirements.enter_context(retirement_guard(
+                        root, previous["lease_id"], previous["provider_session_id"]
+                    ))
+                    previous = {**retired_owner_report(root, original_entry),
+                                "follower_pid": old_pid, "follower_state": disposition}
+                    if disposition not in HANDOVER_CLEAR_STATES:
+                        raise OSError(f"previous follower {disposition}; owner retained")
+
+                pid = live_follower_pid(root, lease_id)
+                lease_state = read_json(lease_path)
+                pid_record = read_json(follower_pidfile(root, lease_id)) or {}
+                installed = pid_record.get("configuration") or (lease_state or {}).get("wakeup_configuration")
+                migrating = (isinstance(lease_state, dict)
+                             and lease_state.get("bus") not in (None, resolved_bus))
+                if pid is not None and not verified_follower(root, lease_id, args.session, pid):
+                    raise OSError("existing follower identity could not be verified; retained")
+                if migrating or pid is not None and installed != configuration:
+                    with retirement_guard(root, lease_id, args.session) as (_, disposition):
+                        if disposition not in HANDOVER_CLEAR_STATES:
+                            raise OSError(f"existing follower {disposition}; retained")
+                        if migrating:
+                            lease_state = read_json(lease_path)
+                            if lease_state is None:
+                                raise OSError("lease became unreadable; retained")
+                            lease_state.update(bus=resolved_bus, cursor=0, active=False)
+                            atomic_json(lease_path, lease_state)
+                    pid = None
+                if pid is None:
+                    command = [sys.executable, os.path.abspath(__file__),
+                               "--bus", resolved_bus, "--bridge-home", str(root.resolve()),
+                               "--provider", args.provider, "--session", args.session,
+                               "--name", name, "--drafts", "--follow", "--coalesce",
+                               "--follower-events", str(events_path),
+                               "--follower-channel", str(args.channel),
+                               "--wakeup", configuration["wakeup"]]
+                    if args.on_seal:
+                        command += ["--on-seal", args.on_seal]
+                    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    with contextlib.ExitStack() as outputs:
+                        for path in (log_path, errors_path):
+                            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+                            handle = outputs.enter_context(os.fdopen(descriptor, "ab"))
+                            os.fchmod(handle.fileno(), 0o600)
+                            if path == log_path:
+                                log = handle
+                            else:
+                                errors = handle
+                        child = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                                                 stdout=log, stderr=errors, start_new_session=True)
+                    pid = child.pid
+                    child_state = "starting"
+                    atomic_json(follower_pidfile(root, lease_id), {
+                        "lease_id": lease_id, "pid": pid, "started_at": utc_now(),
+                        "configuration": configuration,
+                    })
+                    deadline = time.monotonic() + 5.0
+                    while time.monotonic() < deadline:
+                        if child.poll() is not None:
+                            child_state = "exited"
+                            raise OSError(f"follower exited during startup; see {errors_path}")
+                        state = read_json(lease_path) or {}
+                        if (state.get("schema") == LEASE_SCHEMA and state.get("pid") == pid
+                                and state.get("lease_id") == lease_id
+                                and state.get("active") is True and state.get("bus") == resolved_bus
+                                and events_path.exists()
+                                and verified_follower(root, lease_id, args.session, pid)
+                                and child.poll() is None):
+                            child_state = "ready"
+                            break
+                        time.sleep(0.1)
+                    else:
+                        raise OSError(f"follower readiness timed out; see {errors_path}")
+                if persist_voice:
+                    write_voice_profile(root, name, voice=args.voice, speed=args.speed, vendor=args.tts_vendor)
+                if previous is not None:
+                    # A producer may have completed another old-owner row while
+                    # its reader was exiting. Never hide that row at cutover.
+                    require_drained_lease(root, previous["lease_id"])
+                bindings[str(args.channel)] = claimed
+            # channel_bindings commits here, while retirement locks still hold.
+    except (OSError, ValueError, RuntimeError) as error:
+        if child is not None:
+            try:
+                if child.poll() is None:
+                    child.terminate()
+                child.wait(timeout=5)
+                child_state = "stopped"
+            except (OSError, subprocess.TimeoutExpired):
+                child_state = "did_not_exit" if child.poll() is None else "exited"
+        actual = read_json(binding_path)
+        actual_entry = (actual.get("bindings", {}).get(str(args.channel))
+                        if isinstance(actual, dict) and isinstance(actual.get("bindings"), dict)
+                        else None)
+        unchanged = ((actual is not None or not binding_path.exists())
+                     and actual_entry == original_entry)
+        if previous is not None:
+            emit({"schema": TAKEOVER_RECEIPT_SCHEMA, "kind": "takeover_receipt",
+                  "channel": str(args.channel), "audience": name, "provider": args.provider.casefold(),
+                  "provider_session_id": args.session,
+                  "binding_changed": False if unchanged else None,
+                  "binding_state": "unchanged" if unchanged else "uncertain",
+                  "previous": previous, "new_follower_state": child_state,
+                  "binding_path": str(binding_path)})
+        suffix = "unchanged" if unchanged else "state uncertain"
+        sys.stderr.write(f"bus-demux: attach failed: {error}; channel {args.channel} {suffix}\n")
+        return 3
     state = read_json(lease_path) or {}
-    emit(
-        {
-            "schema": ATTACH_RECEIPT_SCHEMA,
-            "kind": "attach_receipt",
-            "channel": str(args.channel),
-            "audience": name,
-            "provider": args.provider.casefold(),
-            "provider_session_id": args.session,
-            "lease_id": lease_id,
-            "cursor": state.get("cursor"),
-            "resumed": resumed,
-            "follower_pid": pid,
-            "follower_spawned": spawned,
-            "follower_log": str(log_path),
-            "follower_events": str(events_path),
-            "coalesce_requested": True,
-            "on_seal_hook": bool(args.on_seal),
-            "wakeup": configuration["wakeup"],
-            "wakeup_receipts": str(root / "wakeups" / lease_id),
-            "voice": voice_profile(root, name),
-            "voice_source": voice_source,
-            "voices_file": "present"
-            if (root / VOICES_FILENAME).exists()
-            else "missing",
-            "binding_path": str(binding_path),
-            # True only when another session's entry was rewritten for this
-            # name; a free or already-owned digit changes no owner.
-            "binding_changed": binding_changed,
-            "previous": previous,
-        }
-    )
+    emit({
+        "schema": ATTACH_RECEIPT_SCHEMA, "kind": "attach_receipt",
+        "channel": str(args.channel), "audience": name, "provider": args.provider.casefold(),
+        "provider_session_id": args.session, "lease_id": lease_id,
+        "cursor": state.get("cursor"), "resumed": resumed, "follower_pid": pid,
+        "follower_spawned": child is not None, "follower_log": str(log_path),
+        "follower_events": str(events_path), "coalesce_requested": True,
+        "on_seal_hook": bool(args.on_seal), "wakeup": configuration["wakeup"],
+        "wakeup_receipts": str(root / "wakeups" / lease_id),
+        "voice": voice_profile(root, name), "voice_source": voice_source,
+        "voices_file": "present" if (root / VOICES_FILENAME).exists() else "missing",
+        "binding_path": str(binding_path), "binding_changed": previous is not None,
+        "previous": previous,
+    })
     return 0
 
 
@@ -4742,6 +4690,18 @@ def main() -> int:
         f"then {DEFAULT_SPEECH_SPEED}; with --attach it is stored in the profile",
     )
     args = parser.parse_args()
+    # Refuse contradictory commands before any early publication/playback or
+    # inspection dispatch can return without reaching the detach branch.
+    if args.detach and any((
+        args.attach, args.takeover, args.channel is not None, args.status, args.watch,
+        args.follow, args.once, args.from_start, args.ack, args.lease,
+        args.from_file is not None, args.say is not None, args.send_text,
+        args.read_delivery, args.retry_wakeup, args.play_reply, args.stop_reply,
+        args.playback_ticket, args.reply_to, args.all, args.become, args.active_names,
+        args.version, args.print_bus_path, args.print_install_interlock_path,
+        args.print_agent_turn_lease_path, args.assert_install_idle,
+    )):
+        parser.error("--detach combines with no other command")
     if args.version:
         manifest = {}
         # Direct installs carry their generation with the executable, independent
@@ -4878,10 +4838,6 @@ def main() -> int:
     if args.detach:
         if not args.provider:
             parser.error("--detach requires --provider/--session")
-        if any((args.attach, args.channel is not None, args.status, args.watch,
-                args.follow, args.once, args.from_start, args.ack, args.lease,
-                args.from_file is not None, args.say is not None)):
-            parser.error("--detach combines with no other command")
         try:
             return detach_command(args)
         except OSError as error:
