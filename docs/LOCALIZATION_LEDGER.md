@@ -31,20 +31,21 @@ website, the docs, the CLI and model prompts are outside this ledger.
 
 ## 2. Where the app stands
 
-`Localizable.xcstrings` holds **1426 keys** (1403 translatable, source inventory
+`Localizable.xcstrings` holds **1423 keys** (1401 translatable, source inventory
 2026-10-06). Before the initial localization work the compiler extracted 468 —
 the literals SwiftUI localizes by itself; the
 rest was plain `String` and invisible to any translation. **Polish copy covers
-every translatable key** in both catalogs (1403/1403 and 4/4), initially imported from the translator worksheet
+every translatable key** in both catalogs (1401/1401 and 4/4), initially imported from the translator worksheet
 (`scripts/l10n-sheet.py`); the catalog is the source of the translation from
 here on.
 
 | Measure                                       | Count    |
 | --------------------------------------------- | -------- |
-| Keys in `Localizable.xcstrings`               | 1426     |
-| Keys with Polish copy                         | 1403     |
+| Keys in `Localizable.xcstrings`               | 1423     |
+| Keys with Polish copy                         | 1401     |
 | License keys awaiting Polish review           | 19       |
-| Keys with a translator comment                | 471      |
+| Tray keys awaiting Polish review              | 6        |
+| Keys with a translator comment                | 470      |
 | Keys with English plural forms                | 27       |
 | Keys written as identifiers (`defaultValue:`) | 52       |
 | Permission prompts in `InfoPlist.xcstrings`   | 4        |
@@ -54,6 +55,13 @@ The license copy cut marks 19 agent-authored Polish entries as `needs_review`.
 The Founder-confirmed mode names, license-panel blurb and Remove key label
 remain `translated`. Drafts provide coverage,
 not evidence of UI review; the review process is in `LOCALIZATION.md` §6.
+
+The tray revision marks six additional Polish entries as `needs_review`: the
+stop action, the Agent-mode start/stop actions, the start-in-Agent-mode toggle,
+and the copy/save transcript actions. Exact Founder-provided labels are
+`translated`. The Settings disclosure contains the seven existing toggles and
+ends with Open Settings; its previous standalone row was removed. Action
+routing and Notes Mode behavior are unchanged by this menu revision.
 
 By area:
 

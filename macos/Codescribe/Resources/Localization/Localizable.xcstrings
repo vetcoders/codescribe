@@ -1616,12 +1616,12 @@
         }
       }
     },
-    "About" : {
+    "About codescribe" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "O aplikacji"
+            "value" : "O codescribe"
           }
         }
       }
@@ -3191,12 +3191,12 @@
         }
       }
     },
-    "Check for Updates…" : {
+    "Check for Updates" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sprawdź uaktualnienia…"
+            "value" : "Sprawdź uaktualnienia"
           }
         }
       }
@@ -4098,8 +4098,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kopiuj ostatnią transkrypcję"
+            "state" : "needs_review",
+            "value" : "Kopiuj ostatni transkrypt"
           }
         }
       }
@@ -8242,6 +8242,16 @@
         }
       }
     },
+    "Open Settings" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz ustawienia"
+          }
+        }
+      }
+    },
     "Open System Settings" : {
       "comment" : "Button that deep-links into the macOS System Settings privacy pane",
       "localizations" : {
@@ -8283,16 +8293,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Otwórz diagnostykę"
-          }
-        }
-      }
-    },
-    "Open history" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Otwórz historię"
           }
         }
       }
@@ -9174,16 +9174,6 @@
         }
       }
     },
-    "Quick settings" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Szybkie ustawienia"
-          }
-        }
-      }
-    },
     "Quick start" : {
       "localizations" : {
         "pl" : {
@@ -9205,13 +9195,12 @@
         }
       }
     },
-    "Quit codescribe" : {
-      "comment" : "Tray row; codescribe is the product name, kept lowercase",
+    "Quit" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zakończ codescribe"
+            "value" : "Zakończ"
           }
         }
       }
@@ -10518,8 +10507,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zapisz ostatnią transkrypcję"
+            "state" : "needs_review",
+            "value" : "Zapisz ostatni transkrypt"
           }
         }
       }
@@ -11072,7 +11061,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "ustawienia"
+            "value" : "Ustawienia…"
           }
         }
       }
@@ -11088,12 +11077,12 @@
         }
       }
     },
-    "Setup Wizard…" : {
+    "Setup Wizard" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Kreator konfiguracji…"
+            "value" : "Kreator"
           }
         }
       }
@@ -11155,27 +11144,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aby skróty działały, włącz uprawnienia „Monitorowanie wprowadzania” i „Dostępność”"
-          }
-        }
-      }
-    },
-    "Show Agent" : {
-      "comment" : "Tray row: opens the agent chat window",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż Agenta"
-          }
-        }
-      }
-    },
-    "Show Dock Icon" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż ikonę w Docku"
           }
         }
       }
@@ -11253,6 +11221,17 @@
         }
       }
     },
+    "Show icon" : {
+      "comment" : "Tray toggle: show the application's Dock icon",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż ikonę"
+          }
+        }
+      }
+    },
     "Show in Finder" : {
       "localizations" : {
         "pl" : {
@@ -11279,6 +11258,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż lub ukryj narzędzia transkrypcji"
+          }
+        }
+      }
+    },
+    "Show overlay" : {
+      "comment" : "Tray toggle: enable the transcription overlay",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż overlay"
           }
         }
       }
@@ -11788,28 +11778,6 @@
         }
       }
     },
-    "Start Assistive" : {
-      "comment" : "Tray row: start an agent recording",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozpocznij nagrywanie dla Agenta"
-          }
-        }
-      }
-    },
-    "Start Dictation" : {
-      "comment" : "Tray row: start a dictation recording",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozpocznij dyktowanie"
-          }
-        }
-      }
-    },
     "Start a dictation session" : {
       "localizations" : {
         "pl" : {
@@ -11830,13 +11798,13 @@
         }
       }
     },
-    "Start in Assistive" : {
-      "comment" : "Tray toggle: new recordings start in the assistive (agent) lane",
+    "Start in Agent mode" : {
+      "comment" : "Tray toggle: new transcriptions started here use Agent mode",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozpoczynaj w trybie Agenta"
+            "state" : "needs_review",
+            "value" : "Rozpoczynaj w trybie agentowym"
           }
         }
       }
@@ -11857,6 +11825,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dźwięk rozpoczęcia"
+          }
+        }
+      }
+    },
+    "Start transcription" : {
+      "comment" : "Tray row: start a new transcription",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozpocznij transkrypcję"
+          }
+        }
+      }
+    },
+    "Start transcription in Agent mode" : {
+      "comment" : "Tray row: start a new transcription in Agent mode",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Rozpocznij transkrypcję w trybie agentowym"
           }
         }
       }
@@ -12009,28 +11999,6 @@
         }
       }
     },
-    "Stop Assistive" : {
-      "comment" : "Tray row: stop the agent recording",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zatrzymaj nagrywanie dla Agenta"
-          }
-        }
-      }
-    },
-    "Stop Dictation" : {
-      "comment" : "Tray row: stop the dictation recording",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zatrzymaj dyktowanie"
-          }
-        }
-      }
-    },
     "Stop playing the original recording" : {
       "localizations" : {
         "pl" : {
@@ -12067,6 +12035,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zatrzymaj odczytywanie"
+          }
+        }
+      }
+    },
+    "Stop transcription" : {
+      "comment" : "Tray row: stop the current transcription",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zatrzymaj transkrypcję"
+          }
+        }
+      }
+    },
+    "Stop transcription in Agent mode" : {
+      "comment" : "Tray row: stop the current transcription in Agent mode",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zatrzymaj transkrypcję w trybie agentowym"
           }
         }
       }
@@ -13278,16 +13268,6 @@
         }
       }
     },
-    "Transcription Overlay" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Overlay transkrypcji"
-          }
-        }
-      }
-    },
     "Transcription failed" : {
       "localizations" : {
         "pl" : {
@@ -13748,10 +13728,6 @@
       }
     },
     "Voice Lab" : {
-      "shouldTranslate" : false
-    },
-    "Voice Lab…" : {
-      "comment" : "Tray row: opens the Voice Lab console",
       "shouldTranslate" : false
     },
     "Voice chat" : {
