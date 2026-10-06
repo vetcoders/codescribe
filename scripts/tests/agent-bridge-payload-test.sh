@@ -120,7 +120,7 @@ struct Install {
   }
 }
 SWIFT
-xcrun swiftc -swift-version 6 -warnings-as-errors \
+xcrun swiftc -swift-version 6 -warnings-as-errors -D CODESCRIBE_AGENT_BRIDGE_STANDALONE \
   "$ROOT/macos/Codescribe/Services/AgentBridgeInstaller.swift" \
   "$WORKDIR/install.swift" -o "$WORKDIR/install"
 "$WORKDIR/install" "$PAYLOAD" "$WORKDIR/home"

@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 "$ROOT/scripts/build-app.sh" --stage-agent-bridge "$STAGE/payload"
-xcrun swiftc -swift-version 6 -warnings-as-errors \
+xcrun swiftc -swift-version 6 -warnings-as-errors -D CODESCRIBE_AGENT_BRIDGE_STANDALONE \
   "$ROOT/macos/Codescribe/Services/AgentBridgeInstaller.swift" \
   "$ROOT/scripts/agent-bridge-install.swift" -o "$STAGE/install"
 "$STAGE/install" "$STAGE/payload"
