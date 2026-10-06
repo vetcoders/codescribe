@@ -16,6 +16,7 @@ pub(crate) const DEFAULT_RETENTION_SECS: f32 = 120.0;
 /// Bounded ring of session PCM with an absolute capture-sample clock.
 pub(crate) struct LiveAudioBuffer {
     /// Capture rate, and the unit second↔index conversions are expressed in.
+    #[cfg(test)]
     sample_rate: u32,
     /// Retained tail, oldest first.
     samples: VecDeque<f32>,
@@ -45,6 +46,7 @@ impl LiveAudioBuffer {
             rate as usize
         };
         Self {
+            #[cfg(test)]
             sample_rate: rate,
             samples: VecDeque::new(),
             start_index: 0,
@@ -68,21 +70,25 @@ impl LiveAudioBuffer {
     }
 
     /// Retained sample count.
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.samples.len()
     }
 
     /// Absolute sample index of the oldest retained sample.
+    #[cfg(test)]
     pub(crate) fn retained_start_sample(&self) -> u64 {
         self.start_index
     }
 
     /// Session time of the oldest retained sample.
+    #[cfg(test)]
     pub(crate) fn retained_start_secs(&self) -> f32 {
         self.start_index as f32 / self.sample_rate as f32
     }
 
     /// Total audio seen this session, retained or evicted.
+    #[cfg(test)]
     pub(crate) fn session_secs(&self) -> f32 {
         self.end_index as f32 / self.sample_rate as f32
     }

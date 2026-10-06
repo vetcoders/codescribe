@@ -1013,6 +1013,7 @@ impl AcousticLedger {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn next_word_trial(&mut self, stopping: bool) -> Option<WordTrial> {
         self.next_word_trial_in(stopping, None, None)
     }
@@ -1097,6 +1098,7 @@ impl AcousticLedger {
     /// Reissuing a retained decode frame cannot add evidence to this trial.
     /// The scheduler asks before leasing PCM or submitting another native job;
     /// admission independently enforces the same rule on returned evidence.
+    #[cfg(test)]
     pub(crate) fn word_trial_has_decode(
         &self,
         trial: &WordTrial,
@@ -1331,6 +1333,7 @@ impl AcousticLedger {
         receipt
     }
 
+    #[cfg(test)]
     pub(crate) fn has_word_conflicts(&self) -> bool {
         self.word_adjudication
             .components

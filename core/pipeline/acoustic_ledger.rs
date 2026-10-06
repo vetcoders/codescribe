@@ -3375,9 +3375,9 @@ impl AcousticLedger {
         if self.is_sealed(&coverage)
             || self.text_recovery_pending(&coverage)
             || !self.word_labels_settled(&coverage)
-            || !self
+            || self
                 .text_of(&coverage)
-                .is_some_and(|label| !label.trim().is_empty())
+                .is_none_or(|label| label.trim().is_empty())
         {
             return false;
         }

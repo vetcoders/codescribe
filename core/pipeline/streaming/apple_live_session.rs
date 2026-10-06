@@ -3145,8 +3145,6 @@ impl AppleSealState {
         }
     }
 
-    /// At most one extra job; every normal window already queued or held wins.
-
     fn complete_word_trial(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -4973,16 +4971,7 @@ struct AppleStreamOutcome {
     conservation: SessionConservationReceipt,
 }
 
-/// Resolve a sealed utterance back to its audio span, then release what can
-/// never be re-cut.
-///
-/// F3 (falsification): the tail-patch cuts exactly `window(prev_end, end_ts)`
-/// and hands it to Whisper. If an Apple `end_ts` ever fails to address retained
-/// audio — a clock that does not agree with the PCM timeline, or a boundary
-/// older than the retention cap — that must be visible here, in the live path.
-/// A silent miss would surface as canvas patched from the wrong audio, so an
-/// unresolved boundary yields `None` and never reaches Layer 1.
-
+/// Clamp an observed timestamp to the captured PCM timeline.
 fn seconds_to_captured_sample(seconds: f32, sample_rate: u32, captured_end: u64) -> u64 {
     if !seconds.is_finite() || seconds <= 0.0 {
         return 0;
