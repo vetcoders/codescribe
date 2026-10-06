@@ -27967,13 +27967,25 @@ mod tc2_window_contract_tests {
                 );
                 let events = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
                 assert_eq!(events.len(), 1);
-                assert!(matches!(
-                    &events[0],
-                    EngineEvent::LedgerMutation {
-                        receipt: MutationReceipt::Refuse { reason: actual, .. },
-                        ..
-                    } if actual == &reason
-                ));
+                if sealed {
+                    assert!(matches!(
+                        &events[0],
+                        EngineEvent::LedgerMutation {
+                            receipt: MutationReceipt::KeepVisibleUnanchored {
+                                reason: NoAuthorityReason::LateAppleWordSealedOwner,
+                                ..
+                            },
+                            ..
+                        }
+                    ));
+                } else {
+                    assert!(matches!(
+                        &events[0],
+                        EngineEvent::LedgerMutation {
+                            receipt: MutationReceipt::Refuse { reason: actual, .. }, ..
+                        } if actual == &reason
+                    ));
+                }
                 let ledger = f.state.acoustic_ledger.lock().unwrap();
                 assert_eq!(ledger.slots_of(&f.occurrence).unwrap(), before.as_slice());
                 assert_eq!(ledger.text_of(&f.occurrence), Some("Alpha,"));

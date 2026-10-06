@@ -746,6 +746,23 @@ impl AcousticLedger {
             });
             component
         };
+        // A rejected older Apple callback cannot revise the provisional
+        // label or reopen a conflict against fresher retained evidence.
+        if candidate.family() == ObservationProducer::Apple
+            && component.apple.last().is_some_and(|prior| {
+                prior.observation.generation >= candidate.observation.generation
+            })
+        {
+            self.word_adjudication.components.push(component);
+            self.record_word_choice(
+                observation,
+                sources,
+                outputs,
+                "stale_apple_generation",
+                false,
+            );
+            return Some(false);
+        }
         let trial = self
             .word_evidence_input(observation)
             .and_then(|input| input.trial.as_ref());
@@ -754,6 +771,7 @@ impl AcousticLedger {
         });
         let prior_support = component.support();
         let fresh = component.observe(candidate.clone());
+        let provisional_apple = provisional_apple && fresh;
         let repeated_label = label_equal(&candidate.surface, &compose_label(sources));
         let raw = candidate.original_text.as_deref();
         let apple = component

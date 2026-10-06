@@ -1200,6 +1200,37 @@ impl AcousticLedger {
         self.prepare_word_evidence(observation, words);
         let trace = super::trail::SlotTrace::words(self, observation, words, self.capture_rate_hz);
         let owner = &observation.occurrence;
+        if self.is_sealed(owner) && observation.producer != ObservationProducer::ManualHuman {
+            let reason = match observation.producer {
+                ObservationProducer::Whisper => NoAuthorityReason::LateWhisperWordSealedOwner,
+                ObservationProducer::CloudLive => NoAuthorityReason::LateCloudLiveWordSealedOwner,
+                _ => NoAuthorityReason::LateAppleWordSealedOwner,
+            };
+            // The reducer keys evidence by occurrence. Carry forward the last
+            // K5 receipt so another late window cannot erase earlier evidence.
+            let prior = self.trail.iter().rev().find_map(|entry| {
+                if &entry.observation.occurrence != owner {
+                    return None;
+                }
+                match &entry.decision {
+                    MutationReceipt::KeepVisibleUnanchored {
+                        label,
+                        reason:
+                            NoAuthorityReason::LateWhisperWordSealedOwner
+                            | NoAuthorityReason::LateCloudLiveWordSealedOwner
+                            | NoAuthorityReason::LateAppleWordSealedOwner,
+                        ..
+                    } => Some(label.clone()),
+                    _ => None,
+                }
+            });
+            let mut labels = prior.into_iter().collect::<Vec<_>>();
+            labels.extend(words.iter().map(|pin| pin.text.clone()));
+            return trace.finish(
+                self.keep_visible_unanchored(observation, &labels.join(" "), reason),
+                self,
+            );
+        }
         // Replay is fenced before alignment can emit a retention operation.
         if self.answered.contains(observation) {
             let candidate = words
@@ -1234,7 +1265,7 @@ impl AcousticLedger {
                 let same_label =
                     normalize_word_token(&source.text) == normalize_word_token(&pin.text);
                 if source.producer == ObservationProducer::Whisper || same_label {
-                    if !self.is_sealed(owner) {
+                    {
                         let output = WordSlot {
                             sample_start: pin.sample_start,
                             sample_end: pin.sample_end,
@@ -1267,37 +1298,6 @@ impl AcousticLedger {
                     return trace.finish(receipt, self);
                 }
             }
-        }
-        if self.is_sealed(owner) && observation.producer != ObservationProducer::ManualHuman {
-            let reason = match observation.producer {
-                ObservationProducer::Whisper => NoAuthorityReason::LateWhisperWordSealedOwner,
-                ObservationProducer::CloudLive => NoAuthorityReason::LateCloudLiveWordSealedOwner,
-                _ => NoAuthorityReason::LateAppleWordSealedOwner,
-            };
-            // The reducer keys evidence by occurrence. Carry forward the last
-            // K5 receipt so another late window cannot erase earlier evidence.
-            let prior = self.trail.iter().rev().find_map(|entry| {
-                if &entry.observation.occurrence != owner {
-                    return None;
-                }
-                match &entry.decision {
-                    MutationReceipt::KeepVisibleUnanchored {
-                        label,
-                        reason:
-                            NoAuthorityReason::LateWhisperWordSealedOwner
-                            | NoAuthorityReason::LateCloudLiveWordSealedOwner
-                            | NoAuthorityReason::LateAppleWordSealedOwner,
-                        ..
-                    } => Some(label.clone()),
-                    _ => None,
-                }
-            });
-            let mut labels = prior.into_iter().collect::<Vec<_>>();
-            labels.extend(words.iter().map(|pin| pin.text.clone()));
-            return trace.finish(
-                self.keep_visible_unanchored(observation, &labels.join(" "), reason),
-                self,
-            );
         }
         if self.word_trial_input_refusal(observation, words).is_some() {
             return trace.finish(

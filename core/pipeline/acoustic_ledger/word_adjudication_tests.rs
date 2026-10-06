@@ -379,3 +379,80 @@ fn a_same_label_update_and_trial_cannot_downgrade_a_complete_word_at_a_voiced_fe
     assert!(ledger.word_finality(&owner)[0].unresolved);
     assert!(!ledger.word_choices().last().unwrap().lexical_resolved);
 }
+
+#[test]
+fn stale_apple_cannot_revert_a_newer_provisional_word_or_open_a_conflict() {
+    for decode in [None, Some((0, 128_000))] {
+        let (mut ledger, owner) = fixture();
+        offer(
+            &mut ledger,
+            &owner,
+            ObservationProducer::Apple,
+            2,
+            "nowsze",
+            None,
+        );
+        let before = ledger.slots_of(&owner).unwrap().to_vec();
+        offer(
+            &mut ledger,
+            &owner,
+            ObservationProducer::Apple,
+            1,
+            "starsze",
+            decode,
+        );
+        assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+        assert_eq!(ledger.text_of(&owner), Some("nowsze"));
+        assert!(!ledger.has_word_conflicts());
+        let choice = ledger.word_choices().last().unwrap();
+        assert!(!choice.accepted);
+        assert!(!choice.lexical_resolved);
+        assert_eq!(choice.reason, "stale_apple_generation");
+    }
+}
+
+#[test]
+fn late_apple_respects_duplicate_and_sealed_fences_before_adjudication() {
+    let (mut ledger, owner) = fixture();
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        0,
+        "1286",
+        Some((0, 128_000)),
+    );
+    let apple = ObservationIdentity::new(ObservationProducer::Apple, 8, 1, owner.clone());
+    let pin = WordPin::new(48_000, 64_000, "1286");
+    ledger.admit_word_slots(&apple, std::slice::from_ref(&pin));
+    let choices = ledger.word_choices().len();
+    let before = ledger.slots_of(&owner).unwrap().to_vec();
+    let repeated = ledger.admit_word_slots(&apple, std::slice::from_ref(&pin));
+    assert!(matches!(
+        repeated,
+        MutationReceipt::Refuse {
+            reason: RefuseReason::BatchDuplicate,
+            ..
+        }
+    ));
+    assert_eq!(ledger.word_choices().len(), choices);
+    for producer in [ObservationProducer::Apple, ObservationProducer::Whisper] {
+        ledger.note_frontier_return(&owner, producer);
+    }
+    let seal = ledger.seal(&owner).unwrap();
+    for generation in [1, 2] {
+        let late =
+            ObservationIdentity::new(ObservationProducer::Apple, 8, generation, owner.clone());
+        let receipt = ledger.admit_word_slots(&late, std::slice::from_ref(&pin));
+        assert!(matches!(
+            receipt,
+            MutationReceipt::KeepVisibleUnanchored {
+                reason: NoAuthorityReason::LateAppleWordSealedOwner,
+                ..
+            }
+        ));
+        assert_eq!(ledger.word_choices().len(), choices);
+        assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+        assert_eq!(ledger.seal_of(&owner), Some(&seal));
+    }
+}
