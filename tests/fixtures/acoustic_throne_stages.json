@@ -195,10 +195,66 @@
         "committedSegments",
         "finalizeTranscript"
       ],
+      "required_absent_production": [
+        "bound_context_range",
+        "FusionContextMode",
+        "ContextBounds",
+        "enqueue_layer1_piece",
+        "flush_layer1_coalesce",
+        "repair_terminal_seal_coverage",
+        "repair_terminal_seal_coverage_with"
+      ],
+      "exclusive_production_literal_owners": [
+        {
+          "literal": "TailPatchRequest {",
+          "owners": [
+            {
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "kind": "struct",
+              "symbol": "TailPatchRequest",
+              "count": 1
+            },
+            {
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "kind": "function",
+              "symbol": "pump_capture_windows",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "literal": "transcribe_selected_controlled(",
+          "owners": [
+            {
+              "file": "core/pipeline/streaming/session.rs",
+              "kind": "function",
+              "symbol": "compute_tail_patch_job",
+              "count": 1
+            },
+            {
+              "file": "core/stt/tail_provider.rs",
+              "kind": "function",
+              "symbol": "transcribe_selected",
+              "count": 1
+            },
+            {
+              "file": "core/stt/tail_provider.rs",
+              "kind": "function",
+              "symbol": "transcribe_selected_controlled",
+              "count": 1
+            }
+          ]
+        }
+      ],
       "required_present": [
         {
           "symbol": "AcousticLedger",
           "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "CaptureWindowPlan",
+          "owner": "core/pipeline/streaming/layer1_window.rs",
           "cardinality": 1
         },
         {
@@ -279,6 +335,10 @@
             "core/audio/streaming_recorder.rs",
             "core/pipeline/streaming/apple_live_session.rs"
           ]
+        },
+        {
+          "symbol": "CaptureWindowPlan",
+          "consumers": ["core/pipeline/streaming/apple_live_session.rs"]
         },
         {
           "symbol": "AcousticSerial",
@@ -727,10 +787,181 @@
                 "SileroIngress::new(sample_rate, state.session_id.clone(), state.capture_epoch)",
                 "samples_seen += samples.len() as u64",
                 "state.audio.push(&samples)",
+                "state.pump_capture_windows(&ev_tx);",
                 "fusion.ingest(&samples, samples_seen)",
                 "emit_stream_events(events, &ev_tx, &mut state, audio_secs)",
+                "state.capture_stopping = true;",
+                "state.pump_capture_windows(&ev_tx);",
+                "reconcile_terminal_coverage(&mut state, &ev_tx);",
+                "let seal_coverage = publish_terminal_coverage(&state, &ev_tx);",
+                "if !seal_coverage.status.is_complete() {",
                 ".seal_terminal(&state.session_id, state.capture_epoch)",
                 "EngineEvent::LedgerSeal { receipt }"
+              ]
+            },
+            {
+              "symbol": "new_for_session",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "fn new_for_session(sample_rate: u32, session_id: String, capture_epoch: u64) -> Self",
+                "window_plan: CaptureWindowPlan::new(",
+                "session_id_for_energy.clone(),",
+                "capture_epoch,",
+                "sample_rate,"
+              ]
+            },
+            {
+              "symbol": "new",
+              "file": "core/pipeline/streaming/layer1_window.rs",
+              "signature_contains": "fn new(session: String, capture_epoch: u64, sample_rate: u32) -> Self",
+              "required_code": [
+                "session,",
+                "capture_epoch,",
+                "window_samples: u64::from(sample_rate) * 9,",
+                "step_samples: u64::from(sample_rate) * 3,",
+                "next_start: 0,",
+                "offered: None,",
+                "finished: sample_rate == 0,"
+              ]
+            },
+            {
+              "symbol": "next_due",
+              "file": "core/pipeline/streaming/layer1_window.rs",
+              "required_code": [
+                "self.observe_head(capture_end, stopping);",
+                "if let Some(offered) = &self.offered {",
+                "return Some(offered.clone());",
+                "let head = self.eof.unwrap_or(self.capture_end);",
+                "self.next_start.checked_add(self.window_samples)",
+                "full_end <= head",
+                "head > self.last_full_end && self.next_start < head",
+                "sample_start: self.next_start,",
+                "sample_end: end,",
+                "self.offered = Some(range.clone());"
+              ]
+            },
+            {
+              "symbol": "observe_head",
+              "file": "core/pipeline/streaming/layer1_window.rs",
+              "required_code": [
+                "if self.eof.is_some() {",
+                "return;",
+                "if capture_end > self.capture_end {",
+                "self.capture_end = capture_end;",
+                "if stopping {",
+                "self.eof = Some(self.capture_end);"
+              ]
+            },
+            {
+              "symbol": "account",
+              "file": "core/pipeline/streaming/layer1_window.rs",
+              "required_code": [
+                "if self.offered.as_ref() != Some(range) {",
+                "return false;",
+                "self.offered = None;",
+                "if range.sample_end - range.sample_start == self.window_samples {",
+                "self.next_start = self.next_start.saturating_add(self.step_samples);",
+                "self.finished = self.eof == Some(self.last_full_end);",
+                "self.finished = true;"
+              ]
+            },
+            {
+              "symbol": "pump_capture_windows",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                ".window_plan",
+                ".next_due(self.audio.session_sample_end(), self.capture_stopping)",
+                ".window_by_samples(range.sample_start, range.sample_end)",
+                "window.sample_start == range.sample_start",
+                "&& window.sample_end == range.sample_end",
+                "&& window.samples.len() as u64 == range.sample_end - range.sample_start",
+                "self.refinement_pending.push_back(TailPatchRequest {",
+                "audio: window.samples,",
+                "identity: TailRequestIdentity { request_id, range },",
+                "self.retry_refinements(ev_tx);",
+                "self.replay_completed_windows(ev_tx);",
+                "self.close_admission_horizon(ev_tx, self.window_plan.admission_horizon());"
+              ],
+              "forbidden_code": ["bound_context_range(", "repair_terminal_seal_coverage("]
+            },
+            {
+              "symbol": "retry_refinements",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "let range = request.provider_request.identity.range.clone();",
+                ".next_due(self.audio.session_sample_end(), self.capture_stopping)",
+                "!= Some(&range)",
+                "match sender.try_send(request) {",
+                "Ok(()) => {",
+                "self.window_plan.account(&range);",
+                "self.refinement_submitted.insert(",
+                "Err(mpsc::error::TrySendError::Full(request)) => {",
+                "self.refinement_pending.push_front(request);"
+              ]
+            },
+            {
+              "symbol": "push_request",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "req.provider_request.language = self.language.clone();",
+                "let job = compute_tail_patch_job(",
+                "audio: req.audio,",
+                "request: req.provider_request,",
+                "self.push_job(job);"
+              ]
+            },
+            {
+              "symbol": "compute_tail_patch_job",
+              "file": "core/pipeline/streaming/session.rs",
+              "required_code": [
+                "compute_tail_patch_job_with(owner, input, move |request, pcm, control| {",
+                "crate::stt::tail_provider::transcribe_selected_controlled(provider, request, pcm, control)"
+              ]
+            },
+            {
+              "symbol": "complete_whisper_window",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "let key = request_identity",
+                "self.refinement_submitted.get(key).is_some_and(|job| {",
+                "request_identity.as_ref() == Some(&job.request_identity)",
+                "if !matched {",
+                "return;",
+                "self.refinement_submitted",
+                "payload.identity == job.request_identity",
+                "&& payload.validate().is_ok()",
+                "if let Some(payload) = payload.filter(|_| valid) {",
+                "self.retain_word_decode(&payload);",
+                "self.admit_completed_window(ev_tx, &payload, true);",
+                "self.close_admission_horizon(ev_tx, self.window_plan.admission_horizon());"
+              ]
+            },
+            {
+              "symbol": "replay_completed_windows",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "let owners = self.unsealed_word_owners();",
+                "self.retained_word_decodes",
+                "range_overlaps_occurrence(&payload.identity.range, owner)",
+                "replayed_window_owners",
+                "for payload in returned {",
+                "self.admit_completed_window(ev_tx, &payload, false);"
+              ],
+              "forbidden_code": ["self.admit_completed_window(ev_tx, &payload, true);"]
+            },
+            {
+              "symbol": "admit_completed_window",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "let identity = &returned.identity;",
+                "range_overlaps_occurrence(&identity.range, owner)",
+                "self.replayed_window_owners",
+                ".insert((request_id, occurrence.clone()))",
+                "self.admit_routed_words_with_decode_window(",
+                "admit_ledger_label(",
+                "self.publish_resolved_word_seals(ev_tx);",
+                "if fresh && mutation_admitted {",
+                "} else if fresh {"
               ]
             },
             {
@@ -797,10 +1028,21 @@
                 "continue;",
                 "let apple_admitted = if has_apple_label {",
                 "admit_ledger_label(",
-                "energy: EnergyAdmission::RequireExistingQualification,",
-                "let request_range = bound_context_range(&silero.range, context, pad_samples, &bounds);",
-                "state.window_by_samples(request_range.sample_start, request_range.sample_end)"
-              ]
+                "energy: EnergyAdmission::RequireExistingQualification,"
+              ],
+              "forbidden_code": ["bound_context_range(", "TailPatchRequest {"]
+            },
+            {
+              "symbol": "register_whisper_owner",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "if !ledger.is_qualified(occurrence) || ledger.is_sealed(occurrence) {",
+                "return false;",
+                "ledger.schedule_frontier(occurrence.clone(), [LedgerObservationProducer::Whisper]);",
+                "ledger.schedule_observer(occurrence.clone(), LedgerObservationProducer::Whisper)",
+                "self.refinement_receipt(occurrence, \"admitted\");"
+              ],
+              "forbidden_code": ["TailPatchRequest {", "window_by_samples(", "next_due("]
             },
             {
               "symbol": "qualify_owned_occurrence",
@@ -950,6 +1192,109 @@
               "minimum_count": 1
             },
             {
+              "callee": "new",
+              "callee_file": "core/pipeline/streaming/layer1_window.rs",
+              "caller": "new_for_session",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "pump_capture_windows",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "apple_stream_worker",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 3
+            },
+            {
+              "callee": "next_due",
+              "callee_file": "core/pipeline/streaming/layer1_window.rs",
+              "caller": "pump_capture_windows",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "observe_head",
+              "callee_file": "core/pipeline/streaming/layer1_window.rs",
+              "caller": "next_due",
+              "caller_file": "core/pipeline/streaming/layer1_window.rs"
+            },
+            {
+              "callee": "window_by_samples",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "pump_capture_windows",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "retry_refinements",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "pump_capture_windows",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "next_due",
+              "callee_file": "core/pipeline/streaming/layer1_window.rs",
+              "caller": "retry_refinements",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "account",
+              "callee_file": "core/pipeline/streaming/layer1_window.rs",
+              "caller": "retry_refinements",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "push_request",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "apple_stream_transcription_session",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "compute_tail_patch_job",
+              "callee_file": "core/pipeline/streaming/session.rs",
+              "caller": "push_request",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "transcribe_selected_controlled",
+              "callee_file": "core/stt/tail_provider.rs",
+              "caller": "compute_tail_patch_job",
+              "caller_file": "core/pipeline/streaming/session.rs"
+            },
+            {
+              "callee": "complete_whisper_window",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "apple_stream_worker",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "retain_word_decode",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "complete_whisper_window",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "admit_completed_window",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "complete_whisper_window",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "replay_completed_windows",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "pump_capture_windows",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "admit_completed_window",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "replay_completed_windows",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "admit_ledger_label",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "admit_completed_window",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
               "callee": "emit_stream_events",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "apple_stream_worker",
@@ -983,6 +1328,12 @@
               "caller": "seal_sliced_by_silero",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs",
               "minimum_count": 1
+            },
+            {
+              "callee": "register_whisper_owner",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "reconcile_silero_ledger",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
             },
             {
               "callee": "qualify_owned_occurrence",
@@ -1065,6 +1416,18 @@
               "barrier": {
                 "required_code": "if ledger.is_sealed(&occurrence) {",
                 "selection": "last_before_after"
+              }
+            },
+            {
+              "caller": "complete_whisper_window",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "before": {
+                "corridor": "capture_to_ledger",
+                "callee": "retain_word_decode"
+              },
+              "after": {
+                "corridor": "capture_to_ledger",
+                "callee": "admit_completed_window"
               }
             }
           ]
@@ -1584,11 +1947,60 @@
           "name": "speech_coverage_to_terminal_truth",
           "hops": [
             {
-              "symbol": "repair_terminal_seal_coverage",
+              "symbol": "stop_refinements_tick",
               "file": "core/pipeline/streaming/apple_live_session.rs",
               "required_code": [
-                "repair_terminal_seal_coverage_with(",
-                "|request, pcm, control| InProcessTailProvider.transcribe_controlled(request, pcm, control)"
+                "if now >= deadline {",
+                "self.return_outstanding_whisper_without_label(ev_tx);",
+                "return false;",
+                "self.tick_refinements(ev_tx, now);",
+                "self.planned_work_pending()",
+                "|| !self.refinement_submitted.is_empty()",
+                "|| !self.refinement_pending.is_empty()"
+              ],
+              "forbidden_code": ["TailPatchRequest {", "transcribe_controlled("]
+            },
+            {
+              "symbol": "return_outstanding_whisper_without_label",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "self.refinement_pending.clear();",
+                "self.refinement_submitted.clear();",
+                ".window_plan",
+                ".next_due(self.audio.session_sample_end(), self.capture_stopping)",
+                "self.window_plan.account(&range);",
+                "self.close_admission_horizon(ev_tx, u64::MAX);"
+              ],
+              "forbidden_code": ["TailPatchRequest {", "transcribe_controlled("]
+            },
+            {
+              "symbol": "reconcile_terminal_coverage",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "state.replay_completed_windows(ev_tx);",
+                "let speech = coverage_speech_evidence(state);",
+                "state.retained_word_decodes",
+                "let mut gaps = ledger",
+                ".assess_seal_coverage(",
+                "for owner in ledger.qualified_occurrences() {",
+                "admit_full_pass_gap_segments(",
+                "state.close_admission_horizon(ev_tx, state.window_plan.admission_horizon());",
+                "state.publish_resolved_word_seals(ev_tx);",
+                "state.seal_remaining_at_session_end(ev_tx);",
+                "let receipt = ledger.assess_seal_coverage(",
+                "ledger.record_seal_coverage(receipt.clone());"
+              ],
+              "forbidden_code": ["TailPatchRequest {", "transcribe_controlled(", "window_by_samples("]
+            },
+            {
+              "symbol": "publish_terminal_coverage",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "let speech = coverage_speech_evidence(state);",
+                "let receipt = ledger.assess_seal_coverage(",
+                "ledger.record_seal_coverage(receipt.clone());",
+                "EngineEvent::SealCoverage {",
+                "receipt"
               ]
             },
             {
@@ -1686,21 +2098,64 @@
           ],
           "required_invocations": [
             {
-              "callee": "repair_terminal_seal_coverage",
+              "callee": "stop_refinements_tick",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "apple_stream_worker",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 2
+            },
+            {
+              "callee": "tick_refinements",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "stop_refinements_tick",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "pump_capture_windows",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "tick_refinements",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "return_outstanding_whisper_without_label",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "stop_refinements_tick",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "next_due",
+              "callee_file": "core/pipeline/streaming/layer1_window.rs",
+              "caller": "return_outstanding_whisper_without_label",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "account",
+              "callee_file": "core/pipeline/streaming/layer1_window.rs",
+              "caller": "return_outstanding_whisper_without_label",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "reconcile_terminal_coverage",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "apple_stream_worker",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs"
             },
             {
-              "callee": "repair_terminal_seal_coverage_with",
+              "callee": "publish_terminal_coverage",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
-              "caller": "repair_terminal_seal_coverage",
+              "caller": "apple_stream_worker",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "replay_completed_windows",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "reconcile_terminal_coverage",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs"
             },
             {
               "callee": "coverage_speech_evidence",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
-              "caller": "repair_terminal_seal_coverage_with",
+              "caller": "reconcile_terminal_coverage",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs"
             },
             {
@@ -1725,27 +2180,32 @@
             {
               "callee": "assess_seal_coverage",
               "callee_file": "core/pipeline/acoustic_ledger.rs",
-              "caller": "repair_terminal_seal_coverage_with",
+              "caller": "reconcile_terminal_coverage",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs",
               "minimum_count": 2
             },
             {
               "callee": "record_seal_coverage",
               "callee_file": "core/pipeline/acoustic_ledger.rs",
-              "caller": "repair_terminal_seal_coverage_with",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
-              "minimum_count": 2
+              "caller": "reconcile_terminal_coverage",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
             },
             {
               "callee": "admit_full_pass_gap_segments",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
-              "caller": "repair_terminal_seal_coverage_with",
+              "caller": "reconcile_terminal_coverage",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs"
             },
             {
-              "callee": "window_by_samples",
-              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
-              "caller": "repair_terminal_seal_coverage_with",
+              "callee": "assess_seal_coverage",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "caller": "publish_terminal_coverage",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "record_seal_coverage",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "caller": "publish_terminal_coverage",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs"
             },
             {
@@ -1772,6 +2232,44 @@
               "callee": "complete_stop",
               "callee_file": "core/audio/streaming_recorder.rs",
               "minimum_count": 1
+            }
+          ],
+          "ordering": [
+            {
+              "caller": "apple_stream_worker",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "before": {
+                "corridor": "speech_coverage_to_terminal_truth",
+                "callee": "reconcile_terminal_coverage"
+              },
+              "after": {
+                "corridor": "speech_coverage_to_terminal_truth",
+                "callee": "publish_terminal_coverage"
+              }
+            },
+            {
+              "caller": "reconcile_terminal_coverage",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "before": {
+                "corridor": "speech_coverage_to_terminal_truth",
+                "callee": "replay_completed_windows"
+              },
+              "after": {
+                "corridor": "speech_coverage_to_terminal_truth",
+                "callee": "admit_full_pass_gap_segments"
+              }
+            },
+            {
+              "caller": "reconcile_terminal_coverage",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "before": {
+                "corridor": "speech_coverage_to_terminal_truth",
+                "callee": "admit_full_pass_gap_segments"
+              },
+              "after": {
+                "corridor": "speech_coverage_to_terminal_truth",
+                "callee": "record_seal_coverage"
+              }
             }
           ]
         },

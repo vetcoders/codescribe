@@ -549,6 +549,7 @@ def is_test_path(file: str) -> bool:
     return (
         file.startswith("tests/")
         or file.startswith("scripts/tests/")
+        or path.stem.endswith("_tests")
         or any(part.endswith("Tests") for part in path.parts)
     )
 
@@ -1136,6 +1137,64 @@ def verify_forbidden_executable_literals(
     return hits, failures
 
 
+def verify_exclusive_production_literal_owners(
+    verifier: StructuralVerifier, contracts: Any
+) -> tuple[dict[str, list[str]], list[str]]:
+    if contracts is None:
+        return {}, []
+    if not isinstance(contracts, list) or any(not isinstance(row, dict) for row in contracts):
+        raise RuntimeError("exclusive_production_literal_owners must be a list of objects")
+    observations: dict[str, list[str]] = {}
+    failures: list[str] = []
+    for contract in contracts:
+        literal = contract.get("literal")
+        owners = contract.get("owners")
+        if (
+            set(contract) != {"literal", "owners"}
+            or not isinstance(literal, str)
+            or not literal
+            or literal in observations
+            or not isinstance(owners, list)
+            or not owners
+            or any(
+                not isinstance(owner, dict)
+                or set(owner) != {"file", "symbol", "kind", "count"}
+                or not isinstance(owner["file"], str)
+                or not owner["file"]
+                or Path(owner["file"]).is_absolute()
+                or not isinstance(owner["symbol"], str)
+                or not owner["symbol"]
+                or not isinstance(owner["kind"], str)
+                or owner["kind"] not in {"struct", "function"}
+                or type(owner["count"]) is not int
+                or owner["count"] < 1
+                for owner in owners
+            )
+        ):
+            raise RuntimeError(f"malformed exclusive production literal owner: {contract}")
+        expected = [
+            (owner["file"], owner["kind"], owner["symbol"])
+            for owner in owners for _ in range(owner["count"])
+        ]
+        rows = production_occurrences({
+            "occurrences": require_complete_literal_evidence(
+                verifier.literal_occurrences(literal), literal
+            )
+        })
+        actual = [
+            (str(row["file"]), str((row.get("enclosing_symbol") or {}).get("kind")),
+             str((row.get("enclosing_symbol") or {}).get("name")))
+            for row in rows if not is_test_path(str(row["file"]))
+        ]
+        observations[literal] = [f"{file}:{kind}:{symbol}" for file, kind, symbol in sorted(actual)]
+        if sorted(actual) != sorted(expected):
+            failures.append(
+                f"production literal {literal!r} has competing or missing owners: "
+                f"expected {sorted(expected)}, observed {sorted(actual)}"
+            )
+    return observations, failures
+
+
 def code_without_comments_or_strings(source: str) -> str:
     """Return code tokens while refusing comments and string literals as evidence."""
     rendered: list[str] = []
@@ -1645,6 +1704,7 @@ def verify_code_corridors(
             file = hop.get("file")
             signature = hop.get("signature_contains")
             required_code = hop.get("required_code")
+            forbidden_code = hop.get("forbidden_code", [])
             ast_contract = hop.get("ast_contract")
             if ast_contract is not None and (
                 ast_contract != symbol or AST_BODIES.get(symbol) != file
@@ -1660,6 +1720,12 @@ def verify_code_corridors(
                 or not isinstance(required_code, list)
                 or (not required_code and ast_contract is None)
                 or any(not isinstance(item, str) or not item for item in required_code)
+                or not isinstance(forbidden_code, list)
+                or any(
+                    not isinstance(item, str)
+                    or not code_without_comments_or_strings(item)
+                    for item in forbidden_code
+                )
             ):
                 raise RuntimeError(f"corridor {name} has malformed hop: {hop}")
             rows = corridor_body_rows(
@@ -1673,6 +1739,7 @@ def verify_code_corridors(
             start_line: int | None = None
             required_code_in_order = False
             dead_code_markers: list[str] = []
+            forbidden_code_hits: list[str] = []
             unreachable_required_code: list[dict[str, Any]] = []
             if len(rows) == 1:
                 body = rows[0]
@@ -1688,6 +1755,10 @@ def verify_code_corridors(
                         required_code, normalized_required_code, strict=True
                     )
                     if normalized not in code
+                ]
+                forbidden_code_hits = [
+                    snippet for snippet in forbidden_code
+                    if code_without_comments_or_strings(snippet) in code
                 ]
                 cursor = 0
                 required_code_in_order = True
@@ -1752,6 +1823,7 @@ def verify_code_corridors(
                     "missing_code": missing_code,
                     "required_code_in_order": required_code_in_order,
                     "dead_code_markers": dead_code_markers,
+                    "forbidden_code_hits": forbidden_code_hits,
                     "unreachable_required_code": unreachable_required_code,
                 }
             )
@@ -1774,6 +1846,10 @@ def verify_code_corridors(
             elif dead_code_markers:
                 failures.append(
                     f"corridor {name} hop {symbol} contains dead-code markers {dead_code_markers}"
+                )
+            elif forbidden_code_hits:
+                failures.append(
+                    f"corridor {name} hop {symbol} contains competing executable code {forbidden_code_hits}"
                 )
             elif unreachable_required_code:
                 failures.append(
@@ -2205,12 +2281,29 @@ def verify_stage(
         if files:
             forbidden_hits[symbol] = files
             failures.append(f"forbidden symbol {symbol} remains in {files}")
+    production_absent = stage_contract.get("required_absent_production", [])
+    if (not isinstance(production_absent, list)
+        or any(not isinstance(symbol, str) or not symbol for symbol in production_absent)
+        or len(production_absent) != len(set(production_absent))):
+        raise RuntimeError("required_absent_production must name unique symbols")
+    for symbol in production_absent:
+        files = [
+            file for file in observed_files(verifier.occurrences(symbol))
+            if not is_test_path(file)
+        ]
+        if files:
+            forbidden_hits[f"production:{symbol}"] = files
+            failures.append(f"retired production authority {symbol} remains in {files}")
     forbidden_literal_hits, forbidden_literal_failures = (
         verify_forbidden_executable_literals(
             verifier, manifest.get("forbidden_executable_literals")
         )
     )
     failures.extend(forbidden_literal_failures)
+    literal_owner_paths, literal_owner_failures = verify_exclusive_production_literal_owners(
+        verifier, stage_contract.get("exclusive_production_literal_owners")
+    )
+    failures.extend(literal_owner_failures)
     residue_by_substring = build_residue_by_substring(verifier, forbidden_symbols)
     residue_gate = residue_by_substring["summary"]
     if residue_gate["unclassified_count"] or residue_gate["review_required_count"]:
@@ -2302,6 +2395,8 @@ def verify_stage(
     corridor_paths, corridor_failures = verify_code_corridors(
         verifier, stage_contract.get("required_corridors")
     )
+    if literal_owner_paths:
+        corridor_paths["exclusive_production_literal_owners"] = literal_owner_paths
     failures.extend(corridor_failures)
 
     canary_rows, unclassified_canary = read_canary(canary_path)
