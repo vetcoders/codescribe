@@ -79,6 +79,53 @@ fn disputed() -> (AcousticLedger, OccurrenceIdentity) {
 }
 
 #[test]
+fn ordinary_third_grid_window_adjudicates_without_phase_dependent_extra_work() {
+    let (mut ledger, owner) = fixture();
+    let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone());
+    ledger.admit_word_slots(&apple, &[WordPin::new(128_000, 136_000, "56")]);
+
+    // Same input sequence whether completions arrive live or in the Stop drain.
+    // Fixed padding3s would exclude this third frame despite full source cover.
+    for (generation, start, end, text) in [
+        (1, 0, 144_000, "1286"),
+        (2, 48_000, 192_000, "999"),
+        (3, 96_000, 240_000, "1286"),
+    ] {
+        let frame = OccurrenceIdentity::new(owner.session.clone(), owner.capture_epoch, start, end);
+        let trial = ledger.next_word_trial_in(false, Some(&frame), None);
+        let observation = ObservationIdentity::new(
+            ObservationProducer::Whisper,
+            generation,
+            generation,
+            owner.clone(),
+        );
+        let pins = [WordPin::new(128_000, 136_000, text).with_decode_window(start, end)];
+        if generation == 3 {
+            let trial =
+                trial.expect("two prior observations authorize this ordinary fresh witness");
+            let receipt = ledger.admit_word_trial(&trial, &observation, &pins, &pins);
+            assert!(receipt.grants_mutation());
+        } else {
+            assert!(
+                trial.is_none(),
+                "ordinary frames cannot spend a trial before two prior witnesses"
+            );
+        }
+        ledger.admit_word_slots(&observation, &pins);
+    }
+    assert_eq!(ledger.text_of(&owner), Some("1286"));
+    assert!(!ledger.has_word_conflicts());
+    let replay =
+        OccurrenceIdentity::new(owner.session.clone(), owner.capture_epoch, 96_000, 240_000);
+    assert!(
+        ledger
+            .next_word_trial_in(false, Some(&replay), None)
+            .is_none()
+    );
+    assert_eq!(ledger.text_of(&owner), Some("1286"));
+}
+
+#[test]
 fn wrong_apple_is_not_a_veto_against_a_confirmed_trial() {
     let (mut ledger, owner) = disputed();
     let trial = ledger
