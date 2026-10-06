@@ -12720,6 +12720,17 @@
         }
       }
     },
+    "The installation path could not be inspected." : {
+      "comment" : "Agent bridge refuses an installation path it cannot inspect",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie można sprawdzić ścieżki instalacji."
+          }
+        }
+      }
+    },
     "The local FP16 bundle is missing or invalid. Local power is explicitly not ready until validation passes." : {
       "localizations" : {
         "pl" : {
