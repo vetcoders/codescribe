@@ -95,6 +95,61 @@ class ChannelCaptureMessageTests(unittest.TestCase):
         return DEMUX.normalized_revision_events(json.dumps({"schema": DEMUX.CLEAN_SCHEMA,
             "session_id": session, "status": DEMUX.SESSION_ENDED}), self.normalizer)
 
+    def test_handover_uses_source_closure_without_erasing_pending_history(self):
+        row = self.evidence()
+        preview = self.envelopes(DEMUX.normalized_revision_events(json.dumps(row), self.normalizer))[0]
+        self.lease.queue_delivery(preview)
+        close = {"schema": DEMUX.CLEAN_SCHEMA, "session_id": row["session_id"],
+                 "status": DEMUX.SESSION_ENDED}
+        self.bus.write_text(json.dumps(row) + "\n" + json.dumps(close) + "\n")
+        self.lease.unclosed_channel_messages = self.normalizer.channel_documents()
+        self.lease.persist(active=True, cursor=self.bus.stat().st_size)
+        saved = self.lease.path.read_bytes()
+        DEMUX.require_drained_lease(self.root, self.lease.lease_id)
+        self.assertEqual(self.lease.path.read_bytes(), saved)
+        self.assertEqual(DEMUX.read_json(self.lease.path)["pending"], [preview])
+
+    def test_handover_keeps_a_real_unfinished_capture(self):
+        row = self.evidence()
+        DEMUX.normalized_revision_events(json.dumps(row), self.normalizer)
+        self.bus.write_text(json.dumps(row) + "\n")
+        self.lease.unclosed_channel_messages = self.normalizer.channel_documents()
+        self.lease.persist(active=True, cursor=self.bus.stat().st_size)
+        saved = self.lease.path.read_bytes()
+        with self.assertRaisesRegex(OSError, "unfinished capture"):
+            DEMUX.require_drained_lease(self.root, self.lease.lease_id)
+        self.assertEqual(self.lease.path.read_bytes(), saved)
+
+    def test_unread_draft_does_not_reopen_a_closed_capture_after_restart(self):
+        self.lease.close()
+        row = self.evidence()
+        row["recipients"] = [{"provider": "codex", "provider_session_id": "agent-a",
+            "lease_id": self.lease.lease_id, "bus": self.lease.bus, "channel": "2", "name": "lena"}]
+        close = {"schema": DEMUX.CLEAN_SCHEMA, "session_id": row["session_id"],
+                 "status": DEMUX.SESSION_ENDED}
+        self.bus.write_text(json.dumps(row) + "\n" + json.dumps(close) + "\n")
+        base = [str(SPEC.origin), "--bus", str(self.bus), "--bridge-home", str(self.root),
+                "--provider", "codex", "--session", "agent-a"]
+
+        def invoke(*arguments):
+            output = io.StringIO()
+            with patch.object(sys, "argv", base + list(arguments)), \
+                 patch.object(sys, "stdout", output), patch.object(sys, "stderr", io.StringIO()):
+                self.assertEqual(DEMUX.main(), 0)
+            return [json.loads(line) for line in output.getvalue().splitlines()]
+
+        emitted = invoke("--name", "lena", "--from-start", "--drafts")
+        final = next(item for item in emitted if item.get("kind") == "seal")
+        preview = next(item for item in emitted if item.get("kind") in ("draft", "revised"))
+        invoke("--ack", final["delivery_id"])
+        for _ in range(2):
+            replayed = invoke("--name", "lena", "--from-start", "--drafts")
+            self.assertIn(preview, replayed)
+            state = DEMUX.read_json(self.lease.path)
+            self.assertEqual(state["unclosed_channel_messages"], {})
+            self.assertEqual(state["pending"], [preview])
+            DEMUX.require_drained_lease(self.root, self.lease.lease_id)
+
     def envelopes(self, rows):
         values = []
         for row in rows:

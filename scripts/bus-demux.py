@@ -2433,7 +2433,11 @@ def run(args: argparse.Namespace) -> int:
     normalizer = EvidenceNormalizer()
     if lease:
         normalizer.restore_channel_documents(list(lease.unclosed_channel_messages.values()))
-        normalizer.restore_channel_documents(list(lease.pending.values()))
+        # Mailbox drafts are receipt history, not evidence of an open capture.
+        # A final queued before cursor commit still suppresses its replay.
+        normalizer.restore_channel_documents([
+            payload for payload in lease.pending.values() if payload.get("status") == SEALED
+        ])
     native = (
         NativeQueueWakeup(args.bridge_home, args.session, follower_channel)
         if lease and args.follow and args.provider == "codex"
@@ -3863,6 +3867,19 @@ def write_channel_binding(
     return path
 
 
+def source_closes_retained_documents(bus: Path, documents: dict[str, Any]) -> bool:
+    """Resolve stale observer snapshots through the canonical source normalizer."""
+    remaining = set(documents)
+    normalizer = EvidenceNormalizer()
+    for raw in replay(bus):
+        for event in normalized_revision_events(raw, normalizer):
+            if event.get("status") == SEALED:
+                remaining.discard(event.get("session_id"))
+        if not remaining:
+            return True
+    return not remaining
+
+
 def require_drained_lease(root: Path, lease_id: str) -> None:
     """A saved cursor must cover the source before its reader can be retired."""
     path = root / "leases" / f"{lease_id}.json"
@@ -3883,8 +3900,11 @@ def require_drained_lease(root: Path, lease_id: str) -> None:
         end = generation_metadata(Path(state["bus"])).st_size
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise OSError("source extent unavailable; owner retained") from error
-    if state["cursor"] != end or state.get("unclosed_channel_messages"):
+    if state["cursor"] != end:
         raise OSError("old source is undrained; resume its reader before retiring it")
+    documents = state.get("unclosed_channel_messages", {})
+    if documents and not source_closes_retained_documents(Path(state["bus"]), documents):
+        raise OSError("old source has an unfinished capture; owner retained")
 
 
 def verified_follower(root: Path, lease_id: str, session: str, pid: int) -> bool:
