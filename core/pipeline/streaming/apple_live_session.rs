@@ -5414,7 +5414,6 @@ fn admit_late_apple_words(
             .acoustic_ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut novel = Vec::new();
         for (start, end, text, confidence) in words {
             let pin =
                 OccurrenceIdentity::new(owner.session.clone(), owner.capture_epoch, start, end);
@@ -5456,98 +5455,46 @@ fn admit_late_apple_words(
                 });
                 continue;
             }
-            let consumed_span = ledger.slots_of(&owner).is_some_and(|slots| {
-                slots.iter().any(|slot| {
-                    let overlap = end
-                        .min(slot.sample_end)
-                        .saturating_sub(start.max(slot.sample_start));
-                    let shorter =
-                        (end - start).min(slot.sample_end.saturating_sub(slot.sample_start));
-                    shorter > 0 && overlap >= shorter / 2 + shorter % 2
-                })
-            });
-            let higher_rank_owns_span = ledger.slots_of(&owner).is_some_and(|slots| {
-                slots.iter().any(|slot| {
-                    let overlap = end
-                        .min(slot.sample_end)
-                        .saturating_sub(start.max(slot.sample_start));
-                    overlap > 0
-                        && slot.producer.authority_rank()
-                            > LedgerObservationProducer::Apple.authority_rank()
-                })
-            });
-            if higher_rank_owns_span
-                || (consumed_span && ledger.matching_word_slot(&owner, &pin, &text, false))
-            {
-                // Retain Apple's original alternative before the range replay
-                // fence. Evidence does not grant another insertion.
-                let mut hypothesis =
-                    crate::pipeline::acoustic_ledger::WordPin::new(start, end, &text);
-                hypothesis.confidence = confidence;
-                ledger.observe_retained_apple_word(&observation, &hypothesis);
-                outcome.dropped_by_slot_rules += 1;
-                // A replay or a higher-rank witness cannot add a second word.
-                // A fresh Apple correction of an Apple-owned slot continues to
-                // the ledger's replacement path below.
-                let receipt = if ledger.matching_word_slot(&owner, &pin, &text, false) {
-                    ledger.refuse_replayed_range(&observation, &text)
-                } else {
-                    // The higher layer already owns this physical range.
-                    // Keep the same refusal for open and sealed owners.
-                    ledger.refuse_replacement(&observation, &text, RefuseReason::SealedReplay)
-                };
-                let _ = ev_tx.send(EngineEvent::LedgerMutation {
-                    observation,
-                    label: text,
-                    receipt,
-                });
-                continue;
-            }
             let word = crate::pipeline::acoustic_ledger::WordPin::new(start, end, text);
-            novel.push(match confidence {
+            let word = match confidence {
                 Some(confidence) => word.with_confidence(confidence),
                 None => word,
+            };
+            let receipt = ledger.admit_word_slots(&observation, &[word]);
+            let admitted = ledger
+                .slots_of(&owner)
+                .unwrap_or(&[])
+                .iter()
+                .filter(|slot| slot.observation == observation)
+                .count();
+            if admitted > 0 {
+                *outcome.admitted_into.entry(owner.clone()).or_default() += admitted;
+            }
+            if matches!(&receipt, MutationReceipt::KeepVisibleUnanchored { .. }) {
+                outcome.kept_unanchored += 1;
+            } else {
+                outcome.dropped_by_slot_rules += 1usize.saturating_sub(admitted);
+            }
+            let label = match &receipt {
+                MutationReceipt::KeepVisibleUnanchored { label, reason, .. } => {
+                    let _ = ev_tx.send(EngineEvent::Warning {
+                        code: reason.as_str().into(),
+                        message: format!(
+                            "owner={}..{} request={request}",
+                            owner.sample_start, owner.sample_end
+                        ),
+                    });
+                    label.clone()
+                }
+                _ => ledger.text_of(&owner).unwrap_or("").to_string(),
+            };
+            let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                observation,
+                label,
+                receipt,
             });
         }
-        if novel.is_empty() {
-            continue;
-        }
-        let observation =
-            ledger.next_word_observation(LedgerObservationProducer::Apple, request, &owner);
-        let receipt = ledger.admit_word_slots(&observation, &novel);
-        let admitted = ledger
-            .slots_of(&owner)
-            .unwrap_or(&[])
-            .iter()
-            .filter(|slot| slot.observation == observation)
-            .count();
-        if admitted > 0 {
-            outcome.admitted_into.insert(owner.clone(), admitted);
-        }
-        if matches!(&receipt, MutationReceipt::KeepVisibleUnanchored { .. }) {
-            outcome.kept_unanchored += novel.len();
-        } else {
-            outcome.dropped_by_slot_rules += novel.len().saturating_sub(admitted);
-        }
-        let label = match &receipt {
-            MutationReceipt::KeepVisibleUnanchored { label, reason, .. } => {
-                let _ = ev_tx.send(EngineEvent::Warning {
-                    code: reason.as_str().into(),
-                    message: format!(
-                        "owner={}..{} request={request}",
-                        owner.sample_start, owner.sample_end
-                    ),
-                });
-                label.clone()
-            }
-            _ => ledger.text_of(&owner).unwrap_or("").to_string(),
-        };
         drop(ledger);
-        let _ = ev_tx.send(EngineEvent::LedgerMutation {
-            observation,
-            label,
-            receipt,
-        });
         if let Some((id, _)) = owners.iter().find(|(_, range)| range == &owner) {
             state.refresh_pending_label(*id, &owner);
         }

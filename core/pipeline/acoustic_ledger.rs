@@ -1200,6 +1200,54 @@ impl AcousticLedger {
         self.prepare_word_evidence(observation, words);
         let trace = super::trail::SlotTrace::words(self, observation, words, self.capture_rate_hz);
         let owner = &observation.occurrence;
+        // Late Apple evidence uses the same physical matcher and recorded
+        // input as every other word. Transport does not classify overlap.
+        if observation.producer == ObservationProducer::Apple
+            && let [pin] = words
+        {
+            let range = OccurrenceIdentity::new(
+                &owner.session,
+                owner.capture_epoch,
+                pin.sample_start,
+                pin.sample_end,
+            );
+            let sources = self
+                .slots_of(owner)
+                .unwrap_or(&[])
+                .iter()
+                .filter(|source| self.word_slot_targets_pin(source, &range))
+                .cloned()
+                .collect::<Vec<_>>();
+            if let [source] = sources.as_slice() {
+                let same_label =
+                    normalize_word_token(&source.text) == normalize_word_token(&pin.text);
+                if source.producer == ObservationProducer::Whisper || same_label {
+                    if !self.is_sealed(owner) {
+                        let output = WordSlot {
+                            sample_start: pin.sample_start,
+                            sample_end: pin.sample_end,
+                            text: pin.text.clone(),
+                            producer: observation.producer,
+                            observation: observation.clone(),
+                            witness: SlotWitness::Unwitnessed,
+                            confidence: pin.confidence,
+                            surface_rewritten: pin.surface_rewritten,
+                        };
+                        self.adjudicate_word_sources(observation, &sources, &[output]);
+                    }
+                    let receipt = if same_label {
+                        self.refuse_replayed_range(observation, &pin.text)
+                    } else {
+                        self.refuse_replacement(
+                            observation,
+                            &pin.text,
+                            RefuseReason::SlotAdmissionRejected,
+                        )
+                    };
+                    return trace.finish(receipt, self);
+                }
+            }
+        }
         if self.is_sealed(owner) && observation.producer != ObservationProducer::ManualHuman {
             let reason = match observation.producer {
                 ObservationProducer::Whisper => NoAuthorityReason::LateWhisperWordSealedOwner,

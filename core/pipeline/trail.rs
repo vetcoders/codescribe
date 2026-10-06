@@ -1486,6 +1486,46 @@ mod tests {
     }
 
     #[test]
+    fn forensic_trail_late_apple_alternative_and_trial_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = OccurrenceIdentity::new("late-apple-trial-replay", 17, 0, 16_000);
+        let sink =
+            TrailSink::open_in(dir.path(), &owner.session, owner.capture_epoch, 128).unwrap();
+        let mut ledger = forensic_trail_measured_ledger(&owner);
+        let first = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        ledger.admit_word_slots(
+            &first,
+            &[WordPin::new(2_000, 6_000, "56").with_decode_window(0, 16_000)],
+        );
+        ledger.admit_word_slots(
+            &ObservationIdentity::new(ObservationProducer::Apple, 2, 1, owner.clone()),
+            &[WordPin::new(2_000, 6_000, "1286")],
+        );
+        let trial = ledger.next_word_trial(true).unwrap();
+        let pins = [WordPin::new(2_000, 6_000, "1286").with_decode_window(0, 16_000)];
+        let confirmed = ledger.next_word_observation(ObservationProducer::Whisper, 3, &owner);
+        ledger.admit_word_trial(&trial, &confirmed, &pins, &pins);
+        assert_eq!(ledger.text_of(&owner), Some("1286"));
+        drop(sink);
+        let rows = read_trail(&trail_path(dir.path(), &owner.session).unwrap()).unwrap();
+        forensic_trail_assert_exact_replay(&ledger, &owner, &rows);
+        let mut forged = rows.clone();
+        let input = forged
+            .iter_mut()
+            .find_map(|row| match &mut row.event {
+                TrailEvent::SlotStart { operation }
+                    if operation.observation.producer == ObservationProducer::Apple =>
+                {
+                    operation.word_evidence.as_mut()
+                }
+                _ => None,
+            })
+            .unwrap();
+        input.words[0].original_text = Some("999".into());
+        assert_replay_refused_before_projection(&forged);
+    }
+
+    #[test]
     fn forensic_trail_actual_word_correction_refuses_label_then_roundtrips_clock() {
         let dir = tempfile::tempdir().unwrap();
         let owner = OccurrenceIdentity::new("forensic-trail-correction", 17, 0, 16_000);

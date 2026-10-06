@@ -108,9 +108,9 @@ fn late_correct_apple_survives_rank_refusal_and_can_win_a_trial() {
         "56",
         Some((0, 128_000)),
     );
-    ledger.observe_retained_apple_word(
+    ledger.admit_word_slots(
         &ObservationIdentity::new(ObservationProducer::Apple, 8, 2, owner.clone()),
-        &WordPin::new(48_000, 64_000, "1286"),
+        &[WordPin::new(48_000, 64_000, "1286")],
     );
     assert_eq!(ledger.text_of(&owner), Some("56"));
     let trial = ledger
@@ -209,13 +209,6 @@ fn rewritten_surfaces_do_not_fabricate_independent_source_agreement() {
             "zgodne",
             Some((0, 128_000)),
         ),
-        (
-            ObservationProducer::Whisper,
-            2,
-            "druga",
-            "inne",
-            Some((8_000, 136_000)),
-        ),
     ] {
         let obs = ObservationIdentity::new(producer, 8, generation, owner.clone());
         let mut original = WordPin::new(48_000, 64_000, raw);
@@ -229,6 +222,11 @@ fn rewritten_surfaces_do_not_fabricate_independent_source_agreement() {
         ledger.admit_word_slots(&obs, &[rewritten]);
     }
     assert_eq!(ledger.text_of(&owner), Some("zgodne"));
+    assert!(
+        ledger.has_word_conflicts(),
+        "two raw hypotheses already disagree despite one surface"
+    );
+    assert!(!ledger.word_choices().last().unwrap().lexical_resolved);
     let support = &ledger.word_choices().last().unwrap().support;
     assert!(
         support
@@ -313,4 +311,68 @@ fn provisional_apple_can_evolve_until_another_source_has_spoken() {
     );
     assert_eq!(ledger.text_of(&owner), Some("zweryfikowałeś"));
     assert!(ledger.next_word_trial(true).is_some());
+}
+
+#[test]
+fn a_same_label_update_and_trial_cannot_downgrade_a_complete_word_at_a_voiced_fence() {
+    use crate::audio::capture_receipt::{
+        AcousticAvailability, AcousticSpeechEvidence, CAPTURE_ENERGY_PRODUCER,
+        CaptureEvidenceIdentity,
+    };
+    use crate::stt::tail_provider::TailSampleRange;
+    let (mut ledger, owner) = fixture();
+    ledger.record_speech_evidence(&AcousticSpeechEvidence::measured(
+        CaptureEvidenceIdentity::new(&owner.session, owner.capture_epoch),
+        CAPTURE_ENERGY_PRODUCER,
+        AcousticAvailability::Observed {
+            observed_samples: 160_000,
+        },
+        vec![TailSampleRange {
+            session: owner.session.clone(),
+            capture_epoch: owner.capture_epoch,
+            sample_start: 48_000,
+            sample_end: 64_000,
+        }],
+    ));
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        0,
+        "1286",
+        Some((0, 128_000)),
+    );
+    let original = ledger.slots_of(&owner).unwrap()[0].clone();
+    assert!(ledger.complete_word_slot(&original));
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        1,
+        "1286",
+        Some((0, 64_000)),
+    );
+    assert_eq!(ledger.slots_of(&owner).unwrap(), &[original.clone()]);
+    assert!(!ledger.coarse_word_source(&original));
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        2,
+        "56",
+        Some((1_000, 64_000)),
+    );
+    let choice = ledger.word_choices().last().unwrap();
+    assert!(choice.candidate.complete);
+    assert!(!choice.candidate.acoustic_boundaries_complete);
+    assert!(!choice.lexical_resolved);
+    let trial = ledger
+        .next_word_trial(true)
+        .expect("unresolved lexical evidence remains explicit");
+    let pins = [WordPin::new(48_000, 64_000, "56").with_decode_window(0, 64_000)];
+    let observation = ledger.next_word_observation(ObservationProducer::Whisper, 99, &owner);
+    ledger.admit_word_trial(&trial, &observation, &pins, &pins);
+    assert_eq!(ledger.slots_of(&owner).unwrap(), &[original]);
+    assert!(ledger.word_finality(&owner)[0].unresolved);
+    assert!(!ledger.word_choices().last().unwrap().lexical_resolved);
 }

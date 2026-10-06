@@ -374,10 +374,6 @@ impl AcousticLedger {
         !self.word_pin_observations.contains(&source.observation)
             || (source.text.contains(char::is_whitespace)
                 && self.slot_source_ranges(source).len() == 1)
-            || self
-                .complete_decoded_words
-                .get(&source.observation)
-                .is_some_and(|ranges| !ranges.contains(&(source.sample_start, source.sample_end)))
     }
 
     pub(crate) fn complete_word_slot(&self, source: &WordSlot) -> bool {

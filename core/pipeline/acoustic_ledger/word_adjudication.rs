@@ -3,7 +3,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
-pub const WORD_POLICY: &str = "word-adjudication/v1";
+pub const WORD_POLICY: &str = "word-adjudication/v2";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,7 +42,10 @@ pub struct WordHypothesis {
     pub backend: Option<String>,
     pub finality: String,
     pub timing: String,
+    /// The decoder covered the material source scope; not a boundary verdict.
     pub complete: bool,
+    #[serde(default)]
+    pub acoustic_boundaries_complete: bool,
     pub q: u32,
 }
 
@@ -57,6 +60,9 @@ pub struct WordChoiceReceipt {
     pub selected_label: String,
     pub reason: String,
     pub accepted: bool,
+    /// Admission eligibility alone never discharges a lexical dispute.
+    #[serde(default)]
+    pub lexical_resolved: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,43 +210,6 @@ impl WordAdjudication {
 }
 
 impl AcousticLedger {
-    /// A late Apple replay remains lexical evidence, without acquiring
-    /// permission to insert a second token or change a sealed word.
-    pub(crate) fn observe_retained_apple_word(
-        &mut self,
-        observation: &ObservationIdentity,
-        pin: &WordPin,
-    ) {
-        if observation.producer != ObservationProducer::Apple
-            || self.is_sealed(&observation.occurrence)
-        {
-            return;
-        }
-        let output = WordSlot {
-            sample_start: pin.sample_start,
-            sample_end: pin.sample_end,
-            text: pin.text.clone(),
-            producer: observation.producer,
-            observation: observation.clone(),
-            witness: SlotWitness::Unwitnessed,
-            confidence: pin.confidence,
-            surface_rewritten: false,
-        };
-        let sources = self
-            .slots_of(&observation.occurrence)
-            .unwrap_or(&[])
-            .iter()
-            .filter(|source| self.pin_targets_source(source, &output))
-            .cloned()
-            .collect::<Vec<_>>();
-        // Apple live word timestamps carry no decoder-window claim.
-        let mut original = pin.clone();
-        original.decode_sample_start = None;
-        original.decode_sample_end = None;
-        self.stage_word_evidence(observation, &[original], None, "unknown");
-        self.adjudicate_word_sources(observation, &sources, &[output]);
-    }
-
     pub(super) fn record_word_decode_bounds(
         &mut self,
         observation: &ObservationIdentity,
@@ -534,6 +503,19 @@ impl AcousticLedger {
         let complete = measured
             && matches!(timing, "capture_word_pins" | "exact_sample_range")
             && decode.is_some_and(|(s, e)| s < e && s <= start && end <= e);
+        let acoustic_boundaries_complete = complete
+            && decode.is_some_and(|(s, e)| {
+                pins.iter().all(|pin| {
+                    (s < pin.sample_start || pin.sample_start == 0)
+                        && !self.decode_word_fence_incomplete(
+                            &observation.occurrence,
+                            s,
+                            e,
+                            pin.sample_start,
+                            pin.sample_end,
+                        )
+                })
+            });
         WordHypothesis {
             producer_request: input.and_then(|input| input.producer_request.clone()),
             observation: observation.clone(),
@@ -550,6 +532,7 @@ impl AcousticLedger {
             finality: input.map_or_else(|| "unknown".into(), |input| input.finality.clone()),
             timing: input.map_or_else(|| "capture_word_pins".into(), |input| input.timing.clone()),
             complete,
+            acoustic_boundaries_complete,
             q: decode.map_or(0, |decode| context_quality(start, end, decode)),
         }
     }
@@ -583,6 +566,7 @@ impl AcousticLedger {
             },
             reason: reason.into(),
             accepted,
+            lexical_resolved: false,
         });
     }
 
@@ -778,6 +762,7 @@ impl AcousticLedger {
             .filter(|h| {
                 h.family() == ObservationProducer::Whisper
                     && h.complete
+                    && h.acoustic_boundaries_complete
                     && h.original_text.is_some()
                     && h.original_text
                         .as_deref()
@@ -793,9 +778,12 @@ impl AcousticLedger {
                     && apple.is_none_or(|a| raw.is_some_and(|b| label_equal(a, b)))));
         let confirmed_trial = trial_matches
             && complete
+            && candidate.acoustic_boundaries_complete
             && raw.is_some()
             && prior_support.iter().any(|h| {
-                ((h.family() == ObservationProducer::Whisper && h.complete)
+                ((h.family() == ObservationProducer::Whisper
+                    && h.complete
+                    && h.acoustic_boundaries_complete)
                     || (h.family() == ObservationProducer::Apple
                         && component.apple.last() == Some(h)))
                     && h.original_text
@@ -803,12 +791,26 @@ impl AcousticLedger {
                         .zip(raw)
                         .is_some_and(|(a, b)| label_equal(a, b))
             });
+        let raw_disagrees = raw
+            .zip(component.incumbent.original_text.as_deref())
+            .is_some_and(|(a, b)| !label_equal(a, b));
+        let geometry_preserves_complete_source = candidate.acoustic_boundaries_complete
+            || !sources.iter().any(|source| self.complete_word_slot(source));
+        let lexical_resolved = provisional_apple
+            || confirmed_trial
+            || (trial.is_none()
+                && complete
+                && candidate.acoustic_boundaries_complete
+                && agreement
+                && fresh);
         let (accepted, reason) = if provisional_apple {
             // A still-provisional Apple word may evolve on the same exact
             // pins. Once Whisper supplies evidence, normal adjudication owns it.
             (true, "apple_provisional_revision")
         } else if !complete {
             (false, "incomplete_source_scope")
+        } else if !geometry_preserves_complete_source {
+            (false, "incomplete_acoustic_boundary")
         } else if trial.is_some() {
             if confirmed_trial {
                 (true, "trial_confirmed")
@@ -823,10 +825,11 @@ impl AcousticLedger {
                     old.sample_start == new.sample_start && old.sample_end == new.sample_end
                 });
             (
-                (same_geometry && !component.conflict) || (agreement && fresh),
+                (same_geometry && !component.conflict && raw.is_some() && !raw_disagrees)
+                    || lexical_resolved,
                 "same_label_evidence",
             )
-        } else if agreement && fresh {
+        } else if lexical_resolved {
             (true, "source_agreement")
         } else {
             (false, "lexical_disagreement")
@@ -847,10 +850,13 @@ impl AcousticLedger {
             && !apple.zip(raw).is_some_and(|(a, b)| label_equal(a, b))
             && candidate.family() == ObservationProducer::Whisper
             && complete;
-        if (complete && !repeated_label && !accepted) || apple_disagrees || held_whisper_disagrees {
+        if (complete && (!repeated_label || raw_disagrees) && !lexical_resolved)
+            || apple_disagrees
+            || held_whisper_disagrees
+        {
             component.conflict = true;
         }
-        if accepted || (repeated_label && agreement) {
+        if lexical_resolved {
             component.conflict = false;
             component.attempted = false;
             // Keep the active trial until its completion receipt is recorded.
@@ -874,6 +880,7 @@ impl AcousticLedger {
             },
             reason: reason.into(),
             accepted,
+            lexical_resolved,
         });
         Some(accepted)
     }
