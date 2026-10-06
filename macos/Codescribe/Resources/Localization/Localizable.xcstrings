@@ -2044,17 +2044,6 @@
         }
       }
     },
-    "Agent mode" : {
-      "comment" : "Operating mode: agent features",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tryb agentowy"
-          }
-        }
-      }
-    },
     "Agent mode requires a license. Open Settings → License." : {
       "localizations" : {
         "pl" : {
@@ -2795,13 +2784,13 @@
         }
       }
     },
-    "Basic mode" : {
-      "comment" : "Operating mode: basic transcription",
+    "Basic mode stays free. A license unlocks Agent mode." : {
+      "comment" : "License panel: what is available without a key and what a license unlocks",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tryb podstawowy"
+            "value" : "Tryb podstawowy pozostaje bezpłatny. Licencja odblokowuje tryb agentowy."
           }
         }
       }
@@ -12685,6 +12674,17 @@
         }
       }
     },
+    "The key is verified locally and stored in the macOS Keychain." : {
+      "comment" : "License panel footnote: how the key is checked and where it lives",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucz jest weryfikowany lokalnie i przechowywany w Pęku kluczy macOS."
+          }
+        }
+      }
+    },
     "The local FP16 bundle is missing or invalid. Local power is explicitly not ready until validation passes." : {
       "localizations" : {
         "pl" : {
@@ -13248,17 +13248,6 @@
         }
       }
     },
-    "Transcription is available in Basic mode. A license unlocks Agent mode." : {
-      "comment" : "License panel: what is available without a key and what a license unlocks",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Transkrypcja jest dostępna w trybie podstawowym. Licencja odblokowuje tryb agentowy."
-          }
-        }
-      }
-    },
     "Transcripts" : {
       "localizations" : {
         "pl" : {
@@ -13501,16 +13490,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zaktualizuj skill"
-          }
-        }
-      }
-    },
-    "Updates through" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aktualizacje do"
           }
         }
       }
@@ -15370,6 +15349,60 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zachowano do odzyskania w edytorze."
+          }
+        }
+      }
+    },
+    "license.mode.agent" : {
+      "comment" : "License panel, Mode row value: agent operating mode",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Agent"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agentowy"
+          }
+        }
+      }
+    },
+    "license.mode.basic" : {
+      "comment" : "License panel, Mode row value: basic operating mode",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Basic"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podstawowy"
+          }
+        }
+      }
+    },
+    "license.offer.agentLifetime" : {
+      "comment" : "License panel, License row value: name of the purchased offer",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Agent · one-time purchase"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent · zakup jednorazowy"
           }
         }
       }

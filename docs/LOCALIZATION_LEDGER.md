@@ -87,6 +87,31 @@ removed from the catalog entirely: no Swift source references either any
 longer. The same review corrected the Polish value of `Refresh status` from
 „Sprawdź ponownie” to „Odśwież stan”.
 
+A Founder sketch polishes the License panel's card. The single combined
+`Mode` row (no key, state readable) now shows the short `license.mode.basic`
+value (`Basic` / `Podstawowy`) instead of the removed `Basic mode` key. Once a
+license state beyond "no key" is known, the card adds a separate `Mode` row
+whose value is the short `license.mode.agent` / `license.mode.basic` pair
+(`Agent` / `Agentowy`, `Basic` / `Podstawowy`) — new identifier keys under
+`LOCALIZATION.md` §R7, chosen because the bare English words collide with
+other catalog keys (`Basic`, the dictation-lane name, already shares
+`Podstawowy`). The value is derived from `licenseAllowsAgentMode`, never the
+raw SKU, which no longer renders anywhere in the panel. A `License` row
+(reusing the existing `License` key) appears only for the `agentic-lifetime`
+SKU, with the new identifier key `license.offer.agentLifetime` (`Agent ·
+one-time purchase` / `Agent · zakup jednorazowy`); any other non-nil SKU shows
+no License row and no raw identifier. The `Updates through` row is removed
+entirely pending the `updates_until`/Sparkle contract, and its catalog key is
+removed since nothing else referenced it. The header blurb is reworded from
+`Transcription is available in Basic mode. A license unlocks Agent mode.` to
+`Basic mode stays free. A license unlocks Agent mode.` (old key removed, new
+key `translated`), and a new footnote, `The key is verified locally and
+stored in the macOS Keychain.`, is added below the actions/error block. The
+bare English catalog keys `Agent mode` and `Basic mode` are removed: a
+repo-wide grep found both were referenced only by the two `LicensePanel.swift`
+call sites this change replaces, so the working assumption that they were
+still used elsewhere did not hold. Catalog count: 1418 -> 1419.
+
 By area:
 
 | Area                                                                                               | State                                                          | What is left                                                                                           |

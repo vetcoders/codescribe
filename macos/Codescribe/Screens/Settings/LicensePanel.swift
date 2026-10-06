@@ -14,7 +14,7 @@ struct LicensePanel: View {
       SettingsPageHeader(
         String(localized: "License"),
         blurb: String(
-          localized: "Transcription is available in Basic mode. A license unlocks Agent mode.",
+          localized: "Basic mode stays free. A license unlocks Agent mode.",
           comment: "License panel: what is available without a key and what a license unlocks")
       )
       VStack(spacing: 0) {
@@ -23,20 +23,19 @@ struct LicensePanel: View {
           value: stateLabel,
           tint: model.licenseAllowsAgentMode,
           trailing: .none)
-        if model.licenseStatus.sku != nil {
+        if showsModeRow {
           divider
           RuntimeRow(
             key: String(localized: "Mode", comment: "License panel: operating mode"),
-            value: modeLabel, tint: false,
-            mono: model.licenseStatus.sku != "agentic-lifetime",
+            value: modeLabel(agentMode: model.licenseAllowsAgentMode), tint: false,
             trailing: .none)
         }
-        if let updatesUntil = model.licenseStatus.updatesUntil {
+        if showsLicenseOfferRow {
           divider
           RuntimeRow(
-            key: String(localized: "Updates through"),
-            value: updatesUntil, tint: false,
-            mono: true, trailing: .none)
+            key: String(localized: "License"),
+            value: licenseOfferLabel, tint: false,
+            trailing: .none)
         }
       }
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
@@ -121,6 +120,16 @@ struct LicensePanel: View {
         .foregroundStyle(Color.secondary)
         .padding(.top, 10)
       }
+
+      Text(
+        String(
+          localized: "The key is verified locally and stored in the macOS Keychain.",
+          comment: "License panel footnote: how the key is checked and where it lives")
+      )
+      .font(CSFont.ui(11.5))
+      .foregroundStyle(Color.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.top, CSSpace.section)
     }
     .frame(maxWidth: 560, alignment: .leading)
     .padding(.horizontal, CSSpace.xl)
@@ -128,18 +137,45 @@ struct LicensePanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  /// Known SKUs display the operating mode. Unknown identifiers stay visible
-  /// so support can identify them without inventing an offer name.
-  private var modeLabel: String {
-    switch model.licenseStatus.sku {
-    case nil: String(localized: "Basic mode", comment: "Operating mode: basic transcription")
-    case "agentic-lifetime": String(localized: "Agent mode", comment: "Operating mode: agent features")
-    case let sku?: sku
-    }
+  /// Effective operating mode, derived from whether the current license
+  /// allows Agent mode — never the raw SKU, which never renders on screen.
+  private func modeLabel(agentMode: Bool) -> String {
+    agentMode
+      ? String(
+        localized: "license.mode.agent", defaultValue: "Agent",
+        comment: "License panel, Mode row value: agent operating mode")
+      : String(
+        localized: "license.mode.basic", defaultValue: "Basic",
+        comment: "License panel, Mode row value: basic operating mode")
+  }
+
+  /// Name of the purchased offer; shown only for the lifetime agent SKU, so
+  /// no other identifier ever needs an on-screen name invented for it.
+  private var licenseOfferLabel: String {
+    String(
+      localized: "license.offer.agentLifetime", defaultValue: "Agent · one-time purchase",
+      comment: "License panel, License row value: name of the purchased offer")
+  }
+
+  /// No key yet, but the license state is readable: the Status row is
+  /// replaced by a single combined Mode row (always Basic in that state).
+  private var isCombinedModeRow: Bool {
+    model.licenseReadState == .available && model.licenseStatus.state == .unlicensed
+  }
+
+  /// Separate Mode row, shown once a license state beyond "no key" is known.
+  /// Loading/unavailable show only the Status row; the no-key state shows
+  /// only the combined row above — never both.
+  private var showsModeRow: Bool {
+    model.licenseReadState == .available && !isCombinedModeRow
+  }
+
+  private var showsLicenseOfferRow: Bool {
+    showsModeRow && model.licenseStatus.sku == "agentic-lifetime"
   }
 
   private var stateRowLabel: String {
-    if model.licenseReadState == .available, model.licenseStatus.state == .unlicensed {
+    if isCombinedModeRow {
       return String(localized: "Mode", comment: "License panel: operating mode")
     }
     return String(localized: "Status", comment: "License panel: current license status")
@@ -154,7 +190,7 @@ struct LicensePanel: View {
     }
     switch model.licenseStatus.state {
     case .unlicensed:
-      return String(localized: "Basic mode", comment: "Operating mode: basic transcription")
+      return modeLabel(agentMode: false)
     case .active:
       return String(localized: "Active", comment: "License status: active")
     case .graceOffline:

@@ -200,6 +200,9 @@ including buttons, settings, history, messages, help and accessibility copy.
 | -------------------------------- | ------------- | --------------- |
 | Basic operating mode             | Basic mode    | Tryb podstawowy |
 | Agent operating mode             | Agent mode    | Tryb agentowy   |
+| Mode-row value: basic mode (License panel) | Basic | Podstawowy |
+| Mode-row value: agent mode (License panel) | Agent | Agentowy |
+| License-row value: lifetime agent offer (License panel) | Agent · one-time purchase | Agent · zakup jednorazowy |
 | Converting audio to text         | transcription | transkrypcja    |
 | The resulting text               | transcript    | transkrypt      |
 | Command to convert audio to text | Transcribe    | Transkrybuj     |
