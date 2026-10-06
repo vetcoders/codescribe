@@ -27,7 +27,7 @@ use crate::stt::tail_provider::{
 use crate::stt::tail_provider::{TailProviderPayload, TailProviderRequest};
 
 /// Actual execution handles outlive result receivers and ledger accounting.
-/// Both live requests and terminal gaps use this session-owned spawn seam.
+/// Live and Stop requests from the same PCM plan share this spawn seam.
 /// No closure captures the owner itself: the last owner may safely join in Drop.
 #[derive(Default)]
 pub(crate) struct LocalExecutionOwner {
@@ -43,15 +43,6 @@ impl LocalExecutionOwner {
     pub(super) fn begin_drain(&self, budget: std::time::Duration) -> std::time::Instant {
         let deadline = std::time::Instant::now() + budget;
         self.control.limit_until(deadline)
-    }
-
-    /// Stop-path text recovery budget. Unlike [`Self::begin_drain`], this
-    /// replaces the deadline: recovery runs after the live tail-patch drain
-    /// and must not inherit a clock that drain already spent. Cancellation
-    /// stays in force.
-    pub(super) fn begin_text_recovery(&self, budget: std::time::Duration) -> std::time::Instant {
-        self.control
-            .replace_deadline(std::time::Instant::now() + budget)
     }
 
     pub(crate) fn spawn<T, F>(&self, work: F) -> Result<tokio::sync::oneshot::Receiver<Result<T>>>
