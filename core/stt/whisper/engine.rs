@@ -445,7 +445,7 @@ impl<'a> WhisperEncoderExecutionReceipt<'a> {
             encoder_input_sample_rate_hz = whisper::SAMPLE_RATE,
             encoder_input_duration_ms = sample_duration_ms(
                 self.encoder_input_samples_16k,
-                whisper::SAMPLE_RATE,
+                whisper::SAMPLE_RATE as u32,
             ),
             "Whisper encoder invocation started"
         );
@@ -472,7 +472,7 @@ impl<'a> WhisperEncoderExecutionReceipt<'a> {
             encoder_input_sample_rate_hz = whisper::SAMPLE_RATE,
             encoder_input_duration_ms = sample_duration_ms(
                 self.encoder_input_samples_16k,
-                whisper::SAMPLE_RATE,
+                whisper::SAMPLE_RATE as u32,
             ),
             elapsed_ms = self.started.elapsed().as_millis() as u64,
             outcome,
@@ -507,14 +507,14 @@ impl Drop for EngineRequest<'_> {
 
 impl LocalWhisperEngine {
     fn encoder_forward_observed(
-        &self,
+        &mut self,
         mel: &Tensor,
         encoder_input_samples_16k: usize,
         encoder_stage: &'static str,
         control: &crate::stt::LocalExecutionControl,
     ) -> Result<Tensor> {
         let Some(observation) = control.tail_execution_observation() else {
-            return self.model.encoder.forward(mel, true);
+            return Ok(self.model.encoder.forward(mel, true)?);
         };
         let receipt = WhisperEncoderExecutionReceipt::start(
             observation,
@@ -523,7 +523,7 @@ impl LocalWhisperEngine {
         );
         let output = self.model.encoder.forward(mel, true);
         receipt.finish(if output.is_ok() { "success" } else { "failure" });
-        output
+        Ok(output?)
     }
 
     /// One cleanup corridor for public file calls and controlled local repair.
@@ -1380,12 +1380,8 @@ impl LocalWhisperEngine {
         .to_dtype(self.model.decoder.dtype())?;
 
         control.check()?;
-        let encoder_output = self.encoder_forward_observed(
-            &mel,
-            samples.len(),
-            "language_detection",
-            control,
-        )?;
+        let encoder_output =
+            self.encoder_forward_observed(&mel, samples.len(), "language_detection", control)?;
         control.check()?;
 
         let start_token = self
@@ -1547,12 +1543,8 @@ impl LocalWhisperEngine {
 
         // Run encoder once
         control.check()?;
-        let encoder_output = self.encoder_forward_observed(
-            &mel,
-            samples_16k.len(),
-            "transcription",
-            control,
-        )?;
+        let encoder_output =
+            self.encoder_forward_observed(&mel, samples_16k.len(), "transcription", control)?;
         control.check()?;
 
         // Decoder loop – allow up to the configured maximum target positions minus initial tokens

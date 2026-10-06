@@ -581,6 +581,8 @@ const LIVE_REFINEMENT_PCM_SECS: usize = 32;
 /// One decoder window and the active speculative capture horizon. The larger
 /// pending-PCM cap above bounds retained transport memory, not recognition scope.
 const CAPTURE_DECODE_WINDOW_SECS: u64 = 9;
+/// Raw provider results only; retaining a frame does not accept its words.
+const RETAINED_WORD_DECODE_CAP: usize = 32;
 const LIVE_WORKER_QUANTUM: Duration = Duration::from_millis(40);
 /// Bounds the complete live obligation, including time before enqueue and
 /// overlap accounting. Stop retains its separate, shorter drain budget.
@@ -2026,6 +2028,9 @@ struct AppleSealState {
     decode_budget: CaptureDecodeBudget,
     word_trial_jobs: BTreeMap<(u64, u64, u64, u64), WordTrial>,
     word_trials_deferred: Vec<WordTrial>,
+    /// Capture-local, transport-bounded results with their original request
+    /// identities. Stop can account an existing frame without decoding it again.
+    retained_word_decodes: VecDeque<TailProviderPayload>,
     word_trials_stopping: bool,
     word_trial_started: Option<Instant>,
     refinement_submitted: BTreeMap<(u64, u64, u64, u64), TailPatchInFlight>,
@@ -2503,6 +2508,7 @@ impl AppleSealState {
             decode_budget: CaptureDecodeBudget::new(session_id_for_energy.clone(), capture_epoch),
             word_trial_jobs: BTreeMap::new(),
             word_trials_deferred: Vec::new(),
+            retained_word_decodes: VecDeque::new(),
             word_trials_stopping: false,
             word_trial_started: None,
             refinement_submitted: BTreeMap::new(),
@@ -3461,6 +3467,68 @@ impl AppleSealState {
             .close_word_trial(trial, reason);
     }
 
+    fn retain_word_decode(&mut self, payload: &TailProviderPayload) {
+        let range = &payload.identity.range;
+        if payload.validate().is_err()
+            || payload.evidence.source != crate::stt::tail_provider::TailEvidenceSource::Whisper
+            || payload.evidence.timing_quality
+                != crate::stt::tail_provider::TailTimingQuality::ExactSampleRange
+            || payload.evidence.segment_grain != crate::stt::tail_provider::TailSegmentGrain::Word
+            || payload.segments.is_empty()
+            || payload
+                .segments
+                .iter()
+                .any(|segment| segment.grain != crate::stt::tail_provider::TailSegmentGrain::Word)
+            || range.session != self.session_id
+            || range.capture_epoch != self.capture_epoch
+            || range.sample_end > self.audio.session_sample_end()
+            || range.sample_end.saturating_sub(range.sample_start)
+                > u64::from(self.sample_rate).saturating_mul(LIVE_REFINEMENT_PCM_SECS as u64)
+        {
+            return;
+        }
+        // One completed frame remains one witness even if a producer returns
+        // it under another request id. Keep the first authenticated result.
+        if self
+            .retained_word_decodes
+            .iter()
+            .any(|retained| retained.identity.range == *range)
+        {
+            return;
+        }
+        if self.retained_word_decodes.len() == RETAINED_WORD_DECODE_CAP {
+            self.retained_word_decodes.pop_front();
+        }
+        self.retained_word_decodes.push_back(payload.clone());
+    }
+
+    fn retained_word_decode(
+        &self,
+        requested: &TailSampleRange,
+        exact: bool,
+    ) -> Option<&TailProviderPayload> {
+        if requested.session != self.session_id || requested.capture_epoch != self.capture_epoch {
+            return None;
+        }
+        self.retained_word_decodes
+            .iter()
+            .filter(|payload| {
+                let range = &payload.identity.range;
+                if exact {
+                    range == requested
+                } else {
+                    range.contains(requested)
+                }
+            })
+            .min_by_key(|payload| {
+                payload
+                    .identity
+                    .range
+                    .sample_end
+                    .saturating_sub(payload.identity.range.sample_start)
+            })
+    }
+
     fn word_trial_range(
         &self,
         trial: &WordTrial,
@@ -3542,6 +3610,10 @@ impl AppleSealState {
                 return;
             }
         };
+        if self.retained_word_decode(&range, true).is_some() {
+            self.close_word_trial(&trial, "decode_already_completed");
+            return;
+        }
         let Some(window) = self.window_by_samples(range.sample_start, range.sample_end) else {
             self.close_word_trial(&trial, "pcm_unavailable");
             return;
@@ -4497,6 +4569,9 @@ impl AppleSealState {
             );
         }
         let payload = (!payload_identity_mismatch).then_some(payload).flatten();
+        if let Some(payload) = payload.as_ref() {
+            self.retain_word_decode(payload);
+        }
         if let Some(trial) = self
             .word_trial_jobs
             .remove(&inflight_key(submission_sequence, &job.request_identity))
@@ -7146,6 +7221,8 @@ fn drain_formatter_observers(
 /// One provider attempt for a single requested PCM range.
 enum StopRangeAttempt {
     Ready(TailProviderPayload),
+    /// Existing source evidence, never a newly executed resolving trial.
+    Retained(TailProviderPayload),
     MissingPcm,
     ForeignIdentity,
     BudgetExhausted,
@@ -7650,7 +7727,32 @@ where
 
     let mut ordinal = 0u64;
     let mut initial_published = false;
-    let mut attempt = |state: &mut AppleSealState, range: TailSampleRange| -> StopRangeAttempt {
+    let mut attempt = |state: &mut AppleSealState,
+                       range: TailSampleRange,
+                       fresh_trial: bool|
+     -> StopRangeAttempt {
+        if let Err(error) = execution.check() {
+            return StopRangeAttempt::Failed(error);
+        }
+        if let Some(payload) = state.retained_word_decode(&range, fresh_trial).cloned() {
+            if !initial_published {
+                let _ = ev_tx.send(EngineEvent::SealCoverage {
+                    receipt: initial.clone(),
+                    comparison: None,
+                });
+                initial_published = true;
+            }
+            info!(
+                request_id = payload.identity.request_id,
+                sample_start = payload.identity.range.sample_start,
+                sample_end = payload.identity.range.sample_end,
+                requested_start = range.sample_start,
+                requested_end = range.sample_end,
+                fresh_trial,
+                "stop_reused_word_decode"
+            );
+            return StopRangeAttempt::Retained(payload);
+        }
         let Some(window) = state.window_by_samples(range.sample_start, range.sample_end) else {
             let _ = ev_tx.send(EngineEvent::Warning {
                 code: "seal_coverage_gap_pcm_unavailable".into(),
@@ -7697,7 +7799,10 @@ where
             initial_published = true;
         }
         match result {
-            Ok(payload) if payload.identity == request.identity => StopRangeAttempt::Ready(payload),
+            Ok(payload) if payload.identity == request.identity => {
+                state.retain_word_decode(&payload);
+                StopRangeAttempt::Ready(payload)
+            }
             Ok(_) => {
                 let _ = ev_tx.send(EngineEvent::Warning {
                     code: "seal_coverage_gap_identity_mismatch".into(),
@@ -7730,12 +7835,15 @@ where
         };
         let result = state.word_trial_range(&trial);
         match result {
-            Ok(range) if execution.check().is_ok() => match attempt(state, range) {
+            Ok(range) if execution.check().is_ok() => match attempt(state, range, true) {
                 StopRangeAttempt::Ready(payload) => {
                     state.complete_word_trial_batch(ev_tx, &trial, Some(&payload), true);
                     // The lexical return also carries work for pending acoustic
                     // debt. It is never spent as a second provider invocation.
                     admit_debt_occurrence_recovery(state, ev_tx, &trial.owner, &payload);
+                }
+                StopRangeAttempt::Retained(_) => {
+                    state.close_word_trial(&trial, "decode_already_completed")
                 }
                 StopRangeAttempt::MissingPcm => state.close_word_trial(&trial, "pcm_unavailable"),
                 StopRangeAttempt::ForeignIdentity => {
@@ -7788,7 +7896,15 @@ where
             range.sample_end = range.sample_end.min(state.audio.session_sample_end());
             range
         })
+        .collect();
+    let windows = terminal_decode_windows(ranges, max_samples)
+        .into_iter()
         .flat_map(|range| {
+            // Reusing this authenticated frame starts no work. Exhausted
+            // inference allowance must not hide already returned evidence.
+            if state.retained_word_decode(&range, false).is_some() {
+                return vec![range];
+            }
             if !state.decode_budget.can_admit(&range, DecodePhase::Terminal) {
                 state
                     .decode_budget
@@ -7798,8 +7914,8 @@ where
                 .decode_budget
                 .available_ranges(&range, DecodePhase::Terminal)
         })
-        .collect();
-    for range in terminal_decode_windows(ranges, max_samples) {
+        .collect::<Vec<_>>();
+    for range in windows {
         // A prior tile may have settled this entire range through the same
         // source lineage. Re-read debt instead of replaying a stale work list.
         let (pending, coverage) = {
@@ -7834,9 +7950,12 @@ where
         if intersecting.is_empty() && gaps.is_empty() {
             continue;
         }
-        match attempt(state, range) {
-            StopRangeAttempt::Ready(payload) => {
-                state.complete_covered_word_trials(ev_tx, &payload, true, 32, true);
+        let result = attempt(state, range, false);
+        if let StopRangeAttempt::Ready(payload) = &result {
+            state.complete_covered_word_trials(ev_tx, payload, true, 32, true);
+        }
+        match result {
+            StopRangeAttempt::Ready(payload) | StopRangeAttempt::Retained(payload) => {
                 if payload.evidence.segment_grain
                     == crate::stt::tail_provider::TailSegmentGrain::Word
                     || payload.segments.is_empty()
