@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+use super::acoustic_ledger::word_adjudication::{WordChoiceReceipt, WordEvidenceInput, WordTrialReceipt, WordTrial, WordFinality, WORD_POLICY};
 use super::acoustic_ledger::{
     AcousticEvidence, AcousticLedger, DictionarySlotRule, EnergyCalibration, LayerDecisionReceipt,
     MutationReceipt, ObservationIdentity, OccurrenceIdentity, SlotAlternative, SlotOperationKind,
@@ -239,6 +240,12 @@ impl TrailSpeechEvidence {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrailSlotStart {
+    #[serde(default)]
+    pub word_policy: Option<String>,
+    #[serde(default)]
+    pub word_evidence: Option<WordEvidenceInput>,
+    #[serde(default)]
+    pub word_choices_before: usize,
     pub observation: ObservationIdentity,
     pub input: TrailSlotInput,
     pub source_slots: Vec<WordSlot>,
@@ -254,6 +261,8 @@ pub struct TrailSlotStart {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrailSlotEnd {
+    #[serde(default)]
+    pub word_choices: Vec<WordChoiceReceipt>,
     pub observation: ObservationIdentity,
     pub first_ordinal: usize,
     pub decisions: usize,
@@ -302,6 +311,9 @@ impl SlotTrace {
             return Self(None);
         }
         let start = TrailSlotStart {
+            word_policy: Some(WORD_POLICY.into()),
+            word_evidence: ledger.word_evidence_input(observation).cloned(),
+            word_choices_before: ledger.word_choices().len(),
             observation: observation.clone(),
             input: input(),
             source_slots: ledger
@@ -384,6 +396,7 @@ impl SlotTrace {
                 &start.observation.occurrence,
                 TrailEvent::SlotEnd {
                     operation: Box::new(TrailSlotEnd {
+                        word_choices: ledger.word_choices()[start.word_choices_before..].to_vec(),
                         observation: start.observation.clone(),
                         first_ordinal: start.first_ordinal,
                         decisions: ledger.layer_trail().len() - start.first_ordinal,
@@ -483,6 +496,17 @@ pub struct TrailDecision {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TrailEvent {
+    OccurrenceSealed {
+        occurrence: OccurrenceIdentity,
+        receipt_id: String,
+        word_finality: Vec<WordFinality>,
+    },
+    WordTrialOpened {
+        trial: WordTrial,
+    },
+    WordTrialClosed {
+        receipt: WordTrialReceipt,
+    },
     Start {
         sample_clock: String,
     },
@@ -809,6 +833,17 @@ pub fn read_trail(path: &Path) -> io::Result<Vec<TrailRecord>> {
     Ok(records)
 }
 
+/// Evidence availability is independent of persistence integrity.
+pub fn word_evidence_coverage(records: &[TrailRecord]) -> &'static str {
+    let inputs = records.iter().filter_map(|row| match &row.event {
+        TrailEvent::SlotStart { operation } if matches!(operation.input, TrailSlotInput::Words { .. } | TrailSlotInput::Split { .. }) => Some(operation),
+        _ => None,
+    }).collect::<Vec<_>>();
+    let recorded = inputs.iter().filter(|input| input.word_policy.as_deref() == Some(WORD_POLICY)
+        && input.word_evidence.as_ref().is_some_and(|evidence| evidence.words.iter().all(|word| word.original_text.is_some()))).count();
+    if recorded == 0 { "absent" } else if recorded == inputs.len() { "recorded" } else { "partial" }
+}
+
 /// Per-pin fate, keyed by PCM geometry. Identical words remain separate rows.
 /// Labels without word geometry are explicitly unpinned diagnostic hypotheses.
 pub fn render_trace(records: &[TrailRecord], word: Option<&str>) -> String {
@@ -819,6 +854,11 @@ pub fn render_trace(records: &[TrailRecord], word: Option<&str>) -> String {
         "Persistence complete; N2/revision evidence incomplete.\n"
     } else {
         "INCOMPLETE TRAIL: missing end, overflow or write failure.\n"
+    });
+    output.push_str(match word_evidence_coverage(records) {
+        "recorded" => "Word source inputs recorded; unknown producer metadata remains explicit.\n",
+        "partial" => "PARTIAL SOURCE HYPOTHESES: some original producer labels were not recorded.\n",
+        _ => "ARCHIVE WITHOUT SOURCE HYPOTHESES: Apple cannot be reconstructed from rendered text.\n",
     });
     for row in records {
         match &row.event {
@@ -925,6 +965,10 @@ pub fn replay_decisions(
     project: impl FnMut(&AcousticLedger, &ObservationIdentity, &MutationReceipt),
 ) -> io::Result<AcousticLedger> {
     validate_envelope(records)?;
+    if records.iter().any(|row| matches!(&row.event, TrailEvent::SlotStart { operation }
+        if operation.word_policy.is_none() && matches!(operation.input, TrailSlotInput::Words { .. } | TrailSlotInput::Split { .. }))) {
+        return Err(io::Error::other("archive_without_source_hypotheses: earlier decisions cannot certify the current word policy"));
+    }
     replay_validated(records, |_, _, _| {})?;
     replay_validated(records, project)
 }
@@ -978,6 +1022,9 @@ fn validate_envelope(records: &[TrailRecord]) -> io::Result<()> {
             return Err(io::Error::other("trail has interior start or end"));
         }
         let occurrence = match &row.event {
+            TrailEvent::OccurrenceSealed { occurrence, .. } => Some(occurrence),
+            TrailEvent::WordTrialOpened { trial } => Some(&trial.owner),
+            TrailEvent::WordTrialClosed { receipt } => Some(&receipt.trial.owner),
             TrailEvent::Qualification { evidence, .. } => Some(&evidence.occurrence),
             TrailEvent::Decision { decision } => Some(&decision.observation.occurrence),
             TrailEvent::Frontier { occurrence, .. } => Some(occurrence),
@@ -1040,6 +1087,36 @@ fn replay_slot_operation(
             "slot operation source or decision range differs",
         ));
     }
+    if let Some(policy) = &start.word_policy {
+        if policy != WORD_POLICY {
+            return Err(io::Error::other("unsupported word adjudication policy"));
+        }
+        if matches!(start.input, TrailSlotInput::Words { .. } | TrailSlotInput::Split { .. }) && start.word_evidence.is_none() {
+            return Err(io::Error::other("word source input missing"));
+        }
+        if let Some(input) = &start.word_evidence {
+            let pins = match &start.input {
+                TrailSlotInput::Words { words } => Some(words),
+                TrailSlotInput::Split { children, .. } => Some(children),
+                _ => None,
+            };
+            if let Some(pins) = pins
+                && (pins.len() != input.words.len() || !pins.iter().zip(&input.words).all(|(pin, source)|
+                    pin.sample_start == source.sample_start && pin.sample_end == source.sample_end
+                        && pin.text == source.surface && pin.confidence == source.confidence
+                        && pin.surface_rewritten == source.surface_rewritten
+                        && pin.decode_sample_start.zip(pin.decode_sample_end) == source.decode)) {
+                return Err(io::Error::other("word source and admission pins differ"));
+            }
+            if input.observation != start.observation {
+                return Err(io::Error::other("word evidence observation differs"));
+            }
+            if let Some(trial) = &input.trial {
+                ledger.restore_word_trial(trial).map_err(io::Error::other)?;
+            }
+            ledger.restore_word_evidence(input.clone());
+        }
+    }
     if let Some(rate) = start.capture_rate_hz {
         ledger.bind_capture_rate(rate);
     }
@@ -1079,11 +1156,12 @@ fn replay_slot_operation(
                 })?;
         }
         TrailSlotInput::Split { target, children } => {
-            ledger
-                .split_word_slot(observation, &target.target(), &word_pins(children))
-                .map_err(|reason| {
-                    io::Error::other(format!("recorded split refused: {reason:?}"))
-                })?;
+            // Refusals are replayable inputs too. The exact choices, operations,
+            // decisions and resulting slots are checked below before projection.
+            let result = ledger.split_word_slot(observation, &target.target(), &word_pins(children));
+            if start.word_policy.is_none() && result.is_err() {
+                return Err(io::Error::other("recorded split refused"));
+            }
         }
     }
     let checkpoints = REPLAY_CHECKPOINTS.with(|rows| rows.borrow_mut().take().unwrap_or_default());
@@ -1108,6 +1186,8 @@ fn replay_slot_operation(
         || ledger.slots_of(&observation.occurrence).unwrap_or(&[]) != end.result_slots
         || operations != end.operations
         || alternatives != end.alternatives
+        || (start.word_policy.is_some()
+            && ledger.word_choices().get(start.word_choices_before..) != Some(end.word_choices.as_slice()))
     {
         return Err(io::Error::other(
             "replay slot operation, lineage or decisions differ",
@@ -1243,6 +1323,19 @@ fn replay_validated(
                 return Err(io::Error::other(
                     "document revision replay needs its reducer action",
                 ));
+            }
+            TrailEvent::OccurrenceSealed { occurrence, receipt_id, word_finality } => {
+                let seal = ledger.seal(occurrence).map_err(|reason| io::Error::other(format!("recorded seal refused: {reason:?}")))?;
+                if seal.receipt_id != *receipt_id || seal.word_finality != *word_finality {
+                    return Err(io::Error::other("recorded lexical finality differs"));
+                }
+            }
+            TrailEvent::WordTrialOpened { trial } => {
+                ledger.restore_word_trial(trial).map_err(io::Error::other)?;
+            }
+            TrailEvent::WordTrialClosed { receipt } => {
+                ledger.restore_word_trial(&receipt.trial).map_err(io::Error::other)?;
+                ledger.close_word_trial(&receipt.trial, &receipt.reason);
             }
             TrailEvent::Start { .. } | TrailEvent::End { .. } | TrailEvent::Checkpoint { .. } => {}
         }
