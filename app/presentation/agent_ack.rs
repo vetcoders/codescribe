@@ -737,7 +737,7 @@ fn read_marker(
 ) -> io::Result<Option<AckMarker>> {
     let Some(stem) = marker_delivery_id(path) else {
         return Ok(None);
-    }
+    };
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_file() || metadata.len() > 1 << 20 {
         return Ok(None);
