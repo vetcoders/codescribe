@@ -892,6 +892,64 @@ impl AcousticLedger {
         .then_some(*index)
     }
 
+    /// An ordinary target cannot detach a Word from a crossed coarse source.
+    /// Collect the entire uncertain partition before any part can commit.
+    /// Intersection joins an adjudication question, never occurrence identity.
+    fn crossed_source_partitions(
+        &self,
+        sources: &[WordSlot],
+        pins: &[WordSlot],
+        ordinary_targets: &[Option<usize>],
+    ) -> Vec<(BTreeSet<usize>, BTreeSet<usize>)> {
+        let intersects = |source: usize, pin: usize| {
+            sources[source]
+                .observation
+                .occurrence
+                .same_capture(&pins[pin].observation.occurrence)
+                && sources[source].sample_start < pins[pin].sample_end
+                && pins[pin].sample_start < sources[source].sample_end
+        };
+        let connected = |source: usize, pin: usize| {
+            intersects(source, pin) || self.pin_targets_source(&sources[source], &pins[pin])
+        };
+        let mut partitions: Vec<(BTreeSet<usize>, BTreeSet<usize>)> = Vec::new();
+        for (seed, target) in ordinary_targets.iter().enumerate() {
+            let Some(target) = target else {
+                continue;
+            };
+            if partitions.iter().any(|(_, words)| words.contains(&seed))
+                || !sources.iter().enumerate().any(|(index, source)| {
+                    index != *target && self.coarse_word_source(source) && intersects(index, seed)
+                })
+            {
+                continue;
+            }
+            let mut word_indices = BTreeSet::from([seed]);
+            let mut source_indices = BTreeSet::new();
+            loop {
+                let size = word_indices.len() + source_indices.len();
+                for index in 0..sources.len() {
+                    if word_indices.iter().any(|word| connected(index, *word)) {
+                        source_indices.insert(index);
+                    }
+                }
+                for index in 0..pins.len() {
+                    if source_indices
+                        .iter()
+                        .any(|source| connected(*source, index))
+                    {
+                        word_indices.insert(index);
+                    }
+                }
+                if size == word_indices.len() + source_indices.len() {
+                    break;
+                }
+            }
+            partitions.push((source_indices, word_indices));
+        }
+        partitions
+    }
+
     /// Resolve connected intersections as one geometric operation. Slot count
     /// is not occurrence identity: several words may refine one coarse source.
     pub(super) fn resegment_word_slots(
@@ -919,6 +977,7 @@ impl AcousticLedger {
             .iter()
             .map(|pin| self.ordinary_word_target(&prior, &pins, pin))
             .collect::<Vec<_>>();
+        let crossed_partitions = self.crossed_source_partitions(&prior, &pins, &ordinary_targets);
         for seed in 0..pins.len() {
             if visited.contains(&seed) {
                 continue;
@@ -929,6 +988,12 @@ impl AcousticLedger {
                 // Borrow the ledger only while discovering this component.
                 // Refusals and alternatives are recorded after discovery.
                 let connected = |source: usize, pin: usize| {
+                    if let Some((sources, _)) = crossed_partitions
+                        .iter()
+                        .find(|(_, words)| words.contains(&pin))
+                    {
+                        return sources.contains(&source);
+                    }
                     ordinary_targets[pin].map_or_else(
                         || {
                             let held = &prior[source];
