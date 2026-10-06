@@ -3312,6 +3312,16 @@
         }
       }
     },
+    "Choose a conversation or show agent channel details" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wybierz rozmowę lub pokaż szczegóły kanału agenta"
+          }
+        }
+      }
+    },
     "Choose a screen anchor or allow free dragging" : {
       "localizations" : {
         "pl" : {
@@ -11308,16 +11318,6 @@
         }
       }
     },
-    "Shows agent channel details" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokazuje szczegóły kanału agenta"
-          }
-        }
-      }
-    },
     "Shows the live impact, names whether base prompts are preserved, and requires typing %@ before data moves to Trash." : {
       "localizations" : {
         "pl" : {
@@ -13580,6 +13580,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Agent odpięty — włącz „Zawsze na wierzchu”"
+          }
+        }
+      }
+    },
+    "Unread replies" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nieprzeczytane odpowiedzi"
           }
         }
       }
