@@ -191,8 +191,16 @@ requiring an older check with the same name is not proof of localization coverag
 The single invariant: **a string that reaches the screen, VoiceOver or a tooltip
 is born localized at the place where it is written as a literal.**
 
-Use **Agent** for the Codescribe mode, window and conversation partner in both
-English and Polish. Generic AI agents and external coding agents keep lowercase
+Operating modes are **Basic mode** / **Tryb podstawowy** and
+**Agent mode** / **Tryb agentowy** (Founder decision 2026-10-06).
+Use **transcription** / **transkrypcja** for the activity and **transcript** /
+**transkrypt** for its text output. Recording describes audio capture only;
+speech describes actual speech, for example speech detection.
+Keep only copy that helps a user act, understand a state or make a decision.
+Remove repeated explanations, implementation details and future-service plans;
+show exceptional instructions and diagnostics when needed. Keep meaningful
+limits, action consequences, actionable errors and accessibility copy.
+Generic AI agents and external coding agents keep lowercase
 (`agent AI`, `agent`, `agentów`). An account used by Codescribe's Agent is an
 **Agent account** / **Konto Agenta**; API-key presence is a separate status.
 Onboarding copy changes ship together in English, Polish and the corresponding

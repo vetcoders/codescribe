@@ -31,22 +31,23 @@ website, the docs, the CLI and model prompts are outside this ledger.
 
 ## 2. Where the app stands
 
-`Localizable.xcstrings` holds **1417 keys** (1394 translatable). Before this
-work the compiler extracted 468 — the literals SwiftUI localizes by itself; the
+`Localizable.xcstrings` holds **1423 keys** (1400 translatable, source inventory
+2026-10-06). Before the initial localization work the compiler extracted 468 —
+the literals SwiftUI localizes by itself; the
 rest was plain `String` and invisible to any translation. **Polish is complete**
-in both catalogs (1394/1394 and 4/4), imported from the translator worksheet
+in both catalogs (1400/1400 and 4/4), initially imported from the translator worksheet
 (`scripts/l10n-sheet.py`); the catalog is the source of the translation from
 here on.
 
 | Measure                                       | Count    |
 | --------------------------------------------- | -------- |
-| Keys in `Localizable.xcstrings`               | 1417     |
-| Keys translated to Polish                     | 1394     |
-| Keys with a translator comment                | 441      |
-| Keys with English plural forms                | 26       |
-| Keys written as identifiers (`defaultValue:`) | 37       |
+| Keys in `Localizable.xcstrings`               | 1423     |
+| Keys translated to Polish                     | 1400     |
+| Keys with a translator comment                | 469      |
+| Keys with English plural forms                | 27       |
+| Keys written as identifiers (`defaultValue:`) | 52       |
 | Permission prompts in `InfoPlist.xcstrings`   | 4        |
-| Swift sources in the app target / touched     | 128 / 77 |
+| Swift sources in the original census / touched | 128 / 77 |
 
 By area:
 
@@ -209,8 +210,10 @@ Swift-side notes:
   `Agent(msg: "…")` — instead of the message. This predates the localization
   work and was left alone because fixing it changes what those notices say;
   the fix is `error.userFacingMessage` at each site.
-- `LicenseService` reports keychain failures the same way, so
-  `LicenseKeychainError.errorDescription` is localized but may never be shown.
+- `LicenseService` now owns localized read, verification, activation and removal
+  error summaries. The underlying error remains in `lastErrorDetails`, shown
+  only in the license panel's expandable Details section. No bridge error
+  prose is parsed to determine the summary.
 - `OnboardingViewModel.lastError` receives bridge text at five sites and is read
   by no view. Those messages never reach a person today.
 

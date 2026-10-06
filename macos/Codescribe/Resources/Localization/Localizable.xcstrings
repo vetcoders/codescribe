@@ -1555,16 +1555,6 @@
         }
       }
     },
-    "A signed CSK1 key unlocks the Agentic lane. Validation is local and the key stays in the macOS Keychain." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Podpisany klucz CSK1 odblokowuje tryb agentowy. Weryfikacja odbywa się lokalnie, a klucz zostaje w pęku kluczy macOS."
-          }
-        }
-      }
-    },
     "A transcript revision cannot be empty" : {
       "localizations" : {
         "pl" : {
@@ -1715,12 +1705,23 @@
         }
       }
     },
-    "Activate / Restore" : {
+    "Activate" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Aktywuj / przywróć"
+            "value" : "Aktywuj"
+          }
+        }
+      }
+    },
+    "Active" : {
+      "comment" : "License status: active",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktywna"
           }
         }
       }
@@ -1745,12 +1746,55 @@
         }
       }
     },
-    "Active · Agentic unlocked" : {
+    "Active · %lld days left" : {
+      "comment" : "License status; the count is days left in the local activation period, not days without internet",
       "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "new",
+                  "value" : "Active · %lld day left"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "new",
+                  "value" : "Active · %lld days left"
+                }
+              }
+            }
+          }
+        },
         "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aktywna · tryb agentowy odblokowany"
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Aktywna · pozostały %lld dni"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Aktywna · pozostało %lld dni"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Aktywna · pozostał %lld dzień"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Aktywna · pozostało %lld dnia"
+                }
+              }
+            }
           }
         }
       }
@@ -2000,6 +2044,27 @@
         }
       }
     },
+    "Agent mode" : {
+      "comment" : "Operating mode: agent features",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tryb agentowy"
+          }
+        }
+      }
+    },
+    "Agent mode requires a license. Open Settings → License." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tryb agentowy wymaga licencji. Otwórz Ustawienia → Licencja."
+          }
+        }
+      }
+    },
     "Agent needs setup" : {
       "comment" : "Global provider or native readiness problem, not a client installation",
       "localizations" : {
@@ -2081,18 +2146,6 @@
         }
       }
     },
-    "Agent · one-time purchase" : {
-      "comment" : "License plan name",
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent · zakup jednorazowy"
-          }
-        }
-      }
-    },
     "Agent — %@" : {
       "comment" : "The placeholder is a model name",
       "localizations" : {
@@ -2111,16 +2164,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Agentowy"
-          }
-        }
-      }
-    },
-    "Agentic requires a license. Basic dictation remains free." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tryb agentowy wymaga licencji. Dyktowanie w trybie podstawowym pozostaje bezpłatne."
           }
         }
       }
@@ -2752,12 +2795,13 @@
         }
       }
     },
-    "Basic stays free." : {
+    "Basic mode" : {
+      "comment" : "Operating mode: basic transcription",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tryb podstawowy pozostaje bezpłatny."
+            "value" : "Tryb podstawowy"
           }
         }
       }
@@ -3197,16 +3241,6 @@
         }
       }
     },
-    "Checking license… Basic dictation remains free." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdzanie licencji… Podstawowe dyktowanie jest zawsze dostępne."
-          }
-        }
-      }
-    },
     "Checking provider access…" : {
       "comment" : "Setup Agent readiness while the provider snapshot is loading\nSetup provider row status while credentials are loading",
       "localizations" : {
@@ -3582,16 +3616,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się zapisać pliku Markdown dla „%@”. Sprawdź wskazany w ustawieniach folder Transkrypcje i spróbuj ponownie."
-          }
-        }
-      }
-    },
-    "Codescribe does not phone home while you work. A future fulfillment service may refresh the validation timestamp explicitly; offline grace is 30 days." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe nie łączy się z serwerem podczas Twojej pracy. W przyszłości usługa licencyjna może jawnie odświeżać datę weryfikacji. Bez połączenia aplikacja działa do 30 dni."
           }
         }
       }
@@ -4306,6 +4330,16 @@
         }
       }
     },
+    "Couldn't activate the key. Try again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się aktywować klucza. Spróbuj ponownie."
+          }
+        }
+      }
+    },
     "Couldn't apply “%@”: %@" : {
       "comment" : "Palette pick failed: the picked entry, then the reason it failed",
       "localizations" : {
@@ -4428,6 +4462,26 @@
         }
       }
     },
+    "Couldn't read the saved license. Try again in Settings → License." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie można odczytać zapisanej licencji. Spróbuj ponownie w Ustawieniach → Licencja."
+          }
+        }
+      }
+    },
+    "Couldn't read the saved license. Try again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie można odczytać zapisanej licencji. Spróbuj ponownie."
+          }
+        }
+      }
+    },
     "Couldn't read tool grants" : {
       "localizations" : {
         "pl" : {
@@ -4445,6 +4499,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się odczytać historii transkrypcji: %@"
+          }
+        }
+      }
+    },
+    "Couldn't remove the key. Try again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się usunąć klucza. Spróbuj ponownie."
           }
         }
       }
@@ -4518,6 +4582,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się cofnąć ponownej transkrypcji: %@"
+          }
+        }
+      }
+    },
+    "Couldn't verify the saved license. Enter your key again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie można zweryfikować zapisanej licencji. Wprowadź klucz ponownie."
           }
         }
       }
@@ -4871,6 +4945,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odmów"
+          }
+        }
+      }
+    },
+    "Details" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szczegóły"
           }
         }
       }
@@ -5368,13 +5452,12 @@
         }
       }
     },
-    "Enter a CSK1 license key." : {
-      "comment" : "CSK1 is the license-key prefix — keep it verbatim",
+    "Enter a license key." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wpisz klucz licencyjny zaczynający się od CSK1."
+            "value" : "Wprowadź klucz licencyjny."
           }
         }
       }
@@ -5395,16 +5478,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wprowadź klucz licencyjny"
-          }
-        }
-      }
-    },
-    "Enter or restore key" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wprowadź lub przywróć klucz"
           }
         }
       }
@@ -5811,12 +5884,12 @@
         }
       }
     },
-    "Get license" : {
+    "Get license key" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Uzyskaj licencję"
+            "value" : "Uzyskaj klucz"
           }
         }
       }
@@ -6204,6 +6277,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "W użyciu"
+          }
+        }
+      }
+    },
+    "Inactive" : {
+      "comment" : "License status: a time limit has elapsed",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nieaktywna"
           }
         }
       }
@@ -6615,42 +6699,22 @@
         }
       }
     },
-    "License access is unavailable. Retry in Settings › License. Basic dictation remains free." : {
+    "License access ended. Check Settings → License." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie można teraz sprawdzić licencji. Spróbuj ponownie w Ustawieniach › Licencja. Podstawowe dyktowanie pozostaje bezpłatne."
+            "value" : "Licencja jest nieaktywna. Sprawdź Ustawienia → Licencja."
           }
         }
       }
     },
-    "License access is unavailable. The last verified license still follows its original expiry." : {
+    "License key" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sprawdzenie licencji jest niedostępne. Data wygaśnięcia licencji pozostaje bez zmian."
-          }
-        }
-      }
-    },
-    "License access unavailable" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie można sprawdzić licencji."
-          }
-        }
-      }
-    },
-    "License status" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stan licencji"
+            "value" : "Klucz licencyjny"
           }
         }
       }
@@ -8075,58 +8139,6 @@
         }
       }
     },
-    "Offline grace · %lld days left" : {
-      "localizations" : {
-        "en" : {
-          "variations" : {
-            "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Offline grace · %lld day left"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Offline grace · %lld days left"
-                }
-              }
-            }
-          }
-        },
-        "pl" : {
-          "variations" : {
-            "plural" : {
-              "few" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Praca bez połączenia · zostały %lld dni"
-                }
-              },
-              "many" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Praca bez połączenia · zostało %lld dni"
-                }
-              },
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Praca bez połączenia · został %lld dzień"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Praca bez połączenia · zostało %lld dnia"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "Older" : {
       "comment" : "Thread rail section",
       "localizations" : {
@@ -8243,16 +8255,6 @@
         }
       }
     },
-    "Open codescribe.vetcoders.io/license — enter your email, paste the key back here" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Otwórz codescribe.vetcoders.io/license, podaj adres e-mail i wklej tutaj otrzymany klucz"
-          }
-        }
-      }
-    },
     "Open diagnostics" : {
       "comment" : "Open Agent diagnostics from the Setup global readiness row",
       "localizations" : {
@@ -8320,6 +8322,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Otwórz pełny tekst w przewijanym widoku."
+          }
+        }
+      }
+    },
+    "Open the license-key page" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwiera stronę wydawania kluczy"
           }
         }
       }
@@ -9745,12 +9757,12 @@
         }
       }
     },
-    "Remove license" : {
+    "Remove key from this Mac" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Usuń licencję"
+            "value" : "Usuń klucz z tego Maca"
           }
         }
       }
@@ -10303,16 +10315,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ponowna transkrypcja wymaga silnika nagrywania"
-          }
-        }
-      }
-    },
-    "Retry license access" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdź ponownie licencję"
           }
         }
       }
@@ -11921,12 +11923,13 @@
         }
       }
     },
-    "State" : {
+    "Status" : {
+      "comment" : "License panel: current license status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Stan"
+            "value" : "Status"
           }
         }
       }
@@ -13459,16 +13462,6 @@
         }
       }
     },
-    "Unlicensed · Basic" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bez licencji · Podstawowy"
-          }
-        }
-      }
-    },
     "Unpinned" : {
       "comment" : "Always-on-top state",
       "localizations" : {
@@ -13556,16 +13549,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zaktualizuj skill"
-          }
-        }
-      }
-    },
-    "Updates expired · installed app remains active" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aktualizacje wygasły · zainstalowana aplikacja nadal działa"
           }
         }
       }
@@ -14361,16 +14344,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Twój język. Twoje skróty. Twój sposób pracy."
-          }
-        }
-      }
-    },
-    "Your license period ended. Renew to keep using Agentic — Basic dictation remains free." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Twoja licencja wygasła. Odnów ją, aby nadal korzystać z trybu agentowego. Dyktowanie w trybie podstawowym pozostaje bezpłatne."
           }
         }
       }

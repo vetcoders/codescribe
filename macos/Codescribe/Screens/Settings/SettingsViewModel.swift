@@ -1203,6 +1203,7 @@ final class SettingsViewModel: ObservableObject {
   var licenseStatus: CsLicenseStatus { licenseService.status }
   var licenseReadState: LicenseService.ReadState { licenseService.readState }
   var licenseBusy: Bool { licenseService.isBusy }
+  var licenseAllowsAgentMode: Bool { licenseService.canUseAgentic }
   private var licenseChangeSink: AnyCancellable?
   private var agentBridgeSynchronizationSink: AnyCancellable?
   /// Provider ids with a "Sign in with ChatGPT" flow in flight (browser open,
@@ -1436,6 +1437,7 @@ final class SettingsViewModel: ObservableObject {
   func refreshLicense() { licenseService.refresh() }
 
   var licenseError: String? { licenseService.lastError }
+  var licenseErrorDetails: String? { licenseService.lastErrorDetails }
 
   @discardableResult
   func activateLicense(_ key: String) async -> Bool {
