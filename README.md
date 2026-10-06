@@ -177,9 +177,9 @@ Tagged builds publish DMGs through GitHub Releases:
 2. Download `Codescribe_<version>-<builddate>-<sha>.dmg` for the standard build, or the `_full` variant for the larger build with embedded Whisper.
 3. Drag `Codescribe.app` into `Applications`
 
-> **Current truth:** `v0.13.3` is the latest version published on GitHub
-> Releases. The repository is at `0.14.1`, but those newer milestones have not
-> been tagged or published. A production artifact must be Developer ID signed,
+> **Current truth (2026-10-06):** `v0.15.2` is the latest version published on
+> GitHub Releases. The repository is at `0.15.3`; that candidate has not been
+> published and its release gates remain blocked. A production artifact must be Developer ID signed,
 > notarized, stapled, and pass `verify-dmg`; a source install or ad-hoc `.app` is
 > not a public release.
 
