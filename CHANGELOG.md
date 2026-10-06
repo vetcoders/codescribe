@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Translator worksheet (`scripts/l10n-sheet.py`, `make l10n-sheet`): exports a CSV per catalog and language and folds it back, refusing rows that drop an argument or misspell the product. The catalog lint now requires every language the bundle carries to be complete.
 - Turning the transcription overlay off closes an overlay already on screen (a take being corrected stays until its draft is committed or discarded), and a status card shown with the overlay off no longer stays up when "Keep visible between takes" is pinned.
 - A second click on the menu bar icon closes the menu; it no longer closes and reopens it within the same click.
+- `make install-bus` builds again. The installer source compiles on its own, so helpers and already selected skills install from source without rebuilding the app.
 
 ## Release reality
 
