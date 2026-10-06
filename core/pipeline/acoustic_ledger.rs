@@ -75,7 +75,7 @@ mod slot_ops;
 pub mod word_adjudication;
 #[cfg(test)]
 #[path = "acoustic_ledger/word_adjudication_tests.rs"]
-mod word_adjudication_tests;
+pub(crate) mod word_adjudication_tests;
 pub use slot_ops::{
     DictionarySlotRule, GroupSpeechCoverageReceipt, SlotOperationKind, SlotOperationReceipt,
     SlotOperationRefusal, SlotTarget, SpeechPinCoverage,

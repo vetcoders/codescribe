@@ -120,7 +120,7 @@ enum LiveConsultationRequest {
 
 /// Positive geometry/transport fixtures explicitly supply a resolving decode.
 /// The original completion remains a separate observation; real admission and
-/// trial completion both run, with context leased from this fixture's PCM.
+/// trial completion both run against the already authenticated fixture frame.
 #[cfg(test)]
 fn complete_confirmed_test_window(
     state: &mut AppleSealState,
@@ -136,7 +136,6 @@ fn complete_confirmed_test_window(
             break;
         };
         let mut confirmed = payload.clone();
-        confirmed.identity.range = state.word_trial_range(&trial).expect("fixture trial PCM");
         confirmed.identity.request_id = u64::MAX - trial.id;
         confirmed.segments.retain(|segment| {
             segment.range.sample_start >= confirmed.identity.range.sample_start
@@ -6338,7 +6337,10 @@ fn admit_ledger_label<'a>(
     let request = observation.request;
     let _ = ev_tx.send(EngineEvent::LedgerMutation {
         observation,
-        label: ledger.text_of(&occurrence).unwrap_or(label).to_string(),
+        label: match &receipt {
+            MutationReceipt::KeepVisibleUnanchored { label, .. } => label.clone(),
+            _ => ledger.text_of(&occurrence).unwrap_or(label).to_string(),
+        },
         receipt: receipt.clone(),
     });
     drop(ledger);
@@ -15187,19 +15189,28 @@ mod rc_w2_test_rehab {
         reconcile_silero_ledger(&mut state, &tx, &physical, &current);
         assert_eq!(document(&state), "alpha beta other");
         assert!(state.unmatched_silero_words.is_empty());
-        let whisper = state.acoustic_ledger.lock().unwrap().next_word_observation(
+        let mut whisper = state.acoustic_ledger.lock().unwrap().next_word_observation(
             LedgerObservationProducer::Whisper,
             10,
             &owner,
         );
-        state.acoustic_ledger.lock().unwrap().admit_word_slots(
-            &whisper,
-            &[crate::pipeline::acoustic_ledger::WordPin::new(
-                sample(1.5),
-                sample(1.75),
-                "revised",
-            )],
-        );
+        let pins =
+            [
+                crate::pipeline::acoustic_ledger::WordPin::new(
+                    sample(1.5),
+                    sample(1.75),
+                    "revised",
+                )
+                .with_decode_window(0, sample(2.0)),
+            ];
+        let mut ledger = state.acoustic_ledger.lock().unwrap();
+        ledger.admit_word_slots(&whisper, &pins);
+        let trial = ledger
+            .next_word_trial(true)
+            .expect("changed word needs confirmation");
+        whisper = ledger.next_word_observation(LedgerObservationProducer::Whisper, 11, &owner);
+        ledger.admit_word_trial(&trial, &whisper, &pins, &pins);
+        drop(ledger);
         let retained_document = document(&state);
         assert_eq!(retained_document, "alpha beta revised");
         assert_eq!(
@@ -18774,6 +18785,8 @@ mod live_refinement_admission_tests {
         payload.segments[0].range.sample_start = 50;
         payload.segments[0].range.sample_end = 350;
         payload.evidence.segment_grain = crate::stt::tail_provider::TailSegmentGrain::Word;
+        payload.evidence.timing_quality =
+            crate::stt::tail_provider::TailTimingQuality::ExactSampleRange;
         completion
     }
 
@@ -18803,6 +18816,81 @@ mod live_refinement_admission_tests {
             })
             .collect();
         completion
+    }
+
+    #[test]
+    fn word_trial_uses_the_existing_queue_and_complete_capture_context_once() {
+        use crate::pipeline::acoustic_ledger::WordPin;
+        let (mut state, events, _receiver, mut requests) = fixture(8);
+        forensic_live_transport_capture(&mut state);
+        reconcile_silero_ledger(
+            &mut state,
+            &events,
+            &closed(1),
+            &[TranscriptSegment {
+                confidence: None,
+                text: "1286".into(),
+                start_ts: 0.0,
+                end_ts: 0.4,
+            }],
+        );
+        state.flush_layer1_coalesce(&events);
+        let normal = requests.try_recv().unwrap();
+        let mut result = forensic_live_transport_word_completion(&normal);
+        result.payload.as_mut().unwrap().text = "56".into();
+        result.payload.as_mut().unwrap().segments[0].text = "56".into();
+        state.complete_whisper_window(&events, result, 0.4);
+        state.audio.push(&vec![0.25; 3_000]);
+        let owner = normal.member_occurrences[0].1.clone();
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            let observation =
+                ledger.next_word_observation(LedgerObservationProducer::Whisper, 500, &owner);
+            ledger.admit_word_slots(
+                &observation,
+                &[WordPin::new(50, 350, "56").with_decode_window(0, 2_000)],
+            );
+            assert_eq!(ledger.text_of(&owner), Some("1286"));
+        }
+        state.queue_word_trial();
+        let trial = requests
+            .try_recv()
+            .expect("one adjudication uses the normal queue");
+        assert_eq!(
+            (
+                trial.provider_request.identity.range.sample_start,
+                trial.provider_request.identity.range.sample_end
+            ),
+            (0, 3_400)
+        );
+        assert!(trial.committed_text.is_empty() && trial.neighbour_context.is_empty());
+        assert_eq!(trial.audio.len(), 3_400);
+        state.queue_word_trial();
+        assert!(requests.try_recv().is_err());
+        let mut result = forensic_live_transport_word_completion(&trial);
+        result.payload.as_mut().unwrap().text = "56".into();
+        result.payload.as_mut().unwrap().segments[0].text = "56".into();
+        let mut duplicate = forensic_live_transport_word_completion(&trial);
+        duplicate.payload = result.payload.clone();
+        state.complete_whisper_window(&events, result, 3.4);
+        assert!(state.word_trial_jobs.is_empty());
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&owner),
+            Some("56")
+        );
+        state.complete_whisper_window(&events, duplicate, 3.5);
+        assert_eq!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&owner)
+                .unwrap()
+                .len(),
+            1
+        );
+        state.queue_word_trial();
+        assert!(requests.try_recv().is_err());
     }
 
     #[test]
@@ -22208,8 +22296,8 @@ mod relay_l1_overlap_admission_tests {
         );
         assert_eq!(
             mutation_count(&events),
-            3,
-            "step 7: exclusive-remainder words join the whole span once"
+            4,
+            "three windows plus explicit lexical adjudication; physical words remain unique"
         );
         assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
@@ -22307,8 +22395,8 @@ mod relay_l1_overlap_admission_tests {
         );
         assert_eq!(
             mutation_count(&events),
-            3,
-            "step 7: exclusive-remainder words join the whole span once"
+            4,
+            "three windows plus explicit lexical adjudication; physical words remain unique"
         );
         assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
@@ -23072,11 +23160,15 @@ mod relay_l1_overlap_admission_tests {
         assert!(!rejected.grants_mutation(), "stale: {rejected:?}");
         assert_eq!(ledger.slots_of(&owner).unwrap(), before);
         assert!(ledger.text_recovery_pending(&owner));
-        let fresh = ObservationIdentity::new(ObservationProducer::Whisper, 93, 2, owner.clone());
-        let accepted = ledger.admit_word_slots(
-            &fresh,
-            &[WordPin::new(4_000, 18_000, "Kamil").with_decode_window(0, 24_000)],
-        );
+        let mut fresh =
+            ObservationIdentity::new(ObservationProducer::Whisper, 93, 2, owner.clone());
+        let pins = [WordPin::new(4_000, 18_000, "Kamil").with_decode_window(0, 24_000)];
+        ledger.admit_word_slots(&fresh, &pins);
+        let trial = ledger
+            .next_word_trial(true)
+            .expect("lexical correction requires a trial");
+        fresh = ledger.next_word_observation(ObservationProducer::Whisper, 94, &owner);
+        let accepted = ledger.admit_word_trial(&trial, &fresh, &pins, &pins);
         assert!(accepted.grants_mutation(), "fresh: {accepted:?}");
         assert_eq!(ledger.text_of(&owner), Some("Kamil"));
         assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
@@ -24738,6 +24830,17 @@ mod relay_l1_overlap_admission_tests {
             12.5,
         );
         let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        if second_start < 34_000 {
+            // Overlapping provider pins fail validation. A bounded trial may
+            // not turn that malformed payload into a resolved lexical dispute.
+            assert_eq!(ledger.text_of(&owner), Some("zima usza rości dalej"));
+            assert_eq!(&ledger.slots_of(&owner).unwrap()[..3], sources.as_slice());
+            assert!(
+                !ledger.has_word_conflicts(),
+                "failed trials are closed, not retried forever"
+            );
+            return;
+        }
         assert_eq!(ledger.text_of(&owner), Some("zimą szarości dalej"));
         let slots = ledger.slots_of(&owner).unwrap();
         assert_eq!(slots.len(), 3);
@@ -24754,7 +24857,12 @@ mod relay_l1_overlap_admission_tests {
         let operations = ledger
             .slot_operations()
             .iter()
-            .filter(|operation| operation.observation == slots[0].observation)
+            .filter(|operation| {
+                operation
+                    .sources
+                    .iter()
+                    .any(|source| sources.contains(source))
+            })
             .collect::<Vec<_>>();
         assert!(!operations.is_empty());
         for source in &sources {
@@ -24803,7 +24911,7 @@ mod relay_l1_overlap_admission_tests {
     }
 
     #[test]
-    fn forensic_three_slots_resegment_to_two_with_exact_lineage() {
+    fn forensic_overlapping_word_trial_keeps_three_sources() {
         measured_partition_keeps_each_source_lineage(33_000);
     }
 

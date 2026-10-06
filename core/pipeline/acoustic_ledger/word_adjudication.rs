@@ -173,16 +173,22 @@ impl WordAdjudication {
             }
             ObservationProducer::Whisper => {
                 // The same audio with a new request id is still one witness.
-                if hypothesis.decode.is_none()
-                    || self.whisper.iter().any(|prior| {
-                        prior.family() == ObservationProducer::Whisper
-                            && prior.decode == hypothesis.decode
-                            && prior
-                                .observation
-                                .occurrence
-                                .same_capture(&hypothesis.observation.occurrence)
-                    })
-                {
+                if hypothesis.decode.is_none() {
+                    return false;
+                }
+                if let Some(prior) = self.whisper.iter_mut().find(|prior| {
+                    prior.family() == ObservationProducer::Whisper
+                        && prior.decode == hypothesis.decode
+                        && prior
+                            .observation
+                            .occurrence
+                            .same_capture(&hypothesis.observation.occurrence)
+                }) {
+                    // Keep the latest alternative from this frame for a
+                    // bounded trial, without counting it as a second vote.
+                    if hypothesis.observation.generation > prior.observation.generation {
+                        *prior = hypothesis;
+                    }
                     return false;
                 }
                 self.whisper.push(hypothesis);
@@ -410,6 +416,33 @@ impl AcousticLedger {
         ranges
     }
 
+    fn provisional_apple_revision(
+        &self,
+        observation: &ObservationIdentity,
+        sources: &[WordSlot],
+    ) -> bool {
+        observation.producer == ObservationProducer::Apple
+            && !sources.is_empty()
+            && sources
+                .iter()
+                .all(|source| source.producer == ObservationProducer::Apple)
+            && self.word_evidence_input(observation).is_some_and(|input| {
+                sources.iter().all(|source| {
+                    input.words.iter().any(|pin| {
+                        pin.sample_start == source.sample_start
+                            && pin.sample_end == source.sample_end
+                    })
+                })
+            })
+            && !self.word_adjudication.components.iter().any(|component| {
+                component.targets.iter().any(|target| {
+                    sources
+                        .iter()
+                        .any(|source| SlotTarget::from(source) == *target)
+                }) && !component.whisper.is_empty()
+            })
+    }
+
     pub(super) fn asr_source_scope_complete(
         &self,
         observation: &ObservationIdentity,
@@ -417,6 +450,7 @@ impl AcousticLedger {
     ) -> bool {
         if observation.producer == ObservationProducer::ManualHuman
             || sources.iter().all(|source| self.coarse_word_source(source))
+            || self.provisional_apple_revision(observation, sources)
         {
             return true;
         }
@@ -702,6 +736,7 @@ impl AcousticLedger {
             return None;
         }
         let targets = sources.iter().map(SlotTarget::from).collect::<Vec<_>>();
+        let provisional_apple = self.provisional_apple_revision(observation, sources);
         let candidate = self.hypothesis(observation, sources, outputs);
         let complete = self.asr_source_scope_complete(observation, sources) && candidate.complete;
         let existing = self
@@ -744,14 +779,18 @@ impl AcousticLedger {
                 h.family() == ObservationProducer::Whisper
                     && h.complete
                     && h.original_text.is_some()
-                    && h.original_text == candidate.original_text
+                    && h.original_text
+                        .as_deref()
+                        .zip(raw)
+                        .is_some_and(|(a, b)| label_equal(a, b))
             })
             .map(|h| h.decode)
             .collect::<BTreeSet<_>>()
             .len();
         let agreement = raw.is_some()
-            && ((apple == raw && whisper_support > 0)
-                || (whisper_support >= 2 && apple.is_none_or(|a| Some(a) == raw)));
+            && ((apple.zip(raw).is_some_and(|(a, b)| label_equal(a, b)) && whisper_support > 0)
+                || (whisper_support >= 2
+                    && apple.is_none_or(|a| raw.is_some_and(|b| label_equal(a, b)))));
         let confirmed_trial = trial_matches
             && complete
             && raw.is_some()
@@ -759,9 +798,16 @@ impl AcousticLedger {
                 ((h.family() == ObservationProducer::Whisper && h.complete)
                     || (h.family() == ObservationProducer::Apple
                         && component.apple.last() == Some(h)))
-                    && h.original_text == candidate.original_text
+                    && h.original_text
+                        .as_deref()
+                        .zip(raw)
+                        .is_some_and(|(a, b)| label_equal(a, b))
             });
-        let (accepted, reason) = if !complete {
+        let (accepted, reason) = if provisional_apple {
+            // A still-provisional Apple word may evolve on the same exact
+            // pins. Once Whisper supplies evidence, normal adjudication owns it.
+            (true, "apple_provisional_revision")
+        } else if !complete {
             (false, "incomplete_source_scope")
         } else if trial.is_some() {
             if confirmed_trial {
@@ -787,14 +833,18 @@ impl AcousticLedger {
         };
         let apple_disagrees = candidate.family() == ObservationProducer::Apple
             && raw.is_some()
-            && candidate.original_text != component.incumbent.original_text
+            && !candidate
+                .original_text
+                .as_deref()
+                .zip(component.incumbent.original_text.as_deref())
+                .is_some_and(|(a, b)| label_equal(a, b))
             && component
                 .support()
                 .iter()
                 .any(|h| h.family() == ObservationProducer::Whisper && h.complete);
         let held_whisper_disagrees = repeated_label
             && apple.is_some()
-            && apple != raw
+            && !apple.zip(raw).is_some_and(|(a, b)| label_equal(a, b))
             && candidate.family() == ObservationProducer::Whisper
             && complete;
         if (complete && !repeated_label && !accepted) || apple_disagrees || held_whisper_disagrees {

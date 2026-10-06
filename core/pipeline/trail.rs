@@ -1399,6 +1399,7 @@ fn replay_validated(
 
 #[cfg(test)]
 mod tests {
+    use super::super::acoustic_ledger::word_adjudication_tests::corroborate_candidate;
     use super::super::acoustic_ledger::{ObservationProducer, WordPin};
     use super::*;
 
@@ -1513,9 +1514,10 @@ mod tests {
             ledger.slots_of(&owner).unwrap(),
             std::slice::from_ref(&held)
         );
-        let measured = ledger.next_word_observation(ObservationProducer::Whisper, 2, &owner);
-        let corrected = ledger.admit_word_slots(
-            &measured,
+        let mut measured = ledger.next_word_observation(ObservationProducer::Whisper, 2, &owner);
+        let corrected = corroborate_candidate(
+            &mut ledger,
+            &mut measured,
             &[WordPin::new(2_500, 6_500, "zweryfikowałeś").with_decode_window(0, 16_000)],
         );
         assert!(corrected.grants_mutation(), "{corrected:?}");
@@ -1726,7 +1728,14 @@ mod tests {
         match scenario {
             "batch" => {
                 ledger.admit_word_slots(&apple, &[WordPin::new(0, 4_000, "no")]);
-                ledger.admit_word_slots(&whisper, &children);
+                let mut confirmed = whisper.clone();
+                corroborate_candidate(
+                    &mut ledger,
+                    &mut confirmed,
+                    &children
+                        .clone()
+                        .map(|pin| pin.with_decode_window(0, 16_000)),
+                );
                 assert_eq!(ledger.text_of(&owner), Some("na prawdę"));
                 assert!(
                     ledger
@@ -1993,8 +2002,11 @@ mod tests {
         );
         let mut missing_input = rows.clone();
         for row in &mut missing_input {
-            if let TrailEvent::Decision { decision } = &mut row.event {
-                decision.input = None;
+            if let TrailEvent::SlotStart { operation } = &mut row.event {
+                assert!(
+                    operation.word_evidence.take().is_some(),
+                    "remove actual recorded source evidence"
+                );
                 break;
             }
         }
@@ -2066,9 +2078,12 @@ mod tests {
             );
             // A word correction supplies its PCM pin, rather than granting
             // whole-label text the authority to replace an existing word.
-            let receipt = ledger.admit_word_slots(
-                &ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone()),
-                &[WordPin::new(0, 16_000, "zweryfikowałeś")],
+            let mut observation =
+                ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone());
+            let receipt = corroborate_candidate(
+                &mut ledger,
+                &mut observation,
+                &[WordPin::new(0, 16_000, "zweryfikowałeś").with_decode_window(0, 16_000)],
             );
             assert!(receipt.grants_mutation());
             assert_eq!(ledger.text_of(&owner), Some("zweryfikowałeś"));

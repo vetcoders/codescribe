@@ -254,7 +254,7 @@ fn context_quality_is_bounded_at_extreme_sample_offsets() {
 
 /// Old geometry fixtures now provide an explicit resolving observation instead
 /// of granting a lexical correction solely because Whisper arrived later.
-pub(super) fn corroborate_candidate(
+pub(crate) fn corroborate_candidate(
     ledger: &mut AcousticLedger,
     observation: &mut ObservationIdentity,
     pins: &[WordPin],
@@ -273,4 +273,44 @@ pub(super) fn corroborate_candidate(
         receipt = ledger.admit_word_trial(&trial, observation, pins, pins);
     }
     receipt
+}
+
+#[test]
+fn provisional_apple_can_evolve_until_another_source_has_spoken() {
+    let (mut ledger, owner) = fixture();
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Apple,
+        0,
+        "weryfikowałeś",
+        None,
+    );
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Apple,
+        1,
+        "zweryfikowałeś",
+        None,
+    );
+    assert_eq!(ledger.text_of(&owner), Some("zweryfikowałeś"));
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        2,
+        "zweryfikowałeś",
+        Some((0, 128_000)),
+    );
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Apple,
+        3,
+        "inne",
+        None,
+    );
+    assert_eq!(ledger.text_of(&owner), Some("zweryfikowałeś"));
+    assert!(ledger.next_word_trial(true).is_some());
 }

@@ -432,7 +432,7 @@ mod tests {
             for event in &session.events {
                 let revision = match event {
                     EngineEvent::LedgerMutation { observation, receipt, .. } =>
-                        reducer.apply_ledger_mutation(&mut ledger, observation, receipt),
+                        reducer.apply_ledger_mutation(&ledger, observation, receipt),
                     EngineEvent::LedgerSeal { receipt } => reducer.apply_ledger_seal(receipt),
                     EngineEvent::OccurrenceLabelProposal { proposal } =>
                         reducer.apply_occurrence_label_proposal(&mut ledger, proposal).1,
