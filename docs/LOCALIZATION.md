@@ -191,11 +191,34 @@ requiring an older check with the same name is not proof of localization coverag
 The single invariant: **a string that reaches the screen, VoiceOver or a tooltip
 is born localized at the place where it is written as a literal.**
 
-Operating modes are **Basic mode** / **Tryb podstawowy** and
-**Agent mode** / **Tryb agentowy** (Founder decision 2026-10-06).
-Use **transcription** / **transkrypcja** for the activity and **transcript** /
-**transkrypt** for its text output. Recording describes audio capture only;
-speech describes actual speech, for example speech detection.
+### Product glossary — English / Polish
+
+Founder decision 2026-10-06. These are the preferred terms throughout the UI,
+including buttons, settings, history, messages, help and accessibility copy.
+
+| Meaning | English | Polish |
+| --- | --- | --- |
+| Basic operating mode | Basic mode | Tryb podstawowy |
+| Agent operating mode | Agent mode | Tryb agentowy |
+| Converting audio to text | transcription | transkrypcja |
+| The resulting text | transcript | transkrypt |
+| Command to convert audio to text | Transcribe | Transkrybuj |
+
+Mode names and license status describe different things. Do not call Basic
+mode "Unlicensed" / "Bez licencji", or Agent mode "Agent" / "Agentic".
+These display names do not rename persisted identifiers or bridge enums (R6).
+
+Do not use "recording", "dictation" or "speech" ("nagranie", "dyktowanie",
+"dyktando", "mowa") as umbrella names for transcription. Exceptions must
+describe the actual object or operation: an audio recording is "nagranie",
+audio capture is "nagrywanie", and actual speech is "mowa", for example in
+speech detection. Do not call an audio file a transcript.
+
+English source copy and every shipped translation change together in the same
+cut; the glossary is not a Polish-only substitution list.
+
+### Keep only useful copy
+
 Keep only copy that helps a user act, understand a state or make a decision.
 Remove repeated explanations, implementation details and future-service plans;
 show exceptional instructions and diagnostics when needed. Keep meaningful

@@ -34,20 +34,25 @@ website, the docs, the CLI and model prompts are outside this ledger.
 `Localizable.xcstrings` holds **1423 keys** (1400 translatable, source inventory
 2026-10-06). Before the initial localization work the compiler extracted 468 —
 the literals SwiftUI localizes by itself; the
-rest was plain `String` and invisible to any translation. **Polish is complete**
-in both catalogs (1400/1400 and 4/4), initially imported from the translator worksheet
+rest was plain `String` and invisible to any translation. **Polish copy covers
+every translatable key** in both catalogs (1400/1400 and 4/4), initially imported from the translator worksheet
 (`scripts/l10n-sheet.py`); the catalog is the source of the translation from
 here on.
 
 | Measure                                       | Count    |
 | --------------------------------------------- | -------- |
 | Keys in `Localizable.xcstrings`               | 1423     |
-| Keys translated to Polish                     | 1400     |
+| Keys with Polish copy                         | 1400     |
+| License keys awaiting Polish review           | 18       |
 | Keys with a translator comment                | 469      |
 | Keys with English plural forms                | 27       |
 | Keys written as identifiers (`defaultValue:`) | 52       |
 | Permission prompts in `InfoPlist.xcstrings`   | 4        |
 | Swift sources in the original census / touched | 128 / 77 |
+
+The license copy cut marks 18 agent-authored Polish entries as `needs_review`.
+The Founder-confirmed mode names remain `translated`. Drafts provide coverage,
+not evidence of UI review; the review process is in `LOCALIZATION.md` §6.
 
 By area:
 

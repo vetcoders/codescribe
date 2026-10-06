@@ -1709,7 +1709,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Aktywuj"
           }
         }
@@ -1720,7 +1720,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Aktywna"
           }
         }
@@ -1772,25 +1772,25 @@
             "plural" : {
               "few" : {
                 "stringUnit" : {
-                  "state" : "translated",
+                  "state" : "needs_review",
                   "value" : "Aktywna · pozostały %lld dni"
                 }
               },
               "many" : {
                 "stringUnit" : {
-                  "state" : "translated",
+                  "state" : "needs_review",
                   "value" : "Aktywna · pozostało %lld dni"
                 }
               },
               "one" : {
                 "stringUnit" : {
-                  "state" : "translated",
+                  "state" : "needs_review",
                   "value" : "Aktywna · pozostał %lld dzień"
                 }
               },
               "other" : {
                 "stringUnit" : {
-                  "state" : "translated",
+                  "state" : "needs_review",
                   "value" : "Aktywna · pozostało %lld dnia"
                 }
               }
@@ -2059,7 +2059,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Tryb agentowy wymaga licencji. Otwórz Ustawienia → Licencja."
           }
         }
@@ -4334,7 +4334,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Nie udało się aktywować klucza. Spróbuj ponownie."
           }
         }
@@ -4466,7 +4466,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Nie można odczytać zapisanej licencji. Spróbuj ponownie w Ustawieniach → Licencja."
           }
         }
@@ -4476,7 +4476,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Nie można odczytać zapisanej licencji. Spróbuj ponownie."
           }
         }
@@ -4507,7 +4507,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Nie udało się usunąć klucza. Spróbuj ponownie."
           }
         }
@@ -4590,7 +4590,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Nie można zweryfikować zapisanej licencji. Wprowadź klucz ponownie."
           }
         }
@@ -4953,7 +4953,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Szczegóły"
           }
         }
@@ -5456,7 +5456,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Wprowadź klucz licencyjny."
           }
         }
@@ -5888,7 +5888,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Uzyskaj klucz"
           }
         }
@@ -6286,7 +6286,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Nieaktywna"
           }
         }
@@ -6703,7 +6703,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Licencja jest nieaktywna. Sprawdź Ustawienia → Licencja."
           }
         }
@@ -6713,7 +6713,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Klucz licencyjny"
           }
         }
@@ -8330,7 +8330,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Otwiera stronę wydawania kluczy"
           }
         }
@@ -9761,7 +9761,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Usuń klucz z tego Maca"
           }
         }
@@ -11928,7 +11928,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Status"
           }
         }
