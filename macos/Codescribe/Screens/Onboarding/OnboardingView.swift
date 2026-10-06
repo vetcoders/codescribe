@@ -57,7 +57,7 @@ struct OnboardingView: View {
     }
   }
 
-  private var chapter: (title: String, symbol: String, purpose: String) {
+  private var chapter: (title: String, symbol: String, purpose: String?) {
     switch model.step {
     case .interfaceLanguage:
       return (
@@ -66,22 +66,16 @@ struct OnboardingView: View {
             "Choose your language", locale: model.interfaceLocale,
             comment: "First setup chapter heading")),
         "globe",
-        String(
-          localized: LocalizedStringResource(
-            "Start with the language of the app.", locale: model.interfaceLocale,
-            comment: "First setup chapter subtitle"))
+        nil
       )
     case .mode:
       return (
         String(
           localized: LocalizedStringResource(
-            "Your voice, a new possibility", locale: model.interfaceLocale,
+            "Choose how you want to use Codescribe.", locale: model.interfaceLocale,
             comment: "Setup chapter heading")),
         "waveform",
-        String(
-          localized: LocalizedStringResource(
-            "First, choose what you want to do.", locale: model.interfaceLocale,
-            comment: "Setup chapter subtitle"))
+        nil
       )
     case .permission:
       return (
@@ -89,45 +83,38 @@ struct OnboardingView: View {
           localized: LocalizedStringResource(
             "Make the connection", locale: model.interfaceLocale, comment: "Setup chapter heading")),
         "hand.raised",
-        String(
-          localized: LocalizedStringResource(
-            "You decide what Codescribe can access.", locale: model.interfaceLocale,
-            comment: "Setup chapter subtitle; Codescribe is the product name"))
+        nil
       )
     case .language, .apiKey, .hotkeyMode:
       return (
         String(
           localized: LocalizedStringResource(
-            "Make it yours", locale: model.interfaceLocale, comment: "Setup chapter heading")),
+            "Your language. Your shortcuts. Your way of working.",
+            locale: model.interfaceLocale, comment: "Setup chapter heading")),
         "slider.horizontal.3",
-        String(
-          localized: LocalizedStringResource(
-            "Your language. Your shortcuts. Your way of working.", locale: model.interfaceLocale,
-            comment: "Setup chapter subtitle"))
+        nil
       )
     case .agenticReadiness:
       return (
         String(
           localized: LocalizedStringResource(
-            "Give your voice tools", locale: model.interfaceLocale, comment: "Setup chapter heading"
+            "Connect Codescribe to an agent", locale: model.interfaceLocale,
+            comment: "Setup chapter heading"
           )),
         "sparkles",
         String(
           localized: LocalizedStringResource(
-            "Connect the assistants you want to work with.", locale: model.interfaceLocale,
+            "Choose the agents you want to work with by voice.", locale: model.interfaceLocale,
             comment: "Setup chapter subtitle"))
       )
     case .done:
       return (
         String(
           localized: LocalizedStringResource(
-            "Your next thought starts here", locale: model.interfaceLocale,
+            "Setup is complete.", locale: model.interfaceLocale,
             comment: "Setup chapter heading")),
         "checkmark",
-        String(
-          localized: LocalizedStringResource(
-            "Setup is complete. Your voice takes it from here.", locale: model.interfaceLocale,
-            comment: "Setup chapter subtitle"))
+        nil
       )
     }
   }
@@ -146,7 +133,9 @@ struct OnboardingView: View {
           .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 5) {
           Text(chapter.title).font(.headline)
-          Text(chapter.purpose).font(.subheadline).foregroundStyle(.secondary)
+          if let purpose = chapter.purpose {
+            Text(purpose).font(.subheadline).foregroundStyle(.secondary)
+          }
         }
         Spacer(minLength: 0)
       }

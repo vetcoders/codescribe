@@ -1162,7 +1162,7 @@ public protocol CodescribeAgentStatusProtocol: AnyObject, Sendable {
 
     /**
      * Agentic-lane readiness. `ready` is the core capability gate (assistive
-     * provider + its API key + native tools); the MCP rows are informational.
+     * provider request access + native tools); the MCP rows are informational.
      * Projects files, env and the existing credential cache. The explicit
      * background provider-access refresh acquires credentials before publication.
      */
@@ -1246,7 +1246,7 @@ public convenience init() {
 
     /**
      * Agentic-lane readiness. `ready` is the core capability gate (assistive
-     * provider + its API key + native tools); the MCP rows are informational.
+     * provider request access + native tools); the MCP rows are informational.
      * Projects files, env and the existing credential cache. The explicit
      * background provider-access refresh acquires credentials before publication.
      */
@@ -8221,7 +8221,7 @@ public func FfiConverterTypeCsAgentResetPreview_lower(_ value: CsAgentResetPrevi
 
 /**
  * Agentic-lane readiness verdict + rows. `ready` reflects the CORE capability
- * gate only (assistive provider configured + its API key set + native tools
+ * gate only (assistive provider access available + native tools
  * available); the MCP rows (Vibecrafted + AICX + Loctree + PRView) are
  * informational context and never flip `ready`. See the core
  * `AgenticReadinessReport` for the C4 semantics decision.
@@ -18983,7 +18983,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_workspace_with_attachments() != 44225) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_agentic_readiness() != 2261) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_agentic_readiness() != 32944) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_capability_matrix() != 24926) {

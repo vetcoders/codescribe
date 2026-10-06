@@ -207,7 +207,7 @@ struct ShortcutsPanel: View {
       SettingsSectionLabel(String(localized: "Dot colors"))
       HStack(spacing: 12) {
         legendItem(color: CSColor.terracotta, text: "Red — dictation or formatting is recording")
-        legendItem(color: CSColor.assistive, text: "Purple — voice goes to the agent")
+        legendItem(color: CSColor.assistive, text: "Purple — voice goes to the Agent")
         legendItem(color: CSColor.amber, text: "Orange — processing after recording")
       }
       HStack(spacing: 12) {

@@ -184,7 +184,7 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
       XCTAssertEqual(
         PermissionKind.microphone.onboardingTitle(locale: wizard.interfaceLocale),
         "Dostęp do mikrofonu")
-      XCTAssertEqual(PermissionState.granted.label(locale: wizard.interfaceLocale), "przyznano")
+      XCTAssertEqual(PermissionState.granted.label(locale: wizard.interfaceLocale), "Przyznano")
       wizard.selectInterfaceLanguage(.english)
       XCTAssertEqual(wizard.primaryLabel, "Continue")
       XCTAssertEqual(wizard.progressLabel, "Step 1 of 13")

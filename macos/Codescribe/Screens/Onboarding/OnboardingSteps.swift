@@ -22,11 +22,7 @@ struct InterfaceLanguageStepView: View {
           localized: LocalizedStringResource(
             "What language should Codescribe use?", locale: model.interfaceLocale,
             comment: "First setup step heading")),
-        blurb: String(
-          localized: LocalizedStringResource(
-            "This changes the app’s interface. You’ll choose your dictation language later.",
-            locale: model.interfaceLocale,
-            comment: "Interface language is independent of speech recognition"))
+        blurb: nil
       )
       ForEach(InterfaceLanguage.allCases, id: \.self) { language in
         OnboardingChoiceCard(
@@ -37,6 +33,15 @@ struct InterfaceLanguageStepView: View {
         .accessibilityIdentifier("onboarding-interface-language-\(language.rawValue)")
       }
       .disabled(model.applyingInterfaceLanguage)
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "You’ll choose your dictation language later.", locale: model.interfaceLocale,
+            comment: "Interface language is independent of speech recognition"))
+      )
+      .font(.body)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
       if model.interfaceLanguageNeedsRestart {
         Text(
           String(
@@ -60,22 +65,26 @@ struct InterfaceLanguageStepView: View {
 /// Shared heading (eyebrow + title + blurb) for the choice steps, matching the
 /// permission-step typography.
 private struct OnboardingStepHeader: View {
-  let eyebrow: String
+  let eyebrow: String?
   let title: String
-  let blurb: String
+  let blurb: String?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: eyebrow)
+      if let eyebrow {
+        EyebrowLabel(text: eyebrow)
+      }
       Text(title)
         .font(.title2.weight(.semibold))
         .foregroundStyle(.primary)
         .fixedSize(horizontal: false, vertical: true)
-      Text(blurb)
-        .font(.body)
-        .lineSpacing(3)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+      if let blurb {
+        Text(blurb)
+          .font(.body)
+          .lineSpacing(3)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
     }
   }
 }
@@ -138,12 +147,11 @@ struct ModeStepView: View {
             "Operating lane", locale: model.interfaceLocale, comment: "Setup step eyebrow")),
         title: String(
           localized: LocalizedStringResource(
-            "Where should your words go?", locale: model.interfaceLocale,
+            "How do you want to work?", locale: model.interfaceLocale,
             comment: "Setup step heading")),
         blurb: String(
           localized: LocalizedStringResource(
-            "Start with dictation, or bring an assistant into the conversation. Change this any time in Settings.",
-            locale: model.interfaceLocale,
+            "Dictate, or work by voice with an AI agent.", locale: model.interfaceLocale,
             comment: "Setup step blurb"))
       )
 
@@ -155,7 +163,7 @@ struct ModeStepView: View {
               comment: "Operating lane choice; Basic is the lane name")),
           subtitle: String(
             localized: LocalizedStringResource(
-              "Voice-to-text anywhere. The simplest, fastest setup.", locale: model.interfaceLocale,
+              "You speak, Codescribe turns it into text.", locale: model.interfaceLocale,
               comment: "Operating lane choice detail")),
           isSelected: model.onboardingMode == .basic
         ) { model.selectMode(.basic) }
@@ -167,20 +175,12 @@ struct ModeStepView: View {
               comment: "Operating lane choice; Agentic is the lane name")),
           subtitle: String(
             localized: LocalizedStringResource(
-              "Talk with an AI assistant and connect its tools, so your voice can drive an AI assistant, not just type.",
-              locale: model.interfaceLocale,
+              "Talk with the Agent and use its tools.", locale: model.interfaceLocale,
               comment: "Operating lane choice detail")),
           isSelected: model.onboardingMode == .agentic
         ) { model.selectMode(.agentic) }
       }
       .padding(.top, 4)
-
-      OnboardingStepNote(
-        text: String(
-          localized: LocalizedStringResource(
-            "Agentic adds one more setup step (readiness check). Basic skips it.",
-            locale: model.interfaceLocale,
-            comment: "Setup step footnote; Agentic and Basic are the two lane names")))
     }
   }
 }
@@ -202,11 +202,7 @@ struct LanguageStepView: View {
           localized: LocalizedStringResource(
             "Pick your dictation language.", locale: model.interfaceLocale,
             comment: "Setup step heading")),
-        blurb: String(
-          localized: LocalizedStringResource(
-            "Sets the transcription language. Auto-detect handles mixed or multilingual speech. Change it any time in Settings.",
-            locale: model.interfaceLocale,
-            comment: "Setup step blurb; Auto-detect is the name of the first language choice")))
+        blurb: nil)
 
       VStack(spacing: 10) {
         ForEach(choices, id: \.self) { language in
@@ -244,7 +240,8 @@ struct LanguageStepView: View {
     case .auto:
       return String(
         localized: LocalizedStringResource(
-          "Multilingual — detects the language as you speak.", locale: model.interfaceLocale,
+          "Auto-detect also works when you speak several languages.",
+          locale: model.interfaceLocale,
           comment: "Detail under the Auto-detect dictation language choice"))
     default: return nil
     }
@@ -266,11 +263,7 @@ struct HotkeyModeStepView: View {
           localized: LocalizedStringResource(
             "How do you trigger recording?", locale: model.interfaceLocale,
             comment: "Setup step heading")),
-        blurb: String(
-          localized: LocalizedStringResource(
-            "Pick a starting preset. This sets the Dictation, Formatting, and Assistive shortcuts for you.",
-            locale: model.interfaceLocale,
-            comment: "Setup step blurb; Dictation, Formatting and Assistive are the three modes")))
+        blurb: nil)
 
       VStack(spacing: 10) {
         ForEach(HotkeyModeChoice.allCases, id: \.self) { mode in
@@ -286,7 +279,7 @@ struct HotkeyModeStepView: View {
       OnboardingStepNote(
         text: String(
           localized: LocalizedStringResource(
-            "Fine-tune the exact keys later in Settings › Shortcuts.",
+            "You can change the shortcuts later in Settings › Shortcuts.",
             locale: model.interfaceLocale,
             comment: "Setup step footnote; Settings › Shortcuts is a navigation path in the app")))
     }
@@ -305,178 +298,110 @@ struct AgenticReadinessStepView: View {
   @Environment(\.openWindow) private var openWindow
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      agentBridgeSetup
-      DisclosureGroup("Connection details") {
-        VStack(alignment: .leading, spacing: 12) {
-          Text(model.agentBridgeExplanation)
-            .font(.callout)
-            .foregroundStyle(.secondary)
-          Text(model.agentBridgeStatus.detail)
-            .font(.callout)
-            .foregroundStyle(.secondary)
-          ForEach(model.agentBridgeStatus.installedPaths, id: \.self) { path in
-            Text(path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
-              .font(.caption.monospaced())
-              .textSelection(.enabled)
-          }
-          if model.providerAccessResolved, model.providerAccessError == nil,
-            let readiness = model.readiness
-          {
-            SettingsSectionLabel(
-              String(
-                localized: LocalizedStringResource("Agent readiness", locale: model.interfaceLocale)
-              ))
-            readinessPill(ready: readiness.ready)
-            Text(
-              "Agent readiness covers Assistive access and native tools. Cloud Formatting is configured separately in Settings › Agent › LLM lanes."
-            )
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            // Core orders verdict, provider, native tools and workspace roots first.
-            // Optional MCP has its own status report below.
-            statusCard(rows: Array(readiness.rows.prefix(4)), valueLineLimit: nil)
-              .accessibilityIdentifier("onboarding-agent-readiness-core-status")
-          }
-          Text(model.providerAccessDescription)
-            .font(.callout)
-            .foregroundStyle(.secondary)
-          if let mcpStatus = model.mcpStatus {
-            SettingsSectionLabel(
-              String(
-                localized: LocalizedStringResource("MCP servers", locale: model.interfaceLocale)))
-            statusCard(rows: mcpStatus.rows)
-              .accessibilityIdentifier("onboarding-mcp-status")
-          }
-          Button("Refresh") { model.refreshReadiness() }.csAction()
-        }.padding(.top, 8)
-      }
-
-      Text(
-        "MCP connects your assistant to additional tools. You can add servers later in Settings."
-      )
-      .font(.callout)
-      .foregroundStyle(.secondary)
-      Button("MCP settings…") {
-        model.prepareMcpSettingsDeepLink()
-        openWindow(id: SettingsView.windowID)
-      }.csAction()
-        .accessibilityIdentifier("onboarding-mcp-settings")
-
-      OnboardingStepNote(
-        text: String(
-          localized: LocalizedStringResource(
-            "This connection is optional. You can continue and set it up later.",
-            locale: model.interfaceLocale,
-            comment: "Setup step footnote on the agent-readiness step")))
-    }
-  }
-
-  /// Product install for the external named-session bridge. The checkboxes are
-  /// deliberately empty on first run; visiting this step performs no writes.
-  /// Reopening Setup seeds clients from the managed receipt for an explicit
-  /// reinstall/update or a safe deselection.
-  private var agentBridgeSetup: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text("Coding assistants", comment: "Setup: eyebrow above the coding-assistant choices")
-        .textCase(.uppercase)
-        .font(CSFont.mono(10, .semibold))
-        .tracking(0.4)
-        .foregroundStyle(CSColor.textFaint)
-      Text(model.agentBridgeTitle)
-        .font(CSFont.ui(15, .bold))
-        .foregroundStyle(.primary)
-      Text(
-        "Choose where to send your dictation. Your assistant can listen as you speak; changes wait until you finish."
-      )
-      .font(CSFont.ui(12.5))
-      .lineSpacing(3)
-      .foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
-
       VStack(spacing: 8) {
         ForEach(AgentBridgeClient.allCases) { client in
-          OnboardingChoiceCard(
-            title: client.displayName,
-            subtitle: String(
-              localized: LocalizedStringResource(
-                "Connect a live coding session", locale: model.interfaceLocale,
-                comment: "Detail under a coding-assistant checkbox")),
-            isSelected: model.selectedAgentClients.contains(client)
-          ) { model.toggleAgentClient(client) }
+          VStack(alignment: .leading, spacing: 6) {
+            OnboardingChoiceCard(
+              title: client.displayName,
+              subtitle: String(
+                localized: LocalizedStringResource(
+                  "Connect to the active session", locale: model.interfaceLocale,
+                  comment: "Detail under a coding-assistant checkbox")),
+              isSelected: model.selectedAgentClients.contains(client)
+            ) { model.toggleAgentClient(client) }
+
+            if model.agentClientNeedsSetup(client) {
+              HStack(spacing: 10) {
+                Text(
+                  String(
+                    localized: LocalizedStringResource(
+                      "\(client.displayName) needs setup", locale: model.interfaceLocale,
+                      comment: "Status below an agent client card; %@ is Codex or Claude Code"))
+                )
+                .font(CSFont.mono(10.5, .medium))
+                .foregroundStyle(CSColor.terracottaLight)
+                Spacer(minLength: 0)
+                Button(
+                  String(
+                    localized: LocalizedStringResource(
+                      "Set up", locale: model.interfaceLocale,
+                      comment: "Button below an agent client card"))
+                ) {
+                  if model.agentClientIsInstalled(client) {
+                    model.prepareAgentDiagnosticsDeepLink()
+                    openWindow(id: SettingsView.windowID)
+                  } else {
+                    model.setUpAgentClient(client)
+                  }
+                }
+                .csAction()
+              }
+              .padding(.horizontal, 12)
+            }
+
+            if model.agentClientShowsError(client), let error = model.agentBridgeError {
+              Text(error)
+                .font(CSFont.mono(10.5, .medium))
+                .foregroundStyle(CSColor.terracottaLight)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 12)
+            }
+          }
         }
       }
 
-      HStack(spacing: 10) {
-        Button(model.agentBridgeButtonTitle) {
-          model.installAgentBridge()
-        }.csAction(prominent: true)
-          .disabled(
-            model.selectedAgentClients.isEmpty || !model.agentBridgeStatus.payloadAvailable
+      if model.agentBridgeReadyToGo {
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "Ready to go ✓", locale: model.interfaceLocale,
+              comment: "Agent setup status below the client cards"))
+        )
+        .font(CSFont.mono(10.5, .semibold))
+        .foregroundStyle(CSColor.oliveLight)
+      } else if model.agentReadinessPending {
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "Checking provider access…", locale: model.interfaceLocale,
+              comment: "Setup Agent readiness while the provider snapshot is loading"))
+        )
+        .font(CSFont.mono(10.5, .medium))
+        .foregroundStyle(.secondary)
+      } else if model.agentNeedsGlobalSetup {
+        HStack(spacing: 10) {
+          Text(
+            String(
+              localized: LocalizedStringResource(
+                "Agent needs setup", locale: model.interfaceLocale,
+                comment: "Global provider or native readiness problem, not a client installation"))
           )
+          .font(CSFont.mono(10.5, .medium))
+          .foregroundStyle(CSColor.terracottaLight)
+          Spacer(minLength: 0)
+          Button(
+            String(
+              localized: LocalizedStringResource(
+                "Open diagnostics", locale: model.interfaceLocale,
+                comment: "Open Agent diagnostics from the Setup global readiness row"))
+          ) {
+            model.prepareAgentDiagnosticsDeepLink()
+            openWindow(id: SettingsView.windowID)
+          }
+          .csAction()
+        }
       }
 
-      if let error = model.agentBridgeError {
+      if model.agentBridgeErrorClient == nil, let error = model.agentBridgeError {
         Text(error)
           .font(CSFont.mono(10.5, .medium))
           .foregroundStyle(CSColor.terracottaLight)
           .fixedSize(horizontal: false, vertical: true)
       }
+
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  private func readinessPill(ready: Bool) -> some View {
-    let accent = ready ? CSColor.olive : CSColor.terracotta
-    let accentLight = ready ? CSColor.oliveLight : CSColor.terracottaLight
-    return Text(
-      ready
-        ? String(
-          localized: LocalizedStringResource(
-            "Agent capabilities ready", locale: model.interfaceLocale))
-        : String(
-          localized: LocalizedStringResource(
-            "Agent capabilities not ready", locale: model.interfaceLocale))
-    )
-    .textCase(.uppercase)
-    .font(CSFont.mono(9, .semibold))
-    .tracking(0.4)
-    .foregroundStyle(accentLight)
-    .padding(.horizontal, 8)
-    .padding(.vertical, 2)
-    .background(
-      RoundedRectangle(cornerRadius: 6, style: .continuous)
-        .fill(accent.opacity(0.12))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 6, style: .continuous)
-        .strokeBorder(accent.opacity(0.24), lineWidth: 1))
-  }
-
-  @ViewBuilder
-  private func statusCard(rows: [CsMcpStatusRow], valueLineLimit: Int? = 2) -> some View {
-    VStack(spacing: 0) {
-      ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-        if index > 0 {
-          Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
-        }
-        HStack(spacing: 12) {
-          Text(row.label)
-            .font(CSFont.mono(11.5, .medium))
-            .foregroundStyle(.secondary)
-            .frame(width: 150, alignment: .leading)
-          Text(row.value)
-            .font(CSFont.ui(12, .semibold))
-            .foregroundStyle(.primary)
-            .lineLimit(valueLineLimit)
-            .fixedSize(horizontal: false, vertical: valueLineLimit == nil)
-            .frame(maxWidth: .infinity, alignment: .leading)
-          Circle().fill(row.tone.dotColor).frame(width: 7, height: 7)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-      }
-    }
   }
 }
 
@@ -583,15 +508,19 @@ struct ApiKeyStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(
-        text: String(
-          localized: LocalizedStringResource(
-            "AI provider", locale: model.interfaceLocale, comment: "Setup step eyebrow")))
-      Text("Connect an AI provider.")
-        .font(.title2.weight(.semibold))
-        .foregroundStyle(.primary)
       Text(
-        "Account sign-in and API keys are separate ways to connect. Account sign-in supports Assistive; cloud Formatting and model discovery use an API key. Keys are stored in the macOS Keychain and never shown back. You can skip this step and configure access later in Settings › Providers."
+        String(
+          localized: LocalizedStringResource(
+            "Connect an AI provider", locale: model.interfaceLocale,
+            comment: "Setup step heading"))
+      )
+      .font(.title2.weight(.semibold))
+      .foregroundStyle(.primary)
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "Set up an Agent account or an API key. You can also do this later.",
+            locale: model.interfaceLocale, comment: "Setup step description"))
       )
       .font(.body)
       .lineSpacing(3)
@@ -601,41 +530,21 @@ struct ApiKeyStepView: View {
       providerPicker
         .padding(.top, 4)
 
-      if model.providerAccessError != nil {
-        Button("Retry provider access") { model.refreshProviderAccess() }
-          .disabled(model.providerAccessPending || model.providerMutationPending)
+      if let error = model.providerSelectionError {
+        providerSelectionError(error)
       }
-      Text(model.providerAccessDescription)
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-      if model.providerAccessResolved, model.providerAccessError == nil,
-        model.selectedProviderHasAccountAccess
-      {
-        HStack {
-          Text("Provider account")
-          Spacer(minLength: 0)
-          Text(
-            model.selectedProviderAccountError != nil
-              ? String(
-                localized: LocalizedStringResource(
-                  "Account access unavailable", locale: model.interfaceLocale))
-              : model.selectedProviderAccountConnected
-                ? String(
-                  localized: LocalizedStringResource("connected", locale: model.interfaceLocale))
-                : String(
-                  localized: LocalizedStringResource("not connected", locale: model.interfaceLocale)
-                )
-          )
-        }
-        .font(.callout)
-      }
-      Button("Manage provider access…") {
-        model.prepareProviderSettingsDeepLink()
-        openWindow(id: SettingsView.windowID)
-      }.csAction()
 
-      keyField
+      if let error = model.providerAccessError {
+        inlineError(error)
+      }
+
+      if model.selectedProviderHasAccountAccess {
+        accountField
+      }
+
+      if model.selectedProviderHasApiKeyAccount {
+        keyField
+      }
     }
   }
 
@@ -672,77 +581,215 @@ struct ApiKeyStepView: View {
     }
   }
 
-  private var keyField: some View {
-    let account = model.selectedProvider?.apiKeyAccount ?? "LLM_OPENAI_API_KEY"
-    let isSet = model.selectedProviderKeySet
-    let isOptional =
-      model.selectedProviderAccountConnected
-      || model.selectedProvider?.keyRequired == false
-    let statusColor =
-      !model.providerAccessResolved || model.providerAccessError != nil
-      ? CSColor.textFaint
-      : isSet
-        ? CSColor.oliveLight
-        : (isOptional ? CSColor.textFaint : CSColor.terracottaLight)
-    return VStack(alignment: .leading, spacing: 10) {
+  private var accountField: some View {
+    VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 10) {
         Circle()
-          .fill(statusColor.opacity(0.85))
+          .fill(accountStatusColor.opacity(0.85))
           .frame(width: 7, height: 7)
-        Text(SettingsViewModel.keyLabel(for: account))
-          .font(CSFont.ui(13.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
-        Text(account)
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "Agent account", locale: model.interfaceLocale,
+              comment: "Setup provider account row label"))
+        )
+        .font(CSFont.ui(13.5, .semibold))
+        .foregroundStyle(CSColor.textBody)
         Spacer(minLength: 0)
-        Text(
-          !model.providerAccessResolved
-            ? String(
-              localized: LocalizedStringResource(
-                "Checking provider access…", locale: model.interfaceLocale))
-            : model.providerAccessError != nil
-              ? String(
-                localized: LocalizedStringResource(
-                  "Provider access unavailable", locale: model.interfaceLocale))
-              : isSet
-                ? String(localized: LocalizedStringResource("set", locale: model.interfaceLocale))
-                : String(
-                  localized: LocalizedStringResource("not set", locale: model.interfaceLocale))
-        )
-        .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(statusColor)
+        Text(model.selectedProviderAccountStatus)
+          .font(CSFont.mono(10, .semibold))
+          .foregroundStyle(accountStatusColor)
+        Button(accountActionTitle, action: openProviderSettings)
+          .csAction()
+          .disabled(model.providerMutationPending)
       }
-      HStack(spacing: 8) {
-        SecureField(
-          isSet
-            ? String(
-              localized: LocalizedStringResource("Replace key…", locale: model.interfaceLocale))
-            : String(
-              localized: LocalizedStringResource("Paste key…", locale: model.interfaceLocale)),
-          text: $model.apiKeyDraft
-        )
-        .focused($keyFocused)
-        .settingsInputChrome(isFocused: keyFocused)
-        .onSubmit { model.saveApiKey() }
-        Button("Save key") { model.saveApiKey() }.csAction(prominent: true)
-          .disabled(model.providerMutationPending || !model.apiKeySaveAvailable)
-        if model.providerMutationPending { ProgressView().controlSize(.small) }
-      }
-      if !model.apiKeySaveAvailable,
-        !model.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      {
-        Text(
-          "This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available."
-        )
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+      if let error = model.selectedProviderAccountError {
+        inlineError(error)
       }
     }
     .padding(.vertical, 13)
     .overlay(alignment: .bottom) {
       Rectangle().fill(CSColor.hairline(0.08)).frame(height: 1)
+    }
+  }
+
+  private var keyField: some View {
+    return VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 10) {
+        Circle()
+          .fill(keyStatusColor.opacity(0.85))
+          .frame(width: 7, height: 7)
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "API key", locale: model.interfaceLocale,
+              comment: "Setup provider API key row label"))
+        )
+        .font(CSFont.ui(13.5, .semibold))
+        .foregroundStyle(CSColor.textBody)
+        Spacer(minLength: 0)
+        Text(model.selectedProviderKeyStatus)
+          .font(CSFont.mono(10, .semibold))
+          .foregroundStyle(keyStatusColor)
+        Button(keyActionTitle) {
+          model.beginApiKeyEditing()
+          keyFocused = true
+        }
+        .csAction()
+        .disabled(model.providerMutationPending)
+      }
+      if model.apiKeyEditorExpanded {
+        HStack(spacing: 8) {
+          SecureField(
+            String(
+              localized: LocalizedStringResource(
+                "Paste key…", locale: model.interfaceLocale,
+                comment: "Setup API key editor placeholder")),
+            text: $model.apiKeyDraft
+          )
+          .focused($keyFocused)
+          .settingsInputChrome(isFocused: keyFocused)
+          .onSubmit { model.saveApiKey() }
+          Button(
+            String(
+              localized: LocalizedStringResource(
+                "Save key", locale: model.interfaceLocale,
+                comment: "Setup button: save the provider API key"))
+          ) { model.saveApiKey() }
+          .csAction(prominent: true)
+          .disabled(model.providerMutationPending || !canSubmitApiKey)
+          if model.providerMutationPending { ProgressView().controlSize(.small) }
+        }
+        if !model.apiKeySaveAvailable,
+          !model.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+          Text(
+            String(
+              localized: LocalizedStringResource(
+                "This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available.",
+                locale: model.interfaceLocale,
+                comment: "Setup API key editor note shown while provider access is unavailable"))
+          )
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+        }
+        if let error = model.apiKeySaveError {
+          keySaveError(error)
+        }
+      }
+    }
+    .padding(.vertical, 13)
+    .overlay(alignment: .bottom) {
+      Rectangle().fill(CSColor.hairline(0.08)).frame(height: 1)
+    }
+  }
+
+  private var canSubmitApiKey: Bool {
+    model.apiKeySaveAvailable
+      && !model.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  private var accountStatusColor: Color {
+    if model.providerAccessPending || model.providerAccessError != nil
+      || model.selectedProviderAccountError != nil
+    {
+      return CSColor.textFaint
+    }
+    return model.selectedProviderAccountConnected ? CSColor.oliveLight : CSColor.terracottaLight
+  }
+
+  private var keyStatusColor: Color {
+    if model.providerAccessPending || model.providerAccessError != nil { return CSColor.textFaint }
+    if model.selectedProviderKeySet { return CSColor.oliveLight }
+    return model.selectedProviderRequiresApiKey ? CSColor.terracottaLight : CSColor.textFaint
+  }
+
+  private var accountActionTitle: String {
+    if model.selectedProviderAccountConnected {
+      return String(
+        localized: LocalizedStringResource(
+          "Manage", locale: model.interfaceLocale,
+          comment: "Setup Agent account row action for a connected account"))
+    }
+    return String(
+      localized: LocalizedStringResource(
+        "Connect", locale: model.interfaceLocale,
+        comment: "Setup Agent account row action for a disconnected account"))
+  }
+
+  private var keyActionTitle: String {
+    if model.selectedProviderKeySet {
+      return String(
+        localized: LocalizedStringResource(
+          "Change", locale: model.interfaceLocale,
+          comment: "Setup API key row action when a key is stored"))
+    }
+    return String(
+      localized: LocalizedStringResource(
+        "Add", locale: model.interfaceLocale,
+        comment: "Setup API key row action when no key is stored"))
+  }
+
+  private func openProviderSettings() {
+    model.prepareProviderSettingsDeepLink()
+    openWindow(id: SettingsView.windowID)
+  }
+
+  private func inlineError(_ message: String) -> some View {
+    HStack(spacing: 8) {
+      Text(message)
+        .font(.callout)
+        .foregroundStyle(CSColor.terracottaLight)
+        .lineLimit(1)
+        .help(message)
+      Spacer(minLength: 0)
+      Button(
+        String(
+          localized: LocalizedStringResource(
+            "Try again", locale: model.interfaceLocale,
+            comment: "Setup provider access retry button"))
+      ) { model.refreshProviderAccess() }
+      .csAction()
+      .disabled(model.providerAccessPending || model.providerMutationPending)
+    }
+  }
+
+  private func providerSelectionError(_ message: String) -> some View {
+    HStack(spacing: 8) {
+      Text(message)
+        .font(.callout)
+        .foregroundStyle(CSColor.terracottaLight)
+        .lineLimit(1)
+        .help(message)
+      Spacer(minLength: 0)
+      Button(
+        String(
+          localized: LocalizedStringResource(
+            "Try again", locale: model.interfaceLocale,
+            comment: "Setup provider selection retry button"))
+      ) { model.retryProviderSelection() }
+      .csAction()
+      .disabled(model.providerMutationPending)
+    }
+  }
+
+  private func keySaveError(_ message: String) -> some View {
+    HStack(spacing: 8) {
+      Text(message)
+        .font(.callout)
+        .foregroundStyle(CSColor.terracottaLight)
+        .lineLimit(1)
+        .help(message)
+      Spacer(minLength: 0)
+      Button(
+        String(
+          localized: LocalizedStringResource(
+            "Try again", locale: model.interfaceLocale,
+            comment: "Setup API key save retry button"))
+      ) { model.saveApiKey() }
+      .csAction()
+      .disabled(model.providerMutationPending || !canSubmitApiKey)
     }
   }
 }
@@ -767,7 +814,10 @@ struct DoneStepView: View {
         .font(.title2.weight(.semibold))
         .foregroundStyle(.primary)
       Text(
-        "Press Finish to close setup and start using Codescribe. Anything you skipped is available in Settings."
+        String(
+          localized: LocalizedStringResource(
+            "Click Finish to close setup.", locale: model.interfaceLocale,
+            comment: "Setup completion explanation; Finish is the button label"))
       )
       .font(.body)
       .lineSpacing(3)
@@ -779,49 +829,44 @@ struct DoneStepView: View {
           summaryRow(
             kind.displayName(locale: model.interfaceLocale),
             done: model.permissions.state(kind).isGranted,
-            doneLabel: String(
-              localized: LocalizedStringResource(
-                "granted", locale: model.interfaceLocale,
-                comment: "Permission status: this permission is granted")))
+            doneLabel: model.permissions.state(kind).label(locale: model.interfaceLocale))
         }
-        if model.providerAccessResolved, model.providerAccessError == nil {
+        if model.selectedProviderRequiresApiKey {
           summaryRow(
             String(
               localized: LocalizedStringResource(
                 "Provider API key", locale: model.interfaceLocale,
                 comment: "Summary row: whether an API key is stored for the chosen AI provider")),
-            done: model.selectedProviderKeySet,
-            doneLabel: String(
+            done: model.providerAccessResolved && !model.providerAccessPending
+              && model.providerAccessError == nil && model.selectedProviderKeySet,
+            doneLabel: model.selectedProviderKeyStatus,
+            statusLabel: model.selectedProviderKeyStatus)
+        }
+        if model.selectedProviderHasAccountAccess {
+          summaryRow(
+            String(
               localized: LocalizedStringResource(
-                "set", locale: model.interfaceLocale, comment: "Status chip: a value is stored")))
-          if model.selectedProviderHasAccountAccess, model.selectedProviderAccountError == nil {
-            summaryRow(
-              String(
-                localized: LocalizedStringResource(
-                  "Provider account", locale: model.interfaceLocale)),
-              done: model.selectedProviderAccountConnected,
-              doneLabel: String(
-                localized: LocalizedStringResource("connected", locale: model.interfaceLocale)),
-              missingLabel: String(
-                localized: LocalizedStringResource("not connected", locale: model.interfaceLocale)))
-          }
+                "Agent account", locale: model.interfaceLocale,
+                comment: "Summary row: provider account used by Agent features")),
+            done: model.providerAccessResolved && !model.providerAccessPending
+              && model.providerAccessError == nil && model.selectedProviderAccountError == nil
+              && model.selectedProviderAccountConnected,
+            doneLabel: model.selectedProviderAccountStatus,
+            statusLabel: model.selectedProviderAccountStatus)
         }
       }
       .padding(.top, 6)
-      if model.providerAccessError != nil {
-        Button("Retry provider access") { model.refreshProviderAccess() }
-          .disabled(model.providerAccessPending || model.providerMutationPending)
-      }
-      Text(model.providerAccessDescription)
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+      OnboardingStepNote(
+        text: String(
+          localized: LocalizedStringResource(
+            "Anything you skipped is available later in Settings.",
+            locale: model.interfaceLocale, comment: "Setup completion footnote")))
     }
   }
 
   private func summaryRow(
     _ label: String, done: Bool, doneLabel: String,
-    missingLabel: String? = nil
+    missingLabel: String? = nil, statusLabel: String? = nil
   ) -> some View {
     HStack(spacing: 10) {
       CSIconView(
@@ -835,10 +880,13 @@ struct DoneStepView: View {
         .foregroundStyle(CSColor.textBody)
       Spacer(minLength: 0)
       Text(
-        done
-          ? doneLabel
-          : (missingLabel
-            ?? String(localized: LocalizedStringResource("optional", locale: model.interfaceLocale)))
+        statusLabel
+          ?? (done
+            ? doneLabel
+            : (missingLabel
+              ?? String(
+                localized: LocalizedStringResource(
+                  "Optional", locale: model.interfaceLocale, comment: "Status chip"))))
       )
       .font(CSFont.mono(10, .semibold))
       .foregroundStyle(done ? CSColor.oliveLight : CSColor.textFaint)
@@ -885,13 +933,12 @@ extension PermissionKind {
     case .microphone:
       return String(
         localized: LocalizedStringResource(
-          "Transcribe your voice into text. Audio is processed locally on your Mac.",
-          locale: locale,
+          "Audio is processed locally on your computer.", locale: locale,
           comment: "Why the app asks for the Microphone scope"))
     case .accessibility:
       return String(
         localized: LocalizedStringResource(
-          "Type transcribed text into any application and control text insertion.", locale: locale,
+          "Lets Codescribe type text directly into other apps.", locale: locale,
           comment: "Why the app asks for the Accessibility scope"))
     case .inputMonitoring:
       return String(
@@ -901,19 +948,18 @@ extension PermissionKind {
     case .screenRecording:
       return String(
         localized: LocalizedStringResource(
-          "Capture screen context to give the AI assistant visual awareness of what you're working on.",
-          locale: locale,
+          "Lets the Agent use your screen as context.", locale: locale,
           comment: "Why the app asks for the Screen Recording scope"))
     case .speechRecognition:
       return String(
         localized: LocalizedStringResource(
-          "Power Apple live dictation on-device. Speech never leaves your Mac.", locale: locale,
+          "Powers Apple live dictation on your computer. The recording never leaves your device.",
+          locale: locale,
           comment: "Why the app asks for the Speech Recognition scope"))
     case .fullDiskAccess:
       return String(
         localized: LocalizedStringResource(
-          "Read project files for AI context. Optional — limits file-aware features if skipped.",
-          locale: locale,
+          "Lets the Agent read files and use them as context.", locale: locale,
           comment: "Why the app asks for the Full Disk Access scope"))
     }
   }

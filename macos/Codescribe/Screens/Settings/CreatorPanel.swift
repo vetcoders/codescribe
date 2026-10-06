@@ -119,12 +119,6 @@ struct CreatorPanel: View {
     .padding(.horizontal, CSSpace.xl)
     .padding(.vertical, CSSpace.section)
     .onAppear { model.refreshCreatorAgentBridge() }
-    .onReceive(
-      NotificationCenter.default.publisher(
-        for: SettingsViewModel.agentBridgeLaunchSynchronizationDidFinish)
-    ) { _ in
-      model.refreshCreatorAgentBridge()
-    }
     .confirmationDialog(
       "Replace a manually installed Codescribe skill?",
       isPresented: Binding(
@@ -416,7 +410,7 @@ private struct PermissionChecklistRow: View {
         .foregroundStyle(Color.primary)
         .frame(maxWidth: .infinity, alignment: .leading)
       if granted {
-        Text("granted", comment: "Permission status: this permission is granted")
+        Text(state.label)
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(CSColor.oliveLight)
       } else {

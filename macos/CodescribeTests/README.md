@@ -1,7 +1,6 @@
 # CodescribeTests — what runs, and how
 
-Swift unit tests for the SwiftUI front-end. **893 tests, executed by
-`make test-swift`.**
+Swift unit tests for the SwiftUI front-end, executed by `make test-swift`.
 
 ```bash
 make test-swift                                    # whole suite
@@ -41,6 +40,14 @@ synthetic; no real credential is used by these unit fixtures.
    `** TEST SUCCEEDED **` and `Executed 0 tests` — a silent pass, the same trap
    `cargo test <filter>` carries. `make test-swift` fails with rc 3 when a run
    executes zero tests.
+5. **License fixtures require the checked-in DEV verifier.** Their RFC 8032
+   signature cannot validate against an app-distribution public key. The Rust
+   verifier is compiled into the bridge; clearing the environment before
+   `make test-swift` does not rebuild an existing bridge just because the key
+   changed. After an app build with a different public key, first run
+   `env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX make app-bindings`, then run tests
+   with that variable unset. Apply the app's public key separately for its
+   distribution or local-install build.
 
 ## Why the suite was believed unrunnable
 
@@ -50,6 +57,13 @@ boots the Rust core through `AppDelegate`'s eager stored properties and hangs
 compilation only" and no plan could cite them as evidence.
 
 Half of that was right.
+
+Mocking `SettingsEngine` does not isolate the view model's permission reads.
+Settings and Voice Lab tests that do not exercise macOS permission probing must
+also pass `permissionProbe: MockPermissionProbe()`. The production default is
+`NativePermissionProbe`, whose synchronous snapshot can wait on system services
+in a headless session; a refresh repeats that read. Keep permission-specific
+tests explicit about the probe they intend to exercise.
 
 **Right — the eager properties really do boot a second core in the test host.**
 The XCTest bundle uses the app as its host, so `AppDelegate` is instantiated in

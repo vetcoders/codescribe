@@ -254,8 +254,9 @@ const AGENTIC_PREREQS: &[(&str, &str)] = &[
 ];
 
 /// Core capability gate — the REAL ability of the agent to act. This is the only
-/// input that decides `ready`: a configured assistive-lane provider whose API
-/// key is present, the compiled-in native tool set, and exact agreement between
+/// input that decides `ready`: a usable sealed assistive lane with current
+/// credential access (account access, API key, or a key-optional provider),
+/// the native tool set, and exact agreement between
 /// the persisted Settings roots and the roots resolved by native tools. Operator
 /// tooling (MCP servers) is informational and never enters this verdict.
 #[derive(Debug, Clone)]
@@ -264,8 +265,8 @@ pub struct CoreReadiness {
     pub provider_label: String,
     /// Keychain/env account holding that provider's assistive key.
     pub key_env_key: String,
-    /// Whether that key is present (non-empty) in env or Keychain.
-    pub key_set: bool,
+    /// Whether the sealed lane is usable and a request has credential access.
+    pub provider_access_available: bool,
     /// Number of native (compiled-in) tools available to the agent.
     pub native_tool_count: usize,
     /// Roots rendered by Settings from fresh persisted config.
@@ -285,7 +286,7 @@ pub fn probe_core_readiness(runtime_settings: &RuntimeSettingsSnapshot) -> CoreR
     assemble_core_readiness(
         assistive_lane.provider_display_name().to_string(),
         assistive_lane.credential().key_account().to_string(),
-        assistive_lane.request_available(),
+        assistive_lane.available() && assistive_lane.request_available(),
         configured_workspace_roots,
         tool_workspace_roots,
     )
@@ -312,7 +313,7 @@ fn configured_workspace_roots(runtime_settings: &RuntimeSettingsSnapshot) -> Vec
 fn assemble_core_readiness(
     provider_label: String,
     key_env_key: String,
-    key_set: bool,
+    provider_access_available: bool,
     configured_workspace_roots: Vec<String>,
     tool_workspace_roots: Vec<String>,
 ) -> CoreReadiness {
@@ -323,7 +324,7 @@ fn assemble_core_readiness(
     CoreReadiness {
         provider_label,
         key_env_key,
-        key_set,
+        provider_access_available,
         native_tool_count,
         configured_workspace_roots,
         tool_workspace_roots,
@@ -341,7 +342,7 @@ fn workspace_roots_match(core: &CoreReadiness) -> bool {
 /// Readiness verdict for the Agentic operating lane.
 ///
 /// `ready` is decided SOLELY by the core capability gate ([`CoreReadiness`]:
-/// assistive provider configured + its API key set + native tools compiled in +
+/// assistive provider access available + native tools compiled in +
 /// exact Settings/native-tool workspace-root parity).
 /// The per-server MCP rows (Vibecrafted / AICX / Loctree / PRView) are
 /// INFORMATIONAL context only — they can never flip `ready` — because they are
@@ -362,7 +363,7 @@ impl AgenticReadinessReport {
     }
 
     /// `true` only when the core capability gate passes: a configured assistive
-    /// provider with its API key set, at least one native tool available, and
+    /// provider with request access, at least one native tool available, and
     /// matching non-empty Settings/native-tool workspace roots.
     /// Operator-tooling MCP rows are informational and never affect this verdict.
     pub fn is_ready(&self) -> bool {
@@ -528,21 +529,24 @@ fn assemble_readiness(
 
     let tools_present = core.native_tool_count > 0;
     let roots_match = workspace_roots_match(&core);
-    let ready = core.key_set && tools_present && roots_match;
+    let ready = core.provider_access_available && tools_present && roots_match;
 
     // ---- Core capability gate rows (these decide `ready`). ----
     let verdict = if ready {
         McpStatusRow {
             label: "Agentic readiness:".to_string(),
             value: format!(
-                "ready — {} configured, key set, {} native tool(s)",
+                "ready — {} configured, access available, {} native tool(s)",
                 core.provider_label, core.native_tool_count
             ),
             tone: McpRowTone::Good,
         }
     } else {
-        let reason = if !core.key_set {
-            format!("assistive API key missing (set {})", core.key_env_key)
+        let reason = if !core.provider_access_available {
+            format!(
+                "assistive provider access unavailable (sign in or set {})",
+                core.key_env_key
+            )
         } else if !tools_present {
             "no native tools available".to_string()
         } else {
@@ -557,15 +561,15 @@ fn assemble_readiness(
 
     let provider_row = McpStatusRow {
         label: "Provider:".to_string(),
-        value: if core.key_set {
-            format!("{} — key set", core.provider_label)
+        value: if core.provider_access_available {
+            format!("{} — access available", core.provider_label)
         } else {
             format!(
-                "{} — key missing (set {})",
+                "{} — access unavailable (sign in or set {})",
                 core.provider_label, core.key_env_key
             )
         },
-        tone: if core.key_set {
+        tone: if core.provider_access_available {
             McpRowTone::Good
         } else {
             McpRowTone::Bad
@@ -1622,12 +1626,12 @@ mod tests {
             .unwrap_or_else(|| panic!("row '{label}' present"))
     }
 
-    /// Core gate that PASSES: provider configured, key set, native tools present.
+    /// Core gate that PASSES: provider access available, native tools present.
     fn core_ready() -> CoreReadiness {
         CoreReadiness {
             provider_label: "OpenAI (Responses)".to_string(),
             key_env_key: "LLM_OPENAI_API_KEY".to_string(),
-            key_set: true,
+            provider_access_available: true,
             native_tool_count: 10,
             configured_workspace_roots: vec!["~/Git".to_string()],
             tool_workspace_roots: vec!["~/Git".to_string()],
@@ -1649,6 +1653,37 @@ mod tests {
         );
         assert!(!core.provider_label.is_empty());
         assert!(!core.key_env_key.is_empty());
+    }
+
+    #[test]
+    fn core_readiness_requires_a_model_for_a_key_optional_custom_provider() {
+        use codescribe_core::config::{CapturedRuntimeInputs, Config};
+        use codescribe_core::llm::provider::{CustomProvider, WireFamily};
+
+        let root = tempfile::tempdir().expect("isolated runtime root");
+        let mut input = CapturedRuntimeInputs::defaults_at(root.path().to_path_buf(), 1);
+        let provider = CustomProvider::new(
+            "Readiness fixture",
+            WireFamily::OpenAiResponses,
+            "http://localhost:8080/v1",
+        )
+        .expect("valid custom provider");
+        input.user_settings.llm_assistive_provider = Some(format!("custom:{}", provider.id));
+        input.user_settings.llm_custom_providers = vec![provider];
+
+        let without_model = Config::runtime_snapshot_from_captured(input.clone());
+        let lane = without_model.llm_lanes().assistive();
+        assert!(lane.request_available(), "the custom endpoint needs no key");
+        assert!(!lane.available(), "the loader refuses a missing model");
+        assert!(
+            !super::probe_core_readiness(&without_model).provider_access_available,
+            "credential access alone cannot make an unusable lane ready"
+        );
+
+        input.user_settings.llm_assistive_model = Some("fixture-model".to_string());
+        let with_model = Config::runtime_snapshot_from_captured(input);
+        assert!(with_model.llm_lanes().assistive().available());
+        assert!(super::probe_core_readiness(&with_model).provider_access_available);
     }
 
     /// A passing core gate is READY with zero operator MCP tooling; MCP absence
@@ -1676,7 +1711,7 @@ mod tests {
         let provider = find_row(&report, "Provider:");
         assert_eq!(provider.tone, McpRowTone::Good);
         assert!(
-            provider.value.contains("key set"),
+            provider.value.contains("access available") && !provider.value.contains("key set"),
             "got: {}",
             provider.value
         );
@@ -1707,13 +1742,12 @@ mod tests {
         }
     }
 
-    /// Full MCP substrate cannot rescue readiness when the core gate has no
-    /// assistive API key.
+    /// Full MCP substrate cannot rescue readiness when provider access is unavailable.
     #[test]
-    fn missing_assistive_key_blocks_readiness_even_with_full_substrate() {
+    fn unavailable_provider_access_blocks_readiness_even_with_full_substrate() {
         let temp = tempfile::tempdir().expect("temp dir");
         let path = temp.path().join("mcp.json");
-        // Full operator substrate present — but the core gate has no key.
+        // Full operator substrate present — but the core gate has no provider access.
         let config = json!({
             "mcpServers": {
                 "vibecrafted-mcp": { "command": "vibecrafted-mcp", "enabled": true },
@@ -1725,18 +1759,18 @@ mod tests {
         fs::write(&path, config.to_string()).expect("write config");
 
         let core = CoreReadiness {
-            key_set: false,
+            provider_access_available: false,
             ..core_ready()
         };
         let report = probe_agentic_readiness_at(&path, core);
         assert!(
             !report.is_ready(),
-            "no API key must block readiness regardless of MCP substrate"
+            "unavailable provider access must block readiness regardless of MCP substrate"
         );
         let verdict = find_row(&report, "Agentic readiness:");
         assert_eq!(verdict.tone, McpRowTone::Bad);
         assert!(
-            verdict.value.contains("key missing") || verdict.value.contains("key"),
+            verdict.value.contains("provider access unavailable"),
             "got: {}",
             verdict.value
         );

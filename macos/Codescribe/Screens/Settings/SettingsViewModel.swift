@@ -1204,6 +1204,7 @@ final class SettingsViewModel: ObservableObject {
   var licenseReadState: LicenseService.ReadState { licenseService.readState }
   var licenseBusy: Bool { licenseService.isBusy }
   private var licenseChangeSink: AnyCancellable?
+  private var agentBridgeSynchronizationSink: AnyCancellable?
   /// Provider ids with a "Sign in with ChatGPT" flow in flight (browser open,
   /// local callback server listening). Guards double-clicks.
   @Published private(set) var accountLoginPending: Set<String> = []
@@ -1341,6 +1342,12 @@ final class SettingsViewModel: ObservableObject {
     licenseChangeSink = self.licenseService.objectWillChange.sink { [weak self] _ in
       self?.objectWillChange.send()
     }
+    // Settings owns this projection even when a deep link skips Creator.
+    agentBridgeSynchronizationSink = NotificationCenter.default.publisher(
+      for: Self.agentBridgeLaunchSynchronizationDidFinish
+    ).sink { [weak self] _ in
+      self?.refreshCreatorAgentBridge()
+    }
     lastServingVerdict = servingStatusProvider()
   }
 
@@ -1412,6 +1419,7 @@ final class SettingsViewModel: ObservableObject {
     refreshWhisperModelStatus()
     refreshWhisperModelCatalog()
     refreshAgentStatus()
+    refreshCreatorAgentBridge()
     reloadMcpServers()
     loadHotkeys()
     licenseService.refresh()
@@ -1803,9 +1811,9 @@ final class SettingsViewModel: ObservableObject {
   }
 
   private func select(_ target: SettingsSection, tab targetTab: SettingsTab?) {
-    guard target.availability == .available,
-      section != target || tab != targetTab
-    else { return }
+    guard target.availability == .available else { return }
+    if targetTab == .agentStatus { refreshCreatorAgentBridge() }
+    guard section != target || tab != targetTab else { return }
     if section != target { section = target }
     if tab != targetTab { tab = targetTab }
     if target == .agent {

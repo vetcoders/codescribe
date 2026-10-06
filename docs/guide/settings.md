@@ -131,9 +131,14 @@ Setup, its completion summary and the provider cards distinguish these states:
 | Key-optional host | Not required  | Optional       | Requests supported by that host, after selecting a model                                 |
 
 A connected ChatGPT account is not an OpenAI API key. It does not authorize the
-Formatting lane. Setup can continue with account-only access; use **Manage
-provider access…** to open Providers when another credential is needed. A lane
+Formatting lane. Setup can continue with account-only access. Use **Add/Change**
+in the API-key row to edit a key, or **Connect/Manage** in the Agent-account row
+to open Providers. A lane
 is usable only when its resolved runtime snapshot reports it available.
+
+Setup reuses the Providers sign-in flow so its callbacks, pending state and
+account errors stay with the Settings model. The wizard stays open and refreshes
+the account/key snapshot when it regains focus.
 
 ### Model discovery
 
@@ -155,18 +160,49 @@ Palette labels and grant actions follow the macOS interface language through
 the app's String Catalog. Model IDs, provider IDs and tool grant keys remain
 unchanged.
 
-Open **Settings → AI & Prompts**.
+Open **Settings → Agent → Diagnostics** for the complete agent connection
+report: the core readiness rows, managed skill status and installation paths,
+capability matrix, MCP status, and a single Refresh action. Native-tool or
+workspace failures remain visible there even when credentials are valid.
+Long diagnostic values wrap within the pane, keeping labels and controls
+visible when the sidebar is open.
+Managed skill status is read when Settings opens, when Diagnostics is selected
+and after launch synchronization finishes. A direct link refreshes even if
+Diagnostics is already selected. These inspections do not install skills or
+attach listeners.
 
-This tab owns the LLM side of the product:
+Setup keeps the Agent step to one decision: which clients to connect. It shows
+only a short ready state or an inline setup action and error. The preceding
+provider step presents account and API-key presence from the provider credential
+snapshot; diagnostic readiness describes usable provider access and must not be
+read as proof that an API key exists.
+Setup shows the API-key row and editor whenever the provider has an API-key
+account, including optional keys for custom endpoints. Whether a key is required
+does not decide whether it can be edited or saved. Providers without an API-key
+account expose no editor or save action.
+Readiness also requires the loader's sealed lane to be usable, including a
+selected model for a custom provider. A key-optional endpoint alone is not ready.
+An unresolved, pending or failed provider read cannot show a ready verdict.
+Switching providers preserves separate drafts while collapsing the optional
+key editor; Continue saves a draft only while that editor is visible. A restored
+hidden draft remains available through Add or Change without a Keychain write.
+Provider selection is projected only after its configuration write succeeds.
+Selection errors and their retry stay beside the provider picker; key-save
+errors and their retry stay beside the key editor. Earlier setup errors do not
+become key-save errors.
+If a configured provider disappears from the registry, Setup can display an
+available provider without persisting that choice. Explicitly selecting the
+displayed provider writes it; refresh, Back and Skip do not normalize configuration.
 
-Agent capabilities readiness in Setup covers Assistive access and native tools.
-Expand **Connection details** to see the core verdict, provider access, native
-tools and workspace-root status with the complete reported reason. Native-tool
-or workspace failures remain visible even when credentials are valid. These core
-rows appear separately from **MCP servers**, whose status is optional. The wizard
-presents account/key presence separately from that capability verdict; it does
-not label an account as a key. While provider access is unresolved or unavailable,
-the wizard keeps its pending/error presentation instead of showing a core verdict.
+The Agent step distinguishes a selected client's missing or damaged installation
+from a global provider or native-readiness problem. Global issues open Diagnostics
+without selecting or installing another client. An installation error belongs
+to the single client affected by the attempted change; errors spanning multiple
+clients appear beneath the selection instead of being assigned to an arbitrary
+card.
+Managed installation health includes the receipt-owned skill files, so missing
+or altered instructions also expose repair. An empty selection can forget a
+folder already absent; it never deletes an existing unowned or unreadable path.
 
 Prompt files live in `~/.codescribe/prompts/`.
 

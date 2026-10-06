@@ -34,16 +34,16 @@ enum PermissionState: Equatable {
     case .granted:
       return String(
         localized: LocalizedStringResource(
-          "granted", locale: locale, comment: "Permission row status, lower case"))
+          "Granted", locale: locale, comment: "Permission row status"))
     case .denied:
       return String(
         localized: LocalizedStringResource(
-          "denied", locale: locale, comment: "Permission row status, lower case"))
+          "Denied", locale: locale, comment: "Permission row status"))
     case .notDetermined:
       return String(
         localized: LocalizedStringResource(
-          "not determined", locale: locale,
-          comment: "Permission row status, lower case: the user has not decided yet"
+          "Not determined", locale: locale,
+          comment: "Permission row status: the user has not decided yet"
         ))
     }
   }

@@ -21,7 +21,7 @@ struct OverlayConversationComposer: View {
       .accessibilityIdentifier("overlay-conversation-composer")
       .overlay(alignment: .topLeading) {
         if draft.isEmpty {
-          Text("Message the agent")
+          Text("Message the Agent")
             .font(.system(size: 14))
             .foregroundStyle(palette.mutedText.color)
             .padding(.top, 5)
@@ -72,7 +72,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.isVerticallyResizable = true
     editor.autoresizingMask = [.width]
     editor.delegate = context.coordinator
-    editor.setAccessibilityLabel(String(localized: "Message the agent"))
+    editor.setAccessibilityLabel(String(localized: "Message the Agent"))
     scroll.documentView = editor
     return scroll
   }

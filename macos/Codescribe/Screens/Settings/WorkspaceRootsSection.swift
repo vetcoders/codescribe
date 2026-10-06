@@ -24,7 +24,7 @@ struct WorkspaceRootsSection: View {
       SettingsSectionLabel(String(localized: "Agent workspace roots"))
 
       Text(
-        "Directories the assistant scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped."
+        "Directories the Agent scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped."
       )
       .font(CSFont.ui(11.5))
       .lineSpacing(2)

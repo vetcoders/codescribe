@@ -51,8 +51,8 @@ final class CredentialPresentationTests: XCTestCase {
         "global key-status flags cannot impersonate this provider's credential")
       XCTAssertEqual(engine.keyWrites, 0)
       if account && !key {
-        XCTAssertTrue(model.providerAccessDescription.contains("without adding one"))
-        XCTAssertTrue(model.providerAccessDescription.contains("Formatting"))
+        XCTAssertEqual(model.selectedProviderAccountStatus, "Connected")
+        XCTAssertEqual(model.selectedProviderKeyStatus, "Not set")
       }
       engine.provider.accountSignedIn = !account
       engine.provider.apiKeySet = !key
@@ -80,7 +80,7 @@ final class CredentialPresentationTests: XCTestCase {
     model.refreshProviderAccess()
     await awaitCondition { !model.providerAccessPending }
     XCTAssertFalse(model.selectedProviderKeySet)
-    XCTAssertTrue(model.providerAccessDescription.contains("does not require an API key"))
+    XCTAssertFalse(model.selectedProviderRequiresApiKey)
   }
 
   func testAccountAccessDoesNotPretendModelDiscoveryHasAKey() {

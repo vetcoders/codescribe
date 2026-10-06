@@ -84,18 +84,19 @@ enum HotkeyModeChoice: String, CaseIterable {
     case .hold:
       return String(
         localized: LocalizedStringResource(
-          "Press and hold Fn/Globe while you speak; release to stop.", locale: locale,
+          "Hold Fn/Globe while you speak. Release to stop.", locale: locale,
           comment: "Hotkey preset detail; Fn and Globe are the key caps on a Mac keyboard"))
     case .toggle:
       return String(
         localized: LocalizedStringResource(
-          "Double-tap Left/Right Option to start, tap again to stop.", locale: locale,
-          comment: "Hotkey preset detail; Option is the key cap on a Mac keyboard"))
+          "Double-tap left Option: dictation with formatting. Double-tap right Option: talk to the Agent. Tap again to stop.",
+          locale: locale,
+          comment: "Hotkey preset detail; left and right Option activate different modes"))
     case .both:
       return String(
         localized: LocalizedStringResource(
-          "Hold Fn/Globe to dictate, or double-tap Option to toggle.", locale: locale,
-          comment: "Hotkey preset detail; Fn, Globe and Option are Mac key caps"))
+          "Use both methods.", locale: locale,
+          comment: "Hotkey preset detail: hold and toggle methods are both enabled"))
     }
   }
 
@@ -157,10 +158,10 @@ final class OnboardingViewModel: ObservableObject {
 
   // Agentic-readiness step state (lazy — probed when the step appears).
   @Published private(set) var readiness: CsAgenticReadiness?
-  @Published private(set) var mcpStatus: CsMcpStatusReport?
   @Published private(set) var agentBridgeStatus: AgentBridgeInstallationStatus
   @Published private(set) var selectedAgentClients: Set<AgentBridgeClient>
   @Published private(set) var agentBridgeError: String?
+  @Published private(set) var agentBridgeErrorClient: AgentBridgeClient?
 
   // API-key step state.
   @Published private(set) var providers: [CsProviderOption] = []
@@ -169,8 +170,13 @@ final class OnboardingViewModel: ObservableObject {
   @Published private(set) var providerAccessResolved = false
   @Published private(set) var providerAccessError: String?
   @Published private(set) var providerAccountErrors: [String: String] = [:]
+  @Published private(set) var providerSelectionError: String?
+  @Published private(set) var apiKeySaveError: String?
+  @Published private(set) var apiKeyEditorExpanded = false
   private var providerAccessGeneration: UInt64 = 0
   private var providerRefreshRequested = false
+  private var failedProviderSelectionId: String?
+  private var apiKeyDraftsByProviderId: [String: String] = [:]
   @Published var selectedProviderId: String
   @Published var apiKeyDraft: String = ""
 
@@ -222,6 +228,7 @@ final class OnboardingViewModel: ObservableObject {
     self.agentBridgeStatus = bridgeStatus
     self.selectedAgentClients = Set(bridgeStatus.installedClients)
     self.agentBridgeError = nil
+    self.agentBridgeErrorClient = nil
     self.selectedProviderId =
       engine.assistiveProvider()
       ?? "openai-responses"
@@ -242,8 +249,8 @@ final class OnboardingViewModel: ObservableObject {
   var windowTitle: String {
     String(
       localized: LocalizedStringResource(
-        "Welcome to codescribe", locale: interfaceLocale,
-        comment: "Setup wizard window title; codescribe is the product name, kept lowercase"
+        "Getting started", locale: interfaceLocale,
+        comment: "Setup wizard window title"
       ))
   }
   var totalSteps: Int { OnboardingStep.count }
@@ -282,32 +289,35 @@ final class OnboardingViewModel: ObservableObject {
     providers.first { $0.id == selectedProviderId }
   }
 
-  var agentBridgeTitle: String {
-    String(
-      localized: LocalizedStringResource(
-        "Connect Codescribe to your agent.", locale: interfaceLocale,
-        comment: "Setup step heading; Codescribe is the product name"))
+  private var agentReadinessIsCurrentAndReady: Bool {
+    providerAccessResolved && !providerAccessPending && providerAccessError == nil
+      && readiness?.ready == true
   }
 
-  var agentBridgeExplanation: String {
-    String(
-      localized: LocalizedStringResource(
-        "The named agent can hear live drafts and reply during the pause. Installation, commits, deletion, and every other state-changing action wait for transcript_sealed.",
-        locale: interfaceLocale,
-        comment: "Setup step explanation; transcript_sealed is an event name, keep it verbatim"
-      ))
+  var agentReadinessPending: Bool {
+    providerAccessPending || (!providerAccessResolved && providerAccessError == nil)
   }
 
-  var agentBridgeButtonTitle: String {
-    agentBridgeStatus.installedClients.isEmpty
-      ? String(
-        localized: LocalizedStringResource(
-          "Install selected", locale: interfaceLocale,
-          comment: "Button: install the bridge for the checked coding assistants"))
-      : String(
-        localized: LocalizedStringResource(
-          "Update selected", locale: interfaceLocale,
-          comment: "Button: update the bridge for the checked coding assistants"))
+  var agentNeedsGlobalSetup: Bool {
+    !agentReadinessPending && !agentReadinessIsCurrentAndReady
+  }
+
+  var agentBridgeReadyToGo: Bool {
+    agentReadinessIsCurrentAndReady && agentBridgeError == nil
+      && selectedAgentClients.allSatisfy { agentClientIsInstalled($0) }
+  }
+
+  func agentClientIsInstalled(_ client: AgentBridgeClient) -> Bool {
+    agentBridgeStatus.installedClients.contains(client)
+      && !agentBridgeStatus.clientsNeedingRepair.contains(client)
+  }
+
+  func agentClientNeedsSetup(_ client: AgentBridgeClient) -> Bool {
+    selectedAgentClients.contains(client) && !agentClientIsInstalled(client)
+  }
+
+  func agentClientShowsError(_ client: AgentBridgeClient) -> Bool {
+    agentBridgeError != nil && agentBridgeErrorClient == client
   }
 
   // MARK: - Lifecycle refresh
@@ -355,7 +365,6 @@ final class OnboardingViewModel: ObservableObject {
       return
     }
     readiness = agentStatus.agenticReadiness()
-    mcpStatus = agentStatus.mcpStatus()
     agentBridgeStatus = agentBridge.status()
   }
 
@@ -365,24 +374,42 @@ final class OnboardingViewModel: ObservableObject {
     } else {
       selectedAgentClients.insert(client)
     }
+    // An installation error belongs to the selection that produced it. Once
+    // the user changes that decision, do not present the stale failure as the
+    // status of the new selection.
+    agentBridgeError = nil
+    agentBridgeErrorClient = nil
   }
 
-  /// The only home-directory write on the readiness step. Merely visiting,
-  /// refreshing, skipping, or continuing never installs a client skill.
+  /// The only home-directory write on the readiness step. It runs from an
+  /// explicit Set up action or from Continue when the selected clients differ
+  /// from the managed receipt or its ownership evidence needs repair.
+  /// Visiting, refreshing, Back, and Skip stay
+  /// read-only.
   func installAgentBridge() {
+    let current = agentBridge.status()
+    let affectedClients = selectedAgentClients.symmetricDifference(Set(current.installedClients))
+      .union(current.clientsNeedingRepair.intersection(selectedAgentClients))
     do {
       agentBridgeStatus = try agentBridge.install(selectedClients: selectedAgentClients)
       agentBridgeError = nil
+      agentBridgeErrorClient = nil
     } catch {
       agentBridgeError = error.userFacingMessage
+      agentBridgeErrorClient = affectedClients.count == 1 ? affectedClients.first : nil
       agentBridgeStatus = agentBridge.status()
     }
   }
 
-  /// Select Agent settings before the view opens the shared Settings window.
-  /// The wizard stays open so the user can configure MCP and then return.
-  func prepareMcpSettingsDeepLink() {
-    SettingsDeepLink.shared.present(tab: .agentMcp)
+  func setUpAgentClient(_ client: AgentBridgeClient) {
+    selectedAgentClients.insert(client)
+    installAgentBridge()
+  }
+
+  /// Select Agent diagnostics before the view opens the shared Settings window.
+  /// The wizard stays open so the user can resolve readiness and then return.
+  func prepareAgentDiagnosticsDeepLink() {
+    SettingsDeepLink.shared.present(tab: .agentStatus)
   }
 
   func prepareProviderSettingsDeepLink() {
@@ -466,11 +493,24 @@ final class OnboardingViewModel: ObservableObject {
       }
       return
     }
-    if step == .apiKey, apiKeySaveAvailable,
+    if step == .apiKey, apiKeyEditorExpanded, apiKeySaveAvailable,
       !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     {
       saveApiKey(advanceOnSuccess: true)
       return
+    }
+    if step == .agenticReadiness {
+      agentBridgeStatus = agentBridge.status()
+      let selectionChanged = selectedAgentClients != Set(agentBridgeStatus.installedClients)
+      let selectedNeedsRepair =
+        !agentBridgeStatus.clientsNeedingRepair.isDisjoint(with: selectedAgentClients)
+      if selectionChanged || selectedNeedsRepair {
+        installAgentBridge()
+        guard agentBridgeError == nil,
+          selectedAgentClients == Set(agentBridgeStatus.installedClients),
+          agentBridgeStatus.clientsNeedingRepair.isDisjoint(with: selectedAgentClients)
+        else { return }
+      }
     }
     commitCurrentChoice()
     advanceAfterCommit()
@@ -642,12 +682,29 @@ final class OnboardingViewModel: ObservableObject {
 
   func selectProvider(_ id: String) {
     guard !providerMutationPending else { return }
-    selectedProviderId = id
+    guard id != selectedProviderId || id != engine.assistiveProvider() else { return }
+    if apiKeyDraft.isEmpty {
+      apiKeyDraftsByProviderId[selectedProviderId] = nil
+    } else {
+      apiKeyDraftsByProviderId[selectedProviderId] = apiKeyDraft
+    }
+    apiKeyEditorExpanded = false
+    apiKeySaveError = nil
+    providerSelectionError = nil
+    failedProviderSelectionId = nil
     do {
       try engine.updateConfig(key: "LLM_ASSISTIVE_PROVIDER", value: id)
+      selectedProviderId = id
+      apiKeyDraft = apiKeyDraftsByProviderId[id] ?? ""
     } catch {
-      lastError = error.userFacingMessage
+      providerSelectionError = error.userFacingMessage
+      failedProviderSelectionId = id
     }
+  }
+
+  func retryProviderSelection() {
+    guard let id = failedProviderSelectionId else { return }
+    selectProvider(id)
   }
 
   /// True when the currently selected provider's key is present in the Keychain.
@@ -655,9 +712,17 @@ final class OnboardingViewModel: ObservableObject {
     selectedProvider?.apiKeySet == true
   }
 
+  var selectedProviderHasApiKeyAccount: Bool {
+    selectedProvider?.apiKeyAccount.isEmpty == false
+  }
+
+  var selectedProviderRequiresApiKey: Bool {
+    selectedProvider?.keyRequired == true
+  }
+
   var apiKeySaveAvailable: Bool {
     providerAccessResolved && providerAccessError == nil
-      && selectedProvider?.apiKeyAccount.isEmpty == false
+      && selectedProviderHasApiKeyAccount
   }
 
   var selectedProviderAccountError: String? { providerAccountErrors[selectedProviderId] }
@@ -670,67 +735,68 @@ final class OnboardingViewModel: ObservableObject {
     selectedProvider?.accountLoginEnabled == true || selectedProviderAccountConnected
   }
 
-  func refreshProviderAccess() {
-    refreshProviders()
-    keyStatus = engine.keyStatus()
-  }
-
-  /// Credential presence is presented separately from the core capability verdict.
-  /// Account sign-in does not promise a Formatting credential or a model catalog.
-  var providerAccessDescription: String {
-    if let error = providerAccessError {
+  var selectedProviderAccountStatus: String {
+    if providerAccessPending {
       return String(
         localized: LocalizedStringResource(
-          "Provider access is unavailable. Retry to check account and API key status.",
-          locale: interfaceLocale)) + " " + error
+          "Checking provider access…", locale: interfaceLocale,
+          comment: "Setup provider row status while credentials are loading"))
     }
-    if !providerAccessResolved {
+    if providerAccessError != nil {
       return String(
         localized: LocalizedStringResource(
-          "Checking provider access… You can continue with Basic dictation.",
-          locale: interfaceLocale))
+          "Provider access unavailable", locale: interfaceLocale,
+          comment: "Setup provider row status when the credential snapshot failed"))
     }
-
     if selectedProviderAccountError != nil {
       return String(
         localized: LocalizedStringResource(
-          "Provider account access is unavailable. Remove the stored account in Settings › Providers, then sign in again.",
-          locale: interfaceLocale))
+          "Account access unavailable", locale: interfaceLocale,
+          comment: "Setup Agent account row status when account credentials cannot be read"))
     }
-    if selectedProviderAccountConnected && selectedProviderKeySet {
+    return selectedProviderAccountConnected
+      ? String(
+        localized: LocalizedStringResource(
+          "Connected", locale: interfaceLocale,
+          comment: "Setup Agent account row status"))
+      : String(
+        localized: LocalizedStringResource(
+          "Not connected", locale: interfaceLocale,
+          comment: "Setup Agent account row status"))
+  }
+
+  var selectedProviderKeyStatus: String {
+    if providerAccessPending {
       return String(
         localized: LocalizedStringResource(
-          "Account connected and API key configured. Supported Assistive requests can use the account; Formatting and model discovery use the provider API key.",
-          locale: interfaceLocale))
+          "Checking provider access…", locale: interfaceLocale,
+          comment: "Setup provider row status while credentials are loading"))
     }
-    if selectedProviderAccountConnected {
+    if providerAccessError != nil {
       return String(
         localized: LocalizedStringResource(
-          "Account connected for supported Assistive requests. No API key is configured. You can continue without adding one; cloud Formatting and model discovery require a provider API key.",
-          locale: interfaceLocale))
+          "Provider access unavailable", locale: interfaceLocale,
+          comment: "Setup provider row status when the credential snapshot failed"))
     }
-    if selectedProviderKeySet {
-      return String(
+    return selectedProviderKeySet
+      ? String(
         localized: LocalizedStringResource(
-          "API key configured. Supported Assistive requests, cloud Formatting and model discovery can use this provider's key. No account is connected.",
-          locale: interfaceLocale))
-    }
-    if selectedProvider?.keyRequired == false {
-      return String(
+          "Set", locale: interfaceLocale,
+          comment: "Setup API key row status"))
+      : String(
         localized: LocalizedStringResource(
-          "This provider does not require an API key. Choose a model in Settings › Agent › LLM lanes.",
-          locale: interfaceLocale))
-    }
-    if selectedProviderHasAccountAccess {
-      return String(
-        localized: LocalizedStringResource(
-          "No account or API key is configured for this provider. Connect a supported account for Assistive, or add an API key in Settings › Providers. You can skip this step for dictation.",
-          locale: interfaceLocale))
-    }
-    return String(
-      localized: LocalizedStringResource(
-        "No API key is configured for this provider. Add one in Settings › Providers, choose another provider, or skip this step for dictation.",
-        locale: interfaceLocale))
+          "Not set", locale: interfaceLocale,
+          comment: "Setup API key row status"))
+  }
+
+  func beginApiKeyEditing() {
+    guard selectedProviderHasApiKeyAccount else { return }
+    apiKeyEditorExpanded = true
+  }
+
+  func refreshProviderAccess() {
+    refreshProviders()
+    keyStatus = engine.keyStatus()
   }
 
   func saveApiKey(advanceOnSuccess: Bool = false) {
@@ -740,6 +806,7 @@ final class OnboardingViewModel: ObservableObject {
     guard apiKeySaveAvailable, !trimmed.isEmpty, let account = selectedProvider?.apiKeyAccount,
       !providerMutationPending
     else { return }
+    apiKeySaveError = nil
     providerMutationPending = true
     providerAccessGeneration &+= 1
     Task { @MainActor [self] in
@@ -753,10 +820,14 @@ final class OnboardingViewModel: ObservableObject {
           apiKeyDraft == submitted
           && selectedProviderId == providerId
           && selectedProvider?.apiKeyAccount == account
-        if stillCurrent { apiKeyDraft = "" }
-        lastError = nil
+        if stillCurrent {
+          apiKeyDraft = ""
+          apiKeyDraftsByProviderId[providerId] = nil
+          apiKeyEditorExpanded = false
+        }
+        apiKeySaveError = nil
         if advanceOnSuccess, stillCurrent, step == .apiKey { advanceAfterCommit() }
-      } catch { lastError = error.userFacingMessage }
+      } catch { apiKeySaveError = error.userFacingMessage }
     }
   }
 

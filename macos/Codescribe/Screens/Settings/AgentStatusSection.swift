@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Agent-substrate status, rendered inside the Engine panel (READ-ONLY runtime
+// Agent-substrate status, rendered inside Agent Diagnostics (READ-ONLY runtime
 // truth). Surfaces the previously built-but-dead readiness + MCP status probes:
 // the agentic-lane verdict (Vibecrafted + AICX + Loctree + PRView) and the
 // per-server MCP status. A "Refresh" action re-probes without touching the rest
@@ -17,6 +17,21 @@ struct AgentStatusSection: View {
       // Agentic readiness verdict + per-prerequisite rows.
       statusCard(rows: model.agentReadiness.rows)
         .padding(.top, CSSpace.control)
+
+      SettingsSectionLabel(String(localized: "Connection details"))
+        .padding(.top, CSSpace.section)
+      Text(model.creatorAgentBridgeStatus.detail)
+        .font(CSFont.ui(11.5))
+        .foregroundStyle(Color.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.top, 4)
+      ForEach(model.creatorAgentBridgeStatus.installedPaths, id: \.self) { path in
+        Text(path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(Color.secondary)
+          .textSelection(.enabled)
+          .padding(.top, 4)
+      }
 
       SettingsSectionLabel(String(localized: "Capability matrix"))
         .padding(.top, CSSpace.section)
@@ -40,7 +55,7 @@ struct AgentStatusSection: View {
 
       // Per-server health probe. Reflects the cached Test / handshake result
       // from the MCP servers tab; purely informational and never flips the
-      // readiness verdict above. Shown whole — the Capabilities tab has room.
+      // readiness verdict above. Shown whole — the Diagnostics tab has room.
       if !model.mcpServers.isEmpty {
         HStack(spacing: 10) {
           SettingsSectionLabel(String(localized: "Per-server probe"))
@@ -55,6 +70,7 @@ struct AgentStatusSection: View {
           .padding(.top, 8)
       }
     }
+    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
   }
 
   // MARK: Per-server probe
@@ -94,6 +110,7 @@ struct AgentStatusSection: View {
       Spacer(minLength: 0)
       Button {
         model.refreshAgentStatus()
+        model.refreshCreatorAgentBridge()
       } label: {
         HStack(spacing: 5) {
           CSIconView(icon: .refresh, size: 11, weight: .semibold)
@@ -199,7 +216,8 @@ private struct AgentStatusRow: View {
         .font(CSFont.ui(12.5, .semibold))
         .foregroundStyle(Color.primary)
         .lineLimit(2)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       Circle().fill(row.tone.dotColor).frame(width: 7, height: 7)
     }
     .padding(.horizontal, 16)
@@ -238,6 +256,7 @@ private struct CapabilityMatrixRow: View {
           .font(CSFont.ui(12.5, .semibold))
           .foregroundStyle(Color.primary)
           .lineLimit(2)
+          .fixedSize(horizontal: false, vertical: true)
         if !row.nativeTool.isEmpty {
           Text(verbatim: "tool: \(row.nativeTool) · provider: \(row.provider)")
             .font(CSFont.mono(10, .medium))
@@ -250,7 +269,7 @@ private struct CapabilityMatrixRow: View {
             .lineLimit(1)
         }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
+      .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       Circle().fill(tierColor).frame(width: 7, height: 7).padding(.top, 5)
     }
     .padding(.horizontal, 16)

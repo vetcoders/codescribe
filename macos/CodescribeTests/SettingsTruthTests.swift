@@ -786,7 +786,7 @@ final class SettingsTruthTests: XCTestCase {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(updateConfigObserver: { key, value in
         writes.append((key, value))
-      }))
+      }), permissionProbe: MockPermissionProbe())
 
     model.setWhisperAdaptiveBuffer(true)
     model.setFormatOnDevice(true)
@@ -936,7 +936,7 @@ final class SettingsTruthTests: XCTestCase {
     let engine = MockSettingsEngine(updateConfigManyObserver: { entries in
       batches.append(entries)
     })
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     var overlayPreferenceNotices = 0
     model.onOverlayPreferenceChanged = { overlayPreferenceNotices += 1 }
 
@@ -1555,7 +1555,7 @@ final class SettingsTruthTests: XCTestCase {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(
         settingsLoader: { persisted },
-        updateConfigObserver: { writes.append(($0, $1)) })
+        updateConfigObserver: { writes.append(($0, $1)) }), permissionProbe: MockPermissionProbe()
     )
     _ = ShortcutsPanel(model: model)
     XCTAssertEqual(model.pasteMode, .comfort)
