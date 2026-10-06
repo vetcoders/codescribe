@@ -227,7 +227,7 @@ pub(super) fn preserve_group_content(
     ))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SlotTarget {
     pub observation: ObservationIdentity,
     pub sample_start: u64,
@@ -967,6 +967,7 @@ impl AcousticLedger {
                         })
             };
             let all_coarse = sources.iter().all(coarse_source);
+            let source_complete = self.asr_source_scope_complete(observation, &sources);
             let authority = sources.iter().all(|source| {
                 source.producer != ObservationProducer::ManualHuman
                     && (source.producer.authority_rank() < observation.producer.authority_rank()
@@ -1121,7 +1122,17 @@ impl AcousticLedger {
                     || content_refinement
                     || partial_refinement
                     || window_partition);
-            let refusal = if !authority {
+            let local_choice = if source_complete && geometry && !ambiguous {
+                self.adjudicate_word_sources(observation, &sources, &outputs)
+            } else {
+                None
+            };
+            let refusal = if !source_complete {
+                self.record_word_choice(observation, &sources, &outputs, "incomplete_source_scope", false);
+                Some("incomplete_source_scope")
+            } else if local_choice == Some(false) {
+                Some("lexical_disagreement")
+            } else if !authority && local_choice != Some(true) {
                 Some("protected_source")
             } else if !geometry
                 || ambiguous
@@ -1141,7 +1152,8 @@ impl AcousticLedger {
             if let Some(reason) = refusal {
                 self.retain_slot_alternative(observation, &candidate, sources, reason);
                 for word in &outputs {
-                    self.record_word_slot_refusal(observation, word, true);
+                    self.record_word_slot_refusal(observation, word,
+                        !matches!(reason, "incomplete_source_scope" | "lexical_disagreement"));
                 }
                 continue;
             }
@@ -1629,7 +1641,9 @@ impl AcousticLedger {
         self.answered.push(observation.clone());
         self.word_pin_observations.insert(observation.clone());
         self.record_layer_decision(observation, &label, &decision, None);
+        let observation = observation.clone();
         self.slot_operations.push(receipt);
+        self.remember_word_outputs(&observation);
     }
 
     /// Merge exactly the named sources using a specific Dictionary rule.
@@ -1699,7 +1713,13 @@ impl AcousticLedger {
         ) {
             return Err(SlotOperationRefusal::ProducerNotAuthorized);
         }
-        let sources = self.resolve_slot_targets(observation, std::slice::from_ref(target), true)?;
+        let sources = self.resolve_slot_targets(observation, std::slice::from_ref(target), false)?;
+        self.prepare_word_evidence(observation, children);
+        let trace = super::super::trail::SlotTrace::split(self, observation, target, children);
+        if !self.asr_source_scope_complete(observation, &sources) {
+            self.record_word_choice(observation, &sources, &[], "incomplete_source_scope", false);
+            return trace.finish(Err(SlotOperationRefusal::InvalidEvidence), self);
+        }
         let source = &sources[0];
         if children.len() < 2
             || children.iter().any(|child| {
@@ -1714,8 +1734,9 @@ impl AcousticLedger {
             || children[0].sample_start != source.sample_start
             || children.last().unwrap().sample_end != source.sample_end
         {
-            return Err(SlotOperationRefusal::InvalidEvidence);
+            return trace.finish(Err(SlotOperationRefusal::InvalidEvidence), self);
         }
+        self.record_word_decode_bounds(observation, children);
         let outputs = children
             .iter()
             .map(|pin| WordSlot {
@@ -1728,7 +1749,22 @@ impl AcousticLedger {
                 confidence: pin.confidence,
                 surface_rewritten: pin.surface_rewritten,
             })
-            .collect();
+            .collect::<Vec<_>>();
+        match self.adjudicate_word_sources(observation, &sources, &outputs) {
+            Some(false) => {
+                return trace.finish(Err(SlotOperationRefusal::ProducerNotAuthorized), self);
+            }
+            None => {
+                if let Err(refusal) = self.resolve_slot_targets(
+                    observation,
+                    std::slice::from_ref(target),
+                    true,
+                ) {
+                    return trace.finish(Err(refusal), self);
+                }
+            }
+            Some(true) => {}
+        }
         let receipt = SlotOperationReceipt {
             observation: observation.clone(),
             kind: SlotOperationKind::Split,
@@ -1737,7 +1773,6 @@ impl AcousticLedger {
             outputs,
             rule_id: "producer_child_pcm_boundaries/v1".to_string(),
         };
-        let trace = super::super::trail::SlotTrace::split(self, observation, target, children);
         self.commit_slot_operation(receipt.clone());
         trace.finish(Ok(receipt), self)
     }

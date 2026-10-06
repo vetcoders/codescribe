@@ -71,6 +71,8 @@ use crate::stt::tail_provider::TailSampleRange;
 
 #[path = "acoustic_ledger/slot_ops.rs"]
 mod slot_ops;
+#[path = "acoustic_ledger/word_adjudication.rs"]
+pub mod word_adjudication;
 pub use slot_ops::{
     DictionarySlotRule, GroupSpeechCoverageReceipt, SlotOperationKind, SlotOperationReceipt,
     SlotOperationRefusal, SlotTarget, SpeechPinCoverage,
@@ -760,6 +762,7 @@ struct DecodeFenceEnergy {
 /// Text is never a key here. The only key is [`OccurrenceIdentity`].
 #[derive(Debug, Clone, Default)]
 pub struct AcousticLedger {
+    word_adjudication: word_adjudication::WordAdjudicationState,
     committed: BTreeMap<OccurrenceIdentity, CommittedObservation>,
     slot_alternatives: Vec<SlotAlternative>,
     /// Rejected PCM awaiting accepted word evidence, keyed by its exact owner.
@@ -1107,7 +1110,7 @@ impl AcousticLedger {
         if self.committed.contains_key(occurrence) {
             return self.admit_word_slots(observation, words);
         }
-        self.admit_with_slots(observation, label, Some(slots), false)
+        self.admit_word_slots(observation, words)
     }
 
     /// Allocate a new generation of this occurrence's producer, independently
@@ -1181,8 +1184,8 @@ impl AcousticLedger {
     }
 
     /// Merge word evidence on its owner. Heard span is the union of pin ranges,
-    /// never a coverage gate. Rank is the order: Whisper replaces Apple,
-    /// lexicon, and cloud-live slots by midpoint; cloud-live replaces Apple
+    /// never a coverage gate. Apple and Whisper choices use accumulated
+    /// local evidence; other producer permissions retain their own rules. Cloud-live replaces Apple
     /// and lexicon and fills only ranges Whisper does not hold; Apple fills
     /// only ranges neither cloud-live nor Whisper holds. Finality fences stay
     /// in the same admission path used by whole-label producer generations.
@@ -1191,7 +1194,11 @@ impl AcousticLedger {
         observation: &ObservationIdentity,
         words: &[WordPin],
     ) -> MutationReceipt {
+        self.prepare_word_evidence(observation, words);
         let trace = super::trail::SlotTrace::words(self, observation, words, self.capture_rate_hz);
+        if self.word_trial_input_refusal(observation, words).is_some() {
+            return trace.finish(self.refuse_replacement(observation, "", RefuseReason::SlotAdmissionRejected), self);
+        }
         let owner = &observation.occurrence;
         if self.is_sealed(owner) && observation.producer != ObservationProducer::ManualHuman {
             let reason = match observation.producer {
@@ -1406,108 +1413,27 @@ impl AcousticLedger {
         } else {
             self.record_assigned_word_pins(observation, &assignments);
         }
-        let complete_words = words
-            .iter()
-            .filter(|pin| {
-                pin.decode_sample_start
-                    .is_some_and(|start| start < pin.sample_start)
-                    && pin.decode_sample_end.is_some_and(|end| {
-                        if observation.producer == ObservationProducer::Whisper {
-                            pin.sample_end <= end
-                                && !self.decode_word_fence_incomplete(
-                                    owner,
-                                    pin.decode_sample_start.unwrap(),
-                                    end,
-                                    pin.sample_start,
-                                    pin.sample_end,
-                                )
-                        } else {
-                            pin.sample_end < end
-                        }
-                    })
-                    && pin.sample_start < pin.sample_end
-                    && pin.text.split_whitespace().count() == 1
-            })
-            // Completeness belongs to the original decoded word. Index its
-            // bounded projection so a cut at an owner edge is not a decode cut.
-            .map(|pin| {
-                (
-                    pin.sample_start.max(owner.sample_start),
-                    pin.sample_end.min(owner.sample_end),
-                )
-            })
-            .collect::<Vec<_>>();
-        if words
-            .iter()
-            .any(|pin| pin.decode_sample_start.is_some() || pin.decode_sample_end.is_some())
-        {
-            self.complete_decoded_words
-                .insert(observation.clone(), complete_words);
-        }
-        if let Some((start, end)) = words
-            .first()
-            .and_then(|pin| Some((pin.decode_sample_start?, pin.decode_sample_end?)))
-            && start < end
-            && words.iter().all(|pin| {
-                pin.decode_sample_start == Some(start)
-                    && pin.decode_sample_end == Some(end)
-                    && start <= pin.sample_start
-                    && pin.sample_end <= end
-            })
-        {
-            self.decoded_word_windows
-                .insert(observation.clone(), (start, end));
-        }
+        self.record_word_decode_bounds(observation, words);
         let recovery_pending = self.text_recovery_pending(owner);
         let mut slots = self.slots_of(owner).unwrap_or(&[]).to_vec();
-        // A candidate at either decode fence cannot replace a complete word
-        // decoded across that fence. Check original PCM, not owner clipping.
-        // Coarse labels and edge stubs supply no complete-word evidence.
-        if observation.producer != ObservationProducer::ManualHuman {
-            let jitter = u64::from(self.capture_rate_hz.unwrap_or(16_000)) / 4;
+        // Full source coverage is independent of the candidate's distance
+        // from a decode fence. Refusal retains represented speech without debt.
+        if matches!(observation.producer, ObservationProducer::Apple | ObservationProducer::Whisper | ObservationProducer::CloudLive) {
             incoming.retain(|word| {
-                let clipped_sources = slots
-                    .iter()
-                    .filter(|source| {
-                        self.word_pin_observations.contains(&source.observation)
-                            && source.observation != *observation
-                            && self.complete_word_slot(source)
-                            && source.sample_start < word.sample_end
-                            && word.sample_start < source.sample_end
-                            && words.iter().any(|pin| {
-                                pin.sample_start.max(owner.sample_start) == word.sample_start
-                                    && pin.sample_end.min(owner.sample_end) == word.sample_end
-                                    && self.slot_source_ranges(source).iter().any(|range| {
-                                        range.same_capture(owner)
-                                            && range.sample_start.max(owner.sample_start)
-                                                == source.sample_start
-                                            && range.sample_end.min(owner.sample_end)
-                                                == source.sample_end
-                                            && (pin.decode_sample_start.is_some_and(|start| {
-                                                pin.sample_start >= start
-                                                    && pin.sample_start - start <= jitter
-                                                    && range.sample_start < start
-                                                    && start < range.sample_end
-                                            }) || pin.decode_sample_end.is_some_and(|end| {
-                                                pin.sample_end <= end
-                                                    && end - pin.sample_end <= jitter
-                                                    && range.sample_start < end
-                                                    && end < range.sample_end
-                                            }))
-                                    })
-                            })
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if clipped_sources.is_empty() {
+                let sources = slots.iter().filter(|source| {
+                    self.word_pin_observations.contains(&source.observation)
+                        && self.complete_word_slot(source)
+                        && self.pin_targets_source(source, word)
+                }).cloned().collect::<Vec<_>>();
+                if sources.is_empty() || self.asr_source_scope_complete(observation, &sources) {
                     return true;
                 }
-                self.retain_slot_alternative(
-                    observation,
-                    &word.text,
-                    clipped_sources,
-                    "decode_window_clipped",
-                );
+                if self.adjudicate_word_sources(observation, &sources, std::slice::from_ref(word)).is_none() {
+                    self.record_word_choice(observation, &sources, std::slice::from_ref(word),
+                        "incomplete_source_scope", false);
+                }
+                self.retain_slot_alternative(observation, &word.text, sources,
+                    "incomplete_source_scope");
                 self.record_word_slot_refusal(observation, word, false);
                 false
             });
@@ -1614,6 +1540,31 @@ impl AcousticLedger {
                             && word.sample_start <= midpoint
                             && midpoint < word.sample_end
                     }));
+            if !conflicts.is_empty()
+                && matches!(word.producer, ObservationProducer::Apple | ObservationProducer::Whisper | ObservationProducer::CloudLive) {
+                let sources = conflicts.iter().map(|&index| prior[index].clone()).collect::<Vec<_>>();
+                if !self.asr_source_scope_complete(observation, &sources) {
+                    if self.adjudicate_word_sources(observation, &sources, std::slice::from_ref(&word)).is_none() {
+                        self.record_word_choice(observation, &sources, std::slice::from_ref(&word), "incomplete_source_scope", false);
+                    }
+                    self.retain_slot_alternative(observation, &word.text, sources, "incomplete_source_scope");
+                    self.record_word_slot_refusal(observation, &word, false);
+                    continue;
+                }
+            }
+            let local_choice = if !ambiguous && !partition && !conflicts.is_empty() {
+                let sources = conflicts.iter().map(|&index| prior[index].clone()).collect::<Vec<_>>();
+                self.adjudicate_word_sources(observation, &sources, std::slice::from_ref(&word))
+            } else {
+                None
+            };
+            if local_choice == Some(false) {
+                self.retain_slot_alternative(observation, &word.text,
+                    conflicts.iter().map(|&index| prior[index].clone()).collect(),
+                    "word_adjudication_held");
+                self.record_word_slot_refusal(observation, &word, false);
+                continue;
+            }
             let blocked = (word.producer != ObservationProducer::ManualHuman
                 && intersects
                     .iter()
@@ -1631,10 +1582,11 @@ impl AcousticLedger {
                     let held = &prior[index];
                     held.producer == ObservationProducer::ManualHuman
                         && word.producer != ObservationProducer::ManualHuman
-                        || held.producer.authority_rank() > word.producer.authority_rank()
-                        || (held.producer == word.producer
-                            && held.observation.generation >= word.observation.generation
-                            && held.observation != word.observation)
+                        || (local_choice.is_none()
+                            && (held.producer.authority_rank() > word.producer.authority_rank()
+                                || (held.producer == word.producer
+                                    && held.observation.generation >= word.observation.generation
+                                    && held.observation != word.observation)))
                 });
             if ambiguous || blocked || partition {
                 self.refuse_word_slot(
@@ -2486,6 +2438,9 @@ impl AcousticLedger {
                 }
             }
         }
+        if applies_slots {
+            self.remember_word_outputs(observation);
+        }
         self.record_layer_decision(observation, text, &decision, None);
         let accepted = decision.grants_mutation()
             || (slot_revision && matches!(decision, MutationReceipt::Preserve { .. }));
@@ -2678,7 +2633,7 @@ impl AcousticLedger {
             }
             if outranks
                 || same_lane_revision
-                || (slot_revision && observation.producer != held.producer)
+                || slot_revision
             {
                 if !has_word_pins
                     && self
@@ -3341,6 +3296,9 @@ impl AcousticLedger {
         if self.text_recovery_pending(occurrence) {
             return Err(SealRefusal::TextRecoveryPending);
         }
+        if self.word_trials_pending(occurrence) {
+            return Err(SealRefusal::FrontierOpen);
+        }
         let serial = self
             .evidence
             .get(occurrence)
@@ -3376,6 +3334,7 @@ impl AcousticLedger {
             return Err(SealRefusal::ObservationsWithoutReceipts);
         }
         Ok(LedgerSealReceipt {
+            word_finality: self.word_finality(occurrence),
             receipt_id: Self::seal_id(LedgerSealScope::Occurrence, occurrence),
             scope: LedgerSealScope::Occurrence,
             coverage: occurrence.clone(),
@@ -3395,8 +3354,13 @@ impl AcousticLedger {
     ) -> Result<&LedgerSealReceipt, SealRefusal> {
         if !self.seals.contains_key(occurrence) {
             let receipt = self.mint_seal(occurrence)?;
+            super::trail::record(occurrence, super::trail::TrailEvent::OccurrenceSealed {
+                occurrence: occurrence.clone(), receipt_id: receipt.receipt_id.clone(),
+                word_finality: receipt.word_finality.clone(),
+            });
             self.seals.insert(occurrence.clone(), receipt);
             super::occurrence_slot_receipt::emit(self, occurrence);
+            self.close_word_components(occurrence);
         }
         self.seals
             .get(occurrence)
@@ -3466,6 +3430,8 @@ impl AcousticLedger {
         // any.
         let frontier = ObservationFrontier::scheduled(coverage.clone(), Vec::new());
         let receipt = LedgerSealReceipt {
+            word_finality: in_epoch.iter().filter_map(|owner| self.seals.get(owner))
+                .flat_map(|seal| seal.word_finality.clone()).collect(),
             receipt_id: Self::seal_id(LedgerSealScope::Terminal, &coverage),
             scope: LedgerSealScope::Terminal,
             coverage,
@@ -5210,6 +5176,8 @@ impl LedgerSealScope {
 ///   deciding finality themselves.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LedgerSealReceipt {
+    /// Lexical settlement is independent of acoustic coverage and finality.
+    pub word_finality: Vec<word_adjudication::WordFinality>,
     /// Ledger-minted scope. Cardinality never determines finality.
     pub scope: LedgerSealScope,
     /// Stable identifier for cross-referencing from a projection.

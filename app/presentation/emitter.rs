@@ -152,6 +152,7 @@ pub enum ReducerAction {
         entry: TranscriptDocumentEntry,
     },
     RecordLedgerSeal {
+        word_finality: Vec<codescribe_core::pipeline::acoustic_ledger::word_adjudication::WordFinality>,
         occurrence: OccurrenceIdentity,
         seal_receipt: String,
         terminal: bool,
@@ -367,8 +368,10 @@ impl TranscriptRevision {
                 occurrence,
                 seal_receipt,
                 terminal,
+                word_finality,
             } => ledger.seal_receipt(seal_receipt).is_some_and(|seal| {
-                seal.is_occurrence_seal() != *terminal
+                seal.word_finality == *word_finality
+                    && seal.is_occurrence_seal() != *terminal
                     && seal.sealed_occurrences.first() == Some(occurrence)
                     && seal
                         .sealed_occurrences
@@ -1634,6 +1637,7 @@ impl TranscriptReducer {
             self.terminal_sealed = true;
         }
         Some(self.revision_for_action(ReducerAction::RecordLedgerSeal {
+            word_finality: receipt.word_finality.clone(),
             occurrence,
             seal_receipt: receipt.receipt_id.clone(),
             terminal: !receipt.is_occurrence_seal(),

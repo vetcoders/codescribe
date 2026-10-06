@@ -75,6 +75,7 @@ use crate::pipeline::contracts::{
     SessionConservationReceipt, SpeechIntegrity, SpeechIntegrityPhase, TranscriptSegment,
     UnadmittedAppleWord, UnadmittedAppleWordSource,
 };
+use crate::pipeline::acoustic_ledger::word_adjudication::WordTrial;
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
 use crate::stt::tail_provider::{
@@ -1785,6 +1786,9 @@ struct AppleSealState {
     /// Sealed fragments waiting to share one Whisper window (~5 segments).
     layer1_coalesce: Layer1Coalesce,
     refinement_pending: VecDeque<TailPatchRequest>,
+    word_trial_jobs: BTreeMap<(u64, u64, u64, u64), WordTrial>,
+    word_trials_stopping: bool,
+    word_trial_started: Option<Instant>,
     refinement_submitted: BTreeMap<(u64, u64, u64, u64), TailPatchInFlight>,
     /// Edge words retain the authenticated decode request until admission or
     /// an accounted same-PCM replacement. Terminal closure supplies no scope.
@@ -2257,6 +2261,9 @@ impl AppleSealState {
             tail_patch: None,
             layer1_coalesce: Layer1Coalesce::default(),
             refinement_pending: VecDeque::new(),
+            word_trial_jobs: BTreeMap::new(),
+            word_trials_stopping: false,
+            word_trial_started: None,
             refinement_submitted: BTreeMap::new(),
             pending_whisper_stubs: Vec::new(),
             last_submission_sequence: 0,
@@ -3185,6 +3192,145 @@ impl AppleSealState {
             .is_complete()
     }
 
+    fn close_word_trial(&self, trial: &WordTrial, reason: &str) {
+        self.acoustic_ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .close_word_trial(trial, reason);
+    }
+
+    fn word_trial_range(&self, trial: &WordTrial) -> std::result::Result<TailSampleRange, &'static str> {
+        if trial.owner.session != self.session_id || trial.owner.capture_epoch != self.capture_epoch {
+            return Err("foreign_capture");
+        }
+        let start = trial.source_ranges.iter().map(|range| range.sample_start).min().ok_or("empty_scope")?;
+        let end = trial.source_ranges.iter().map(|range| range.sample_end).max().ok_or("empty_scope")?;
+        let floor = self.pcm_floor_sample();
+        let ceiling = self.audio.session_sample_end();
+        if start < floor || end > ceiling || start >= end { return Err("pcm_unavailable"); }
+        let context = u64::from(self.sample_rate).saturating_mul(3);
+        let decode_start = start.saturating_sub(context).max(floor);
+        let decode_end = end.saturating_add(context).min(ceiling);
+        // Same bounded PCM lease as ordinary live work. Never crop the dispute
+        // to fit that lease; no partial inference is a resolving trial.
+        if decode_end.saturating_sub(decode_start) > u64::from(self.sample_rate).saturating_mul(LIVE_REFINEMENT_PCM_SECS as u64) {
+            return Err("scope_exceeds_budget");
+        }
+        Ok(TailSampleRange {
+            session: self.session_id.clone(), capture_epoch: self.capture_epoch,
+            sample_start: decode_start, sample_end: decode_end,
+        })
+    }
+
+    /// At most one extra job; every normal window already queued or held wins.
+    fn queue_word_trial(&mut self) {
+        if !self.refinement_pending.is_empty() || !self.refinement_submitted.is_empty()
+            || !self.layer1_coalesce.is_empty() || !self.word_trial_jobs.is_empty() { return; }
+        let trial = self.acoustic_ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .next_word_trial(false);
+        let Some(trial) = trial else { return; };
+        let range = match self.word_trial_range(&trial) {
+            Ok(range) => range,
+            Err(reason) => { self.close_word_trial(&trial, reason); return; }
+        };
+        let Some(window) = self.window_by_samples(range.sample_start, range.sample_end) else {
+            self.close_word_trial(&trial, "pcm_unavailable"); return;
+        };
+        if window.sample_start != range.sample_start || window.sample_end != range.sample_end {
+            self.close_word_trial(&trial, "incomplete_source_scope"); return;
+        }
+        let Some(sender) = self.tail_patch.as_ref() else {
+            self.close_word_trial(&trial, "lane_unavailable"); return;
+        };
+        let sequence = self.last_submission_sequence.checked_add(1).expect("Whisper submission sequence exhausted");
+        let identity = TailRequestIdentity { request_id: u64::MAX - trial.id, range };
+        let utterance_id = self.pending_events.iter().find_map(|(id, pending)|
+            (pending.occurrence == trial.owner).then_some(*id)).unwrap_or(0);
+        let members = vec![(utterance_id, trial.owner.clone())];
+        let request = TailPatchRequest {
+            submission_sequence: sequence, utterance_id,
+            // No disputed Apple label is supplied as recognition context.
+            committed_text: String::new(), neighbour_context: String::new(),
+            audio: window.samples,
+            provider_request: TailProviderRequest { identity: identity.clone(), sample_rate: self.sample_rate, language: None },
+            admit_sample_start: trial.owner.sample_start, admit_sample_end: trial.owner.sample_end,
+            member_occurrences: members.clone(),
+        };
+        match sender.try_send(request) {
+            Ok(()) => {
+                self.last_submission_sequence = sequence;
+                let key = inflight_key(sequence, &identity);
+                self.refinement_submitted.insert(key, TailPatchInFlight {
+                    submission_sequence: sequence, utterance_id, request_identity: identity,
+                    admit_sample_start: trial.owner.sample_start, admit_sample_end: trial.owner.sample_end,
+                    member_occurrences: members,
+                });
+                self.word_trial_jobs.insert(key, trial);
+                self.word_trial_started = Some(self.refinement_clock);
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => self.close_word_trial(&trial, "queue_pressure"),
+            Err(mpsc::error::TrySendError::Closed(_)) => self.close_word_trial(&trial, "lane_unavailable"),
+        }
+    }
+
+    fn complete_word_trial(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>, trial: &WordTrial, payload: Option<&TailProviderPayload>) {
+        let Some(payload) = payload else { self.close_word_trial(trial, "inference_failed"); return; };
+        if payload.validate().is_err()
+            || payload.evidence.timing_quality != crate::stt::tail_provider::TailTimingQuality::ExactSampleRange
+            || payload.evidence.source != crate::stt::tail_provider::TailEvidenceSource::Whisper
+            || payload.identity.range.session != trial.owner.session
+            || payload.identity.range.capture_epoch != trial.owner.capture_epoch
+            || payload.segments.is_empty()
+            || payload.segments.iter().any(|segment| segment.grain != crate::stt::tail_provider::TailSegmentGrain::Word) {
+            self.close_word_trial(trial, "invalid_trial_evidence"); return;
+        }
+        let words = payload.segments.iter().map(|segment| {
+            let mut pin = crate::pipeline::acoustic_ledger::WordPin::new(
+                segment.range.sample_start, segment.range.sample_end, &segment.text)
+                .with_decode_window(payload.identity.range.sample_start, payload.identity.range.sample_end);
+            pin.confidence = segment.confidence;
+            pin
+        }).collect::<Vec<_>>();
+        let rewritten = words.iter().map(|pin| {
+            let mut output = pin.clone();
+            let (surface, counts) = super::live_lexicon::rewrite(&pin.text, &self.lexicon_custom_path);
+            self.lexicon_entries_custom = counts.custom;
+            output.surface_rewritten = surface != pin.text;
+            self.lexicon_rewrites = self.lexicon_rewrites.saturating_add(u64::from(output.surface_rewritten));
+            output.text = surface;
+            output
+        }).collect::<Vec<_>>();
+        let speech = coverage_speech_evidence(self);
+        let mut ledger = self.acoustic_ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        ledger.bind_word_provider(payload);
+        ledger.record_speech_evidence(&speech);
+        self.record_decode_fence_measurement(&mut ledger,
+            Some((payload.identity.range.sample_start, payload.identity.range.sample_end)));
+        let observation = ledger.next_word_observation(LedgerObservationProducer::Whisper, payload.identity.request_id, &trial.owner);
+        let receipt = ledger.admit_word_trial(trial, &observation, &rewritten, &words);
+        let label = ledger.text_of(&trial.owner).unwrap_or("").to_string();
+        drop(ledger);
+        let _ = ev_tx.send(EngineEvent::LedgerMutation { observation, label, receipt });
+        if let Some(id) = self.pending_events.iter().find_map(|(id, pending)|
+            (pending.occurrence == trial.owner).then_some(*id)) {
+            self.refresh_pending_label(id, &trial.owner);
+        }
+        self.publish_resolved_word_seals(ev_tx);
+    }
+
+    fn publish_resolved_word_seals(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        let owners = self.word_owners();
+        for (id, owner) in owners {
+            let seal = {
+                let mut ledger = self.acoustic_ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if ledger.is_sealed(&owner) { continue; }
+                ledger.seal(&owner).cloned().ok()
+            };
+            if let Some(receipt) = seal {
+                let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
+                self.emit_pending_seal(ev_tx, id);
+            }
+        }
+    }
+
     /// One bounded nonblocking attempt per pending request, stopping at pressure.
     fn retry_refinements(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
         while let Some(mut request) = self.refinement_pending.pop_front() {
@@ -3296,6 +3442,14 @@ impl AppleSealState {
                     && job.admit_sample_start < owner.sample_end
             })
         });
+        let trial_keys = self.word_trial_jobs.iter().filter(|(_, trial)| affected.contains(&trial.owner))
+            .map(|(key, _)| *key).collect::<Vec<_>>();
+        for key in trial_keys {
+            if let Some(trial) = self.word_trial_jobs.remove(&key) {
+                self.acoustic_ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .close_word_trial(&trial, reason.code());
+            }
+        }
         self.refinement_submitted.retain(|_, job| {
             !affected.iter().any(|owner| {
                 owner.sample_start < job.admit_sample_end
@@ -3341,6 +3495,14 @@ impl AppleSealState {
     fn tick_refinements(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>, now: Instant) {
         self.flush_cloud_commits(ev_tx);
         self.refinement_clock = now;
+        if self.word_trial_started.is_some_and(|start| now.saturating_duration_since(start) >= LIVE_WHISPER_SETTLEMENT_TIMEOUT)
+            || self.tail_patch.as_ref().is_none_or(mpsc::Sender::is_closed) {
+            for (key, trial) in std::mem::take(&mut self.word_trial_jobs) {
+                self.refinement_submitted.remove(&key);
+                self.close_word_trial(&trial, "deadline_or_lane_unavailable");
+            }
+            self.word_trial_started = None;
+        }
         if self.refinement_lane_lost
             || self
                 .tail_patch
@@ -3363,6 +3525,10 @@ impl AppleSealState {
             self.queue_layer1_flush(ev_tx, flush);
         }
         self.retry_refinements(ev_tx);
+        if !self.word_trials_stopping {
+            self.queue_word_trial();
+        }
+        self.publish_resolved_word_seals(ev_tx);
     }
 
     /// Return true while Stop still owns work. One absolute deadline applies
@@ -3769,6 +3935,16 @@ impl AppleSealState {
             );
         }
         let payload = (!payload_identity_mismatch).then_some(payload).flatten();
+        if let Some(trial) = self.word_trial_jobs.remove(&inflight_key(submission_sequence, &job.request_identity)) {
+            self.word_trial_started = None;
+            self.complete_word_trial(ev_tx, &trial, payload.as_ref());
+            self.close_admission_horizon(ev_tx, self.admission_horizon);
+            return;
+        }
+        if let Some(payload) = payload.as_ref() {
+            self.acoustic_ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                .bind_word_provider(payload);
+        }
 
         let request_id = request_identity
             .as_ref()
@@ -4198,6 +4374,16 @@ impl AppleSealState {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let observation = ledger.next_word_observation(producer, request, owner);
+            let original = pins.iter().map(|pin| {
+                let mut word = crate::pipeline::acoustic_ledger::WordPin::new(
+                    pin.pin.sample_start, pin.pin.sample_end, &pin.text);
+                word.confidence = pin.confidence;
+                if let Some((start, end)) = decode_window {
+                    word = word.with_decode_window(start, end);
+                }
+                word
+            }).collect::<Vec<_>>();
+            ledger.stage_word_evidence(&observation, &original, None, "unknown");
             ledger.record_speech_evidence(&speech);
             self.record_decode_fence_measurement(
                 &mut ledger,
@@ -4525,6 +4711,11 @@ impl AppleSealState {
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
     ) {
+        for (key, trial) in std::mem::take(&mut self.word_trial_jobs) {
+            self.refinement_submitted.remove(&key);
+            self.close_word_trial(&trial, "stop_deadline");
+        }
+        self.word_trial_started = None;
         let occurrences = {
             let ledger = self
                 .acoustic_ledger
@@ -5088,47 +5279,6 @@ fn admit_late_apple_words(
                     &text,
                     NoAuthorityReason::LateAppleWordNotCurrent,
                 );
-                let _ = ev_tx.send(EngineEvent::LedgerMutation {
-                    observation,
-                    label: text,
-                    receipt,
-                });
-                continue;
-            }
-            let consumed_span = ledger.slots_of(&owner).is_some_and(|slots| {
-                slots.iter().any(|slot| {
-                    let overlap = end
-                        .min(slot.sample_end)
-                        .saturating_sub(start.max(slot.sample_start));
-                    let shorter =
-                        (end - start).min(slot.sample_end.saturating_sub(slot.sample_start));
-                    shorter > 0 && overlap >= shorter / 2 + shorter % 2
-                })
-            });
-            let higher_rank_owns_span = ledger.slots_of(&owner).is_some_and(|slots| {
-                slots.iter().any(|slot| {
-                    let overlap = end
-                        .min(slot.sample_end)
-                        .saturating_sub(start.max(slot.sample_start));
-                    overlap > 0
-                        && slot.producer.authority_rank()
-                            > LedgerObservationProducer::Apple.authority_rank()
-                })
-            });
-            if higher_rank_owns_span
-                || (consumed_span && ledger.matching_word_slot(&owner, &pin, &text, false))
-            {
-                outcome.dropped_by_slot_rules += 1;
-                // A replay or a higher-rank witness cannot add a second word.
-                // A fresh Apple correction of an Apple-owned slot continues to
-                // the ledger's replacement path below.
-                let receipt = if ledger.matching_word_slot(&owner, &pin, &text, false) {
-                    ledger.refuse_replayed_range(&observation, &text)
-                } else {
-                    // The higher layer already owns this physical range.
-                    // Keep the same refusal for open and sealed owners.
-                    ledger.refuse_replacement(&observation, &text, RefuseReason::SealedReplay)
-                };
                 let _ = ev_tx.send(EngineEvent::LedgerMutation {
                     observation,
                     label: text,
@@ -5970,7 +6120,7 @@ fn admit_ledger_label<'a>(
     let request = observation.request;
     let _ = ev_tx.send(EngineEvent::LedgerMutation {
         observation,
-        label: label.to_string(),
+        label: ledger.text_of(&occurrence).unwrap_or(label).to_string(),
         receipt: receipt.clone(),
     });
     drop(ledger);
@@ -6434,6 +6584,8 @@ fn admit_debt_occurrence_recovery(
         return false;
     }
     if word_grain {
+        state.acoustic_ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bind_word_provider(payload);
         if payload.validate().is_err()
             || payload.identity.range.session != occurrence.session
             || payload.identity.range.capture_epoch != occurrence.capture_epoch
@@ -6678,7 +6830,9 @@ where
         ledger.pending_text_recoveries(&state.session_id, state.capture_epoch)
     };
     debt.sort_by_key(|occurrence| (occurrence.sample_start, occurrence.sample_end));
-    if initial.status == SealCoverageStatus::Complete && debt.is_empty() {
+    let lexical_pending = state.acoustic_ledger.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner).has_word_conflicts();
+    if initial.status == SealCoverageStatus::Complete && debt.is_empty() && !lexical_pending {
         return initial;
     }
     // The live tail-patch drain already spent its own deadline. Recovery does
@@ -6808,6 +6962,26 @@ where
             StopRangeAttempt::MissingPcm | StopRangeAttempt::ForeignIdentity => {}
         }
     }
+
+    loop {
+        let trial = state.acoustic_ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .next_word_trial(true);
+        let Some(trial) = trial else { break; };
+        let result = state.word_trial_range(&trial);
+        match result {
+            Ok(range) if execution.check().is_ok() => match attempt(state, range) {
+                StopRangeAttempt::Ready(payload) => state.complete_word_trial(ev_tx, &trial, Some(&payload)),
+                StopRangeAttempt::MissingPcm => state.close_word_trial(&trial, "pcm_unavailable"),
+                StopRangeAttempt::ForeignIdentity => state.close_word_trial(&trial, "foreign_completion"),
+                StopRangeAttempt::Failed(_) => state.close_word_trial(&trial, "cancelled_or_budget_exhausted"),
+            },
+            Ok(_) => state.close_word_trial(&trial, "cancelled_or_budget_exhausted"),
+            Err(reason) => state.close_word_trial(&trial, reason),
+        }
+    }
+    state.close_admission_horizon(ev_tx, u64::MAX);
+    state.publish_resolved_word_seals(ev_tx);
+    state.seal_remaining_at_session_end(ev_tx);
 
     let final_receipt = state
         .acoustic_ledger
@@ -8105,6 +8279,7 @@ fn apple_stream_worker(
     // measured 2026-08-12, `rec_stop=36.701s` of which 30.005s was this loop
     // waiting for a completion that had already arrived for every job it sent.
     let mut tail_patch_timeout_residue = 0;
+    state.word_trials_stopping = true;
     let stop_deadline = local_execution.begin_drain(TAIL_PATCH_CLOSURE_TIMEOUT);
     if state.cloud_commit_tx.is_none()
         && state.cloud_uncommitted.is_empty()
