@@ -725,7 +725,11 @@ impl CaptureDecodeBudget {
         available
     }
 
-    fn available_ranges(&self, range: &TailSampleRange, phase: DecodePhase) -> Vec<TailSampleRange> {
+    fn available_ranges(
+        &self,
+        range: &TailSampleRange,
+        phase: DecodePhase,
+    ) -> Vec<TailSampleRange> {
         if range.session != self.session
             || range.capture_epoch != self.capture_epoch
             || range.sample_start >= range.sample_end
@@ -3155,9 +3159,8 @@ impl AppleSealState {
         decode_window_with_min_context(
             &range,
             &range,
-            self.whisper_context_window_samples().min(
-                u64::from(self.sample_rate).saturating_mul(CAPTURE_DECODE_WINDOW_SECS),
-            ),
+            self.whisper_context_window_samples()
+                .min(u64::from(self.sample_rate).saturating_mul(CAPTURE_DECODE_WINDOW_SECS)),
             0,
             self.pcm_floor_sample(),
         )
@@ -3552,7 +3555,8 @@ impl AppleSealState {
             return;
         };
         if !self.decode_budget.can_admit(&range, DecodePhase::Live) {
-            self.decode_budget.receipt(&range, DecodePhase::Live, "refused");
+            self.decode_budget
+                .receipt(&range, DecodePhase::Live, "refused");
             self.word_trials_deferred.push(trial);
             return;
         }
@@ -3588,7 +3592,8 @@ impl AppleSealState {
         };
         match sender.try_send(request) {
             Ok(()) => {
-                self.decode_budget.record(&identity.range, DecodePhase::Live);
+                self.decode_budget
+                    .record(&identity.range, DecodePhase::Live);
                 self.last_submission_sequence = sequence;
                 let key = inflight_key(sequence, &identity);
                 self.refinement_submitted.insert(
@@ -7514,12 +7519,18 @@ fn terminal_decode_windows(
     }
     ranges.retain(|range| range.sample_start < range.sample_end);
     ranges.sort_by(|left, right| {
-        (&left.session, left.capture_epoch, left.sample_start, left.sample_end).cmp(&(
-            &right.session,
-            right.capture_epoch,
-            right.sample_start,
-            right.sample_end,
-        ))
+        (
+            &left.session,
+            left.capture_epoch,
+            left.sample_start,
+            left.sample_end,
+        )
+            .cmp(&(
+                &right.session,
+                right.capture_epoch,
+                right.sample_start,
+                right.sample_end,
+            ))
     });
     let mut merged: Vec<TailSampleRange> = Vec::new();
     for range in ranges {
@@ -7779,9 +7790,13 @@ where
         })
         .flat_map(|range| {
             if !state.decode_budget.can_admit(&range, DecodePhase::Terminal) {
-                state.decode_budget.receipt(&range, DecodePhase::Terminal, "refused");
+                state
+                    .decode_budget
+                    .receipt(&range, DecodePhase::Terminal, "refused");
             }
-            state.decode_budget.available_ranges(&range, DecodePhase::Terminal)
+            state
+                .decode_budget
+                .available_ranges(&range, DecodePhase::Terminal)
         })
         .collect();
     for range in terminal_decode_windows(ranges, max_samples) {
@@ -7822,7 +7837,8 @@ where
         match attempt(state, range) {
             StopRangeAttempt::Ready(payload) => {
                 state.complete_covered_word_trials(ev_tx, &payload, true, 32, true);
-                if payload.evidence.segment_grain == crate::stt::tail_provider::TailSegmentGrain::Word
+                if payload.evidence.segment_grain
+                    == crate::stt::tail_provider::TailSegmentGrain::Word
                     || payload.segments.is_empty()
                 {
                     // Word routing fans this exact return to every intersecting
@@ -30425,3 +30441,7 @@ pub fn forensic_word_conservation_trace(
 )> {
     forensic_word_conservation_fixture::capture_trace(adaptive, contracted)
 }
+
+#[cfg(test)]
+#[path = "capture_decode_budget_contract_tests.rs"]
+mod capture_decode_budget_contract_tests;

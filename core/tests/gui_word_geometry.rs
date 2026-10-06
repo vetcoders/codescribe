@@ -210,3 +210,63 @@ fn complete_return_clears_speech_debt_while_retaining_lexical_disagreement() {
         );
     }
 }
+
+#[test]
+fn actual_live_boundary_geometry_cannot_render_a_hybrid_partition() {
+    // These producer coordinates come from actual GUI take03. The calibration
+    // is synthetic; this counterexample asserts transaction conservation, not
+    // audio recognition accuracy or a new identity rule.
+    let owner = OccurrenceIdentity::new("gui-take03-partition", 1, 1_182_720, 1_697_792);
+    let calibration = EnergyCalibration::new("gui-take03-partition", 1.0, 1);
+    let mut ledger = AcousticLedger::new();
+    ledger.bind_capture_rate(48_000);
+    assert!(
+        ledger
+            .qualify(
+                &AcousticEvidence {
+                    occurrence: owner.clone(),
+                    duration_ms: 10_730.667,
+                    energy_integral: 100.0,
+                    mean_rms_dbfs: -20.0,
+                    peak_dbfs: -10.0,
+                    vad_open_sample: Some(owner.sample_start),
+                    vad_close_sample: Some(owner.sample_end),
+                    evidence_calibration_version: calibration.version.clone(),
+                },
+                &calibration
+            )
+            .is_qualified()
+    );
+    ledger.schedule_frontier(
+        owner.clone(),
+        [ObservationProducer::Apple, ObservationProducer::Whisper],
+    );
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Apple,
+        11,
+        &[WordPin::new(1_587_456, 1_645_056, "rozstrzyga tych dwóch")],
+    );
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Apple,
+        12,
+        &[WordPin::new(1_645_056, 1_665_216, "spraw")],
+    );
+    assert_eq!(ledger.text_of(&owner), Some("rozstrzyga tych dwóch spraw"));
+    let pins = [
+        WordPin::new(1_593_152, 1_633_472, "rozstrzyga"),
+        WordPin::new(1_633_472, 1_641_152, "tych"),
+        WordPin::new(1_641_152, 1_658_432, "dwóch"),
+        WordPin::new(1_658_432, 1_673_792, "spraw."),
+    ]
+    .map(|pin| pin.with_decode_window(1_313_792, 1_697_792));
+    offer(&mut ledger, &owner, ObservationProducer::Whisper, 13, &pins);
+    let text = ledger.text_of(&owner).unwrap();
+    assert!(
+        text == "rozstrzyga tych dwóch spraw" || text == "rozstrzyga tych dwóch spraw.",
+        "preserve the complete incumbent or admit a complete authorized partition; hybrid: {text}"
+    );
+}
