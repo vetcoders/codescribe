@@ -26,6 +26,14 @@ The same unified overlay then shows My dictation. Channel auto-reopening shares
 the controller's serial transition lock with this handover. Repeated lifecycle
 callbacks do not replace a view the user selected during the admitted capture.
 
+A recording Stop gesture binds the already published capture identity before
+waiting for the start transition lock. Key release, the overlay Stop and the
+recording toggle join the same retained terminal operation. A start finishing
+its admission cannot discard that Stop; timeout leaves its owner running until
+settlement. The terminal operation rechecks the captured identity under the
+transition lock and never stops a successor. Idle without a published capture
+still requires admission to be available before reporting no live take.
+
 Each reply's **Play** invokes the installed bus speech owner with its persisted
 reply ID and a fresh playback ticket. **Stop** names the exact emitted active
 ticket and provider session. These controls do not use the built-in chat player.
