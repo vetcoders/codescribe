@@ -496,6 +496,7 @@ a translation 15–30 % longer than English clips or truncates first.
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | Settings tab bar                 | Segments hug their own labels; the bar scrolls horizontally once six of them exceed the pane at 880 pt                       |
 | Settings sidebar                 | 196–300 pt; health footer is two lines in 196 pt                                                                             |
+| Settings detail column           | Never narrower than 664 pt: an 880 pt window with the sidebar open, 664 pt with it hidden                                    |
 | Tool permissions                 | `Allow · Ask · Deny` in a picker pinned to 180 pt — the tightest slot in Settings                                            |
 | Agent status                     | Label column 160 pt, capability columns 120 / 96 pt, one-line rows                                                           |
 | Providers, MCP servers, key rows | One-line status chips and rows; editor sheet 480 pt                                                                          |

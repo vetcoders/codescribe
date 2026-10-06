@@ -75,20 +75,21 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertGreaterThan(joined.components(separatedBy: ".settingsGroupedInset(").count, 2)
   }
 
-  /// The six tabs of a tabbed section fit the detail column of the smallest
-  /// Settings window with the sidebar at its ideal width, in English and in
-  /// Polish. A language that breaks this still gets the scrolling bar, but the
-  /// label is then too long and should be shortened before it ships.
+  /// The six tabs of a tabbed section fit the narrowest detail column, in
+  /// English and in Polish. A language that breaks this still gets the
+  /// scrolling bar, but the label is then too long and should be shortened
+  /// before it ships.
   @MainActor
   func testTabBarsFitTheMinimumWindowInEnglishAndPolish() throws {
     let sources = try settingsSources()
     let view = try XCTUnwrap(sources["SettingsView.swift"])
-    XCTAssertTrue(view.contains(".frame(minWidth: 880,"))
     XCTAssertTrue(view.contains(".navigationSplitViewColumnWidth(min: 196, ideal: 216, max: 300)"))
+    // An 880 pt window with the sidebar at its ideal width.
+    XCTAssertEqual(SettingsView.detailMinWidth, 880 - 216)
     let pane = try XCTUnwrap(sources["SettingsTabbedPane.swift"])
     XCTAssertTrue(pane.contains(".padding(.horizontal, CSSpace.xl)"))
-    // Window, minus sidebar and its divider, minus the bar's horizontal padding.
-    let column: CGFloat = 880 - 216 - 1 - 2 * CSSpace.xl
+    // Detail column minus the bar's horizontal padding and the column divider.
+    let column: CGFloat = SettingsView.detailMinWidth - 1 - 2 * CSSpace.xl
 
     let polish = try polishCatalog()
     let tabbed = SettingsSection.allCases.filter { !SettingsTab.tabs(in: $0).isEmpty }
@@ -106,6 +107,21 @@ final class SettingsChromeContractTests: XCTestCase {
           width, column, "\(section.rawValue) tabs in \(language): \(titles)")
       }
     }
+  }
+
+  /// The window minimum sits on the detail column. A minimum width on the
+  /// split view itself makes the opening sidebar stop halfway and jump
+  /// (measured on macOS 27 below a 1096 pt window).
+  func testWindowMinimumIsCarriedByTheDetailColumn() throws {
+    let view = try XCTUnwrap(settingsSources()["SettingsView.swift"])
+    let detail = try XCTUnwrap(view.range(of: "} detail: {"))
+    let minimum = try XCTUnwrap(view.range(of: ".frame(minWidth: Self.detailMinWidth)"))
+    let toolbar = try XCTUnwrap(view.range(of: ".navigationTitle("))
+    XCTAssertLessThan(detail.lowerBound, minimum.lowerBound)
+    XCTAssertLessThan(minimum.lowerBound, toolbar.lowerBound)
+    XCTAssertTrue(
+      view.contains(".frame(maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)"))
+    XCTAssertFalse(view.contains("minWidth: 880"))
   }
 
   func testAvailabilityTintsUseSolidTerracotta() throws {
