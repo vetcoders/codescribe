@@ -64,9 +64,9 @@ use crate::llm::ai_formatting::{
     AiFormatResult, AiFormatStatus, format_text_with_status_for_policy,
 };
 use crate::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
-use crate::pipeline::acoustic_ledger::word_adjudication::WordTrial;
 #[cfg(test)]
 use crate::pipeline::acoustic_ledger::SealCoverageStatus;
+use crate::pipeline::acoustic_ledger::word_adjudication::WordTrial;
 use crate::pipeline::acoustic_ledger::{
     AcousticEvidence, AcousticLedger, EnergyCalibration, MutationReceipt, NoAuthorityReason,
     ObservationIdentity as LedgerObservationIdentity,
@@ -81,7 +81,8 @@ use crate::pipeline::contracts::{
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
 use crate::stt::tail_provider::{
-    TailProviderPayload, TailProviderRequest, TailRequestIdentity, TailSampleRange, TimedTailSegment,
+    TailProviderPayload, TailProviderRequest, TailRequestIdentity, TailSampleRange,
+    TimedTailSegment,
 };
 
 use super::layer1_window::CaptureWindowPlan;
@@ -3010,8 +3011,7 @@ impl AppleSealState {
         });
         if matches!(
             reason,
-            RefinementFailure::StopDeadline
-                | RefinementFailure::NotScheduled
+            RefinementFailure::StopDeadline | RefinementFailure::NotScheduled
         ) {
             self.return_whisper_without_label(ev_tx, id, occurrence);
             self.emit_pending_seal(ev_tx, id);
@@ -3113,7 +3113,10 @@ impl AppleSealState {
             || range.capture_epoch != self.capture_epoch
             || range.sample_end > self.audio.session_sample_end()
             || range.sample_end.saturating_sub(range.sample_start) > u64::from(self.sample_rate) * 9
-            || self.retained_word_decodes.iter().any(|held| held.identity.range == *range)
+            || self
+                .retained_word_decodes
+                .iter()
+                .any(|held| held.identity.range == *range)
         {
             return;
         }
@@ -3124,22 +3127,25 @@ impl AppleSealState {
     /// original witness and replay it only into newly qualified owners.
     fn replay_completed_windows(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
         let owners = self.unsealed_word_owners();
-        let returned = self.retained_word_decodes.iter().filter(|payload| {
-            owners.iter().any(|(_, owner)| {
-                range_overlaps_occurrence(&payload.identity.range, owner)
-                    && !self.replayed_window_owners.contains(&(payload.identity.request_id, owner.clone()))
+        let returned = self
+            .retained_word_decodes
+            .iter()
+            .filter(|payload| {
+                owners.iter().any(|(_, owner)| {
+                    range_overlaps_occurrence(&payload.identity.range, owner)
+                        && !self
+                            .replayed_window_owners
+                            .contains(&(payload.identity.request_id, owner.clone()))
+                })
             })
-        }).cloned().collect::<Vec<_>>();
+            .cloned()
+            .collect::<Vec<_>>();
         for payload in returned {
             self.admit_completed_window(ev_tx, &payload, false);
         }
     }
 
-
-
-
     /// At most one extra job; every normal window already queued or held wins.
-
 
     fn complete_word_trial(
         &mut self,
@@ -3255,8 +3261,6 @@ impl AppleSealState {
         (true, admitted)
     }
 
-
-
     /// A scheduled return offers every covered dispute its third witness before
     /// ordinary admission. The ledger requires full source and frame freshness
     /// for each component, including owners qualified after the original return.
@@ -3272,8 +3276,10 @@ impl AppleSealState {
             || payload.identity.range.session != self.session_id
             || payload.identity.range.capture_epoch != self.capture_epoch
             || payload.segments.is_empty()
-            || payload.segments.iter().any(|segment| segment.grain
-                != crate::stt::tail_provider::TailSegmentGrain::Word)
+            || payload
+                .segments
+                .iter()
+                .any(|segment| segment.grain != crate::stt::tail_provider::TailSegmentGrain::Word)
         {
             return (0, false);
         }
@@ -3427,7 +3433,10 @@ impl AppleSealState {
         self.flush_cloud_commits(ev_tx);
         self.refinement_clock = now;
         if self.refinement_lane_lost
-            || self.tail_patch.as_ref().is_some_and(mpsc::Sender::is_closed)
+            || self
+                .tail_patch
+                .as_ref()
+                .is_some_and(mpsc::Sender::is_closed)
         {
             self.tail_patch = None;
             self.refinement_lane_lost = true;
@@ -3804,8 +3813,7 @@ impl AppleSealState {
         let valid = payload.as_ref().is_some_and(|payload| {
             payload.identity == job.request_identity
                 && payload.validate().is_ok()
-                && payload.evidence.source
-                    == crate::stt::tail_provider::TailEvidenceSource::Whisper
+                && payload.evidence.source == crate::stt::tail_provider::TailEvidenceSource::Whisper
                 && payload.evidence.timing_quality
                     == crate::stt::tail_provider::TailTimingQuality::ExactSampleRange
                 && payload.evidence.stability
@@ -3858,7 +3866,9 @@ impl AppleSealState {
         let admit_sample_start = identity.range.sample_start;
         let admit_sample_end = identity.range.sample_end;
         let payload = Some(returned);
-        let exact_open_members = self.unsealed_word_owners().into_iter()
+        let exact_open_members = self
+            .unsealed_word_owners()
+            .into_iter()
             .filter(|(_, owner)| range_overlaps_occurrence(&identity.range, owner))
             .collect::<Vec<_>>();
         let mut mutation_admitted = false;
@@ -3916,10 +3926,7 @@ impl AppleSealState {
             ledger.record_speech_evidence(&speech);
             self.record_decode_fence_measurement(
                 &mut ledger,
-                Some((
-                    identity.range.sample_start,
-                    identity.range.sample_end,
-                )),
+                Some((identity.range.sample_start, identity.range.sample_end)),
             );
             segments.last().is_some_and(|last| {
                 ledger.decode_word_fence_incomplete(
@@ -3936,7 +3943,10 @@ impl AppleSealState {
         if edge_incomplete {
             let last_index = segments.len() - 1;
             for ((_, owner), route) in owners.iter().zip(&mut routes) {
-                if self.replayed_window_owners.contains(&(request_id, owner.clone())) {
+                if self
+                    .replayed_window_owners
+                    .contains(&(request_id, owner.clone()))
+                {
                     continue;
                 }
                 if let Some(position) = route
@@ -3950,16 +3960,16 @@ impl AppleSealState {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .require_text_recovery(owner);
-                    self.pending_whisper_stubs.push((
-                        identity.clone(),
-                        owner.clone(),
-                        stub,
-                    ));
+                    self.pending_whisper_stubs
+                        .push((identity.clone(), owner.clone(), stub));
                 }
             }
         }
         for (index, ((member_id, occurrence), route)) in owners.iter().zip(&routes).enumerate() {
-            if !self.replayed_window_owners.insert((request_id, occurrence.clone())) {
+            if !self
+                .replayed_window_owners
+                .insert((request_id, occurrence.clone()))
+            {
                 continue;
             }
             if word_grain {
@@ -3970,10 +3980,7 @@ impl AppleSealState {
                         occurrence,
                         (
                             request_id,
-                            Some((
-                                identity.range.sample_start,
-                                identity.range.sample_end,
-                            )),
+                            Some((identity.range.sample_start, identity.range.sample_end)),
                         ),
                         RoutedWords {
                             pins: &route.exclusive,
@@ -6452,7 +6459,11 @@ fn reconcile_terminal_coverage(
     let threshold_samples =
         u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
     let speech = coverage_speech_evidence(state);
-    let retained = state.retained_word_decodes.iter().cloned().collect::<Vec<_>>();
+    let retained = state
+        .retained_word_decodes
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
     for payload in retained {
         let uncovered = {
             let ledger = state
@@ -7777,7 +7788,10 @@ fn apple_stream_worker(
         && state.cloud_commit_retry.is_empty()
         && state.cloud_inflight.is_empty()
     {
-        while state.planned_work_pending() || !state.refinement_submitted.is_empty() || !state.refinement_pending.is_empty() {
+        while state.planned_work_pending()
+            || !state.refinement_submitted.is_empty()
+            || !state.refinement_pending.is_empty()
+        {
             let outstanding = state.tail_patch_awaiting_completion();
             if !state.stop_refinements_tick(&ev_tx, Instant::now(), stop_deadline) {
                 tail_patch_timeout_residue = outstanding;
@@ -7799,13 +7813,16 @@ fn apple_stream_worker(
     } else {
         // Live-final admission has already settled before the archive handoff.
         // Remaining observer/refinement work stays a post-delivery revision.
-        while state.planned_work_pending() || !state.refinement_submitted.is_empty()
+        while state.planned_work_pending()
+            || !state.refinement_submitted.is_empty()
             || !state.refinement_pending.is_empty()
             || !state.cloud_inflight.is_empty()
         {
             let outstanding = state.tail_patch_awaiting_completion();
             let now = Instant::now();
-            if (state.planned_work_pending() || !state.refinement_submitted.is_empty() || !state.refinement_pending.is_empty())
+            if (state.planned_work_pending()
+                || !state.refinement_submitted.is_empty()
+                || !state.refinement_pending.is_empty())
                 && !state.stop_refinements_tick(&ev_tx, now, stop_deadline)
             {
                 tail_patch_timeout_residue = outstanding;

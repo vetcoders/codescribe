@@ -1572,12 +1572,7 @@ impl LocalWhisperEngine {
                 let mel = mel
                     .as_ref()
                     .ok_or_else(|| anyhow!("Whisper mel missing for encoder forward"))?;
-                self.encoder_forward_observed(
-                    mel,
-                    samples_16k.len(),
-                    "transcription",
-                    control,
-                )?
+                self.encoder_forward_observed(mel, samples_16k.len(), "transcription", control)?
             }
         };
         control.check()?;

@@ -1,26 +1,9 @@
-//! Bounded per-session PCM retention for the Apple progressive live path.
+//! Bounded recorder PCM on the original capture sample clock.
 //!
-//! The Apple path forwards captured PCM straight into one long-lived SFSpeech
-//! request and then drops it. Nothing mid-session can re-read the audio, so
-//! there is no window for Layer 1 tail-patch to hand to Whisper: a sealed
-//! `UtteranceFinal` carries an `end_ts` but no way back to the samples it came
-//! from.
-//!
-//! This buffer is that way back. It keeps a bounded, drop-oldest tail of the
-//! session's samples indexed by absolute sample offset, so an utterance
-//! boundary expressed in seconds resolves to the exact PCM span behind it.
-//!
-//! Contract notes:
-//! - Time is **session time**: seconds since the first pushed sample, the same
-//!   clock `apple_stream_worker` derives `audio_secs` from. It is NOT wall
-//!   clock and NOT the capture device clock.
-//! - `window` is honest about what it lost. A range that fell off the retention
-//!   cap returns `None` rather than a silently short slice — a tail-patch fed a
-//!   truncated window would rewrite committed canvas from the wrong audio.
-//! - Non-finite bounds (NaN / ±inf) are rejected, never coerced. `f32 as u64`
-//!   maps NaN to 0 and saturates infinities, which would turn a corrupt
-//!   timestamp into a plausible-looking window. Same class as the non-finite
-//!   `end_ts` guard on the stop boundary.
+//! The work plan selects integer sample bounds independently of recognizer
+//! phrases. Retention never concatenates silence or silently crops a request.
+//! Evicted or future samples refuse the whole range; capture time keeps advancing
+//! after eviction. Seconds are only readouts derived from the original rate.
 
 use std::collections::VecDeque;
 
@@ -84,42 +67,6 @@ impl LiveAudioBuffer {
         }
     }
 
-    /// Samples covering `[from_secs, to_secs)` in session time.
-    ///
-    /// `None` when the bounds are not finite, are inverted, start before what
-    /// retention still holds, start past the audio seen so far, or end more
-    /// than `CLAMP_TOLERANCE_SECS` past it. Within that tolerance the upper
-    /// bound is clamped — a boundary landing a rounding step past the last
-    /// pushed chunk is quantisation, not missing audio.
-    ///
-    /// Refusing beats truncating: a short window looks like a success and would
-    /// address the wrong audio.
-    #[cfg(test)]
-    pub(crate) fn window(&self, from_secs: f32, to_secs: f32) -> Option<Vec<f32>> {
-        self.window_with_range(from_secs, to_secs)
-            .map(|window| window.samples)
-    }
-
-    /// Release everything before `secs` — audio already committed downstream
-    /// can never be re-cut, so holding it is pure footprint.
-    #[cfg(test)]
-    pub(crate) fn committed_through(&mut self, secs: f32) {
-        let Some(index) = self.index_for(secs) else {
-            return;
-        };
-        if index <= self.start_index {
-            return;
-        }
-        let drop_n = ((index - self.start_index) as usize).min(self.samples.len());
-        self.samples.drain(..drop_n);
-        self.start_index = self.start_index.saturating_add(drop_n as u64);
-        // `drain` keeps the allocation; hand it back once it dwarfs what we
-        // actually hold, otherwise a long session pays peak footprint forever.
-        if self.samples.capacity() > 4 * self.samples.len().max(1) {
-            self.samples.shrink_to_fit();
-        }
-    }
-
     /// Retained sample count.
     pub(crate) fn len(&self) -> usize {
         self.samples.len()
@@ -147,7 +94,7 @@ impl LiveAudioBuffer {
 
     /// Cut `[sample_start, sample_end)` on the capture PCM clock.
     ///
-    /// `None` when the range is inverted or has already fallen off retention.
+    /// `None` when the range is inverted, evicted, or extends past capture.
     /// Both bounds address the capture sample clock directly.
     pub(crate) fn window_by_samples(
         &self,
@@ -157,247 +104,134 @@ impl LiveAudioBuffer {
         if sample_end < sample_start
             || sample_start < self.start_index
             || sample_start > self.end_index
+            || sample_end > self.end_index
         {
             return None;
         }
-        let to = sample_end.min(self.end_index);
         let lo = (sample_start - self.start_index) as usize;
-        let hi = (to - self.start_index) as usize;
+        let hi = (sample_end - self.start_index) as usize;
         Some(ResolvedAudioWindow {
             samples: self.samples.range(lo..hi).copied().collect(),
             sample_start,
-            sample_end: to,
+            sample_end,
         })
     }
-
 }
 
-/// Retention, window honesty, commit release, and F3 end_ts mapping fixtures.
+/// Capture sample addressing, bounded retention, and unmodified PCM fixtures.
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Session sample rate used by all retention fixtures (16 kHz mono).
     const RATE: u32 = 16_000;
-    /// Capture-sized push quantum so tests exercise chunk quantisation.
-    const CHUNK: usize = 1024;
 
-    /// Push `samples` through the buffer in capture-sized chunks, the way the
-    /// worker receives them — so every test exercises chunk quantisation.
-    fn push_chunked(buffer: &mut LiveAudioBuffer, samples: &[f32]) {
-        for chunk in samples.chunks(CHUNK) {
-            buffer.push(chunk);
-        }
-    }
-
-    /// Ramp signal: sample at index `i` has value `i as f32`, so any slice
-    /// identifies its own absolute offset.
     fn ramp(len: usize) -> Vec<f32> {
         (0..len).map(|i| i as f32).collect()
     }
 
-    /// Half-open `[1s, 2s)` resolves to exactly one second of ramp samples.
-    #[test]
-    fn window_returns_the_requested_span_at_session_rate() {
-        let mut buffer = LiveAudioBuffer::new(RATE, DEFAULT_RETENTION_SECS);
-        push_chunked(&mut buffer, &ramp(RATE as usize * 3));
-
-        let window = buffer.window(1.0, 2.0).expect("retained range");
-        assert_eq!(window.len(), RATE as usize);
-        assert_eq!(window[0], RATE as f32);
-        assert_eq!(*window.last().unwrap(), (2 * RATE - 1) as f32);
+    fn push_chunked(buffer: &mut LiveAudioBuffer, samples: &[f32]) {
+        for chunk in samples.chunks(1024) {
+            buffer.push(chunk);
+        }
     }
 
-    /// Window bounds need not land on CHUNK multiples (cross-chunk honesty).
     #[test]
-    fn window_spans_capture_chunk_boundaries() {
+    fn requested_sample_span_keeps_original_coordinates_and_values() {
         let mut buffer = LiveAudioBuffer::new(RATE, DEFAULT_RETENTION_SECS);
-        push_chunked(&mut buffer, &ramp(RATE as usize * 2));
-
-        // 0.05 s = 800 samples — deliberately not a CHUNK multiple.
-        let window = buffer.window(0.05, 0.15).expect("retained range");
-        assert_eq!(window.len(), 1600);
-        assert_eq!(window[0], 800.0);
-        assert_eq!(*window.last().unwrap(), 2399.0);
+        push_chunked(&mut buffer, &ramp(48_000));
+        let window = buffer.window_by_samples(16_000, 32_000).unwrap();
+        assert_eq!((window.sample_start, window.sample_end), (16_000, 32_000));
+        assert_eq!(window.samples, ramp(48_000)[16_000..32_000]);
     }
 
-    /// Cap drop-oldest: evicted ranges are `None`, not silently short.
     #[test]
-    fn cap_evicts_oldest_and_evicted_ranges_report_none() {
-        // 1 s cap, 3 s pushed — the first two seconds are gone.
+    fn sample_bounds_cross_capture_chunk_boundaries_without_rounding() {
+        let mut buffer = LiveAudioBuffer::new(RATE, DEFAULT_RETENTION_SECS);
+        push_chunked(&mut buffer, &ramp(32_000));
+        let window = buffer.window_by_samples(800, 2400).unwrap();
+        assert_eq!(window.samples.len(), 1600);
+        assert_eq!(window.samples[0], 800.0);
+        assert_eq!(*window.samples.last().unwrap(), 2399.0);
+    }
+
+    #[test]
+    fn eviction_refuses_old_pcm_and_does_not_reset_capture_clock() {
         let mut buffer = LiveAudioBuffer::new(RATE, 1.0);
-        push_chunked(&mut buffer, &ramp(RATE as usize * 3));
-
-        assert!(
-            buffer.window(0.0, 0.5).is_none(),
-            "evicted range must be None"
-        );
-        assert!(buffer.len() <= RATE as usize);
+        push_chunked(&mut buffer, &ramp(48_000));
+        assert!(buffer.window_by_samples(0, 8000).is_none());
+        assert_eq!(buffer.len(), 16_000);
+        assert_eq!(buffer.retained_start_sample(), 32_000);
         assert_eq!(buffer.retained_start_secs(), 2.0);
+        assert_eq!(buffer.session_sample_end(), 48_000);
         assert_eq!(buffer.session_secs(), 3.0);
-
-        let window = buffer.window(2.5, 3.0).expect("retained tail");
-        assert_eq!(window.len(), RATE as usize / 2);
-        assert_eq!(window[0], (RATE as f32) * 2.5);
-    }
-
-    /// `committed_through` frees retained PCM that can never be re-cut.
-    #[test]
-    fn committed_through_releases_retained_samples() {
-        let mut buffer = LiveAudioBuffer::new(RATE, DEFAULT_RETENTION_SECS);
-        push_chunked(&mut buffer, &ramp(RATE as usize * 4));
-        assert_eq!(buffer.len(), RATE as usize * 4);
-
-        buffer.committed_through(3.0);
-
-        assert_eq!(buffer.len(), RATE as usize);
-        assert!(
-            buffer.window(2.0, 2.5).is_none(),
-            "committed audio is released"
-        );
-        let window = buffer.window(3.5, 4.0).expect("uncommitted tail retained");
-        assert_eq!(window[0], (RATE as f32) * 3.5);
-    }
-
-    /// Same class as the non-finite `end_ts` guard on the stop boundary: a
-    /// corrupt timestamp must refuse to address audio, not silently resolve to
-    /// sample 0 (NaN) or the whole session (inf) through an `as u64` cast.
-    #[test]
-    fn non_finite_and_negative_bounds_are_refused() {
-        let mut buffer = LiveAudioBuffer::new(RATE, DEFAULT_RETENTION_SECS);
-        push_chunked(&mut buffer, &ramp(RATE as usize));
-
-        assert!(buffer.window(f32::NAN, 0.5).is_none());
-        assert!(buffer.window(0.0, f32::NAN).is_none());
-        assert!(buffer.window(f32::INFINITY, 0.5).is_none());
-        assert!(buffer.window(0.0, f32::NEG_INFINITY).is_none());
-        assert!(buffer.window(-1.0, 0.5).is_none());
-        assert!(buffer.window(0.5, 0.1).is_none(), "inverted range");
-        // A corrupt bound must not prune the buffer either.
-        buffer.committed_through(f32::NAN);
-        assert_eq!(buffer.len(), RATE as usize);
-    }
-
-    /// Past-end: small overshoot clamps; large overshoot / past start refuse.
-    #[test]
-    fn window_past_the_audio_seen_so_far_is_refused_but_the_edge_is_clamped() {
-        let mut buffer = LiveAudioBuffer::new(RATE, DEFAULT_RETENTION_SECS);
-        push_chunked(&mut buffer, &ramp(RATE as usize));
-
-        // Starts beyond anything captured — nothing honest to return.
-        assert!(buffer.window(2.0, 3.0).is_none());
-        // Ends within a chunk-quantisation step of the last sample — clamp.
-        let window = buffer.window(0.9, 1.05).expect("clamped to audio seen");
-        assert_eq!(window.len(), RATE as usize / 10);
-        // Ends well past the audio seen — that is a disagreeing clock, not
-        // rounding. A short window here would silently mis-address audio.
-        assert!(
-            buffer.window(0.9, 1.5).is_none(),
-            "overshoot beyond chunk tolerance must refuse, not truncate"
+        assert_eq!(
+            buffer.window_by_samples(40_000, 48_000).unwrap().samples,
+            ramp(48_000)[40_000..]
         );
     }
 
-    // ── F3 falsification: Apple `end_ts` → PCM window mapping ───────────────
-
-    /// Root-mean-square of a slice — the speech/silence discriminator used by
-    /// the boundary fixture below.
-    fn rms(samples: &[f32]) -> f32 {
-        if samples.is_empty() {
-            return 0.0;
-        }
-        (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
-    }
-
-    /// Session-time offsets, within `window`, of the first and last 10 ms block
-    /// carrying speech-level energy.
-    fn speech_edges_secs(window: &[f32]) -> Option<(f32, f32)> {
-        let block = RATE as usize / 100; // 10 ms
-        let mut first = None;
-        let mut last = None;
-        for (i, chunk) in window.chunks(block).enumerate() {
-            if rms(chunk) > 0.05 {
-                first.get_or_insert(i);
-                last = Some(i);
-            }
-        }
-        let (first, last) = (first?, last?);
-        Some((
-            first as f32 * block as f32 / RATE as f32,
-            (last + 1) as f32 * block as f32 / RATE as f32,
-        ))
-    }
-
-    /// Synthesise a session whose speech spans are known exactly: a 220 Hz tone
-    /// inside each span, digital silence outside.
-    fn fixture_session(total_secs: f32, speech_spans: &[(f32, f32)]) -> Vec<f32> {
-        let total = (total_secs * RATE as f32) as usize;
-        (0..total)
-            .map(|i| {
-                let t = i as f32 / RATE as f32;
-                if speech_spans.iter().any(|&(a, b)| t >= a && t < b) {
-                    (std::f32::consts::TAU * 220.0 * t).sin() * 0.5
-                } else {
-                    0.0
-                }
-            })
-            .collect()
-    }
-
-    /// F3 (go/no-go for W2-A): an utterance boundary expressed as `end_ts`
-    /// must resolve, via `window(prev_end, end_ts)`, to the audio that actually
-    /// produced it — within ±0.2 s at both edges.
-    ///
-    /// This measures the retention path's own clock: capture chunking, sample
-    /// indexing and second↔index rounding. It holds the buffer to the tolerance
-    /// W2-A needs. It does NOT measure whether SFSpeech's reported `end_ts`
-    /// agrees with the session clock — that is an engine-side question the
-    /// bridge probe answers, and it is stated as such in the report.
     #[test]
-    fn utterance_end_ts_maps_to_its_audio_window_within_tolerance() {
-        /// F3 go/no-go edge tolerance (seconds) for end_ts → PCM mapping.
-        const TOLERANCE: f32 = 0.2;
-        let spans = [(0.5f32, 2.0f32), (2.5, 4.0), (4.4, 5.6)];
-        let session = fixture_session(6.0, &spans);
-
+    fn even_one_sample_past_capture_is_refused_without_clamping() {
         let mut buffer = LiveAudioBuffer::new(RATE, DEFAULT_RETENTION_SECS);
-        push_chunked(&mut buffer, &session);
-
-        // Apple seals utterances at the end of each span; the consumer resolves
-        // each one against the previous boundary, exactly as W2-A will.
-        let mut prev_end = 0.0f32;
-        for (i, &(speech_start, speech_end)) in spans.iter().enumerate() {
-            let end_ts = speech_end;
-            let window = buffer.window(prev_end, end_ts).unwrap_or_else(|| {
-                panic!("utterance {i}: window({prev_end}, {end_ts}) unresolved")
-            });
-
-            let (rel_start, rel_end) = speech_edges_secs(&window)
-                .unwrap_or_else(|| panic!("utterance {i}: silent window"));
-            let measured_start = prev_end + rel_start;
-            let measured_end = prev_end + rel_end;
-
-            let start_drift = (measured_start - speech_start).abs();
-            let end_drift = (measured_end - speech_end).abs();
-            // Printed so the F3 go/no-go carries numbers, not just a green tick
-            // (`cargo test ... -- --nocapture`).
-            println!(
-                "F3 utterance {i}: window({prev_end:.3}, {end_ts:.3}) \
-                 start expected {speech_start:.3}s measured {measured_start:.3}s drift {start_drift:.4}s | \
-                 end expected {speech_end:.3}s measured {measured_end:.3}s drift {end_drift:.4}s"
-            );
+        buffer.push(&ramp(16_000));
+        for (start, end) in [
+            (0, 16_001),
+            (14_400, 16_800),
+            (32_000, 48_000),
+            (8000, 1600),
+            (0, u64::MAX),
+        ] {
             assert!(
-                start_drift <= TOLERANCE,
-                "utterance {i}: start drift {start_drift:.4}s > {TOLERANCE}s \
-                 (expected {speech_start:.3}s, measured {measured_start:.3}s)"
+                buffer.window_by_samples(start, end).is_none(),
+                "{start}..{end}"
             );
-            assert!(
-                end_drift <= TOLERANCE,
-                "utterance {i}: end drift {end_drift:.4}s > {TOLERANCE}s \
-                 (expected {speech_end:.3}s, measured {measured_end:.3}s)"
-            );
-
-            prev_end = end_ts;
         }
+        assert_eq!(
+            buffer
+                .window_by_samples(14_400, 16_000)
+                .unwrap()
+                .samples
+                .len(),
+            1600
+        );
+        assert_eq!(buffer.len(), 16_000);
+        assert_eq!(buffer.session_sample_end(), 16_000);
+    }
+
+    #[test]
+    fn empty_capture_and_empty_chunks_do_not_invent_audio() {
+        let mut buffer = LiveAudioBuffer::new(RATE, DEFAULT_RETENTION_SECS);
+        buffer.push(&[]);
+        assert_eq!(buffer.len(), 0);
+        assert_eq!(buffer.session_sample_end(), 0);
+        assert!(buffer.window_by_samples(0, 1).is_none());
+        assert!(buffer.window_by_samples(0, 0).unwrap().samples.is_empty());
+    }
+
+    #[test]
+    fn fractional_retention_uses_each_original_capture_rate() {
+        for rate in [100_u32, 16_000, 44_100, 48_000] {
+            let mut buffer = LiveAudioBuffer::new(rate, 0.5);
+            buffer.push(&ramp(rate as usize));
+            let count = (f64::from(rate) * 0.5).round() as u64;
+            assert_eq!(buffer.len() as u64, count);
+            assert_eq!(buffer.session_sample_end(), u64::from(rate));
+            assert_eq!(buffer.retained_start_sample(), u64::from(rate) - count);
+        }
+    }
+
+    #[test]
+    fn speech_and_silence_survive_cross_chunk_sample_addressing() {
+        let mut pcm = vec![0.0; 96_000];
+        for (start, end) in [(8000, 32_000), (40_000, 64_000), (70_400, 89_600)] {
+            pcm[start..end].fill(0.25);
+        }
+        let mut buffer = LiveAudioBuffer::new(RATE, DEFAULT_RETENTION_SECS);
+        push_chunked(&mut buffer, &pcm);
+        let window = buffer.window_by_samples(4800, 91_200).unwrap();
+        assert_eq!(window.samples, pcm[4800..91_200]);
+        assert_eq!(window.samples.iter().filter(|v| **v > 0.0).count(), 67_200);
+        assert_eq!(window.sample_start, 4800);
+        assert_eq!(window.sample_end, 91_200);
     }
 }
 

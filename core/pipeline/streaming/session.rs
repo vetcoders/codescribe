@@ -1190,21 +1190,13 @@ mod local_execution_tests {
     }
 
     #[test]
-    fn text_recovery_budget_replaces_an_expired_live_drain() {
+    fn expired_capture_drain_cannot_be_reopened_by_another_phase() {
         let owner = LocalExecutionOwner::default();
-        let expired = owner.begin_drain(Duration::ZERO);
+        let deadline = owner.begin_drain(Duration::ZERO);
         assert!(owner.spawn(|_| Ok(())).is_err());
-        let recovery = owner.begin_text_recovery(Duration::from_secs(20));
-        assert!(recovery > expired);
-        let receiver = owner
-            .spawn(|_| Ok(7u8))
-            .expect("a fresh recovery budget admits work the live drain already refused");
-        assert_eq!(receiver.blocking_recv().unwrap().unwrap(), 7);
-        assert_eq!(
-            owner.begin_drain(Duration::from_secs(60)),
-            recovery,
-            "begin_drain still cannot move the recovery deadline later"
-        );
+        assert_eq!(owner.begin_drain(Duration::from_secs(20)), deadline);
+        assert!(owner.spawn(|_| Ok(7u8)).is_err());
+        assert_eq!(owner.begin_drain(Duration::from_secs(60)), deadline);
     }
 
     #[test]
