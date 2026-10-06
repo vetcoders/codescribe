@@ -11,7 +11,12 @@ struct LicensePanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsPageHeader(String(localized: "License"))
+      SettingsPageHeader(
+        String(localized: "License"),
+        blurb: String(
+          localized: "Transcription is available in Basic mode. A license unlocks Agent mode.",
+          comment: "License panel: what is available without a key and what a license unlocks")
+      )
       VStack(spacing: 0) {
         RuntimeRow(
           key: stateRowLabel,
@@ -21,8 +26,9 @@ struct LicensePanel: View {
         if model.licenseStatus.sku != nil {
           divider
           RuntimeRow(
-            key: String(localized: "Plan"), value: planLabel, tint: false,
-            mono: planLabel == model.licenseStatus.sku,
+            key: String(localized: "Mode", comment: "License panel: operating mode"),
+            value: modeLabel, tint: false,
+            mono: model.licenseStatus.sku != "agentic-lifetime",
             trailing: .none)
         }
         if let updatesUntil = model.licenseStatus.updatesUntil {
@@ -33,12 +39,12 @@ struct LicensePanel: View {
             mono: true, trailing: .none)
         }
       }
-      .padding(.top, CSSpace.section)
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
           .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
+      .padding(.top, CSSpace.section)
 
       SettingsSectionLabel(String(localized: "License key"))
         .padding(.top, CSSpace.section)
@@ -59,7 +65,7 @@ struct LicensePanel: View {
         .padding(.top, CSSpace.control)
         .accessibilityLabel("Codescribe license key")
 
-      HStack(spacing: 12) {
+      HStack(spacing: CSSpace.md) {
         Button("Activate") {
           let submitted = key
           Task { @MainActor in
@@ -84,7 +90,7 @@ struct LicensePanel: View {
         .accessibilityIdentifier("settings-license-get")
 
         if model.licenseStatus.state != .unlicensed {
-          Button("Remove key from this Mac", role: .destructive) {
+          Button("Remove key", role: .destructive) {
             Task { @MainActor in await model.removeLicense() }
           }
           .csFocusRing()
@@ -92,7 +98,7 @@ struct LicensePanel: View {
           .disabled(model.licenseBusy)
         }
       }
-      .padding(.top, 12)
+      .padding(.top, CSSpace.md)
 
       if let error = model.licenseError {
         Text(error)
@@ -116,13 +122,15 @@ struct LicensePanel: View {
         .padding(.top, 10)
       }
     }
+    .frame(maxWidth: 560, alignment: .leading)
     .padding(.horizontal, CSSpace.xl)
     .padding(.vertical, CSSpace.section)
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   /// Known SKUs display the operating mode. Unknown identifiers stay visible
   /// so support can identify them without inventing an offer name.
-  private var planLabel: String {
+  private var modeLabel: String {
     switch model.licenseStatus.sku {
     case nil: String(localized: "Basic mode", comment: "Operating mode: basic transcription")
     case "agentic-lifetime": String(localized: "Agent mode", comment: "Operating mode: agent features")
@@ -132,7 +140,7 @@ struct LicensePanel: View {
 
   private var stateRowLabel: String {
     if model.licenseReadState == .available, model.licenseStatus.state == .unlicensed {
-      return String(localized: "Mode", comment: "License panel: operating mode when no key is stored")
+      return String(localized: "Mode", comment: "License panel: operating mode")
     }
     return String(localized: "Status", comment: "License panel: current license status")
   }

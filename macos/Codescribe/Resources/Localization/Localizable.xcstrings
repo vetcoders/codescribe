@@ -7271,7 +7271,7 @@
       }
     },
     "Mode" : {
-      "comment" : "License panel: operating mode when no key is stored",
+      "comment" : "License panel: operating mode",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9778,12 +9778,12 @@
         }
       }
     },
-    "Remove key from this Mac" : {
+    "Remove key" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Usuń klucz z tego Maca"
+            "state" : "translated",
+            "value" : "Usuń klucz"
           }
         }
       }
@@ -13324,6 +13324,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Transkrypcja przerwana"
+          }
+        }
+      }
+    },
+    "Transcription is available in Basic mode. A license unlocks Agent mode." : {
+      "comment" : "License panel: what is available without a key and what a license unlocks",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcja jest dostępna w trybie podstawowym. Licencja odblokowuje tryb agentowy."
           }
         }
       }
