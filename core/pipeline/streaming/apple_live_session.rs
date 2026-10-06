@@ -578,10 +578,198 @@ struct TailPatchRequest {
 // Bounds include unsent owned PCM; source retention remains independently bounded.
 const LIVE_REFINEMENT_PENDING_CAP: usize = 8;
 const LIVE_REFINEMENT_PCM_SECS: usize = 32;
+/// One decoder window and the active speculative capture horizon. The larger
+/// pending-PCM cap above bounds retained transport memory, not recognition scope.
+const CAPTURE_DECODE_WINDOW_SECS: u64 = 9;
 const LIVE_WORKER_QUANTUM: Duration = Duration::from_millis(40);
 /// Bounds the complete live obligation, including time before enqueue and
 /// overlap accounting. Stop retains its separate, shorter drain budget.
 const LIVE_WHISPER_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecodePhase {
+    Live,
+    Terminal,
+}
+
+impl DecodePhase {
+    fn limit(self) -> u8 {
+        match self {
+            Self::Live => 2,
+            Self::Terminal => 3,
+        }
+    }
+
+    fn code(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Terminal => "terminal",
+        }
+    }
+}
+
+/// Work accounting only. AcousticLedger alone owns words, evidence and seals.
+/// Counts describe half-open capture intervals and survive horizon advancement:
+/// a failed job and a cancelled accepted job never acquire another free pass.
+struct CaptureDecodeBudget {
+    session: String,
+    capture_epoch: u64,
+    counts: BTreeMap<u64, u8>,
+    live_floor: u64,
+}
+
+impl CaptureDecodeBudget {
+    fn new(session: String, capture_epoch: u64) -> Self {
+        Self {
+            session,
+            capture_epoch,
+            counts: BTreeMap::new(),
+            live_floor: 0,
+        }
+    }
+
+    fn advance_live_horizon(&mut self, capture_end: u64, horizon_samples: u64) {
+        self.live_floor = self
+            .live_floor
+            .max(capture_end.saturating_sub(horizon_samples));
+    }
+
+    fn count_at(&self, sample: u64) -> u8 {
+        self.counts
+            .range(..=sample)
+            .next_back()
+            .map_or(0, |(_, count)| *count)
+    }
+
+    fn maximum(&self, start: u64, end: u64) -> u8 {
+        if start >= end {
+            return 0;
+        }
+        self.counts
+            .range(start..end)
+            .map(|(_, count)| *count)
+            .chain(std::iter::once(self.count_at(start)))
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn can_admit(&self, range: &TailSampleRange, phase: DecodePhase) -> bool {
+        range.session == self.session
+            && range.capture_epoch == self.capture_epoch
+            && range.sample_start < range.sample_end
+            && (phase == DecodePhase::Terminal || range.sample_start >= self.live_floor)
+            && self.maximum(range.sample_start, range.sample_end) < phase.limit()
+    }
+
+    /// Called only after live queue acceptance or immediately before Stop spawn.
+    /// The worker is the sole scheduler, so queue acceptance cannot race a debit.
+    fn record(&mut self, range: &TailSampleRange, phase: DecodePhase) -> bool {
+        if !self.can_admit(range, phase) {
+            self.receipt(range, phase, "refused");
+            return false;
+        }
+        let start_count = self.count_at(range.sample_start);
+        let end_count = self.count_at(range.sample_end);
+        self.counts.entry(range.sample_start).or_insert(start_count);
+        self.counts.entry(range.sample_end).or_insert(end_count);
+        for (_, count) in self.counts.range_mut(range.sample_start..range.sample_end) {
+            *count += 1;
+        }
+        self.receipt(range, phase, "reserved");
+        true
+    }
+
+    fn receipt(&self, range: &TailSampleRange, phase: DecodePhase, disposition: &'static str) {
+        info!(
+            session_id = %self.session,
+            capture_epoch = self.capture_epoch,
+            sample_start = range.sample_start,
+            sample_end = range.sample_end,
+            phase = phase.code(),
+            disposition,
+            maximum_passes = if range.sample_start < range.sample_end {
+                self.maximum(range.sample_start, range.sample_end)
+            } else {
+                0
+            },
+            pass_limit = phase.limit(),
+            live_floor = self.live_floor,
+            "capture_decode_budget"
+        );
+    }
+
+    /// Remove exhausted left context, never samples from the admission range.
+    fn available_suffix_start(&self, start: u64, end: u64, phase: DecodePhase) -> u64 {
+        if start >= end {
+            return end;
+        }
+        let mut available = start;
+        let mut cursor = start;
+        let mut count = self.count_at(start);
+        for (&boundary, &next_count) in self.counts.range((
+            std::ops::Bound::Excluded(start),
+            std::ops::Bound::Excluded(end),
+        )) {
+            if count >= phase.limit() {
+                available = boundary;
+            }
+            cursor = boundary;
+            count = next_count;
+        }
+        if cursor < end && count >= phase.limit() {
+            available = end;
+        }
+        if phase == DecodePhase::Live {
+            available = available.max(self.live_floor);
+        }
+        available
+    }
+
+    fn available_ranges(&self, range: &TailSampleRange, phase: DecodePhase) -> Vec<TailSampleRange> {
+        if range.session != self.session
+            || range.capture_epoch != self.capture_epoch
+            || range.sample_start >= range.sample_end
+        {
+            return Vec::new();
+        }
+        let mut boundaries = vec![range.sample_start];
+        boundaries.extend(
+            self.counts
+                .range((
+                    std::ops::Bound::Excluded(range.sample_start),
+                    std::ops::Bound::Excluded(range.sample_end),
+                ))
+                .map(|(sample, _)| *sample),
+        );
+        boundaries.push(range.sample_end);
+        let mut available: Vec<TailSampleRange> = Vec::new();
+        for pair in boundaries.windows(2) {
+            if self.count_at(pair[0]) >= phase.limit() {
+                continue;
+            }
+            let start = if phase == DecodePhase::Live {
+                pair[0].max(self.live_floor)
+            } else {
+                pair[0]
+            };
+            if start >= pair[1] {
+                continue;
+            }
+            if let Some(last) = available.last_mut()
+                && last.sample_end == start
+            {
+                last.sample_end = pair[1];
+            } else {
+                available.push(TailSampleRange {
+                    sample_start: start,
+                    sample_end: pair[1],
+                    ..range.clone()
+                });
+            }
+        }
+        available
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 enum RefinementFailure {
@@ -594,6 +782,7 @@ enum RefinementFailure {
     Deadline,
     NotScheduled,
     QualificationRefused,
+    DecodeBudget,
 }
 
 impl RefinementFailure {
@@ -608,6 +797,7 @@ impl RefinementFailure {
             Self::Deadline => "live_refinement_deadline",
             Self::NotScheduled => "live_refinement_not_scheduled",
             Self::QualificationRefused => "live_refinement_qualification_refused",
+            Self::DecodeBudget => "capture_decode_budget_reserved_for_stop",
         }
     }
 }
@@ -1829,7 +2019,9 @@ struct AppleSealState {
     /// Sealed fragments waiting to share one Whisper window (~5 segments).
     layer1_coalesce: Layer1Coalesce,
     refinement_pending: VecDeque<TailPatchRequest>,
+    decode_budget: CaptureDecodeBudget,
     word_trial_jobs: BTreeMap<(u64, u64, u64, u64), WordTrial>,
+    word_trials_deferred: Vec<WordTrial>,
     word_trials_stopping: bool,
     word_trial_started: Option<Instant>,
     refinement_submitted: BTreeMap<(u64, u64, u64, u64), TailPatchInFlight>,
@@ -2304,7 +2496,9 @@ impl AppleSealState {
             tail_patch: None,
             layer1_coalesce: Layer1Coalesce::default(),
             refinement_pending: VecDeque::new(),
+            decode_budget: CaptureDecodeBudget::new(session_id_for_energy.clone(), capture_epoch),
             word_trial_jobs: BTreeMap::new(),
+            word_trials_deferred: Vec::new(),
             word_trials_stopping: false,
             word_trial_started: None,
             refinement_submitted: BTreeMap::new(),
@@ -2961,7 +3155,9 @@ impl AppleSealState {
         decode_window_with_min_context(
             &range,
             &range,
-            self.whisper_context_window_samples(),
+            self.whisper_context_window_samples().min(
+                u64::from(self.sample_rate).saturating_mul(CAPTURE_DECODE_WINDOW_SECS),
+            ),
             0,
             self.pcm_floor_sample(),
         )
@@ -2970,7 +3166,8 @@ impl AppleSealState {
     /// Prepend retained PCM so a short admit span ends on at least
     /// `whisper_context_window_sec` of audio. Admit bounds stay put.
     fn extend_flush_context(&self, flush: &mut CoalesceFlush) {
-        let min_samples = self.whisper_context_window_samples();
+        let max_samples = u64::from(self.sample_rate).saturating_mul(CAPTURE_DECODE_WINDOW_SECS);
+        let min_samples = self.whisper_context_window_samples().min(max_samples);
         if min_samples == 0 || flush.admit_sample_end <= flush.admit_sample_start {
             return;
         }
@@ -3017,7 +3214,23 @@ impl AppleSealState {
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
         mut flush: CoalesceFlush,
     ) -> bool {
+        self.decode_budget.advance_live_horizon(
+            self.audio.session_sample_end(),
+            u64::from(self.sample_rate).saturating_mul(CAPTURE_DECODE_WINDOW_SECS),
+        );
         self.extend_flush_context(&mut flush);
+        let start = self.decode_budget.available_suffix_start(
+            flush.sample_start,
+            flush.sample_end,
+            DecodePhase::Live,
+        );
+        if start > flush.sample_start
+            && start <= flush.admit_sample_start
+            && start - flush.sample_start <= flush.audio.len() as u64
+        {
+            flush.audio.drain(..(start - flush.sample_start) as usize);
+            flush.sample_start = start;
+        }
         let identity = flush
             .member_occurrences
             .first()
@@ -3038,6 +3251,8 @@ impl AppleSealState {
                 })
         }) && flush.member_occurrences.len() == flush.member_ids.len()
             && flush.sample_end > flush.sample_start
+            && flush.sample_end - flush.sample_start
+                <= u64::from(self.sample_rate).saturating_mul(CAPTURE_DECODE_WINDOW_SECS)
             && flush.audio.len() as u64 == flush.sample_end - flush.sample_start;
         if !valid {
             self.note_window_refused_before_inference(RefinementFailure::InvalidIdentity);
@@ -3204,6 +3419,7 @@ impl AppleSealState {
         if !self.refinement_pending.is_empty()
             || !self.refinement_submitted.is_empty()
             || !self.pending_whisper_stubs.is_empty()
+            || !self.word_trials_deferred.is_empty()
             || !self.formatter_in_flight.is_empty()
             || !self.cloud_inflight.is_empty()
             || !self.cloud_uncommitted.is_empty()
@@ -3273,7 +3489,7 @@ impl AppleSealState {
         // Same bounded PCM lease as ordinary live work. Never crop the dispute
         // to fit that lease; no partial inference is a resolving trial.
         if decode_end.saturating_sub(decode_start)
-            > u64::from(self.sample_rate).saturating_mul(LIVE_REFINEMENT_PCM_SECS as u64)
+            > u64::from(self.sample_rate).saturating_mul(CAPTURE_DECODE_WINDOW_SECS)
         {
             return Err("scope_exceeds_budget");
         }
@@ -3305,7 +3521,8 @@ impl AppleSealState {
         }
         let context = (
             u64::from(self.sample_rate).saturating_mul(3),
-            self.pcm_floor_sample()..self.audio.session_sample_end(),
+            self.pcm_floor_sample().max(self.decode_budget.live_floor)
+                ..self.audio.session_sample_end(),
         );
         let trial = self
             .acoustic_ledger
@@ -3334,6 +3551,11 @@ impl AppleSealState {
             self.close_word_trial(&trial, "lane_unavailable");
             return;
         };
+        if !self.decode_budget.can_admit(&range, DecodePhase::Live) {
+            self.decode_budget.receipt(&range, DecodePhase::Live, "refused");
+            self.word_trials_deferred.push(trial);
+            return;
+        }
         let sequence = self
             .last_submission_sequence
             .checked_add(1)
@@ -3366,6 +3588,7 @@ impl AppleSealState {
         };
         match sender.try_send(request) {
             Ok(()) => {
+                self.decode_budget.record(&identity.range, DecodePhase::Live);
                 self.last_submission_sequence = sequence;
                 let key = inflight_key(sequence, &identity);
                 self.refinement_submitted.insert(
@@ -3550,9 +3773,22 @@ impl AppleSealState {
         });
         let mut words = 0;
         let mut admitted = false;
+        let deferred = std::mem::take(&mut self.word_trials_deferred);
+        for trial in deferred {
+            let covered = self.word_trial_range(&trial).is_ok_and(|required| {
+                range.sample_start <= required.sample_start
+                    && range.sample_end >= required.sample_end
+            });
+            if words < limit && covered {
+                admitted |= self.complete_word_trial(ev_tx, &trial, Some(payload)).1;
+                words += 1;
+            } else {
+                self.word_trials_deferred.push(trial);
+            }
+        }
         // Bound synchronous ledger work too. Any remaining components retain
         // their own trials; this never widens or crops the decoded PCM.
-        for _ in 0..limit {
+        for _ in words..limit {
             let next = self
                 .acoustic_ledger
                 .lock()
@@ -3613,6 +3849,34 @@ impl AppleSealState {
     /// One bounded nonblocking attempt per pending request, stopping at pressure.
     fn retry_refinements(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
         while let Some(mut request) = self.refinement_pending.pop_front() {
+            let range = &mut request.provider_request.identity.range;
+            let start = self.decode_budget.available_suffix_start(
+                range.sample_start,
+                range.sample_end,
+                DecodePhase::Live,
+            );
+            if start > range.sample_start
+                && start <= request.admit_sample_start
+                && start - range.sample_start <= request.audio.len() as u64
+            {
+                request.audio.drain(..(start - range.sample_start) as usize);
+                range.sample_start = start;
+            }
+            if !self
+                .decode_budget
+                .can_admit(&request.provider_request.identity.range, DecodePhase::Live)
+            {
+                self.decode_budget.receipt(
+                    &request.provider_request.identity.range,
+                    DecodePhase::Live,
+                    "refused",
+                );
+                self.note_window_refused_before_inference(RefinementFailure::DecodeBudget);
+                for (id, occurrence) in &request.member_occurrences {
+                    self.fail_refinement(ev_tx, *id, occurrence, RefinementFailure::DecodeBudget);
+                }
+                continue;
+            }
             let Some(sender) = self.tail_patch.as_ref() else {
                 for (id, occurrence) in &request.member_occurrences {
                     self.fail_refinement(ev_tx, *id, occurrence, RefinementFailure::LaneGone);
@@ -3633,6 +3897,8 @@ impl AppleSealState {
             };
             match sender.try_send(request) {
                 Ok(()) => {
+                    self.decode_budget
+                        .record(&inflight.request_identity.range, DecodePhase::Live);
                     for (_, occurrence) in &inflight.member_occurrences {
                         self.refinement_receipt(occurrence, "submitted");
                     }
@@ -3780,6 +4046,10 @@ impl AppleSealState {
     fn tick_refinements(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>, now: Instant) {
         self.flush_cloud_commits(ev_tx);
         self.refinement_clock = now;
+        self.decode_budget.advance_live_horizon(
+            self.audio.session_sample_end(),
+            u64::from(self.sample_rate).saturating_mul(CAPTURE_DECODE_WINDOW_SECS),
+        );
         if self.word_trial_started.is_some_and(|start| {
             now.saturating_duration_since(start) >= LIVE_WHISPER_SETTLEMENT_TIMEOUT
         }) || self.tail_patch.as_ref().is_none_or(mpsc::Sender::is_closed)
@@ -6873,6 +7143,7 @@ enum StopRangeAttempt {
     Ready(TailProviderPayload),
     MissingPcm,
     ForeignIdentity,
+    BudgetExhausted,
     Failed(anyhow::Error),
 }
 
@@ -6994,6 +7265,41 @@ fn admit_debt_occurrence_recovery(
         .iter()
         .filter(|segment| !segment.text.trim().is_empty())
         .collect();
+    if payload.validate().is_ok()
+        && payload.identity.range.session == state.session_id
+        && payload.identity.range.capture_epoch == state.capture_epoch
+        && payload.evidence.source == crate::stt::tail_provider::TailEvidenceSource::Whisper
+        && payload.evidence.timing_quality
+            == crate::stt::tail_provider::TailTimingQuality::ExactSampleRange
+        && payload.evidence.stability == crate::stt::tail_provider::TailEvidenceStability::Final
+        && payload.text.trim().is_empty()
+        && payload.segments.is_empty()
+    {
+        let speech = coverage_speech_evidence(state);
+        let owners = state.word_owners_in_window(
+            payload.identity.range.sample_start,
+            payload.identity.range.sample_end,
+            &[],
+        );
+        let mut ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ledger.record_speech_evidence(&speech);
+        for (_, owner) in &owners {
+            let mut observation = ledger.next_word_observation(
+                LedgerObservationProducer::Whisper,
+                payload.identity.request_id,
+                owner,
+            );
+            observation.request = payload.identity.request_id;
+            ledger.record_empty_decode_work(
+                &observation,
+                &OccurrenceIdentity::from(&payload.identity.range),
+            );
+        }
+        return !ledger.text_recovery_pending(occurrence);
+    }
     let word_grain = payload.evidence.segment_grain
         == crate::stt::tail_provider::TailSegmentGrain::Word
         && !substantive.is_empty()
@@ -7032,16 +7338,16 @@ fn admit_debt_occurrence_recovery(
             return false;
         }
         let owners = state.word_owners_in_window(
-            occurrence.sample_start,
-            occurrence.sample_end,
+            payload.identity.range.sample_start,
+            payload.identity.range.sample_end,
             &payload.segments,
         );
         let routes = state.route_overlap_pins(
             ev_tx,
             AdmitWindow {
                 request_id: payload.identity.request_id,
-                sample_start: occurrence.sample_start,
-                sample_end: occurrence.sample_end,
+                sample_start: payload.identity.range.sample_start,
+                sample_end: payload.identity.range.sample_end,
             },
             &owners,
             &payload.segments,
@@ -7196,16 +7502,62 @@ fn range_overlaps_occurrence(range: &TailSampleRange, occurrence: &OccurrenceIde
         && occurrence.sample_start < range.sample_end
 }
 
+/// Union the requested PCM once, then tile it without repeated context. Every
+/// returned tile is still only provider work; its exact pins must pass the
+/// existing occurrence, energy, lexical and seal gates.
+fn terminal_decode_windows(
+    mut ranges: Vec<TailSampleRange>,
+    max_samples: u64,
+) -> Vec<TailSampleRange> {
+    if max_samples == 0 {
+        return Vec::new();
+    }
+    ranges.retain(|range| range.sample_start < range.sample_end);
+    ranges.sort_by(|left, right| {
+        (&left.session, left.capture_epoch, left.sample_start, left.sample_end).cmp(&(
+            &right.session,
+            right.capture_epoch,
+            right.sample_start,
+            right.sample_end,
+        ))
+    });
+    let mut merged: Vec<TailSampleRange> = Vec::new();
+    for range in ranges {
+        if let Some(last) = merged.last_mut()
+            && last.session == range.session
+            && last.capture_epoch == range.capture_epoch
+            && range.sample_start <= last.sample_end
+        {
+            last.sample_end = last.sample_end.max(range.sample_end);
+        } else {
+            merged.push(range);
+        }
+    }
+    let mut windows = Vec::new();
+    for range in merged {
+        let mut start = range.sample_start;
+        while start < range.sample_end {
+            let end = start.saturating_add(max_samples).min(range.sample_end);
+            windows.push(TailSampleRange {
+                sample_start: start,
+                sample_end: end,
+                ..range.clone()
+            });
+            start = end;
+        }
+    }
+    windows
+}
+
 /// Compare committed occurrence coverage with the existing Silero speech
 /// ledger (or the capture energy ladder when Silero produced no spans).
 ///
-/// An occurrence that owes text recovery is requested on a window that ends
-/// at its `sample_end` and covers the configured context when the tail is
-/// shorter. The provider result is one whole-span observation of that
-/// identity. A material uncovered range that no pending
-/// debt occurrence owns keeps the gap path. Only mapped segments enter the
-/// ledger. Unscoped text, uncertain timing and a segment that escapes the
-/// requested span cannot manufacture occurrence evidence.
+/// Full-context lexical work runs first; remaining debt and uncovered speech
+/// share bounded, disjoint source windows. Returned pins keep their exact
+/// decoder range through Lexicon and ledger admission. LitePlus consumes the
+/// resulting engine document; it never grants another decode or a seal.
+/// Unscoped text, uncertain timing and partial word evidence cannot manufacture
+/// occurrence coverage, even when the remaining work budget is exhausted.
 fn repair_terminal_seal_coverage(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -7275,11 +7627,15 @@ where
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .has_word_conflicts();
     if initial.status == SealCoverageStatus::Complete && debt.is_empty() && !lexical_pending {
+        for trial in std::mem::take(&mut state.word_trials_deferred) {
+            state.close_word_trial(&trial, "source_dispute_already_settled");
+        }
         return initial;
     }
     // The live tail-patch drain already spent its own deadline. Recovery does
     // not lengthen that wait; it installs this phase's cap.
     execution.begin_text_recovery(SEAL_TEXT_RECOVERY_BUDGET);
+    state.word_trials_stopping = true;
 
     let mut ordinal = 0u64;
     let mut initial_published = false;
@@ -7294,6 +7650,15 @@ where
             });
             return StopRangeAttempt::MissingPcm;
         };
+        if window.sample_start != range.sample_start
+            || window.sample_end != range.sample_end
+            || window.samples.len() as u64 != range.sample_end.saturating_sub(range.sample_start)
+        {
+            return StopRangeAttempt::MissingPcm;
+        }
+        if !state.decode_budget.record(&range, DecodePhase::Terminal) {
+            return StopRangeAttempt::BudgetExhausted;
+        }
         let request = TailProviderRequest {
             identity: TailRequestIdentity {
                 request_id: u64::MAX - ordinal,
@@ -7339,80 +7704,16 @@ where
         });
     };
 
-    for occurrence in debt {
-        if occurrence.sample_end <= occurrence.sample_start {
-            continue;
-        }
-        let range = state.with_min_context(TailSampleRange {
-            session: occurrence.session.clone(),
-            capture_epoch: occurrence.capture_epoch,
-            sample_start: occurrence.sample_start,
-            sample_end: occurrence.sample_end,
-        });
-        match attempt(state, range) {
-            StopRangeAttempt::Ready(payload) => {
-                state.complete_covered_word_trials(ev_tx, &payload, true, 32, true);
-                admit_debt_occurrence_recovery(state, ev_tx, &occurrence, &payload);
-            }
-            StopRangeAttempt::Failed(error) => warn_failed(ev_tx, error),
-            StopRangeAttempt::MissingPcm | StopRangeAttempt::ForeignIdentity => {}
-        }
-    }
-
-    let (after_debt, still_pending) = {
-        let ledger = state
-            .acoustic_ledger
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (
-            ledger.assess_seal_coverage(
-                &state.session_id,
-                state.capture_epoch,
-                &speech_evidence,
-                threshold_samples,
-            ),
-            ledger.pending_text_recoveries(&state.session_id, state.capture_epoch),
-        )
-    };
-    // A range that still intersects pending debt was already requested as that
-    // occurrence. Asking for its speech sub-range admits an overlap the
-    // occurrence does not own.
-    for range in after_debt.uncovered_speech_ranges {
-        if range.sample_end.saturating_sub(range.sample_start) <= threshold_samples {
-            continue;
-        }
-        if still_pending
-            .iter()
-            .any(|occurrence| range_overlaps_occurrence(&range, occurrence))
-        {
-            continue;
-        }
-        let requested = state.with_min_context(range.clone());
-        match attempt(state, requested) {
-            StopRangeAttempt::Ready(payload) => {
-                state.complete_covered_word_trials(ev_tx, &payload, true, 32, true);
-                // The decode window may extend left of the gap. Containment
-                // stays on the uncovered speech range.
-                admit_full_pass_gap_segments(
-                    state,
-                    ev_tx,
-                    &payload,
-                    std::slice::from_ref(&range),
-                    threshold_samples,
-                    EnergyAdmission::QualifyFinalPassGap,
-                );
-            }
-            StopRangeAttempt::Failed(error) => warn_failed(ev_tx, error),
-            StopRangeAttempt::MissingPcm | StopRangeAttempt::ForeignIdentity => {}
-        }
-    }
-
+    // Lexical trials need their complete fresh context. Spend that reserved
+    // work first; the same return also accounts for its owners' decode scopes.
     loop {
-        let trial = state
-            .acoustic_ledger
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .next_word_trial(true);
+        let trial = state.word_trials_deferred.pop().or_else(|| {
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .next_word_trial(true)
+        });
         let Some(trial) = trial else {
             break;
         };
@@ -7420,11 +7721,17 @@ where
         match result {
             Ok(range) if execution.check().is_ok() => match attempt(state, range) {
                 StopRangeAttempt::Ready(payload) => {
-                    state.complete_word_trial_batch(ev_tx, &trial, Some(&payload), true)
+                    state.complete_word_trial_batch(ev_tx, &trial, Some(&payload), true);
+                    // The lexical return also carries work for pending acoustic
+                    // debt. It is never spent as a second provider invocation.
+                    admit_debt_occurrence_recovery(state, ev_tx, &trial.owner, &payload);
                 }
                 StopRangeAttempt::MissingPcm => state.close_word_trial(&trial, "pcm_unavailable"),
                 StopRangeAttempt::ForeignIdentity => {
                     state.close_word_trial(&trial, "foreign_completion")
+                }
+                StopRangeAttempt::BudgetExhausted => {
+                    state.close_word_trial(&trial, "capture_decode_budget_exhausted")
                 }
                 StopRangeAttempt::Failed(_) => {
                     state.close_word_trial(&trial, "cancelled_or_budget_exhausted")
@@ -7434,6 +7741,116 @@ where
             Err(reason) => state.close_word_trial(&trial, reason),
         }
     }
+    let max_samples = u64::from(state.sample_rate).saturating_mul(CAPTURE_DECODE_WINDOW_SECS);
+    let terminal_coverage = {
+        let ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        debt = ledger.pending_text_recoveries(&state.session_id, state.capture_epoch);
+        ledger.assess_seal_coverage(
+            &state.session_id,
+            state.capture_epoch,
+            &speech_evidence,
+            threshold_samples,
+        )
+    };
+    let ranges = debt
+        .iter()
+        .map(|occurrence| TailSampleRange {
+            session: occurrence.session.clone(),
+            capture_epoch: occurrence.capture_epoch,
+            sample_start: occurrence.sample_start,
+            sample_end: occurrence.sample_end,
+        })
+        .chain(
+            terminal_coverage
+                .uncovered_speech_ranges
+                .iter()
+                .filter(|range| {
+                    range.sample_end.saturating_sub(range.sample_start) > threshold_samples
+                })
+                .cloned(),
+        )
+        .map(|range| {
+            let mut range = state.with_min_context(range);
+            range.sample_end = range.sample_end.min(state.audio.session_sample_end());
+            range
+        })
+        .flat_map(|range| {
+            if !state.decode_budget.can_admit(&range, DecodePhase::Terminal) {
+                state.decode_budget.receipt(&range, DecodePhase::Terminal, "refused");
+            }
+            state.decode_budget.available_ranges(&range, DecodePhase::Terminal)
+        })
+        .collect();
+    for range in terminal_decode_windows(ranges, max_samples) {
+        // A prior tile may have settled this entire range through the same
+        // source lineage. Re-read debt instead of replaying a stale work list.
+        let (pending, coverage) = {
+            let ledger = state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (
+                ledger.pending_text_recoveries(&state.session_id, state.capture_epoch),
+                ledger.assess_seal_coverage(
+                    &state.session_id,
+                    state.capture_epoch,
+                    &speech_evidence,
+                    threshold_samples,
+                ),
+            )
+        };
+        let intersecting = pending
+            .iter()
+            .filter(|owner| range_overlaps_occurrence(&range, owner))
+            .collect::<Vec<_>>();
+        let gaps = coverage
+            .uncovered_speech_ranges
+            .into_iter()
+            .filter(|gap| {
+                gap.overlaps(&range)
+                    && !pending
+                        .iter()
+                        .any(|owner| range_overlaps_occurrence(gap, owner))
+            })
+            .collect::<Vec<_>>();
+        if intersecting.is_empty() && gaps.is_empty() {
+            continue;
+        }
+        match attempt(state, range) {
+            StopRangeAttempt::Ready(payload) => {
+                state.complete_covered_word_trials(ev_tx, &payload, true, 32, true);
+                if payload.evidence.segment_grain == crate::stt::tail_provider::TailSegmentGrain::Word
+                    || payload.segments.is_empty()
+                {
+                    // Word routing fans this exact return to every intersecting
+                    // owner once. Each pin retains its complete source lineage.
+                    if let Some(owner) = intersecting.first() {
+                        admit_debt_occurrence_recovery(state, ev_tx, owner, &payload);
+                    }
+                } else {
+                    for owner in intersecting {
+                        admit_debt_occurrence_recovery(state, ev_tx, owner, &payload);
+                    }
+                }
+                admit_full_pass_gap_segments(
+                    state,
+                    ev_tx,
+                    &payload,
+                    &gaps,
+                    threshold_samples,
+                    EnergyAdmission::QualifyFinalPassGap,
+                );
+            }
+            StopRangeAttempt::Failed(error) => warn_failed(ev_tx, error),
+            StopRangeAttempt::MissingPcm
+            | StopRangeAttempt::ForeignIdentity
+            | StopRangeAttempt::BudgetExhausted => {}
+        }
+    }
+
     state.close_admission_horizon(ev_tx, u64::MAX);
     state.publish_resolved_word_seals(ev_tx);
     state.seal_remaining_at_session_end(ev_tx);
