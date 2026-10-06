@@ -9,6 +9,8 @@ binding file byte-for-byte unchanged while the receipt names the reader that
 was being stopped.
 """
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -18,6 +20,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 HELPER = Path(__file__).resolve().parents[1] / "bus-demux.py"
 SPEC = importlib.util.spec_from_file_location("bus_channel_handover", HELPER)
@@ -28,13 +31,6 @@ SPEC.loader.exec_module(DEMUX)
 NAME, CHANNEL = "james", "2"
 OLD = ("codex", "session-old")
 NEW = ("claude-code", "session-new")
-STUBBORN = (
-    "import signal, sys, time\n"
-    "from pathlib import Path\n"
-    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-    "Path(sys.argv[0]).with_suffix('.ready').touch()\n"
-    "time.sleep(120)\n"
-)
 
 
 def alive(pid):
@@ -59,6 +55,7 @@ class ChannelHandoverTests(unittest.TestCase):
         }
         self.environment["CODESCRIBE_AGENT_BRIDGE_HOME"] = str(self.root)
         self.sequence = 0
+        self.helper_path = HELPER
         self.processes = []
         self.addCleanup(self.reap)
 
@@ -73,7 +70,7 @@ class ChannelHandoverTests(unittest.TestCase):
 
     def helper(self, *arguments):
         return subprocess.run(
-            [sys.executable, str(HELPER), "--bridge-home", str(self.root), *arguments],
+            [sys.executable, str(self.helper_path), "--bridge-home", str(self.root), *arguments],
             capture_output=True, text=True, timeout=60, env=self.environment,
         )
 
@@ -83,7 +80,7 @@ class ChannelHandoverTests(unittest.TestCase):
     def attach(self, identity, name=NAME, channel=CHANNEL, takeover=False):
         result = self.helper(
             "--bus", str(self.bus), "--attach", "--channel", channel, "--name", name,
-            *self.owner(identity), *(["--takeover"] if takeover else []),
+            *self.owner(identity), "--wakeup", "off", *(["--takeover"] if takeover else []),
         )
         for line in result.stdout.splitlines():
             pid = json.loads(line).get("follower_pid")
@@ -157,15 +154,28 @@ class ChannelHandoverTests(unittest.TestCase):
         return pid
 
     def stubborn_follower(self, identity):
-        """Looks exactly like the session's follower and ignores SIGTERM."""
-        script = self.home / "stubborn.py"
-        script.write_text(STUBBORN, encoding="utf-8")
-        pid = self.orphan(sys.executable, str(script), "--follow", "--session", identity[1])
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not script.with_suffix(".ready").exists():
-            time.sleep(0.05)
-        self.assertTrue(script.with_suffix(".ready").exists())
-        return pid
+        """The actual helper and lease owner, with SIGTERM refusal injected."""
+        self.instrument_follower("import signal\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)")
+        return self.attached(identity)["follower_pid"]
+
+    def instrument_follower(self, body):
+        script = self.home / "bus-demux.py"
+        original = HELPER.read_text(encoding="utf-8")
+        marker = 'if __name__ == "__main__":'
+        self.assertEqual(original.count(marker), 1)
+        instrument = 'if "--follow" in sys.argv:\n' + "\n".join(
+            "    " + line for line in body.splitlines()) + "\n\n"
+        script.write_text(original.replace(marker, instrument + marker), encoding="utf-8")
+        self.helper_path = script
+
+    def in_process_attach(self):
+        arguments = [str(HELPER), "--bridge-home", str(self.root), "--bus", str(self.bus),
+                     "--attach", "--channel", CHANNEL, "--name", NAME,
+                     *self.owner(NEW), "--takeover", "--wakeup", "off"]
+        output, error = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", arguments), contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            result = DEMUX.main()
+        return result, json.loads(output.getvalue()), error.getvalue()
 
     def stored_session(self, identity, name=NAME, channel=CHANNEL, pid=None, pending=()):
         """An earlier session's durable state, written as its follower left it."""
@@ -403,8 +413,7 @@ class ChannelHandoverTests(unittest.TestCase):
         self.assertEqual(receipt["previous"]["follower_pid"], impostor)
         self.assertEqual(receipt["previous"]["provider_session_id"], OLD[1])
         self.assertIn(
-            "bus-demux: attach failed: previous follower identity could not be verified; "
-            f"retained; channel {CHANNEL} unchanged", result.stderr)
+            f"previous follower unverified_retained; owner retained; channel {CHANNEL} unchanged", result.stderr)
         self.assertEqual(self.binding.read_bytes(), before)
         self.assertTrue(alive(impostor))
         self.assertFalse(DEMUX.follower_pidfile(self.root, self.lease_id(NEW)).exists())
@@ -421,7 +430,6 @@ class ChannelHandoverTests(unittest.TestCase):
 
     def test_takeover_refuses_a_reader_that_does_not_exit(self):
         stubborn = self.stubborn_follower(OLD)
-        self.stored_session(OLD, pid=stubborn)
         before = self.binding.read_bytes()
         result = self.attach(NEW, takeover=True)
         self.assertEqual(result.returncode, 3, result.stdout)
@@ -431,7 +439,7 @@ class ChannelHandoverTests(unittest.TestCase):
         self.assertEqual(receipt["previous"]["follower_state"], "did_not_exit")
         self.assertEqual(receipt["previous"]["follower_pid"], stubborn)
         self.assertIn(
-            "bus-demux: attach failed: previous follower did not exit; retained; "
+            "bus-demux: attach failed: previous follower did_not_exit; owner retained; "
             f"channel {CHANNEL} unchanged", result.stderr)
         self.assertEqual(self.binding.read_bytes(), before)
         self.assertTrue(alive(stubborn))
@@ -493,6 +501,158 @@ class ChannelHandoverTests(unittest.TestCase):
             self.assertIn(reason, result.stderr, arguments)
             self.assertEqual(result.stdout, "")
         self.assertFalse(self.binding.exists())
+
+    def test_mixed_detach_has_no_publication_or_playback_effect(self):
+        old = self.attached(OLD)
+        binding, bus = self.binding.read_bytes(), self.bus.read_bytes()
+        for operation in (
+            ["--send-text", "--channel", CHANNEL, "--lease", self.lease_id(OLD)],
+            ["--say", "This must never be spoken"],
+            ["--play-reply", "a" * 24, "--playback-ticket", "b" * 24],
+            ["--stop-reply", "a" * 24, "--playback-ticket", "b" * 24],
+        ):
+            result = self.helper("--bus", str(self.bus), "--detach", *self.owner(OLD), *operation)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("--detach combines with no other command", result.stderr)
+            self.assertEqual(self.binding.read_bytes(), binding)
+            self.assertEqual(self.bus.read_bytes(), bus)
+            self.assertTrue(alive(old["follower_pid"]))
+        self.assertFalse((self.root / "runtime" / "reply-sources").exists())
+
+    def test_stale_manual_reader_remains_owned_without_a_pidfile(self):
+        self.instrument_follower("time.time = lambda: 1.0")
+        old = self.attached(OLD)
+        DEMUX.follower_pidfile(self.root, self.lease_id(OLD)).unlink()
+        self.assertEqual(self.lease(OLD)["heartbeat_unix"], 1.0)
+        receipt = self.attached(NEW, takeover=True)
+        self.assertEqual(receipt["previous"]["follower_pid"], old["follower_pid"])
+        self.assertEqual(receipt["previous"]["follower_state"], "stopped")
+        self.assertTrue(self.gone(old["follower_pid"]))
+
+    def test_accepted_typed_row_ahead_of_cursor_prevents_takeover(self):
+        target = Path(os.environ.get("CARGO_TARGET_DIR", HELPER.parents[1] / "target"))
+        publisher = target / "debug" / "codescribe"
+        self.assertTrue(publisher.is_file(), "build the canonical publisher before this round trip")
+        self.environment["PATH"] = str(publisher.parent) + os.pathsep + self.environment.get("PATH", "")
+        old = self.attached(OLD)
+        pid = old["follower_pid"]
+        os.kill(pid, signal.SIGSTOP)
+        binding = self.binding.read_bytes()
+        sent = subprocess.run(
+            [sys.executable, str(self.helper_path), "--bridge-home", str(self.root),
+             "--bus", str(self.bus), "--send-text", "--channel", CHANNEL,
+             "--lease", self.lease_id(OLD), *self.owner(OLD)],
+            input="James, accepted before handover", capture_output=True, text=True,
+            timeout=10, env=self.environment)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        published = json.loads(sent.stdout)
+        self.assertEqual(published["kind"], "message_published")
+        self.assertLess(self.lease(OLD)["cursor"], self.bus.stat().st_size)
+        os.kill(pid, signal.SIGKILL)
+        self.assertTrue(self.gone(pid))
+        lease, source = self.lease(OLD), self.bus.read_bytes()
+        refused = self.attach(NEW, takeover=True)
+        self.assertEqual(refused.returncode, 3, refused.stderr)
+        self.assertEqual(json.loads(refused.stdout)["previous"]["follower_state"], "undrained_retained")
+        self.assertEqual(self.binding.read_bytes(), binding)
+        self.assertEqual(self.lease(OLD), lease)
+        self.assertEqual(self.bus.read_bytes(), source)
+        self.assertFalse((self.root / "leases" / f"{self.lease_id(NEW)}.json").exists())
+        recovered = self.attached(OLD)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            pending = self.lease(OLD)["pending"]
+            if any(item.get("message_id") == published["message_id"] for item in pending):
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("accepted old-owner message was not recoverable")
+        self.assertTrue(alive(recovered["follower_pid"]))
+        self.assertEqual(self.bindings()[CHANNEL]["provider_session_id"], OLD[1])
+
+    def test_bound_owner_without_recovery_state_is_retained(self):
+        self.stored_session(OLD)
+        (self.root / "leases" / f"{self.lease_id(OLD)}.json").unlink()
+        binding = self.binding.read_bytes()
+        result = self.attach(NEW, takeover=True)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(self.binding.read_bytes(), binding)
+        self.assertEqual(json.loads(result.stdout)["previous"]["follower_state"], "undrained_retained")
+        self.assertFalse((self.root / "leases" / f"{self.lease_id(NEW)}.json").exists())
+
+    def test_log_open_failure_retains_exact_old_binding(self):
+        self.attached(OLD)
+        binding = self.binding.read_bytes()
+        log, _ = DEMUX.follower_paths(self.root, self.lease_id(NEW))
+        log.mkdir()
+        result = self.attach(NEW, takeover=True)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(self.binding.read_bytes(), binding)
+        self.assertEqual(json.loads(result.stdout)["new_follower_state"], "not_started")
+
+    def test_pidfile_write_failure_stops_its_new_reader_and_keeps_owner(self):
+        self.attached(OLD)
+        binding = self.binding.read_bytes()
+        DEMUX.follower_pidfile(self.root, self.lease_id(NEW)).mkdir()
+        result = self.attach(NEW, takeover=True)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertEqual(receipt["new_follower_state"], "stopped")
+        self.assertIs(receipt["binding_changed"], False)
+        self.assertEqual(self.binding.read_bytes(), binding)
+
+    def test_spawn_failure_keeps_exact_old_binding(self):
+        self.attached(OLD)
+        binding = self.binding.read_bytes()
+        original = subprocess.Popen
+        def fail_follower(command, *arguments, **options):
+            if "--follow" in command:
+                raise OSError("injected follower spawn failure")
+            return original(command, *arguments, **options)
+        with mock.patch.object(subprocess, "Popen", side_effect=fail_follower):
+            result, receipt, error = self.in_process_attach()
+        self.assertEqual(result, 3, error)
+        self.assertIn("injected follower spawn failure", error)
+        self.assertIs(receipt["binding_changed"], False)
+        self.assertEqual(receipt["new_follower_state"], "not_started")
+        self.assertEqual(self.binding.read_bytes(), binding)
+
+    def test_post_replace_failure_restores_original_raw_bytes(self):
+        self.attached(OLD)
+        binding = self.binding.read_bytes()
+        original = DEMUX.atomic_json
+        def fail_after_replace(path, value):
+            original(path, value)
+            if path == self.binding:
+                raise OSError("injected binding durability failure")
+        with mock.patch.object(DEMUX, "atomic_json", side_effect=fail_after_replace):
+            result, receipt, error = self.in_process_attach()
+        self.assertEqual(result, 3, error)
+        self.assertIs(receipt["binding_changed"], False)
+        self.assertEqual(receipt["binding_state"], "unchanged")
+        self.assertEqual(self.binding.read_bytes(), binding)
+
+    def test_failed_restoration_reports_uncertainty(self):
+        self.attached(OLD)
+        binding = self.binding.read_bytes()
+        original = DEMUX.atomic_json
+        original_bytes = DEMUX.atomic_bytes
+        def fail_after_replace(path, value):
+            original(path, value)
+            if path == self.binding:
+                raise OSError("injected binding durability failure")
+        def fail_restore(path, encoded):
+            if path == self.binding and encoded == binding:
+                raise OSError("injected restore failure")
+            return original_bytes(path, encoded)
+        with mock.patch.object(DEMUX, "atomic_json", side_effect=fail_after_replace), mock.patch.object(DEMUX, "atomic_bytes", side_effect=fail_restore):
+            result, receipt, error = self.in_process_attach()
+        self.assertEqual(result, 3, error)
+        self.assertIsNone(receipt["binding_changed"])
+        self.assertEqual(receipt["binding_state"], "uncertain")
+        self.assertIn("channel 2 state uncertain", error)
+        self.assertEqual(self.bindings()[CHANNEL]["provider_session_id"], NEW[1])
 
 
 if __name__ == "__main__":

@@ -172,8 +172,7 @@ fn frozen_channel_recipients(
         if lease["schema"] != "codescribe.agent-bridge.lease.v1"
             || lease["active"] != true
             || !age.is_finite()
-            || age < 0.0
-            || age > active_names::LEASE_TTL_SECONDS
+            || !(0.0..=active_names::LEASE_TTL_SECONDS).contains(&age)
             || lease["provider"] != provider
             || lease["provider_session_id"] != session
             || lease["lease_id"] != lease_id
