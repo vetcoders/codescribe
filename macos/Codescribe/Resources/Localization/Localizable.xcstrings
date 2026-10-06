@@ -3322,16 +3322,6 @@
         }
       }
     },
-    "Choose a conversation or show agent channel details" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wybierz rozmowę lub pokaż szczegóły kanału agenta"
-          }
-        }
-      }
-    },
     "Choose a screen anchor or allow free dragging" : {
       "localizations" : {
         "pl" : {
