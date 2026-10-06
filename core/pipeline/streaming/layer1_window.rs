@@ -1,480 +1,126 @@
-//! Layer 1 window: coalesce ~5 Apple segments into one Whisper job.
+//! The session's single work plan on the original capture sample clock.
 //!
-//! Apple seals short fragments. Diffing each fragment against its own Whisper
-//! window hits the change-ratio cap and leaves the chopped canvas standing.
-//! This module joins a handful of those fragments — text, PCM, and char
-//! offsets — so one decode can cover the whole sentence. It builds windows
-//! only: every member occurrence keeps its own PCM identity, and the
-//! returned candidate is admitted per occurrence by the acoustic ledger.
+//! Planning owns coordinates, never PCM, occurrence identity, labels or seals.
+//! Every accepted window is consumed once, including failed provider work.
 
-use std::time::{Duration, Instant};
+use crate::stt::tail_provider::TailSampleRange;
 
-use crate::pipeline::acoustic_ledger::OccurrenceIdentity;
-
-/// One sealed Apple fragment waiting to share a Whisper window.
-#[derive(Debug, Clone)]
-pub struct CoalescedPiece {
-    pub utterance_id: u64,
-    /// Exact physical occurrence whose launched Whisper slot this piece owns.
-    pub occurrence: OccurrenceIdentity,
-    pub committed_text: String,
-    pub audio: Vec<f32>,
-    pub sample_start: u64,
-    pub sample_end: u64,
-    pub start_ts: f32,
-    pub covered_through_secs: f32,
-    pub segment_count: usize,
-}
-
-/// Ready-to-send Layer 1 job built from one or more coalesced pieces.
-#[derive(Debug, Clone)]
-pub struct CoalesceFlush {
-    pub committed_text: String,
-    pub audio: Vec<f32>,
-    pub member_ids: Vec<(u64, f32)>,
-    /// Exact identities survive pending-presentation removal and queue loss.
-    pub member_occurrences: Vec<(u64, OccurrenceIdentity)>,
-    pub neighbour_context: String,
-    pub sample_start: u64,
-    pub sample_end: u64,
-    /// Samples inside `[sample_start, sample_end)` whose pins may be admitted.
-    /// A leading overlap prefix is decoder context and stays outside this range.
-    pub admit_sample_start: u64,
-    pub admit_sample_end: u64,
-    pub primary_utterance_id: u64,
-}
-
-/// Rolling buffer of sealed Apple fragments for one Layer 1 decode.
-#[derive(Debug, Default)]
-pub struct Layer1Coalesce {
-    adaptive: bool,
-    pieces: Vec<CoalescedPiece>,
-    neighbour_before: String,
-    segments: usize,
-    deadline: Option<Instant>,
-    sample_rate: u32,
-    /// Suffix of the last emitted contiguous run, replayed only when the next
-    /// piece continues that exact capture clock.
-    overlap_tail: Option<OverlapTail>,
-}
-
-#[derive(Debug, Clone)]
-struct OverlapTail {
+#[derive(Debug)]
+pub(crate) struct CaptureWindowPlan {
     session: String,
     capture_epoch: u64,
-    sample_end: u64,
-    audio: Vec<f32>,
+    window_samples: u64,
+    step_samples: u64,
+    eof: Option<u64>,
+    next_start: u64,
+    last_full_end: u64,
+    offered: Option<TailSampleRange>,
+    finished: bool,
 }
 
-impl Layer1Coalesce {
-    /// Darek's live window: swap after about five Apple segments.
-    pub const TARGET_SEGMENTS: usize = 5;
-    /// Ceiling for one observation, including a retained overlap prefix.
-    /// A piece that would push the request past this ceiling is split on the
-    /// capture PCM axis; the member occurrence identity stays whole.
-    pub const MAX_AUDIO_SECS: f32 = 4.0;
-    /// Speech-proven PCM repeated at the start of the next observation.
-    pub const OVERLAP_SECS: f32 = 1.0;
-    /// A pause this long is a sentence boundary — flush what we have.
-    pub const PAUSE_SECS: f32 = 1.2;
-
-    /// Preserve sealed phrase boundaries up to 8 s, with the same 1.2 s
-    /// oldest-member latency bound. This is bounded buffering, not a streaming encoder.
-    pub fn adaptive() -> Self {
+impl CaptureWindowPlan {
+    pub(crate) fn new(session: String, capture_epoch: u64, sample_rate: u32) -> Self {
         Self {
-            adaptive: true,
-            ..Self::default()
+            session,
+            capture_epoch,
+            window_samples: u64::from(sample_rate) * 9,
+            step_samples: u64::from(sample_rate) * 3,
+            eof: None,
+            next_start: 0,
+            last_full_end: 0,
+            offered: None,
+            finished: sample_rate == 0,
         }
     }
 
-    fn max_audio_secs(&self) -> f32 {
-        if self.adaptive {
-            8.0
+    /// Peeking never spends work. Backpressure retains the exact offered frame.
+    /// The first EOF freezes the capture head while earlier windows drain.
+    /// A smaller head withholds unavailable work without revoking its offer.
+    pub(crate) fn next_due(&mut self, capture_end: u64, stopping: bool) -> Option<TailSampleRange> {
+        if self.finished {
+            return None;
+        }
+        if stopping {
+            self.eof.get_or_insert(capture_end);
+        }
+        let capture_limit = self.eof.unwrap_or(capture_end);
+        if let Some(offered) = &self.offered {
+            return (offered.sample_end <= capture_end.min(capture_limit)).then(|| offered.clone());
+        }
+        let end = match self.next_start.checked_add(self.window_samples) {
+            Some(full_end) if full_end <= capture_limit => full_end,
+            _ if self.eof.is_some() && capture_limit > self.last_full_end => capture_limit,
+            _ => {
+                if self.eof.is_some() {
+                    self.finished = true;
+                }
+                return None;
+            }
+        };
+        if self.next_start >= end {
+            self.finished = self.eof.is_some();
+            return None;
+        }
+        if end > capture_end {
+            return None;
+        }
+        let range = TailSampleRange {
+            session: self.session.clone(),
+            capture_epoch: self.capture_epoch,
+            sample_start: self.next_start,
+            sample_end: end,
+        };
+        self.offered = Some(range.clone());
+        Some(range)
+    }
+
+    /// Account only the exact outstanding offer, after transport acceptance or
+    /// an explicit unavailable-work receipt. There is no success refund.
+    pub(crate) fn account(&mut self, range: &TailSampleRange) -> bool {
+        if self.offered.as_ref() != Some(range) {
+            return false;
+        }
+        self.offered = None;
+        if range.sample_end - range.sample_start == self.window_samples {
+            self.last_full_end = range.sample_end;
+            self.next_start = self.next_start.saturating_add(self.step_samples);
+            self.finished = self.eof.is_some_and(|end| end <= self.last_full_end);
         } else {
-            Self::MAX_AUDIO_SECS
+            self.finished = true;
+        }
+        true
+    }
+
+    /// No unaccounted future frame starts before this sample; `u64::MAX` means
+    /// the plan is exhausted. Accepted jobs must still return before the session
+    /// may close an owner's horizon.
+    pub(crate) fn admission_horizon(&self) -> u64 {
+        if self.finished {
+            u64::MAX
+        } else {
+            self.next_start
         }
     }
 
-    fn max_samples(&self) -> u64 {
-        (self.max_audio_secs() * self.sample_rate.max(1) as f32) as u64
+    /// No further ranges can be offered, regardless of accepted jobs in flight.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.finished
     }
+}
 
-    pub fn is_empty(&self) -> bool {
-        self.pieces.is_empty()
-    }
-
-    /// A reserved frontier may already be owned by a not-yet-submitted window.
-    pub(crate) fn holds_occurrence(&self, occurrence: &OccurrenceIdentity) -> bool {
-        self.pieces
-            .iter()
-            .any(|piece| &piece.occurrence == occurrence)
-    }
-
-    /// Remember the canvas already sealed before the next piece.
-    pub fn set_neighbour(&mut self, neighbour: impl Into<String>) {
-        if self.pieces.is_empty() {
-            self.neighbour_before = neighbour.into();
-        }
-    }
-
+#[cfg(test)]
+impl Layer1Coalesce {
     /// Push a sealed fragment. Returns a flush when the window is full, or
     /// when `piece` starts after a sentence pause (the previous window first).
     #[cfg(test)]
     pub fn push(&mut self, piece: CoalescedPiece, sample_rate: u32) -> Vec<CoalesceFlush> {
         self.push_at(piece, sample_rate, Instant::now())
     }
-
-    pub fn push_at(
-        &mut self,
-        piece: CoalescedPiece,
-        sample_rate: u32,
-        now: Instant,
-    ) -> Vec<CoalesceFlush> {
-        self.sample_rate = sample_rate.max(1);
-        let mut out = self.flush_due(now);
-        if let Some(last) = self.pieces.last() {
-            let gap = piece.start_ts - last.covered_through_secs;
-            if gap >= Self::PAUSE_SECS
-                || (self.adaptive
-                    && (last.sample_end != piece.sample_start
-                        || !last.occurrence.same_capture(&piece.occurrence)))
-            {
-                out.extend(self.take_flushes());
-            }
-        }
-        let max_samples = self.max_samples();
-        let piece_samples = piece.sample_end.saturating_sub(piece.sample_start);
-        if !self.pieces.is_empty() {
-            let pending = self
-                .prefix_samples_for_held()
-                .saturating_add(self.held_samples())
-                .saturating_add(piece_samples);
-            if pending > max_samples {
-                out.extend(self.take_flushes());
-            }
-        }
-        // The prefix is prepended at flush. Count it before accepting the piece,
-        // and split on the PCM axis when the piece itself cannot fit.
-        let prefix_samples = if self.pieces.is_empty() {
-            self.prefix_samples_continuing(&piece)
-        } else {
-            0
-        };
-        if piece_samples > max_samples.saturating_sub(prefix_samples) {
-            out.extend(self.emit_long_piece(piece));
-            return out;
-        }
-        if self.pieces.is_empty() && self.neighbour_before.is_empty() {
-            // Neighbour is set by the caller before the first push of a window.
-        }
-        if self.pieces.is_empty() {
-            self.deadline = Some(now + Duration::from_millis(1_200));
-        }
-        self.segments = self.segments.saturating_add(piece.segment_count.max(1));
-        self.pieces.push(piece);
-        if self.should_flush(sample_rate) {
-            out.extend(self.take_flushes());
-        }
-        out
-    }
-
-    /// Drain whatever is held — session end, epoch sleep, or test.
-    ///
-    /// Returns one flush per contiguous PCM run, so a held window with a gap in
-    /// it drains as several admissible requests rather than one that lies about
-    /// its range.
-    pub fn force_flush(&mut self) -> Vec<CoalesceFlush> {
-        self.take_flushes()
-    }
-
-    /// Oldest closed member owns the deadline. More pieces cannot postpone it.
-    pub fn flush_due(&mut self, now: Instant) -> Vec<CoalesceFlush> {
-        if self.deadline.is_some_and(|deadline| now >= deadline) {
-            self.take_flushes()
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn should_flush(&self, sample_rate: u32) -> bool {
-        if self.pieces.is_empty() {
-            return false;
-        }
-        if !self.adaptive && self.segments >= Self::TARGET_SEGMENTS {
-            return true;
-        }
-        let samples = self
-            .held_samples()
-            .saturating_add(self.prefix_samples_for_held());
-        let rate = sample_rate.max(1) as f32;
-        (samples as f32 / rate) >= self.max_audio_secs()
-    }
-
-    fn held_samples(&self) -> u64 {
-        self.pieces.iter().fold(0_u64, |total, held| {
-            total.saturating_add(held.sample_end.saturating_sub(held.sample_start))
-        })
-    }
-
-    fn prefix_samples_for_held(&self) -> u64 {
-        self.pieces
-            .first()
-            .map(|piece| self.prefix_samples_continuing(piece))
-            .unwrap_or(0)
-    }
-
-    fn prefix_samples_continuing(&self, piece: &CoalescedPiece) -> u64 {
-        self.overlap_tail
-            .as_ref()
-            .filter(|tail| tail.continues(piece))
-            .map(|tail| tail.audio.len() as u64)
-            .unwrap_or(0)
-    }
-
-    fn take_flushes(&mut self) -> Vec<CoalesceFlush> {
-        if self.pieces.is_empty() {
-            return Vec::new();
-        }
-        let pieces = std::mem::take(&mut self.pieces);
-        self.segments = 0;
-        self.deadline = None;
-        let neighbour_context = std::mem::take(&mut self.neighbour_before);
-        let prefix = self.overlap_tail.take();
-        let flushes = build_flushes(pieces, neighbour_context, prefix);
-        self.remember_overlap(flushes.last());
-        flushes
-    }
-
-    /// One occurrence that does not fit in the observation budget becomes
-    /// bounded observations with 1 s overlap. A retained prefix consumes part of
-    /// the first window. Exclusive admit ranges partition the occurrence; the
-    /// shared second is PCM context, not a second member.
-    fn emit_long_piece(&mut self, piece: CoalescedPiece) -> Vec<CoalesceFlush> {
-        let max_samples = self.max_samples();
-        let overlap = overlap_samples(self.sample_rate).min(max_samples.saturating_sub(1));
-        let mut cursor = piece.sample_start;
-        let mut flushes = Vec::new();
-        let mut prefix = self
-            .overlap_tail
-            .take()
-            .filter(|tail| tail.continues(&piece));
-        while cursor < piece.sample_end {
-            let prefix_len = prefix
-                .as_ref()
-                .filter(|tail| tail.sample_end == cursor && !tail.audio.is_empty())
-                .map(|tail| tail.audio.len() as u64)
-                .unwrap_or(0);
-            let new_budget = max_samples.saturating_sub(prefix_len);
-            if new_budget == 0 {
-                // The retained prefix already fills the window, so it cannot
-                // be prepended without exceeding the budget.
-                prefix = None;
-                continue;
-            }
-            let window_end = cursor.saturating_add(new_budget).min(piece.sample_end);
-            if window_end <= cursor {
-                break;
-            }
-            let last = window_end == piece.sample_end;
-            let stepped = window_end.saturating_sub(overlap);
-            let admit_end = if last || stepped <= cursor {
-                window_end
-            } else {
-                stepped
-            };
-            let local_start = cursor.saturating_sub(piece.sample_start) as usize;
-            let local_end = window_end.saturating_sub(piece.sample_start) as usize;
-            let slice = piece
-                .audio
-                .get(local_start..local_end)
-                .unwrap_or_default()
-                .to_vec();
-            let (sample_start, audio) = match prefix.take() {
-                Some(tail) if tail.sample_end == cursor => {
-                    let start = tail.sample_end.saturating_sub(tail.audio.len() as u64);
-                    let mut audio = tail.audio;
-                    audio.extend_from_slice(&slice);
-                    (start, audio)
-                }
-                _ => (cursor, slice),
-            };
-            flushes.push(flush_from_piece(
-                &piece,
-                audio,
-                sample_start,
-                window_end,
-                cursor,
-                admit_end,
-            ));
-            cursor = admit_end;
-        }
-        self.remember_overlap(flushes.last());
-        flushes
-    }
-
-    fn remember_overlap(&mut self, flush: Option<&CoalesceFlush>) {
-        let Some(flush) = flush else {
-            return;
-        };
-        let Some((_, member)) = flush.member_occurrences.last() else {
-            return;
-        };
-        let keep = overlap_samples(self.sample_rate).min(flush.audio.len() as u64) as usize;
-        if keep == 0 {
-            self.overlap_tail = None;
-            return;
-        }
-        let start = flush.audio.len() - keep;
-        self.overlap_tail = Some(OverlapTail {
-            session: member.session.clone(),
-            capture_epoch: member.capture_epoch,
-            sample_end: flush.sample_end,
-            audio: flush.audio[start..].to_vec(),
-        });
-    }
-}
-
-impl OverlapTail {
-    fn continues(&self, piece: &CoalescedPiece) -> bool {
-        self.session == piece.occurrence.session
-            && self.capture_epoch == piece.occurrence.capture_epoch
-            && self.sample_end == piece.sample_start
-            && !self.audio.is_empty()
-    }
 }
 
 #[cfg(test)]
 fn window_samples(sample_rate: u32) -> u64 {
     (Layer1Coalesce::MAX_AUDIO_SECS * sample_rate.max(1) as f32) as u64
-}
-
-fn overlap_samples(sample_rate: u32) -> u64 {
-    (Layer1Coalesce::OVERLAP_SECS * sample_rate.max(1) as f32) as u64
-}
-
-/// Split a held window into one flush per contiguous PCM run.
-///
-/// A window used to declare `[first.sample_start, last.sample_end)` while
-/// carrying only the concatenated PCM of its pieces. Whenever the pieces were
-/// not adjacent — which is the normal case, since the pauses between utterances
-/// are not speech and never enter the buffer — the two disagreed, and
-/// `TailProviderRequest::validate_pcm` refused the job at the provider seam.
-/// Layer 1 then reported a generic provider error for a window that never
-/// reached inference. Measured on this module's own five-piece geometry: 70 400
-/// samples declared against 31 999 carried.
-///
-/// Concatenating across the gap would be worse: the joined audio would carry
-/// timestamps that mean nothing on the capture clock, and every segment mapped
-/// back from it would name samples the operator never spoke. Splitting keeps
-/// every request honest — each declares exactly the samples it holds.
-fn build_flushes(
-    pieces: Vec<CoalescedPiece>,
-    neighbour_context: String,
-    prefix: Option<OverlapTail>,
-) -> Vec<CoalesceFlush> {
-    let mut runs: Vec<Vec<CoalescedPiece>> = Vec::new();
-    for piece in pieces {
-        match runs.last_mut() {
-            Some(run)
-                if run.last().is_some_and(|previous| {
-                    previous.sample_end == piece.sample_start
-                        && previous.occurrence.same_capture(&piece.occurrence)
-                }) =>
-            {
-                run.push(piece);
-            }
-            _ => runs.push(vec![piece]),
-        }
-    }
-    runs.into_iter()
-        .enumerate()
-        .map(|(index, run)| {
-            // Only the first run inherits the left neighbour; the runs after it
-            // are preceded by their own predecessor inside this window.
-            let context = if index == 0 {
-                neighbour_context.clone()
-            } else {
-                String::new()
-            };
-            let prefix = (index == 0)
-                .then_some(prefix.clone())
-                .flatten()
-                .filter(|tail| run.first().is_some_and(|piece| tail.continues(piece)));
-            build_flush(run, context, prefix)
-        })
-        .collect()
-}
-
-fn build_flush(
-    pieces: Vec<CoalescedPiece>,
-    neighbour_context: String,
-    prefix: Option<OverlapTail>,
-) -> CoalesceFlush {
-    let mut committed_text = String::new();
-    let mut audio = Vec::new();
-    let mut member_ids = Vec::with_capacity(pieces.len());
-    let mut member_occurrences = Vec::with_capacity(pieces.len());
-    let admit_sample_start = pieces.first().map_or(0, |p| p.sample_start);
-    let sample_end = pieces.last().map_or(0, |p| p.sample_end);
-    let primary_utterance_id = pieces.last().map_or(0, |p| p.utterance_id);
-    let sample_start = prefix.as_ref().map_or(admit_sample_start, |tail| {
-        tail.sample_end.saturating_sub(tail.audio.len() as u64)
-    });
-    if let Some(tail) = prefix {
-        audio.extend_from_slice(&tail.audio);
-    }
-    for piece in pieces {
-        if !piece.committed_text.is_empty() {
-            if !committed_text.is_empty() {
-                committed_text.push(' ');
-            }
-            committed_text.push_str(&piece.committed_text);
-        }
-        member_ids.push((piece.utterance_id, piece.covered_through_secs));
-        member_occurrences.push((piece.utterance_id, piece.occurrence.clone()));
-        debug_assert_eq!(
-            piece.audio.len() as u64,
-            piece.sample_end.saturating_sub(piece.sample_start),
-            "a piece must carry the PCM range it declares before it can be coalesced"
-        );
-        // Runs are split at every gap and capture boundary. Never repair an
-        // invalid payload by padding or truncating: provider validation refuses it.
-        audio.extend_from_slice(&piece.audio);
-    }
-    CoalesceFlush {
-        committed_text,
-        audio,
-        member_ids,
-        member_occurrences,
-        neighbour_context,
-        sample_start,
-        sample_end,
-        admit_sample_start,
-        admit_sample_end: sample_end,
-        primary_utterance_id,
-    }
-}
-
-fn flush_from_piece(
-    piece: &CoalescedPiece,
-    audio: Vec<f32>,
-    sample_start: u64,
-    sample_end: u64,
-    admit_sample_start: u64,
-    admit_sample_end: u64,
-) -> CoalesceFlush {
-    CoalesceFlush {
-        committed_text: piece.committed_text.clone(),
-        audio,
-        member_ids: vec![(piece.utterance_id, piece.covered_through_secs)],
-        member_occurrences: vec![(piece.utterance_id, piece.occurrence.clone())],
-        neighbour_context: String::new(),
-        sample_start,
-        sample_end,
-        admit_sample_start,
-        admit_sample_end,
-        primary_utterance_id: piece.utterance_id,
-    }
 }
 
 #[cfg(test)]
