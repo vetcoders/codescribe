@@ -6162,8 +6162,9 @@ impl RecordingController {
         conversation.as_ref().is_none_or(|task| task.is_finished())
     }
 
-    /// Stop-current is admitted without queuing behind a start or a terminal
-    /// owner. A delayed gesture must not discover a replacement after waiting.
+    /// Bind Stop to the published capture before waiting for start serialization.
+    /// The retained terminal owner checks that identity under the serial lock;
+    /// a delayed gesture cannot discover or stop a replacement after waiting.
     pub async fn stop_current_capture(self: &Arc<Self>) -> Result<CaptureStopOutcome> {
         let receiver = {
             let Ok(mut slot) = self.capture_settlement.try_lock() else {
@@ -6175,13 +6176,16 @@ impl RecordingController {
             {
                 operation.result.clone()
             } else {
-                let Ok(_serial) = self.serial_lock.try_lock() else {
-                    return Ok(CaptureStopOutcome::AdmissionUnavailable);
-                };
                 let Ok(state) = self.state.try_read() else {
                     return Ok(CaptureStopOutcome::AdmissionUnavailable);
                 };
                 if *state == State::Idle {
+                    // Idle is only conclusive once any unpublished start has
+                    // released admission. A published take below already has
+                    // its own identity and can register Stop without this lock.
+                    let Ok(_serial) = self.serial_lock.try_lock() else {
+                        return Ok(CaptureStopOutcome::AdmissionUnavailable);
+                    };
                     // No active terminal body to cancel. Invalidate a delayed
                     // hold that has not crossed this same admission boundary.
                     self.hold_start_generation.fetch_add(1, Ordering::SeqCst);
@@ -9843,25 +9847,118 @@ mod owned_capture_settlement_tests {
     }
 
     #[tokio::test]
-    async fn stop_current_refuses_queued_admission_and_cannot_target_successor() {
+    async fn stop_during_published_start_is_retained_for_every_stop_gesture() {
+        for route in 0..4 {
+            let (controller, _, dir) = fixture().await;
+            if route == 1 || route == 2 {
+                controller.set_state(State::RecHold).await;
+            }
+            // Actual start publishes RecHold/RecToggle before releasing this lock.
+            // No microphone or model is opened by this empty-recorder fixture.
+            let held = controller.serial_lock.lock().await;
+            let mut call = Box::pin(async {
+                match route {
+                    0 => controller.stop_recording_from_external_surface().await,
+                    _ => {
+                        controller
+                            .handle_hotkey_event(HotkeyInput {
+                                key_type: if route == 1 {
+                                    HotkeyType::Hold
+                                } else {
+                                    HotkeyType::Toggle
+                                },
+                                action: if route == 1 {
+                                    HotkeyAction::Up
+                                } else {
+                                    HotkeyAction::Press
+                                },
+                                assistive: route == 1,
+                                hold_mode: if route == 1 {
+                                    HoldMode::Chat
+                                } else {
+                                    HoldMode::Raw
+                                },
+                                force_raw: route == 2,
+                                force_ai: false,
+                            })
+                            .await
+                    }
+                }
+            });
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(
+                std::future::Future::poll(call.as_mut(), &mut context).is_pending(),
+                "route {route}: Stop must be retained while its published start finishes"
+            );
+            assert_eq!(
+                controller
+                    .capture_settlement
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .capture_id,
+                "owned"
+            );
+            assert_eq!(rows(&dir).len(), 1, "Stop has not settled yet");
+            drop(held);
+            call.await
+                .expect("the original Stop settles after admission releases");
+            assert_eq!(controller.current_state().await, State::Idle);
+            assert!(controller.session_id.read().await.is_none());
+            let events = rows(&dir);
+            assert_eq!(events.len(), 2, "route {route}: no spontaneous successor");
+            assert_eq!(events[0].session_id, events[1].session_id);
+            assert_eq!(events[1].status, "session_ended");
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_current_waits_for_its_snapshot_and_cannot_target_successor() {
         let (controller, _, dir) = fixture().await;
         let held = controller.serial_lock.lock().await;
+        let mut call = Box::pin(controller.stop_current_capture());
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(call.as_mut(), &mut context).is_pending());
         assert_eq!(
-            controller.stop_current_capture().await.unwrap(),
-            CaptureStopOutcome::AdmissionUnavailable
+            controller
+                .capture_settlement
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .capture_id,
+            "owned"
         );
-        assert!(controller.capture_settlement.lock().unwrap().is_none());
         *controller.session_id.write().await = Some("replacement".into());
         drop(held);
-        assert_eq!(
-            controller.stop_capture_if_owned("owned").await.unwrap(),
-            CaptureStopOutcome::ForeignCapture
-        );
+        assert_eq!(call.await.unwrap(), CaptureStopOutcome::ForeignCapture);
         assert_eq!(
             controller.session_id.read().await.as_deref(),
             Some("replacement")
         );
+        assert_eq!(controller.current_state().await, State::RecToggle);
         assert_eq!(rows(&dir).len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_current_timeout_during_start_keeps_the_terminal_owner() {
+        let (controller, mut stages, dir) = fixture().await;
+        let held = controller.serial_lock.lock().await;
+        let caller = tokio::spawn({
+            let controller = Arc::clone(&controller);
+            async move { controller.stop_current_capture().await }
+        });
+        stage(&mut stages, CaptureSettlementStage::Registered).await;
+        assert_eq!(caller.await.unwrap().unwrap(), CaptureStopOutcome::Pending);
+        assert_eq!(rows(&dir).len(), 1);
+        drop(held);
+        assert_eq!(
+            controller.stop_capture_if_owned("owned").await.unwrap(),
+            CaptureStopOutcome::Stopped
+        );
+        assert_eq!(rows(&dir).len(), 2);
+        assert_eq!(controller.current_state().await, State::Idle);
     }
 
     #[tokio::test(start_paused = true)]
