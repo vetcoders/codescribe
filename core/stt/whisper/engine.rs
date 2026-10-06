@@ -1803,6 +1803,12 @@ impl LocalWhisperEngine {
         if samples.is_empty() {
             return Ok((RawTranscript::default(), None));
         }
+        // Keep this encoder-inclusive boundary: the metric covers tail
+        // inference after resampling through raw decode, including language
+        // selection when needed.
+        // Word alignment is measured separately below; the execution receipt
+        // remains the full provider-job duration.
+        let decode_started = std::time::Instant::now();
         let (detected_lang, encoder_output) = match language {
             Some(_) => (None, None),
             None if samples.len() <= 16_000usize * 30 => {
@@ -1827,7 +1833,6 @@ impl LocalWhisperEngine {
         };
         let language = language.or(detected_lang.as_deref());
         self.capture_word_alignment = true;
-        let decode_started = std::time::Instant::now();
         let transcript = match encoder_output {
             Some(encoder_output) => self.transcribe_samples_16k_raw_with_encoder(
                 &samples,
@@ -1845,6 +1850,7 @@ impl LocalWhisperEngine {
         let words = self.align_captured_words(language)?;
         tracing::info!(
             decode_ms,
+            decode_scope = "tail_inference_after_resampling_before_alignment",
             align_ms = align_started.elapsed().as_millis() as u64,
             word_pins = words.as_ref().map_or(0, Vec::len),
             "tail_window_latency"
