@@ -595,6 +595,7 @@ impl AcousticLedger {
         {
             incumbent.original_text = None;
             incumbent.complete = false;
+            incumbent.acoustic_boundaries_complete = false;
         }
         let mut component = WordAdjudication {
             owner: owner.clone(),
@@ -625,6 +626,8 @@ impl AcousticLedger {
                         }
                 });
                 if let Some((group, covered)) = group {
+                    group.complete &= hypothesis.complete;
+                    group.acoustic_boundaries_complete &= hypothesis.acoustic_boundaries_complete;
                     for pin in hypothesis.pins {
                         if !group.pins.contains(&pin) {
                             group.pins.push(pin);
@@ -675,6 +678,7 @@ impl AcousticLedger {
                 && hypothesis
                     .decode
                     .is_some_and(|(s, e)| s <= start && end <= e);
+            hypothesis.acoustic_boundaries_complete &= hypothesis.complete;
             hypothesis.q = hypothesis
                 .decode
                 .map_or(0, |decode| context_quality(start, end, decode));
@@ -1218,5 +1222,52 @@ impl AcousticLedger {
         {
             self.word_adjudication.input = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod boundary_group_tests {
+    use super::*;
+
+    #[test]
+    fn a_group_cannot_borrow_its_first_words_complete_boundary() {
+        let owner = OccurrenceIdentity::new("mixed-word-boundaries", 1, 0, 160_000);
+        let mut ledger = AcousticLedger::new();
+        let calibration = EnergyCalibration::new("boundary-group-test", 1.0, 1);
+        assert!(
+            ledger
+                .qualify(
+                    &AcousticEvidence {
+                        occurrence: owner.clone(),
+                        duration_ms: 10_000.0,
+                        energy_integral: 100.0,
+                        mean_rms_dbfs: -20.0,
+                        peak_dbfs: -10.0,
+                        vad_open_sample: Some(0),
+                        vad_close_sample: Some(160_000),
+                        evidence_calibration_version: calibration.version.clone(),
+                    },
+                    &calibration
+                )
+                .is_qualified()
+        );
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        ledger.admit_word_slots(
+            &observation,
+            &[
+                WordPin::new(16_000, 32_000, "pierwsze").with_decode_window(0, 64_000),
+                WordPin::new(48_000, 64_000, "ucięte").with_decode_window(0, 64_000),
+            ],
+        );
+        let sources = ledger.slots_of(&owner).unwrap();
+        assert_eq!(sources.len(), 2);
+        let components = &ledger.word_adjudication.components;
+        assert!(components[0].incumbent.acoustic_boundaries_complete);
+        assert!(!components[1].incumbent.acoustic_boundaries_complete);
+        let group = ledger.component_for_sources(&owner, sources);
+        assert_eq!(group.whisper.len(), 1);
+        assert!(group.whisper[0].complete);
+        assert!(!group.whisper[0].acoustic_boundaries_complete);
     }
 }

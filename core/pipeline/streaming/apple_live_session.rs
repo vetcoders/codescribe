@@ -5460,6 +5460,7 @@ fn admit_late_apple_words(
                 Some(confidence) => word.with_confidence(confidence),
                 None => word,
             };
+            let candidate = word.text.clone();
             let receipt = ledger.admit_word_slots(&observation, &[word]);
             let admitted = ledger
                 .slots_of(&owner)
@@ -5486,6 +5487,7 @@ fn admit_late_apple_words(
                     });
                     label.clone()
                 }
+                MutationReceipt::Refuse { .. } => candidate,
                 _ => ledger.text_of(&owner).unwrap_or("").to_string(),
             };
             let _ = ev_tx.send(EngineEvent::LedgerMutation {
@@ -15004,7 +15006,7 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn retention_receipt_counts_the_ledger_overlap_rule_separately_from_slots() {
+    fn one_sample_whisper_overlap_does_not_block_a_distinct_apple_word() {
         let mut state = state("retain-slot-rule", 2.0);
         let owner = qualify(&mut state, 0.0, 2.0);
         let whisper =
@@ -15017,17 +15019,20 @@ mod rc_w2_test_rehab {
                 "heard",
             )],
         );
-        // Less than half overlap passes consumed-span, but any Whisper overlap
-        // is refused by the existing Apple slot rule.
-        let current = vec![segment("overlap", 0.45, 0.9), segment("novel", 1.0, 1.25)];
+        // One shared PCM sample does not identify the same physical word.
+        let boundary = (sample(0.5) - 1) as f32 / state.sample_rate as f32;
+        let current = vec![
+            segment("overlap", boundary, 0.9),
+            segment("novel", 1.0, 1.25),
+        ];
         let words = retention_words(&current);
         let (tx, mut rx) = mpsc::unbounded_channel();
         retain_apple_words_at_exit(&mut state, &tx, 2, &words, &current, "overlap_refused");
         let receipts = retention_receipts(&drain(&mut rx));
         assert_eq!(receipts[0]["words"], 2);
-        assert_eq!(receipts[0]["admitted_into"][0]["count"], 1);
-        assert_eq!(receipts[0]["dropped_by_slot_rules"], 1);
-        assert_eq!(document(&state), "heard novel");
+        assert_eq!(receipts[0]["admitted_into"][0]["count"], 2);
+        assert_eq!(receipts[0]["dropped_by_slot_rules"], 0);
+        assert_eq!(document(&state), "heard overlap novel");
     }
 
     #[test]
@@ -16397,7 +16402,10 @@ mod rc_w2_test_rehab {
                 assert!(drain(&mut rx).iter().any(|event| matches!(
                     event,
                     EngineEvent::LedgerMutation {
-                        receipt: MutationReceipt::Refuse { .. },
+                        receipt: MutationReceipt::KeepVisibleUnanchored {
+                            reason: NoAuthorityReason::LateAppleWordSealedOwner,
+                            ..
+                        },
                         ..
                     }
                 )));
@@ -16435,7 +16443,7 @@ mod rc_w2_test_rehab {
                     event,
                     EngineEvent::LedgerMutation {
                         receipt: MutationReceipt::Refuse {
-                            reason: RefuseReason::SealedReplay,
+                            reason: RefuseReason::SlotAdmissionRejected,
                             ..
                         },
                         ..
@@ -27946,7 +27954,7 @@ mod tc2_window_contract_tests {
                 .to_vec();
             for (text, reason) in [
                 ("alpha", RefuseReason::ReplayedRangeIdentity),
-                ("changed", RefuseReason::SealedReplay),
+                ("changed", RefuseReason::SlotAdmissionRejected),
             ] {
                 while f.receiver.try_recv().is_ok() {}
                 let word = FusionWord::from_timed(&pin(text, 248_000, 266_000));

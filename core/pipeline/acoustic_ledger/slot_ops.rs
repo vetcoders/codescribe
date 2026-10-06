@@ -2646,7 +2646,7 @@ mod slot_ops_tests {
     fn forensic_relay_human_and_passed_layers_cannot_be_rewritten_by_acoustic_labels() {
         for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
             for state in ["human", "sealed", "lower"] {
-                let (mut ledger, owners, _) = forensic_relay_five_capture("relay-protected-five");
+                let (mut ledger, owners, pcm) = forensic_relay_five_capture("relay-protected-five");
                 for owner in &owners {
                     let first =
                         ObservationIdentity::new(ObservationProducer::Apple, 301, 0, owner.clone());
@@ -2668,7 +2668,11 @@ mod slot_ops_tests {
                             corroborate_candidate(
                                 &mut ledger,
                                 &mut next,
-                                &[forensic_relay_word(owner, "poprawione")]
+                                &[forensic_relay_word_with_actual_quiet_margin(
+                                    owner,
+                                    "poprawione",
+                                    &pcm
+                                )]
                             )
                             .grants_mutation()
                         );
@@ -2677,6 +2681,10 @@ mod slot_ops_tests {
                         assert!(ledger.note_frontier_return(owner, ObservationProducer::Apple));
                         ledger.seal(owner).unwrap();
                     }
+                }
+                // Complete setup before offering refusals: those refusals now
+                // retain real conflicts for their own words and later trials.
+                for owner in &owners {
                     let source = ledger.slots_of(owner).unwrap().to_vec();
                     let lineage = ledger.slot_source_ranges(&source[0]);
                     let offered = if state == "lower" {

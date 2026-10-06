@@ -1200,6 +1200,18 @@ impl AcousticLedger {
         self.prepare_word_evidence(observation, words);
         let trace = super::trail::SlotTrace::words(self, observation, words, self.capture_rate_hz);
         let owner = &observation.occurrence;
+        // Replay is fenced before alignment can emit a retention operation.
+        if self.answered.contains(observation) {
+            let candidate = words
+                .iter()
+                .map(|pin| pin.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            return trace.finish(
+                self.refuse_replacement(observation, &candidate, RefuseReason::BatchDuplicate),
+                self,
+            );
+        }
         // Late Apple evidence uses the same physical matcher and recorded
         // input as every other word. Transport does not classify overlap.
         if observation.producer == ObservationProducer::Apple
@@ -1234,6 +1246,14 @@ impl AcousticLedger {
                             surface_rewritten: pin.surface_rewritten,
                         };
                         self.adjudicate_word_sources(observation, &sources, &[output]);
+                    }
+                    if !same_label {
+                        self.retain_slot_alternative(
+                            observation,
+                            &pin.text,
+                            sources,
+                            "word_adjudication_held",
+                        );
                     }
                     let receipt = if same_label {
                         self.refuse_replayed_range(observation, &pin.text)
@@ -1278,15 +1298,6 @@ impl AcousticLedger {
                 self.keep_visible_unanchored(observation, &labels.join(" "), reason),
                 self,
             );
-        }
-        // Replay is fenced before alignment can emit a retention operation.
-        if self.answered.contains(observation) {
-            let candidate = words
-                .iter()
-                .map(|pin| pin.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
-            return self.refuse_replacement(observation, &candidate, RefuseReason::BatchDuplicate);
         }
         if self.word_trial_input_refusal(observation, words).is_some() {
             return trace.finish(

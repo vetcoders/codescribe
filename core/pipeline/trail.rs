@@ -2064,6 +2064,13 @@ mod tests {
         let owner = OccurrenceIdentity::new(session, 7, 0, 16_000);
         let sink = TrailSink::open_in(dir.path(), session, 7, 64).unwrap();
         let mut ledger = AcousticLedger::new();
+        let energy = crate::audio::capture_receipt::CaptureEnergyOwner::bind(session, 7);
+        let mut writer = crate::audio::capture_receipt::CaptureLevelAccumulator::bound_to(&energy);
+        let mut pcm = vec![0.2_f32; 20_000];
+        pcm[16_000..].fill(0.0);
+        writer.push_samples(&pcm);
+        ledger.bind_capture_rate(16_000);
+        ledger.record_speech_evidence(&energy.session_active_speech_ranges(session, 7, 16_000));
         let calibration = EnergyCalibration::new("relay-trail", 1.0, 1);
         assert!(
             ledger
@@ -2123,7 +2130,7 @@ mod tests {
             let receipt = corroborate_candidate(
                 &mut ledger,
                 &mut observation,
-                &[WordPin::new(0, 16_000, "zweryfikowałeś").with_decode_window(0, 16_000)],
+                &[WordPin::new(0, 16_000, "zweryfikowałeś").with_decode_window(0, 20_000)],
             );
             assert!(receipt.grants_mutation());
             assert_eq!(ledger.text_of(&owner), Some("zweryfikowałeś"));

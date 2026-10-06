@@ -352,7 +352,10 @@ fn a_same_label_update_and_trial_cannot_downgrade_a_complete_word_at_a_voiced_fe
         "1286",
         Some((0, 64_000)),
     );
-    assert_eq!(ledger.slots_of(&owner).unwrap(), &[original.clone()]);
+    assert_eq!(
+        ledger.slots_of(&owner).unwrap(),
+        std::slice::from_ref(&original)
+    );
     assert!(!ledger.coarse_word_source(&original));
     offer(
         &mut ledger,

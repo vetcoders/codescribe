@@ -875,7 +875,7 @@
                 "return self.admit(observation, label);",
                 "if self.committed.contains_key(occurrence) {",
                 "return self.admit_word_slots(observation, words);",
-                "self.admit_with_slots(observation, label, Some(slots), false)"
+                "self.admit_word_slots(observation, words)"
               ]
             },
             {
