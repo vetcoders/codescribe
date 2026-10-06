@@ -729,6 +729,12 @@ final class OverlayState {
   private(set) var conversations: [OverlayConversation] = []
   private(set) var selectedConversationID: String?
   private(set) var showsAgentMonitor = false
+  @ObservationIgnored var onAgentSidebarPresented: (() -> Void)?
+  private var playbackMutes: [AgentPlaybackIdentity: Bool] = [:]
+  private var channelPlaybackIdentities: [String: AgentPlaybackIdentity] = [:]
+  private var pendingPlaybackIdentities: Set<AgentPlaybackIdentity> = []
+  @ObservationIgnored private var playbackPreferenceRevision: UInt64 = 0
+  private(set) var playbackPreferenceError: String?
   private var channelRoster: [CsChannelRosterState] = []
   private var pendingChannelConversation: CsChannelRosterState?
   private(set) var replyControlErrors: [String: String] = [:]
@@ -751,7 +757,130 @@ final class OverlayState {
   var selectedConversation: OverlayConversation? {
     conversations.first { $0.id == selectedConversationID }
   }
-  var showsMyDictation: Bool { selectedConversationID == nil && !showsAgentMonitor }
+  var showsMyDictation: Bool { selectedConversationID == nil }
+
+  private func playbackIdentity(for conversation: OverlayConversation) -> AgentPlaybackIdentity? {
+    guard let owner = conversation.owner, let bus = conversation.messages.first?.busPath else {
+      return nil
+    }
+    return AgentPlaybackIdentity(provider: owner.provider, session: owner.providerSessionID, bus: bus)
+  }
+
+  private func playbackIdentity(for channel: String) -> AgentPlaybackIdentity? {
+    guard let hud = channelHudStates[channel], let identity = channelPlaybackIdentities[channel],
+      hud.provider == identity.provider, hud.providerSessionID == identity.session
+    else { return nil }
+    return identity
+  }
+
+  var channelPlaybackMuted: [String: Bool] {
+    var result: [String: Bool] = [:]
+    for channel in channelHudStates.keys {
+      if let identity = playbackIdentity(for: channel), let muted = playbackMutes[identity] {
+        result[channel] = muted
+      }
+    }
+    return result
+  }
+
+  var pendingPlaybackChannels: Set<String> {
+    Set(channelHudStates.keys.filter {
+      playbackIdentity(for: $0).map { pendingPlaybackIdentities.contains($0) } ?? false
+    })
+  }
+
+  var pendingPlaybackOwners: Set<String> {
+    Set(conversations.compactMap { conversation in
+      guard let identity = playbackIdentity(for: conversation),
+        pendingPlaybackIdentities.contains(identity)
+      else { return nil }
+      return conversation.owner?.id
+    })
+  }
+
+  func conversationPlaybackMuted(_ conversation: OverlayConversation) -> Bool? {
+    playbackIdentity(for: conversation).flatMap { playbackMutes[$0] }
+  }
+
+  func canToggleConversationMicrophone(_ conversation: OverlayConversation) -> Bool {
+    guard !channelStatusUnavailable, let owner = conversation.owner,
+      OverlayChannelStatusView.toggleDigit(for: conversation.channel) != nil,
+      let hud = channelHudStates[conversation.channel], hud.provider == owner.provider,
+      hud.providerSessionID == owner.providerSessionID
+    else { return false }
+    return conversations.filter {
+      $0.channel == conversation.channel && $0.owner?.provider == owner.provider
+        && $0.owner?.providerSessionID == owner.providerSessionID
+    }.count == 1
+  }
+
+  func conversationMicrophoneOpen(_ conversation: OverlayConversation) -> Bool {
+    canToggleConversationMicrophone(conversation)
+      && channelHudStates[conversation.channel]?.open == true
+  }
+
+  func toggleConversationMicrophone(_ conversation: OverlayConversation) async {
+    guard canToggleConversationMicrophone(conversation),
+      let digit = OverlayChannelStatusView.toggleDigit(for: conversation.channel)
+    else { return }
+    await toggleAgentChannel(digit)
+  }
+
+  func toggleConversationPlayback(_ conversation: OverlayConversation) async {
+    guard let identity = playbackIdentity(for: conversation) else { return }
+    await togglePlayback(identity)
+  }
+
+  func toggleChannelPlayback(_ channel: String) async {
+    guard let identity = playbackIdentity(for: channel) else { return }
+    await togglePlayback(identity)
+  }
+
+  private func togglePlayback(_ identity: AgentPlaybackIdentity) async {
+    guard let muted = playbackMutes[identity],
+      !pendingPlaybackIdentities.contains(identity)
+    else { return }
+    pendingPlaybackIdentities.insert(identity)
+    playbackPreferenceRevision &+= 1
+    defer {
+      pendingPlaybackIdentities.remove(identity)
+      playbackPreferenceRevision &+= 1
+    }
+    do {
+      try await RealAgentBridgeInstaller.setPlaybackMuted(!muted, for: identity)
+      // Show the owner's durable receipt, never an optimistic button state.
+      let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(for: [identity])
+      playbackMutes[identity] = snapshot[identity]
+      playbackPreferenceError = snapshot[identity] == nil
+        ? String(localized: "Playback status unavailable") : nil
+    } catch {
+      playbackPreferenceError = error.userFacingMessage
+    }
+  }
+
+  private func refreshPlaybackMutes() async {
+    let revision = playbackPreferenceRevision
+    let roster = channelRoster
+    var candidates: [String: AgentPlaybackIdentity] = [:]
+    for (channel, hud) in channelHudStates {
+      guard let provider = hud.provider, let session = hud.providerSessionID,
+        !provider.isEmpty, !session.isEmpty
+      else { continue }
+      // The candidate locates the lease; its bus is replaced by that lease's bus.
+      candidates[channel] = AgentPlaybackIdentity(
+        provider: provider, session: session, bus: agentConversationBusPath())
+    }
+    let bound = await RealAgentBridgeInstaller.boundPlaybackIdentities(for: candidates)
+    let identities = Set(bound.values)
+      .union(conversations.compactMap { playbackIdentity(for: $0) })
+    let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(for: identities)
+    guard !Task.isCancelled, revision == playbackPreferenceRevision, roster == channelRoster else { return }
+    channelPlaybackIdentities = bound
+    // A poll started before a click may carry the old receipt for that identity.
+    let retained = playbackMutes.filter { pendingPlaybackIdentities.contains($0.key) }
+    playbackMutes = snapshot.filter { !pendingPlaybackIdentities.contains($0.key) }
+      .merging(retained, uniquingKeysWith: { _, current in current })
+  }
 
   func unreadReplies(in conversation: OverlayConversation) -> Int {
     conversation.replyIDs.filter { !viewedReplyIDs.contains($0) }.count
@@ -775,12 +904,20 @@ final class OverlayState {
   }
 
   func showAgentMonitor() {
-    revisionFocusCommitTask?.cancel()
-    revisionFocusCommitTask = nil
-    selectedConversationID = nil
+    onAgentSidebarPresented?()
     pendingChannelConversation = nil
     showsAgentMonitor = true
     expandAgentSurface()
+  }
+
+  func toggleAgentSidebar() {
+    if showsAgentMonitor && !isCollapsed { hideAgentSidebar() } else { showAgentMonitor() }
+  }
+
+  func hideAgentSidebar() {
+    showsAgentMonitor = false
+    markVisibleConversationRead()
+    onChannelPresentationChanged?()
   }
 
   private func expandAgentSurface() {
@@ -828,7 +965,7 @@ final class OverlayState {
   }
 
   private func markVisibleConversationRead() {
-    guard conversationIsVisible, !isCollapsed, let selectedConversation else { return }
+    guard conversationIsVisible, !isCollapsed, !showsAgentMonitor, let selectedConversation else { return }
     viewedReplyIDs.formUnion(selectedConversation.replyIDs)
   }
 
@@ -1008,6 +1145,7 @@ final class OverlayState {
             onChannelPresentationChanged?()
           }
         }
+        await self?.refreshPlaybackMutes()
         do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
       }
     }

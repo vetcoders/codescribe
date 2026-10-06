@@ -17,6 +17,13 @@ struct OverlayConversationView: View {
   let sending: Bool
   let sendError: String?
   let onSend: () -> Void
+  var microphoneOpen = false
+  var microphoneEnabled = false
+  var playbackMuted: Bool?
+  var playbackEnabled = false
+  var onMicrophone: () -> Void = {}
+  var onPlayback: () -> Void = {}
+  var playbackError: String?
 
   @State private var followsLatest = true
   @State private var composerHeight: CGFloat = 0
@@ -75,6 +82,10 @@ struct OverlayConversationView: View {
         if let sendError {
           Text(verbatim: sendError).font(.caption).foregroundStyle(palette.errorStatus.color)
         }
+        if let playbackError {
+          Text(verbatim: playbackError).font(.caption).foregroundStyle(palette.errorStatus.color)
+            .accessibilityIdentifier("overlay-conversation-playback-error")
+        }
       }
     }
     .padding(.horizontal, 20)
@@ -86,24 +97,28 @@ struct OverlayConversationView: View {
   private var navigation: some View {
     HStack {
       Button(action: onShowMonitor) {
-        Image(systemName: "chevron.left")
-          .font(.system(size: 18, weight: .semibold))
-          .frame(width: 32, height: 32)
-          .contentShape(Rectangle())
+        OverlayMicrophoneGlyph(symbol: "line.3.horizontal", tint: palette.mutedText.color)
       }
       .buttonStyle(.plain)
-      .accessibilityLabel("Capture channels")
-      .help("Capture channels")
+      .csFocusOutline()
+      .accessibilityLabel("Agents")
+      .help("Agents")
       .accessibilityIdentifier("overlay-conversation-back")
-      Spacer()
       if conversation.channel == "0" {
         Text("0 · All").font(.headline)
       } else {
-        Text(verbatim: conversation.name).font(.headline)
+        Text(verbatim: conversation.name).font(.headline).lineLimit(1)
           .help(
             Text(
               verbatim: conversation.owner.map { "\($0.provider) · \($0.providerSessionID)" } ?? "")
           )
+      }
+      Spacer(minLength: 4)
+      if conversation.owner != nil {
+        OverlayAgentAudioControls(
+          open: microphoneOpen, muted: playbackMuted,
+          microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
+          palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback)
       }
     }
     .accessibilityIdentifier("overlay-conversation-navigation")
@@ -233,14 +248,15 @@ struct OverlayConversationView: View {
             .accessibilityIdentifier("overlay-reply-play-\(message.id)")
           }
           if let playback = message.playback {
-            Text(playbackLabel(playback.state)).font(.caption)
+            Text(playbackLabel(playback.state, reason: playback.reason)).font(.caption)
           } else if pendingControls.contains(message.id) {
             Text("Requesting playback").font(.caption)
           }
         }
         .buttonStyle(.borderless)
-        if let reason = message.playback?.reason {
-          Text(verbatim: reason).font(.caption).foregroundStyle(palette.mutedText.color)
+        if let reason = message.playback?.reason, reason != "muted" {
+          Text(verbatim: reason)
+            .font(.caption).foregroundStyle(palette.mutedText.color)
         }
         if let error = controlErrors[message.id] {
           Text(verbatim: error).font(.caption).foregroundStyle(palette.errorStatus.color)
@@ -262,8 +278,9 @@ struct OverlayConversationView: View {
     }
   }
 
-  private func playbackLabel(_ state: String) -> String {
-    switch state {
+  private func playbackLabel(_ state: String, reason: String? = nil) -> String {
+    if reason == "muted" { return String(localized: "Automatic playback muted") }
+    return switch state {
     case "waiting": String(localized: "Waiting for speech")
     case "playing": String(localized: "Speaking")
     case "spoken": String(localized: "Spoken")

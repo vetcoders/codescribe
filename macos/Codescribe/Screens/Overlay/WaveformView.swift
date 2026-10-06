@@ -158,8 +158,8 @@ struct WaveformView: View {
 
   private var barWidth: CGFloat { compact ? 1.5 : 2 }
   private var gap: CGFloat { compact ? 2 : 3 }
-  private var maxBarHeight: CGFloat { compact ? 9 : 12 }
-  private var trackHeight: CGFloat { compact ? 12 : 16 }
+  private var maxBarHeight: CGFloat { compact ? 18 : 24 }
+  private var trackHeight: CGFloat { compact ? 22 : 28 }
   private let minScale: CGFloat = 0.35
 
   private var contentWidth: CGFloat {

@@ -109,10 +109,7 @@ enum OverlayControlSymbols {
   static let actions = "ellipsis"
   static let closeActions = "xmark"
   static let placement = "location.viewfinder"
-  /// Live-preview toggle: "wolałem dzióbki ^v" (Founder, quoted in the Codex
-  /// handoff, Annex A1, 2026-09-29). Expanded
-  /// shows ^ (fold the transcript), collapsed shows v (unfold it), as the
-  /// collapse toggle did before 8b987508 swapped in an eye.
+  /// The preview control rotates these chevrons 45 degrees toward the mini widget.
   static let collapsePreview = "chevron.up"
   static let expandPreview = "chevron.down"
 }

@@ -155,10 +155,61 @@ struct OverlayMicrophoneGlyph: View {
   }
 }
 
+/// Identical controls in the roster and conversation; neither owns capture or playback.
+struct OverlayAgentAudioControls: View {
+  let open: Bool
+  let muted: Bool?
+  let microphoneEnabled: Bool
+  let playbackEnabled: Bool
+  let palette: OverlayAppearancePalette
+  let onMicrophone: () -> Void
+  let onPlayback: () -> Void
+
+  private var microphoneLabel: String {
+    open ? String(localized: "Disconnect microphone") : String(localized: "Connect microphone")
+  }
+  private var playbackLabel: String {
+    muted == true ? String(localized: "Unmute agent replies") : String(localized: "Mute agent replies")
+  }
+  private var playbackValue: String {
+    if muted == nil { return String(localized: "Playback status unavailable") }
+    return muted == true ? String(localized: "Automatic playback muted")
+      : String(localized: "Automatic playback on")
+  }
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Button(action: onMicrophone) {
+        OverlayMicrophoneGlyph(
+          symbol: open ? "mic.fill" : "mic.slash",
+          tint: open ? palette.listeningStatus.color : palette.mutedText.color)
+      }
+      .buttonStyle(.plain).csFocusOutline()
+      .disabled(!microphoneEnabled)
+      .help(microphoneLabel)
+      .accessibilityLabel(microphoneLabel)
+      .accessibilityValue(open ? String(localized: "Microphone active") : String(localized: "Microphone off"))
+      .accessibilityIdentifier("overlay-agent-microphone")
+
+      Button(action: onPlayback) {
+        OverlayMicrophoneGlyph(
+          symbol: muted == nil ? "speaker.badge.exclamationmark"
+            : muted == true ? "speaker.slash.fill" : "speaker.wave.2",
+          tint: muted == false ? palette.listeningStatus.color : palette.mutedText.color)
+      }
+      .buttonStyle(.plain).csFocusOutline()
+      .disabled(!playbackEnabled || muted == nil)
+      .help(playbackLabel)
+      .accessibilityLabel(playbackLabel)
+      .accessibilityValue(playbackValue)
+      .accessibilityIdentifier("overlay-agent-speaker")
+    }
+  }
+}
+
 /// A quiet notification affordance opens the full monitor on the overlay canvas.
 struct OverlayChannelStatusView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.displayScale) private var displayScale
 
   let channels: [OverlayChannelDelivery]
   let unavailable: Bool
@@ -174,6 +225,11 @@ struct OverlayChannelStatusView: View {
   let unreadCounts: [String: Int]
   let onSelectConversation: ((String?) -> Void)?
   let onShowMonitor: (() -> Void)?
+  var mutedChannels: [String: Bool] = [:]
+  var pendingMuteChannels: Set<String> = []
+  var onTogglePlayback: ((String) -> Void)?
+  var onDismissMonitor: (() -> Void)?
+  var playbackError: String?
 
   init(
     channels: [OverlayChannelDelivery], unavailable: Bool,
@@ -231,53 +287,10 @@ struct OverlayChannelStatusView: View {
     return title + " (" + String(count) + ")"
   }
 
-  /// Native menu labels accept images, but omit Shapes and reset text colors.
-  /// The header uses the full bound-agent symbol as a muted navigation affordance.
-  /// The projected glyph still owns receipt labels, accessibility and roster marks.
-  private var nativeHeaderImage: CGImage? {
-    let renderer = ImageRenderer(
-      content: OverlayAgentStatusMark(
-        reduceMotion: true, glyph: .attached, palette: palette, animates: false, fontSize: 13))
-    renderer.scale = displayScale
-    return renderer.cgImage
-  }
-
   var body: some View {
-    Menu {
-      Button("My dictation", systemImage: "waveform") { onSelectConversation?(nil) }
-      ForEach(channels) { channel in
-        Button {
-          viewConversation(channel)
-        } label: {
-          Label {
-            Text(verbatim: notificationTitle(for: channel))
-          } icon: {
-            Image(systemName: "bubble.left")
-          }
-        }
-      }
-      if !savedConversations.isEmpty {
-        Menu("Saved conversations") {
-          ForEach(savedConversations) { conversation in
-            Button {
-              onSelectConversation?(conversation.id)
-            } label: {
-              Text(verbatim: conversation.name)
-            }
-          }
-        }
-      }
-      Divider()
-      Button("Capture channels", systemImage: "person.2") { showMonitor() }
-    } label: {
-      Group {
-        if let image = nativeHeaderImage {
-          Image(decorative: image, scale: displayScale)
-            .renderingMode(.original)
-        }
-      }
-      .frame(width: OverlayAgentGlyph.slotSize.width, height: OverlayAgentGlyph.slotSize.height)
-      .contentShape(Rectangle())
+    Button(action: showMonitor) {
+      OverlayMicrophoneGlyph(symbol: "sidebar.right", tint: palette.mutedText.color)
+      .contentShape(Circle())
       .overlay(alignment: .topTrailing) {
         if unreadCounts.values.contains(where: { $0 > 0 }) {
           Circle()
@@ -289,25 +302,34 @@ struct OverlayChannelStatusView: View {
         }
       }
     }
-    .menuStyle(.borderlessButton)
-    .menuIndicator(.hidden)
-    .frame(width: OverlayAgentGlyph.slotSize.width, height: OverlayAgentGlyph.slotSize.height)
+    .buttonStyle(.plain)
+    .csFocusOutline()
     .fixedSize()
-    .help(
-      Text(
-        "\(glyph.label) — show details",
-        comment: "Agent glyph tooltip; the placeholder is the channel state label")
-    )
-    .accessibilityLabel(glyph.label)
-    .accessibilityHint("Choose a conversation or show agent channel details")
+    .help("Agents")
+    .accessibilityLabel("Agents")
+    .accessibilityValue(glyph.label)
     .accessibilityIdentifier("overlay-agent-glyph")
   }
 
   var monitorBody: some View {
     ChannelRosterContent(palette: palette) {
-      details
-        .font(.system(size: 13, weight: .medium))
-        .foregroundStyle(palette.primaryText.color)
+      VStack(alignment: .leading, spacing: 12) {
+        HStack {
+          Text("Agents").font(.system(size: 13, weight: .semibold))
+          Spacer()
+          Button { onDismissMonitor?() } label: {
+            OverlayMicrophoneGlyph(symbol: "xmark", tint: palette.mutedText.color)
+          }
+          .buttonStyle(.plain).csFocusOutline()
+          .accessibilityLabel("Close agent sidebar")
+          .help("Close agent sidebar")
+        }
+        ScrollView {
+          details
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(palette.primaryText.color)
+        }
+      }
     }
     .accessibilityIdentifier("overlay-agent-monitor")
   }
@@ -344,37 +366,30 @@ struct OverlayChannelStatusView: View {
   private func channelRow(_ channel: OverlayChannelDelivery) -> some View {
     let conversation = conversation(for: channel)
     let open = isOpen(channel)
-    return HStack(spacing: 12) {
+    return HStack(spacing: 6) {
       Button {
         viewConversation(channel)
       } label: {
-        HStack(spacing: 10) {
-          Image(systemName: "bubble.left")
+        HStack(spacing: 8) {
+          Text(verbatim: channel.channel)
+            .font(.system(size: 11, weight: .semibold, design: .monospaced))
             .foregroundStyle(palette.mutedText.color)
             .frame(width: 16)
           VStack(alignment: .leading, spacing: 3) {
             if channel.channel == "0" {
               Text("0 · All")
             } else {
-              Text(verbatim: "\(channel.channel) · \(conversation?.name ?? channel.agent)")
+              Text(verbatim: conversation?.name ?? channel.agent)
                 .lineLimit(1).truncationMode(.middle)
             }
             HStack(spacing: 6) {
-              if open {
-                Text("Microphone active")
-                  .foregroundStyle(palette.listeningStatus.color)
-                  .accessibilityIdentifier("overlay-channel-open-\(channel.channel)")
-              } else {
-                let rowGlyph =
-                  OverlayAgentGlyph.resolve(channels: [channel], unavailable: unavailable)
-                  ?? .attached
-                OverlayAgentStatusMark(
-                  reduceMotion: reduceMotion, glyph: rowGlyph, palette: palette, animates: animates,
-                  fontSize: 10
-                )
-                .accessibilityHidden(true)
-              }
-              Text(detail(for: channel))
+              OverlayAgentStatusMark(
+                reduceMotion: reduceMotion,
+                glyph: OverlayAgentGlyph.resolve(channels: [channel], unavailable: unavailable)
+                  ?? .attached,
+                palette: palette, animates: animates, fontSize: 10
+              ).accessibilityHidden(true)
+              Text(shortStatus(for: channel))
                 .foregroundStyle(palette.bodyText.color)
                 .lineLimit(1).truncationMode(.tail)
                 .accessibilityIdentifier("overlay-channel-delivery-\(channel.channel)")
@@ -390,38 +405,31 @@ struct OverlayChannelStatusView: View {
               .background(palette.processingStatus.color.opacity(0.12), in: Capsule())
               .accessibilityLabel("\(count) unread replies")
           }
-          if conversation != nil {
-            Image(
-              systemName: selectedConversationID == conversation?.id ? "checkmark" : "chevron.right"
-            )
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(palette.mutedText.color)
-          }
         }
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .disabled(onSelectConversation == nil || conversation == nil)
       .help("View conversation without changing the microphone")
+      .accessibilityLabel(Text(verbatim: notificationTitle(for: channel)))
+      .accessibilityValue(detail(for: channel))
       .accessibilityIdentifier("overlay-view-conversation-\(conversation?.id ?? channel.channel)")
 
-      Button {
-        toggle(channel)
-      } label: {
-        OverlayMicrophoneGlyph(
-          symbol: open ? "mic.fill" : "mic", tint: palette.listeningStatus.color
-        )
-        .contentShape(Circle())
-      }
-      .buttonStyle(.plain)
-      .csFocusOutline()
-      .disabled(onToggleChannel == nil || Self.toggleDigit(for: channel.channel) == nil)
-      .help(open ? "Hang up channel" : "Open channel")
-      .accessibilityLabel(Text(verbatim: "\(channel.channel) · \(channel.agent)"))
-      .accessibilityHint(open ? "Hang up channel" : "Open channel")
+      OverlayAgentAudioControls(
+        open: open, muted: mutedChannels[channel.channel],
+        microphoneEnabled: !unavailable && onToggleChannel != nil && Self.toggleDigit(for: channel.channel) != nil,
+        playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains(channel.channel),
+        palette: palette, onMicrophone: { toggle(channel) },
+        onPlayback: { onTogglePlayback?(channel.channel) })
       .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
     }
     .padding(.vertical, 7)
+    .padding(.horizontal, 6)
+    .background(
+      selectedConversationID == conversation?.id && conversation != nil
+        ? palette.mutedText.color.opacity(0.10) : .clear,
+      in: RoundedRectangle(cornerRadius: 10))
+    .help(detail(for: channel))
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-row-\(channel.channel)")
   }
@@ -482,21 +490,10 @@ struct OverlayChannelStatusView: View {
 
   private var details: some View {
     VStack(alignment: .leading, spacing: 4) {
-      if onSelectConversation != nil {
-        Button {
-          onSelectConversation?(nil)
-        } label: {
-          HStack {
-            Image(systemName: "waveform").frame(width: 16)
-            Text("My dictation")
-            Spacer()
-            Image(systemName: "chevron.right").font(.system(size: 10, weight: .medium))
-              .foregroundStyle(palette.mutedText.color)
-          }
-        }
-        .buttonStyle(.plain)
-        .padding(.vertical, 7)
-        .accessibilityIdentifier("overlay-view-my-dictation")
+      if channels.isEmpty && currentConversations.isEmpty {
+        Text("No agents connected")
+          .foregroundStyle(palette.mutedText.color)
+          .padding(.vertical, 12)
       }
       ForEach(channels) { channel in
         channelRow(channel)
@@ -506,19 +503,17 @@ struct OverlayChannelStatusView: View {
         // Keep it visible without inventing a microphone binding.
         ForEach(
           currentConversations.filter { conversation in
-            !channels.contains { $0.channel == conversation.channel }
+            conversation.channel != "0" && !channels.contains { $0.channel == conversation.channel }
           }
         ) { conversation in
           conversationRow(conversation, saved: false)
         }
         if !savedConversations.isEmpty {
           Divider().padding(.vertical, 4)
-          Text("Saved conversations")
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(palette.mutedText.color)
-            .padding(.top, 8)
-          ForEach(savedConversations) { conversation in
-            conversationRow(conversation, saved: true)
+          DisclosureGroup("Saved conversations") {
+            ForEach(savedConversations) { conversation in
+              conversationRow(conversation, saved: true)
+            }
           }
         }
       }
@@ -535,8 +530,25 @@ struct OverlayChannelStatusView: View {
           .foregroundStyle(palette.errorStatus.color)
           .accessibilityIdentifier("overlay-channel-toggle-error")
       }
+      if let playbackError {
+        Text(verbatim: playbackError)
+          .font(.system(size: 11))
+          .foregroundStyle(palette.errorStatus.color)
+          .accessibilityIdentifier("overlay-agent-playback-error")
+      }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func shortStatus(for channel: OverlayChannelDelivery) -> String {
+    if unavailable { return String(localized: "Status unavailable") }
+    if hasDeadFollower(channel) { return String(localized: "Disconnected") }
+    if isOpen(channel) { return String(localized: "Listening") }
+    switch channel.stage {
+    case nil: return String(localized: "Ready")
+    case .sent, .queued: return String(localized: "Awaiting receipt")
+    case .received: return String(localized: "Received")
+    }
   }
 
   func detail(for channel: OverlayChannelDelivery) -> String {

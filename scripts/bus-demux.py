@@ -76,6 +76,7 @@ AGENT_REPLY_SCHEMA = "codescribe.agent-reply.v1"
 AGENT_REPLY_PLAYBACK_SCHEMA = "codescribe.agent-reply-playback.v1"
 REPLY_SOURCE_SCHEMA = "codescribe.agent-reply-source.v1"
 REPLY_CONTROL_SCHEMA = "codescribe.agent-reply-control.v1"
+PLAYBACK_MUTE_SCHEMA = "codescribe.agent-playback-mute.v1"
 REPLY_READ_LIMIT = 32 << 20
 AUDIENCE_BINDING_SCHEMA = "vc.agent-audience-binding.v1"
 AUDIENCE_BINDING_FILENAME = "vc.agent-audience-binding.v1.json"
@@ -3472,10 +3473,54 @@ def load_published_reply(args: argparse.Namespace, identity: str) -> tuple[Path,
     return bus, reply
 
 
+def playback_mute_path(root: Path, provider: str, session: str, bus: Path) -> Path:
+    identity = "\0".join((provider.casefold(), session, str(bus.resolve(strict=False))))
+    key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    return root / "runtime" / "playback-mutes" / f"{key}.json"
+
+
+def agent_playback_muted(root: Path, provider: str, session: str, bus: Path) -> bool:
+    path = playback_mute_path(root, provider, session, bus)
+    try:
+        row = read_reply_json(path, 65536)
+        if (row.get("schema") != PLAYBACK_MUTE_SCHEMA
+                or row.get("provider") != provider.casefold()
+                or row.get("provider_session_id") != session
+                or row.get("lease_id") != lease_identifier(provider, session)
+                or row.get("bus") != str(bus.resolve(strict=False))
+                or type(row.get("muted")) is not bool):
+            return True
+        return row["muted"]
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        # An unreadable mute receipt never gives permission to speak.
+        return True
+
+
+def set_agent_muted(args: argparse.Namespace) -> int:
+    bus = args.bus.expanduser().resolve(strict=False)
+    lease_id = lease_identifier(args.provider, args.session)
+    lease = read_reply_json(args.bridge_home / "leases" / f"{lease_id}.json", 4 << 20)
+    if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
+            or lease.get("provider") != args.provider.casefold()
+            or lease.get("provider_session_id") != args.session
+            or lease.get("bus") != str(bus)):
+        raise ValueError("playback mute does not belong to this provider session and bus")
+    row = {"schema": PLAYBACK_MUTE_SCHEMA, "provider": args.provider.casefold(),
+           "provider_session_id": args.session, "lease_id": lease_id,
+           "bus": str(bus), "muted": args.mute_agent, "emitted_at": utc_now()}
+    atomic_json(playback_mute_path(args.bridge_home, args.provider, args.session, bus), row)
+    emit(row)
+    return 0
+
+
 class ReplyPlaybackControl:
     """One request ticket controls only its own child of the serialized player."""
-    def __init__(self, args: argparse.Namespace, bus: Path, reply: dict[str, Any], ticket: str):
+    def __init__(self, args: argparse.Namespace, bus: Path, reply: dict[str, Any], ticket: str,
+                 *, automatic: bool = False):
         self.bus, self.reply, self.ticket = bus, reply, ticket
+        self.automatic = automatic
         self.root = args.bridge_home
         self.path = self.root / "runtime" / "reply-playback" / f"{reply['reply_id']}.{ticket}.json"
         self.stop_path = self.path.with_suffix(".stop.json")
@@ -3494,12 +3539,18 @@ class ReplyPlaybackControl:
                 ("reply_id", "provider", "provider_session_id", "lease_id")}
 
     def stopped(self) -> bool:
+        if self.muted():
+            return True
         if not self.stop_path.exists():
             return False
         stop = read_reply_json(self.stop_path, 65536)
         return (stop.get("schema") == REPLY_CONTROL_SCHEMA
                 and stop.get("playback_ticket") == self.ticket
                 and all(stop.get(key) == value for key, value in self.owner().items()))
+
+    def muted(self) -> bool:
+        return self.automatic and agent_playback_muted(
+            self.root, self.reply["provider"], self.reply["provider_session_id"], self.bus)
 
     def publish(self, state: str, *, error: str | None = None, reason: str | None = None) -> None:
         event = {"schema": AGENT_REPLY_PLAYBACK_SCHEMA, "kind": "agent_reply_playback",
@@ -3517,8 +3568,9 @@ class ReplyPlaybackControl:
         os.close(self.descriptor)
 
 
-def speak_published_reply(args: argparse.Namespace, bus: Path, reply: dict[str, Any], ticket: str) -> int:
-    control = ReplyPlaybackControl(args, bus, reply, ticket)
+def speak_published_reply(args: argparse.Namespace, bus: Path, reply: dict[str, Any], ticket: str,
+                          *, automatic: bool = False) -> int:
+    control = ReplyPlaybackControl(args, bus, reply, ticket, automatic=automatic)
     try:
         control.publish("waiting")
         if control.stopped():
@@ -3529,10 +3581,12 @@ def speak_published_reply(args: argparse.Namespace, bus: Path, reply: dict[str, 
                                             playback_root=args.bridge_home, bus=bus_path(), control=control)
             if control.stopped() and not spoken:
                 error, reason = "playback stopped", "stopped"
+        if not spoken and control.muted():
+            error, reason = None, "muted"
         state = ("spoken" if spoken else "stopped" if reason == "stopped" else
-                 "refused" if reason in ("take_live", "take_started", "playback_busy") else "failed")
+                 "refused" if reason in ("take_live", "take_started", "playback_busy", "muted") else "failed")
         control.publish(state, error=error, reason=reason)
-        return 0 if spoken else 5
+        return 0 if spoken or reason == "muted" else 5
     except Exception as error:
         control.publish("failed", error=f"speech failed ({error.__class__.__name__})",
                         reason="speech_exception")
@@ -3617,7 +3671,7 @@ def say_reply(args: argparse.Namespace) -> int:
                 {"schema": REPLY_SOURCE_SCHEMA, "bus": str(bus), "source": receipt,
                  **{key: reply[key] for key in ("reply_id", "provider", "provider_session_id", "lease_id")}})
     emit(reply)
-    return speak_published_reply(args, bus, reply, os.urandom(12).hex())
+    return speak_published_reply(args, bus, reply, os.urandom(12).hex(), automatic=True)
 
 
 def send_text_command(args: argparse.Namespace) -> int:
@@ -4673,6 +4727,9 @@ def main() -> int:
     playback = parser.add_mutually_exclusive_group()
     playback.add_argument("--play-reply", metavar="REPLY_ID", help="explicitly play one durable reply")
     playback.add_argument("--stop-reply", metavar="REPLY_ID", help="request stop from that reply's real player")
+    mute = parser.add_mutually_exclusive_group()
+    mute.add_argument("--mute-agent", action="store_true", help="mute automatic replies for this provider session and bus")
+    mute.add_argument("--unmute-agent", action="store_true", help="unmute future automatic replies for this provider session and bus")
     parser.add_argument("--playback-ticket", metavar="TICKET", help="24 lowercase hex identifying one playback request")
     parser.add_argument(
         "--tts-vendor",
@@ -4695,6 +4752,11 @@ def main() -> int:
         f"then {DEFAULT_SPEECH_SPEED}; with --attach it is stored in the profile",
     )
     args = parser.parse_args()
+    if (args.mute_agent or args.unmute_agent) and any((
+        args.version, args.print_bus_path, args.print_install_interlock_path,
+        args.print_agent_turn_lease_path, args.assert_install_idle,
+    )):
+        parser.error("agent mute combines with no inspection command")
     # Refuse contradictory commands before any early publication/playback or
     # inspection dispatch can return without reaching the detach branch.
     if args.detach and any((
@@ -4703,6 +4765,7 @@ def main() -> int:
         args.from_file is not None, args.say is not None, args.send_text,
         args.read_delivery, args.retry_wakeup, args.play_reply, args.stop_reply,
         args.playback_ticket, args.reply_to, args.all, args.become, args.active_names,
+        args.mute_agent, args.unmute_agent,
         args.version, args.print_bus_path, args.print_install_interlock_path,
         args.print_agent_turn_lease_path, args.assert_install_idle,
     )):
@@ -4757,6 +4820,21 @@ def main() -> int:
         parser.error("--lease requires --provider and --session")
     if args.takeover and not args.attach:
         parser.error("--takeover requires --attach")
+    if args.mute_agent or args.unmute_agent:
+        if (not args.provider or not args.bus_overridden
+                or any((args.send_text, args.say is not None, args.ack, args.attach,
+                        args.detach, args.takeover, args.channel is not None, args.lease,
+                        args.status, args.watch, args.follow, args.once, args.from_start,
+                        args.from_file, args.read_delivery, args.retry_wakeup,
+                        args.play_reply, args.stop_reply, args.playback_ticket, args.reply_to,
+                        args.all, args.become, args.active_names, args.voice,
+                        args.speed is not None, args.tts_vendor))):
+            parser.error("agent mute requires only --provider/--session/--bus/--bridge-home")
+        try:
+            return set_agent_muted(args)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: playback mute refused: {error}\n")
+            return 3
     if args.send_text:
         if (not args.provider or args.channel not in tuple(str(n) for n in range(1, 10))
                 or not args.lease or not args.bus_overridden

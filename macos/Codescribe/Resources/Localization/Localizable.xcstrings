@@ -2004,6 +2004,16 @@
         }
       }
     },
+    "Agent playback preference could not be saved." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się zapisać ustawienia odsłuchu agenta."
+          }
+        }
+      }
+    },
     "Agent provider and MCP connector secrets are present and will be deleted permanently." : {
       "localizations" : {
         "pl" : {
@@ -2115,6 +2125,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Agent — głos + AI"
+          }
+        }
+      }
+    },
+    "Agents" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Agenci"
           }
         }
       }
@@ -2661,6 +2681,36 @@
         }
       }
     },
+    "Automatic playback muted" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Automatyczny odsłuch wyciszony"
+          }
+        }
+      }
+    },
+    "Automatic playback on" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Automatyczny odsłuch włączony"
+          }
+        }
+      }
+    },
+    "Awaiting receipt" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Czeka na potwierdzenie"
+          }
+        }
+      }
+    },
     "Back" : {
       "localizations" : {
         "pl" : {
@@ -2997,22 +3047,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Obsługiwane możliwości"
-          }
-        }
-      }
-    },
-    "Capture channels" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Capture channels"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Kanały nagrywania"
           }
         }
       }
@@ -3397,6 +3431,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zamknij działania"
+          }
+        }
+      }
+    },
+    "Close agent sidebar" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zamknij panel agentów"
           }
         }
       }
@@ -3853,6 +3897,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Połącz dostawcę AI"
+          }
+        }
+      }
+    },
+    "Connect microphone" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Podłącz mikrofon"
           }
         }
       }
@@ -4989,6 +5043,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odrzuć szkic transkrypcji"
+          }
+        }
+      }
+    },
+    "Disconnect microphone" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odłącz mikrofon"
+          }
+        }
+      }
+    },
+    "Disconnected" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Rozłączony"
           }
         }
       }
@@ -6281,6 +6355,16 @@
         }
       }
     },
+    "Install the agent bridge to control playback." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zainstaluj połączenie z agentami, aby sterować odsłuchem."
+          }
+        }
+      }
+    },
     "Install the agent bridge to play replies." : {
       "localizations" : {
         "en" : {
@@ -6645,6 +6729,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Stan licencji"
+          }
+        }
+      }
+    },
+    "Listening" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Słucha"
           }
         }
       }
@@ -7159,6 +7253,16 @@
         }
       }
     },
+    "Microphone off" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Mikrofon wyłączony"
+          }
+        }
+      }
+    },
     "Middle mouse acts as Fn" : {
       "localizations" : {
         "pl" : {
@@ -7467,6 +7571,16 @@
         }
       }
     },
+    "Mute agent replies" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wycisz odpowiedzi agenta"
+          }
+        }
+      }
+    },
     "My dictation" : {
       "localizations" : {
         "en" : {
@@ -7624,6 +7738,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie potrzebujesz konta. Twoja konfiguracja i historia transkrypcji pozostają na tym Macu."
+          }
+        }
+      }
+    },
+    "No agents connected" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Brak podpiętych agentów"
           }
         }
       }
@@ -8704,6 +8828,16 @@
         }
       }
     },
+    "Playback status unavailable" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Stan odsłuchu niedostępny"
+          }
+        }
+      }
+    },
     "Playing %@" : {
       "comment" : "The placeholder is an audio file name",
       "localizations" : {
@@ -9380,6 +9514,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Gotowe · %@"
+          }
+        }
+      }
+    },
+    "Received" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odebrano"
           }
         }
       }
@@ -11925,6 +12069,16 @@
         }
       }
     },
+    "Status unavailable" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Stan niedostępny"
+          }
+        }
+      }
+    },
     "Status: %@" : {
       "comment" : "Tray detail row; %@ is a status phrase such as Error or Hotkey conflict",
       "localizations" : {
@@ -13439,6 +13593,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Bez licencji · Podstawowy"
+          }
+        }
+      }
+    },
+    "Unmute agent replies" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Włącz odsłuch odpowiedzi agenta"
           }
         }
       }

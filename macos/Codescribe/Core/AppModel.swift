@@ -340,7 +340,7 @@ final class OverlayController: ObservableObject {
     let screen = NSScreen.main
     let clamped = DictationOverlayWindow.clamp(panel.frame.size, to: screen)
     let size = NSSize(
-      width: clamped.width,
+      width: state.isCollapsed ? DictationOverlayWindow.collapsedSize.width : clamped.width,
       height: state.isCollapsed
         ? DictationOverlayWindow.collapsedHeight
         : max(clamped.height, DictationOverlayWindow.minSize.height))

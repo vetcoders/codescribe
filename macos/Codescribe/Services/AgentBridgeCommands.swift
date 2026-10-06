@@ -1,10 +1,150 @@
+import CryptoKit
 import Darwin
 import Foundation
+
+/// Session playback control identity; agent names and channel numbers are labels.
+struct AgentPlaybackIdentity: Hashable, Sendable {
+  let provider: String
+  let session: String
+  let bus: String
+
+  init(provider: String, session: String, bus: String) {
+    self.provider = provider
+    self.session = session
+    self.bus = URL(fileURLWithPath: bus).resolvingSymlinksInPath().path
+  }
+
+  var leaseID: String { Self.digest([provider, session], bytes: 16) }
+  var storageKey: String { Self.digest([provider, session, bus], bytes: 12) }
+
+  private static func digest(_ parts: [String], bytes: Int) -> String {
+    SHA256.hash(data: Data(parts.joined(separator: "\0").utf8))
+      .prefix(bytes).map { String(format: "%02x", $0) }.joined()
+  }
+}
+
+private struct AgentPlaybackMuteReceipt: Decodable, Sendable {
+  let schema: String
+  let provider: String
+  let provider_session_id: String
+  let lease_id: String
+  let bus: String
+  let muted: Bool
+
+  func belongs(to identity: AgentPlaybackIdentity) -> Bool {
+    schema == "codescribe.agent-playback-mute.v1" && provider == identity.provider
+      && provider_session_id == identity.session && lease_id == identity.leaseID
+      && bus == identity.bus
+  }
+}
 
 /// App-side invocations of the installed managed `cs-bus` command. They live
 /// apart from `AgentBridgeInstaller.swift` because they reference app types,
 /// and that file is also compiled on its own by `make install-bus`.
 extension RealAgentBridgeInstaller {
+  /// Resolve each live roster session to its actual leased bus, including custom buses.
+  @MainActor
+  static func boundPlaybackIdentities(
+    for candidates: [String: AgentPlaybackIdentity]
+  ) async -> [String: AgentPlaybackIdentity] {
+    let root = RealAgentBridgeInstaller().bridgeRoot
+    return await Task.detached(priority: .utility) {
+      var result: [String: AgentPlaybackIdentity] = [:]
+      for (channel, candidate) in candidates {
+        let path = root.appendingPathComponent("leases/\(candidate.leaseID).json")
+        guard let handle = try? FileHandle(forReadingFrom: path) else { continue }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: (4 << 20) + 1), data.count <= (4 << 20),
+          let row = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          row["schema"] as? String == "codescribe.agent-bridge.lease.v1",
+          row["lease_id"] as? String == candidate.leaseID,
+          row["provider"] as? String == candidate.provider,
+          row["provider_session_id"] as? String == candidate.session,
+          let bus = row["bus"] as? String, bus.hasPrefix("/")
+        else { continue }
+        result[channel] = AgentPlaybackIdentity(
+          provider: candidate.provider, session: candidate.session, bus: bus)
+      }
+      return result
+    }.value
+  }
+
+  /// Read the playback owner's atomically published receipts off the UI thread.
+  /// Missing means audible; malformed or unreadable remains unknown in the UI.
+  @MainActor
+  static func playbackMuteSnapshot(
+    for identities: Set<AgentPlaybackIdentity>
+  ) async -> [AgentPlaybackIdentity: Bool] {
+    let root = RealAgentBridgeInstaller().bridgeRoot
+    return await Task.detached(priority: .utility) {
+      var result: [AgentPlaybackIdentity: Bool] = [:]
+      for identity in identities {
+        let path = root.appendingPathComponent("runtime/playback-mutes/\(identity.storageKey).json")
+        do {
+          let handle = try FileHandle(forReadingFrom: path)
+          defer { try? handle.close() }
+          let data = try handle.read(upToCount: 65537) ?? Data()
+          guard data.count <= 65536,
+            let row = try? JSONDecoder().decode(AgentPlaybackMuteReceipt.self, from: data),
+            row.belongs(to: identity)
+          else { continue }
+          result[identity] = row.muted
+        } catch let error as NSError {
+          if error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError {
+            result[identity] = false
+          }
+        }
+      }
+      return result
+    }.value
+  }
+
+  @MainActor
+  static func setPlaybackMuted(_ muted: Bool, for identity: AgentPlaybackIdentity) async throws {
+    let installer = RealAgentBridgeInstaller()
+    let executable = installer.commandURL("cs-bus")
+    guard installer.fileManager.isExecutableFile(atPath: executable.path),
+      installer.managedCommandID(executable) != nil
+    else {
+      throw NSError(domain: "Codescribe.BusPlayback", code: 1, userInfo: [
+        NSLocalizedDescriptionKey: String(localized: "Install the agent bridge to control playback.")
+      ])
+    }
+    let arguments = [
+      muted ? "--mute-agent" : "--unmute-agent", "--provider", identity.provider,
+      "--session", identity.session, "--bus", identity.bus,
+      "--bridge-home", installer.bridgeRoot.path,
+    ]
+    var environment = ProcessInfo.processInfo.environment
+    let commandDirectories = [
+      installer.homeDirectory.appendingPathComponent(".cargo/bin").path,
+      installer.homeDirectory.appendingPathComponent(".local/bin").path,
+      "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
+    ]
+    environment["PATH"] = (commandDirectories + [environment["PATH"] ?? ""]).joined(separator: ":")
+    let commandEnvironment = environment
+    try await Task.detached(priority: .userInitiated) {
+      let process = Process()
+      process.executableURL = executable
+      process.arguments = arguments
+      process.environment = commandEnvironment
+      process.standardInput = FileHandle.nullDevice
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      try process.run()
+      let deadline = Date().addingTimeInterval(15)
+      while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+      if process.isRunning { process.terminate() }
+      guard !process.isRunning, process.terminationReason == .exit,
+        process.terminationStatus == 0
+      else {
+        throw NSError(domain: "Codescribe.BusPlayback", code: 2, userInfo: [
+          NSLocalizedDescriptionKey: String(localized: "Agent playback preference could not be saved.")
+        ])
+      }
+    }.value
+  }
+
   /// Uses the same bus predicate and turn lease as the idle-safe installer.
   /// Retaining the returned exclusive lease prevents a new agent turn until
   /// the restarting process exits. An unreadable bus refuses the restart.

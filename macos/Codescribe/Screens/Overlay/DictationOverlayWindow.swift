@@ -35,9 +35,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       makeFirstResponder(nil)
       releaseKeyAfterTranscript()
       expandedSize = frame.size
-      size = NSSize(
-        width: frame.width, height: DictationOverlayWindow.collapsedHeight)
-      minSize = NSSize(width: DictationOverlayWindow.minSize.width, height: size.height)
+      size = DictationOverlayWindow.collapsedSize
+      minSize = size
       contentMinSize = minSize
       styleMask.remove(.resizable)
     } else {
@@ -237,6 +236,7 @@ private final class OverlayContentContainer: NSView {
 
 enum DictationOverlayWindow {
   static let collapsedHeight: CGFloat = 46
+  static let collapsedSize = NSSize(width: 180, height: collapsedHeight)
 
   /// Shared geometry seam: a low-dragged/bottom-anchored bar must not unfold
   /// below the display. Keep its top unchanged whenever the full frame fits.
@@ -303,6 +303,10 @@ enum DictationOverlayWindow {
     )
     panel.delegate = panel
     state.onCollapseChanged = { [weak panel] collapsed in panel?.setCollapsed(collapsed) }
+    state.onAgentSidebarPresented = { [weak panel] in
+      panel?.makeFirstResponder(nil)
+      panel?.releaseKeyAfterTranscript()
+    }
     panel.onUserMove = { [weak state] in
       guard !OverlayController.isApplyingFrame else { return }
       state?.userDraggedOverlay()

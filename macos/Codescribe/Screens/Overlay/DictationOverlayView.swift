@@ -56,6 +56,8 @@ struct OverlayRecordingControls: View {
   let palette: OverlayAppearancePalette
   let onIntent: (OverlayIntent) -> Void
   let onPreviewToggle: () -> Void
+  var showsRecordingButton = true
+  var onShowDictation: (() -> Void)?
 
   /// Recording and preview keep fixed hairline circles, leaving the remaining
   /// width to the waveform (Founder, 2026-09-29: "ten stop jest olbrzymi").
@@ -115,12 +117,15 @@ struct OverlayRecordingControls: View {
 
   var body: some View {
     HStack(spacing: compact ? 4 : 7) {
-      recordingButton
+      if showsRecordingButton { recordingButton }
       previewButton
     }
     .fixedSize()
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-recording-controls")
+    .contextMenu {
+      Button("My dictation", systemImage: "waveform") { onShowDictation?() }
+    }
   }
 
   func finishRecording() {
@@ -193,6 +198,7 @@ struct OverlayRecordingControls: View {
     Button(action: togglePreview) {
       Image(systemName: previewSymbol)
         .font(.system(size: 11, weight: .semibold))
+        .rotationEffect(.degrees(45))
         .foregroundStyle(palette.mutedText.color)
         .frame(width: Self.controlDiameter, height: Self.controlDiameter)
         .contentShape(Circle())
@@ -302,7 +308,9 @@ struct DictationOverlayView: View {
       )
     }
     .csFocusPolicy()
-    .frame(minWidth: windowMinWidth, maxWidth: .infinity, maxHeight: .infinity)
+    .frame(
+      minWidth: state.isCollapsed ? DictationOverlayWindow.collapsedSize.width : windowMinWidth,
+      maxWidth: .infinity, maxHeight: .infinity)
     // Terminal corner clip (U22): the canvas paints its background from the
     // CONTENT column's size, not the window's. Whenever the column outgrows
     // the window frame — a mid-edge-drag beat, a stale persisted size below
@@ -344,33 +352,58 @@ struct DictationOverlayView: View {
 
   private func canvasStack<IntentRail: View>(_ intentRail: IntentRail) -> some View {
     ZStack {
-      bodySection
-        .frame(height: state.isCollapsed ? 0 : nil)
-        .opacity(state.isCollapsed || !state.showsMyDictation ? 0 : 1)
-        .allowsHitTesting(!state.isCollapsed && state.showsMyDictation)
-        .accessibilityHidden(state.isCollapsed || !state.showsMyDictation)
-      if let conversation = state.selectedConversation, !state.isCollapsed {
-        OverlayConversationView(
-          conversation: conversation, palette: palette,
-          topInset: headerHeight + 8, bottomInset: 20,
-          pendingControls: state.pendingReplyControls, controlErrors: state.replyControlErrors,
-          onControl: { message, stop in
-            Task { await state.controlReply(message, stop: stop) }
-          }, onShowMonitor: state.showAgentMonitor,
-          focusRevision: state.conversationFocusRevision,
-          followsLiveChannel: state.channelHudStates[conversation.channel]?.open == true,
-          draft: Binding(
-            get: { state.conversationDrafts[conversation.id] ?? "" },
-            set: { state.conversationDrafts[conversation.id] = $0 }),
-          sending: state.pendingTextMessages.contains(conversation.id),
-          sendError: state.textMessageErrors[conversation.id],
-          onSend: { Task { await state.sendConversationText(conversation) } })
-      } else if state.showsAgentMonitor, !state.isCollapsed {
-        ScrollView {
-          channelStatusView.monitorBody
-            .padding(.horizontal, 20)
-            .padding(.top, headerHeight + 8)
-            .padding(.bottom, 20)
+      GeometryReader { geometry in
+        let reservedWidth: CGFloat = state.showsAgentMonitor && geometry.size.width >= 640 ? 280 : 0
+        ZStack {
+          bodySection
+            .frame(height: state.isCollapsed ? 0 : nil)
+            .opacity(state.isCollapsed || !state.showsMyDictation ? 0 : 1)
+            .allowsHitTesting(!state.isCollapsed && state.showsMyDictation)
+            .accessibilityHidden(state.isCollapsed || !state.showsMyDictation)
+          if let conversation = state.selectedConversation, !state.isCollapsed,
+            !state.showsAgentMonitor || reservedWidth > 0
+          {
+            OverlayConversationView(
+              conversation: conversation, palette: palette,
+              topInset: headerHeight + 8, bottomInset: 20,
+              pendingControls: state.pendingReplyControls, controlErrors: state.replyControlErrors,
+              onControl: { message, stop in
+                Task { await state.controlReply(message, stop: stop) }
+              }, onShowMonitor: state.showAgentMonitor,
+              focusRevision: state.conversationFocusRevision,
+              followsLiveChannel: state.channelHudStates[conversation.channel]?.open == true,
+              draft: Binding(
+                get: { state.conversationDrafts[conversation.id] ?? "" },
+                set: { state.conversationDrafts[conversation.id] = $0 }),
+              sending: state.pendingTextMessages.contains(conversation.id),
+              sendError: state.textMessageErrors[conversation.id],
+              onSend: { Task { await state.sendConversationText(conversation) } },
+              microphoneOpen: state.conversationMicrophoneOpen(conversation),
+              microphoneEnabled: state.canToggleConversationMicrophone(conversation),
+              playbackMuted: state.conversationPlaybackMuted(conversation),
+              playbackEnabled: !state.pendingPlaybackOwners.contains(conversation.owner?.id ?? ""),
+              onMicrophone: { Task { await state.toggleConversationMicrophone(conversation) } },
+              onPlayback: { Task { await state.toggleConversationPlayback(conversation) } },
+              playbackError: state.playbackPreferenceError)
+          }
+        }
+        .padding(.trailing, reservedWidth)
+        .allowsHitTesting(!state.showsAgentMonitor || reservedWidth > 0)
+        .accessibilityHidden(state.showsAgentMonitor && reservedWidth == 0)
+        .overlay(alignment: .trailing) {
+          if state.showsAgentMonitor && !state.isCollapsed {
+            channelStatusView.monitorBody
+              .padding(12)
+              .frame(width: min(280, geometry.size.width - 16))
+              .background(palette.desktopBackground.color.opacity(0.98))
+              .overlay(alignment: .leading) {
+                Rectangle().fill(palette.border.color).frame(width: 0.5)
+                  .allowsHitTesting(false)
+              }
+              .padding(.top, headerHeight + 8)
+              .padding(.bottom, 16)
+              .accessibilityIdentifier("overlay-agent-sidebar")
+          }
         }
       }
       VStack(spacing: 0) {
@@ -393,7 +426,7 @@ struct DictationOverlayView: View {
       }
       .frame(maxHeight: .infinity, alignment: .top)
       VStack(spacing: 0) {
-        if !state.isCollapsed && state.showsMyDictation {
+        if !state.isCollapsed && state.showsMyDictation && !state.showsAgentMonitor {
           VStack(spacing: CSSpace.sm) {
             HStack(spacing: 6) {
               OverlayEvidenceChip(
@@ -559,14 +592,18 @@ struct DictationOverlayView: View {
 
   private var header: some View {
     VStack(spacing: 6) {
-      ViewThatFits(in: .horizontal) {
-        fullHeader
-        narrowHeader
+      if state.isCollapsed {
+        miniHeader
+      } else {
+        ViewThatFits(in: .horizontal) {
+          fullHeader
+          narrowHeader
+        }
       }
 
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, 16)
+    .padding(.horizontal, state.isCollapsed ? 10 : 16)
     .padding(.vertical, 10)
     .coordinateSpace(name: "overlay-header")
     // Keep the explicit drag region above the passive glass background.
@@ -594,37 +631,72 @@ struct DictationOverlayView: View {
 
   private var narrowHeader: some View { justifiedHeader(compact: true) }
 
+  private var miniHeader: some View {
+    HStack(spacing: 6) {
+      closeButton
+      chromeWaveform(barCount: 4)
+        .frame(minWidth: 12, maxWidth: .infinity)
+      if pointerInsideOverlay { channelStatusView }
+      recordingControls(compact: true, showsMicrophone: pointerInsideOverlay || state.recording)
+    }
+    .frame(height: 26)
+    .accessibilityIdentifier("overlay-mini-widget")
+    .contextMenu {
+      Button("Agents", systemImage: "sidebar.right") { state.showAgentMonitor() }
+      Button("My dictation", systemImage: "waveform") {
+        state.selectConversation(nil)
+        if state.isCollapsed { state.toggleCollapsed() }
+      }
+    }
+  }
+
+  private var closeButton: some View {
+    Button { state.relayIntent(.close) } label: {
+      ModeDot(color: CSColor.terracotta, size: 9)
+        .overlay {
+          if closeDotHovered {
+            OverlayCloseCross()
+              .stroke(palette.desktopBackground.color, style: StrokeStyle(lineWidth: 1))
+              .accessibilityHidden(true)
+          }
+        }
+        .scaleEffect(closeDotHovered ? 1.15 : 1)
+        .contentShape(Circle().inset(by: -7.5))
+    }
+    .buttonStyle(.plain)
+    .onHover { closeDotHovered = $0 }
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: closeDotHovered)
+    .focusable(false)
+    .help(OverlayIntent.close.helpText)
+    .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
+    .accessibilityIdentifier("overlay-brand-close-dot")
+  }
+
+  private func recordingControls(compact: Bool, showsMicrophone: Bool = true) -> some View {
+    var controls = OverlayRecordingControls(
+      canFinish: state.recording && !state.transcribing,
+      isPreviewCollapsed: state.isCollapsed, compact: compact, palette: palette,
+      onIntent: { intent in
+        if intent == .startRecording { state.selectConversation(nil) }
+        state.relayIntent(intent)
+      },
+      onPreviewToggle: { state.toggleCollapsed() },
+      isFinalizing: !state.terminal
+        && (state.transcribing || state.mode == .finalizing
+          || (!state.recording && state.showsSessionTimer)),
+      recordingLight: state.recordingLight, animates: overlayVisible)
+    controls.showsRecordingButton = showsMicrophone
+    controls.onShowDictation = {
+      state.selectConversation(nil)
+      if state.isCollapsed { state.toggleCollapsed() }
+    }
+    return controls
+  }
+
   private func justifiedHeader(compact: Bool) -> some View {
     HStack(spacing: compact ? 6 : 10) {
       HStack(spacing: 5) {
-        Button {
-          state.relayIntent(.close)
-        } label: {
-          ModeDot(
-            color: CSColor.terracotta,
-            size: 7
-          )
-          .overlay {
-            if closeDotHovered {
-              OverlayCloseCross()
-                .stroke(palette.desktopBackground.color, style: StrokeStyle(lineWidth: 1))
-                .accessibilityHidden(true)
-            }
-          }
-          .scaleEffect(closeDotHovered ? 1.15 : 1)
-          // 24 pt hit target without moving the dot: the shape reaches past the
-          // circle, the layout keeps the pre-b83e95538 position (Founder, 25 IX).
-          .contentShape(Circle().inset(by: -8.5))
-        }
-        .buttonStyle(.plain)
-        .onHover { closeDotHovered = $0 }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: closeDotHovered)
-        // Never the panel's initial key view: the transcript canvas keeps the
-        // preselection, and Space/Return cannot close the overlay by accident.
-        .focusable(false)
-        .help(OverlayIntent.close.helpText)
-        .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
-        .accessibilityIdentifier("overlay-brand-close-dot")
+        closeButton
 
         // The wordmark is the product name, never translated copy.
         Text(verbatim: "codescribe")
@@ -657,42 +729,27 @@ struct DictationOverlayView: View {
           .allowsHitTesting(false)
           .accessibilityHidden(true)
         }
+      sessionTimer
+        .allowsHitTesting(false)
 
       HStack(spacing: compact ? 4 : 8) {
         if showsDiagnostics && state.compactProjection?.degraded == true {
-          Image(systemName: "waveform.badge.magnifyingglass")
-            .foregroundStyle(palette.mutedText.color)
+          OverlayMicrophoneGlyph(
+            symbol: "waveform.badge.magnifyingglass", tint: palette.mutedText.color)
             .help(OverlayWarningCopy.liveTranscriptBehind.sentence)
             .accessibilityLabel(OverlayWarningCopy.liveTranscriptBehind.sentence)
             .accessibilityIdentifier("overlay-acoustic-warning")
         }
         if let error = state.expansionPreferenceError {
-          Image(systemName: "exclamationmark.triangle.fill")
-            .foregroundStyle(palette.processingStatus.color)
+          OverlayMicrophoneGlyph(
+            symbol: "exclamationmark.triangle.fill", tint: palette.processingStatus.color)
             .help(error)
             .accessibilityLabel(error)
             .accessibilityIdentifier("overlay-preference-save-error")
         }
-        if !state.visibleChannelRows.isEmpty || !state.conversations.isEmpty
-          || state.channelStatusUnavailable
-        {
-          channelStatusView
-        }
-        sessionTimer
-          .allowsHitTesting(false)
+        channelStatusView
         OverlayPlacementMenu(state: state, palette: palette)
-        OverlayRecordingControls(
-          canFinish: state.recording && !state.transcribing,
-          isPreviewCollapsed: state.isCollapsed,
-          compact: compact,
-          palette: palette,
-          onIntent: state.relayIntent,
-          onPreviewToggle: { state.toggleCollapsed() },
-          isFinalizing: !state.terminal
-            && (state.transcribing || state.mode == .finalizing
-              || (!state.recording && state.showsSessionTimer)),
-          recordingLight: state.recordingLight, animates: overlayVisible
-        )
+        recordingControls(compact: compact)
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
@@ -701,8 +758,9 @@ struct DictationOverlayView: View {
   }
 
   private var channelStatusView: OverlayChannelStatusView {
-    OverlayChannelStatusView(
-      channels: state.visibleChannelRows, unavailable: state.channelStatusUnavailable,
+    var view = OverlayChannelStatusView(
+      channels: state.visibleChannelRows.filter { $0.channel != "0" },
+      unavailable: state.channelStatusUnavailable,
       palette: palette, animates: overlayVisible,
       hudStates: state.channelHudStates,
       onToggleChannel: { digit in
@@ -716,8 +774,14 @@ struct DictationOverlayView: View {
           ($0.id, state.unreadReplies(in: $0))
         }),
       onSelectConversation: state.selectConversation,
-      onShowMonitor: state.showAgentMonitor
+      onShowMonitor: state.toggleAgentSidebar
     )
+    view.mutedChannels = state.channelPlaybackMuted
+    view.pendingMuteChannels = state.pendingPlaybackChannels
+    view.onTogglePlayback = { channel in Task { await state.toggleChannelPlayback(channel) } }
+    view.onDismissMonitor = state.hideAgentSidebar
+    view.playbackError = state.playbackPreferenceError
+    return view
   }
 
   /// Audio-evidence strip in the primary bar. Amplitude/VAD only — word/PCM
