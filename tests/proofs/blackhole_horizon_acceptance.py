@@ -39,9 +39,10 @@ def verify(proof: Path, expected_commit: str) -> list[str]:
         ends = [e for e in events if e.get("session_id") == sid and e.get("status") == "session_ended"]
         if len(ends) != 1 or ends[0].get("end_reason") != "completed":
             failures.append(f"{take}: one completed terminal required")
-        seals = [e for e in events if e.get("session_id") == sid and e.get("status") == "transcript_sealed"]
-        if not seals or not any(e.get("text", "").strip() for e in seals):
-            failures.append(f"{take}: nonempty sealed transcript required")
+        evidence = [e for e in events if e.get("session_id") == sid and e.get("schema") == "codescribe.transcript-evidence.v1"]
+        final = evidence[-1] if evidence else {}
+        if final.get("seal_coverage", {}).get("status") != "complete" or not final.get("rendered_text", "").strip():
+            failures.append(f"{take}: nonempty transcript with complete seal coverage required")
         if case["cost"]["maximum_source_window_multiplicity"] > 3:
             failures.append(f"{take}: source PCM decoded more than three times")
         if case["counts"]["successful_logical_whisper_tail_calls"] < 1:
