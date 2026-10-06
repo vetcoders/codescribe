@@ -206,26 +206,29 @@ private struct SettingsHealthFooter: View {
 
   var body: some View {
     let health = model.settingsHealth
-    Group {
-      if let target = health.targetSection {
-        Button {
-          model.select(target)
-        } label: {
-          content(health)
+    // No message means nothing operational to say: the sidebar has no footer.
+    if let message = health.message {
+      Group {
+        if let target = health.targetSection {
+          Button {
+            model.select(target)
+          } label: {
+            content(health, message: message)
+          }
+          .csFocusRing()
+          .help("Open \(target.title) settings")
+        } else {
+          content(health, message: message)
         }
-        .csFocusRing()
-        .help("Open \(target.title) settings")
-      } else {
-        content(health)
       }
+      .accessibilityIdentifier("settings-health-footer")
     }
-    .accessibilityIdentifier("settings-health-footer")
   }
 
-  private func content(_ health: SettingsHealthState) -> some View {
+  private func content(_ health: SettingsHealthState, message: String) -> some View {
     HStack(spacing: 8) {
       Circle().fill(health.level.color).frame(width: 6, height: 6)
-      Text(health.message)
+      Text(message)
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(health.level.color)
         .lineLimit(2)

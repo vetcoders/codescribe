@@ -2065,17 +2065,6 @@
         }
       }
     },
-    "Agent not ready" : {
-      "comment" : "Settings health footer, sentence case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent niegotowy"
-          }
-        }
-      }
-    },
     "Agent pinned, disable Always on Top" : {
       "localizations" : {
         "pl" : {
@@ -2112,6 +2101,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Oznaczanie transkrypcji dla agentów"
+          }
+        }
+      }
+    },
+    "Agent unavailable" : {
+      "comment" : "Settings health footer, sentence case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent niedostępny"
           }
         }
       }
@@ -2153,17 +2153,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Agent — %@"
-          }
-        }
-      }
-    },
-    "Agent: no key or account" : {
-      "comment" : "Settings health footer, sentence case: no supported account or API key",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent: brak klucza lub konta"
           }
         }
       }
@@ -5502,17 +5491,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Błąd"
-          }
-        }
-      }
-    },
-    "Everything is ready" : {
-      "comment" : "Settings health footer, sentence case: nothing needs attention",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wszystko gotowe"
           }
         }
       }
@@ -9395,6 +9373,17 @@
         }
       }
     },
+    "Ready to work" : {
+      "comment" : "Settings health footer, sentence case: nothing needs attention",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gotowe do pracy"
+          }
+        }
+      }
+    },
     "Ready · %@" : {
       "comment" : "The placeholder is a model path or model id",
       "localizations" : {
@@ -9509,13 +9498,13 @@
         }
       }
     },
-    "Recording not ready" : {
+    "Recording needs setup" : {
       "comment" : "Settings health footer, sentence case",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nagrywanie niegotowe"
+            "value" : "Nagrywanie wymaga konfiguracji"
           }
         }
       }
@@ -11940,17 +11929,6 @@
         }
       }
     },
-    "Status unknown" : {
-      "comment" : "Settings health footer, sentence case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stan nieznany"
-          }
-        }
-      }
-    },
     "Status: %@" : {
       "comment" : "Tray detail row; %@ is a status phrase such as Error or Hotkey conflict",
       "localizations" : {
@@ -13285,17 +13263,6 @@
         }
       }
     },
-    "Transcription engine unavailable" : {
-      "comment" : "Settings health footer, sentence case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Silnik transkrypcji niedostępny"
-          }
-        }
-      }
-    },
     "Transcription failed" : {
       "localizations" : {
         "pl" : {
@@ -13332,6 +13299,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Transkrypcja przerwana"
+          }
+        }
+      }
+    },
+    "Transcription unavailable" : {
+      "comment" : "Settings health footer, sentence case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcja niedostępna"
           }
         }
       }

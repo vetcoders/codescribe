@@ -124,8 +124,9 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(view.contains("minWidth: 880"))
   }
 
-  /// The sidebar footer is one sentence-case line per state. The healthy line
-  /// must stay on one line in the narrowest sidebar, in English and Polish.
+  /// The sidebar footer is one sentence-case line per state, and empty while
+  /// the state is undetermined. The healthy line must stay on one line in the
+  /// narrowest sidebar, in English and Polish.
   @MainActor
   func testHealthFooterReadsAsOneSentenceCaseLine() throws {
     let states = [
@@ -136,14 +137,19 @@ final class SettingsChromeContractTests: XCTestCase {
       healthState(stt: true, recording: true, keys: .available, agent: false, formatting: true),
       healthState(stt: true, recording: true, keys: .available, agent: true, formatting: false),
       healthState(stt: true, recording: nil, keys: .available, agent: true, formatting: true),
-      healthState(stt: nil, recording: true, keys: .available, agent: true, formatting: true),
     ]
-    XCTAssertEqual(Set(states.map(\.message)).count, states.count)
+    let messages = try states.map { try XCTUnwrap($0.message) }
+    XCTAssertEqual(Set(messages).count, states.count)
+
+    let undetermined = healthState(
+      stt: nil, recording: true, keys: .available, agent: true, formatting: true)
+    XCTAssertNil(undetermined.message)
+    XCTAssertNil(undetermined.targetSection)
 
     let polish = try polishCatalog()
-    for state in states {
-      let translated = try XCTUnwrap(polish[state.message], "no Polish row: \(state.message)")
-      for line in [state.message, translated] {
+    for message in messages {
+      let translated = try XCTUnwrap(polish[message], "no Polish row: \(message)")
+      for line in [message, translated] {
         XCTAssertEqual(line.first?.isUppercase, true, line)
         XCTAssertFalse(line.contains("·"), line)
       }
@@ -151,12 +157,13 @@ final class SettingsChromeContractTests: XCTestCase {
 
     let view = try XCTUnwrap(settingsSources()["SettingsView.swift"])
     XCTAssertTrue(view.contains("Circle().fill(health.level.color).frame(width: 6, height: 6)"))
-    XCTAssertTrue(view.contains("Text(health.message)\n        .font(CSFont.mono(10, .medium))"))
+    XCTAssertTrue(view.contains("if let message = health.message {"))
+    XCTAssertTrue(view.contains("Text(message)\n        .font(CSFont.mono(10, .medium))"))
     // Narrowest sidebar minus the footer padding, the status dot and its gap.
     let slot: CGFloat = 196 - 2 * 16 - 6 - 8
-    let healthy = try XCTUnwrap(states.first)
-    XCTAssertEqual(healthy.level, .healthy)
-    for line in [healthy.message, try XCTUnwrap(polish[healthy.message])] {
+    XCTAssertEqual(states.first?.level, .healthy)
+    let healthy = try XCTUnwrap(messages.first)
+    for line in [healthy, try XCTUnwrap(polish[healthy])] {
       let width = (line as NSString).size(withAttributes: [.font: CSFont.nsMono(10)]).width
       XCTAssertLessThanOrEqual(width, slot, line)
     }

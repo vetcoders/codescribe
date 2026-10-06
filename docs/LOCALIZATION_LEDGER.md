@@ -495,7 +495,7 @@ a translation 15–30 % longer than English clips or truncates first.
 | Surface                          | Slot                                                                                                                         |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | Settings tab bar                 | Segments hug their own labels; the bar scrolls horizontally once six of them exceed the pane at 880 pt                       |
-| Settings sidebar                 | 196–300 pt; health footer is one sentence-case line (`Everything is ready`); a problem line may wrap to two                  |
+| Settings sidebar                 | 196–300 pt; health footer is one sentence-case line (`Ready to work`), absent while undetermined; a problem line may wrap    |
 | Settings detail column           | Never narrower than 664 pt: an 880 pt window with the sidebar open, 664 pt with it hidden                                    |
 | Tool permissions                 | `Allow · Ask · Deny` in a picker pinned to 180 pt — the tightest slot in Settings                                            |
 | Agent status                     | Label column 160 pt, capability columns 120 / 96 pt, one-line rows                                                           |

@@ -1060,14 +1060,14 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(
       healthState(stt: true, recording: true, keys: .available, agent: true, formatting: true),
       SettingsHealthState(
-        level: .healthy, message: "Everything is ready", targetSection: nil
+        level: .healthy, message: "Ready to work", targetSection: nil
       )
     )
     XCTAssertEqual(
       healthState(stt: true, recording: true, keys: .missing, agent: false, formatting: true),
       SettingsHealthState(
         level: .degraded,
-        message: "Agent: no key or account",
+        message: "Agent needs setup",
         targetSection: .keys
       )
     )
@@ -1075,7 +1075,7 @@ final class SettingsTruthTests: XCTestCase {
       healthState(stt: false, recording: true, keys: .available, agent: true, formatting: true),
       SettingsHealthState(
         level: .offline,
-        message: "Transcription engine unavailable",
+        message: "Transcription unavailable",
         targetSection: .engine
       )
     )
@@ -1083,7 +1083,7 @@ final class SettingsTruthTests: XCTestCase {
       healthState(stt: true, recording: true, keys: .available, agent: false, formatting: true),
       SettingsHealthState(
         level: .offline,
-        message: "Agent not ready",
+        message: "Agent unavailable",
         targetSection: .agent
       )
     )
@@ -1091,15 +1091,15 @@ final class SettingsTruthTests: XCTestCase {
       healthState(stt: nil, recording: true, keys: .available, agent: true, formatting: true),
       SettingsHealthState(
         level: .unknown,
-        message: "Status unknown",
-        targetSection: .engine
+        message: nil,
+        targetSection: nil
       )
     )
     XCTAssertEqual(
       healthState(stt: true, recording: false, keys: .available, agent: true, formatting: true),
       SettingsHealthState(
         level: .offline,
-        message: "Recording not ready",
+        message: "Recording needs setup",
         targetSection: .audio
       )
     )
@@ -1125,7 +1125,7 @@ final class SettingsTruthTests: XCTestCase {
       stt: true, recording: true, keys: .available, agent: true,
       formatting: false, formattingRequired: false)
     XCTAssertEqual(disabled.level, .healthy)
-    XCTAssertEqual(disabled.message, "Everything is ready")
+    XCTAssertEqual(disabled.message, "Ready to work")
     XCTAssertEqual(
       healthState(stt: false, recording: true, keys: .available, agent: true, formatting: false)
         .level,

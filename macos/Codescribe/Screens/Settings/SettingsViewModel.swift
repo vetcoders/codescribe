@@ -541,14 +541,16 @@ enum SettingsHealthLevel: Equatable {
 
 struct SettingsHealthState: Equatable {
   let level: SettingsHealthLevel
-  let message: String
+  /// `nil` when nothing operational can be said yet: the footer stays empty.
+  let message: String?
   let targetSection: SettingsSection?
 }
 
 /// Pure aggregate used by the rail footer and its XCTest matrix. Known failures
 /// beat unknown inputs so the footer never hides a concrete problem behind a
-/// muted "unknown" state. Every message is one sentence-case line: the healthy
-/// state says so in two words, a problem names only the area that owns it.
+/// muted "unknown" state. Every message is one sentence-case line that names
+/// the area, never the cause: the owning panel explains. An undetermined state
+/// has no message, except the recording check, which says it is running.
 func healthState(
   stt: Bool?,
   recording: Bool?,
@@ -561,7 +563,7 @@ func healthState(
     return SettingsHealthState(
       level: .offline,
       message: String(
-        localized: "Transcription engine unavailable",
+        localized: "Transcription unavailable",
         comment: "Settings health footer, sentence case"
       ),
       targetSection: .engine
@@ -571,7 +573,7 @@ func healthState(
     return SettingsHealthState(
       level: .offline,
       message: String(
-        localized: "Recording not ready",
+        localized: "Recording needs setup",
         comment: "Settings health footer, sentence case"
       ),
       targetSection: .audio
@@ -580,10 +582,8 @@ func healthState(
   if keys == .missing {
     return SettingsHealthState(
       level: .degraded,
-      message: String(
-        localized: "Agent: no key or account",
-        comment: "Settings health footer, sentence case: no supported account or API key"
-      ),
+      // Shares the onboarding row: no supported account or API key.
+      message: String(localized: "Agent needs setup"),
       targetSection: .keys
     )
   }
@@ -591,7 +591,7 @@ func healthState(
     return SettingsHealthState(
       level: .offline,
       message: String(
-        localized: "Agent not ready",
+        localized: "Agent unavailable",
         comment: "Settings health footer, sentence case"
       ),
       targetSection: .agent
@@ -617,17 +617,14 @@ func healthState(
           localized: "Checking recording…",
           comment: "Settings health footer, sentence case"
         )
-        : String(
-          localized: "Status unknown",
-          comment: "Settings health footer, sentence case"
-        ),
-      targetSection: recording == nil ? .audio : .engine
+        : nil,
+      targetSection: recording == nil ? .audio : nil
     )
   }
   return SettingsHealthState(
     level: .healthy,
     message: String(
-      localized: "Everything is ready",
+      localized: "Ready to work",
       comment: "Settings health footer, sentence case: nothing needs attention"
     ),
     targetSection: nil
