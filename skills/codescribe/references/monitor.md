@@ -36,14 +36,41 @@ complete original envelope now and ACK after reading. This is one delivery,
 not a second command. A later queued copy must not repeat the completed task
 or speak a second answer for a delivery already acknowledged by this conversation.
 
+## Bell for providers without native inject
+
+`cs-bus --attach --provider <provider> --session <session-id> --name <name> --channel <n>`
+automatically selects `--wakeup bell` for every provider except codex, which
+uses `codex-queue`. The follower appends one compact JSON line per fresh seal
+or message to `agent-bridge/runtime/followers/<lease_id>.bell.jsonl`. Each line
+carries `kind`, `delivery_id`, `emitted_at` and up to 500 characters of `text`.
+Drafts and revised drafts do not write a bell line. The follower also writes a
+receipt under `agent-bridge/wakeups/<lease-id>/<delivery-id>.json` with schema
+`codescribe.bell.receipt.v1` and disposition `bell_posted`.
+
+Providers without a native inject channel have no equivalent of `codex queue`,
+so wakeup is a bounded watcher on the agent side. Start
+`cs-bus --watch --provider <provider> --session <session-id>` as a background
+task with a window no longer than 60 seconds, and renew completed windows
+throughout the active task. The end of a window opens an agent turn: read the
+delivery with `cs-bus --read-delivery <id> --provider <provider> --session <session-id>` and ACK after reading.
+
+For `--wakeup bell`, `--ack` records acceptance and the bell file itself is the
+only queue; `native_queue_settled: true` means no further withdrawal is needed.
+`cs-bus --retry-wakeup <delivery-id> --provider <provider> --session <session-id>`
+re-appends a bell line only if the receipt does not already show `bell_posted`.
+
+After the final answer and session death the bell is dead: no watcher can
+resume a dead session. Do not promise unattended replies beyond the active task.
+
 ## Select the execution mechanism for other providers
 
-Inspect tools available in this provider session before launching a listener.
-Use its documented event-driven background monitor or notification facility
-that delivers output to the agent and resumes processing without human input.
-Verify whether it survives a final answer, whether it notifies on output or
-only process exit, and how it is cancelled. Do not infer these properties from
-the word "background" or invent an API name.
+For every provider except codex, `--attach` automatically arms `--wakeup bell`
+as described above. Inspect any additional tools available in this provider
+session before launching a listener. Use a documented event-driven background
+monitor or notification facility that delivers output to the agent and resumes
+processing without human input. Verify whether it survives a final answer,
+whether it notifies on output or only process exit, and how it is cancelled.
+Do not infer these properties from the word "background" or invent an API name.
 
 An infinite follower needs output notifications. An exit-only notification
 cannot be treated as live delivery while that follower keeps running.

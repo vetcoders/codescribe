@@ -75,8 +75,12 @@ manual attach saga and drive the engine:
 
 3. Codex attachment arms `codex queue` automatically for this exact thread.
    It continues after a final answer; no private hook or polling is needed.
-   Every attachment must also start `--watch` under the provider's
-   output-notifying monitor, including Codex. The default is a short bell.
+   Attachment for providers without native inject arms `--wakeup bell`
+   automatically: the follower writes compact lines to `<lease_id>.bell.jsonl`
+   and the agent runs `--watch` as a bounded background watcher, renewing it
+   throughout the active task. The bell dies when the session ends. Every
+   attachment must also start `--watch` under the provider's output-notifying
+   monitor, including Codex and bell providers. The default is a short bell.
    Keep and renew notification windows throughout active tasks. Read a bell's
    full `--read-delivery <id>` envelope before ACK; a later native queued copy
    must not repeat the task or its spoken answer.
@@ -189,7 +193,9 @@ include successful delivery, unavailable wakeup, and seal refusal.
    resolved bus, helper support for recent schemas, and stable provider session.
 2. Every provider requires an output-notifying `--watch`, with its default
    short bell, for active tasks. Codex also uses native queue for subsequent
-   turns. A process handle or diagnostic tail is insufficient; renew completed
+   turns. Providers without native inject use `--wakeup bell` file lines and
+   require bounded watcher windows (≤60s) renewed throughout the active task. A
+   process handle or diagnostic tail is insufficient; renew completed
    notification windows and retain the monitor through the entire task.
 3. Reuse the session's name, or ask once if none is established. If the Founder
    asks the agent to choose, choose a pronounceable name and bind it directly.

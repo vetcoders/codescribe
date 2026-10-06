@@ -41,7 +41,9 @@ cs-bus --status --provider codex --session <thread-id>
 
 Every provider requires an output-notifying `cs-bus --watch` monitor; its default
 is a short bell. Keep it active and renew notification windows during tasks.
-Codex also uses native queue wakeup after a final answer. Read a bell's complete
-`--read-delivery` envelope before ACK; do not repeat a handled queued copy.
+Codex also uses native queue wakeup after a final answer. Providers without
+native inject use `--wakeup bell` file-based wakeup while the session is active;
+it does not survive a final answer. Read a bell's complete `--read-delivery`
+envelope before ACK; do not repeat a handled queued copy.
 Use `--watch --full` only for text diagnostics. A queue receipt is distinct from
 an agent ACK.

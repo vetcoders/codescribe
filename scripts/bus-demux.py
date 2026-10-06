@@ -2112,6 +2112,8 @@ def withdraw_acknowledged_queue(root: Path, lease_id: str, identity: str, *,
     receipt = read_json(path)
     if receipt is None:
         return not path.exists()
+    if receipt.get("schema") == "codescribe.bell.receipt.v1":
+        return True
     state = read_json(root / "leases" / f"{lease_id}.json") or {}
     expected = {"lease_id": lease_id, "provider": "codex", "provider_session_id": state.get("provider_session_id"),
                 "delivery_id": identity}
@@ -2223,7 +2225,11 @@ def effective_wakeup(args: argparse.Namespace) -> str:
     if requested != "auto":
         return requested
     managed_follower = getattr(args, "attach", False) or getattr(args, "follower_channel", None)
-    return "codex-queue" if args.provider == "codex" and managed_follower and not args.on_seal else "off"
+    if not managed_follower or args.on_seal:
+        return "off"
+    if args.provider == "codex":
+        return "codex-queue"
+    return "bell"
 
 
 def wakeup_configuration(args: argparse.Namespace) -> dict[str, Any]:
@@ -2363,6 +2369,104 @@ class NativeQueueWakeup:
                 sys.stderr.write(f"cs-bus: native wakeup {receipt['disposition']} for {identity}; retained, see --status\n")
 
 
+class BellWakeup:
+    """Bounded file-based wakeup for providers without a live-session inject.
+
+    The follower emits a compact, append-only bell line per fresh seal/message.
+    A separate agent watcher polls the per-lease ``.bell.jsonl`` and decides
+    when to ring the provider. Each delivery keeps a durable receipt under
+    ``wakeups/<lease>/``.
+    """
+
+    BELL_SCHEMA = "codescribe.bell.receipt.v1"
+    BELL_TEXT_LIMIT = 500
+
+    def __init__(self, root: Path, provider: str, session: str, channel: str | None):
+        from concurrent.futures import ThreadPoolExecutor
+
+        self.root = root
+        self.provider = provider.casefold()
+        self.session = session
+        self.channel = channel
+        self.lease_id = lease_identifier(self.provider, session)
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"cs-{self.provider}-bell")
+
+    def enqueue_withdrawal(self, identity: str) -> None:
+        """A bell has no provider queue to withdraw from after ACK."""
+        return
+
+    def enqueue(self, payload: dict[str, Any], *, retry: bool = False) -> None:
+        if payload.get("kind") not in ("seal", "message"):
+            return
+        self.executor.submit(self._deliver, dict(payload), retry).add_done_callback(self._report_error)
+
+    @staticmethod
+    def _report_error(future: Any) -> None:
+        if not future.cancelled() and future.exception() is not None:
+            sys.stderr.write("cs-bus: bell wakeup failed; delivery remains in its mailbox\n")
+
+    def close(self, *, wait: bool = False) -> None:
+        self.executor.shutdown(wait=wait, cancel_futures=not wait)
+
+    def _deliver(self, payload: dict[str, Any], retry: bool) -> None:
+        identity = payload.get("delivery_id")
+        owner = payload.get("delivery_owner")
+        if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{24}", identity):
+            return
+        expected = {"lease_id": self.lease_id, "provider": self.provider, "provider_session_id": self.session}
+        if not isinstance(owner, dict) or any(owner.get(k) != v or payload.get(k) != v for k, v in expected.items()):
+            return
+        if delivery_acknowledged(self.root, self.lease_id, identity, payload):
+            return
+        state = read_json(self.root / "leases" / f"{self.lease_id}.json") or {}
+        if state.get("schema") != LEASE_SCHEMA or any(state.get(k) != v for k, v in expected.items()):
+            return
+        if payload not in state.get("pending", []):
+            return
+        directory = self.root / "wakeups" / self.lease_id
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        receipt_path = directory / f"{identity}.json"
+        with (directory / f"{identity}.lock").open("a") as lock:
+            os.chmod(lock.name, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            previous = read_json(receipt_path)
+            if receipt_path.exists() and previous is None:
+                raise ValueError("unreadable wakeup receipt; preserved")
+            if previous and previous.get("disposition") == "bell_posted":
+                return
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return
+            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            receipt = {
+                "schema": self.BELL_SCHEMA, **expected,
+                "delivery_id": identity, "disposition": "bell_posted",
+                "bus_emitted_at": payload.get("emitted_at"),
+                "bell_posted_at": now,
+                "attempt": (previous or {}).get("attempt", 0) + 1,
+            }
+            atomic_json(receipt_path, receipt)
+            bell_path = self.root / "runtime" / "followers" / f"{self.lease_id}.bell.jsonl"
+            bell_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            bell_line = json.dumps({
+                "kind": payload.get("kind"),
+                "delivery_id": identity,
+                "emitted_at": payload.get("emitted_at"),
+                "text": text[:self.BELL_TEXT_LIMIT],
+            }, ensure_ascii=False, sort_keys=True) + "\n"
+            descriptor = os.open(bell_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                os.fchmod(descriptor, 0o600)
+                remaining = memoryview(bell_line.encode("utf-8"))
+                while remaining:
+                    written = os.write(descriptor, remaining)
+                    if written == 0:
+                        raise OSError("bell write made no progress")
+                    remaining = remaining[written:]
+            finally:
+                os.close(descriptor)
+
+
 def fire_seal_hook(command: str, payload: dict[str, Any]) -> None:
     """Detached wake hook, exactly once per freshly queued seal.
 
@@ -2433,11 +2537,12 @@ def run(args: argparse.Namespace) -> int:
     if lease:
         normalizer.restore_channel_documents(list(lease.unclosed_channel_messages.values()))
         normalizer.restore_channel_documents(list(lease.pending.values()))
-    native = (
-        NativeQueueWakeup(args.bridge_home, args.session, follower_channel)
-        if lease and args.follow and args.provider == "codex"
-        else None
-    )
+    native = None
+    if lease and args.follow:
+        if args.provider == "codex":
+            native = NativeQueueWakeup(args.bridge_home, args.session, follower_channel)
+        else:
+            native = BellWakeup(args.bridge_home, args.provider, args.session, follower_channel)
     event_trigger: BusEventTrigger | None = None
     deferred: tuple[list[dict[str, Any]], int | None] | None = None
     recipients: set[str] | None = None
@@ -2472,7 +2577,7 @@ def run(args: argparse.Namespace) -> int:
                 payload = remaining[0]
                 if not lease or lease.queue_delivery(payload):
                     publish(payload)
-                    if native and effective_wakeup(args) == "codex-queue":
+                    if native and effective_wakeup(args) in ("codex-queue", "bell"):
                         native.enqueue(payload)
                     if args.on_seal and payload.get("kind") in ("seal", "message"):
                         fire_seal_hook(args.on_seal, payload)
@@ -2548,7 +2653,7 @@ def run(args: argparse.Namespace) -> int:
                 if delivery_acknowledged(lease.root, lease.lease_id, payload["delivery_id"], payload):
                     continue
                 publish(payload)
-                if native and effective_wakeup(args) == "codex-queue":
+                if native and effective_wakeup(args) in ("codex-queue", "bell"):
                     native.enqueue(payload)
             flush_human_drafts()
         if args.once:
@@ -4582,12 +4687,12 @@ def main() -> int:
         "(CODESCRIBE_SEAL_DELIVERY_ID/_SESSION_ID/_TEXT in its environment)",
     )
     parser.add_argument(
-        "--wakeup", choices=("auto", "codex-queue", "off"), default="auto",
-        help="native wakeup: auto uses codex queue for attached Codex sessions; off keeps monitor-only delivery",
+        "--wakeup", choices=("auto", "codex-queue", "bell", "off"), default="auto",
+        help="native wakeup: auto uses codex queue for attached Codex sessions and bell for every other attached session; off keeps monitor-only delivery",
     )
     parser.add_argument(
         "--retry-wakeup", metavar="DELIVERY_ID",
-        help="explicitly retry one retained Codex seal after a failed/uncertain queue submission",
+        help="explicitly retry one retained seal after a failed/uncertain native queue or bell submission",
     )
     parser.add_argument("--read-delivery", metavar="DELIVERY_ID", help="read one complete pending envelope without acknowledging or resubmitting it")
     parser.add_argument(
@@ -4814,9 +4919,11 @@ def main() -> int:
         return 0
     if args.wakeup == "codex-queue" and (args.provider != "codex" or args.on_seal):
         parser.error("codex-queue requires --provider codex and no separate --on-seal hook")
+    if args.wakeup == "bell" and (args.provider == "codex" or args.on_seal):
+        parser.error("bell requires a non-codex provider and no separate --on-seal hook")
     if args.retry_wakeup:
-        if args.provider != "codex" or not re.fullmatch(r"[0-9a-f]{24}", args.retry_wakeup):
-            parser.error("--retry-wakeup requires --provider codex, --session and a delivery id")
+        if not args.provider or not re.fullmatch(r"[0-9a-f]{24}", args.retry_wakeup):
+            parser.error("--retry-wakeup requires --provider/--session and a delivery id")
         if any((args.ack, args.attach, args.detach, args.status, args.watch, args.follow, args.once, args.say is not None)):
             parser.error("--retry-wakeup combines with no other command")
         lease_id = lease_identifier(args.provider, args.session)
@@ -4824,12 +4931,17 @@ def main() -> int:
         payload = next((p for p in state.get("pending", []) if p.get("delivery_id") == args.retry_wakeup), None)
         if payload is None or payload.get("kind") not in ("seal", "message"):
             parser.error("delivery is not a pending seal in this mailbox")
-        native = NativeQueueWakeup(args.bridge_home, args.session, None)
+        if args.provider == "codex":
+            native = NativeQueueWakeup(args.bridge_home, args.session, None)
+            success_disposition = "provider_accepted"
+        else:
+            native = BellWakeup(args.bridge_home, args.provider, args.session, None)
+            success_disposition = "bell_posted"
         native.enqueue(payload, retry=True)
         native.close(wait=True)
         receipt = read_json(args.bridge_home / "wakeups" / lease_id / f"{args.retry_wakeup}.json") or {}
         emit(receipt)
-        return 0 if receipt.get("disposition") == "provider_accepted" else 3
+        return 0 if receipt.get("disposition") == success_disposition else 3
     if args.speed is not None and args.speed <= 0:
         parser.error("--speed must be positive")
     if args.voice is not None and not args.voice.strip():
