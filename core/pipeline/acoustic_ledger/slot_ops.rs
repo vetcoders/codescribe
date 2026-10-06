@@ -829,12 +829,21 @@ impl AcousticLedger {
                         && self
                             .slots_of(owner)
                             .is_some_and(|pins| pins.contains(source))
-                        // The exact held Word supplies lexical authority; a
-                        // refused stub supplies only its decoder window and
-                        // scheduled producer's return. Accepted decode coverage
-                        // must still account for that producer's owner scope.
-                        // Other refusals still own their retained-source debt.
-                        && !(matches!(alternative.reason, "decode_window_clipped" | "incomplete_source_scope")
+                        // A complete held Word survives an unaccepted spelling
+                        // or timing proposal. That lexical dispute is retained
+                        // in word finality; it does not prove missing speech.
+                        // Both the actual refused decode and accepted work
+                        // covering this exact owner must exist, and the
+                        // scheduled producer must have returned. A stub alone,
+                        // a coarse source, or a refused partition cannot settle
+                        // the source's recovery obligation.
+                        && !(matches!(
+                            alternative.reason,
+                            "decode_window_clipped"
+                                | "incomplete_source_scope"
+                                | "word_adjudication_held"
+                                | "lexical_disagreement"
+                        )
                             && self.complete_word_slot(source)
                             && self.returned_word_scope_accounted(&source.observation)
                             && self
