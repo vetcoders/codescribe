@@ -37,6 +37,7 @@ use crate::safe_path;
 
 use super::embedded::EmbeddedModel;
 use super::params::DecodingParams;
+use crate::stt::tail_provider::TailExecutionObservation;
 
 fn candle_config(architecture: crate::whisper_weights::WhisperArchitecture) -> Config {
     Config {
@@ -391,6 +392,112 @@ struct EngineRequest<'a> {
     previous_prompt: Option<String>,
 }
 
+struct WhisperEncoderExecutionReceipt<'a> {
+    observation: &'a TailExecutionObservation,
+    encoder_stage: &'static str,
+    encoder_input_samples_16k: usize,
+    started: std::time::Instant,
+    finished: bool,
+}
+
+impl<'a> WhisperEncoderExecutionReceipt<'a> {
+    fn start(
+        observation: &'a TailExecutionObservation,
+        encoder_stage: &'static str,
+        encoder_input_samples_16k: usize,
+    ) -> Self {
+        let receipt = Self {
+            observation,
+            encoder_stage,
+            encoder_input_samples_16k,
+            started: std::time::Instant::now(),
+            finished: false,
+        };
+        receipt.log_started();
+        receipt
+    }
+
+    fn log_started(&self) {
+        let observation = self.observation;
+        let identity = &observation.identity;
+        tracing::info!(
+            event = "whisper_encoder_invocation_started",
+            execution_id = %observation.execution_id,
+            encoder_stage = self.encoder_stage,
+            session_id = %identity.range.session,
+            capture_epoch = identity.range.capture_epoch,
+            request_id = identity.request_id,
+            sample_start = identity.range.sample_start,
+            sample_end = identity.range.sample_end,
+            source_input_samples = observation.source_input_samples,
+            source_sample_rate_hz = observation.sample_rate,
+            source_input_duration_ms = sample_duration_ms(
+                observation.source_input_samples,
+                observation.sample_rate,
+            ),
+            vad_compacted_input_samples = observation.vad_compacted_input_samples,
+            vad_compacted_sample_rate_hz = observation.sample_rate,
+            vad_compacted_input_duration_ms = sample_duration_ms(
+                observation.vad_compacted_input_samples,
+                observation.sample_rate,
+            ),
+            encoder_input_samples = self.encoder_input_samples_16k,
+            encoder_input_sample_rate_hz = whisper::SAMPLE_RATE,
+            encoder_input_duration_ms = sample_duration_ms(
+                self.encoder_input_samples_16k,
+                whisper::SAMPLE_RATE,
+            ),
+            "Whisper encoder invocation started"
+        );
+    }
+
+    fn finish(mut self, outcome: &'static str) {
+        self.log_finished(outcome);
+        self.finished = true;
+    }
+
+    fn log_finished(&self, outcome: &'static str) {
+        let observation = self.observation;
+        let identity = &observation.identity;
+        tracing::info!(
+            event = "whisper_encoder_invocation_finished",
+            execution_id = %observation.execution_id,
+            encoder_stage = self.encoder_stage,
+            session_id = %identity.range.session,
+            capture_epoch = identity.range.capture_epoch,
+            request_id = identity.request_id,
+            sample_start = identity.range.sample_start,
+            sample_end = identity.range.sample_end,
+            encoder_input_samples = self.encoder_input_samples_16k,
+            encoder_input_sample_rate_hz = whisper::SAMPLE_RATE,
+            encoder_input_duration_ms = sample_duration_ms(
+                self.encoder_input_samples_16k,
+                whisper::SAMPLE_RATE,
+            ),
+            elapsed_ms = self.started.elapsed().as_millis() as u64,
+            outcome,
+            "Whisper encoder invocation finished"
+        );
+    }
+}
+
+impl Drop for WhisperEncoderExecutionReceipt<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.log_finished("aborted");
+            self.finished = true;
+        }
+    }
+}
+
+fn sample_duration_ms(samples: usize, sample_rate: u32) -> f64 {
+    if sample_rate == 0 {
+        0.0
+    } else {
+        samples as f64 * 1_000.0 / sample_rate as f64
+    }
+}
+
 impl Drop for EngineRequest<'_> {
     fn drop(&mut self) {
         self.engine.decoding_params.initial_prompt = self.previous_prompt.take();
@@ -399,6 +506,26 @@ impl Drop for EngineRequest<'_> {
 }
 
 impl LocalWhisperEngine {
+    fn encoder_forward_observed(
+        &self,
+        mel: &Tensor,
+        encoder_input_samples_16k: usize,
+        encoder_stage: &'static str,
+        control: &crate::stt::LocalExecutionControl,
+    ) -> Result<Tensor> {
+        let Some(observation) = control.tail_execution_observation() else {
+            return self.model.encoder.forward(mel, true);
+        };
+        let receipt = WhisperEncoderExecutionReceipt::start(
+            observation,
+            encoder_stage,
+            encoder_input_samples_16k,
+        );
+        let output = self.model.encoder.forward(mel, true);
+        receipt.finish(if output.is_ok() { "success" } else { "failure" });
+        output
+    }
+
     /// One cleanup corridor for public file calls and controlled local repair.
     /// Restores prompt and cache on success, cancellation, error, and unwind.
     pub(crate) fn with_request<R>(
@@ -1253,7 +1380,12 @@ impl LocalWhisperEngine {
         .to_dtype(self.model.decoder.dtype())?;
 
         control.check()?;
-        let encoder_output = self.model.encoder.forward(&mel, true)?;
+        let encoder_output = self.encoder_forward_observed(
+            &mel,
+            samples.len(),
+            "language_detection",
+            control,
+        )?;
         control.check()?;
 
         let start_token = self
@@ -1415,7 +1547,12 @@ impl LocalWhisperEngine {
 
         // Run encoder once
         control.check()?;
-        let encoder_output = self.model.encoder.forward(&mel, true)?;
+        let encoder_output = self.encoder_forward_observed(
+            &mel,
+            samples_16k.len(),
+            "transcription",
+            control,
+        )?;
         control.check()?;
 
         // Decoder loop – allow up to the configured maximum target positions minus initial tokens

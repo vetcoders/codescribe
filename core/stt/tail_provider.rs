@@ -9,7 +9,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -19,6 +19,7 @@ use reqwest::blocking::Client;
 use reqwest::blocking::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::{Message, accept, client};
+use uuid::Uuid;
 
 use crate::pipeline::contracts::RawTranscript;
 
@@ -161,6 +162,150 @@ impl TailSampleRange {
 pub struct TailRequestIdentity {
     pub request_id: u64,
     pub range: TailSampleRange,
+}
+
+/// Privacy-safe observation context for one in-process Whisper execution.
+#[derive(Clone, Debug)]
+pub(crate) struct TailExecutionObservation {
+    pub execution_id: Uuid,
+    pub identity: TailRequestIdentity,
+    pub source_input_samples: usize,
+    pub sample_rate: u32,
+    pub vad_compacted_input_samples: usize,
+}
+
+struct TailExecutionReceipt {
+    observation: TailExecutionObservation,
+    started: Instant,
+    vad_compaction_measured: bool,
+    finished: bool,
+}
+
+impl TailExecutionReceipt {
+    fn start(request: &TailProviderRequest, source_input_samples: usize) -> Self {
+        let observation = TailExecutionObservation {
+            execution_id: Uuid::new_v4(),
+            identity: request.identity.clone(),
+            source_input_samples,
+            sample_rate: request.sample_rate,
+            vad_compacted_input_samples: 0,
+        };
+        let receipt = Self {
+            observation,
+            started: Instant::now(),
+            vad_compaction_measured: false,
+            finished: false,
+        };
+        receipt.log_started();
+        receipt
+    }
+
+    fn log_started(&self) {
+        let identity = &self.observation.identity;
+        tracing::info!(
+            event = "tail_execution_started",
+            execution_id = %self.observation.execution_id,
+            session_id = %identity.range.session,
+            capture_epoch = identity.range.capture_epoch,
+            request_id = identity.request_id,
+            sample_start = identity.range.sample_start,
+            sample_end = identity.range.sample_end,
+            source_input_samples = self.observation.source_input_samples,
+            source_sample_rate_hz = self.observation.sample_rate,
+            source_input_duration_ms = sample_duration_ms(
+                self.observation.source_input_samples,
+                self.observation.sample_rate,
+            ),
+            "tail execution started"
+        );
+    }
+
+    fn record_vad_compaction(&mut self, compacted_input_samples: usize) {
+        self.observation.vad_compacted_input_samples = compacted_input_samples;
+        self.vad_compaction_measured = true;
+        let identity = &self.observation.identity;
+        tracing::info!(
+            event = "tail_execution_vad_compaction",
+            execution_id = %self.observation.execution_id,
+            session_id = %identity.range.session,
+            capture_epoch = identity.range.capture_epoch,
+            request_id = identity.request_id,
+            sample_start = identity.range.sample_start,
+            sample_end = identity.range.sample_end,
+            source_input_samples = self.observation.source_input_samples,
+            source_sample_rate_hz = self.observation.sample_rate,
+            source_input_duration_ms = sample_duration_ms(
+                self.observation.source_input_samples,
+                self.observation.sample_rate,
+            ),
+            vad_compacted_input_samples = compacted_input_samples,
+            vad_compacted_input_duration_ms = sample_duration_ms(
+                compacted_input_samples,
+                self.observation.sample_rate,
+            ),
+            "tail execution VAD compaction measured"
+        );
+    }
+
+    fn execution_control(
+        &self,
+        control: &super::LocalExecutionControl,
+    ) -> super::LocalExecutionControl {
+        control.with_tail_execution_observation(Arc::new(self.observation.clone()))
+    }
+
+    fn finish(&mut self, outcome: &'static str) {
+        if self.finished {
+            return;
+        }
+        self.log_finished(outcome);
+        self.finished = true;
+    }
+
+    fn log_finished(&self, outcome: &'static str) {
+        let identity = &self.observation.identity;
+        tracing::info!(
+            event = "tail_execution_finished",
+            execution_id = %self.observation.execution_id,
+            session_id = %identity.range.session,
+            capture_epoch = identity.range.capture_epoch,
+            request_id = identity.request_id,
+            sample_start = identity.range.sample_start,
+            sample_end = identity.range.sample_end,
+            source_input_samples = self.observation.source_input_samples,
+            source_sample_rate_hz = self.observation.sample_rate,
+            source_input_duration_ms = sample_duration_ms(
+                self.observation.source_input_samples,
+                self.observation.sample_rate,
+            ),
+            vad_compaction_measured = self.vad_compaction_measured,
+            vad_compacted_input_samples = self.observation.vad_compacted_input_samples,
+            vad_compacted_input_duration_ms = sample_duration_ms(
+                self.observation.vad_compacted_input_samples,
+                self.observation.sample_rate,
+            ),
+            elapsed_ms = self.started.elapsed().as_millis() as u64,
+            outcome,
+            "tail execution finished"
+        );
+    }
+}
+
+impl Drop for TailExecutionReceipt {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.log_finished("failure");
+            self.finished = true;
+        }
+    }
+}
+
+fn sample_duration_ms(samples: usize, sample_rate: u32) -> f64 {
+    if sample_rate == 0 {
+        0.0
+    } else {
+        samples as f64 * 1_000.0 / sample_rate as f64
+    }
 }
 
 /// Typed stability of the provider evidence.
@@ -441,11 +586,14 @@ impl InProcessTailProvider {
         pcm: &[f32],
         control: &super::LocalExecutionControl,
     ) -> Result<TailProviderPayload> {
+        let mut execution = TailExecutionReceipt::start(request, pcm.len());
         control.check()?;
         request.validate_pcm(pcm)?;
         let started = Instant::now();
         let (speech, _, speech_index) =
             crate::vad::extract_speech_indexed(pcm, request.sample_rate);
+        execution.record_vad_compaction(speech.len());
+        let execution_control = execution.execution_control(control);
         control.check()?;
         let (raw, word_segments) = if speech.is_empty() {
             (RawTranscript::default(), None)
@@ -455,7 +603,7 @@ impl InProcessTailProvider {
                 request.sample_rate,
                 request.language.as_deref(),
                 None,
-                control,
+                &execution_control,
             )?
         };
         let request_range = &request.identity.range;
@@ -547,6 +695,7 @@ impl InProcessTailProvider {
         };
         payload.validate()?;
         control.check()?;
+        execution.finish("success");
         Ok(payload)
     }
 }
