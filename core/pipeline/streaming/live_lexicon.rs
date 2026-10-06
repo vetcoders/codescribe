@@ -417,6 +417,78 @@ mod tests {
     use super::*;
 
     #[test]
+    fn registered_merge_uses_embedded_defaults_and_keeps_punctuation() {
+        let absent = Path::new("/nonexistent/codescribe-lexicon-test.jsonl");
+        for (words, expected) in [
+            (["postgre", "sql"], "PostgreSQL"),
+            (["code", "scribe"], "Codescribe"),
+            (["[CODE", "SCRIBE.]"], "[Codescribe.]"),
+            (["log", "tree"], "Loctree"),
+        ] {
+            let (merges, counts) = registered_merges(&words, absent);
+            assert_eq!(counts.custom, 0);
+            assert_eq!(merges.len(), 1, "{words:?}");
+            let proposal = &merges[0];
+            assert_eq!((proposal.start, proposal.end), (0, 2));
+            assert_eq!(proposal.rule.input, words);
+            assert_eq!(proposal.rule.canonical, expected);
+            assert!(registered_merges(&[expected], absent).0.is_empty());
+        }
+    }
+
+    #[test]
+    fn registered_merge_cannot_consume_unmatched_source_words_or_sentence_edges() {
+        let absent = Path::new("/nonexistent/codescribe-lexicon-test.jsonl");
+        for words in [
+            ["the log", "tree"],
+            ["log", "tree works"],
+            ["log.", "tree"],
+            ["xlog", "tree"],
+            ["postgra", "SQL"],
+            ["metty", "mazur"],
+        ] {
+            assert!(registered_merges(&words, absent).0.is_empty(), "{words:?}");
+        }
+    }
+
+    #[test]
+    fn registered_merge_prefers_longest_complete_alias_without_hiding_neighbours() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lexicon.custom.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"term\":\"ShortName\",\"mispronunciations\":[\"lux tree\"]}\n",
+                "{\"term\":\"LongName\",\"mispronunciations\":[\"lux tree house\"]}\n",
+            ),
+        )
+        .unwrap();
+        let words = ["before", "lux", "tree", "house", "after"];
+        let (merges, _) = registered_merges(&words, &path);
+        assert_eq!(merges.len(), 1);
+        assert_eq!((merges[0].start, merges[0].end), (1, 4));
+        assert_eq!(merges[0].rule.input, ["lux", "tree", "house"]);
+        assert_eq!(merges[0].rule.canonical, "LongName");
+    }
+
+    #[test]
+    fn registered_merge_refuses_protected_canonical_and_rewrite_chains() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lexicon.custom.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"term\":\"WrongName\",\"mispronunciations\":[\"Loctree label\"]}\n",
+                "{\"term\":\"AlphaName\",\"mispronunciations\":[\"two parts\"]}\n",
+                "{\"term\":\"BetaName\",\"mispronunciations\":[\"AlphaName\"]}\n",
+            ),
+        )
+        .unwrap();
+        assert!(registered_merges(&["Loctree", "label"], &path).0.is_empty());
+        assert!(registered_merges(&["two", "parts"], &path).0.is_empty());
+    }
+
+    #[test]
     fn bundled_rules_preserve_ordinary_polish_words() {
         let absent = Path::new("/nonexistent/codescribe-lexicon-test.jsonl");
         for text in [
