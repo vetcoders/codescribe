@@ -3,7 +3,9 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
-pub const WORD_POLICY: &str = "word-adjudication/v2";
+/// A repeated PCM frame cannot corroborate a trial. Replay rejects earlier
+/// policies rather than reinterpret their recorded lexical decisions.
+pub const WORD_POLICY: &str = "word-adjudication/v3";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +159,19 @@ impl WordHypothesis {
 }
 
 impl WordAdjudication {
+    fn has_decode(&self, capture: &OccurrenceIdentity, decode: Option<(u64, u64)>) -> bool {
+        decode.is_some()
+            && self
+                .whisper
+                .iter()
+                .chain(std::iter::once(&self.incumbent))
+                .any(|hypothesis| {
+                    hypothesis.family() == ObservationProducer::Whisper
+                        && hypothesis.observation.occurrence.same_capture(capture)
+                        && hypothesis.decode == decode
+                })
+    }
+
     fn support(&self) -> Vec<WordHypothesis> {
         let mut support = self.apple.clone();
         support.extend(self.whisper.clone());
@@ -777,7 +792,11 @@ impl AcousticLedger {
             component.trial.as_ref() == Some(trial) && trial.targets == targets
         });
         let prior_support = component.support();
-        let fresh = component.observe(candidate.clone());
+        // The incumbent can outlive the three retained Whisper alternatives.
+        // Replaying its frame does not become fresh when that history rolls.
+        let repeated_decode = candidate.family() == ObservationProducer::Whisper
+            && component.has_decode(&candidate.observation.occurrence, candidate.decode);
+        let fresh = component.observe(candidate.clone()) && !repeated_decode;
         let provisional_apple = provisional_apple && fresh;
         let repeated_label = label_equal(&candidate.surface, &compose_label(sources));
         let raw = candidate.original_text.as_deref();
@@ -806,13 +825,18 @@ impl AcousticLedger {
                 || (whisper_support >= 2
                     && apple.is_none_or(|a| raw.is_some_and(|b| label_equal(a, b)))));
         let confirmed_trial = trial_matches
+            && fresh
             && complete
             && candidate.acoustic_boundaries_complete
             && raw.is_some()
             && prior_support.iter().any(|h| {
+                // A new request for the same PCM cannot corroborate itself,
+                // including an incumbent no longer in the rolling history.
                 ((h.family() == ObservationProducer::Whisper
                     && h.complete
-                    && h.acoustic_boundaries_complete)
+                    && h.acoustic_boundaries_complete
+                    && h.decode.is_some()
+                    && h.decode != candidate.decode)
                     || (h.family() == ObservationProducer::Apple
                         && component.apple.last() == Some(h)))
                     && h.original_text
@@ -990,7 +1014,7 @@ impl AcousticLedger {
     }
 
     pub(crate) fn next_word_trial(&mut self, stopping: bool) -> Option<WordTrial> {
-        self.next_word_trial_in(stopping, None)
+        self.next_word_trial_in(stopping, None, None)
     }
 
     /// An actual trial decode can adjudicate other disputed words only when
@@ -1000,6 +1024,10 @@ impl AcousticLedger {
         &mut self,
         stopping: bool,
         coverage: Option<&OccurrenceIdentity>,
+        // Required padding and retained capture bounds. With coverage, the
+        // returned frame must supply this context. Without coverage, exclude
+        // already observed planned frames before spending a live trial.
+        context: Option<(u64, std::ops::Range<u64>)>,
     ) -> Option<WordTrial> {
         let index = self
             .word_adjudication
@@ -1007,29 +1035,80 @@ impl AcousticLedger {
             .iter()
             .enumerate()
             .filter(|(_, c)| {
-                c.conflict
-                    && !c.attempted
-                    && !self.is_sealed(&c.owner)
-                    && (stopping || c.whisper.iter().filter(|h| h.complete).count() >= 2)
-                    && coverage.is_none_or(|coverage| {
-                        let sources = self
-                            .slots_of(&c.owner)
-                            .unwrap_or(&[])
-                            .iter()
-                            .filter(|slot| c.targets.contains(&SlotTarget::from(*slot)))
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        !sources.is_empty()
-                            && self.word_source_ranges(&sources).iter().all(|range| {
-                                range.same_capture(coverage)
-                                    && range.sample_start >= coverage.sample_start
-                                    && range.sample_end <= coverage.sample_end
-                            })
-                    })
+                if !c.conflict
+                    || c.attempted
+                    || self.is_sealed(&c.owner)
+                    || (!stopping && c.whisper.iter().filter(|h| h.complete).count() < 2)
+                {
+                    return false;
+                }
+                if coverage.is_none() && context.is_none() {
+                    return true;
+                }
+                let sources = self
+                    .slots_of(&c.owner)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter(|slot| c.targets.contains(&SlotTarget::from(*slot)))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let ranges = self.word_source_ranges(&sources);
+                if sources.is_empty() || sources.len() != c.targets.len() || ranges.is_empty() {
+                    return false;
+                }
+                if let Some(coverage) = coverage
+                    && (c.has_decode(coverage, Some((coverage.sample_start, coverage.sample_end)))
+                        || !ranges.iter().all(|range| {
+                            range.same_capture(coverage)
+                                && range.sample_start >= coverage.sample_start
+                                && range.sample_end <= coverage.sample_end
+                        }))
+                {
+                    return false;
+                }
+                context.as_ref().is_none_or(|(padding, retained)| {
+                    let start = ranges
+                        .iter()
+                        .map(|range| range.sample_start)
+                        .min()
+                        .expect("nonempty source ranges");
+                    let end = ranges
+                        .iter()
+                        .map(|range| range.sample_end)
+                        .max()
+                        .expect("nonempty source ranges");
+                    let decode = (
+                        start.saturating_sub(*padding).max(retained.start),
+                        end.saturating_add(*padding).min(retained.end),
+                    );
+                    start >= retained.start
+                        && end <= retained.end
+                        && coverage.map_or_else(
+                            || !c.has_decode(&c.owner, Some(decode)),
+                            |range| range.sample_start <= decode.0 && range.sample_end >= decode.1,
+                        )
+                })
             })
             .max_by_key(|(_, c)| c.whisper.iter().map(|h| h.q).max().unwrap_or(0))
             .map(|(index, _)| index)?;
         self.open_word_trial(index)
+    }
+
+    /// Reissuing a retained decode frame cannot add evidence to this trial.
+    /// The scheduler asks before leasing PCM or submitting another native job;
+    /// admission independently enforces the same rule on returned evidence.
+    pub(crate) fn word_trial_has_decode(
+        &self,
+        trial: &WordTrial,
+        decode: &OccurrenceIdentity,
+    ) -> bool {
+        self.word_adjudication
+            .components
+            .iter()
+            .filter(|component| component.trial.as_ref() == Some(trial))
+            .any(|component| {
+                component.has_decode(decode, Some((decode.sample_start, decode.sample_end)))
+            })
     }
 
     /// The live scheduler proved that every window able to own these words

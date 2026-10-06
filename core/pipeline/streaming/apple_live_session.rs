@@ -3277,12 +3277,21 @@ impl AppleSealState {
         {
             return Err("scope_exceeds_budget");
         }
-        Ok(TailSampleRange {
+        let range = TailSampleRange {
             session: self.session_id.clone(),
             capture_epoch: self.capture_epoch,
             sample_start: decode_start,
             sample_end: decode_end,
-        })
+        };
+        if self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .word_trial_has_decode(trial, &OccurrenceIdentity::from(&range))
+        {
+            return Err("decode_already_observed");
+        }
+        Ok(range)
     }
 
     /// At most one extra job; every normal window already queued or held wins.
@@ -3294,11 +3303,15 @@ impl AppleSealState {
         {
             return;
         }
+        let context = (
+            u64::from(self.sample_rate).saturating_mul(3),
+            self.pcm_floor_sample()..self.audio.session_sample_end(),
+        );
         let trial = self
             .acoustic_ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .next_word_trial(false);
+            .next_word_trial_in(false, None, Some(context));
         let Some(trial) = trial else {
             return;
         };
@@ -3383,10 +3396,10 @@ impl AppleSealState {
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
         trial: &WordTrial,
         payload: Option<&TailProviderPayload>,
-    ) -> bool {
+    ) -> (bool, bool) {
         let Some(payload) = payload else {
             self.close_word_trial(trial, "inference_failed");
-            return false;
+            return (false, false);
         };
         if payload.validate().is_err()
             || payload.evidence.timing_quality
@@ -3403,7 +3416,7 @@ impl AppleSealState {
                 .any(|segment| segment.grain != crate::stt::tail_provider::TailSegmentGrain::Word)
         {
             self.close_word_trial(trial, "invalid_trial_evidence");
-            return false;
+            return (false, false);
         }
         let words = payload
             .segments
@@ -3457,6 +3470,7 @@ impl AppleSealState {
             &trial.owner,
         );
         let receipt = ledger.admit_word_trial(trial, &observation, &rewritten, &words);
+        let admitted = receipt.grants_mutation();
         let label = ledger.text_of(&trial.owner).unwrap_or("").to_string();
         drop(ledger);
         let _ = ev_tx.send(EngineEvent::LedgerMutation {
@@ -3471,8 +3485,8 @@ impl AppleSealState {
         {
             self.refresh_pending_label(id, &trial.owner);
         }
-        self.publish_resolved_word_seals(ev_tx);
-        true
+        // Valid work and accepted mutation are distinct accounting facts.
+        (true, admitted)
     }
 
     fn complete_word_trial_batch(
@@ -3482,41 +3496,83 @@ impl AppleSealState {
         payload: Option<&TailProviderPayload>,
         stopping: bool,
     ) {
-        if !self.complete_word_trial(ev_tx, trial, payload) {
+        if !self.complete_word_trial(ev_tx, trial, payload).0 {
             return;
         }
         let Some(payload) = payload else {
             return;
         };
-        let range = OccurrenceIdentity::new(
-            &payload.identity.range.session,
-            payload.identity.range.capture_epoch,
-            payload.identity.range.sample_start,
-            payload.identity.range.sample_end,
-        );
-        let mut words = 1;
-        // Bound synchronous ledger work too. Any remaining components retain
-        // their own trials; this never widens or crops the decoded PCM.
-        for _ in 1..32 {
-            let next = self
-                .acoustic_ledger
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .next_word_trial_in(stopping, Some(&range));
-            let Some(next) = next else {
-                break;
-            };
-            self.complete_word_trial(ev_tx, &next, Some(payload));
-            words += 1;
-        }
+        let words = 1 + self.complete_covered_word_trials(ev_tx, payload, stopping, 31, false).0;
+        self.publish_resolved_word_seals(ev_tx);
         info!(
-            sample_start = range.sample_start,
-            sample_end = range.sample_end,
+            sample_start = payload.identity.range.sample_start,
+            sample_end = payload.identity.range.sample_end,
             words_adjudicated = words,
             request_id = payload.identity.request_id,
             phase = if stopping { "stop" } else { "live" },
             "shared_word_trial_decode"
         );
+    }
+
+    /// Consume a returned window before admitting it as ordinary evidence.
+    /// A pending dispute can use this fresh frame as its bounded trial when
+    /// it provides the same complete context as a dedicated request.
+    fn complete_covered_word_trials(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        payload: &TailProviderPayload,
+        stopping: bool,
+        limit: usize,
+        require_context: bool,
+    ) -> (usize, bool) {
+        if payload.validate().is_err()
+            || payload.evidence.timing_quality
+                != crate::stt::tail_provider::TailTimingQuality::ExactSampleRange
+            || payload.evidence.source != crate::stt::tail_provider::TailEvidenceSource::Whisper
+            || payload.identity.range.session != self.session_id
+            || payload.identity.range.capture_epoch != self.capture_epoch
+            || payload.segments.is_empty()
+            || payload
+                .segments
+                .iter()
+                .any(|segment| segment.grain != crate::stt::tail_provider::TailSegmentGrain::Word)
+        {
+            return (0, false);
+        }
+        let range = OccurrenceIdentity::from(&payload.identity.range);
+        let context = require_context.then(|| {
+            (
+                u64::from(self.sample_rate).saturating_mul(3),
+                self.pcm_floor_sample()..self.audio.session_sample_end(),
+            )
+        });
+        let mut words = 0;
+        let mut admitted = false;
+        // Bound synchronous ledger work too. Any remaining components retain
+        // their own trials; this never widens or crops the decoded PCM.
+        for _ in 0..limit {
+            let next = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .next_word_trial_in(stopping, Some(&range), context.clone());
+            let Some(next) = next else {
+                break;
+            };
+            admitted |= self.complete_word_trial(ev_tx, &next, Some(payload)).1;
+            words += 1;
+        }
+        if require_context && words > 0 {
+            info!(
+                request_id = payload.identity.request_id,
+                sample_start = payload.identity.range.sample_start,
+                sample_end = payload.identity.range.sample_end,
+                words_adjudicated = words,
+                phase = if stopping { "stop" } else { "live" },
+                "word_trials_shared_with_decode"
+            );
+        }
+        (words, admitted)
     }
 
     fn publish_resolved_word_seals(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
@@ -4173,7 +4229,10 @@ impl AppleSealState {
             self.close_admission_horizon(ev_tx, self.admission_horizon);
             return;
         }
+        let mut mutation_admitted = false;
         if let Some(payload) = payload.as_ref() {
+            mutation_admitted |=
+                self.complete_covered_word_trials(ev_tx, payload, false, 32, true).1;
             self.acoustic_ledger
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -4269,7 +4328,6 @@ impl AppleSealState {
                 }
             }
         }
-        let mut mutation_admitted = false;
         for (index, ((member_id, occurrence), route)) in owners.iter().zip(&routes).enumerate() {
             if word_grain {
                 if !route.exclusive.is_empty() {
@@ -4432,6 +4490,7 @@ impl AppleSealState {
             }
         }
         self.close_admission_horizon(ev_tx, job.request_identity.range.sample_start);
+        self.publish_resolved_word_seals(ev_tx);
         if mutation_admitted {
             self.tail_patch_jobs_applied = self.tail_patch_jobs_applied.saturating_add(1);
             self.tail_patch_replacements = self.tail_patch_replacements.saturating_add(1);
@@ -7289,6 +7348,7 @@ where
         });
         match attempt(state, range) {
             StopRangeAttempt::Ready(payload) => {
+                state.complete_covered_word_trials(ev_tx, &payload, true, 32, true);
                 admit_debt_occurrence_recovery(state, ev_tx, &occurrence, &payload);
             }
             StopRangeAttempt::Failed(error) => warn_failed(ev_tx, error),
@@ -7327,6 +7387,7 @@ where
         let requested = state.with_min_context(range.clone());
         match attempt(state, requested) {
             StopRangeAttempt::Ready(payload) => {
+                state.complete_covered_word_trials(ev_tx, &payload, true, 32, true);
                 // The decode window may extend left of the gap. Containment
                 // stays on the uncovered speech range.
                 admit_full_pass_gap_segments(
