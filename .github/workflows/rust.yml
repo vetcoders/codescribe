@@ -4,7 +4,8 @@
 # Rust-only jobs use macos-latest; quality needs the xcode-27 image because
 # the app already uses SDK 27 Foundation Models APIs.
 # format: cargo fmt --check
-# quality: compiler localization extraction + catalog gates, Clippy, `make verify`.
+# quality: compiler localization extraction + catalog gates, helper installer
+# compile gate, Clippy, `make verify`.
 # `Clippy + Tests` is required by ruleset 20429200 ("main porotection").
 # Localization runs IN that job: its failure cannot become an optional or
 # skipped dependency check. Keep the job name and these unconditional steps.
@@ -98,6 +99,9 @@ jobs:
 
       - name: Test localization gate positive and negative controls
         run: make test-l10n-sync
+
+      - name: Verify the helper installer compiles without the app target
+        run: make verify-install-bus
 
       # Same PATH contract as the format job — Homebrew rustup, proxy-less CARGO_HOME.
       - name: Ensure stable toolchain on PATH

@@ -190,9 +190,14 @@ site-dev:
 install-voice-lab:
 	@./scripts/install-voice-lab.sh
 
-.PHONY: install-bus
+.PHONY: install-bus verify-install-bus
 install-bus:
 	@./scripts/install-bus.sh
+
+# The source installer is built from two files outside the app target. A type
+# that only the app defines breaks it without failing any app build or test.
+verify-install-bus:
+	@./scripts/install-bus.sh --compile-only
 
 install-if-idle:
 	@./scripts/install-if-idle.sh $(if $(INSTALL_APP_SOURCE),--from-app "$(INSTALL_APP_SOURCE)")
@@ -359,6 +364,7 @@ bump-major:
 # gate: verify-l10n-bridge class=static ci=no -- scripts/l10n-bridge-census.py: every String field crossing the UniFFI bridge (macos/Codescribe/Bridge/codescribe_ffi.swift) is classified data|prose in scripts/data/l10n-bridge-fields.txt; an unclassified or vanished field fails, so English prose composed in Rust cannot grow unnoticed (LOCALIZATION_LEDGER.md §4 burn-down)
 # gate: verify-l10n-sync class=operator ci=yes -- scripts/l10n-sync.sh --check: Localizable.xcstrings vs compiler extraction from a current Debug build; missing/outdated data exits 2; rust.yml builds fresh Swift-only extraction and invokes this target in required Clippy + Tests
 # gate: test-l10n-sync class=operator ci=yes -- real Swift compiler and xcstringstool in a temporary source tree: synchronized catalog passes, new/changed Swift copy fails, missing/outdated extraction fails, checks never write the catalog; rust.yml runs this in required Clippy + Tests
+# gate: verify-install-bus class=operator ci=yes -- scripts/install-bus.sh --compile-only: real Swift 6 compiler, warnings as errors, over the two files `make install-bus` builds its installer from; stages and installs nothing; needs the Swift toolchain
 # gate: smoke-canaries class=operator ci=no -- verify-canaries + host rows: dist inputs, appcast feed, live-store purity, Sparkle key parity, keychain domain cleanliness (scripts/canaries.sh --host)
 # gate: test-keychain-session class=hermetic ci=no -- ephemeral signing-keychain contract (scripts/tests/keychain-session-test.sh) against a FAKE security binary and a temp HOME; touches no real keychain
 # gate: verify-dmg class=operator ci=no -- fail-closed payload check against an already-built DMG; release.yml runs the same check via scripts/verify-dmg-payload.sh, not via this target
@@ -1312,6 +1318,7 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-catalog' 'String Catalog lint (part of check): stale keys, arguments, plurals, coverage'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-bridge' 'Bridge census (part of check): every String crossing UniFFI is classified data|prose'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-sync' 'String Catalog vs current Debug compiler extraction; required in CI'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-install-bus' 'Helper installer source compiles without the app target; required in CI'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-l10n-sync' 'Real-compiler positive/negative controls for the localization gate'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'l10n-build' 'Swift-only Debug archive for extraction (docs/LOCALIZATION.md); no runnable app'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'l10n-sync' 'Fold strings extracted by the last Debug build into the String Catalog'

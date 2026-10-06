@@ -163,7 +163,7 @@ struct Checks {
   }
 }
 SWIFT
-xcrun swiftc -swift-version 6 -warnings-as-errors -D CODESCRIBE_AGENT_BRIDGE_STANDALONE \
+xcrun swiftc -swift-version 6 -warnings-as-errors \
   "$ROOT/macos/Codescribe/Services/AgentBridgeInstaller.swift" \
   "$WORKDIR/check.swift" -o "$WORKDIR/check"
 "$WORKDIR/check" "$WORKDIR"
