@@ -760,6 +760,23 @@ def event_kind(status: Any) -> str:
     }.get(str(status), "event")
 
 
+# A preview of a document the reducer is still building.
+DRAFT_KINDS = ("draft", "revised")
+# The envelope that closes a message: an agent acknowledges one of these, never
+# a draft. A channel take and a coverage-refused flush both seal; typed Founder
+# messages arrive as `message`.
+TERMINAL_KINDS = ("seal", "message")
+
+
+def draft_key(payload: dict[str, Any]) -> tuple[Any, Any]:
+    """The message a draft previews, and that its terminal envelope closes.
+
+    Channel takes carry `message_id` (`channel_message_identity`); named
+    utterances are keyed by the reducer's `document_index` instead.
+    """
+    return payload.get("session_id"), payload.get("message_id") or payload.get("document_index")
+
+
 def valid_session_audio_id(session_id: Any) -> str | None:
     """Same alphabet as the controller retain path. Never a filesystem path."""
     if not isinstance(session_id, str):
@@ -1861,19 +1878,12 @@ class SessionLease:
             return False
         if delivery_id in self.pending:
             return False
-        if self.coalesce and payload.get("kind") in ("draft", "revised"):
+        if self.coalesce and payload.get("kind") in DRAFT_KINDS:
             # A reducer storm re-states one document ~250 times per sentence.
             # Under coalescing the newest revision replaces its predecessors
             # in the mailbox instead of stacking toward the 256 cap; the seal
             # stays a separate envelope so terminal delivery is never merged.
-            key = (payload.get("session_id"), payload.get("message_id") or payload.get("document_index"))
-            stale = [
-                queued_id
-                for queued_id, item in self.pending.items()
-                if item.get("kind") in ("draft", "revised")
-                and (item.get("session_id"), item.get("message_id") or item.get("document_index")) == key
-            ]
-            for queued_id in stale:
+            for queued_id in self._drafts_of(draft_key(payload)):
                 del self.pending[queued_id]
         pending_bytes = sum(
             len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
@@ -1890,8 +1900,61 @@ class SessionLease:
                 "this same lease; the unread bus cursor is preserved"
             )
         self.pending[delivery_id] = payload
+        if payload.get("kind") in TERMINAL_KINDS:
+            # The terminal envelope is durable from here on, so the drafts it
+            # closes can leave in the same transition. Nothing ever acknowledges
+            # a draft, so otherwise the last preview of every message stays in
+            # the mailbox for the life of the lease: the lease file grows, the
+            # 256-envelope cap approaches, and every resume re-publishes a
+            # preview the reducer has already superseded.
+            for queued_id in self._drafts_of(draft_key(payload)):
+                del self.pending[queued_id]
         self.persist(active=True)
         return True
+
+    def _drafts_of(self, key: tuple[Any, Any]) -> list[str]:
+        return [
+            queued_id
+            for queued_id, item in self.pending.items()
+            if item.get("kind") in DRAFT_KINDS and draft_key(item) == key
+        ]
+
+    def prune_settled_drafts(self) -> None:
+        """Drop drafts whose terminal envelope was acknowledged in an earlier run.
+
+        A lease written before drafts were retired with their message can hold
+        previews whose seal left the mailbox long ago. The acknowledgment marker
+        keeps the terminal envelope's causal coordinates (`receipt_envelope`
+        drops only transcript-bearing fields), so a settled message is provable
+        from the marker store rather than guessed.
+        """
+        if not self.pending:
+            return
+        settled: set[tuple[Any, Any]] = set()
+        try:
+            entries = os.listdir(self.root / "acknowledgments" / self.lease_id)
+        except OSError:
+            return
+        for entry in entries:
+            if not entry.endswith(".json"):
+                continue
+            delivery_id = entry[: -len(".json")]
+            if not re.fullmatch(r"[0-9a-f]{24}", delivery_id):
+                continue
+            if not delivery_acknowledged(self.root, self.lease_id, delivery_id):
+                continue
+            envelope = (read_json(self.root / "acknowledgments" / self.lease_id / entry) or {}).get("envelope")
+            if isinstance(envelope, dict) and envelope.get("kind") in TERMINAL_KINDS:
+                settled.add(draft_key(envelope))
+        orphans = [
+            queued_id
+            for queued_id, item in self.pending.items()
+            if item.get("kind") in DRAFT_KINDS and draft_key(item) in settled
+        ]
+        if orphans:
+            for queued_id in orphans:
+                del self.pending[queued_id]
+            self.persist(active=True)
 
     def collect_acknowledgments(self, native: Any = None) -> None:
         completed = [
@@ -2271,7 +2334,7 @@ class NativeQueueWakeup:
         self.executor.submit(withdraw_acknowledged_queue, self.root, self.lease_id, identity).add_done_callback(complete)
 
     def enqueue(self, payload: dict[str, Any], *, retry: bool = False) -> None:
-        if payload.get("kind") not in ("seal", "message"):
+        if payload.get("kind") not in TERMINAL_KINDS:
             return
         self.executor.submit(self._deliver, dict(payload), retry).add_done_callback(self._report_error)
 
@@ -2432,6 +2495,10 @@ def run(args: argparse.Namespace) -> int:
     # a fresh one per line would re-emit the entire document every time.
     normalizer = EvidenceNormalizer()
     if lease:
+        # Prune first: a draft left over from a message that was sealed and
+        # acknowledged in an earlier run must not be restored as an unclosed
+        # document for a session that is already settled.
+        lease.prune_settled_drafts()
         normalizer.restore_channel_documents(list(lease.unclosed_channel_messages.values()))
         # Mailbox drafts are receipt history, not evidence of an open capture.
         # A final queued before cursor commit still suppresses its replay.
@@ -2448,9 +2515,6 @@ def run(args: argparse.Namespace) -> int:
     recipients: set[str] | None = None
     human_drafts: dict[tuple[Any, Any], dict[str, Any]] = {}
 
-    def draft_key(payload: dict[str, Any]) -> tuple[Any, Any]:
-        return payload.get("session_id"), payload.get("message_id") or payload.get("document_index")
-
     def flush_human_drafts(key: tuple[Any, Any] | None = None) -> None:
         keys = [key] if key is not None else list(human_drafts)
         for current in keys:
@@ -2462,7 +2526,7 @@ def run(args: argparse.Namespace) -> int:
     def publish(payload: dict[str, Any]) -> None:
         if events_path is not None and lease and lease.coalesce:
             key = draft_key(payload)
-            if payload.get("kind") in ("draft", "revised"):
+            if payload.get("kind") in DRAFT_KINDS:
                 emit_follower(payload, events_path, follower_channel, human_output=False)
                 human_drafts[key] = payload
                 return
@@ -2479,7 +2543,7 @@ def run(args: argparse.Namespace) -> int:
                     publish(payload)
                     if native and effective_wakeup(args) == "codex-queue":
                         native.enqueue(payload)
-                    if args.on_seal and payload.get("kind") in ("seal", "message"):
+                    if args.on_seal and payload.get("kind") in TERMINAL_KINDS:
                         fire_seal_hook(args.on_seal, payload)
                 remaining.pop(0)
         except BufferError:
@@ -4057,7 +4121,7 @@ def retired_owner_report(root: Path, entry: dict[str, Any]) -> dict[str, Any]:
     unacked = [
         str(item.get("delivery_id"))
         for item in lease_backlog(root, lease_id)[2]
-        if item.get("kind") in ("seal", "message")
+        if item.get("kind") in TERMINAL_KINDS
         and isinstance(item.get("delivery_id"), str)
     ]
     return {
@@ -4115,7 +4179,7 @@ def detach_command(args: argparse.Namespace) -> int:
         binding_changed = False if unchanged else None
         released = []
     unacked = [item for item in lease_backlog(root, lease_id)[2]
-               if item.get("kind") in ("seal", "message")]
+               if item.get("kind") in TERMINAL_KINDS]
     emit({
         "schema": DETACH_RECEIPT_SCHEMA, "kind": "detach_receipt",
         "provider": args.provider.casefold(), "provider_session_id": args.session,
@@ -4375,7 +4439,7 @@ def status_command(args: argparse.Namespace) -> int:
     log_path, events_path = follower_paths(root, lease_id)
     state = read_json(root / "leases" / f"{lease_id}.json")
     pending, markers, unacked = lease_backlog(root, lease_id)
-    seals = [item for item in unacked if item.get("kind") in ("seal", "message")]
+    seals = [item for item in unacked if item.get("kind") in TERMINAL_KINDS]
     last_seal = max(
         seals, key=lambda item: str(item.get("emitted_at") or ""), default=None
     )
@@ -4540,8 +4604,8 @@ def watch_command(args: argparse.Namespace) -> int:
                 continue  # a restarted follower replays its pending mailbox
             seen.add(identity)
             if args.human:
-                key = (payload.get("session_id"), payload.get("message_id") or payload.get("document_index"))
-                if payload.get("kind") in ("draft", "revised"):
+                key = draft_key(payload)
+                if payload.get("kind") in DRAFT_KINDS:
                     drafts[key] = payload
                     continue
                 flush(key)
@@ -4920,7 +4984,7 @@ def main() -> int:
         lease_id = lease_identifier(args.provider, args.session)
         state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
         payload = next((p for p in state.get("pending", []) if p.get("delivery_id") == args.retry_wakeup), None)
-        if payload is None or payload.get("kind") not in ("seal", "message"):
+        if payload is None or payload.get("kind") not in TERMINAL_KINDS:
             parser.error("delivery is not a pending seal in this mailbox")
         native = NativeQueueWakeup(args.bridge_home, args.session, None)
         native.enqueue(payload, retry=True)
