@@ -4330,16 +4330,6 @@
         }
       }
     },
-    "Couldn't activate the key. Try again." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Nie udało się aktywować klucza. Spróbuj ponownie."
-          }
-        }
-      }
-    },
     "Couldn't apply “%@”: %@" : {
       "comment" : "Palette pick failed: the picked entry, then the reason it failed",
       "localizations" : {
@@ -4534,6 +4524,16 @@
         }
       }
     },
+    "Couldn't save the key on this Mac. Try again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się zapisać klucza na tym Macu. Spróbuj ponownie."
+          }
+        }
+      }
+    },
     "Couldn't send to Agent" : {
       "localizations" : {
         "pl" : {
@@ -4582,6 +4582,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się cofnąć ponownej transkrypcji: %@"
+          }
+        }
+      }
+    },
+    "Couldn't verify the key. Check that it's correct and complete." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się zweryfikować klucza. Sprawdź, czy jest poprawny i kompletny."
           }
         }
       }
@@ -7256,6 +7266,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "W szablonie brakuje {text}. Transkrypcja zostanie dodana na jego końcu."
+          }
+        }
+      }
+    },
+    "Mode" : {
+      "comment" : "License panel: operating mode when no key is stored",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Tryb"
           }
         }
       }

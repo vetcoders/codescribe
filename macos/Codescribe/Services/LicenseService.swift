@@ -247,9 +247,15 @@ final class LicenseService: ObservableObject {
     lastError = nil
     lastErrorDetails = nil
     defer { isBusy = false }
+    let timestamp = Int64(now().timeIntervalSince1970)
     do {
-      let timestamp = Int64(now().timeIntervalSince1970)
       _ = try activateBridge(key, timestamp)
+    } catch {
+      lastError = String(localized: "Couldn't verify the key. Check that it's correct and complete.")
+      lastErrorDetails = error.localizedDescription
+      return false
+    }
+    do {
       let candidate = PersistedLicense(key: key, lastOnlineValidation: timestamp)
       let data = try JSONEncoder().encode(candidate)
       try await storage { try $0?.save(data) }
@@ -261,7 +267,7 @@ final class LicenseService: ObservableObject {
       lastErrorDetails = nil
       return true
     } catch {
-      lastError = String(localized: "Couldn't activate the key. Try again.")
+      lastError = String(localized: "Couldn't save the key on this Mac. Try again.")
       lastErrorDetails = error.localizedDescription
       return false
     }

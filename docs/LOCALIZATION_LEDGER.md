@@ -31,26 +31,26 @@ website, the docs, the CLI and model prompts are outside this ledger.
 
 ## 2. Where the app stands
 
-`Localizable.xcstrings` holds **1423 keys** (1400 translatable, source inventory
+`Localizable.xcstrings` holds **1425 keys** (1402 translatable, source inventory
 2026-10-06). Before the initial localization work the compiler extracted 468 —
 the literals SwiftUI localizes by itself; the
 rest was plain `String` and invisible to any translation. **Polish copy covers
-every translatable key** in both catalogs (1400/1400 and 4/4), initially imported from the translator worksheet
+every translatable key** in both catalogs (1402/1402 and 4/4), initially imported from the translator worksheet
 (`scripts/l10n-sheet.py`); the catalog is the source of the translation from
 here on.
 
 | Measure                                       | Count    |
 | --------------------------------------------- | -------- |
-| Keys in `Localizable.xcstrings`               | 1423     |
-| Keys with Polish copy                         | 1400     |
-| License keys awaiting Polish review           | 18       |
-| Keys with a translator comment                | 469      |
+| Keys in `Localizable.xcstrings`               | 1425     |
+| Keys with Polish copy                         | 1402     |
+| License keys awaiting Polish review           | 20       |
+| Keys with a translator comment                | 470      |
 | Keys with English plural forms                | 27       |
 | Keys written as identifiers (`defaultValue:`) | 52       |
 | Permission prompts in `InfoPlist.xcstrings`   | 4        |
 | Swift sources in the original census / touched | 128 / 77 |
 
-The license copy cut marks 18 agent-authored Polish entries as `needs_review`.
+The license copy cut marks 20 agent-authored Polish entries as `needs_review`.
 The Founder-confirmed mode names remain `translated`. Drafts provide coverage,
 not evidence of UI review; the review process is in `LOCALIZATION.md` §6.
 
@@ -217,7 +217,9 @@ Swift-side notes:
   the fix is `error.userFacingMessage` at each site.
 - `LicenseService` now owns localized read, verification, activation and removal
   error summaries. The underlying error remains in `lastErrorDetails`, shown
-  only in the license panel's expandable Details section. No bridge error
+  only in the license panel's expandable Details section. Activation reports
+  key-verification failure separately from failure to save the verified key
+  on this Mac; checking and saving use separate catches. No bridge error
   prose is parsed to determine the summary.
 - `OnboardingViewModel.lastError` receives bridge text at five sites and is read
   by no view. Those messages never reach a person today.

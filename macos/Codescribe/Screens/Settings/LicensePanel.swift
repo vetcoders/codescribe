@@ -14,7 +14,7 @@ struct LicensePanel: View {
       SettingsPageHeader(String(localized: "License"))
       VStack(spacing: 0) {
         RuntimeRow(
-          key: String(localized: "Status", comment: "License panel: current license status"),
+          key: stateRowLabel,
           value: stateLabel,
           tint: model.licenseAllowsAgentMode,
           trailing: .none)
@@ -128,6 +128,13 @@ struct LicensePanel: View {
     case "agentic-lifetime": String(localized: "Agent mode", comment: "Operating mode: agent features")
     case let sku?: sku
     }
+  }
+
+  private var stateRowLabel: String {
+    if model.licenseReadState == .available, model.licenseStatus.state == .unlicensed {
+      return String(localized: "Mode", comment: "License panel: operating mode when no key is stored")
+    }
+    return String(localized: "Status", comment: "License panel: current license status")
   }
 
   private var stateLabel: String {
