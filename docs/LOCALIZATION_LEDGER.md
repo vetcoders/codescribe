@@ -39,16 +39,16 @@ every translatable key** in both catalogs (1401/1401 and 4/4), initially importe
 (`scripts/l10n-sheet.py`); the catalog is the source of the translation from
 here on.
 
-| Measure                                       | Count    |
-| --------------------------------------------- | -------- |
-| Keys in `Localizable.xcstrings`               | 1423     |
-| Keys with Polish copy                         | 1401     |
-| License keys awaiting Polish review           | 19       |
-| Tray keys awaiting Polish review              | 6        |
-| Keys with a translator comment                | 470      |
-| Keys with English plural forms                | 27       |
-| Keys written as identifiers (`defaultValue:`) | 52       |
-| Permission prompts in `InfoPlist.xcstrings`   | 4        |
+| Measure                                        | Count    |
+| ---------------------------------------------- | -------- |
+| Keys in `Localizable.xcstrings`                | 1423     |
+| Keys with Polish copy                          | 1401     |
+| License keys awaiting Polish review            | 19       |
+| Tray keys awaiting Polish review               | 6        |
+| Keys with a translator comment                 | 470      |
+| Keys with English plural forms                 | 27       |
+| Keys written as identifiers (`defaultValue:`)  | 52       |
+| Permission prompts in `InfoPlist.xcstrings`    | 4        |
 | Swift sources in the original census / touched | 128 / 77 |
 
 The license copy cut marks 19 agent-authored Polish entries as `needs_review`.
