@@ -1144,16 +1144,15 @@ final class SettingsTruthTests: XCTestCase {
     )
     XCTAssertEqual(choices[1].accessibilityValue(isSelected: true), "Selected")
     XCTAssertEqual(choices[2].accessibilityValue(isSelected: false), "Not selected")
-    // The dictionary name derives from the SettingsSection title owner, so a
-    // rail rename (e.g. Dictionary → Teacher) flows through automatically.
+    // The footnote names the rail section literally: Polish needs the
+    // locative, so the title cannot be interpolated. A rail rename must fail
+    // here until the sentence is reworded with it.
     XCTAssertEqual(
       LanguageIdentityPresentation.supportingCopy,
-      "Programming vocabulary and your \(SettingsSection.voiceLab.title) entries enrich the selected language."
+      "Domain vocabulary and Dictionary entries improve speech recognition."
     )
-    XCTAssertEqual(
-      LanguageIdentityPresentation.supportingCopy,
-      "Programming vocabulary and your Dictionary entries enrich the selected language."
-    )
+    XCTAssertTrue(
+      LanguageIdentityPresentation.supportingCopy.contains(SettingsSection.voiceLab.title))
     XCTAssertFalse(LanguageIdentityPresentation.supportingCopy.contains("model weights"))
   }
 

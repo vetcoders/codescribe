@@ -809,6 +809,31 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertEqual(Set(model.creatorAgentBridgeStatus.installedClients), [.codex, .claudeCode])
   }
 
+  func testLaunchSynchronizationDetailStaysOutOfTheCreatorNotice() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("creator-launch-detail")
+    let detail = "Agent bridge synchronization retained the installed runtime: test detail"
+    defer { SettingsViewModel.recordAgentBridgeLaunchSynchronization(nil) }
+    SettingsViewModel.recordAgentBridgeLaunchSynchronization(detail)
+
+    // A Settings instance opened after launch reads the recorded detail.
+    let model = SettingsViewModel(
+      creatorAgentBridge: RealAgentBridgeInstaller(
+        resourceRoot: payload, homeDirectory: home, environment: [:]),
+      permissionProbe: MockPermissionProbe(.allGranted),
+      servingStatusProvider: { nil }
+    )
+    model.refreshCreatorAgentBridge()
+    XCTAssertEqual(model.creatorAgentBridgeLaunchDetail, detail)
+    XCTAssertNil(model.creatorAgentBridgeNotice)
+    XCTAssertNil(model.creatorAgentBridgeError)
+
+    // A later launch result reaches an already open instance and clears.
+    SettingsViewModel.recordAgentBridgeLaunchSynchronization(nil)
+    XCTAssertNil(model.creatorAgentBridgeLaunchDetail)
+    XCTAssertNil(model.creatorAgentBridgeNotice)
+  }
+
   func testCreatorShowsUnownedSkillConflictWithoutReplacingUserContent() throws {
     let payload = try makePayload()
     let home = scratch.appendingPathComponent("creator-unowned")
