@@ -156,17 +156,32 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
             .collect();
         markers.sort();
         for marker_path in markers {
-            // A persisted or bus-recovered ack is already final. The canonical
-            // filename is enough to skip its body; new IDs still go through
-            // read_marker's file, lease, and envelope checks below.
-            if let Some(delivery_id) = marker_delivery_id(&marker_path)
-                && cursor.emitted.contains(delivery_id)
-            {
+            let Some(delivery_id) = marker_delivery_id(&marker_path) else {
+                continue;
+            };
+            // A persisted or bus-recovered ack is already final.
+            if cursor.emitted.contains(delivery_id) {
                 if cursor.known_seals.remove(delivery_id) {
                     dirty = true;
                 }
                 continue;
             }
+            // Pending or bus-recovered delivery proof can arrive on a later
+            // pass. Until then, the marker body cannot authorize an ack.
+            let pending_kind = lease
+                .pending
+                .iter()
+                .find(|pending| pending.id.as_str() == delivery_id)
+                .and_then(|pending| pending.kind.as_deref());
+            let proven = matches!(pending_kind, Some("seal" | "message"))
+                || cursor.known_seals.contains(delivery_id);
+            if !proven {
+                // This counts canonical candidates lacking delivery proof.
+                stats.skipped_unproven += 1;
+                continue;
+            }
+            // Proof only permits inspection. A new marker must still pass
+            // its file, body, lease, envelope, and recipient checks.
             let Some(marker) = read_marker(&marker_path, lease, fallback_bus)? else {
                 continue;
             };
@@ -183,17 +198,6 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
                 if cursor.known_seals.remove(&delivery_id) {
                     dirty = true;
                 }
-                continue;
-            }
-            let pending_kind = lease
-                .pending
-                .iter()
-                .find(|pending| pending.id == delivery_id)
-                .and_then(|pending| pending.kind.as_deref());
-            let proven = matches!(pending_kind, Some("seal" | "message"))
-                || cursor.known_seals.contains(&delivery_id);
-            if !proven {
-                stats.skipped_unproven += 1;
                 continue;
             }
             let row = json!({
