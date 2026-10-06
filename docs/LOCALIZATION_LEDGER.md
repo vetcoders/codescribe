@@ -98,15 +98,13 @@ other catalog keys (`Basic`, the dictation-lane name, already shares
 `Podstawowy`). The value is derived from `licenseAllowsAgentMode`, never the
 raw SKU, which no longer renders anywhere in the panel. A `License` row
 (reusing the existing `License` key) appears only for the `agentic-lifetime`
-SKU, with the new identifier key `license.offer.agentLifetime` (`Agent ·
-one-time purchase` / `Agent · zakup jednorazowy`); any other non-nil SKU shows
+SKU, with the new identifier key `license.offer.agentLifetime` (`Agent · one-time purchase` / `Agent · zakup jednorazowy`); any other non-nil SKU shows
 no License row and no raw identifier. The `Updates through` row is removed
 entirely pending the `updates_until`/Sparkle contract, and its catalog key is
 removed since nothing else referenced it. The header blurb is reworded from
 `Transcription is available in Basic mode. A license unlocks Agent mode.` to
 `Basic mode stays free. A license unlocks Agent mode.` (old key removed, new
-key `translated`), and a new footnote, `The key is verified locally and
-stored in the macOS Keychain.`, is added below the actions/error block. The
+key `translated`), and a new footnote, `The key is verified locally and stored in the macOS Keychain.`, is added below the actions/error block. The
 bare English catalog keys `Agent mode` and `Basic mode` are removed: a
 repo-wide grep found both were referenced only by the two `LicensePanel.swift`
 call sites this change replaces, so the working assumption that they were
