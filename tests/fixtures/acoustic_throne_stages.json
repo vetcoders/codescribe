@@ -882,7 +882,10 @@
                 "self.replay_completed_windows(ev_tx);",
                 "self.close_admission_horizon(ev_tx, self.window_plan.admission_horizon());"
               ],
-              "forbidden_code": ["bound_context_range(", "repair_terminal_seal_coverage("]
+              "forbidden_code": [
+                "bound_context_range(",
+                "repair_terminal_seal_coverage("
+              ]
             },
             {
               "symbol": "retry_refinements",
@@ -947,7 +950,9 @@
                 "for payload in returned {",
                 "self.admit_completed_window(ev_tx, &payload, false);"
               ],
-              "forbidden_code": ["self.admit_completed_window(ev_tx, &payload, true);"]
+              "forbidden_code": [
+                "self.admit_completed_window(ev_tx, &payload, true);"
+              ]
             },
             {
               "symbol": "admit_completed_window",
@@ -1030,7 +1035,12 @@
                 "admit_ledger_label(",
                 "energy: EnergyAdmission::RequireExistingQualification,"
               ],
-              "forbidden_code": ["bound_context_range(", "TailPatchRequest {"]
+              "forbidden_code": [
+                "bound_context_range(",
+                "TailPatchRequest {",
+                "EnergyAdmission::QualifyFromOwnedPcm",
+                "EnergyAdmission::QualifyFinalPassGap"
+              ]
             },
             {
               "symbol": "register_whisper_owner",
@@ -1042,7 +1052,11 @@
                 "ledger.schedule_observer(occurrence.clone(), LedgerObservationProducer::Whisper)",
                 "self.refinement_receipt(occurrence, \"admitted\");"
               ],
-              "forbidden_code": ["TailPatchRequest {", "window_by_samples(", "next_due("]
+              "forbidden_code": [
+                "TailPatchRequest {",
+                "window_by_samples(",
+                "next_due("
+              ]
             },
             {
               "symbol": "qualify_owned_occurrence",
@@ -1195,7 +1209,8 @@
               "callee": "new",
               "callee_file": "core/pipeline/streaming/layer1_window.rs",
               "caller": "new_for_session",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "pump_capture_windows",
@@ -1208,91 +1223,106 @@
               "callee": "next_due",
               "callee_file": "core/pipeline/streaming/layer1_window.rs",
               "caller": "pump_capture_windows",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "observe_head",
               "callee_file": "core/pipeline/streaming/layer1_window.rs",
               "caller": "next_due",
-              "caller_file": "core/pipeline/streaming/layer1_window.rs"
+              "caller_file": "core/pipeline/streaming/layer1_window.rs",
+              "minimum_count": 1
             },
             {
               "callee": "window_by_samples",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "pump_capture_windows",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "retry_refinements",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "pump_capture_windows",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "next_due",
               "callee_file": "core/pipeline/streaming/layer1_window.rs",
               "caller": "retry_refinements",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "account",
               "callee_file": "core/pipeline/streaming/layer1_window.rs",
               "caller": "retry_refinements",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "push_request",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "apple_stream_transcription_session",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "compute_tail_patch_job",
               "callee_file": "core/pipeline/streaming/session.rs",
               "caller": "push_request",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "transcribe_selected_controlled",
               "callee_file": "core/stt/tail_provider.rs",
               "caller": "compute_tail_patch_job",
-              "caller_file": "core/pipeline/streaming/session.rs"
+              "caller_file": "core/pipeline/streaming/session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "complete_whisper_window",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "apple_stream_worker",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "retain_word_decode",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "complete_whisper_window",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "admit_completed_window",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "complete_whisper_window",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "replay_completed_windows",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "pump_capture_windows",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "admit_completed_window",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "replay_completed_windows",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "admit_ledger_label",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "admit_completed_window",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "emit_stream_events",
@@ -1333,7 +1363,8 @@
               "callee": "register_whisper_owner",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "reconcile_silero_ledger",
-              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
             },
             {
               "callee": "qualify_owned_occurrence",
@@ -1990,7 +2021,11 @@
                 "let receipt = ledger.assess_seal_coverage(",
                 "ledger.record_seal_coverage(receipt.clone());"
               ],
-              "forbidden_code": ["TailPatchRequest {", "transcribe_controlled(", "window_by_samples("]
+              "forbidden_code": [
+                "TailPatchRequest {",
+                "transcribe_controlled(",
+                "window_by_samples("
+              ]
             },
             {
               "symbol": "publish_terminal_coverage",
