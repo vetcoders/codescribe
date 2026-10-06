@@ -862,7 +862,7 @@ mod tests {
     }
 
     /// Real Metal footprint of large-v3-turbo: after load, after ≥60 s of
-    /// speech in Relay's 4 s windows, and after `reclaim_metal_buffer_pool`
+    /// speech in the capture plan's 9 s windows, and after `reclaim_metal_buffer_pool`
     /// with the weights still resident.
     ///
     /// Ignored because it loads the on-disk Whisper weights and decodes about
@@ -906,13 +906,15 @@ mod tests {
             }
         };
 
-        let window = (crate::pipeline::streaming::layer1_window::Layer1Coalesce::MAX_AUDIO_SECS
-            * 16_000.0) as usize;
-        assert_eq!(window, 64_000, "Relay window is 4 s at 16 kHz");
+        let window = 9 * 16_000;
+        let mut plan = crate::pipeline::streaming::layer1_window::CaptureWindowPlan::new(
+            "resident-pool-proof".into(),
+            1,
+            16_000,
+        );
+        let mut windows = 0;
         let covered = 60 * 16_000;
         assert!(pcm.len() >= covered, "fixture must cover at least 60 s");
-        let windows = covered / window;
-        assert_eq!(windows * window, covered);
 
         init().expect("Whisper weights load");
         assert!(is_initialized(), "weights resident after load");
@@ -920,23 +922,26 @@ mod tests {
 
         let control = LocalExecutionControl::default();
         let mut first_text = String::new();
-        for index in 0..windows {
-            let start = index * window;
+        while let Some(range) = plan.next_due(covered as u64, true) {
             let (transcript, _) = transcribe_tail_window(
-                &pcm[start..start + window],
+                &pcm[range.sample_start as usize..range.sample_end as usize],
                 16_000,
                 Some("pl"),
                 None,
                 &control,
             )
             .expect("Relay window decode");
-            if index == 0 {
+            if windows == 0 {
                 first_text = transcript.text;
             }
+            assert!(plan.account(&range));
+            windows += 1;
         }
+        assert_eq!(windows, 18);
+        assert!(plan.is_finished());
         assert!(
             !first_text.trim().is_empty(),
-            "first 4 s window produced no text; the fixture did not exercise a decode"
+            "first 9 s window produced no text; the fixture did not exercise a decode"
         );
         let after_decode =
             crate::memory::phys_footprint_bytes().expect("phys_footprint after decode");

@@ -65,6 +65,8 @@ use crate::llm::ai_formatting::{
 };
 use crate::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 use crate::pipeline::acoustic_ledger::word_adjudication::WordTrial;
+#[cfg(test)]
+use crate::pipeline::acoustic_ledger::SealCoverageStatus;
 use crate::pipeline::acoustic_ledger::{
     AcousticEvidence, AcousticLedger, EnergyCalibration, MutationReceipt, NoAuthorityReason,
     ObservationIdentity as LedgerObservationIdentity,

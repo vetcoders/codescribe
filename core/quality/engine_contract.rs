@@ -197,7 +197,7 @@ pub const ENGINE_CONTRACT: EngineContract = EngineContract {
         "present_mean_energy_as_span_identity",
         "treat_mean_energy_db_as_identity",
     ],
-    whisper_window: "approximately_4s_with_approximately_1s_overlap",
+    whisper_window: "9s_windows_on_3s_capture_sample_grid_max_3_visits",
     full_file_pass: "button_only_proposal",
     inline_format_role: "schedule_existing_responses_formatter",
     silero_role: "orthogonal_vad_and_pcm_time_evidence",
@@ -670,108 +670,53 @@ mod tests {
         assert_eq!(ENGINE_CONTRACT.full_file_pass, "button_only_proposal");
     }
 
-    /// `whisper_window` claims a cadence; the scheduler must run it. Two
-    /// consecutive windows on one contiguous capture share ~1 s of PCM, and
-    /// no window crosses a silence gap or a capture boundary. A spelling
-    /// assertion on the constant proved nothing — the runtime ran disjoint
-    /// windows under a green gate (measured 2026-09-24).
+    /// Reports must describe the actual capture-clock plan, including Stop.
     #[test]
     fn whisper_window_cadence_is_run_by_the_scheduler() {
-        use crate::pipeline::acoustic_ledger::OccurrenceIdentity;
-        use crate::pipeline::streaming::layer1_window::{CoalescedPiece, Layer1Coalesce};
-        use std::time::Instant;
+        use crate::pipeline::streaming::layer1_window::CaptureWindowPlan;
 
         const RATE: u64 = 16_000;
-
-        fn piece(id: u64, start_secs: f32, end_secs: f32) -> CoalescedPiece {
-            let sample_start = (start_secs * RATE as f32) as u64;
-            let sample_end = (end_secs * RATE as f32) as u64;
-            CoalescedPiece {
-                utterance_id: id,
-                occurrence: OccurrenceIdentity::new(
-                    "whisper-window-cadence",
-                    1,
-                    sample_start,
-                    sample_end,
-                ),
-                committed_text: format!("fragment-{id}"),
-                audio: vec![0.0; sample_end.saturating_sub(sample_start) as usize],
-                sample_start,
-                sample_end,
-                start_ts: start_secs,
-                covered_through_secs: end_secs,
-                segment_count: 1,
+        let mut plan = CaptureWindowPlan::new("contract-cadence".into(), 1, RATE as u32);
+        let mut windows = Vec::new();
+        for head in [RATE, 5 * RATE, 9 * RATE, 12 * RATE, 18 * RATE, 25 * RATE] {
+            while let Some(range) = plan.next_due(head, false) {
+                assert_eq!(range.sample_end - range.sample_start, 9 * RATE);
+                assert!(plan.account(&range));
+                windows.push(range);
             }
         }
-
-        let overlap_samples = (Layer1Coalesce::OVERLAP_SECS * RATE as f32) as u64;
-        let max_samples = (Layer1Coalesce::MAX_AUDIO_SECS * RATE as f32) as u64;
-
-        // One contiguous capture: consecutive windows share ~1 s of PCM.
-        let now = Instant::now();
-        let mut buffer = Layer1Coalesce::default();
-        let mut flushes = Vec::new();
-        for (id, start, end) in [(1, 0.0, 1.5), (2, 1.5, 3.0), (3, 3.0, 4.5)] {
-            flushes.extend(buffer.push_at(piece(id, start, end), RATE as u32, now));
+        while let Some(range) = plan.next_due(25 * RATE, true) {
+            assert!(plan.account(&range));
+            windows.push(range);
         }
-        assert_eq!(flushes.len(), 1, "the 4 s budget flushes the first window");
-        flushes.extend(buffer.force_flush());
-        assert_eq!(flushes.len(), 2);
-        for pair in flushes.windows(2) {
-            let start = pair[0].sample_start.max(pair[1].sample_start);
-            let shared = pair[0]
-                .sample_end
-                .min(pair[1].sample_end)
-                .saturating_sub(start);
-            assert_eq!(
-                shared, overlap_samples,
-                "consecutive windows on one contiguous capture must share ~1 s of PCM"
-            );
-            assert!(
-                pair[1].admit_sample_start >= pair[0].admit_sample_end,
-                "the shared second is decoder context, never admitted twice"
-            );
-        }
-        for flush in &flushes {
-            let declared = flush.sample_end - flush.sample_start;
-            assert_eq!(flush.audio.len() as u64, declared);
-            assert!(declared <= max_samples);
-        }
-
-        // A silence gap: the next window does not reach back across it.
-        let mut buffer = Layer1Coalesce::default();
-        assert!(
-            buffer
-                .push_at(piece(1, 0.0, 2.0), RATE as u32, now)
-                .is_empty()
-        );
-        let flushed = buffer.push_at(piece(2, 4.0, 5.0), RATE as u32, now);
-        assert_eq!(flushed.len(), 1, "the pause flushes the first window");
-        let held = buffer.force_flush();
-        assert_eq!(held.len(), 1);
         assert_eq!(
-            held[0].sample_start,
-            (4.0 * RATE as f32) as u64,
-            "no overlap prefix may cross the silence gap"
+            ENGINE_CONTRACT.whisper_window,
+            "9s_windows_on_3s_capture_sample_grid_max_3_visits"
         );
-        assert_eq!(held[0].admit_sample_start, held[0].sample_start);
-
-        // A capture boundary: adjacent samples in another epoch never share a
-        // window, so nothing crosses the boundary.
-        let mut buffer = Layer1Coalesce::default();
-        assert!(
-            buffer
-                .push_at(piece(1, 0.0, 2.0), RATE as u32, now)
-                .is_empty()
-        );
-        let mut other_epoch = piece(2, 2.0, 3.0);
-        other_epoch.occurrence.capture_epoch = 2;
-        assert!(buffer.push_at(other_epoch, RATE as u32, now).is_empty());
-        let drained = buffer.force_flush();
-        assert_eq!(drained.len(), 2, "one window per capture epoch");
-        assert_eq!(drained[0].member_occurrences[0].1.capture_epoch, 1);
-        assert_eq!(drained[1].member_occurrences[0].1.capture_epoch, 2);
-        assert_eq!(drained[1].sample_start, drained[1].admit_sample_start);
+        assert_eq!(windows.len(), 7);
+        assert!(plan.is_finished());
+        for (index, range) in windows.iter().enumerate() {
+            assert_eq!(range.sample_start, index as u64 * 3 * RATE);
+            assert_eq!(range.session, "contract-cadence");
+            assert_eq!(range.capture_epoch, 1);
+        }
+        assert_eq!(windows.last().unwrap().sample_end, 25 * RATE);
+        for sample in 0..25 * RATE {
+            let visits = windows
+                .iter()
+                .filter(|range| range.sample_start <= sample && sample < range.sample_end)
+                .count();
+            assert!(
+                (1..=3).contains(&visits),
+                "sample {sample}: {visits} visits"
+            );
+        }
+        // Separate captures have separate clocks, even with identical samples.
+        let mut next = CaptureWindowPlan::new("contract-cadence".into(), 2, RATE as u32);
+        let offered = next.next_due(9 * RATE, false).unwrap();
+        assert_eq!((offered.sample_start, offered.sample_end), (0, 9 * RATE));
+        assert_eq!(offered.capture_epoch, 2);
+        assert!(!next.account(&windows[0]));
     }
 
     #[test]

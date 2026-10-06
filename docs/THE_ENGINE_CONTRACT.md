@@ -552,12 +552,18 @@ to the resolved defects; this section is not a work queue.
   keeps only provider segments whose sample range lies wholly inside one
   member's occurrence. A candidate that straddles a join is admitted to neither
   member instead of being rewritten into the first span.
-- **The cadence constant and the runtime disagree.**
-  `ENGINE_CONTRACT.whisper_window` says `approximately_4s_with_approximately_1s_overlap`.
-  `Layer1Coalesce` flushes on `TARGET_SEGMENTS = 5`, `MAX_AUDIO_SECS = 16.0`,
-  or a `PAUSE_SECS = 1.2` gap, and produces disjoint windows with no overlap.
-  `full_file_pass_is_never_automatic` asserts the spelling of the constant, not
-  the behaviour, so the disagreement is invisible to the gate.
+- **Capture cadence, updated 2026-10-06.**
+  `ENGINE_CONTRACT.whisper_window` reports
+  `9s_windows_on_3s_capture_sample_grid_max_3_visits`.
+  `AppleSealState` owns one `CaptureWindowPlan` on the original sample clock.
+  Full windows are 9 seconds with a 3-second step. Stop drains that same plan;
+  only its next grid window may be partial. Silence remains in the original
+  PCM rather than causing a phrase-triggered flush. Accepted work is accounted
+  once even when inference fails; queue pressure preserves the offered range.
+  A 25-second capture has seven requests and no sample is visited more than
+  three times. The cadence test drives the real planner and checks ranges and
+  visit counts; the separate queue and audio acceptance gates prove wiring and
+  product behavior.
 - **Pre-C6 repetition defect, resolved structurally by C6.** The Apple
   segment-less final path deleted repetition by text. When an
   Apple final arrives without usable segments, `seal_utterance_final`
