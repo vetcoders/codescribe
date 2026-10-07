@@ -103,7 +103,7 @@ struct OverlayConversationView: View {
   private var navigation: some View {
     navigationGlassContainer(
       HStack(spacing: 6) {
-        conversationNamePill
+        Spacer(minLength: 0)
         if conversation.owner != nil {
           OverlayAgentAudioControls(
             open: microphoneOpen, muted: playbackMuted,
@@ -112,7 +112,7 @@ struct OverlayConversationView: View {
           )
           .fixedSize()
         }
-        Spacer(minLength: 0)
+        conversationNamePill
       }
     )
     .accessibilityIdentifier("overlay-conversation-navigation")

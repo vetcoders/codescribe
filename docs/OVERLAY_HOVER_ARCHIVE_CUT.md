@@ -270,3 +270,25 @@ These gates prove source and mounted fixtures. Native microphone/speaker/hotkey,
 GUI animation/performance and Founder acceptance remain unverified. Full Rust
 fixture migration and prior full Swift budget/host issue remain open; this is not
 a release receipt. Background installation has its own exact artifact receipt.
+
+## Trailing conversation controls
+
+Founder delivery b2d54ad49c577d81a462584c was read completely and acknowledged
+before work. The conversation navigation now sits at the right edge, ordered
+microphone, speaker, then the passive agent name/provider capsule. Native glass,
+durable mute, controller-owned microphone state and text scaling are retained.
+No new strings or palette entries were introduced. The mounted light/dark
+conversation fixtures show the trailing controls in this order.
+
+The conversation, hover and appearance suites passed: 41 tests, zero failures,
+4.500 seconds. Catalog and bridge checks passed with the existing 1430 keys and
+1408/1408 Polish translations. Strict Swift formatting and diff whitespace pass.
+Logs use /tmp/codescribe-e19c-agent-trailing-.
+
+Founder independently launched installed2100/c96: process78724, start17:59:18,
+mapped main inode924329269 matching the disk. This verifies the loaded generation,
+not acceptance of its behavior. Astra performed no GUI launch, Quit, restart,
+desktop capture or physical audio/hotkey test. The clipboard held text when read,
+so no new screenshot was available. Reply543d271cea16ace3a68c543c landed on the bus;
+xAI refused speech with credential_rejected/403, without a retry or profile change.
+The updated app artifact is recorded separately after background installation.
