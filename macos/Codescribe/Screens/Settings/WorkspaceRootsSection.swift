@@ -1,10 +1,13 @@
 import Foundation
 import SwiftUI
 
-/// Editable list of workspace roots the agent's `list_projects` tool scans to
-/// resolve project names to absolute paths. Rows are edited locally and committed
-/// through `SettingsViewModel.setAgentWorkspaceRoots` (colon-joined ->
-/// `AGENT_WORKSPACE_ROOTS`). Each row shows a live "directory exists" indicator.
+/// Editable list of the folders the Agent may reach. One setting serves two
+/// consumers: the path policy of every file/terminal tool and the
+/// `list_projects` scan, so the UI shows one neutral list — some entries are
+/// project checkouts, others (data dirs, /tmp) are plain access grants. Rows
+/// are edited locally and committed through
+/// `SettingsViewModel.setAgentWorkspaceRoots`. Each row shows a live
+/// "directory exists" indicator.
 struct WorkspaceRootsSection: View {
   @ObservedObject var model: SettingsViewModel
 
@@ -21,10 +24,10 @@ struct WorkspaceRootsSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel(String(localized: "Agent workspace roots"))
+      SettingsSectionLabel(String(localized: "Allowed folders"))
 
       Text(
-        "Directories the Agent scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped."
+        "The Agent looks for projects and Git repositories in these folders. It also searches subfolders, but skips hidden folders and build directories."
       )
       .font(CSFont.ui(11.5))
       .lineSpacing(2)
@@ -39,14 +42,13 @@ struct WorkspaceRootsSection: View {
       .padding(.top, 12)
 
       HStack(spacing: 10) {
-        Button {
-          rows.append("")
-        } label: {
-          Label("Add root", systemImage: "plus")
+        Button(action: pickFolder) {
+          Label("Add folder…", systemImage: "plus")
             .font(CSFont.ui(12, .semibold))
         }
         .csFocusRing()
         .foregroundStyle(Color.primary)
+        .help("Choose a folder to add to the list")
 
         Spacer()
 
@@ -54,7 +56,7 @@ struct WorkspaceRootsSection: View {
           model.setAgentWorkspaceRoots(rows)
           syncFromModel()
         } label: {
-          Text("Save roots")
+          Text("Save changes")
             .font(CSFont.ui(12, .semibold))
             .foregroundStyle(isDirty ? Color.primary : Color.secondary)
         }
@@ -92,6 +94,8 @@ struct WorkspaceRootsSection: View {
         CSIconView(icon: .remove, size: 13, weight: .semibold, color: Color.secondary)
       }
       .csFocusRing()
+      .help("Remove folder")
+      .accessibilityLabel("Remove folder")
     }
     .padding(.horizontal, 11)
     .padding(.vertical, 9)
@@ -116,6 +120,24 @@ struct WorkspaceRootsSection: View {
     return Circle()
       .fill(valid ? CSColor.oliveLight : CSColor.amber)
       .frame(width: 7, height: 7)
+  }
+
+  /// The ellipsis on the button promises a dialog: a directory picker whose
+  /// choice lands as a new editable row, tilde-abbreviated like the defaults.
+  /// Nothing is saved until Save changes.
+  private func pickFolder() {
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.allowsMultipleSelection = false
+    panel.canCreateDirectories = false
+    panel.prompt = String(localized: "Add folder", comment: "Folder picker confirm button")
+    panel.message = String(localized: "Choose a folder the Agent may read and write")
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    let path = (url.path as NSString).abbreviatingWithTildeInPath
+    if !rows.contains(path) {
+      rows.append(path)
+    }
   }
 
   private func syncFromModel() {

@@ -69,7 +69,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     switch self {
     case .agentLanes: String(localized: "Model configuration.")
     case .agentPrompts: String(localized: "Prompts", comment: "Settings tab: editable prompts")
-    case .agentWorkspace: String(localized: "Workspace roots.")
+    case .agentWorkspace:
+      String(localized: "Folders available to the Agent", comment: "Settings tab: Agent folders")
     case .agentStatus: String(localized: "Connection details.")
     case .agentTools: String(localized: "Tool permissions.")
     case .agentMcp: String(localized: "MCP servers.")
@@ -97,7 +98,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentWorkspace:
       String(
         localized:
-          "Directories the Agent may read and write. Everything outside them is out of reach."
+          "The Agent can read and write only inside these folders. It has no access outside them."
       )
     case .agentStatus:
       String(
@@ -153,7 +154,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       settingsSearchTerms(
         localized: String(
           localized: "settings.search.tab.agentWorkspace",
-          defaultValue: "roots, directory, repo, path",
+          defaultValue: "roots, directory, folders, access, repo, path",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))
