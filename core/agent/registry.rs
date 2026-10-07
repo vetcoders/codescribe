@@ -497,7 +497,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use super::super::permissions::{AgentPermissions, PermissionLevel};
+    use super::super::permissions::{AgentPermissions, PermissionLevel, PermissionSource};
     use super::{
         ToolDecision, ToolDefinition, ToolExecutionPolicy, ToolOrigin, ToolRegistry,
         ToolResultContent, ToolRisk,
