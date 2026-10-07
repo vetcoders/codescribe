@@ -51,7 +51,7 @@ Actually unfinished source and an unconsumed source extent still refuse takeover
   Semgrep found no findings; installed helper and successful takeover were verified.
 - All 239 inherited Lena deliveries were read and acknowledged through `cs-bus`;
   both mailbox backlogs and unacknowledged seals were zero after cleanup.
-- 7 October speech suite: **43 tests passed**, with isolated publication and
+- 7 October speech suite: **44 speech tests passed**, with isolated publication and
   substituted synthesis/player; no network, credentials or speakers were used.
   Added coverage proves persisted muted text without synthesis, unmute, same-name
   session isolation, wrong-bus refusal, manual audition, malformed-receipt refusal.
@@ -68,24 +68,37 @@ Actually unfinished source and an unconsumed source extent still refuse takeover
   navigation and recording ownership retain their behavioral tests.
 - Fixed-WAV five-Iwo gate: the real PCM → ledger → reducer → delivery
   fixture passed (1 selected test, zero failures); no live microphone was opened.
-- Workspace all-target Clippy remains red on 265 stale Rust unit-fixture references
+- Workspace all-target Rust test compilation initially failed on 265 stale unit-fixture references
   in the baseline (194 Apple session, 69 Silero, 2 seal coverage). Those source files
   are identical across the baseline and all three overlay/recovery checkpoints.
-  No fetched branch contains a complete migration. The separate five-Iwo geometry
+  Seven tests asserting the removed Silero context policy have been retired;
+  the lifecycle/identity test remains. The compiler now reports 196 unresolved
+  Apple-session/seal fixture references. No fetched branch contains a complete migration.
+  The separate five-Iwo geometry
   iterator lint is corrected without changing its occurrence assertions.
 - The structural verifier also needs the newer fail-closed manifest/test correction
   from `fb2c16be`, admitted here as patch-equivalent `791e6d1c`. Live and
-  instrument checks are running; no broad verify PASS is claimed.
+  instrument self-tests passed (112 tests); the wired source check will rerun
+  on the stable integration generation. No broad verify PASS is claimed.
 
-Outstanding: final Swift verdict, catalog
-extraction/synchronization, full Rust fixture migration, security/static gates and
-installed-product acceptance. Static checks and fixtures do not prove live UI or
+- Integrated roster/mailbox, renamed-session, carrier replacement and same-session
+  retirement changes: 82 Python tests passed, including 44 speech tests.
+- Integrated Stop ownership: 16 Rust tests passed without opening a microphone.
+- Post-integration bridge/overlay Swift suites: 85 tests passed with zero failures,
+  including a 5 MiB custom-bus lease and rejection above 16 MiB.
+- First background installation succeeded with a verified signature: v0.15.3,
+  build 2040, source stamp `791e6d1c5-dirty`. It predates the final integration;
+  a new build is required. The Founder app was not restarted.
+
+Outstanding: full Rust fixture migration, wired structural gate and installed-product
+acceptance of the final generation. Static checks and fixtures do not prove live UI or
 live audio behavior.
 
 ## Branch comparison after remote refresh
 
-Counts below are unique commits on this branch / the other branch, excluding
-uncommitted edits. None of these refs contains the overlay source checkpoint.
+Counts below were captured at `8baeccaec28e220dbcbbc3a173814a749dfc47ea`
+after remote refresh, before integration. They are a historical comparison,
+not current divergence counts. None of those remote refs contained the overlay source checkpoint.
 
 | Compared ref                                 | Ours / theirs | Integration concern                                                                               |
 | -------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------- |
@@ -98,6 +111,25 @@ uncommitted edits. None of these refs contains the overlay source checkpoint.
 
 Earlier Lena header-glyph work (`680e7f59`) is already an ancestor. Duplicate
 admission is unnecessary. No blind merges, trunk updates or deployment occurred.
+
+## Admitted cuts
+
+`fb2c16be` was admitted as `791e6d1c`. The roster branch commits
+`7f6526b3`, `5d2834c7`, `553445fc`, `423551c5` were admitted as
+`dce0023e`, `dbfed39f`, `dac6cddc`, `39742191`.
+The main-checkout commits `9b6014ba`, `985c0208`, `47678328`, `4fa6e083`,
+`c13fd4d8` were admitted as `7f35953a`, `9865dac9`, `e1d83260`,
+`aa64b18d`, `dacda3d1`.
+Conflict resolution retains our canonical-source closure proof for cross-session
+handover and the newer inherited-cursor rule for same-session detach. Admission
+is patch equivalence with these explicit conflict resolutions, not source ancestry.
+Site/release and the newly appearing peer-text feature are not admitted.
+
+The bounded Rust fixture checkpoint skips `cargo-check` while the 196 retained
+fixture references still cannot compile, and `cargo-fmt` because the hook stages
+all tracked edits; the two authored Rust files were formatted directly with
+Rust 2024. The five-Iwo geometry test passed (5 tests). This deferral returns when
+those retained fixtures are ported to the capture-owned planner; it is not a release PASS.
 
 ## Delivery boundary and historical checkpoint
 

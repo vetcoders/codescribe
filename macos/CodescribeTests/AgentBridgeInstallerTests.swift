@@ -21,6 +21,34 @@ final class AgentBridgeInstallerTests: XCTestCase {
     }
   }
 
+  func testPlaybackIdentityReadsLargeLeasesAndUsesTheirCustomBus() async throws {
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: nil, homeDirectory: scratch, environment: [:])
+    let candidate = AgentPlaybackIdentity(
+      provider: "codex", session: "large-mailbox", bus: scratch.appendingPathComponent("default.jsonl").path)
+    let customBus = scratch.appendingPathComponent("custom.jsonl").path
+    let lease = installer.bridgeRoot.appendingPathComponent("leases/\(candidate.leaseID).json")
+    try FileManager.default.createDirectory(
+      at: lease.deletingLastPathComponent(), withIntermediateDirectories: true)
+    func writeLease(padding: Int) throws {
+      let row: [String: Any] = [
+        "schema": "codescribe.agent-bridge.lease.v1", "lease_id": candidate.leaseID,
+        "provider": candidate.provider, "provider_session_id": candidate.session,
+        "bus": customBus, "pending": [["text": String(repeating: "x", count: padding)]],
+      ]
+      try JSONSerialization.data(withJSONObject: row).write(to: lease)
+    }
+    try writeLease(padding: 5 << 20)
+    let resolved = await RealAgentBridgeInstaller.boundPlaybackIdentities(
+      for: ["2": candidate], installer: installer)
+    XCTAssertEqual(resolved["2"], AgentPlaybackIdentity(
+      provider: candidate.provider, session: candidate.session, bus: customBus))
+    try writeLease(padding: 16 << 20)
+    let oversized = await RealAgentBridgeInstaller.boundPlaybackIdentities(
+      for: ["2": candidate], installer: installer)
+    XCTAssertTrue(oversized.isEmpty)
+  }
+
   func testInstallIsExplicitAtomicIdempotentAndSupportsIndependentClients() throws {
     let payload = try makePayload()
     let home = scratch.appendingPathComponent("home", isDirectory: true)

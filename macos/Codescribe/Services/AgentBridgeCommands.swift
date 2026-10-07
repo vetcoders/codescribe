@@ -45,9 +45,10 @@ extension RealAgentBridgeInstaller {
   /// Resolve each live roster session to its actual leased bus, including custom buses.
   @MainActor
   static func boundPlaybackIdentities(
-    for candidates: [String: AgentPlaybackIdentity]
+    for candidates: [String: AgentPlaybackIdentity],
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
   ) async -> [String: AgentPlaybackIdentity] {
-    let root = RealAgentBridgeInstaller().bridgeRoot
+    let root = installer.bridgeRoot
     return await Task.detached(priority: .utility) {
       var result: [String: AgentPlaybackIdentity] = [:]
       for (channel, candidate) in candidates {
@@ -73,9 +74,10 @@ extension RealAgentBridgeInstaller {
   /// Missing means audible; malformed or unreadable remains unknown in the UI.
   @MainActor
   static func playbackMuteSnapshot(
-    for identities: Set<AgentPlaybackIdentity>
+    for identities: Set<AgentPlaybackIdentity>,
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
   ) async -> [AgentPlaybackIdentity: Bool] {
-    let root = RealAgentBridgeInstaller().bridgeRoot
+    let root = installer.bridgeRoot
     return await Task.detached(priority: .utility) {
       var result: [AgentPlaybackIdentity: Bool] = [:]
       for identity in identities {

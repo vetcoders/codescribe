@@ -63,8 +63,8 @@ fn five_close_physical_iwo_survive_other_observer_and_exact_replay() {
         .map(|p| (p.sample_start, p.sample_end))
         .collect::<Vec<_>>();
     assert_eq!(original.len(), 5);
-    for i in 0..5 {
-        let apple = WordPin::new(pins[i].sample_start, pins[i].sample_end, "Iwo");
+    for (i, pin) in pins.iter().enumerate() {
+        let apple = WordPin::new(pin.sample_start, pin.sample_end, "Iwo");
         offer(
             &mut ledger,
             &owner,
