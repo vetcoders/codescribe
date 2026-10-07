@@ -429,3 +429,54 @@ codex/widget-hover-261007, baseline99760a12b70f6863c5df33d1ab84276236e910fb.
 No GUI launch, Quit, restart, desktop capture, microphone or hotkey test was
 performed. Installed source, running generation and Founder-native acceptance
 require their own receipts; passing mounted fixtures is not live acceptance.
+
+## Full Swift verification and explicit canvas fixtures
+
+The integrator ran the unfiltered `make test-swift` on7fd1 with the existing
+isolated Rust artifact root and default60-second/per-test10-second limits.
+It executed1155 tests, one skip and13 failed assertions in72.373 seconds.
+An isolated22-test run reproduced every assertion failure.
+
+Three edit/focus tests were exercising the default mini presentation while
+expecting an editable canvas. Their fixtures now explicitly open the full
+canvas, as does the native read-only selection fixture. The product still
+starts mini and prevents editing the hidden retained canvas. A close-hover
+source assertion was updated for the existing interaction hold. The Polish
+onboarding bitmap correctly rendered the localized heading, but OCR returned
+lowercase `wybierz`; that recognition assertion now ignores letter case. The
+exact Foundation localization assertions remain intact. Existing formatting
+diagnostics in the touched test file were corrected without runtime changes.
+
+The repaired edit/chrome selection passes13 tests in1.705 seconds. The second
+unfiltered run executes1155 tests, one skip andzero failed assertions in72.299
+seconds. `xcodebuild` reports success, but the canonical Make gate remains
+**RED**, rc4, because72.299 exceeds the unchanged60-second suite budget.
+The slowest test is5.348 seconds, below the unchanged10-second ceiling. This
+is an assertion repair, not a full Swift gate PASS or product acceptance.
+
+The authored unit changes only three test files and this report. No app/helper
+code, localization key, timing budget or recording setting is changed. Logs:
+`/tmp/codescribe-e19c-full-swift-7fd1-goal-oct7.log`,
+`/tmp/codescribe-e19c-focus-isolation-7fd1-goal-oct7.log`,
+`/tmp/codescribe-e19c-edit-fixtures-fixed-oct7.log`,
+`/tmp/codescribe-e19c-full-swift-fixtures-fixed-goal-oct7.log`.
+
+Read-only process observations of the loaded2106/7fd1 generation showed
+101.1–109.2% CPU and about3.34GiB RSS; the canonical bus idle guard returned0
+at the latter observation. These measurements do not attribute CPU/memory
+ownership or establish a leak. A read-only two-second process-stack sample at
+19:55:37 local is stored at
+`/tmp/codescribe-e19c-live-cpu-2106-oct7.sample.txt`. The main thread waited in
+the run loop for662 of664 samples. The Rust channel guard spent416 samples in
+`presentation::agent_ack::scan` reading JSON through unbuffered `Take<File>`;
+the Swift delivery reader also repeatedly parsed lease and receipt JSON.
+These background costs are separate from the cursor repair. No desktop
+capture, microphone, audio, GUI launch, Quit or restart was performed by
+Astra during this verification.
+
+Bruno subsequently reported source1839/build2113, a verified launch and124
+mounted UI tests. Independent readback finds Living Tree tip1839 and process
+65091, with97.3% CPU at20:07 local. His cursor cut and installed-artifact
+receipt remain distinct from this test-only unit; native cursor acceptance
+is still pending. Lena owns the concurrent channel-zero recipient diagnosis
+in `controller/agent_channel.rs`; this unit does not touch that source.
