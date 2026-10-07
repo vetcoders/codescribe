@@ -199,7 +199,7 @@ struct WaveformView: View {
       let count = Self.effectiveBarCount(
         width: geometry.size.width, barWidth: barWidth, gap: gap, minimum: barCount)
       Group {
-        if reduceMotion, active, meter?.gain != nil {
+        if reduceMotion, active {
           // Essential data feedback still updates, but at a calm 5 Hz with no
           // decorative phase sweep. Shape changes only with measured RMS.
           TimelineView(.periodic(from: .now, by: 0.2)) { timeline in

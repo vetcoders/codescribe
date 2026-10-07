@@ -120,6 +120,11 @@ struct TrayMenuView: View {
         style: .primary
       ) { viewModel.onShowAgent() }
 
+      TrayRow(icon: .dock, title: String(localized: "Open widget")) {
+        viewModel.onOpenWidget()
+      }
+      .accessibilityIdentifier("tray-open-widget")
+
       TrayRow(
         icon: viewModel.isRecording && !viewModel.isStartingDictation ? .stop : .record,
         iconColor: recordingActionColor,
@@ -202,12 +207,14 @@ struct TrayMenuView: View {
     VStack(spacing: 0) {
       toggleRow(
         icon: .dock,
-        title: String(localized: "Show icon", comment: "Tray toggle: show the application's Dock icon"),
+        title: String(
+          localized: "Show icon", comment: "Tray toggle: show the application's Dock icon"),
         isOn: viewModel.showDockIcon
       ) { viewModel.setShowDockIcon($0) }
       toggleRow(
         icon: .overlay,
-        title: String(localized: "Show overlay", comment: "Tray toggle: enable the transcription overlay"),
+        title: String(
+          localized: "Show overlay", comment: "Tray toggle: enable the transcription overlay"),
         isOn: viewModel.overlayEnabled
       ) { viewModel.setOverlayEnabled($0) }
       autoPasteToggle
@@ -315,7 +322,8 @@ struct TrayMenuView: View {
         ? String(
           localized: "Stop transcription in Agent mode",
           comment: "Tray row: stop the current transcription in Agent mode")
-        : String(localized: "Stop transcription", comment: "Tray row: stop the current transcription")
+        : String(
+          localized: "Stop transcription", comment: "Tray row: stop the current transcription")
     }
     return viewModel.startInAssistive
       ? String(

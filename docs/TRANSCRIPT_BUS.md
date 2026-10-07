@@ -1101,3 +1101,23 @@ a bounded cooldown, without blocking journal consumption. Missing or mismatched
 provider submission identity stays `unresolved`; no unrelated entry is removed.
 The mailbox, transcript journal, original ACK marker and retained audio remain
 independent of pending provider queue removal.
+
+## Disconnected agent archive
+
+The overlay drawer offers **Remove from list and move to archive** only for a
+closed channel whose controller roster explicitly reports a dead follower.
+Unknown liveness and live readers do not offer that action. The click freezes
+the provider, provider session, lease and channel, rather than selecting by name.
+
+The managed helper's `--archive-agent CHANNEL --provider P --session S --lease L --bus PATH` holds the canonical binding lock and the exact lease's exclusive
+lock through publication. A replaced owner, living PID, busy lease or unreadable
+mailbox refuses the operation. It never signals a follower, acknowledges a
+delivery, advances a cursor or removes transcript/audio/mailbox history.
+
+The helper writes `archives/L-CHANNEL.json` (`codescribe.agent-archive.v1`) and
+then releases only that channel through the binding file's existing writer.
+The receipt includes the frozen owner, bus, name, time and `released: true`.
+The overlay reader ignores archive metadata while that exact owner remains
+bound, including a failed binding write or deliberate reattachment. Otherwise
+the conversation remains in saved conversations; an empty history also retains
+an archive entry. Reusing the channel exposes the new owner independently.

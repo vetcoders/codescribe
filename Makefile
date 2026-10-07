@@ -1159,6 +1159,7 @@ verify:
 	python3 -m unittest scripts/tests/test_agent_publisher_manifest.py; \
 	CODESCRIBE_NO_EMBED=1 cargo build --locked --bin codescribe; \
 	python3 -m unittest scripts/tests/test_bus_channel_handover.py; \
+	python3 -m unittest scripts/tests/test_bus_agent_archive.py; \
 	python3 -m unittest scripts/tests/test_agent_reply_publisher.py; \
 	python3 -m unittest scripts/tests/test_cs_say_entry.py; \
 	bash scripts/validate-envs.sh; \

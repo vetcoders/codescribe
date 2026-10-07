@@ -65,6 +65,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   var rosterSnapshotHandler: (() async -> [CsChannelRosterState])?
   var toggledDigits: [UInt8] = []
   var toggleFailure: Error?
+  var toggleHandler: (() async throws -> Void)?
   struct WordClipRequest: Equatable {
     let sessionId: String
     let captureEpoch: UInt64
@@ -110,6 +111,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   }
   func toggleAgentChannel(digit: UInt8) async throws {
     toggledDigits.append(digit)
+    if let toggleHandler { try await toggleHandler() }
     if let toggleFailure { throw toggleFailure }
   }
 
@@ -1161,7 +1163,7 @@ final class OverlayStateTests: XCTestCase {
     let view = OverlayConversationView(
       conversation: all, palette: .dark, topInset: 50,
       bottomInset: 20, pendingControls: [], controlErrors: [:], onControl: { _, _ in },
-      onShowMonitor: {}, draft: .constant(""), sending: false, sendError: nil, onSend: {})
+      draft: .constant(""), sending: false, sendError: nil, onSend: {})
     XCTAssertEqual(view.orderedMessages.map(\.order), [1, 2, 3, 4, 5])
     XCTAssertEqual(Set(view.orderedMessages.map(\.id)).count, 5)
     XCTAssertEqual(view.orderedMessages.map(\.text), Array(repeating: "Iwo", count: 5))
@@ -1304,6 +1306,81 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.hasOpenChannel, "a failed click cannot optimistically open a channel")
     XCTAssertTrue(state.channelHudStates.isEmpty)
     XCTAssertEqual(state.channelToggleError, "Controller unavailable")
+  }
+
+  func testPendingChannelToggleRejectsSecondClickUntilControllerReceipt() async throws {
+    let engine = OverlayStateTestEngine()
+    var resume: CheckedContinuation<Void, Never>?
+    engine.toggleHandler = { await withCheckedContinuation { resume = $0 } }
+    engine.rosterSnapshot = [
+      .init(
+        channel: "3", audience: "astra", provider: "codex", providerSessionId: "session",
+        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+    ]
+    let state = OverlayState()
+    state.engine = engine
+    let first = Task { await state.toggleAgentChannel(3) }
+    for _ in 0..<50 {
+      if resume != nil { break }
+      await Task.yield()
+    }
+    let continuation = try XCTUnwrap(resume)
+    XCTAssertEqual(state.pendingChannelToggles, ["3"])
+    XCTAssertFalse(state.hasOpenChannel, "pending commands cannot optimistically claim capture")
+    await state.toggleAgentChannel(3)
+    XCTAssertEqual(engine.toggledDigits, [3])
+    continuation.resume()
+    await first.value
+    XCTAssertTrue(state.pendingChannelToggles.isEmpty)
+    XCTAssertTrue(state.channelHudStates["3"]?.open == true)
+  }
+
+  func testAgentOnlyMeasuredLevelsDoNotChangeDictationDocumentPhase() {
+    let state = OverlayState.previewFormatted()
+    let text = state.activeText
+    let mode = state.mode
+    let roster = CsChannelRosterState(
+      channel: "3", audience: "astra", provider: "codex", providerSessionId: "session",
+      open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+    state.applyChannelRoster([roster])
+    XCTAssertFalse(state.recording)
+    XCTAssertTrue(state.audioCaptureActive)
+    state.applyAudioLevel(0.03)
+    XCTAssertNotNil(state.levelMeter.gain)
+    XCTAssertEqual(state.mode, mode)
+    XCTAssertEqual(state.activeText, text)
+
+    var closed = roster
+    closed.open = false
+    state.applyChannelRoster([closed])
+    XCTAssertFalse(state.audioCaptureActive)
+    XCTAssertNil(state.levelMeter.gain)
+    state.applyAudioLevel(0.9)
+    XCTAssertNil(state.levelMeter.gain, "late blocks cannot paint a closed channel")
+    state.applyChannelRoster([roster])
+    XCTAssertNil(state.levelMeter.gain, "reopening cannot inherit a previous capture's gain")
+  }
+
+  func testDictationStopKeepsMeasuredLevelWhileAgentCaptureRemainsOpen() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.applyChannelRoster([
+      .init(
+        channel: "3", audience: "astra", provider: "codex", providerSessionId: "session",
+        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+    ])
+    state.applyAudioLevel(0.03)
+    let gain = state.levelMeter.gain
+    state.finishControllerRecording()
+    XCTAssertFalse(state.recording)
+    XCTAssertTrue(state.audioCaptureActive)
+    XCTAssertEqual(state.levelMeter.gain, gain)
+    state.applyAudioLevel(0.3)
+    XCTAssertGreaterThan(state.levelMeter.gain ?? 0, gain ?? 0)
+    state.applyChannelRoster([])
+    XCTAssertFalse(state.audioCaptureActive)
+    XCTAssertNil(state.levelMeter.gain)
   }
 
   func testRosterSnapshotProjectsDeadAndUnknownFollowersWithoutGuessing() {

@@ -60,6 +60,23 @@ class ReadAckTests(unittest.TestCase):
              patch.object(DEMUX, "emit"):
             self.assertEqual(DEMUX.acknowledge_delivery(self.args(ack=identities)), 0)
 
+    def test_archive_and_mailbox_read_cannot_combine_before_any_state_change(self):
+        before = {str(p.relative_to(self.root)): p.read_bytes()
+                  for p in self.root.rglob("*") if p.is_file()}
+        for extra in [
+                ["--archive-agent", "3", "--lease", self.lease, "--read-pending"],
+                ["--archive-agent", "3", "--lease", self.lease, "--read-limit", "1"],
+                ["--archive-agent", "3", "--lease", self.lease, "--read-bytes", "1000"]]:
+            with self.subTest(extra=extra):
+                result = subprocess.run([
+                    sys.executable, str(SOURCE), "--provider", "codex", "--session", self.session,
+                    "--bridge-home", str(self.root), "--bus", str(self.bus), *extra],
+                    text=True, capture_output=True, check=False)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(before, {str(p.relative_to(self.root)): p.read_bytes()
+                                         for p in self.root.rglob("*") if p.is_file()})
+
     def test_five_equal_messages_are_read_completely_without_automatic_ack(self):
         before = (self.root / "leases" / f"{self.lease}.json").read_bytes()
         result = self.read()

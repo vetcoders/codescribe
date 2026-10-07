@@ -6,6 +6,136 @@ import XCTest
 @testable import Codescribe
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
+  @MainActor
+  func testConversationZoomRetainsEditorDraftSelectionAndTypingFont() throws {
+    let key = "OverlayConversationZoom.\(UUID().uuidString)"
+    defer { UserDefaults.standard.removeObject(forKey: key) }
+    let scale = TextScaleController(key: key)
+    var draft = "Pierwsza linia i druga wypowiedź"
+    let identity = try XCTUnwrap(OverlayConversationOwner(row: owner(leaseA)))
+    let view = OverlayConversationView(
+      conversation: .init(
+        id: identity.id, channel: "2", name: "Lena", owner: identity, messages: []),
+      palette: .light, topInset: 50, bottomInset: 20, pendingControls: [], controlErrors: [:],
+      onControl: { _, _ in }, draft: Binding(get: { draft }, set: { draft = $0 }),
+      sending: false, sendError: nil, onSend: {})
+    let host = NSHostingView(rootView: TextScaleRoot(controller: scale) { view })
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 470, height: 280)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless,
+      backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    func settle() {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.04))
+      host.layoutSubtreeIfNeeded()
+    }
+    func editor(in root: NSView) -> NSTextView? {
+      if let text = root as? NSTextView, text.isEditable { return text }
+      return root.subviews.lazy.compactMap { editor(in: $0) }.first
+    }
+    settle()
+    let original = try XCTUnwrap(editor(in: host))
+    original.setSelectedRange(NSRange(location: 5, length: 7))
+    for _ in 0..<6 { scale.increase() }
+    settle()
+    let enlarged = try XCTUnwrap(editor(in: host))
+    XCTAssertTrue(enlarged === original)
+    XCTAssertEqual(enlarged.string, draft)
+    XCTAssertEqual(enlarged.selectedRange(), NSRange(location: 5, length: 7))
+    XCTAssertEqual(try XCTUnwrap(enlarged.font).pointSize, 22.4, accuracy: 0.05)
+    XCTAssertEqual(
+      (enlarged.typingAttributes[.font] as? NSFont)?.pointSize, enlarged.font?.pointSize)
+    XCTAssertLessThanOrEqual(try XCTUnwrap(enlarged.enclosingScrollView).frame.height, 112)
+    scale.reset()
+    settle()
+    XCTAssertTrue(editor(in: host) === original)
+    XCTAssertEqual(try XCTUnwrap(original.font).pointSize, 14, accuracy: 0.05)
+    XCTAssertEqual(original.selectedRange(), NSRange(location: 5, length: 7))
+    XCTAssertEqual(draft, "Pierwsza linia i druga wypowiedź")
+  }
+
+  func testTextReplyDoesNotAcquireSpeechFromItsTextOrPlaybackFailure() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    let id = String(repeating: "d", count: 24)
+    var text = reply(id)
+    text.removeValue(forKey: "tts_vendor")
+    text.removeValue(forKey: "voice")
+    text.removeValue(forKey: "speed")
+    bus.consume(text)
+    bus.consume(
+      playback(
+        id, ticket: String(repeating: "b", count: 24), state: "failed",
+        time: "2026-10-05T04:00:01Z"))
+    let message = try XCTUnwrap(lenaConversation(bus).messages.first)
+    XCTAssertEqual(message.text, "Odpowiedź")
+    XCTAssertEqual(message.playback?.state, "failed")
+    XCTAssertFalse(message.supportsSpeechPlayback)
+  }
+
+  func testSpeechReplyKeepsPlaybackCapabilityBeforeSynthesisAndAcrossMirrors() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    let id = String(repeating: "d", count: 24)
+    let speech = reply(id)
+    bus.consume(speech)
+    XCTAssertTrue(try XCTUnwrap(lenaConversation(bus).messages.first).supportsSpeechPlayback)
+    var mirror = speech
+    mirror.removeValue(forKey: "tts_vendor")
+    mirror.removeValue(forKey: "voice")
+    bus.consume(mirror)
+    let restored = try JSONDecoder().decode(
+      OverlayChannelDelivery.Bus.self,
+      from: JSONEncoder().encode(bus))
+    XCTAssertTrue(try XCTUnwrap(lenaConversation(restored).messages.first).supportsSpeechPlayback)
+  }
+
+  @MainActor
+  func testTextReplyCannotInvokePlaybackEvenThroughAStaleControl() async throws {
+    var bus = OverlayChannelDelivery.Bus()
+    let id = String(repeating: "d", count: 24)
+    var text = reply(id)
+    text.removeValue(forKey: "tts_vendor")
+    text.removeValue(forKey: "voice")
+    bus.consume(text)
+    let message = try XCTUnwrap(lenaConversation(bus).messages.first)
+    let state = OverlayState()
+    await state.controlReply(message, stop: false)
+    await state.controlReply(message, stop: true)
+    XCTAssertTrue(state.pendingReplyControls.isEmpty)
+    XCTAssertTrue(state.replyControlErrors.isEmpty)
+  }
+
+  func testReadLabelRequiresCanonicalAcknowledgmentRatherThanQueueAcceptance() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(occurrence(0, revision: 1))
+    var recipient = try XCTUnwrap(lenaConversation(bus).messages.first?.recipients.first)
+    let delivery = try XCTUnwrap(recipient.deliveryID)
+    XCTAssertEqual(OverlayConversationView.receiptStatusText(for: recipient), "Addressed")
+    recipient.queued = true
+    XCTAssertEqual(OverlayConversationView.receiptStatusText(for: recipient), "Queued")
+    var accepted = owner(leaseA)
+    accepted.merge([
+      "schema": "codescribe.native-queue.receipt.v1", "disposition": "provider_accepted",
+      "delivery_id": delivery,
+    ]) { _, new in new }
+    bus.observeAcceptance(accepted)
+    recipient = try XCTUnwrap(lenaConversation(bus).messages.first?.recipients.first)
+    XCTAssertEqual(OverlayConversationView.receiptStatusText(for: recipient), "Queue accepted")
+    var foreign = owner(leaseB, session: "foreign")
+    foreign.merge(["schema": "codescribe.agent-ack.v1", "delivery_id": delivery]) { _, new in new }
+    bus.consume(foreign)
+    recipient = try XCTUnwrap(lenaConversation(bus).messages.first?.recipients.first)
+    XCTAssertEqual(OverlayConversationView.receiptStatusText(for: recipient), "Queue accepted")
+    var ack = owner(leaseA)
+    ack.merge(["schema": "codescribe.agent-ack.v1", "delivery_id": delivery]) { _, new in new }
+    bus.consume(ack)
+    recipient = try XCTUnwrap(lenaConversation(bus).messages.first?.recipients.first)
+    XCTAssertEqual(OverlayConversationView.receiptStatusText(for: recipient), "Read")
+  }
+
   func testPlayIconKeepsAdjacentPlaybackStateAndExactControls() throws {
     // SwiftUI AX children are unavailable in the hermetic host; pin the visible branches.
     // Existing bus tests separately exercise canonical playback ticket/owner authority.
@@ -23,7 +153,9 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     XCTAssertTrue(source.contains(".accessibilityLabel(\"Play\")"))
     XCTAssertTrue(source.contains(".help(\"Play\")"))
     XCTAssertTrue(
-      source.contains("if let playback = message.playback { Text(playbackLabel(playback.state, reason: playback.reason))"))
+      source.contains(
+        "if let playback = message.playback { Text(playbackLabel(playback.state, reason: playback.reason))"
+      ))
     XCTAssertTrue(source.contains("case \"spoken\": String(localized: \"Spoken\")"))
     XCTAssertFalse(source.contains("Play again"))
     XCTAssertTrue(
@@ -189,7 +321,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     for scheme in [ColorScheme.dark, .light] {
       let view = OverlayConversationView(
         conversation: conversation, palette: .resolve(scheme), topInset: 50, bottomInset: 20,
-        pendingControls: [], controlErrors: [:], onControl: { _, _ in }, onShowMonitor: {},
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in },
         draft: .constant(""), sending: false, sendError: nil, onSend: {})
       let host = NSHostingView(
         rootView: view.background(OverlayAppearancePalette.resolve(scheme).desktopBackground.color)
@@ -265,7 +397,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     for scheme in [ColorScheme.dark, .light] {
       let view = OverlayConversationView(
         conversation: conversation, palette: .resolve(scheme), topInset: 50, bottomInset: 20,
-        pendingControls: [], controlErrors: [:], onControl: { _, _ in }, onShowMonitor: {},
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in },
         draft: .constant(""), sending: false, sendError: nil, onSend: {})
       let host = NSHostingView(rootView: view.preferredColorScheme(scheme))
       host.frame = NSRect(x: 0, y: 0, width: 532, height: 260)
@@ -298,7 +430,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       let host = NSHostingView(
         rootView: OverlayConversationView(
           conversation: conversation, palette: .resolve(scheme), topInset: 50, bottomInset: 20,
-          pendingControls: [], controlErrors: [:], onControl: { _, _ in }, onShowMonitor: {},
+          pendingControls: [], controlErrors: [:], onControl: { _, _ in },
           draft: .constant(""), sending: false, sendError: nil, onSend: {}
         )
         .preferredColorScheme(scheme))
@@ -343,7 +475,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     let view = OverlayConversationView(
       conversation: .init(id: owner.id, channel: "2", name: "Lena", owner: owner, messages: []),
       palette: .dark, topInset: 50, bottomInset: 20, pendingControls: [], controlErrors: [:],
-      onControl: { _, _ in }, onShowMonitor: {}, draft: draft, sending: sending, sendError: nil,
+      onControl: { _, _ in }, draft: draft, sending: sending, sendError: nil,
       onSend: onSend)
     let host = NSHostingView(rootView: view)
     host.frame = NSRect(x: 0, y: 0, width: 600, height: 500)
@@ -404,6 +536,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       "schema": "codescribe.agent-reply.v1", "reply_id": replyID,
       "text": "Odpowiedź", "association": delivery == nil ? "unsolicited" : "addressed",
       "emitted_at": "2026-10-05T04:00:00Z",
+      "tts_vendor": "xai", "voice": "ara", "speed": 1.25,
     ]) { _, new in new }
     if let delivery { row["delivery_id"] = delivery }
     return row

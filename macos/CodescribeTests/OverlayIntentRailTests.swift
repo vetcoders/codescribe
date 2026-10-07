@@ -627,7 +627,7 @@ final class OverlayIntentRailTests: XCTestCase {
       + [
         OverlayControlSymbols.history, OverlayControlSymbols.previousTake,
         OverlayControlSymbols.actions, OverlayControlSymbols.placement,
-        OverlayControlSymbols.miniToMidi, OverlayControlSymbols.midiToTranscript,
+        OverlayControlSymbols.miniToTranscript, OverlayControlSymbols.midiToTranscript,
         OverlayControlSymbols.returnToMini, "pin.fill",
         "arrow.up.and.down.and.arrow.left.and.right",
       ] + OverlayAnchor.allCases.map(\.systemImage)
@@ -908,9 +908,8 @@ final class OverlayIntentRailTests: XCTestCase {
     expanded.togglePreview()
     XCTAssertEqual(routedIntents, [.finish])
     XCTAssertTrue(previewCollapsed)
-    XCTAssertEqual(expanded.previewAccessibilityLabel, "Hide live preview")
-    // Annex A1: chevrons, never an eye. Expanded offers ^ (fold).
-    XCTAssertEqual(expanded.previewSymbol, "chevron.left")
+    XCTAssertEqual(expanded.previewAccessibilityLabel, "Collapse widget")
+    XCTAssertEqual(expanded.previewSymbol, "arrow.up.right")
 
     let collapsed = OverlayRecordingControls(
       canFinish: true,
@@ -921,8 +920,8 @@ final class OverlayIntentRailTests: XCTestCase {
       onPreviewToggle: { previewCollapsed.toggle() }
     )
     XCTAssertTrue(collapsed.showsStop)
-    XCTAssertEqual(collapsed.previewAccessibilityLabel, "Show controls")
-    XCTAssertEqual(collapsed.previewSymbol, "chevron.right", "mini expands horizontally")
+    XCTAssertEqual(collapsed.previewAccessibilityLabel, "Expand widget")
+    XCTAssertEqual(collapsed.previewSymbol, "arrow.down.left", "click opens the full view")
 
     let unavailable = OverlayRecordingControls(
       canFinish: false,

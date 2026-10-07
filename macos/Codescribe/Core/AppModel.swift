@@ -223,7 +223,15 @@ final class OverlayController: ObservableObject {
       let freshReplyRequestsPanel =
         self.state.freshReplyPresentationRequested && self.readOverlayPreference()
       if self.state.hasOpenChannel || freshReplyRequestsPanel {
-        self.show()
+        if let panel = self.panel, panel.isVisible {
+          // Fresh channel evidence still cancels a handoff fade. Repainting an
+          // existing surface must not re-anchor its current pointer geometry.
+          panel.alphaValue = 1
+          self.orderPanelFront(panel)
+          self.resizeForProjectedContent()
+        } else {
+          self.show()
+        }
       } else {
         self.resizeForProjectedContent()
       }
@@ -250,6 +258,14 @@ final class OverlayController: ObservableObject {
 
   func prepareForRecordingStart() {
     state.prepareForExternalStart()
+  }
+
+  /// An explicit Tray entry uses the same cached panel and leaves capture,
+  /// transcript selection, drafts and recording preferences with their owners.
+  func showWidget() {
+    readOverlayPreference()
+    if panel?.isVisible != true { state.setPresentationMode(.mini) }
+    show()
   }
 
   /// Show the overlay for a dictation session, honouring the "Transcription
@@ -315,6 +331,17 @@ final class OverlayController: ObservableObject {
         self.automaticContentSizingEnabled = false
         self.state.userResizedOverlay()
       }
+      floating.onUserResizeEnded = { [weak self] in
+        guard let self else { return }
+        if self.placementAfterUserResize {
+          self.placementAfterUserResize = false
+          self.applyPlacement()
+        }
+        if self.contentSizeAfterUserResize {
+          self.contentSizeAfterUserResize = false
+          self.resizeForProjectedContent()
+        }
+      }
       floating.onFrameTransitionCompleted = { [weak self] in
         guard let self else { return }
         if self.placementAfterTransition {
@@ -323,6 +350,7 @@ final class OverlayController: ObservableObject {
         }
         self.resizeForProjectedContent()
       }
+      floating.setPresentationMode(state.presentationMode)
     }
     // A pending fade-out must not leave a freshly shown panel invisible.
     panel.alphaValue = 1
@@ -335,6 +363,8 @@ final class OverlayController: ObservableObject {
   /// for those writes; those must not count as a user drag.
   static var isApplyingFrame = false
   private var placementAfterTransition = false
+  private var placementAfterUserResize = false
+  private var contentSizeAfterUserResize = false
 
   /// Derive and apply the panel's frame from the placement prefs: free motion
   /// restores the last dragged origin, anchored derives from the anchor —
@@ -344,12 +374,17 @@ final class OverlayController: ObservableObject {
   /// all frame writes stay inside the programmatic-move guard.
   private func applyPlacement() {
     guard let panel else { return }
+    if (panel as? FloatingOverlayPanel)?.isUserResizing == true {
+      placementAfterUserResize = true
+      return
+    }
     guard (panel as? FloatingOverlayPanel)?.isFrameTransitioning != true else {
       placementAfterTransition = true
       return
     }
     Self.isApplyingFrame = true
     defer { Self.isApplyingFrame = false }
+    (panel as? FloatingOverlayPanel)?.resetPresentationPosition()
     let screen = NSScreen.main
     let clamped = DictationOverlayWindow.clamp(panel.frame.size, to: screen)
     let size: NSSize
@@ -385,6 +420,10 @@ final class OverlayController: ObservableObject {
   /// and unanimated; content keeps its existing reveal transition instead of
   /// morphing the glass panel or exporting hosting constraints.
   private func resizeForProjectedContent() {
+    if (panel as? FloatingOverlayPanel)?.isUserResizing == true {
+      contentSizeAfterUserResize = true
+      return
+    }
     guard automaticContentSizingEnabled, !state.isCollapsed,
       !state.isEditingTranscript, !state.isRevisionDraftDirty, let panel
     else { return }
@@ -475,6 +514,10 @@ final class OverlayController: ObservableObject {
   }
 
   private func orderOut() {
+    placementAfterTransition = false
+    placementAfterUserResize = false
+    contentSizeAfterUserResize = false
+    state.clearWidgetHover()
     // Persist the user's chosen size for next launch (replaces frame autosave,
     // which used to write back the old feedback loop's runaway sizes) — and,
     // in free motion, the dragged origin.

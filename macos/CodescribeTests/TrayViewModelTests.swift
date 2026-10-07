@@ -5,6 +5,22 @@ import XCTest
 
 @MainActor
 final class TrayViewModelTests: XCTestCase {
+  func testOpenWidgetIsNavigationWithoutStartingDictationOrChangingPreferences() {
+    let model = TrayViewModel(isRecording: true)
+    var intents: [TrayIntent] = []
+    var captureStarts = 0
+    var preferenceChanges = 0
+    model.onIntent = { intents.append($0) }
+    model.onDictationStartRequested = { captureStarts += 1 }
+    model.onOverlayPreferenceChanged = { preferenceChanges += 1 }
+    model.onOpenWidget()
+    XCTAssertEqual(intents.count, 1)
+    guard case .openWidget = intents[0] else { return XCTFail("wrong navigation intent") }
+    XCTAssertTrue(model.isRecording)
+    XCTAssertEqual(captureStarts, 0)
+    XCTAssertEqual(preferenceChanges, 0)
+  }
+
   func testHoldBadgeCyclePersistsAndUpdatesTrayState() {
     let engine = TrackingTrayEngine(
       showDockIcon: true,

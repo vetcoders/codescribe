@@ -1651,22 +1651,6 @@
         }
       }
     },
-    "Acknowledged" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Acknowledged"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Agent potwierdził odbiór"
-          }
-        }
-      }
-    },
     "Acoustic coverage was measured as complete, but this transcript has no current terminal seal." : {
       "localizations" : {
         "pl" : {
@@ -3698,6 +3682,16 @@
         }
       }
     },
+    "Collapse widget" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zwiń widget"
+          }
+        }
+      }
+    },
     "Collapsed" : {
       "comment" : "Accessibility value: a disclosure row is closed",
       "localizations" : {
@@ -3893,16 +3887,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Połącz dostawcę AI"
-          }
-        }
-      }
-    },
-    "Connect microphone" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Podłącz mikrofon"
           }
         }
       }
@@ -4342,6 +4326,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się zastosować „%1$@”: %2$@"
+          }
+        }
+      }
+    },
+    "Couldn't archive agent. The channel and conversation are retained." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't archive agent. The channel and conversation are retained."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się przenieść agenta do archiwum. Kanał i rozmowa zostały zachowane."
           }
         }
       }
@@ -5114,16 +5114,6 @@
         }
       }
     },
-    "Disconnect microphone" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Odłącz mikrofon"
-          }
-        }
-      }
-    },
     "Disconnected" : {
       "localizations" : {
         "pl" : {
@@ -5539,6 +5529,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozwiń pasek boczny (⌃⌘S)"
+          }
+        }
+      }
+    },
+    "Expand widget" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozwiń widget"
           }
         }
       }
@@ -6174,16 +6174,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ukryj pełną transkrypcję"
-          }
-        }
-      }
-    },
-    "Hide live preview" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ukryj podgląd na żywo"
           }
         }
       }
@@ -8485,6 +8475,16 @@
         }
       }
     },
+    "Open widget" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz widget"
+          }
+        }
+      }
+    },
     "OpenAI API key" : {
       "comment" : "OpenAI is a company name",
       "localizations" : {
@@ -9442,6 +9442,22 @@
         }
       }
     },
+    "Read" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przeczytano"
+          }
+        }
+      }
+    },
     "Ready" : {
       "comment" : "Menu bar tooltip: ready to record",
       "localizations" : {
@@ -9889,6 +9905,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Usuń własnego dostawcę: %@"
+          }
+        }
+      }
+    },
+    "Remove from list and move to archive" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove from list and move to archive"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usuń z listy i przenieś do archiwum"
           }
         }
       }
@@ -11274,16 +11306,6 @@
         }
       }
     },
-    "Show controls" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż przyciski"
-          }
-        }
-      }
-    },
     "Show earlier messages" : {
       "localizations" : {
         "pl" : {
@@ -11374,16 +11396,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż w Finderze"
-          }
-        }
-      }
-    },
-    "Show live preview" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż podgląd na żywo"
           }
         }
       }
@@ -11679,6 +11691,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odczytaj tę odpowiedź głosem wygenerowanym przez AI."
+          }
+        }
+      }
+    },
+    "Speak to agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mów do agenta"
           }
         }
       }
@@ -12171,6 +12193,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zatrzymaj odczytywanie"
+          }
+        }
+      }
+    },
+    "Stop speaking to agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zakończ dyktowanie do agenta"
           }
         }
       }

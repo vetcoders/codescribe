@@ -109,9 +109,9 @@ enum OverlayControlSymbols {
   static let actions = "ellipsis"
   static let closeActions = "xmark"
   static let placement = "location.viewfinder"
-  static let miniToMidi = "chevron.right"
+  static let miniToTranscript = "arrow.down.left"
   static let midiToTranscript = "chevron.down"
-  static let returnToMini = "chevron.left"
+  static let returnToMini = "arrow.up.right"
 }
 
 enum OverlayDockVisuals {
