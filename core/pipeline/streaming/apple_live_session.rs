@@ -24417,6 +24417,21 @@ mod relay_l1_overlap_admission_tests {
         }
     }
 
+    /// A synthetic returned frame clears debt only when admission does.
+    pub(super) fn admit_completed_window_recovery(
+        state: &mut AppleSealState,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        occurrence: &OccurrenceIdentity,
+        payload: &TailProviderPayload,
+    ) -> bool {
+        state.admit_completed_window(ev_tx, payload, true);
+        !state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .text_recovery_pending(occurrence)
+    }
+
     pub(super) fn first_whisper_measured_capture(
         adaptive: bool,
         decoded: bool,
@@ -24424,24 +24439,18 @@ mod relay_l1_overlap_admission_tests {
     ) {
         let session = "forensic-first-whisper";
         let mut lane = open(session);
-        if adaptive {
-            lane.state.layer1_coalesce = Layer1Coalesce::adaptive();
-        }
         let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
         let speech_end = if voiced_fence { 48_000 } else { 16_000 };
-        let mut input = piece(1, &owner, "");
-        input.audio.fill(0.0);
-        input.audio[6_000..speech_end as usize].fill(0.2);
+        let mut pcm = vec![0.0_f32; 48_000];
+        pcm[6_000..speech_end as usize].fill(0.2);
         record_energy(
             &lane,
-            &input
-                .audio
-                .chunks(1_000)
+            &pcm.chunks(1_000)
                 .map(<[f32]>::to_vec)
                 .collect::<Vec<_>>(),
         );
         record_silero(&mut lane, 48_000, Some((6_000, speech_end)));
-        lane.state.audio.push(&input.audio);
+        lane.state.audio.push(&pcm);
         lane.state.energy_calibration = Some(EnergyCalibration {
             version: "forensic-first-whisper-measured".into(),
             min_energy_integral: 1.0,
@@ -24462,8 +24471,8 @@ mod relay_l1_overlap_admission_tests {
             assert!(ledger.slots_of(&owner).is_none());
             assert!(ledger.text_recovery_pending(&owner));
         }
-        let pcm = input.audio.clone();
-        lane.state.flush_layer1_coalesce(&lane.tx);
+        lane.state.capture_stopping = true;
+        lane.state.pump_capture_windows(&lane.tx);
         let mut requests = take_requests(&mut lane.tail_rx);
         assert_eq!(requests.len(), 1);
         let request = requests.pop().unwrap();
@@ -24599,23 +24608,18 @@ mod relay_l1_overlap_admission_tests {
     ) {
         let session = &mode.session("forensic-terminal-frontier");
         let mut lane = open(session);
-        if mode == BufferMode::Adaptive {
-            lane.state.layer1_coalesce = Layer1Coalesce::adaptive();
-        }
         let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
         let speech_end = if voiced_fence { 48_000 } else { 16_000 };
-        let mut input = piece(1, &owner, "hipoteza");
-        input.audio.fill(0.0);
-        input.audio[6_000..speech_end as usize].fill(0.2);
+        let mut pcm = vec![0.0_f32; 48_000];
+        pcm[6_000..speech_end as usize].fill(0.2);
         record_energy(
             &lane,
-            &input
-                .audio
-                .chunks(1_000)
+            &pcm.chunks(1_000)
                 .map(<[f32]>::to_vec)
                 .collect::<Vec<_>>(),
         );
         record_silero(&mut lane, 48_000, Some((6_000, speech_end)));
+        lane.state.audio.push(&pcm);
         stage(&mut lane, 1, owner.clone(), "hipoteza");
         assert!(
             lane.state
@@ -24624,9 +24628,8 @@ mod relay_l1_overlap_admission_tests {
                 .unwrap()
                 .require_text_recovery(&owner)
         );
-        let pcm = input.audio.clone();
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
-        lane.state.flush_layer1_coalesce(&lane.tx);
+        lane.state.capture_stopping = true;
+        lane.state.pump_capture_windows(&lane.tx);
         let mut requests = take_requests(&mut lane.tail_rx);
         assert_eq!(requests.len(), 1);
         let request = requests.pop().unwrap();
@@ -24737,8 +24740,17 @@ mod relay_l1_overlap_admission_tests {
                     .grants_mutation()
             );
         }
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, piece(2, &b, "")));
+        lane.state.audio.push(&vec![0.2_f32; 200_000]);
+        lane.state.pump_capture_windows(&lane.tx);
         let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(
+            (
+                requests[0].provider_request.identity.range.sample_start,
+                requests[0].provider_request.identity.range.sample_end,
+            ),
+            (0, 144_000),
+            "the seam pin is inside the first full capture window"
+        );
         lane.state.complete_whisper_window(
             &lane.tx,
             completion(
@@ -24762,12 +24774,8 @@ mod relay_l1_overlap_admission_tests {
         use crate::pipeline::acoustic_ledger::WordPin;
         let session = "physical-coarse-to-four";
         let mut lane = open(session);
-        if mode == BufferMode::Adaptive {
-            lane.state.layer1_coalesce = Layer1Coalesce::adaptive();
-        }
         let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
-        let mut input = piece(1, &owner, "");
-        input.audio.fill(0.0);
+        let mut pcm = vec![0.0_f32; 200_000];
         let mut speech = vec![
             (13_000, 19_000),
             (23_000, 29_000),
@@ -24780,13 +24788,11 @@ mod relay_l1_overlap_admission_tests {
         }
         speech.sort_unstable();
         for &(start, end) in &speech {
-            input.audio[start as usize..end as usize].fill(0.2);
+            pcm[start as usize..end as usize].fill(0.2);
         }
         record_energy(
             &lane,
-            &input
-                .audio
-                .chunks(1_000)
+            &pcm.chunks(1_000)
                 .map(<[f32]>::to_vec)
                 .collect::<Vec<_>>(),
         );
@@ -24823,12 +24829,22 @@ mod relay_l1_overlap_admission_tests {
             let slots = ledger.slots_of(&owner).unwrap();
             (slots[0].clone(), slots[1].clone())
         };
-        let pcm = input.audio.clone();
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        lane.state.audio.push(&pcm);
+        lane.state.pump_capture_windows(&lane.tx);
         let requests = take_requests(&mut lane.tail_rx);
         assert!(
             requests.len() > 1,
-            "the unrelated later span must remain undecoded"
+            "{mode:?}: the unrelated later span must remain undecoded"
+        );
+        assert_eq!(
+            (
+                requests[0].provider_request.identity.range.sample_start,
+                requests[0].provider_request.identity.range.sample_end,
+                requests[0].admit_sample_start,
+                requests[0].admit_sample_end,
+            ),
+            (0, 144_000, 0, 144_000),
+            "{mode:?}"
         );
         for request in &requests {
             let range = &request.provider_request.identity.range;
@@ -24952,8 +24968,7 @@ mod relay_l1_overlap_admission_tests {
         let session = "forensic-physical-three-to-two";
         let mut lane = open(session);
         let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
-        let mut input = piece(1, &owner, "");
-        input.audio.fill(0.0);
+        let mut pcm = vec![0.0_f32; 200_000];
         let speech = [
             (12_000, 24_000),
             (27_000, 33_000),
@@ -24961,13 +24976,11 @@ mod relay_l1_overlap_admission_tests {
             (72_000, 78_000),
         ];
         for &(start, end) in &speech {
-            input.audio[start as usize..end as usize].fill(0.2);
+            pcm[start as usize..end as usize].fill(0.2);
         }
         record_energy(
             &lane,
-            &input
-                .audio
-                .chunks(1_000)
+            &pcm.chunks(1_000)
                 .map(<[f32]>::to_vec)
                 .collect::<Vec<_>>(),
         );
@@ -25006,9 +25019,16 @@ mod relay_l1_overlap_admission_tests {
             assert!(receipt.grants_mutation(), "{receipt:?}");
             ledger.slots_of(&owner).unwrap()[..3].to_vec()
         };
-        let pcm = input.audio.clone();
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        lane.state.audio.push(&pcm);
+        lane.state.pump_capture_windows(&lane.tx);
         let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(
+            (
+                requests[0].provider_request.identity.range.sample_start,
+                requests[0].provider_request.identity.range.sample_end,
+            ),
+            (0, 144_000)
+        );
         assert!(!requests.is_empty());
         for request in &requests {
             let range = &request.provider_request.identity.range;
@@ -25430,28 +25450,35 @@ mod relay_l1_overlap_admission_tests {
             .collect()
     }
 
-    // Both buffers launch requests whose decode start and admission range reach
-    // the completion path, and whose admission ranges partition the occurrence.
+    // Both modes name one session. The capture clock is one 9s window / 3s stride.
     #[test]
     fn buffer_modes_launch_requests_whose_admission_partitions_the_occurrence() {
-        let overlap = (Layer1Coalesce::OVERLAP_SECS * RATE as f32) as u64;
+        let total = 200_000;
+        let windows = [(0, 144_000), (48_000, 192_000), (96_000, total)];
         for mode in BufferMode::BOTH {
             let session = &mode.session("buffer-geometry");
-            let (lane, owner, requests) = forensic_lane_in(mode, session, &[]);
+            let mut lane = open(session);
+            let owner = OccurrenceIdentity::new(session, 1, 0, total);
+            let pcm = vec![0.2_f32; total as usize];
+            lane.state.audio.push(&pcm);
+            lane.state.capture_stopping = true;
+            lane.state.pump_capture_windows(&lane.tx);
+            let requests = take_requests(&mut lane.tail_rx);
             let geometry = request_geometry(&requests);
-            let ceiling = match mode {
-                BufferMode::Windows => 64_000,
-                BufferMode::Adaptive => 128_000,
-            };
-            let longest = geometry
-                .iter()
-                .map(|(start, end, _, _)| end - start)
-                .max()
-                .unwrap_or(0);
-            assert!(requests.len() >= 2, "{mode:?}: {geometry:?}");
-            assert!(longest <= ceiling, "{mode:?}: {geometry:?}");
-            if mode == BufferMode::Adaptive {
-                assert!(longest > 64_000, "adaptive buffer engaged: {geometry:?}");
+            assert_eq!(requests.len(), windows.len(), "{mode:?}: {geometry:?}");
+            for (request, expected) in requests.iter().zip(windows) {
+                let frame = &request.provider_request.identity.range;
+                assert_eq!((frame.sample_start, frame.sample_end), expected, "{mode:?}");
+                assert_eq!(
+                    (request.admit_sample_start, request.admit_sample_end),
+                    expected,
+                    "{mode:?}"
+                );
+                assert_eq!(
+                    request.audio,
+                    pcm[frame.sample_start as usize..frame.sample_end as usize],
+                    "{mode:?}"
+                );
             }
             assert_eq!(geometry[0].2, owner.sample_start, "{mode:?}: {geometry:?}");
             assert_eq!(
@@ -25466,16 +25493,12 @@ mod relay_l1_overlap_admission_tests {
                 );
             }
             for pair in geometry.windows(2) {
-                let (_, previous_end, _, previous_admit_end) = pair[0];
-                let (next_start, _, next_admit_start, _) = pair[1];
-                assert_eq!(
-                    previous_admit_end, next_admit_start,
-                    "{mode:?}: admission ranges are contiguous: {geometry:?}"
-                );
+                let (_, previous_end, _, _) = pair[0];
+                let (next_start, _, _, _) = pair[1];
                 assert_eq!(
                     previous_end - next_start,
-                    overlap,
-                    "{mode:?}: consecutive decodes share one second: {geometry:?}"
+                    96_000,
+                    "{mode:?}: consecutive capture windows share six seconds: {geometry:?}"
                 );
             }
             for request in &requests {
@@ -25550,20 +25573,20 @@ mod relay_l1_overlap_admission_tests {
         }
     }
 
-    fn long_word_windows(session: &str) -> [Vec<TimedTailSegment>; 3] {
+    fn long_word_windows(session: &str) -> [Vec<TimedTailSegment>; 2] {
         [
             vec![
-                word_pin(session, "raz", 8_000, 47_000),
-                word_pin(session, "krawedz", 47_000, 52_000),
-                word_pin(session, "echo", 52_000, 64_000),
+                word_pin(session, "raz", 50_000, 61_000),
+                word_pin(session, "krawedz", 60_000, 66_000),
+                word_pin(session, "echo", 66_000, 78_000),
             ],
             vec![
-                word_pin(session, "raz", 8_000, 47_000),
-                word_pin(session, "krawedz", 47_000, 52_000),
-                word_pin(session, "dwa", 52_000, 64_000),
-                word_pin(session, "trzy", 70_000, 88_000),
+                word_pin(session, "raz", 50_000, 61_000),
+                word_pin(session, "krawedz", 60_000, 66_000),
+                word_pin(session, "dwa", 66_000, 78_000),
+                word_pin(session, "trzy", 80_000, 98_000),
+                word_pin(session, "cztery", 100_000, 140_000),
             ],
-            vec![word_pin(session, "cztery", 100_000, 140_000)],
         ]
     }
 
@@ -26241,20 +26264,14 @@ mod relay_l1_overlap_admission_tests {
         let decoded = true;
         let voiced_fence = true;
         let mut lane = open(session);
-        if mode == BufferMode::Adaptive {
-            lane.state.layer1_coalesce = Layer1Coalesce::adaptive();
-        }
         let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
         let speech_end = 16_000;
-        let mut input = piece(1, &owner, "hipoteza");
-        input.audio.fill(0.0);
-        input.audio[6_000..speech_end as usize].fill(0.2);
-        input.audio[invalid_position] = f32::NAN;
+        let mut pcm = vec![0.0_f32; 48_000];
+        pcm[6_000..speech_end as usize].fill(0.2);
+        pcm[invalid_position] = f32::NAN;
         record_energy(
             &lane,
-            &input
-                .audio
-                .chunks(1_000)
+            &pcm.chunks(1_000)
                 .map(<[f32]>::to_vec)
                 .collect::<Vec<_>>(),
         );
@@ -26267,11 +26284,10 @@ mod relay_l1_overlap_admission_tests {
                 .unwrap()
                 .require_text_recovery(&owner)
         );
-        let pcm = input.audio.clone();
         lane.state.audio.push(&pcm);
         assert_eq!(lane.state.audio.session_sample_end(), pcm.len() as u64);
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
-        lane.state.flush_layer1_coalesce(&lane.tx);
+        lane.state.capture_stopping = true;
+        lane.state.pump_capture_windows(&lane.tx);
         let mut requests = take_requests(&mut lane.tail_rx);
         assert_eq!(requests.len(), 1);
         let request = requests.pop().unwrap();
@@ -26382,12 +26398,23 @@ mod relay_l1_overlap_admission_tests {
         record_silero(&mut lane, LONG_SAMPLES, Some((44_000, 51_000)));
         let owner = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
         qualify_unlabelled(&mut lane, &owner);
-        let mut captured_piece = piece(1, &owner, "");
-        captured_piece.audio = pcm.clone();
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, captured_piece));
+        lane.state.capture_stopping = true;
+        lane.state.pump_capture_windows(&lane.tx);
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| (
+                    request.provider_request.identity.range.sample_start,
+                    request.provider_request.identity.range.sample_end,
+                    request.admit_sample_start,
+                    request.admit_sample_end,
+                ))
+                .collect::<Vec<_>>(),
+            vec![(0, 144_000, 0, 144_000), (48_000, LONG_SAMPLES, 48_000, LONG_SAMPLES)]
+        );
         for request in &requests {
             let frame = &request.provider_request.identity.range;
             assert_eq!(
@@ -26438,12 +26465,23 @@ mod relay_l1_overlap_admission_tests {
         record_silero(&mut lane, LONG_SAMPLES, Some((0, LONG_SAMPLES)));
         let owner = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
         qualify_unlabelled(&mut lane, &owner);
-        let mut captured_piece = piece(1, &owner, "");
-        captured_piece.audio = pcm.clone();
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, captured_piece));
+        lane.state.capture_stopping = true;
+        lane.state.pump_capture_windows(&lane.tx);
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| (
+                    request.provider_request.identity.range.sample_start,
+                    request.provider_request.identity.range.sample_end,
+                    request.admit_sample_start,
+                    request.admit_sample_end,
+                ))
+                .collect::<Vec<_>>(),
+            vec![(0, 144_000, 0, 144_000), (48_000, LONG_SAMPLES, 48_000, LONG_SAMPLES)]
+        );
         for request in &requests {
             let frame = &request.provider_request.identity.range;
             assert_eq!(
@@ -26486,21 +26524,32 @@ mod relay_l1_overlap_admission_tests {
         let mut lane = open(session);
         // Only the represented word is voiced; the capture proves the rest silent.
         let mut pcm = vec![0.0_f32; LONG_SAMPLES as usize];
-        pcm[44_000..51_000].fill(0.2);
+        pcm[60_000..80_000].fill(0.2);
         lane.state.audio.push(&pcm);
         record_energy(
             &lane,
             &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
         );
-        record_silero(&mut lane, LONG_SAMPLES, Some((44_000, 51_000)));
+        record_silero(&mut lane, LONG_SAMPLES, Some((60_000, 80_000)));
         let owner = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
         qualify_unlabelled(&mut lane, &owner);
-        let mut captured_piece = piece(1, &owner, "");
-        captured_piece.audio = pcm.clone();
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, captured_piece));
+        lane.state.capture_stopping = true;
+        lane.state.pump_capture_windows(&lane.tx);
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| (
+                    request.provider_request.identity.range.sample_start,
+                    request.provider_request.identity.range.sample_end,
+                    request.admit_sample_start,
+                    request.admit_sample_end,
+                ))
+                .collect::<Vec<_>>(),
+            vec![(0, 144_000, 0, 144_000), (48_000, LONG_SAMPLES, 48_000, LONG_SAMPLES)]
+        );
         for request in &requests {
             let frame = &request.provider_request.identity.range;
             assert_eq!(
@@ -26516,7 +26565,7 @@ mod relay_l1_overlap_admission_tests {
             &lane.tx,
             completion(
                 &requests[0],
-                vec![word_pin(session, "szew", 44_000, 51_000)],
+                vec![word_pin(session, "szew", 60_000, 80_000)],
             ),
             9.5,
         );
@@ -26529,10 +26578,10 @@ mod relay_l1_overlap_admission_tests {
         // These are actual successful completions, not cancellation receipts.
         for request in requests.iter().skip(1) {
             let frame = &request.provider_request.identity.range;
-            assert!(frame.sample_start <= 44_000 && frame.sample_end >= 51_000);
+            assert!(frame.sample_start <= 60_000 && frame.sample_end >= 80_000);
             lane.state.complete_whisper_window(
                 &lane.tx,
-                completion(request, vec![word_pin(session, "szew", 44_000, 51_000)]),
+                completion(request, vec![word_pin(session, "szew", 60_000, 80_000)]),
                 9.5,
             );
         }
@@ -26648,12 +26697,8 @@ mod relay_l1_overlap_admission_tests {
                 segments: Vec::new(),
             },
         );
-        let mut input = piece(1, &occurrence, "tak pozza");
-        // The coalescer admits the owner, not its leading context. The
-        // existing context extension reads that prefix from retained PCM.
-        input.audio = pcm[occurrence.sample_start as usize..].to_vec();
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
         close_lexicon(&mut lane, 1, &occurrence, "tak pozza");
+        lane.state.pump_capture_windows(&lane.tx);
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
         assert_eq!(requests.len(), 2);
@@ -26671,12 +26716,10 @@ mod relay_l1_overlap_admission_tests {
         assert!(requests[0].provider_request.identity.range.sample_start <= 96_000);
 
         let windows = [
-            vec![
-                word_pin(session, "tak", 96_000, 126_720),
-                word_pin(session, "poza", 132_000, 152_000),
-            ],
+            vec![word_pin(session, "tak", 96_000, 126_720)],
             vec![
                 word_pin(session, "tak", 98_624, 135_104),
+                word_pin(session, "poza", 132_000, 152_000),
                 word_pin(session, "tym", 160_000, 174_000),
                 word_pin(session, "to", 174_000, 188_000),
             ],
@@ -26732,11 +26775,8 @@ mod relay_l1_overlap_admission_tests {
                 &pcm.chunks(1_000).map(<[f32]>::to_vec).collect::<Vec<_>>(),
             );
             stage(&mut lane, 1, occurrence.clone(), "apple floor");
-            let mut input = piece(1, &occurrence, "apple floor");
-            input.audio =
-                pcm[occurrence.sample_start as usize..occurrence.sample_end as usize].to_vec();
-            assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
             close_lexicon(&mut lane, 1, &occurrence, "apple floor");
+            lane.state.pump_capture_windows(&lane.tx);
             let sources_before = lane
                 .state
                 .acoustic_ledger
@@ -26760,11 +26800,17 @@ mod relay_l1_overlap_admission_tests {
                 );
             }
             assert!(requests[0].provider_request.identity.range.sample_start <= 96_000);
-            assert!(requests[0].provider_request.identity.range.sample_end >= 152_000);
+            let covering = requests
+                .iter()
+                .find(|request| {
+                    let range = &request.provider_request.identity.range;
+                    range.sample_start <= 96_000 && range.sample_end >= 152_000
+                })
+                .expect("a capture window covers tak and poza");
             lane.state.complete_whisper_window(
                 &lane.tx,
                 completion(
-                    &requests[0],
+                    covering,
                     vec![
                         word_pin(session, "tak", 96_000, 127_000),
                         word_pin(session, "poza", 132_000, 152_000),
@@ -26784,7 +26830,7 @@ mod relay_l1_overlap_admission_tests {
                 // a partial decode must carry the same source as explicit debt.
                 assert_eq!(ledger.text_of(&occurrence), Some("tak poza"), "{warnings}");
                 assert!(ledger.group_speech_coverages().is_empty());
-                let range = &requests[0].provider_request.identity.range;
+                let range = &covering.provider_request.identity.range;
                 let full_source_decoded = range.sample_start <= occurrence.sample_start
                     && range.sample_end >= occurrence.sample_end;
                 eprintln!(
@@ -27010,9 +27056,10 @@ mod relay_l1_overlap_admission_tests {
         let mut lane = open(session);
         let mut pcm = vec![0.0_f32; LONG_SAMPLES as usize];
         for (start, end) in [
-            (8_000, 48_000),
-            (52_000, 64_000),
-            (70_000, 88_000),
+            (50_000, 61_000),
+            (60_000, 66_000),
+            (66_000, 78_000),
+            (80_000, 98_000),
             (100_000, 140_000),
         ] {
             pcm[start..end].fill(0.2);
@@ -27024,20 +27071,18 @@ mod relay_l1_overlap_admission_tests {
         );
         let occurrence = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
         qualify_unlabelled(&mut lane, &occurrence);
-        let mut captured_piece = piece(1, &occurrence, "");
-        captured_piece.audio = pcm.clone();
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, captured_piece));
+        lane.state.capture_stopping = true;
+        lane.state.pump_capture_windows(&lane.tx);
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
-        assert_eq!(requests.len(), 3);
-        let decoder = [(0, 64_000), (0, 112_000), (24_000, LONG_SAMPLES)];
-        let owned = [(0, 48_000), (48_000, 96_000), (96_000, LONG_SAMPLES)];
+        assert_eq!(requests.len(), 2);
+        let windows = [(0, 144_000), (48_000, LONG_SAMPLES)];
         for (index, request) in requests.iter().enumerate() {
             let frame = &request.provider_request.identity.range;
-            assert_eq!((frame.sample_start, frame.sample_end), decoder[index]);
+            assert_eq!((frame.sample_start, frame.sample_end), windows[index]);
             assert_eq!(
                 (request.admit_sample_start, request.admit_sample_end),
-                owned[index]
+                windows[index]
             );
             assert_eq!(
                 request.audio,
@@ -27067,7 +27112,7 @@ mod relay_l1_overlap_admission_tests {
             "the first window's copy belongs to the second window\n{warnings}"
         );
         assert!(
-            warnings.contains("segment 47000..52000")
+            warnings.contains("segment 60000..66000")
                 && warnings.contains(&format!(
                     "occurrence [{}..{}]",
                     occurrence.sample_start, occurrence.sample_end
@@ -27080,7 +27125,7 @@ mod relay_l1_overlap_admission_tests {
                 lane.state.tail_patch_jobs_applied,
                 lane.state.tail_patch_jobs_skipped
             ),
-            (3, 0),
+            (2, 0),
             "each completing window admits words; held={:?}\n{warnings}",
             held_text(&lane, &occurrence)
         );
@@ -27109,9 +27154,10 @@ mod relay_l1_overlap_admission_tests {
         let mut lane = open(session);
         let mut pcm = vec![0.0_f32; LONG_SAMPLES as usize];
         for (start, end) in [
-            (8_000, 48_000),
-            (52_000, 64_000),
-            (70_000, 88_000),
+            (50_000, 61_000),
+            (60_000, 66_000),
+            (66_000, 78_000),
+            (80_000, 98_000),
             (100_000, 140_000),
         ] {
             pcm[start..end].fill(0.2);
@@ -27123,21 +27169,19 @@ mod relay_l1_overlap_admission_tests {
         );
         let occurrence = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
         stage(&mut lane, 1, occurrence.clone(), "ras echo");
-        let mut captured_piece = piece(1, &occurrence, "ras echo");
-        captured_piece.audio = pcm.clone();
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, captured_piece));
+        lane.state.capture_stopping = true;
+        lane.state.pump_capture_windows(&lane.tx);
         close_lexicon(&mut lane, 1, &occurrence, "ras echo");
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
-        assert_eq!(requests.len(), 3);
-        let decoder = [(0, 64_000), (0, 112_000), (24_000, LONG_SAMPLES)];
-        let owned = [(0, 48_000), (48_000, 96_000), (96_000, LONG_SAMPLES)];
+        assert_eq!(requests.len(), 2);
+        let windows = [(0, 144_000), (48_000, LONG_SAMPLES)];
         for (index, request) in requests.iter().enumerate() {
             let frame = &request.provider_request.identity.range;
-            assert_eq!((frame.sample_start, frame.sample_end), decoder[index]);
+            assert_eq!((frame.sample_start, frame.sample_end), windows[index]);
             assert_eq!(
                 (request.admit_sample_start, request.admit_sample_end),
-                owned[index]
+                windows[index]
             );
             assert_eq!(
                 request.audio,
@@ -27172,7 +27216,7 @@ mod relay_l1_overlap_admission_tests {
                 lane.state.tail_patch_jobs_applied,
                 lane.state.tail_patch_jobs_skipped
             ),
-            (3, 0),
+            (2, 0),
             "held={:?}\n{warnings}",
             held_text(&lane, &occurrence)
         );
@@ -27191,9 +27235,10 @@ mod relay_l1_overlap_admission_tests {
         let mut lane = open(session);
         let mut pcm = vec![0.0_f32; LONG_SAMPLES as usize];
         for (start, end) in [
-            (8_000, 48_000),
-            (52_000, 64_000),
-            (70_000, 88_000),
+            (50_000, 61_000),
+            (60_000, 66_000),
+            (66_000, 78_000),
+            (80_000, 98_000),
             (100_000, 140_000),
         ] {
             pcm[start..end].fill(0.2);
@@ -27205,21 +27250,19 @@ mod relay_l1_overlap_admission_tests {
         );
         let occurrence = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
         stage(&mut lane, 1, occurrence.clone(), "ras echo");
-        let mut captured_piece = piece(1, &occurrence, "ras echo");
-        captured_piece.audio = pcm.clone();
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, captured_piece));
+        lane.state.capture_stopping = true;
+        lane.state.pump_capture_windows(&lane.tx);
         close_lexicon(&mut lane, 1, &occurrence, "ras echo");
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
-        assert_eq!(requests.len(), 3);
-        let decoder = [(0, 64_000), (0, 112_000), (24_000, LONG_SAMPLES)];
-        let owned = [(0, 48_000), (48_000, 96_000), (96_000, LONG_SAMPLES)];
+        assert_eq!(requests.len(), 2);
+        let windows = [(0, 144_000), (48_000, LONG_SAMPLES)];
         for (index, request) in requests.iter().enumerate() {
             let frame = &request.provider_request.identity.range;
-            assert_eq!((frame.sample_start, frame.sample_end), decoder[index]);
+            assert_eq!((frame.sample_start, frame.sample_end), windows[index]);
             assert_eq!(
                 (request.admit_sample_start, request.admit_sample_end),
-                owned[index]
+                windows[index]
             );
             assert_eq!(
                 request.audio,
@@ -27241,8 +27284,8 @@ mod relay_l1_overlap_admission_tests {
         let mut windows = long_word_windows(session);
         // Keep the original ambiguous observation as a negative case even
         // when the positive fixture uses disjoint child-word ranges.
-        windows[0][0].range.sample_end = 48_000;
-        windows[1][0].range.sample_end = 48_000;
+        windows[0][0].range.sample_end = 61_000;
+        windows[1][0].range.sample_end = 61_000;
         assert_eq!(
             windows[0][0].range.sample_end - windows[0][1].range.sample_start,
             1_000
@@ -27355,8 +27398,12 @@ mod relay_l1_overlap_admission_tests {
             payload.validate().is_ok(),
             "fixture has an authenticated decode clock"
         );
-        let cleared =
-            admit_debt_occurrence_recovery(&mut lane.state, &lane.tx, &occurrence, &payload);
+        let cleared = admit_completed_window_recovery(
+            &mut lane.state,
+            &lane.tx,
+            &occurrence,
+            &payload,
+        );
         let events = drain(&mut lane.rx);
         let warnings = warning_lines(&events);
         assert!(
@@ -27438,8 +27485,12 @@ mod relay_l1_overlap_admission_tests {
             &occurrence,
             vec![word_pin(&occurrence.session, "whisper inny", 4_000, 12_000)],
         );
-        let recovered =
-            admit_debt_occurrence_recovery(&mut lane.state, &lane.tx, &occurrence, &payload);
+        let recovered = admit_completed_window_recovery(
+            &mut lane.state,
+            &lane.tx,
+            &occurrence,
+            &payload,
+        );
         // Drain before asserting so an unexpected result reports the actual events.
         let events = drain(&mut lane.rx);
         assert!(!recovered, "higher-rank slot must retain debt: {events:#?}");
@@ -27594,14 +27645,8 @@ mod relay_l1_overlap_admission_tests {
                     word_pin(&session, "inny", 8_000, 12_000),
                 ],
             );
-            let payload = result.payload.unwrap();
-            payload.validate().unwrap();
-            assert!(!admit_debt_occurrence_recovery(
-                &mut lane.state,
-                &lane.tx,
-                &owner,
-                &payload
-            ));
+            lane.state
+                .complete_whisper_window(&lane.tx, result, 9.0);
             let events = drain(&mut lane.rx);
             assert_eq!(mutation_count(&events), 0);
             let ledger = lane.state.acoustic_ledger.lock().unwrap();
@@ -27661,8 +27706,7 @@ mod tc2_window_contract_tests {
                 min_valley_samples: 1,
             }),
         );
-        state.whisper_context_window_sec = 8.0;
-        state.audio.push(&vec![0.2; 743_424]);
+        state.audio.push(&vec![0.2; 719_000]);
         let mut physical = UtteranceLedger::new();
         physical.open_or_extend(SESSION, 1, 227_328, 510_464);
         physical.close_open(510_464);
@@ -27678,6 +27722,7 @@ mod tc2_window_contract_tests {
                 vec![LedgerObservationProducer::Whisper]
             );
         }
+        state.pump_capture_windows(&events);
         Fixture {
             state,
             physical,
@@ -27811,7 +27856,6 @@ mod tc2_window_contract_tests {
         }
         assert!(f.state.refinement_submitted.is_empty());
         assert!(f.state.refinement_pending.is_empty());
-        assert!(f.state.layer1_coalesce.is_empty());
         assert_words(&f, "alpha");
         f.physical.open_or_extend(SESSION, 1, 508_416, 743_424);
         f.physical.close_open(743_424);
@@ -27821,15 +27865,24 @@ mod tc2_window_contract_tests {
             &f.physical,
             &[],
         ));
+        let head = f.state.audio.session_sample_end();
+        f.state.audio.push(&vec![0.2; 720_000 - head as usize]);
+        f.state.pump_capture_windows(&f.events);
         let next = f.requests.try_recv().unwrap();
-        assert_eq!(next.provider_request.identity.range.sample_start, 268_416);
-        assert_eq!(next.provider_request.identity.range.sample_end, 700_416);
-        assert_eq!(
-            next.member_occurrences,
-            vec![(2, OccurrenceIdentity::new(SESSION, 1, 508_416, 743_424))]
+        assert_eq!(next.provider_request.identity.range.sample_start, 288_000);
+        assert_eq!(next.provider_request.identity.range.sample_end, 720_000);
+        let newer = OccurrenceIdentity::new(SESSION, 1, 508_416, 743_424);
+        let mut members = next
+            .member_occurrences
+            .iter()
+            .map(|(_, owner)| owner.clone())
+            .collect::<Vec<_>>();
+        members.sort_by_key(|owner| owner.sample_start);
+        assert_eq!(members, vec![f.occurrence.clone(), newer]);
+        assert!(
+            next.provider_request.identity.range.sample_end < newer.sample_end,
+            "the capture clock must not widen the window out to the new owner"
         );
-        let last = f.requests.try_recv().unwrap();
-        assert_eq!(last.member_occurrences, next.member_occurrences);
         assert!(f.requests.try_recv().is_err());
         let ledger = f.state.acoustic_ledger.lock().unwrap();
         assert_eq!(ledger.qualified_occurrences().count(), 2);
@@ -27847,9 +27900,9 @@ mod tc2_window_contract_tests {
         let second = f.requests.try_recv().unwrap();
         assert!(f.requests.try_recv().is_err());
         assert_eq!(first.provider_request.identity.range.sample_start, 0);
-        assert_eq!(first.provider_request.identity.range.sample_end, 419_328);
-        assert_eq!(second.provider_request.identity.range.sample_start, 126_464);
-        assert_eq!(second.provider_request.identity.range.sample_end, 510_464);
+        assert_eq!(first.provider_request.identity.range.sample_end, 432_000);
+        assert_eq!(second.provider_request.identity.range.sample_start, 144_000);
+        assert_eq!(second.provider_request.identity.range.sample_end, 576_000);
         f.state.complete_whisper_window(
             &f.events,
             completion(
@@ -27890,15 +27943,22 @@ mod tc2_window_contract_tests {
             &f.physical,
             &[]
         ));
+        let head = f.state.audio.session_sample_end();
+        f.state.audio.push(&vec![0.2; 720_000 - head as usize]);
+        f.state.pump_capture_windows(&f.events);
         let third = f.requests.try_recv().unwrap();
-        assert_eq!(third.provider_request.identity.range.sample_start, 268_416);
-        assert_eq!(third.provider_request.identity.range.sample_end, 700_416);
-        assert!(
-            !third
-                .member_occurrences
-                .iter()
-                .any(|(_, owner)| owner == &f.occurrence)
-        );
+        assert_eq!(third.provider_request.identity.range.sample_start, 288_000);
+        assert_eq!(third.provider_request.identity.range.sample_end, 720_000);
+        let newer = OccurrenceIdentity::new(SESSION, 1, 508_416, 743_424);
+        assert!(third
+            .member_occurrences
+            .iter()
+            .any(|(_, owner)| owner == &f.occurrence));
+        assert!(third
+            .member_occurrences
+            .iter()
+            .any(|(_, owner)| owner == &newer));
+        assert!(f.requests.try_recv().is_err());
         f.state.complete_whisper_window(
             &f.events,
             completion(
@@ -28021,7 +28081,29 @@ mod tc2_window_contract_tests {
                 &f.physical,
                 &[]
             ));
-            let later = f.requests.try_recv().unwrap();
+            f.state.pump_capture_windows(&f.events);
+            let mut later = None;
+            while let Ok(request) = f.requests.try_recv() {
+                let start = request.provider_request.identity.range.sample_start;
+                let end = request.provider_request.identity.range.sample_end;
+                let covers_later = start <= 1_120_000 && 1_150_000 <= end;
+                if covers_later && start >= f.occurrence.sample_end && later.is_none() {
+                    later = Some(request);
+                    continue;
+                }
+                let pad_start = start.max(f.occurrence.sample_end);
+                let pad_end = pad_start.saturating_add(1_000);
+                let result = if pad_start >= start && pad_end <= end {
+                    completion(&request, vec![pin("pad", pad_start, pad_end)])
+                } else {
+                    let mut missed = completion(&request, vec![]);
+                    missed.payload = None;
+                    missed
+                };
+                f.state
+                    .complete_whisper_window(&f.events, result, 27.1);
+            }
+            let later = later.expect("capture clock window covering the later word");
             assert!(later.provider_request.identity.range.sample_start >= f.occurrence.sample_end);
             let mut result = completion(&later, vec![pin("later", 1_120_000, 1_150_000)]);
             if failed {
@@ -28062,13 +28144,32 @@ mod tc2_window_contract_tests {
             &f.physical,
             &[]
         ));
+        let head = f.state.audio.session_sample_end();
+        f.state
+            .audio
+            .push(&vec![0.2; 864_000 - head as usize]);
+        f.state.pump_capture_windows(&f.events);
         let third = f.requests.try_recv().unwrap();
+        assert_eq!(
+            (
+                third.provider_request.identity.range.sample_start,
+                third.provider_request.identity.range.sample_end,
+            ),
+            (288_000, 720_000)
+        );
         f.state.complete_whisper_window(
             &f.events,
             completion(&third, vec![pin("delta", 434_496, 470_976)]),
             14.6,
         );
         let fourth = f.requests.try_recv().unwrap();
+        assert_eq!(
+            (
+                fourth.provider_request.identity.range.sample_start,
+                fourth.provider_request.identity.range.sample_end,
+            ),
+            (432_000, 864_000)
+        );
         f.state.complete_whisper_window(
             &f.events,
             completion(&fourth, vec![pin("zeta", 482_000, 495_000)]),
@@ -28126,7 +28227,17 @@ mod tc2_window_contract_tests {
             &[],
         ));
         while f.receiver.try_recv().is_ok() {}
+        let head = f.state.audio.session_sample_end();
+        f.state.audio.push(&vec![0.2; 720_000 - head as usize]);
+        f.state.pump_capture_windows(&f.events);
         let request = f.requests.try_recv().unwrap();
+        assert_eq!(
+            (
+                request.provider_request.identity.range.sample_start,
+                request.provider_request.identity.range.sample_end,
+            ),
+            (288_000, 720_000)
+        );
         f.state.complete_whisper_window(
             &f.events,
             completion(&request, vec![pin("delta", 434_496, 470_976)]),
@@ -28265,6 +28376,7 @@ mod tc2_window_contract_tests {
             &f.physical,
             &[],
         ));
+        f.state.pump_capture_windows(&f.events);
         while let Ok(request) = f.requests.try_recv() {
             let word = if request
                 .member_occurrences
@@ -28293,7 +28405,7 @@ mod tc2_window_contract_tests {
             &reclosed,
             &[apple_word("contained", 2_150_000, 2_154_000)],
         ));
-        f.state.flush_layer1_coalesce(&f.events);
+        f.state.pump_capture_windows(&f.events);
         assert_eq!(f.state.windows_admitted, windows_before);
         assert!(f.requests.try_recv().is_err());
         assert_eq!(
@@ -28317,14 +28429,17 @@ mod tc2_window_contract_tests {
             &reclosed,
             &[apple_word("late", 2_320_000, 2_324_000)],
         ));
-        f.state.flush_layer1_coalesce(&f.events);
+        f.state.audio.push(&vec![0.2; 17_000]);
+        f.state.pump_capture_windows(&f.events);
         let requests = std::iter::from_fn(|| f.requests.try_recv().ok()).collect::<Vec<_>>();
-        assert!(!requests.is_empty());
-        assert!(
-            requests
-                .iter()
-                .all(|request| request.member_occurrences == vec![(3, next_owner.clone())])
-        );
+        assert_eq!(requests.len(), 1);
+        let mut occurrences = requests[0]
+            .member_occurrences
+            .iter()
+            .map(|(_, owner)| owner.clone())
+            .collect::<Vec<_>>();
+        occurrences.sort_by_key(|owner| owner.sample_start);
+        assert_eq!(occurrences, vec![owner.clone(), next_owner.clone()]);
         assert_eq!(
             f.state.windows_admitted,
             windows_before + requests.len() as u64
@@ -28370,12 +28485,12 @@ mod tc2_window_contract_tests {
         {
             for stop_recovery in [false, true] {
                 let mut f = fixture();
-                // fixture() submits recovery via reconcile_silero_ledger ->
-                // enqueue_layer1_piece -> queue_layer1_flush (split windows).
+                // fixture() launches the capture-clock windows. Held recovery
+                // keeps the first full window, which ends before newer starts.
                 let held_recovery = if !older_sealed && newer_sealed {
                     let request = f.requests.try_recv().unwrap();
                     let range = &request.provider_request.identity.range;
-                    assert_eq!((range.sample_start, range.sample_end), (0, 419_328));
+                    assert_eq!((range.sample_start, range.sample_end), (0, 432_000));
                     assert!(range.sample_start < f.occurrence.sample_end);
                     assert!(range.sample_end > f.occurrence.sample_start);
                     assert!(range.sample_end <= 508_416);
@@ -28399,7 +28514,7 @@ mod tc2_window_contract_tests {
                     &f.physical,
                     &[apple_word("newer", 652_416, 659_136)],
                 ));
-                f.state.flush_layer1_coalesce(&f.events);
+                f.state.pump_capture_windows(&f.events);
                 // Complete every other window; their labels settle recovery debt
                 // while the retained request still blocks only older's horizon.
                 while let Ok(request) = f.requests.try_recv() {
@@ -28426,7 +28541,6 @@ mod tc2_window_contract_tests {
                     usize::from(held_recovery.is_some())
                 );
                 assert!(f.state.refinement_pending.is_empty());
-                assert!(f.state.layer1_coalesce.is_empty());
                 // (false, false): leave both horizons open.
                 // (false, true): the retained recovery window skips only older.
                 // (true, false): close only older's end.
@@ -28447,11 +28561,14 @@ mod tc2_window_contract_tests {
                     assert!(!ledger.text_recovery_pending(owner));
                 }
 
-                // A subsequent physical closure launches a fresh window whose
-                // eight-second context still hears the overlap. This lets the
-                // live path reach sealed owners without reusing a consumed job.
+                // The next full window that hears both the overlap and the
+                // later owner is 432000..864000. Complete the 288000 window
+                // first so the taken request is that overlap window.
                 let later = OccurrenceIdentity::new(SESSION, 1, 744_000, 792_000);
-                f.state.audio.push(&vec![0.2; 792_000 - 743_424]);
+                let head = f.state.audio.session_sample_end();
+                f.state
+                    .audio
+                    .push(&vec![0.2; 864_000 - head as usize]);
                 f.physical
                     .open_or_extend(SESSION, 1, later.sample_start, later.sample_end);
                 f.physical.close_open(later.sample_end);
@@ -28461,8 +28578,35 @@ mod tc2_window_contract_tests {
                     &f.physical,
                     &[],
                 ));
-                f.state.flush_layer1_coalesce(&f.events);
-                let request = f.requests.try_recv().unwrap();
+                f.state.pump_capture_windows(&f.events);
+                let mut request = None;
+                while let Ok(candidate) = f.requests.try_recv() {
+                    let sample_start = candidate.provider_request.identity.range.sample_start;
+                    let sample_end = candidate.provider_request.identity.range.sample_end;
+                    if sample_end <= 720_000 {
+                        let segments = [
+                            pin("older", 246_464, 262_784),
+                            pin("older_tail", 434_496, 470_976),
+                            pin("newer", 652_416, 659_136),
+                        ]
+                        .into_iter()
+                        .filter(|word| {
+                            sample_start <= word.range.sample_start
+                                && word.range.sample_end <= sample_end
+                        })
+                        .collect();
+                        f.state.complete_whisper_window(
+                            &f.events,
+                            completion(&candidate, segments),
+                            15.5,
+                        );
+                        continue;
+                    }
+                    request = Some(candidate);
+                    break;
+                }
+                let request = request.expect("capture clock window over the closure overlap");
+                assert!(f.requests.try_recv().is_err());
                 assert!(
                     request
                         .member_occurrences
@@ -28528,7 +28672,7 @@ mod tc2_window_contract_tests {
 
                 let returned = completion(&request, vec![pin("whisper_overlap", 509_400, 509_800)]);
                 if stop_recovery {
-                    admit_debt_occurrence_recovery(
+                    let _ = super::relay_l1_overlap_admission_tests::admit_completed_window_recovery(
                         &mut f.state,
                         &f.events,
                         &later,
@@ -28751,7 +28895,7 @@ mod tc2_window_contract_tests {
             .unwrap();
             payload.identity.range.sample_start = 126_464;
             payload.identity.range.sample_end = 510_464;
-            assert!(admit_debt_occurrence_recovery(
+            assert!(super::relay_l1_overlap_admission_tests::admit_completed_window_recovery(
                 &mut f.state,
                 &f.events,
                 &f.occurrence,
@@ -28868,7 +29012,8 @@ mod tc2_window_contract_tests {
             &physical,
             &[apple_word("normal", 60_000, 80_000)]
         ));
-        state.flush_layer1_coalesce(&events);
+        state.capture_stopping = true;
+        state.pump_capture_windows(&events);
         let request = requests.try_recv().unwrap();
         assert!(requests.try_recv().is_err());
         state.complete_whisper_window(

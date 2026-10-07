@@ -341,7 +341,8 @@ fn recovery_closed_occurrence_submits_owned_tail_job() {
             end_ts: 1.8,
         }]
     ));
-    state.flush_layer1_coalesce(&tx);
+    state.capture_stopping = true;
+    state.pump_capture_windows(&tx);
     let job = jobs
         .try_recv()
         .expect("armed local lane must submit real PCM work");
