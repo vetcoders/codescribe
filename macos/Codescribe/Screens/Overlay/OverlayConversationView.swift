@@ -10,7 +10,6 @@ struct OverlayConversationView: View {
   let pendingControls: Set<String>
   let controlErrors: [String: String]
   let onControl: (OverlayConversationMessage, Bool) -> Void
-  let onShowMonitor: () -> Void
   var focusRevision: UInt64 = 0
   var followsLiveChannel = false
   @Binding var draft: String
@@ -96,14 +95,6 @@ struct OverlayConversationView: View {
 
   private var navigation: some View {
     HStack {
-      Button(action: onShowMonitor) {
-        OverlayMicrophoneGlyph(symbol: "line.3.horizontal", tint: palette.mutedText.color)
-      }
-      .buttonStyle(.plain)
-      .csFocusOutline()
-      .accessibilityLabel("Agents")
-      .help("Agents")
-      .accessibilityIdentifier("overlay-conversation-back")
       if conversation.channel == "0" {
         Text("0 · All").font(.headline)
       } else {

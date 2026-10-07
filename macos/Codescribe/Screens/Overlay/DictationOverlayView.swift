@@ -377,7 +377,7 @@ struct DictationOverlayView: View {
               pendingControls: state.pendingReplyControls, controlErrors: state.replyControlErrors,
               onControl: { message, stop in
                 Task { await state.controlReply(message, stop: stop) }
-              }, onShowMonitor: { state.showAgentMonitor() },
+              },
               focusRevision: state.conversationFocusRevision,
               followsLiveChannel: state.channelHudStates[conversation.channel]?.open == true,
               draft: Binding(

@@ -23,7 +23,9 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     XCTAssertTrue(source.contains(".accessibilityLabel(\"Play\")"))
     XCTAssertTrue(source.contains(".help(\"Play\")"))
     XCTAssertTrue(
-      source.contains("if let playback = message.playback { Text(playbackLabel(playback.state, reason: playback.reason))"))
+      source.contains(
+        "if let playback = message.playback { Text(playbackLabel(playback.state, reason: playback.reason))"
+      ))
     XCTAssertTrue(source.contains("case \"spoken\": String(localized: \"Spoken\")"))
     XCTAssertFalse(source.contains("Play again"))
     XCTAssertTrue(
@@ -189,7 +191,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     for scheme in [ColorScheme.dark, .light] {
       let view = OverlayConversationView(
         conversation: conversation, palette: .resolve(scheme), topInset: 50, bottomInset: 20,
-        pendingControls: [], controlErrors: [:], onControl: { _, _ in }, onShowMonitor: {},
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in },
         draft: .constant(""), sending: false, sendError: nil, onSend: {})
       let host = NSHostingView(
         rootView: view.background(OverlayAppearancePalette.resolve(scheme).desktopBackground.color)
@@ -265,7 +267,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     for scheme in [ColorScheme.dark, .light] {
       let view = OverlayConversationView(
         conversation: conversation, palette: .resolve(scheme), topInset: 50, bottomInset: 20,
-        pendingControls: [], controlErrors: [:], onControl: { _, _ in }, onShowMonitor: {},
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in },
         draft: .constant(""), sending: false, sendError: nil, onSend: {})
       let host = NSHostingView(rootView: view.preferredColorScheme(scheme))
       host.frame = NSRect(x: 0, y: 0, width: 532, height: 260)
@@ -298,7 +300,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       let host = NSHostingView(
         rootView: OverlayConversationView(
           conversation: conversation, palette: .resolve(scheme), topInset: 50, bottomInset: 20,
-          pendingControls: [], controlErrors: [:], onControl: { _, _ in }, onShowMonitor: {},
+          pendingControls: [], controlErrors: [:], onControl: { _, _ in },
           draft: .constant(""), sending: false, sendError: nil, onSend: {}
         )
         .preferredColorScheme(scheme))
@@ -343,7 +345,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     let view = OverlayConversationView(
       conversation: .init(id: owner.id, channel: "2", name: "Lena", owner: owner, messages: []),
       palette: .dark, topInset: 50, bottomInset: 20, pendingControls: [], controlErrors: [:],
-      onControl: { _, _ in }, onShowMonitor: {}, draft: draft, sending: sending, sendError: nil,
+      onControl: { _, _ in }, draft: draft, sending: sending, sendError: nil,
       onSend: onSend)
     let host = NSHostingView(rootView: view)
     host.frame = NSRect(x: 0, y: 0, width: 600, height: 500)

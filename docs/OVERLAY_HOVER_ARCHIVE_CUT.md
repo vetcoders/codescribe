@@ -83,3 +83,21 @@ claim a full release gate PASS. No desktop screenshot, microphone/speaker test,
 app restart, trunk merge or release was performed. The running Founder process
 and installed artifact are distinct from source and test-host generations.
 Background app installation and exact installed receipt are recorded separately.
+
+## Single drawer control follow-up
+
+Removed the conversation's duplicate hamburger and its unused callback. The
+header remains the single drawer entry point; the conversation retains the agent
+name and microphone/playback controls. The mounted conversation fixtures use
+the reduced interface.
+
+The affected conversation, state, chrome, resize and hover suites passed:
+**326 tests, zero failures, 19.668 seconds**. Fresh Debug compiler extraction,
+catalog sync, catalog lint and bridge census passed without new or stale keys.
+Logs: `/tmp/codescribe-e19c-single-drawer-swift-oct7.log` and
+`/tmp/codescribe-e19c-single-drawer-l10n-gates-oct7.log`.
+
+The first background installation attempt stopped in Xcode CopySwiftLibs before
+replacing `/Applications/Codescribe.app`. Installed build2094/80352 and the
+Founder process47373 were retained. Packaging diagnosis and a new installed
+receipt remain pending; no app restart or success ping was performed.

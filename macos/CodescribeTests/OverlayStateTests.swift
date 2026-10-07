@@ -1161,7 +1161,7 @@ final class OverlayStateTests: XCTestCase {
     let view = OverlayConversationView(
       conversation: all, palette: .dark, topInset: 50,
       bottomInset: 20, pendingControls: [], controlErrors: [:], onControl: { _, _ in },
-      onShowMonitor: {}, draft: .constant(""), sending: false, sendError: nil, onSend: {})
+      draft: .constant(""), sending: false, sendError: nil, onSend: {})
     XCTAssertEqual(view.orderedMessages.map(\.order), [1, 2, 3, 4, 5])
     XCTAssertEqual(Set(view.orderedMessages.map(\.id)).count, 5)
     XCTAssertEqual(view.orderedMessages.map(\.text), Array(repeating: "Iwo", count: 5))
