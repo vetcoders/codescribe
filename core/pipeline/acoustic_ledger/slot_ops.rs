@@ -696,6 +696,29 @@ impl AcousticLedger {
                 && choice.accepted
                 && choice.lexical_resolved
                 && choice.reason == "trial_confirmed"
+                && self.word_pin_observations.contains(&choice.observation)
+                && self.slot_operations().iter().any(|operation| {
+                    operation.observation == choice.observation
+                        && operation
+                            .sources
+                            .iter()
+                            .map(SlotTarget::from)
+                            .collect::<Vec<_>>()
+                            == choice.targets
+                        && choice
+                            .source_ranges
+                            .iter()
+                            .all(|range| operation.source_ranges.contains(range))
+                        && operation.outputs.len() == choice.candidate.pins.len()
+                        && operation.outputs.iter().zip(&choice.candidate.pins).all(
+                            |(output, pin)| {
+                                output.observation == choice.observation
+                                    && output.sample_start == pin.sample_start
+                                    && output.sample_end == pin.sample_end
+                                    && output.text == pin.surface
+                            },
+                        )
+                })
                 && choice.candidate.complete
                 && choice.candidate.acoustic_boundaries_complete
                 && choice.candidate.decode != Some((start, end))
@@ -2255,6 +2278,77 @@ mod slot_ops_tests {
 
     // Root-owned decode-scope controls. Energy is measured from fixture PCM;
     // returned words are supplied decoder fixtures, not ASR/model acceptance.
+    #[test]
+    fn confirmed_decode_requires_admitted_operation_not_lexical_eligibility() {
+        for commit in [false, true] {
+            let (mut ledger, owner, _, _) =
+                forensic_neighbour_capture("confirmed-operation", 9, true);
+            let initial = ledger.next_word_observation(ObservationProducer::Whisper, 901, &owner);
+            let initial_pin = [WordPin::new(2_000, 16_000, "Iwo").with_decode_window(0, 20_000)];
+            assert!(
+                ledger
+                    .admit_word_slots(&initial, &initial_pin)
+                    .grants_mutation()
+            );
+            let earlier = ledger.next_word_observation(ObservationProducer::Whisper, 902, &owner);
+            let hypothesis = [WordPin::new(2_000, 16_000, "Kamil").with_decode_window(0, 24_000)];
+            assert!(
+                !ledger
+                    .admit_word_slots(&earlier, &hypothesis)
+                    .grants_mutation()
+            );
+            let trial = ledger.next_word_trial(true).expect("correction trial");
+            let returned = ledger.next_word_observation(ObservationProducer::Whisper, 903, &owner);
+            let pins = [WordPin::new(2_000, 16_000, "Kamil").with_decode_window(0, 32_000)];
+            let before = ledger.slots_of(&owner).unwrap().to_vec();
+            if commit {
+                assert!(
+                    ledger
+                        .admit_word_trial(&trial, &returned, &pins, &pins)
+                        .grants_mutation()
+                );
+            } else {
+                // Exercise the real proposal phase without applying the proposed
+                // operation. Eligibility must not authenticate completed work.
+                ledger.stage_word_evidence(&returned, &pins, None, "unknown");
+                let mut evidence = ledger.word_evidence_input(&returned).unwrap().clone();
+                evidence.trial = Some(trial);
+                ledger.restore_word_evidence(evidence);
+                ledger.record_word_decode_bounds(&returned, &pins);
+                let outputs = [WordSlot {
+                    sample_start: 2_000,
+                    sample_end: 16_000,
+                    text: "Kamil".into(),
+                    producer: returned.producer,
+                    observation: returned.clone(),
+                    witness: SlotWitness::Unwitnessed,
+                    confidence: None,
+                    surface_rewritten: false,
+                }];
+                assert_eq!(
+                    ledger.adjudicate_word_sources(&returned, &before, &outputs),
+                    Some(true)
+                );
+                assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+                assert!(
+                    !ledger
+                        .slot_operations()
+                        .iter()
+                        .any(|op| op.observation == returned)
+                );
+            }
+            let choice = ledger.word_choices().last().unwrap();
+            assert!(choice.accepted && choice.lexical_resolved);
+            assert_eq!(choice.reason, "trial_confirmed");
+            assert_eq!(ledger.confirmed_word_decode(&earlier, 0, 24_000), commit);
+            assert_eq!(
+                ledger.text_of(&owner),
+                Some(if commit { "Kamil" } else { "Iwo" })
+            );
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
     #[test]
     fn forensic_scope_sparse_word_times_distinguish_partial_and_complete_work() {
         for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
