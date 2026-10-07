@@ -287,6 +287,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var sleepWakeObserver: SystemSleepWakeObserver?
   private lazy var trayPanel = TrayPanel()
   private var shouldExitForDuplicate = false
+  private var credentialServicesStarted = false
   private let terminationCoordinator = AppTerminationCoordinator()
   // First-run onboarding wizard host. Presented at launch when the core gate
   // (`shouldShowOnboarding`) reports setup is due.
@@ -409,18 +410,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     installSystemSleepWakeObserver()
     registerVoiceDelivery()
     prewarmRecordingController()
-    // Speech Recognition TCC must be requested from THIS process
-    // (com.vetcoders.codescribe). The bridge child is co-located under
-    // Contents/MacOS and inherits the app's responsible identity; granting
-    // only via Terminal/CLI leaves the app as speech_auth_not_determined.
-    ensureSpeechRecognitionAtLaunch()
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(onboardingWindowWillClose),
+      name: NSWindow.willCloseNotification,
+      object: nil
+    )
     // Show the first-run wizard on top of the freshly-installed tray when the
     // core reports onboarding is still due (no setup_done marker, or a stale
     // one invalidated because a required permission is missing).
     if CommandLine.arguments.contains("--resume-onboarding") {
       onboarding.present()
+    } else if config.shouldShowOnboarding() {
+      onboarding.present()
     } else {
-      onboarding.presentIfNeeded()
+      restoreCredentialBackedServices()
+      // Completed installs retain their launch permission repair. First-run
+      // permission prompts belong to the wizard's explained chapter.
+      ensureSpeechRecognitionAtLaunch()
+    }
+  }
+
+  @objc private func onboardingWindowWillClose(_ notification: Notification) {
+    guard let window = notification.object as? NSWindow,
+      window.contentViewController is NSHostingController<OnboardingView>
+    else { return }
+    // Finish writes the core completion marker before closing this window.
+    // Closing an unfinished wizard leaves that gate closed to credential I/O.
+    restoreCredentialBackedServices()
+  }
+
+  private func restoreCredentialBackedServices() {
+    guard !Self.isRunningTests, !shouldExitForDuplicate, !credentialServicesStarted,
+      !config.shouldShowOnboarding()
+    else { return }
+    credentialServicesStarted = true
+    LicenseService.shared.refresh()
+    Task { @MainActor in
+      do {
+        // Reuse the provider step's credential I/O and canonical loader. Later
+        // chat/tray snapshots see this bundle without opening Keychain again.
+        _ = try await ProviderCredentialIO.perform {
+          try CodescribeConfig().providerAccessSnapshot()
+        }
+      } catch {
+        // The explained provider/auth surface owns errors and explicit retry.
+        appLogger.error("Saved provider access could not be restored after setup")
+      }
     }
   }
 
