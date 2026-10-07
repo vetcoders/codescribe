@@ -114,7 +114,7 @@ final class OverlayIntentRailTests: XCTestCase {
       state.engine = engine
 
       let control = OverlayRecordingControls(
-        canFinish: false, isPreviewCollapsed: false, compact: false, palette: .dark,
+        canFinish: false, presentationMode: .expanded, compact: false, palette: .dark,
         onIntent: state.relayIntent, onPreviewToggle: {})
       XCTAssertEqual(control.recordingSymbol, "mic.fill")
       XCTAssertEqual(control.recordingIdentifier, "overlay-start-recording")
@@ -130,7 +130,7 @@ final class OverlayIntentRailTests: XCTestCase {
   func testFinalizingRecordingControlCannotStart() {
     var intents: [OverlayIntent] = []
     let control = OverlayRecordingControls(
-      canFinish: false, isPreviewCollapsed: false, compact: false, palette: .dark,
+      canFinish: false, presentationMode: .expanded, compact: false, palette: .dark,
       onIntent: { intents.append($0) }, onPreviewToggle: {}, isFinalizing: true)
     XCTAssertEqual(control.recordingSymbol, "stop.fill")
     XCTAssertEqual(control.recordingIdentifier, "overlay-stop-recording")
@@ -627,7 +627,8 @@ final class OverlayIntentRailTests: XCTestCase {
       + [
         OverlayControlSymbols.history, OverlayControlSymbols.previousTake,
         OverlayControlSymbols.actions, OverlayControlSymbols.placement,
-        OverlayControlSymbols.collapsePreview, OverlayControlSymbols.expandPreview, "pin.fill",
+        OverlayControlSymbols.miniToMidi, OverlayControlSymbols.midiToTranscript,
+        OverlayControlSymbols.returnToMini, "pin.fill",
         "arrow.up.and.down.and.arrow.left.and.right",
       ] + OverlayAnchor.allCases.map(\.systemImage)
     let collisions = Dictionary(grouping: symbols, by: { $0 }).filter { $0.value.count > 1 }
@@ -745,23 +746,24 @@ final class OverlayIntentRailTests: XCTestCase {
 
     let collapsedState = OverlayState.previewListening()
     collapsedState.handleRecordingPreparing()
-    collapsedState.toggleCollapsed()
+    collapsedState.setPresentationMode(.midi)
     let collapsedRecorder = OverlayHeaderControlFramesRecorder()
     let collapsedHost = NSHostingView(
       rootView: OverlayHeaderControlFramesCapture(
         state: collapsedState, recorder: collapsedRecorder
       )
-      .frame(width: 180, height: DictationOverlayWindow.collapsedHeight)
+      .frame(width: 470, height: DictationOverlayWindow.collapsedHeight)
       .preferredColorScheme(.dark)
     )
-    collapsedHost.frame = CGRect(x: 0, y: 0, width: 180, height: DictationOverlayWindow.collapsedHeight)
+    collapsedHost.frame = CGRect(
+      x: 0, y: 0, width: 470, height: DictationOverlayWindow.collapsedHeight)
     collapsedHost.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.03))
     try assertHeaderControlsFit(
       collapsedRecorder.frames,
-      inside: 180,
-      context: "collapsed listening header",
-      compactMeter: true
+      inside: 470,
+      context: "midi listening header",
+      compactMeter: false
     )
 
     let bitmap = try XCTUnwrap(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
@@ -896,7 +898,7 @@ final class OverlayIntentRailTests: XCTestCase {
     var previewCollapsed = false
     let expanded = OverlayRecordingControls(
       canFinish: true,
-      isPreviewCollapsed: false,
+      presentationMode: .expanded,
       compact: false,
       palette: .dark,
       onIntent: { routedIntents.append($0) },
@@ -908,23 +910,23 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertTrue(previewCollapsed)
     XCTAssertEqual(expanded.previewAccessibilityLabel, "Hide live preview")
     // Annex A1: chevrons, never an eye. Expanded offers ^ (fold).
-    XCTAssertEqual(expanded.previewSymbol, "chevron.up")
+    XCTAssertEqual(expanded.previewSymbol, "chevron.left")
 
     let collapsed = OverlayRecordingControls(
       canFinish: true,
-      isPreviewCollapsed: true,
+      presentationMode: .mini,
       compact: true,
       palette: .dark,
       onIntent: { routedIntents.append($0) },
       onPreviewToggle: { previewCollapsed.toggle() }
     )
     XCTAssertTrue(collapsed.showsStop)
-    XCTAssertEqual(collapsed.previewAccessibilityLabel, "Show live preview")
-    XCTAssertEqual(collapsed.previewSymbol, "chevron.down", "collapsed offers v (unfold)")
+    XCTAssertEqual(collapsed.previewAccessibilityLabel, "Show controls")
+    XCTAssertEqual(collapsed.previewSymbol, "chevron.right", "mini expands horizontally")
 
     let unavailable = OverlayRecordingControls(
       canFinish: false,
-      isPreviewCollapsed: false,
+      presentationMode: .expanded,
       compact: true,
       palette: .dark,
       onIntent: { routedIntents.append($0) },

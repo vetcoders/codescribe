@@ -2,6 +2,19 @@ import AppKit
 import Observation
 import SwiftUI
 
+/// Window presentation only; the reducer continues to own the transcript.
+enum OverlayPresentationMode: CaseIterable {
+  case mini, midi, expanded
+
+  var next: Self {
+    switch self {
+    case .mini: .midi
+    case .midi: .expanded
+    case .expanded: .mini
+    }
+  }
+}
+
 // View model for the dictation overlay, backed by the redesign hotkey/controller
 // bridge (`CodescribeHotkeys` / `CsTranscriptionListener`).
 //
@@ -484,15 +497,36 @@ final class OverlayState {
   var onCloseIntent: (() -> Void)?
   /// Window chrome only: folding never ends capture or creates text edits.
   /// Leaving an edited canvas uses its existing commit-on-blur path.
-  private(set) var isCollapsed = true
+  private(set) var presentationMode: OverlayPresentationMode = .mini
+  var isCollapsed: Bool { presentationMode != .expanded }
+  var isMini: Bool { presentationMode == .mini }
   private(set) var expandedByDefault = true
   private(set) var keepVisibleBetweenTakes = false
   private(set) var expansionPreferenceError: String?
-  @ObservationIgnored var onCollapseChanged: ((Bool) -> Void)?
+  @ObservationIgnored private var requestedCapturePresentation: OverlayPresentationMode?
+  @ObservationIgnored var onPresentationModeChanged: ((OverlayPresentationMode) -> Void)?
 
   func toggleCollapsed() {
-    isCollapsed.toggle()
-    onCollapseChanged?(isCollapsed)
+    setPresentationMode(isCollapsed ? .expanded : .mini)
+  }
+
+  func cyclePresentation() {
+    setPresentationMode(presentationMode.next)
+  }
+
+  func requestHeaderRecording(_ intent: OverlayIntent) {
+    if isMini {
+      setPresentationMode(.midi)
+      if intent == .startRecording { requestedCapturePresentation = .midi }
+    }
+    if intent == .startRecording { selectConversation(nil) }
+    relayIntent(intent)
+  }
+
+  func setPresentationMode(_ mode: OverlayPresentationMode) {
+    guard presentationMode != mode else { return }
+    presentationMode = mode
+    onPresentationModeChanged?(mode)
   }
 
   /// The menu toggle alone persists the take-start preference.
@@ -505,13 +539,15 @@ final class OverlayState {
     applyPreferredExpansion()
   }
 
-  private func applyPreferredExpansion() {
+  private func applyPreferredExpansion(forNewCapture: Bool = false) {
     guard let engine else { return }
     expandedByDefault = engine.overlayExpandedByDefault()
-    let collapsed = !expandedByDefault
-    guard isCollapsed != collapsed else { return }
-    isCollapsed = collapsed
-    onCollapseChanged?(collapsed)
+    if forNewCapture, let requestedCapturePresentation {
+      self.requestedCapturePresentation = nil
+      setPresentationMode(requestedCapturePresentation)
+    } else {
+      setPresentationMode(expandedByDefault ? .expanded : .mini)
+    }
   }
 
   func setKeepVisibleBetweenTakes(_ enabled: Bool) {
@@ -710,7 +746,8 @@ final class OverlayState {
   }
 
   func attach() {
-    applyPreferredExpansion()
+    // Attaching loads policy; a new take or an explicit control opens the canvas.
+    expandedByDefault = engine?.overlayExpandedByDefault() ?? true
     keepVisibleBetweenTakes = engine?.overlayKeepVisibleBetweenTakes() ?? false
     engine?.setListener(listener)
     if engine is ControllerDictationEngine {
@@ -763,7 +800,8 @@ final class OverlayState {
     guard let owner = conversation.owner, let bus = conversation.messages.first?.busPath else {
       return nil
     }
-    return AgentPlaybackIdentity(provider: owner.provider, session: owner.providerSessionID, bus: bus)
+    return AgentPlaybackIdentity(
+      provider: owner.provider, session: owner.providerSessionID, bus: bus)
   }
 
   private func playbackIdentity(for channel: String) -> AgentPlaybackIdentity? {
@@ -784,18 +822,20 @@ final class OverlayState {
   }
 
   var pendingPlaybackChannels: Set<String> {
-    Set(channelHudStates.keys.filter {
-      playbackIdentity(for: $0).map { pendingPlaybackIdentities.contains($0) } ?? false
-    })
+    Set(
+      channelHudStates.keys.filter {
+        playbackIdentity(for: $0).map { pendingPlaybackIdentities.contains($0) } ?? false
+      })
   }
 
   var pendingPlaybackOwners: Set<String> {
-    Set(conversations.compactMap { conversation in
-      guard let identity = playbackIdentity(for: conversation),
-        pendingPlaybackIdentities.contains(identity)
-      else { return nil }
-      return conversation.owner?.id
-    })
+    Set(
+      conversations.compactMap { conversation in
+        guard let identity = playbackIdentity(for: conversation),
+          pendingPlaybackIdentities.contains(identity)
+        else { return nil }
+        return conversation.owner?.id
+      })
   }
 
   func conversationPlaybackMuted(_ conversation: OverlayConversation) -> Bool? {
@@ -851,7 +891,8 @@ final class OverlayState {
       // Show the owner's durable receipt, never an optimistic button state.
       let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(for: [identity])
       playbackMutes[identity] = snapshot[identity]
-      playbackPreferenceError = snapshot[identity] == nil
+      playbackPreferenceError =
+        snapshot[identity] == nil
         ? String(localized: "Playback status unavailable") : nil
     } catch {
       playbackPreferenceError = error.userFacingMessage
@@ -874,7 +915,9 @@ final class OverlayState {
     let identities = Set(bound.values)
       .union(conversations.compactMap { playbackIdentity(for: $0) })
     let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(for: identities)
-    guard !Task.isCancelled, revision == playbackPreferenceRevision, roster == channelRoster else { return }
+    guard !Task.isCancelled, revision == playbackPreferenceRevision, roster == channelRoster else {
+      return
+    }
     channelPlaybackIdentities = bound
     // A poll started before a click may carry the old receipt for that identity.
     let retained = playbackMutes.filter { pendingPlaybackIdentities.contains($0.key) }
@@ -887,7 +930,7 @@ final class OverlayState {
   }
 
   /// Viewing only changes presentation metadata. Capture stays controller-owned.
-  func selectConversation(_ id: String?) {
+  func selectConversation(_ id: String?, expand: Bool = true) {
     guard id == nil || conversations.contains(where: { $0.id == id }) else { return }
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
@@ -895,7 +938,7 @@ final class OverlayState {
     conversationFocusRevision &+= 1
     showsAgentMonitor = false
     pendingChannelConversation = nil
-    if id != nil {
+    if id != nil && expand {
       expandAgentSurface()
     } else {
       onChannelPresentationChanged?()
@@ -903,11 +946,16 @@ final class OverlayState {
     markVisibleConversationRead()
   }
 
-  func showAgentMonitor() {
+  func showTranscription() {
+    selectConversation(nil)
+    expandAgentSurface()
+  }
+
+  func showAgentMonitor(expand: Bool = true) {
     onAgentSidebarPresented?()
     pendingChannelConversation = nil
     showsAgentMonitor = true
-    expandAgentSurface()
+    if expand { expandAgentSurface() }
   }
 
   func toggleAgentSidebar() {
@@ -922,10 +970,7 @@ final class OverlayState {
 
   private func expandAgentSurface() {
     cancelAutoHide()
-    if isCollapsed {
-      isCollapsed = false
-      onCollapseChanged?(false)
-    }
+    setPresentationMode(.expanded)
     onChannelPresentationChanged?()
   }
 
@@ -934,7 +979,7 @@ final class OverlayState {
   private func followChannelConversation(_ row: CsChannelRosterState) {
     pendingChannelConversation = row
     resolveChannelConversation()
-    expandAgentSurface()
+    if expandedByDefault { expandAgentSurface() }
   }
 
   private func resolveChannelConversation() {
@@ -965,7 +1010,9 @@ final class OverlayState {
   }
 
   private func markVisibleConversationRead() {
-    guard conversationIsVisible, !isCollapsed, !showsAgentMonitor, let selectedConversation else { return }
+    guard conversationIsVisible, !isCollapsed, !showsAgentMonitor, let selectedConversation else {
+      return
+    }
     viewedReplyIDs.formUnion(selectedConversation.replyIDs)
   }
 
@@ -1022,9 +1069,9 @@ final class OverlayState {
       let conversation = ownedConversation(forNewReplies: fresh)
     else { return }
     if selectedConversationID == conversation.id {
-      if isCollapsed { expandAgentSurface() }
+      if isCollapsed && expandedByDefault { expandAgentSurface() }
     } else {
-      selectConversation(conversation.id)
+      selectConversation(conversation.id, expand: expandedByDefault)
     }
     // The selection callback above is an ordinary repaint. The snapshot's
     // own callback, still ahead, is the one that may ask the panel to show.
@@ -1191,8 +1238,9 @@ final class OverlayState {
       followChannelConversation(row)
     } else if newlyOpened.count > 1 {
       // Simultaneous recipients belong to the existing aggregate conversation.
-      selectConversation(conversations.first { $0.channel == "0" }?.id)
-      if selectedConversationID == nil { showAgentMonitor() }
+      selectConversation(
+        conversations.first { $0.channel == "0" }?.id, expand: expandedByDefault)
+      if selectedConversationID == nil { showAgentMonitor(expand: expandedByDefault) }
     }
     if hasOpenChannel {
       cancelAutoHide()
@@ -1514,6 +1562,7 @@ final class OverlayState {
   private func runStart(assistive: Bool, language: CsLanguage?) async {
     guard let engine else { return }
     guard micAccessProvider() else {
+      requestedCapturePresentation = nil
       presentTerminalError(
         message: String(
           localized:
@@ -1539,6 +1588,7 @@ final class OverlayState {
       }
       try await engine.startRecording(assistive: assistive, language: language)
     } catch {
+      requestedCapturePresentation = nil
       await handleStartFailure(error, assistive: assistive, language: language)
     }
   }
@@ -2278,7 +2328,7 @@ final class OverlayState {
       resetTranscript()
       errorMessage = nil
       beginCaptureClock()
-      applyPreferredExpansion()
+      applyPreferredExpansion(forNewCapture: true)
     }
     recording = true
     refreshOverlayPolicyTruth()
@@ -2300,7 +2350,7 @@ final class OverlayState {
       resetTranscript()
       errorMessage = nil
       beginCaptureClock()
-      applyPreferredExpansion()
+      applyPreferredExpansion(forNewCapture: true)
     }
     if captureStartedAtUptime == nil {
       beginCaptureClock()
@@ -3616,7 +3666,7 @@ final class OverlayState {
   /// Seeded view model for #Preview in the listening state.
   static func previewListening() -> OverlayState {
     let s = OverlayState()
-    s.isCollapsed = false
+    s.presentationMode = .expanded
     s.applyTranscriptProjection(
       previewProjection(
         "add a rate limiter to the login route and write a test for it",
@@ -3646,7 +3696,7 @@ final class OverlayState {
   /// Seeded view model for #Preview in the post-capture transcribing phase.
   static func previewTranscribing() -> OverlayState {
     let s = OverlayState()
-    s.isCollapsed = false
+    s.presentationMode = .expanded
     s.applyTranscriptProjection(
       previewProjection(
         "add a rate limiter to the login route and write a test for it",
@@ -3662,7 +3712,7 @@ final class OverlayState {
   /// without any usable text).
   static func previewNoSpeech() -> OverlayState {
     let s = OverlayState()
-    s.isCollapsed = false
+    s.presentationMode = .expanded
     s.applyTranscriptProjection(previewProjection("", phase: .noSpeech, terminal: true))
     s.noSpeechNotice = OverlayState.defaultNoSpeechNotice
     return s
@@ -3671,7 +3721,7 @@ final class OverlayState {
   /// Seeded view model for #Preview in the finalized state.
   static func previewFormatted() -> OverlayState {
     let s = OverlayState()
-    s.isCollapsed = false
+    s.presentationMode = .expanded
     s.applyTranscriptProjection(
       previewProjection(
         "Add a rate limiter to the login route and write a test that covers the throttle window. Keep the existing error shape.",
@@ -3685,7 +3735,7 @@ final class OverlayState {
   /// Seeded view model for the terminal error phase.
   static func previewError() -> OverlayState {
     let s = OverlayState()
-    s.isCollapsed = false
+    s.presentationMode = .expanded
     s.applyTranscriptProjection(
       previewProjection("", phase: .error, terminal: true)
     )

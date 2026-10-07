@@ -136,7 +136,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(source.contains("DeveloperSurface.isPowerModeEnabled(labMode: labMode)"))
     let header = try headerSource(source)
     XCTAssertTrue(
-      header.contains("if showsDiagnostics && state.compactProjection?.degraded == true"))
+      header.contains("showsDiagnostics && state.compactProjection?.degraded == true"))
     XCTAssertTrue(header.contains("if let error = state.expansionPreferenceError"))
     let refusal = try section(of: source, from: "case .coverageRefused:", to: "case .noSpeech:")
     XCTAssertFalse(refusal.contains("coverageRefusedBody"))
@@ -199,6 +199,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     try withPanel(state: state) { panel, root in
       let visible = try XCTUnwrap(panel.screen ?? NSScreen.main).visibleFrame
       state.toggleCollapsed()
+      settle(root)
       panel.setFrameOrigin(NSPoint(x: visible.minX + 20, y: visible.minY + 12))
       state.toggleCollapsed()
       settle(root)
@@ -213,9 +214,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.engine = engine
     state.attach()
     XCTAssertTrue(state.expandedByDefault)
+    XCTAssertEqual(state.presentationMode, .mini)
+    state.showTranscription()
     XCTAssertFalse(state.isCollapsed)
     var collapses: [Bool] = []
-    state.onCollapseChanged = { collapses.append($0) }
+    state.onPresentationModeChanged = { collapses.append($0 != .expanded) }
     state.handleRecordingPreparing()
     XCTAssertFalse(state.isCollapsed)
     state.handleRecordingStarted()
@@ -247,7 +250,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let reopened = OverlayState()
     reopened.engine = engine
     reopened.attach()
-    XCTAssertFalse(reopened.isCollapsed)
+    XCTAssertEqual(reopened.presentationMode, .mini)
     XCTAssertTrue(engine.expansionWrites.isEmpty)
   }
 
@@ -256,9 +259,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let state = OverlayState()
     state.engine = engine
     state.attach()
+    state.showTranscription()
     engine.expansionWriteAllowed = false
     var collapses: [Bool] = []
-    state.onCollapseChanged = { collapses.append($0) }
+    state.onPresentationModeChanged = { collapses.append($0 != .expanded) }
     state.toggleCollapsed()
     XCTAssertTrue(state.isCollapsed)
     state.toggleCollapsed()
@@ -387,6 +391,79 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(panel.styleMask.contains(.resizable))
   }
 
+  func testRouterRestoresCanvasAndDrawerFromMidiWithoutChangingCapture() throws {
+    let state = OverlayState.previewFormatted()
+    let text = state.activeText
+    let generation = state.captureGeneration
+    try withPanel(state: state, width: 700) { panel, root in
+      let canvas = try XCTUnwrap(findTranscript(in: root))
+      let fullSize = panel.frame.size
+      state.setPresentationMode(.mini)
+      settle(root)
+      for mode in [OverlayPresentationMode.midi, .expanded, .mini] {
+        state.cyclePresentation()
+        settle(root)
+        XCTAssertEqual(state.presentationMode, mode)
+        XCTAssertEqual(panel.frame.height, mode == .expanded ? fullSize.height : 46, accuracy: 0.5)
+        XCTAssertEqual(panel.sizeForPersistence, fullSize)
+        XCTAssertTrue(findTranscript(in: root) === canvas)
+        XCTAssertEqual(state.activeText, text)
+        XCTAssertEqual(state.captureGeneration, generation)
+      }
+      state.cyclePresentation()
+      settle(root)
+      XCTAssertEqual(panel.frame.width, DictationOverlayWindow.midiSize.width, accuracy: 0.5)
+      state.showAgentMonitor()
+      settle(root)
+      XCTAssertEqual(state.presentationMode, .expanded)
+      XCTAssertTrue(state.showsAgentMonitor)
+      XCTAssertTrue(findTranscript(in: root) === canvas)
+      XCTAssertEqual(panel.frame.size, fullSize)
+      state.hideAgentSidebar()
+      XCTAssertTrue(findTranscript(in: root) === canvas)
+    }
+  }
+
+  func testInterruptedMorphKeepsOriginalCanvasSizeAndTopEdge() throws {
+    let state = OverlayState.previewFormatted()
+    try withPanel(state: state, width: 700) { panel, root in
+      let frame = panel.frame
+      state.setPresentationMode(.mini)
+      XCTAssertTrue(panel.isFrameTransitioning)
+      state.cyclePresentation()
+      state.cyclePresentation()
+      settle(root)
+      XCTAssertEqual(state.presentationMode, .expanded)
+      XCTAssertEqual(panel.frame.size, frame.size)
+      XCTAssertEqual(panel.frame.maxY, frame.maxY, accuracy: 0.5)
+      XCTAssertTrue(panel.styleMask.contains(.resizable))
+      panel.setPresentationMode(.mini, animated: false)
+      XCTAssertFalse(panel.isFrameTransitioning)
+      XCTAssertEqual(panel.frame.size, DictationOverlayWindow.collapsedSize)
+    }
+  }
+
+  func testHeaderMicrophoneRevealsMidiAndNextTakeUsesSavedPreference() {
+    for expanded in [false, true] {
+      let engine = OverlayChromePolicyEngine()
+      engine.expanded = expanded
+      let state = OverlayState(micAccessProvider: { true })
+      state.engine = engine
+      state.attach()
+      state.requestHeaderRecording(.startRecording)
+      XCTAssertEqual(state.presentationMode, .midi)
+      state.handleRecordingPreparing()
+      state.handleRecordingStarted()
+      XCTAssertEqual(
+        state.presentationMode, .midi, "the explicit header choice survives the take callbacks")
+      XCTAssertTrue(engine.expansionWrites.isEmpty)
+      state.finishControllerRecording()
+      state.handleRecordingPreparing()
+      XCTAssertEqual(state.presentationMode, expanded ? .expanded : .mini)
+      state.finishControllerRecording()
+    }
+  }
+
   func testCollapsePreservesTextSizeAndTopEdgeAcrossBarDrag() throws {
     let state = OverlayState.previewFormatted()
     let text = state.activeText
@@ -398,7 +475,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       settle(root)
       XCTAssertEqual(panel.frame.maxY, expanded.maxY, accuracy: 0.5)
       XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
-      XCTAssertEqual(panel.frame.width, 180, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.width, DictationOverlayWindow.collapsedSize.width, accuracy: 0.5)
       XCTAssertEqual(panel.sizeForPersistence, expanded.size)
       XCTAssertEqual(state.activeText, text)
       XCTAssertTrue(findTranscript(in: root) === native, "Folding must not recreate the editor")
@@ -796,7 +873,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       XCTAssertFalse(elements.isEmpty, "The rendered accessibility hierarchy must be observable")
       let header = try headerSource(overlaySource())
       let close = try section(
-        of: header, from: "Button { state.relayIntent(.close)",
+        of: header, from: "private var closeButton: some View",
         to: "private func recordingControls")
       XCTAssertTrue(close.contains("ModeDot("))
       XCTAssertTrue(close.contains("color: CSColor.terracotta"))
@@ -823,7 +900,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let source = try overlaySource()
     let header = try headerSource(source)
     let close = try section(
-      of: header, from: "Button { state.relayIntent(.close)",
+      of: header, from: "private var closeButton: some View",
       to: "private func recordingControls")
     XCTAssertTrue(
       close.contains("state.relayIntent(.close)"),
@@ -917,33 +994,55 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       try source(at: "Codescribe/Core/AppModel.swift").contains("setAutoPasteControlAvailable"))
   }
 
-  /// Annex A1: the live-preview toggle folds and unfolds the transcript and
-  /// shows ^ while expanded, v while folded — never an eye.
-  func testLivePreviewToggleFoldsAndShowsTheMatchingChevron() throws {
+  func testLivePreviewRouterShowsTheDirectionOfItsNextState() throws {
     let state = OverlayState.previewListening()
-    func controls() -> OverlayRecordingControls {
-      OverlayRecordingControls(
-        canFinish: true, isPreviewCollapsed: state.isCollapsed, compact: false,
-        palette: .dark, onIntent: { _ in }, onPreviewToggle: { state.toggleCollapsed() })
+    state.setPresentationMode(.mini)
+    let text = state.activeText
+    for (mode, symbol, label) in [
+      (OverlayPresentationMode.mini, "chevron.right", "Show controls"),
+      (.midi, "chevron.down", "Show live preview"),
+      (.expanded, "chevron.left", "Hide live preview"),
+    ] {
+      XCTAssertEqual(state.presentationMode, mode)
+      let controls = OverlayRecordingControls(
+        canFinish: true, presentationMode: state.presentationMode, compact: false,
+        palette: .dark, onIntent: { _ in }, onPreviewToggle: state.cyclePresentation)
+      XCTAssertEqual(controls.previewSymbol, symbol)
+      XCTAssertEqual(controls.previewAccessibilityLabel, label)
+      controls.togglePreview()
+      XCTAssertEqual(state.activeText, text)
     }
-    let startedCollapsed = state.isCollapsed
-    let before = controls()
-    XCTAssertEqual(before.previewSymbol, startedCollapsed ? "chevron.down" : "chevron.up")
-    before.togglePreview()
-    XCTAssertNotEqual(state.isCollapsed, startedCollapsed, "the toggle folds or unfolds")
-    let after = controls()
-    XCTAssertEqual(after.previewSymbol, state.isCollapsed ? "chevron.down" : "chevron.up")
-    XCTAssertNotEqual(before.previewSymbol, after.previewSymbol)
-    XCTAssertEqual(
-      after.previewAccessibilityLabel, state.isCollapsed ? "Show live preview" : "Hide live preview"
-    )
-    after.togglePreview()
-    XCTAssertEqual(state.isCollapsed, startedCollapsed)
-
+    XCTAssertEqual(state.presentationMode, .mini)
     let overlay = try overlaySource()
-    XCTAssertFalse(overlay.contains("\"eye"), "no eye pictogram on the preview toggle")
+    XCTAssertFalse(overlay.contains("\"eye"))
     XCTAssertTrue(overlay.contains("Image(systemName: previewSymbol)"))
     XCTAssertTrue(overlay.contains(".accessibilityIdentifier(\"overlay-live-preview-toggle\")"))
+  }
+
+  func testDrawerCanOpenEmptyBroadcastAndReturnToTranscriptionWithoutChangingCapture() {
+    let state = OverlayState.previewListening()
+    let broadcast = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast]))
+    let recording = state.recording
+    state.setPresentationMode(.midi)
+    state.showAgentMonitor()
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false,
+      conversations: state.conversations,
+      onSelectConversation: { state.selectConversation($0) })
+    XCTAssertEqual(view.currentConversations.map(\.id), ["0"])
+    view.viewConversation(
+      .init(channel: "0", agent: "All", deliveryID: nil, stage: nil, isOpen: false))
+    XCTAssertEqual(state.selectedConversation?.id, "0")
+    XCTAssertTrue(state.selectedConversation?.messages.isEmpty == true)
+    XCTAssertFalse(state.showsAgentMonitor)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.recording, recording)
+    state.showTranscription()
+    XCTAssertTrue(state.showsMyDictation)
+    XCTAssertEqual(state.conversations, [broadcast])
+    XCTAssertEqual(state.recording, recording)
   }
 
   func testRecordingControlMorphsBetweenIdleLiveAndFinalizing() throws {
@@ -959,7 +1058,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     for state in [OverlayState(), OverlayState.previewFormatted()] {
       XCTAssertFalse(state.recording)
       let control = OverlayRecordingControls(
-        canFinish: false, isPreviewCollapsed: state.isCollapsed, compact: false,
+        canFinish: false, presentationMode: state.presentationMode, compact: false,
         palette: .dark, onIntent: { _ in }, onPreviewToggle: {})
       XCTAssertEqual(control.recordingSymbol, "mic.fill")
       XCTAssertEqual(control.recordingIdentifier, "overlay-start-recording")
@@ -968,7 +1067,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     live.handleRecordingPreparing()
     XCTAssertTrue(live.recording)
     let stop = OverlayRecordingControls(
-      canFinish: live.recording, isPreviewCollapsed: false, compact: false,
+      canFinish: live.recording, presentationMode: .expanded, compact: false,
       palette: .dark, onIntent: { _ in }, onPreviewToggle: {})
     XCTAssertEqual(stop.recordingSymbol, "stop.fill")
     XCTAssertEqual(stop.recordingIdentifier, "overlay-stop-recording")
@@ -995,6 +1094,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   private func settle(_ root: NSView) {
     root.layoutSubtreeIfNeeded()
+    let deadline = Date().addingTimeInterval(1.5)
+    while (root.window as? FloatingOverlayPanel)?.isFrameTransitioning == true && Date() < deadline
+    {
+      RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+    }
+    XCTAssertNotEqual((root.window as? FloatingOverlayPanel)?.isFrameTransitioning, true)
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     root.layoutSubtreeIfNeeded()
   }

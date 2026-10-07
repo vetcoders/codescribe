@@ -109,9 +109,9 @@ enum OverlayControlSymbols {
   static let actions = "ellipsis"
   static let closeActions = "xmark"
   static let placement = "location.viewfinder"
-  /// The preview control rotates these chevrons 45 degrees toward the mini widget.
-  static let collapsePreview = "chevron.up"
-  static let expandPreview = "chevron.down"
+  static let miniToMidi = "chevron.right"
+  static let midiToTranscript = "chevron.down"
+  static let returnToMini = "chevron.left"
 }
 
 enum OverlayDockVisuals {

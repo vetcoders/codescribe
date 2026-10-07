@@ -702,7 +702,7 @@ final class OverlayStateTests: XCTestCase {
     state.applyChannelDelivery([channel])
     let header = OverlayChannelStatusView(
       channels: [channel], unavailable: false,
-      palette: .dark, animates: false, onShowMonitor: state.showAgentMonitor)
+      palette: .dark, animates: false, onShowMonitor: { state.showAgentMonitor() })
     header.showMonitor()
     XCTAssertTrue(state.showsAgentMonitor)
     XCTAssertTrue(state.showsMyDictation, "Sidebar preserves the selected canvas")

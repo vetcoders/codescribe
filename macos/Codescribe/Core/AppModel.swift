@@ -315,6 +315,14 @@ final class OverlayController: ObservableObject {
         self.automaticContentSizingEnabled = false
         self.state.userResizedOverlay()
       }
+      floating.onFrameTransitionCompleted = { [weak self] in
+        guard let self else { return }
+        if self.placementAfterTransition {
+          self.placementAfterTransition = false
+          self.applyPlacement()
+        }
+        self.resizeForProjectedContent()
+      }
     }
     // A pending fade-out must not leave a freshly shown panel invisible.
     panel.alphaValue = 1
@@ -326,6 +334,7 @@ final class OverlayController: ObservableObject {
   /// True while we `setFrame` from prefs. AppKit still fires `windowDidMove`
   /// for those writes; those must not count as a user drag.
   static var isApplyingFrame = false
+  private var placementAfterTransition = false
 
   /// Derive and apply the panel's frame from the placement prefs: free motion
   /// restores the last dragged origin, anchored derives from the anchor —
@@ -335,15 +344,27 @@ final class OverlayController: ObservableObject {
   /// all frame writes stay inside the programmatic-move guard.
   private func applyPlacement() {
     guard let panel else { return }
+    guard (panel as? FloatingOverlayPanel)?.isFrameTransitioning != true else {
+      placementAfterTransition = true
+      return
+    }
     Self.isApplyingFrame = true
     defer { Self.isApplyingFrame = false }
     let screen = NSScreen.main
     let clamped = DictationOverlayWindow.clamp(panel.frame.size, to: screen)
-    let size = NSSize(
-      width: state.isCollapsed ? DictationOverlayWindow.collapsedSize.width : clamped.width,
-      height: state.isCollapsed
-        ? DictationOverlayWindow.collapsedHeight
-        : max(clamped.height, DictationOverlayWindow.minSize.height))
+    let size: NSSize
+    switch state.presentationMode {
+    case .mini: size = DictationOverlayWindow.collapsedSize
+    case .midi:
+      size = NSSize(
+        width: min(
+          DictationOverlayWindow.midiSize.width,
+          screen?.visibleFrame.width ?? .greatestFiniteMagnitude),
+        height: DictationOverlayWindow.collapsedHeight)
+    case .expanded:
+      size = NSSize(
+        width: clamped.width, height: max(clamped.height, DictationOverlayWindow.minSize.height))
+    }
     let origin: NSPoint?
     if state.freeMotion {
       origin = OverlayPlacement.restoredOrigin(size: size, on: screen) ?? panel.frame.origin
@@ -367,6 +388,7 @@ final class OverlayController: ObservableObject {
     guard automaticContentSizingEnabled, !state.isCollapsed,
       !state.isEditingTranscript, !state.isRevisionDraftDirty, let panel
     else { return }
+    guard (panel as? FloatingOverlayPanel)?.isFrameTransitioning != true else { return }
     // Measure the same accepted snapshot the existing canvas paints. Human
     // review fences automatic sizing; compact text never becomes delivery text.
     let livePaint: CsCompactProjection?

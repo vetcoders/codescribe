@@ -49,7 +49,7 @@ final class OverlayResizeHitTests: XCTestCase {
       window.contentView = host
       defer { window.close() }
       var transitions: [Bool] = []
-      state.onCollapseChanged = { transitions.append($0) }
+      state.onPresentationModeChanged = { transitions.append($0 != .expanded) }
       for folded in [false, true, false] {
         if state.isCollapsed != folded { state.toggleCollapsed() }
         host.layoutSubtreeIfNeeded()
@@ -577,7 +577,13 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(panel.sizeForPersistence, savedSize)
     XCTAssertEqual(state.activeText, text)
     state.toggleCollapsed()
-    XCTAssertEqual(panel.frame.size, savedSize)
+    let deadline = Date().addingTimeInterval(1.5)
+    while panel.isFrameTransitioning && Date() < deadline {
+      RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+    }
+    XCTAssertFalse(panel.isFrameTransitioning)
+    XCTAssertGreaterThanOrEqual(panel.frame.width, savedSize.width)
+    XCTAssertGreaterThanOrEqual(panel.frame.height, savedSize.height)
     project(text + "\nmore words", sequence: 2, to: state)
     XCTAssertGreaterThanOrEqual(panel.frame.height, savedSize.height)
   }
