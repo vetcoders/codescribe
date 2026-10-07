@@ -6601,6 +6601,34 @@ fn schedule_formatter_after_terminal_label(
     true
 }
 
+/// Original sample geometry this capture still owns. A future or evicted span
+/// stays refused: clamping it onto the buffer is not ownership.
+fn segment_owns_exact_pcm(state: &AppleSealState, start_ts: f32, end_ts: f32) -> bool {
+    if !start_ts.is_finite() || !end_ts.is_finite() || end_ts <= start_ts {
+        return false;
+    }
+    let rate = f64::from(state.sample_rate.max(1));
+    let start = f64::from(start_ts) * rate;
+    let end = f64::from(end_ts) * rate;
+    if !start.is_finite()
+        || !end.is_finite()
+        || start < 0.0
+        || end < 0.0
+        || start > u64::MAX as f64
+        || end > u64::MAX as f64
+    {
+        return false;
+    }
+    let sample_start = start.round() as u64;
+    let sample_end = end.round() as u64;
+    if sample_end <= sample_start {
+        return false;
+    }
+    state
+        .window_by_samples(sample_start, sample_end)
+        .is_some_and(|window| !window.samples.is_empty())
+}
+
 /// Seal one Apple utterance: run the shared lexicon + cleanup pass, then emit
 /// `UtteranceFinal`. Returns `false` when postprocess filtered the text to
 /// empty; an explicit `Drop` event is emitted instead of an empty final.
@@ -6635,6 +6663,7 @@ fn seal_utterance_final(
     let mut disjoint = Vec::with_capacity(original_segment_count);
     let mut cursor = state.last_apple_segment_end;
     let mut overlap_normalized = false;
+    let mut refused_without_exact_pcm = false;
 
     for mut segment in segments {
         let text = segment.text.trim();
@@ -6654,6 +6683,20 @@ fn seal_utterance_final(
         if segment.start_ts < cursor {
             segment.start_ts = cursor;
         }
+        // Jitter may lift the start onto the accepted boundary. The end stays
+        // on the callback's original clock. Missing exact PCM is diagnostic
+        // only: it must not move this cursor or the accepted Apple boundary.
+        if !segment_owns_exact_pcm(state, segment.start_ts, segment.end_ts) {
+            if !refused_without_exact_pcm {
+                info!(
+                    start_ts = segment.start_ts,
+                    end_ts = segment.end_ts,
+                    "apple_lifecycle: timed callback kept diagnostic; exact owned pcm is absent"
+                );
+                refused_without_exact_pcm = true;
+            }
+            continue;
+        }
         segment.text = text.to_string();
         cursor = segment.end_ts;
         disjoint.push(segment);
@@ -6667,7 +6710,9 @@ fn seal_utterance_final(
     }
 
     if disjoint.is_empty() {
-        if callback_text.is_empty() {
+        if callback_text.is_empty() || refused_without_exact_pcm {
+            // Timed spans that lack their original PCM must not become a
+            // synthesized occurrence, and must not consume an utterance id.
             return false;
         }
         // A segment-less final still names new session-clock audio. Preserve it
@@ -6707,6 +6752,8 @@ fn seal_utterance_final(
 
     // Consume the Apple boundary even if cleanup filters the text. A later
     // cumulative callback must not resurrect audio the product already judged.
+    // `end_ts` is the last span that still owns its original PCM, so a refused
+    // future or evicted sibling cannot poison this boundary.
     state.last_apple_segment_end = end_ts;
 
     // The seal path knows exactly how many acoustic spans this text covers, so
