@@ -136,7 +136,7 @@ The main-checkout commits `9b6014ba`, `985c0208`, `47678328`, `4fa6e083`,
 Conflict resolution retains our canonical-source closure proof for cross-session
 handover and the newer inherited-cursor rule for same-session detach. Admission
 is patch equivalence with these explicit conflict resolutions, not source ancestry.
-Site/release and the newly appearing peer-text feature are not admitted.
+Site/release work is not admitted. Peer-text admission is recorded below.
 
 The bounded Rust fixture checkpoint skips `cargo-check` while the 196 retained
 fixture references still cannot compile, and `cargo-fmt` because the hook stages
@@ -169,3 +169,29 @@ Test-only migration replaces retired owner-specific scheduling with actual captu
 The compiler diagnostic count fell from 196 to 163 retained obsolete references (`/tmp/codescribe-e19c-reservation-fixtures-oct7.log`). These private fixtures have not executed because the whole lib-test target still cannot compile. Separately, all 17 capture-window geometry integration tests passed. Scoped Rust 2024 formatting and diff hygiene passed. This checkpoint skips `cargo-check` for that known compilation failure and `cargo-fmt` because its `git add -u` would stage foreign Founder edits; formatting was executed directly. No application code or installed generation changed.
 
 The unrelated onboarding-language offscreen test also reproduces the Polish bitmap failure in isolation. Appearance/redraw diagnostics did not fix it and were preserved only in the ignored local handoff area, then removed from the tracked test. No full Swift-suite PASS is claimed.
+
+## Peer text and demux generation admission — 2026-10-07
+
+Integrator admitted `afa3c5e9940031b6d6bb4cf140779c0568d6c993` and its child
+`2f5d565c23b374d835bc0ce62f7542376a7483e0` into the current worktree.
+All eight changed files match the source cut exactly before this report update;
+admission is patch equivalence, not ancestry. The helper installer preserves
+the manifest-verified installed publisher; lease resume uses the journal's
+logical extent and retains open PCM inventory across chunk rotation.
+
+Root ran 132 Python tests: 131 passed and one initially refused the missing
+local canonical publisher. After the production publisher build succeeded,
+that real typed-message/handover round trip passed (one selected test).
+The compile-only Swift helper installer gate passed and installed nothing.
+Logs: `/tmp/codescribe-e19c-demux-admission-oct7.log`,
+`/tmp/codescribe-e19c-demux-roundtrip-oct7.log`,
+`/tmp/codescribe-e19c-demux-publisher-build-oct7.log`,
+`/tmp/codescribe-e19c-demux-installer-oct7.log`.
+
+The live Astra lease separately adopted installed helper g2f5d565c through
+same-session detach/attach: cursor 2438386 unchanged, voice ara/xai/1.25 and
+lease unchanged, zero newly emitted historical IDs, backlog zero, follower alive.
+Receipt: `.vibecrafted/astra-demux-adoption-20261007.json`. Peer text reached
+this conversation through its native queue and the causal response was spoken.
+Fresh spoken-take reception remains a separate acceptance boundary.
+No app restart, app install or older helper replacement was performed.
