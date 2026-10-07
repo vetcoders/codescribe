@@ -3,6 +3,7 @@ import SwiftUI
 /// Paints the passive observer's immutable conversation projection.
 struct OverlayConversationView: View {
   @Environment(\.displayScale) private var displayScale
+  @Environment(\.csTextScale) private var textScale
   let conversation: OverlayConversation
   let palette: OverlayAppearancePalette
   let topInset: CGFloat
@@ -23,6 +24,7 @@ struct OverlayConversationView: View {
   var onMicrophone: () -> Void = {}
   var onPlayback: () -> Void = {}
   var playbackError: String?
+  var agentDescriptor: String? = nil
 
   @State private var followsLatest = true
   @State private var composerHeight: CGFloat = 0
@@ -67,6 +69,9 @@ struct OverlayConversationView: View {
           .onChange(of: orderedMessages.last) { _, _ in
             if followsLatest || followsLiveChannel { scrollToLatest(proxy) }
           }
+          .onChange(of: textScale) { _, _ in
+            if followsLatest { scrollToLatest(proxy) }
+          }
       }
       .foregroundStyle(palette.primaryText.color)
     }
@@ -79,10 +84,12 @@ struct OverlayConversationView: View {
         OverlayConversationComposer(
           palette: palette, draft: $draft, sending: sending, onSubmit: submit)
         if let sendError {
-          Text(verbatim: sendError).font(.caption).foregroundStyle(palette.errorStatus.color)
+          Text(verbatim: sendError)
+            .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
         }
         if let playbackError {
-          Text(verbatim: playbackError).font(.caption).foregroundStyle(palette.errorStatus.color)
+          Text(verbatim: playbackError)
+            .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
             .accessibilityIdentifier("overlay-conversation-playback-error")
         }
       }
@@ -95,27 +102,59 @@ struct OverlayConversationView: View {
 
   private var navigation: some View {
     navigationGlassContainer(
-      HStack {
-        if conversation.channel == "0" {
-          Text("0 · All").font(.headline)
-        } else {
-          Text(verbatim: conversation.name).font(.headline).lineLimit(1)
-            .help(
-              Text(
-                verbatim: conversation.owner.map { "\($0.provider) · \($0.providerSessionID)" }
-                  ?? "")
-            )
-        }
-        Spacer(minLength: 4)
+      HStack(spacing: 6) {
+        conversationNamePill
         if conversation.owner != nil {
           OverlayAgentAudioControls(
             open: microphoneOpen, muted: playbackMuted,
             microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
-            palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback)
+            palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback
+          )
+          .fixedSize()
         }
+        Spacer(minLength: 0)
       }
     )
     .accessibilityIdentifier("overlay-conversation-navigation")
+  }
+
+  @ViewBuilder
+  private var conversationNamePill: some View {
+    let label = VStack(alignment: .leading, spacing: 1) {
+      if conversation.channel == "0" {
+        Text("0 · All")
+      } else {
+        Text(verbatim: conversation.name)
+          .help(
+            Text(
+              verbatim: conversation.owner.map { "\($0.provider) · \($0.providerSessionID)" }
+                ?? ""))
+        if let descriptor = agentDescriptor ?? conversation.owner?.provider, !descriptor.isEmpty {
+          Text(verbatim: descriptor)
+            .font(.system(size: 11 * textScale, weight: .regular))
+            .foregroundStyle(palette.mutedText.color)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .accessibilityIdentifier("overlay-conversation-agent-descriptor")
+        }
+      }
+    }
+    .font(.system(size: 13 * textScale, weight: .bold))
+    .foregroundStyle(palette.primaryText.color)
+    .lineLimit(1)
+    .truncationMode(.middle)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 5)
+    .frame(minHeight: 28)
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isHeader)
+    .accessibilityIdentifier("overlay-conversation-name")
+
+    if #available(macOS 26.0, *) {
+      label.glassEffect(.regular, in: Capsule())
+    } else {
+      label.background(.regularMaterial, in: Capsule())
+    }
   }
 
   @ViewBuilder
@@ -147,6 +186,7 @@ struct OverlayConversationView: View {
       LazyVStack(alignment: .leading, spacing: 12) {
         if orderedMessages.isEmpty {
           Text("No conversation messages yet")
+            .font(.system(size: 13 * textScale))
             .foregroundStyle(palette.mutedText.color)
         }
         ForEach(orderedMessages) { message in
@@ -202,22 +242,24 @@ struct OverlayConversationView: View {
     VStack(alignment: .leading, spacing: 5) {
       HStack {
         if message.kind == .user {
-          Text("You").font(.caption.bold())
+          Text("You").font(.system(size: 10 * textScale, weight: .bold))
         } else {
-          Text(verbatim: message.owner?.name ?? conversation.name).font(.caption.bold())
+          Text(verbatim: message.owner?.name ?? conversation.name)
+            .font(.system(size: 10 * textScale, weight: .bold))
         }
         if message.unsolicited && message.kind == .reply {
-          Text("Unsolicited reply").font(.caption)
+          Text("Unsolicited reply").font(.system(size: 10 * textScale))
         }
       }
       .foregroundStyle(palette.mutedText.color)
       if let question = addressedQuestion(for: message) {
         Text("In reply to: \(String(question.text.prefix(100)))")
-          .font(.caption)
+          .font(.system(size: 10 * textScale))
           .foregroundStyle(palette.mutedText.color)
           .lineLimit(2)
       }
       Text(verbatim: message.text)
+        .font(.system(size: 13 * textScale))
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
@@ -228,7 +270,7 @@ struct OverlayConversationView: View {
             Text(Self.receiptStatusText(for: recipient))
           }
         }
-        .font(.caption)
+        .font(.system(size: 10 * textScale))
         .foregroundStyle(palette.mutedText.color)
       }
       if message.kind == .reply && message.supportsSpeechPlayback {
@@ -236,6 +278,7 @@ struct OverlayConversationView: View {
           let active = message.playback.map { ["waiting", "playing"].contains($0.state) } ?? false
           if active {
             Button("Stop", systemImage: "stop.fill") { onControl(message, true) }
+              .font(.system(size: 13 * textScale))
               .accessibilityIdentifier("overlay-reply-stop-\(message.id)")
           } else {
             Button {
@@ -250,18 +293,20 @@ struct OverlayConversationView: View {
             .accessibilityIdentifier("overlay-reply-play-\(message.id)")
           }
           if let playback = message.playback {
-            Text(playbackLabel(playback.state, reason: playback.reason)).font(.caption)
+            Text(playbackLabel(playback.state, reason: playback.reason))
+              .font(.system(size: 10 * textScale))
           } else if pendingControls.contains(message.id) {
-            Text("Requesting playback").font(.caption)
+            Text("Requesting playback").font(.system(size: 10 * textScale))
           }
         }
         .buttonStyle(.borderless)
         if let reason = message.playback?.reason, reason != "muted" {
           Text(verbatim: reason)
-            .font(.caption).foregroundStyle(palette.mutedText.color)
+            .font(.system(size: 10 * textScale)).foregroundStyle(palette.mutedText.color)
         }
         if let error = controlErrors[message.id] {
-          Text(verbatim: error).font(.caption).foregroundStyle(palette.errorStatus.color)
+          Text(verbatim: error)
+            .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
         }
       }
     }

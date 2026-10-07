@@ -169,6 +169,7 @@ private struct OverlayAgentControlStyle: ViewModifier {
 
 /// Identical controls in the roster and conversation; neither owns capture or playback.
 struct OverlayAgentAudioControls: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let open: Bool
   let muted: Bool?
   let microphoneEnabled: Bool
@@ -197,9 +198,11 @@ struct OverlayAgentAudioControls: View {
       Button(action: onMicrophone) {
         Image(systemName: open ? "mic.fill" : "mic")
           .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(open ? palette.listeningStatus.color : palette.primaryText.color)
+          .foregroundStyle(open ? Color.red : palette.primaryText.color)
+          .symbolEffect(.pulse, isActive: open && !reduceMotion)
           .frame(width: 16, height: 16)
       }
+      .tint(open ? Color.red : nil)
       .csFocusOutline()
       .disabled(!microphoneEnabled)
       .help(microphoneLabel)
@@ -233,6 +236,7 @@ struct OverlayAgentAudioControls: View {
 /// A quiet notification affordance opens the full monitor on the overlay canvas.
 struct OverlayChannelStatusView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.csTextScale) private var textScale
 
   let channels: [OverlayChannelDelivery]
   let unavailable: Bool
@@ -241,8 +245,10 @@ struct OverlayChannelStatusView: View {
   /// keep the render loop awake.
   let animates: Bool
   let hudStates: [String: OverlayChannelHudProjection]
+  let agentDescriptors: [String: String]
   let onToggleChannel: ((UInt8) -> Void)?
   let toggleError: String?
+  var pendingToggleChannels: Set<String> = []
   let conversations: [OverlayConversation]
   let selectedConversationID: String?
   let unreadCounts: [String: Int]
@@ -264,8 +270,10 @@ struct OverlayChannelStatusView: View {
     channels: [OverlayChannelDelivery], unavailable: Bool,
     palette: OverlayAppearancePalette, animates: Bool,
     hudStates: [String: OverlayChannelHudProjection] = [:],
+    agentDescriptors: [String: String] = [:],
     onToggleChannel: ((UInt8) -> Void)? = nil,
     toggleError: String? = nil,
+    pendingToggleChannels: Set<String> = [],
     conversations: [OverlayConversation] = [], selectedConversationID: String? = nil,
     unreadCounts: [String: Int] = [:], onSelectConversation: ((String?) -> Void)? = nil,
     onShowMonitor: (() -> Void)? = nil
@@ -275,8 +283,10 @@ struct OverlayChannelStatusView: View {
     self.palette = palette
     self.animates = animates
     self.hudStates = hudStates
+    self.agentDescriptors = agentDescriptors
     self.onToggleChannel = onToggleChannel
     self.toggleError = toggleError
+    self.pendingToggleChannels = pendingToggleChannels
     self.conversations = conversations
     self.selectedConversationID = selectedConversationID
     self.unreadCounts = unreadCounts
@@ -342,9 +352,9 @@ struct OverlayChannelStatusView: View {
 
   var monitorBody: some View {
     ChannelRosterContent(palette: palette) {
-      VStack(alignment: .leading, spacing: 12) {
+      VStack(alignment: .leading, spacing: 8) {
         HStack {
-          Text("Agents").font(.system(size: 13, weight: .semibold))
+          Text("Agents").font(.system(size: 13 * textScale, weight: .semibold))
           Spacer()
           Button {
             onDismissMonitor?()
@@ -356,7 +366,7 @@ struct OverlayChannelStatusView: View {
           .help("Close agent sidebar")
         }
         ScrollView {
-          VStack(alignment: .leading, spacing: 12) {
+          VStack(alignment: .leading, spacing: 8) {
             Button {
               onShowTranscription?()
             } label: {
@@ -370,7 +380,7 @@ struct OverlayChannelStatusView: View {
                     .foregroundStyle(palette.mutedText.color)
                 }
               }
-              .padding(.horizontal, 10).padding(.vertical, 9)
+              .padding(.horizontal, 10).padding(.vertical, 6)
               .frame(maxWidth: .infinity, alignment: .leading)
               .contentShape(RoundedRectangle(cornerRadius: 9))
               .background(
@@ -387,13 +397,14 @@ struct OverlayChannelStatusView: View {
             }
             Divider()
             details
-              .font(.system(size: 13, weight: .medium))
+              .font(.system(size: 13 * textScale, weight: .medium))
               .foregroundStyle(palette.primaryText.color)
           }
         }
         .clipped()
       }
     }
+    .font(.system(size: 13 * textScale))
     .accessibilityIdentifier("overlay-agent-monitor")
   }
 
@@ -443,37 +454,44 @@ struct OverlayChannelStatusView: View {
   private func channelRow(_ channel: OverlayChannelDelivery) -> some View {
     let conversation = conversation(for: channel)
     let open = isOpen(channel)
+    let descriptor = agentDescriptor(for: channel)
+    let status = statusHelp(for: channel)
     let label =
-      HStack(spacing: 8) {
-        Text(verbatim: channel.channel)
-          .font(.system(size: 11, weight: .semibold, design: .monospaced))
-          .foregroundStyle(palette.mutedText.color)
-          .frame(width: 16)
-        VStack(alignment: .leading, spacing: 3) {
+      HStack(spacing: 7) {
+        HStack(spacing: 3) {
+          Text(verbatim: channel.channel)
+            .font(.system(size: 10 * textScale, weight: .semibold, design: .monospaced))
+            .foregroundStyle(palette.mutedText.color)
+            .frame(width: 10)
+          Image(systemName: statusSymbol(for: channel))
+            .font(.system(size: 9 * textScale, weight: .medium))
+            .foregroundStyle(statusTone(for: channel).color)
+            .frame(width: 12, height: 14)
+            .help(status)
+            .accessibilityLabel(Text(verbatim: shortStatus(for: channel)))
+            .accessibilityValue(Text(verbatim: detail(for: channel)))
+            .accessibilityIdentifier("overlay-channel-delivery-\(channel.channel)")
+        }
+        VStack(alignment: .leading, spacing: 2) {
           if channel.channel == "0" {
             Text("0 · All")
           } else {
             Text(verbatim: conversation?.name ?? channel.agent)
               .lineLimit(1).truncationMode(.middle)
           }
-          HStack(spacing: 6) {
-            OverlayAgentStatusMark(
-              reduceMotion: reduceMotion,
-              glyph: OverlayAgentGlyph.resolve(channels: [channel], unavailable: unavailable)
-                ?? .attached,
-              palette: palette, animates: animates, fontSize: 10
-            ).accessibilityHidden(true)
-            Text(shortStatus(for: channel))
-              .foregroundStyle(palette.bodyText.color)
-              .lineLimit(1).truncationMode(.tail)
-              .accessibilityIdentifier("overlay-channel-delivery-\(channel.channel)")
+          if let descriptor {
+            Text(verbatim: descriptor)
+              .font(.system(size: 10 * textScale, weight: .light))
+              .foregroundStyle(palette.mutedText.color)
+              .lineLimit(1).truncationMode(.middle)
+              .help(descriptor)
+              .accessibilityIdentifier("overlay-agent-descriptor-\(channel.channel)")
           }
-          .font(.system(size: 11, weight: .medium))
         }
-        Spacer(minLength: 8)
+        Spacer(minLength: 4)
         if let conversation, let count = unreadCounts[conversation.id], count > 0 {
           Text(verbatim: String(count))
-            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            .font(.system(size: 11 * textScale, weight: .semibold, design: .monospaced))
             .foregroundStyle(palette.processingStatus.color)
             .padding(.horizontal, 6).padding(.vertical, 2)
             .background(palette.processingStatus.color.opacity(0.12), in: Capsule())
@@ -497,17 +515,19 @@ struct OverlayChannelStatusView: View {
         }
         .foregroundStyle(palette.primaryText.color)
         .help(
-          conversation == nil
+          (conversation == nil
             ? String(localized: "No messages yet")
-            : String(localized: "View conversation without changing the microphone")
+            : String(localized: "View conversation without changing the microphone"))
+            + ". " + status
         )
         .accessibilityLabel(Text(verbatim: notificationTitle(for: channel)))
-        .accessibilityValue(detail(for: channel))
+        .accessibilityValue(Text(verbatim: descriptor.map { $0 + ". " + status } ?? status))
         .accessibilityIdentifier("overlay-view-conversation-\(conversation?.id ?? channel.channel)")
 
         OverlayAgentAudioControls(
           open: open, muted: mutedChannels[channel.channel],
           microphoneEnabled: !unavailable && onToggleChannel != nil
+            && !pendingToggleChannels.contains(channel.channel)
             && Self.toggleDigit(for: channel.channel) != nil,
           playbackEnabled: onTogglePlayback != nil
             && !pendingMuteChannels.contains(channel.channel),
@@ -534,14 +554,14 @@ struct OverlayChannelStatusView: View {
         }
       }
     )
-    .padding(.vertical, 7)
+    .padding(.vertical, 4)
     .padding(.horizontal, 6)
     .background(
       selectedConversationID == conversation?.id && conversation != nil
         ? palette.mutedText.color.opacity(0.10) : .clear,
       in: RoundedRectangle(cornerRadius: 10)
     )
-    .help(detail(for: channel))
+    .help(status)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-row-\(channel.channel)")
   }
@@ -563,7 +583,7 @@ struct OverlayChannelStatusView: View {
           }
           if saved, let owner = conversation.owner {
             Text(verbatim: savedConversationDetail(conversation, owner: owner))
-              .font(.system(size: 11))
+              .font(.system(size: 11 * textScale))
               .foregroundStyle(palette.mutedText.color)
               .lineLimit(1)
           }
@@ -571,7 +591,7 @@ struct OverlayChannelStatusView: View {
         Spacer(minLength: 8)
         if let count = unreadCounts[conversation.id], count > 0 {
           Text(verbatim: String(count))
-            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            .font(.system(size: 11 * textScale, weight: .semibold, design: .monospaced))
             .foregroundStyle(palette.processingStatus.color)
             .padding(.horizontal, 6).padding(.vertical, 2)
             .background(palette.processingStatus.color.opacity(0.12), in: Capsule())
@@ -601,7 +621,7 @@ struct OverlayChannelStatusView: View {
   }
 
   private var details: some View {
-    VStack(alignment: .leading, spacing: 4) {
+    VStack(alignment: .leading, spacing: 2) {
       if channels.isEmpty && currentConversations.isEmpty {
         Text("No agents connected")
           .foregroundStyle(palette.mutedText.color)
@@ -667,6 +687,41 @@ struct OverlayChannelStatusView: View {
     case .sent, .queued: return String(localized: "Awaiting receipt")
     case .received: return String(localized: "Received")
     }
+  }
+
+  func agentDescriptor(for channel: OverlayChannelDelivery) -> String? {
+    let descriptor = agentDescriptors[channel.channel]?.trimmingCharacters(
+      in: .whitespacesAndNewlines)
+    if let descriptor, !descriptor.isEmpty { return descriptor }
+    let provider = hudStates[channel.channel]?.provider?.trimmingCharacters(
+      in: .whitespacesAndNewlines)
+    return provider.flatMap { $0.isEmpty ? nil : $0 }
+  }
+
+  func statusSymbol(for channel: OverlayChannelDelivery) -> String {
+    if unavailable { return "exclamationmark.triangle" }
+    if hasDeadFollower(channel) { return "xmark.circle" }
+    if isOpen(channel) { return "mic.fill" }
+    switch channel.stage {
+    case nil: return "circle"
+    case .sent, .queued: return "clock"
+    case .received: return "checkmark"
+    }
+  }
+
+  private func statusTone(for channel: OverlayChannelDelivery) -> OverlayColorToken {
+    if unavailable { return palette.processingStatus }
+    if hasDeadFollower(channel) { return palette.mutedText }
+    if isOpen(channel) { return palette.listeningStatus }
+    switch channel.stage {
+    case nil: return palette.mutedText
+    case .sent, .queued: return palette.processingStatus
+    case .received: return palette.successStatus
+    }
+  }
+
+  func statusHelp(for channel: OverlayChannelDelivery) -> String {
+    shortStatus(for: channel) + ". " + detail(for: channel)
   }
 
   func detail(for channel: OverlayChannelDelivery) -> String {

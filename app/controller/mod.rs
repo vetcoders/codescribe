@@ -3886,7 +3886,12 @@ impl RecordingController {
         recorder.set_capture_turn_intent(CaptureTurnIntent::HandsFree);
         recorder.set_event_sink(None);
         recorder.set_live_formatting_agent(None);
-        recorder.set_level_callback(None);
+        // Level metering belongs to the physical capture, not this take. A
+        // channel may still own the stream while dictation starts or stops;
+        // keep its one tap until the last capture subscriber releases it.
+        if !recorder.recorder.is_active() || !recorder.has_capture_subscribers() {
+            recorder.set_level_callback(None);
+        }
     }
 
     /// Bring the recorder to a clean pre-start state: force-stop a stream left
@@ -4363,6 +4368,11 @@ impl RecordingController {
         recorder: &mut StreamingRecorder,
         event_broadcast: broadcast::Sender<IpcEvent>,
     ) {
+        // The physical callback already captured its tap. Joining that stream
+        // must neither replace the retained sender nor create another worker.
+        if recorder.recorder.is_active() {
+            return;
+        }
         let (level_tx, mut level_rx) = mpsc::channel::<f32>(AUDIO_LEVEL_QUEUE_CAPACITY);
         recorder.set_level_callback(Some(Arc::new(move |rms| {
             let _ = level_tx.try_send(rms);

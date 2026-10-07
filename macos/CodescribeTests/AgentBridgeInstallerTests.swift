@@ -25,28 +25,110 @@ final class AgentBridgeInstallerTests: XCTestCase {
     let installer = RealAgentBridgeInstaller(
       resourceRoot: nil, homeDirectory: scratch, environment: [:])
     let candidate = AgentPlaybackIdentity(
-      provider: "codex", session: "large-mailbox", bus: scratch.appendingPathComponent("default.jsonl").path)
+      provider: "codex", session: "large-mailbox",
+      bus: scratch.appendingPathComponent("default.jsonl").path)
     let customBus = scratch.appendingPathComponent("custom.jsonl").path
     let lease = installer.bridgeRoot.appendingPathComponent("leases/\(candidate.leaseID).json")
     try FileManager.default.createDirectory(
       at: lease.deletingLastPathComponent(), withIntermediateDirectories: true)
-    func writeLease(padding: Int) throws {
-      let row: [String: Any] = [
+    func writeLease(padding: Int, model: String? = nil) throws {
+      var row: [String: Any] = [
         "schema": "codescribe.agent-bridge.lease.v1", "lease_id": candidate.leaseID,
         "provider": candidate.provider, "provider_session_id": candidate.session,
         "bus": customBus, "pending": [["text": String(repeating: "x", count: padding)]],
       ]
+      row["model"] = model
       try JSONSerialization.data(withJSONObject: row).write(to: lease)
     }
     try writeLease(padding: 5 << 20)
-    let resolved = await RealAgentBridgeInstaller.boundPlaybackIdentities(
+    let resolved = await RealAgentBridgeInstaller.boundPlaybackAgents(
       for: ["2": candidate], installer: installer)
-    XCTAssertEqual(resolved["2"], AgentPlaybackIdentity(
-      provider: candidate.provider, session: candidate.session, bus: customBus))
+    XCTAssertEqual(
+      resolved["2"]?.identity,
+      AgentPlaybackIdentity(
+        provider: candidate.provider, session: candidate.session, bus: customBus))
+    XCTAssertEqual(resolved["2"]?.descriptor, "Codex", "Unknown model must not be guessed")
+    try writeLease(padding: 0, model: "gpt-6.1-sol")
+    let withModel = await RealAgentBridgeInstaller.boundPlaybackAgents(
+      for: ["2": candidate], installer: installer)
+    XCTAssertEqual(withModel["2"]?.descriptor, "Codex · gpt-6.1-sol")
+    XCTAssertEqual(
+      withModel["2"]?.identity, resolved["2"]?.identity,
+      "Changing display metadata must not change playback identity")
     try writeLease(padding: 16 << 20)
-    let oversized = await RealAgentBridgeInstaller.boundPlaybackIdentities(
+    let oversized = await RealAgentBridgeInstaller.boundPlaybackAgents(
       for: ["2": candidate], installer: installer)
     XCTAssertTrue(oversized.isEmpty)
+  }
+
+  func testPlaybackMuteSnapshotTreatsAbsentReceiptsAsAudibleAndKeepsAgentsIndependent() async throws
+  {
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: nil, homeDirectory: scratch, environment: [:])
+    let first = AgentPlaybackIdentity(
+      provider: "codex", session: "first", bus: scratch.appendingPathComponent("custom.jsonl").path)
+    let second = AgentPlaybackIdentity(provider: "codex", session: "second", bus: first.bus)
+    let identities: Set<AgentPlaybackIdentity> = [first, second]
+    let absent = await RealAgentBridgeInstaller.playbackMuteSnapshot(
+      for: identities, installer: installer)
+    XCTAssertEqual(absent[first], false, "No receipt is the canonical audible default")
+    XCTAssertEqual(absent[second], false)
+
+    let directory = installer.bridgeRoot.appendingPathComponent("runtime/playback-mutes")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    func publish(_ identity: AgentPlaybackIdentity, muted: Bool) throws {
+      let row: [String: Any] = [
+        "schema": "codescribe.agent-playback-mute.v1", "provider": identity.provider,
+        "provider_session_id": identity.session, "lease_id": identity.leaseID,
+        "bus": identity.bus, "muted": muted,
+      ]
+      try JSONSerialization.data(withJSONObject: row).write(
+        to: directory.appendingPathComponent("\(identity.storageKey).json"), options: .atomic)
+    }
+    try publish(first, muted: true)
+    let freshReader = RealAgentBridgeInstaller(
+      resourceRoot: nil, homeDirectory: scratch, environment: [:])
+    let muted = await RealAgentBridgeInstaller.playbackMuteSnapshot(
+      for: identities, installer: freshReader)
+    XCTAssertEqual(muted[first], true, "A fresh reader sees the durable per-session preference")
+    XCTAssertEqual(muted[second], false, "Muting one agent must leave the other audible")
+    try publish(first, muted: false)
+    let unmuted = await RealAgentBridgeInstaller.playbackMuteSnapshot(
+      for: identities, installer: installer)
+    XCTAssertEqual(unmuted[first], false)
+    XCTAssertEqual(unmuted[second], false)
+  }
+
+  func testPlaybackMuteSnapshotLeavesMalformedForeignAndUnreadableReceiptsUnknown() async throws {
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: nil, homeDirectory: scratch, environment: [:])
+    let identity = AgentPlaybackIdentity(
+      provider: "codex", session: "bound", bus: scratch.appendingPathComponent("custom.jsonl").path)
+    let path = installer.bridgeRoot.appendingPathComponent(
+      "runtime/playback-mutes/\(identity.storageKey).json")
+    try FileManager.default.createDirectory(
+      at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+    var row: [String: Any] = [
+      "schema": "codescribe.agent-playback-mute.v1", "provider": identity.provider,
+      "provider_session_id": "another-session", "lease_id": identity.leaseID,
+      "bus": identity.bus, "muted": false,
+    ]
+    let malformed = [Data("not-json".utf8), try JSONSerialization.data(withJSONObject: row)]
+    row["provider_session_id"] = identity.session
+    row["muted"] = "false"
+    for data in malformed + [
+      try JSONSerialization.data(withJSONObject: row), Data(repeating: 32, count: 65537),
+    ] {
+      try data.write(to: path)
+      let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(
+        for: [identity], installer: installer)
+      XCTAssertNil(snapshot[identity], "Invalid receipt must not enable playback controls")
+    }
+    try FileManager.default.removeItem(at: path)
+    try FileManager.default.createDirectory(at: path, withIntermediateDirectories: false)
+    let unreadable = await RealAgentBridgeInstaller.playbackMuteSnapshot(
+      for: [identity], installer: installer)
+    XCTAssertNil(unreadable[identity], "An existing unreadable object is not a missing receipt")
   }
 
   func testInstallIsExplicitAtomicIdempotentAndSupportsIndependentClients() throws {

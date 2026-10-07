@@ -751,8 +751,30 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     )
     XCTAssertFalse(view.isOpen(channel), "controller HUD state wins over older mailbox state")
     XCTAssertTrue(view.hasDeadFollower(channel))
+    XCTAssertEqual(view.statusSymbol(for: channel), "xmark.circle")
+    XCTAssertTrue(view.statusHelp(for: channel).contains(String(localized: "Disconnected")))
     XCTAssertEqual(view.detail(for: channel), "queued · waiting for receipt · nobody listening")
     XCTAssertEqual(channel.stage, .queued, "liveness does not reinterpret delivery evidence")
+  }
+
+  func testCompactRosterUsesOnlySuppliedRuntimeDescriptorAndKeepsUnknownModelsAbsent() {
+    let channel = OverlayChannelDelivery(
+      channel: "3", agent: "astra", deliveryID: nil, stage: nil, isOpen: false)
+    let hud = OverlayChannelHudProjection(
+      open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+      provider: "codex", providerSessionID: "astra-session")
+    let named = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .light, animates: false,
+      hudStates: ["3": hud], agentDescriptors: ["3": "Codex · gpt-6.1-sol"])
+    XCTAssertEqual(named.agentDescriptor(for: channel), "Codex · gpt-6.1-sol")
+    let providerOnly = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .light, animates: false,
+      hudStates: ["3": hud])
+    XCTAssertEqual(providerOnly.agentDescriptor(for: channel), "codex")
+    let unknown = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .light, animates: false)
+    XCTAssertNil(unknown.agentDescriptor(for: channel))
+    XCTAssertEqual(providerOnly.statusSymbol(for: channel), "circle")
   }
 
   func testLiveAndUnknownFollowerKeepTheExistingDeliveryCopy() {

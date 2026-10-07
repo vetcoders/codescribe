@@ -28,6 +28,102 @@ private struct MicrophoneFrameCapture: View {
 
 final class OverlayResizeHitTests: XCTestCase {
   @MainActor
+  func testPointerResizeKeepsFrameAndEditorThroughLiveRosterUpdates() throws {
+    let state = OverlayState.previewFormatted()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "OverlayResizeHitTests.liveResize"))
+        as? FloatingOverlayPanel)
+    let controller = OverlayController(
+      state: state, overlayEnabledProvider: { true }, assistiveStatusProvider: { false },
+      panelFactory: { _, _ in panel }, orderPanelFront: { $0.orderFrontRegardless() },
+      orderPanelOut: { $0.orderOut(nil) })
+    controller.show()
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    panel.setFrame(NSRect(x: 300, y: 300, width: 470, height: 280), display: false)
+    let root = try XCTUnwrap(panel.contentView)
+    func editor(in view: NSView) -> NSTextView? {
+      if let text = view as? NSTextView { return text }
+      return view.subviews.lazy.compactMap { editor(in: $0) }.first
+    }
+    root.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+    let textView = try XCTUnwrap(editor(in: root))
+    let text = textView.string
+    textView.setSelectedRange(NSRange(location: 2, length: 3))
+    let start = panel.frame
+    let pointer = NSPoint(x: start.maxX, y: start.midY)
+    XCTAssertTrue(panel.beginUserResize(edge: .right, at: pointer))
+    XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: pointer.x + 48, y: pointer.y)))
+    let resized = panel.frame
+    XCTAssertEqual(resized.width, start.width + 48, accuracy: 0.5)
+    for loud in [false, true, false] {
+      state.applyChannelRoster([
+        .init(
+          channel: "3", audience: "astra", provider: "codex", providerSessionId: "resize",
+          open: true, loud: loud, autosealDeadlineUnixMs: nil, followerAlive: true)
+      ])
+      XCTAssertEqual(panel.frame, resized, "passive roster updates must not re-anchor a drag")
+    }
+    XCTAssertFalse(panel.updateUserResize(to: NSPoint(x: pointer.x + 48, y: pointer.y)))
+    panel.endUserResize()
+    XCTAssertFalse(panel.isUserResizing)
+    XCTAssertEqual(panel.frame, resized)
+    XCTAssertEqual(root.subviews.first?.frame, root.bounds)
+    state.setPresentationMode(.mini)
+    panel.setPresentationMode(.mini)
+    state.setPresentationMode(.expanded)
+    panel.setPresentationMode(.expanded)
+    root.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+    XCTAssertEqual(panel.frame.size, resized.size)
+    XCTAssertTrue(editor(in: root) === textView)
+    XCTAssertEqual(textView.string, text)
+    XCTAssertEqual(textView.selectedRange(), NSRange(location: 2, length: 3))
+    withExtendedLifetime(controller) {}
+  }
+
+  @MainActor
+  func testResizeCoalescesPresentationAndCloseCancelsLateMouseUp() throws {
+    let state = OverlayState.previewFormatted()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "OverlayResizeHitTests.resizeClose"))
+        as? FloatingOverlayPanel)
+    let controller = OverlayController(
+      state: state, overlayEnabledProvider: { true }, assistiveStatusProvider: { false },
+      panelFactory: { _, _ in panel }, orderPanelFront: { $0.orderFrontRegardless() },
+      orderPanelOut: { $0.orderOut(nil) })
+    controller.show()
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    panel.setFrame(NSRect(x: 300, y: 300, width: 470, height: 280), display: false)
+    let start = panel.frame
+    let pointer = NSPoint(x: start.maxX, y: start.midY)
+    XCTAssertTrue(panel.beginUserResize(edge: .right, at: pointer))
+    panel.setPresentationMode(.midi)
+    panel.setPresentationMode(.mini)
+    XCTAssertEqual(panel.frame, start)
+    panel.endUserResize()
+    XCTAssertEqual(panel.frame.size, DictationOverlayWindow.collapsedSize)
+    panel.setPresentationMode(.expanded)
+    XCTAssertTrue(panel.beginUserResize(edge: .right, at: pointer))
+    panel.setPresentationMode(.mini)
+    controller.dismiss()
+    XCTAssertFalse(panel.isVisible)
+    XCTAssertFalse(panel.isUserResizing)
+    let closed = panel.frame
+    panel.endUserResize()
+    XCTAssertEqual(panel.frame, closed)
+    XCTAssertFalse(panel.isVisible, "late mouse-up cannot revive a dismissed panel")
+  }
+
+  @MainActor
   func testDrawerFitsMinimumCanvasAndGrowsWithResizedCanvas() throws {
     var measuredWidths: [CGFloat] = []
     for size in [
@@ -235,10 +331,7 @@ final class OverlayResizeHitTests: XCTestCase {
 
   /// The container answers `hitTest` with itself only inside the 16 pt resize
   /// band, so the panel's drag intercept must never treat that band as a drag
-  /// handle — otherwise `OverlayContentContainer.mouseDown` (edge tracking)
-  /// never receives the click and edge resize is dead. The tracking loop runs
-  /// on `window.nextEvent`, which synthetic events cannot feed, so the witness
-  /// is the routing decision on the real hierarchy, not the tracked frame.
+  /// handle. The panel owns resize down/drag/up through ordinary event dispatch.
   @MainActor
   func testRealOverlayResizeBandIsNotAWindowDragHandle() throws {
     let state = OverlayState.previewListening()

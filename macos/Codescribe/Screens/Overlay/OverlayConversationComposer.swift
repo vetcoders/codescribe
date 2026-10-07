@@ -3,6 +3,7 @@ import SwiftUI
 
 /// One input surface; the conversation owner retains the draft and publishes it.
 struct OverlayConversationComposer: View {
+  @Environment(\.csTextScale) private var textScale
   let palette: OverlayAppearancePalette
   @Binding var draft: String
   let sending: Bool
@@ -15,14 +16,15 @@ struct OverlayConversationComposer: View {
   private var composerContent: some View {
     HStack(alignment: .bottom, spacing: 8) {
       ConversationMessageField(
-        text: $draft, textColor: palette.primaryText.nsColor, sending: sending, onSubmit: onSubmit
+        text: $draft, textColor: palette.primaryText.nsColor, fontSize: 14 * textScale,
+        sending: sending, onSubmit: onSubmit
       )
       .fixedSize(horizontal: false, vertical: true)
       .accessibilityIdentifier("overlay-conversation-composer")
       .overlay(alignment: .topLeading) {
         if draft.isEmpty {
           Text("Message the Agent")
-            .font(.system(size: 14))
+            .font(.system(size: 14 * textScale))
             .foregroundStyle(palette.mutedText.color)
             .padding(.top, 5)
             .allowsHitTesting(false)
@@ -48,6 +50,7 @@ struct OverlayConversationComposer: View {
 private struct ConversationMessageField: NSViewRepresentable {
   @Binding var text: String
   let textColor: NSColor
+  let fontSize: CGFloat
   let sending: Bool
   let onSubmit: () -> Void
 
@@ -64,7 +67,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.isEditable = true
     editor.isSelectable = true
     editor.drawsBackground = false
-    editor.font = .systemFont(ofSize: 14)
+    let font = NSFont.systemFont(ofSize: fontSize)
+    editor.font = font
+    editor.typingAttributes[.font] = font
     editor.textContainerInset = NSSize(width: 0, height: 5)
     editor.textContainer?.lineFragmentPadding = 0
     editor.textContainer?.widthTracksTextView = true
@@ -80,6 +85,15 @@ private struct ConversationMessageField: NSViewRepresentable {
   func updateNSView(_ scroll: NSScrollView, context: Context) {
     context.coordinator.parent = self
     guard let editor = scroll.documentView as? MessageTextView else { return }
+    let font = NSFont.systemFont(ofSize: fontSize)
+    if editor.font != font {
+      let selection = editor.selectedRange()
+      editor.font = font
+      editor.setSelectedRange(selection)
+    }
+    if (editor.typingAttributes[.font] as? NSFont) != font {
+      editor.typingAttributes[.font] = font
+    }
     editor.textColor = textColor
     editor.insertionPointColor = textColor
     editor.sending = sending

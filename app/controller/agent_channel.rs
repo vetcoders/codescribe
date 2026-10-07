@@ -753,6 +753,12 @@ impl RecordingController {
                     .with_refinement_warnings(Arc::clone(&refinement_warnings)),
                 );
                 let sink: Arc<dyn EventSink> = emitter;
+                // The first channel may own the physical microphone without a
+                // dictation take. Install its measured level tap before the
+                // recorder freezes the callback; a later subscriber keeps the
+                // tap already feeding the shared capture.
+                let opens_physical_capture = !recorder.recorder.is_active();
+                Self::configure_level_broadcast(recorder, self.event_broadcast.clone());
                 match recorder
                     .begin_channel_session(
                         session_label,
@@ -766,6 +772,9 @@ impl RecordingController {
                 {
                     Ok(id) => id,
                     Err(error) => {
+                        if opens_physical_capture {
+                            recorder.set_level_callback(None);
+                        }
                         super::finish_audio_capture(session_id.as_deref());
                         if channels.is_empty() {
                             hold_badge::hide_hold_badge();
@@ -875,6 +884,13 @@ impl RecordingController {
             let mut recorder_guard = self.recorder.lock().await;
             match recorder_guard.as_mut() {
                 Some(recorder) => {
+                    // Retire the stored sender before the last channel closes
+                    // the stream. Its captured Arc drops with CoreAudio, so the
+                    // bounded worker rejects queued blocks before the next
+                    // physical capture. Shared dictation/other channels keep it.
+                    if recorder.capture_subscriber_count() == 1 && !recorder.has_take_subscriber() {
+                        recorder.set_level_callback(None);
+                    }
                     let (_last, audio_path) = recorder.end_channel_session(open.subscriber).await?;
                     audio_path
                 }

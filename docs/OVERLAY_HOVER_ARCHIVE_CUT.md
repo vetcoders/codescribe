@@ -203,3 +203,70 @@ hashes. Same-session adoption retained lease4b999, cursor4382773 and ara/xai/1.2
 follower91023 became16318, with the original watch/bell retained. Its publisher
 hash remained d3037f8b. The eventual app payload must include both this bus cut
 and the archive UI/helper cut, so background packaging cannot regress the helper.
+
+## Founder build2099 feedback: zoom, live meter and resize
+
+Baseline for this follow-up is2f70a9631760f74b4e338e20efa3d8e8a0892189,
+which contains the UI cut and canonical e447 read/ACK bus. Founder independently
+launched2099; Astra did not launch, restart, quit or capture the live app.
+
+Conversation name, body, metadata, controls and native composer now follow the
+existing csTextScale. Changing scale updates the mounted NSTextView font and
+typing attributes while retaining its identity, draft and selection. The compact
+header timer retains its fixed geometry instead of becoming the only scaled text.
+
+An open agent mic uses native semantic red and a pulse respecting Reduced Motion.
+Pending toggles disable repeated clicks until the controller receipt; no optimistic
+capture state is invented. Agent-only capture installs the existing measured RMS
+tap before the physical recorder freezes its callback. Joining a running capture
+keeps its one tap; the last capture subscriber releases it. Dictation Stop leaves
+the meter alive while an agent still owns capture. The Swift view consumes these
+measurements without changing transcript document or phase. No second recorder,
+decoder, ledger authority or bridge API was introduced.
+
+Edge resize now follows ordinary AppKit sendEvent down/drag/up dispatch instead
+of a nested nextEvent loop with forced intermediate paints. The pointer gesture
+owns frame geometry; passive roster refresh does not re-anchor it. Repeated frames
+are skipped, mode/placement/content writes wait for the gesture terminal event,
+and closing cancels late mouse-up state without reviving the panel. Mounted
+fixtures retain the native editor and selection through resize and live updates.
+
+The name is a passive native glass capsule beside the existing audio controls.
+Drawer rows are compact: status becomes a static pictogram with full tooltip and
+accessibility, followed by name and a small provider/model subtitle. Dead follower
+evidence still wins over stale receipt or open state. Descriptor is display-only
+and comes from the same verified lease as playback identity; unknown model is
+omitted. Current canonical leases have no model field. The native Codex receipt
+for Astra proves gpt-6.1-sol, but publishing/preserving this runtime metadata in
+the canonical lease remains the bus owner's separate work. No model is inferred
+from provider, voice, UUID or global defaults; no parallel model store was added.
+
+The disabled speaker cause was reproduced: FileHandle returns Cocoa missing-file
+code4; the reader recognized only260. Genuine missing receipts now mean audible,
+as in the existing Python authority. Malformed, foreign and unreadable receipts
+remain unknown. Existing per-session durable mute and manual playback authority
+are unchanged. Fixtures cover fresh reader persistence, independent agents,
+unmute, absent files, custom bus, invalid identity and malformed/oversized files.
+Private JSON decoding now uses explicit CodingKeys with native Swift names.
+
+### Verification of this follow-up
+
+- Fresh production Rust/Swift bindings PASS.
+- Production Clippy workspace/allfeatures with -Dwarnings PASS.
+- Full repository Semgrep PASS; normal push hook recorded separately.
+- Final affected Swift suite475 tests, zero failures,31.185 seconds PASS.
+- After the JSON CodingKeys change:49 installer tests, zero failures,2.197s PASS.
+- Existing speech/mute authority:9 isolated Python tests, zero failures,0.116s PASS.
+- Fresh compiler localization extraction/sync/catalog/bridge PASS:1430keys,
+  1408/1408Polish,96 awaiting review, no new/stale keys.
+- Strict authored Swift formatting and diff whitespace PASS; no suppressors.
+
+Logs use prefix /tmp/codescribe-e19c-agent-feedback-, notably swift-final-oct7.log,
+installer-final-oct7.log, mute-python-oct7.log, l10n-final-oct7.log, clippy-oct7.log
+and semgrep-oct7.log. Earlier compile-only failures were fixed before these
+terminal runs; no truncated test, zero-test filter or enlarged budget is accepted.
+
+These gates prove source and mounted fixtures. Native microphone/speaker/hotkey,
+GUI animation/performance and Founder acceptance remain unverified. Full Rust
+fixture migration and prior full Swift budget/host issue remain open; this is not
+a release receipt. Background installation has its own exact artifact receipt.

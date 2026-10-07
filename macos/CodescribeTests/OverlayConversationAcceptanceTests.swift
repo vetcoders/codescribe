@@ -6,6 +6,58 @@ import XCTest
 @testable import Codescribe
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
+  @MainActor
+  func testConversationZoomRetainsEditorDraftSelectionAndTypingFont() throws {
+    let key = "OverlayConversationZoom.\(UUID().uuidString)"
+    defer { UserDefaults.standard.removeObject(forKey: key) }
+    let scale = TextScaleController(key: key)
+    var draft = "Pierwsza linia i druga wypowiedź"
+    let identity = try XCTUnwrap(OverlayConversationOwner(row: owner(leaseA)))
+    let view = OverlayConversationView(
+      conversation: .init(
+        id: identity.id, channel: "2", name: "Lena", owner: identity, messages: []),
+      palette: .light, topInset: 50, bottomInset: 20, pendingControls: [], controlErrors: [:],
+      onControl: { _, _ in }, draft: Binding(get: { draft }, set: { draft = $0 }),
+      sending: false, sendError: nil, onSend: {})
+    let host = NSHostingView(rootView: TextScaleRoot(controller: scale) { view })
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 470, height: 280)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless,
+      backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    func settle() {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.04))
+      host.layoutSubtreeIfNeeded()
+    }
+    func editor(in root: NSView) -> NSTextView? {
+      if let text = root as? NSTextView, text.isEditable { return text }
+      return root.subviews.lazy.compactMap { editor(in: $0) }.first
+    }
+    settle()
+    let original = try XCTUnwrap(editor(in: host))
+    original.setSelectedRange(NSRange(location: 5, length: 7))
+    for _ in 0..<6 { scale.increase() }
+    settle()
+    let enlarged = try XCTUnwrap(editor(in: host))
+    XCTAssertTrue(enlarged === original)
+    XCTAssertEqual(enlarged.string, draft)
+    XCTAssertEqual(enlarged.selectedRange(), NSRange(location: 5, length: 7))
+    XCTAssertEqual(try XCTUnwrap(enlarged.font).pointSize, 22.4, accuracy: 0.05)
+    XCTAssertEqual(
+      (enlarged.typingAttributes[.font] as? NSFont)?.pointSize, enlarged.font?.pointSize)
+    XCTAssertLessThanOrEqual(try XCTUnwrap(enlarged.enclosingScrollView).frame.height, 112)
+    scale.reset()
+    settle()
+    XCTAssertTrue(editor(in: host) === original)
+    XCTAssertEqual(try XCTUnwrap(original.font).pointSize, 14, accuracy: 0.05)
+    XCTAssertEqual(original.selectedRange(), NSRange(location: 5, length: 7))
+    XCTAssertEqual(draft, "Pierwsza linia i druga wypowiedź")
+  }
+
   func testTextReplyDoesNotAcquireSpeechFromItsTextOrPlaybackFailure() throws {
     var bus = OverlayChannelDelivery.Bus()
     let id = String(repeating: "d", count: 24)

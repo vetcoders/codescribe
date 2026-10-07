@@ -394,12 +394,14 @@ struct DictationOverlayView: View {
               sendError: state.textMessageErrors[conversation.id],
               onSend: { Task { await state.sendConversationText(conversation) } },
               microphoneOpen: state.conversationMicrophoneOpen(conversation),
-              microphoneEnabled: state.canToggleConversationMicrophone(conversation),
+              microphoneEnabled: state.canToggleConversationMicrophone(conversation)
+                && !state.pendingChannelToggles.contains(conversation.channel),
               playbackMuted: state.conversationPlaybackMuted(conversation),
               playbackEnabled: !state.pendingPlaybackOwners.contains(conversation.owner?.id ?? ""),
               onMicrophone: { Task { await state.toggleConversationMicrophone(conversation) } },
               onPlayback: { Task { await state.toggleConversationPlayback(conversation) } },
-              playbackError: state.playbackPreferenceError
+              playbackError: state.playbackPreferenceError,
+              agentDescriptor: state.conversationAgentDescriptor(conversation)
             )
             .opacity(state.isCollapsed ? 0 : 1)
             .allowsHitTesting(!state.isCollapsed)
@@ -812,10 +814,12 @@ struct DictationOverlayView: View {
       unavailable: state.channelStatusUnavailable,
       palette: palette, animates: overlayVisible,
       hudStates: state.channelHudStates,
+      agentDescriptors: state.channelAgentDescriptors,
       onToggleChannel: { digit in
         Task { await state.toggleAgentChannel(digit) }
       },
       toggleError: state.channelToggleError,
+      pendingToggleChannels: state.pendingChannelToggles,
       conversations: state.conversations,
       selectedConversationID: state.selectedConversationID,
       unreadCounts: Dictionary(
@@ -854,8 +858,8 @@ struct DictationOverlayView: View {
   private func chromeWaveform(barCount: Int) -> some View {
     WaveformView(
       barCount: barCount,
-      active: state.mode == .listening && (state.audioReady || state.vadActive),
-      transcribing: state.mode == .finalizing,
+      active: state.audioCaptureActive,
+      transcribing: state.mode == .finalizing && !state.channelAudioCaptureActive,
       indicatorMode: state.indicatorMode,
       meter: state.levelMeter,
       inactiveColor: palette.border.color,
@@ -878,7 +882,7 @@ struct DictationOverlayView: View {
         .animation(minimumInterval: 1, paused: !overlayVisible || state.sessionTimerPaused)
       ) { _ in
         Text(state.sessionTimerText)
-          .csMono(11, .semibold)
+          .font(CSFont.mono(11, .semibold))
           .foregroundStyle(palette.mutedText.color)
           .monospacedDigit()
       }

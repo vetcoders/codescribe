@@ -811,6 +811,7 @@ final class OverlayState {
   private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:]
   private(set) var channelRosterNames: [String: String] = [:]
   private(set) var channelToggleError: String?
+  private(set) var pendingChannelToggles: Set<String> = []
   private(set) var conversations: [OverlayConversation] = []
   private(set) var archivedAgentOwners: Set<OverlayConversationOwner> = []
   private(set) var pendingAgentArchives: Set<OverlayConversationOwner> = []
@@ -823,7 +824,7 @@ final class OverlayState {
   private(set) var showsAgentMonitor = false
   @ObservationIgnored var onAgentSidebarPresented: (() -> Void)?
   private var playbackMutes: [AgentPlaybackIdentity: Bool] = [:]
-  private var channelPlaybackIdentities: [String: AgentPlaybackIdentity] = [:]
+  private var channelPlaybackAgents: [String: AgentPlaybackBinding] = [:]
   private var pendingPlaybackIdentities: Set<AgentPlaybackIdentity> = []
   @ObservationIgnored private var playbackPreferenceRevision: UInt64 = 0
   private(set) var playbackPreferenceError: String?
@@ -893,10 +894,24 @@ final class OverlayState {
   }
 
   private func playbackIdentity(for channel: String) -> AgentPlaybackIdentity? {
-    guard let hud = channelHudStates[channel], let identity = channelPlaybackIdentities[channel],
+    guard let hud = channelHudStates[channel],
+      let identity = channelPlaybackAgents[channel]?.identity,
       hud.provider == identity.provider, hud.providerSessionID == identity.session
     else { return nil }
     return identity
+  }
+
+  var channelAgentDescriptors: [String: String] {
+    var descriptors: [String: String] = [:]
+    for (channel, binding) in channelPlaybackAgents where playbackIdentity(for: channel) != nil {
+      descriptors[channel] = binding.descriptor
+    }
+    return descriptors
+  }
+
+  func conversationAgentDescriptor(_ conversation: OverlayConversation) -> String? {
+    guard let identity = playbackIdentity(for: conversation) else { return nil }
+    return channelPlaybackAgents.values.first { $0.identity == identity }?.descriptor
   }
 
   var channelPlaybackMuted: [String: Bool] {
@@ -1000,14 +1015,14 @@ final class OverlayState {
       candidates[channel] = AgentPlaybackIdentity(
         provider: provider, session: session, bus: agentConversationBusPath())
     }
-    let bound = await RealAgentBridgeInstaller.boundPlaybackIdentities(for: candidates)
-    let identities = Set(bound.values)
+    let bound = await RealAgentBridgeInstaller.boundPlaybackAgents(for: candidates)
+    let identities = Set(bound.values.map(\.identity))
       .union(conversations.compactMap { playbackIdentity(for: $0) })
     let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(for: identities)
     guard !Task.isCancelled, revision == playbackPreferenceRevision, roster == channelRoster else {
       return
     }
-    channelPlaybackIdentities = bound
+    channelPlaybackAgents = bound
     // A poll started before a click may carry the old receipt for that identity.
     let retained = playbackMutes.filter { pendingPlaybackIdentities.contains($0.key) }
     playbackMutes = snapshot.filter { !pendingPlaybackIdentities.contains($0.key) }
@@ -1270,6 +1285,16 @@ final class OverlayState {
       channelHudStates[channel.channel]?.open ?? channel.isOpen
     }
   }
+  /// The channel roster projects controller-owned capture without changing
+  /// the dictation document's lifecycle or phase.
+  var channelAudioCaptureActive: Bool {
+    channelHudStates.values.contains(where: \.open)
+  }
+
+  var audioCaptureActive: Bool {
+    channelAudioCaptureActive
+      || (recording && !finalized && !transcribing && !isFinalPass && mode == .listening)
+  }
   @ObservationIgnored var onChannelPresentationChanged: (() -> Void)?
   @ObservationIgnored private var channelObservationTask: Task<Void, Never>?
 
@@ -1326,9 +1351,14 @@ final class OverlayState {
         }
     }
     let wasOpen = hasOpenChannel
+    let wasCapturingAudio = audioCaptureActive
     channelRoster = snapshot
     channelHudStates = projected
     channelRosterNames = names
+    if wasCapturingAudio != audioCaptureActive {
+      levelMeter.reset()
+      hasMeasuredAudioLevel = false
+    }
     if let pending = pendingChannelConversation,
       !snapshot.contains(where: {
         $0.open && $0.channel == pending.channel && $0.provider == pending.provider
@@ -1354,7 +1384,12 @@ final class OverlayState {
   }
 
   func toggleAgentChannel(_ digit: UInt8) async {
-    guard (0...9).contains(digit), let engine else { return }
+    let channel = String(digit)
+    guard (0...9).contains(digit), let engine,
+      !pendingChannelToggles.contains(channel)
+    else { return }
+    pendingChannelToggles.insert(channel)
+    defer { pendingChannelToggles.remove(channel) }
     do {
       try await engine.toggleAgentChannel(digit: digit)
       channelToggleError = nil
@@ -2481,8 +2516,10 @@ final class OverlayState {
     vadActive = false
     isFinalPass = false
     freezeCaptureClock()
-    levelMeter.reset()
-    hasMeasuredAudioLevel = false
+    if !channelAudioCaptureActive {
+      levelMeter.reset()
+      hasMeasuredAudioLevel = false
+    }
 
     if shouldNotifyStopped {
       finalized = true
@@ -2499,8 +2536,10 @@ final class OverlayState {
     warmingUp = false
     transcribing = true
     freezeCaptureClock()
-    levelMeter.reset()
-    hasMeasuredAudioLevel = false
+    if !channelAudioCaptureActive {
+      levelMeter.reset()
+      hasMeasuredAudioLevel = false
+    }
   }
 
   // MARK: Warmup watchdog (orphaned "starting" overlay recovery)
@@ -3728,18 +3767,12 @@ final class OverlayState {
   }
 
   /// `on_audio_level` — capture RMS per audio block. Only feeds the meter
-  /// during live capture: once the session is transcribing/finalised the
-  /// waveform is frozen or gone, and a late block must not wiggle it.
+  /// during controller-owned live dictation or channel capture. Dictation
+  /// finalisation cannot suppress another subscriber's still-open microphone.
   func applyAudioLevel(
     _ rms: Float, now: TimeInterval = ProcessInfo.processInfo.systemUptime
   ) {
-    guard recording,
-      warmingUp || audioReady || vadActive,
-      !finalized,
-      !transcribing,
-      !isFinalPass,
-      mode == .listening
-    else { return }
+    guard audioCaptureActive else { return }
     levelMeter.push(rms: rms, speechActive: vadActive, now: now)
     if levelMeter.gain != nil { hasMeasuredAudioLevel = true }
   }
