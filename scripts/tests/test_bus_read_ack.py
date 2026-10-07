@@ -202,13 +202,19 @@ class ReadAckTests(unittest.TestCase):
         self.pending = [row]
         self.save()
         read = self.read()
-        self.assertEqual(read["deliveries"][0], row)
+        self.assertEqual(read["deliveries"][0]["text"], row["text"])
+        self.assertNotIn("occurrences", read["deliveries"][0])
+        raw = subprocess.run([sys.executable, str(SOURCE), "--read-delivery", self.ids[0],
+                              "--provider", "codex", "--session", self.session,
+                              "--bridge-home", str(self.root)], capture_output=True, text=True)
+        self.assertEqual(raw.returncode, 0, raw.stderr)
+        self.assertEqual(json.loads(raw.stdout), row)
         self.ack(read["read_delivery_ids"])
         marker = DEMUX.read_json(self.root / "acknowledgments" / self.lease / f"{self.ids[0]}.json")
         self.assertEqual(len(marker["envelope"]["occurrences"]), 5)
         self.assertEqual(len({o["sample_start"] for o in marker["envelope"]["occurrences"]}), 5)
 
-    def test_native_bell_contains_read_then_ack_instead_of_obsolete_task_text(self):
+    def test_native_message_contains_full_task_and_read_then_ack_for_current_ownership(self):
         self.pending[0]["text"] = "Do not install old build 2094; this text stays in the bus."
         self.save()
         with patch("shutil.which", return_value="/fake/codex"), patch("subprocess.run",
@@ -217,13 +223,65 @@ class ReadAckTests(unittest.TestCase):
             wake.enqueue(self.pending[0])
             wake.close(wait=True)
         notice = run.call_args.args[0][5]
-        self.assertNotIn(self.pending[0]["text"], notice)
+        self.assertIn(self.pending[0]["text"], notice)
         self.assertIn("--read-pending", notice)
         self.assertIn("--ack", notice)
         self.assertIn(self.session, notice)
         self.assertIn(str(self.root), notice)
         self.assertIn("2026-10-07T13:37:33Z", notice)
         self.assertFalse(DEMUX.delivery_acknowledged(self.root, self.lease, self.ids[0]))
+
+    def test_short_message_with_large_pcm_diagnostics_fits_default_read_budget(self):
+        text = "Astra, odpowiedz od razu.\nPięć Iwo: Iwo Iwo Iwo Iwo Iwo. `echo $HOME` i $(touch x) to tekst."
+        row = self.pending[0]
+        row.update(kind="seal", text=text, wav="/private/audio.wav", occurrences=[{
+            "occurrence_session_id": "capture", "capture_epoch": 1,
+            "sample_start": n * 1600, "sample_end": (n + 1) * 1600,
+            "document_index": 0, "label": "Iwo", "receipt_id": str(n),
+            "acoustic_receipts": [{"diagnostic": "x" * 32768}],
+        } for n in range(5)])
+        self.pending = [row]
+        self.save()
+        path = self.root / "leases" / f"{self.lease}.json"
+        before = path.read_bytes()
+        result = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(len(result.stdout.encode("utf-8")), 8192)
+        read = json.loads(result.stdout)
+        self.assertEqual(read["read_delivery_ids"], [self.ids[0]])
+        self.assertEqual(read["deliveries"][0]["text"], text)
+        self.assertEqual(read["deliveries"][0]["delivery_owner"], row["delivery_owner"])
+        self.assertNotIn("occurrences", read["deliveries"][0])
+        self.assertNotIn("/private/audio.wav", result.stdout)
+        self.assertEqual(path.read_bytes(), before)
+        raw = subprocess.run([sys.executable, str(SOURCE), "--read-delivery", self.ids[0],
+                              "--provider", "codex", "--session", self.session,
+                              "--bridge-home", str(self.root)], capture_output=True, text=True)
+        self.assertEqual(raw.returncode, 0, raw.stderr)
+        self.assertEqual(json.loads(raw.stdout), row)
+        self.ack(read["read_delivery_ids"])
+        marker = DEMUX.read_json(self.root / "acknowledgments" / self.lease / f"{self.ids[0]}.json")
+        self.assertEqual([o["sample_start"] for o in marker["envelope"]["occurrences"]],
+                         [n * 1600 for n in range(5)])
+        self.assertEqual(self.read()["deliveries"], [])
+
+    def test_peer_message_keeps_complete_text_and_provenance_without_audio_diagnostics(self):
+        row = self.pending[0]
+        row.update(source="agent", sender={"name": "lena", "provider": "codex", "provider_session_id": "peer"},
+                   peer_to="astra", association="addressed", spoken=False,
+                   reply_id="a" * 24, reply_to="b" * 24,
+                   producer_schema="codescribe.agent-message.v1", source_event_id="c" * 24,
+                   text="Raport agenta, nie nowa dyspozycja Foundera.\nZachowaj zakres i autorstwo.",
+                   occurrences=[{"acoustic_receipts": ["diagnostic"]}])
+        self.pending = [row]
+        self.save()
+        result = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        compact = json.loads(result.stdout)["deliveries"][0]
+        for field in ("text", "source", "sender", "peer_to", "association", "spoken", "reply_id", "reply_to",
+                      "producer_schema", "source_event_id", "emitted_at", "delivery_owner"):
+            self.assertEqual(compact[field], row[field], field)
+        self.assertNotIn("occurrences", compact)
 
     def cli(self, *options):
         return subprocess.run([sys.executable, str(SOURCE), "--read-pending", "--provider", "codex",
