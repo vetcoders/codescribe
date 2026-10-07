@@ -360,9 +360,10 @@ final class OverlayRecordingLightTests: XCTestCase {
         .deletingLastPathComponent()
         .appendingPathComponent("Codescribe/Screens/Overlay/DictationOverlayView.swift"),
       encoding: .utf8)
-    XCTAssertTrue(source.contains(".help(OverlayWarningCopy.liveTranscriptBehind.sentence)"))
+    XCTAssertTrue(source.contains(".help(transcriptPreviewHelp)"))
     XCTAssertTrue(
-      source.contains(".accessibilityLabel(OverlayWarningCopy.liveTranscriptBehind.sentence)"))
+      source.contains(".accessibilityValue(transcriptPreviewHelp)"))
+    XCTAssertTrue(source.contains("OverlayWarningCopy.liveTranscriptBehind.sentence"))
     XCTAssertFalse(source.contains("OverlayRecordingLightView("))
     XCTAssertTrue(source.contains("recordingLight: state.recordingLight"))
   }
@@ -387,7 +388,7 @@ final class OverlayRecordingLightTests: XCTestCase {
     for light in OverlayRecordingLight.allCases {
       var intents: [OverlayIntent] = []
       let control = OverlayRecordingControls(
-        canFinish: light != .processing, isPreviewCollapsed: false, compact: false,
+        canFinish: light != .processing, presentationMode: .expanded, compact: false,
         palette: .dark, onIntent: { intents.append($0) }, onPreviewToggle: {},
         isFinalizing: light == .processing, recordingLight: light)
       XCTAssertEqual(control.recordingSymbol, "stop.fill", "\(light)")

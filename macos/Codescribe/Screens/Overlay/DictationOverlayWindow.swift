@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import SwiftUI
 
 // Borderless floating window host for the dictation overlay.
@@ -16,49 +17,86 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserMove: (() -> Void)?
   var onUserDragEnded: ((NSPoint) -> Void)?
   var onUserResize: (() -> Void)?
+  var onFrameTransitionCompleted: (() -> Void)?
   fileprivate var presence: OverlayPresence?
   private var dragStart: (mouse: NSPoint, frame: NSRect)?
   private var dragMoved = false
   private var expandedSize: NSSize?
+  private var presentationMode: OverlayPresentationMode = .expanded
+  private var transitionTop: CGFloat?
+  private var frameTransitionTarget: NSRect?
+  private var frameTransitionGeneration: UInt64 = 0
+  private(set) var isFrameTransitioning = false
   var sizeForPersistence: NSSize { expandedSize ?? frame.size }
 
   /// Preserve the top edge and size where the selected display can contain them.
-  func setCollapsed(_ collapsed: Bool) {
-    guard collapsed != (expandedSize != nil) else { return }
+  func setPresentationMode(_ mode: OverlayPresentationMode, animated: Bool = false) {
+    guard mode != presentationMode else { return }
+    let previous = presentationMode
+    presentationMode = mode
     let wasApplyingFrame = OverlayController.isApplyingFrame
     OverlayController.isApplyingFrame = true
     defer { OverlayController.isApplyingFrame = wasApplyingFrame }
-    let top = frame.maxY
+    let top = isFrameTransitioning ? transitionTop ?? frame.maxY : frame.maxY
+    transitionTop = top
     let size: NSSize
-    if collapsed {
+    if mode != .expanded {
       // A hidden editor must not keep accepting the Founder's keystrokes.
       makeFirstResponder(nil)
       releaseKeyAfterTranscript()
-      expandedSize = frame.size
-      size = DictationOverlayWindow.collapsedSize
-      minSize = size
-      contentMinSize = minSize
-      styleMask.remove(.resizable)
+      if previous == .expanded && expandedSize == nil { expandedSize = frame.size }
+      size = mode == .mini ? DictationOverlayWindow.collapsedSize : DictationOverlayWindow.midiSize
     } else {
       let expanded = expandedSize ?? DictationOverlayWindow.defaultSize
       size = NSSize(
         width: expanded.width,
         height: max(expanded.height, DictationOverlayWindow.minSize.height))
-      expandedSize = nil
-      minSize = NSSize(
-        width: DictationOverlayWindow.minSize.width,
-        height: DictationOverlayWindow.minSize.height)
-      contentMinSize = minSize
-      styleMask.insert(.resizable)
     }
+    // Intermediate frames may be smaller than the expanded window's floor.
+    minSize = DictationOverlayWindow.collapsedSize
+    contentMinSize = minSize
+    styleMask.remove(.resizable)
     let proposed = NSRect(
       x: frame.minX, y: top - size.height, width: size.width, height: size.height)
-    let restored =
-      collapsed
-      ? proposed
-      : DictationOverlayWindow.visibleExpansionFrame(
-        proposed, in: screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
-    setFrame(restored, display: true)
+    let restored = DictationOverlayWindow.visibleExpansionFrame(
+      proposed, in: screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
+    frameTransitionGeneration &+= 1
+    let generation = frameTransitionGeneration
+    frameTransitionTarget = restored
+    isFrameTransitioning = animated
+    NSAnimationContext.runAnimationGroup { context in
+      context.duration = animated ? DictationOverlayWindow.presentationDuration : 0
+      context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+      animator().setFrame(restored, display: true)
+    } completionHandler: { [weak self] in
+      Task { @MainActor in
+        self?.completeFrameTransition(generation: generation)
+      }
+    }
+    if !animated { completeFrameTransition(generation: generation) }
+  }
+
+  private func completeFrameTransition(generation: UInt64) {
+    guard generation == frameTransitionGeneration, frameTransitionTarget != nil else { return }
+    isFrameTransitioning = false
+    frameTransitionTarget = nil
+    transitionTop = nil
+    minSize = presentationMode == .expanded ? DictationOverlayWindow.minSize : frame.size
+    contentMinSize = minSize
+    if presentationMode == .expanded {
+      styleMask.insert(.resizable)
+      expandedSize = nil
+    }
+    onFrameTransitionCompleted?()
+  }
+
+  func settleFrameTransition() {
+    guard let target = frameTransitionTarget else { return }
+    NSAnimationContext.runAnimationGroup { context in
+      context.duration = 0
+      animator().setFrame(target, display: true)
+    }
+    completeFrameTransition(generation: frameTransitionGeneration)
   }
 
   func startPresence() {
@@ -117,6 +155,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     }
     switch event.type {
     case .leftMouseDown where isWindowDragHit(at: event.locationInWindow):
+      settleFrameTransition()
       dragStart = (screenPoint(for: event), frame)
     case .leftMouseDragged where dragStart != nil:
       guard let dragStart else { return }
@@ -157,10 +196,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   }
 
   func windowDidMove(_ notification: Notification) {
+    guard !isFrameTransitioning else { return }
     onUserMove?()
   }
 
   func windowDidResize(_ notification: Notification) {
+    guard !isFrameTransitioning else { return }
     onUserResize?()
   }
 }
@@ -235,8 +276,10 @@ private final class OverlayContentContainer: NSView {
 }
 
 enum DictationOverlayWindow {
+  static let presentationDuration: TimeInterval = 0.28
   static let collapsedHeight: CGFloat = 46
-  static let collapsedSize = NSSize(width: 180, height: collapsedHeight)
+  static let collapsedSize = NSSize(width: 200, height: collapsedHeight)
+  static let midiSize = NSSize(width: 640, height: collapsedHeight)
 
   /// Shared geometry seam: a low-dragged/bottom-anchored bar must not unfold
   /// below the display. Keep its top unchanged whenever the full frame fits.
@@ -302,7 +345,12 @@ enum DictationOverlayWindow {
       defer: false
     )
     panel.delegate = panel
-    state.onCollapseChanged = { [weak panel] collapsed in panel?.setCollapsed(collapsed) }
+    state.onPresentationModeChanged = { [weak panel] mode in
+      guard let panel else { return }
+      panel.setPresentationMode(
+        mode,
+        animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+    }
     state.onAgentSidebarPresented = { [weak panel] in
       panel?.makeFirstResponder(nil)
       panel?.releaseKeyAfterTranscript()
@@ -360,7 +408,7 @@ enum DictationOverlayWindow {
     presence.start()
     panel.presence = presence
 
-    if state.isCollapsed { panel.setCollapsed(true) }
+    panel.setPresentationMode(state.presentationMode)
 
     // Size is window-owned (user-resizable) — do NOT resize to fittingSize each frame.
     return panel

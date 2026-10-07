@@ -7976,6 +7976,16 @@
         }
       }
     },
+    "No messages yet" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie ma jeszcze wiadomości"
+          }
+        }
+      }
+    },
     "No models returned. Enter a Model ID in Settings › Agent › LLM lanes." : {
       "localizations" : {
         "pl" : {
@@ -11264,6 +11274,16 @@
         }
       }
     },
+    "Show controls" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż przyciski"
+          }
+        }
+      }
+    },
     "Show earlier messages" : {
       "localizations" : {
         "pl" : {
@@ -11405,6 +11425,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Domyślnie pokazuj transkrypcję"
+          }
+        }
+      }
+    },
+    "Show transcription" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż transkrypcję"
           }
         }
       }
@@ -13383,6 +13413,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ostrzeżenie dotyczące szablonu znacznika transkrypcji"
+          }
+        }
+      }
+    },
+    "Transcription" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcja"
           }
         }
       }
