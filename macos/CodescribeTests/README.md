@@ -150,9 +150,9 @@ test took 5.4 s. Every test above `SWIFT_TEST_MAX_TEST_SECONDS` (default 10 s)
 is printed and fails the gate. The suite budget, `SWIFT_TEST_MAX_SECONDS`
 (default 60 s), was set as a coarse backstop at about twice that 2026-09-25
 measurement. The per-test ceiling targets the one-test hang shape seen in the
-old Keychain regression. Raise the suite budget on a genuinely loaded host
-(`make test-swift SWIFT_TEST_MAX_SECONDS=90`) rather than removing it. The
-defaults stay 60 s and 10 s. A slower suite does not move them.
+old Keychain regression. The defaults stay 60 s and 10 s. An over-budget run
+requires investigation of the test harness and host load; it does not move
+those limits.
 
 Note on exit codes: the _recipe_ exits 3 (zero tests), 4 (suite over budget),
 or 5 (one or more tests over the per-test ceiling), which
