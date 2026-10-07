@@ -403,6 +403,71 @@ final class SettingsChromeContractTests: XCTestCase {
     }
   }
 
+  /// Round 2 of the Polish pass: the Prompts tab keeps file names and raw
+  /// source ids out of the first level, never renders an unsaved draft as the
+  /// saved prompt, and names the prompt a restore will replace.
+  func testPromptsTabKeepsFileNamesOutOfTheFirstLevel() throws {
+    let sources = try settingsSources()
+    let tab = try XCTUnwrap(sources["SettingsTab.swift"])
+    XCTAssertTrue(
+      tab.contains(
+        "case .agentPrompts: String(localized: \"Prompts\", comment: \"Settings tab: editable prompts\")"
+      ), "the Prompts headline lost its trailing period")
+    XCTAssertFalse(tab.contains("Edits the BASE prompt file"))
+
+    let files = try XCTUnwrap(sources["PromptFile.swift"])
+    XCTAssertFalse(files.contains(".txt)"), "file names left the prompt descriptions")
+
+    let panel = try XCTUnwrap(sources["PromptPanel.swift"])
+    XCTAssertTrue(panel.contains("@State private var editingFiles: Set<PromptFile> = []"))
+    XCTAssertTrue(
+      panel.contains("private var savedText: String { snapshot?.content ?? \"\" }"),
+      "VIEW renders the saved snapshot, never the draft")
+    XCTAssertTrue(panel.contains("raw: savedText.isEmpty"))
+    XCTAssertTrue(panel.contains("TextEditor(text: $draft)"))
+    XCTAssertTrue(panel.contains("Button(\"Cancel\", action: onDiscard)"))
+    XCTAssertTrue(panel.contains("Button(\"Restore default…\")"))
+    XCTAssertFalse(panel.contains("Button(\"Restore…\")"))
+    XCTAssertTrue(
+      panel.contains("\"Only \\(title) will change."), "the confirmation names the prompt")
+    XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $detailsExpanded)"))
+    XCTAssertTrue(panel.contains("Text(\"File details\")"))
+    XCTAssertFalse(panel.contains("ScrollView {\n      MarkdownText"), "no nested scrolling")
+    let source = try XCTUnwrap(panel.range(of: "sourceLine\n"))
+    let details = try XCTUnwrap(panel.range(of: "fileDetails\n"))
+    XCTAssertLessThan(source.lowerBound, details.lowerBound, "the path sits under the source line")
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "Prompts": "Prompty",
+      "Browse and edit the base prompts. Codescribe may add further instructions to them while it runs.":
+        "Przeglądaj i edytuj podstawowe prompty. Codescribe może dołączać do nich dodatkowe instrukcje podczas działania.",
+      "Correction": "Korekta",
+      "Correction prompt": "Prompt korekty",
+      "Smart prompt": "Prompt Smart",
+      "Max prompt": "Prompt Max",
+      "Agent prompt": "Prompt Agenta",
+      "Source: Built-in prompt": "Źródło: Wbudowany prompt",
+      "Source: Custom prompt": "Źródło: Własny prompt",
+      "File details": "Szczegóły pliku",
+      "Restore default…": "Przywróć domyślny…",
+      "Unsaved changes": "Niezapisane zmiany",
+      "Edit": "Edytuj",
+      "Save": "Zapisz",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    for retired in [
+      "Prompts.", "Assistive prompt", "Custom file", "Built-in fallback", "Restore…",
+      "Correction only AI formatting (formatting.txt)",
+      "Base system prompt for the Agent (assistive.txt)",
+      "Edits the BASE prompt file. The core still appends its tuning prompt at runtime.",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
   func testAvailabilityTintsUseSolidTerracotta() throws {
     let model = try XCTUnwrap(settingsSources()["SettingsViewModel.swift"])
     XCTAssertEqual(

@@ -381,17 +381,24 @@ final class SettingsTruthTests: XCTestCase {
   }
 
   /// The prompt picker moved; prompt identity did not. Each segment still maps
-  /// to the same storage level and names the same base file.
+  /// to the same storage level; the file name lives under File details only.
   func testPromptFilesKeepTheirStorageIdentity() {
     XCTAssertEqual(PromptFile.allCases.map(\.formattingLevel), [.correction, .smart, .max, nil])
     XCTAssertEqual(
       PromptFile.allCases.compactMap(\.formattingLevel),
       FormattingPolicyOption.editablePrompts
     )
-    XCTAssertTrue(PromptFile.correction.editorSubtitle.hasSuffix("(formatting.txt)"))
-    XCTAssertTrue(PromptFile.smart.editorSubtitle.hasSuffix("(formatting-smart.txt)"))
-    XCTAssertTrue(PromptFile.max.editorSubtitle.hasSuffix("(formatting-max.txt)"))
-    XCTAssertTrue(PromptFile.assistive.editorSubtitle.hasSuffix("(assistive.txt)"))
+    XCTAssertEqual(
+      PromptFile.allCases.map(\.editorTitle),
+      ["Correction prompt", "Smart prompt", "Max prompt", "Agent prompt"]
+    )
+    for file in PromptFile.allCases {
+      XCTAssertFalse(
+        file.editorSubtitle.contains(".txt"), "file names belong under File details: \(file)")
+    }
+    XCTAssertTrue(
+      PromptFile.assistive.editorSubtitle.contains("Voice chat uses its own instructions"),
+      "assistive.txt feeds only the act-on-request lane (compose_agent_system_prompt)")
   }
 
   /// The Tools tab binds by key path now; each projection must read the
@@ -1352,9 +1359,26 @@ final class SettingsTruthTests: XCTestCase {
   }
 
   func testPromptSourceLabelsExposeFileFallbackAndReadErrorTruth() {
-    XCTAssertEqual(promptSourceLabel("custom_file"), "Custom file")
-    XCTAssertEqual(promptSourceLabel("built_in_fallback"), "Built-in fallback")
-    XCTAssertEqual(promptSourceLabel("read_error"), "Read error")
+    XCTAssertEqual(promptSourceLabel("custom_file"), "Source: Custom prompt")
+    XCTAssertEqual(promptSourceLabel("built_in_fallback"), "Source: Built-in prompt")
+    XCTAssertEqual(promptSourceLabel("read_error"), "Source: Built-in prompt (file unreadable)")
+    XCTAssertEqual(promptSourceLabel(nil), "Source unavailable")
+  }
+
+  /// File details tell an existing custom file apart from the path a custom
+  /// prompt would be created at; an empty file is named as empty, not missing.
+  func testPromptFileStatusSeparatesExistingFromCreatable() {
+    XCTAssertEqual(
+      promptFileStatus(source: "custom_file", fileExists: true), "Custom prompt file in use.")
+    XCTAssertEqual(
+      promptFileStatus(source: "built_in_fallback", fileExists: false),
+      "No custom prompt file yet. Saving creates one at this path.")
+    XCTAssertEqual(
+      promptFileStatus(source: "built_in_fallback", fileExists: true),
+      "The file exists but is empty, so the built-in prompt is in use.")
+    XCTAssertEqual(
+      promptFileStatus(source: "read_error", fileExists: true),
+      "The file exists but could not be read.")
   }
 
   func testPromptRestoreTargetsOnlyTheConfirmedPrompt() {

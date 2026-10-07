@@ -68,7 +68,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
   var headline: String {
     switch self {
     case .agentLanes: String(localized: "Model configuration.")
-    case .agentPrompts: String(localized: "Prompts.")
+    case .agentPrompts: String(localized: "Prompts", comment: "Settings tab: editable prompts")
     case .agentWorkspace: String(localized: "Workspace roots.")
     case .agentStatus: String(localized: "Connection details.")
     case .agentTools: String(localized: "Tool permissions.")
@@ -92,7 +92,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentPrompts:
       String(
         localized:
-          "Edits the BASE prompt file. The core still appends its tuning prompt at runtime."
+          "Browse and edit the base prompts. Codescribe may add further instructions to them while it runs."
       )
     case .agentWorkspace:
       String(

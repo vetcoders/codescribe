@@ -2043,6 +2043,16 @@
         }
       }
     },
+    "Agent prompt" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prompt Agenta"
+          }
+        }
+      }
+    },
     "Agent provider and MCP connector secrets are present and will be deleted permanently." : {
       "localizations" : {
         "pl" : {
@@ -2483,16 +2493,6 @@
         }
       }
     },
-    "Assistive prompt" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent"
-          }
-        }
-      }
-    },
     "Attach" : {
       "comment" : "Open panel confirm button",
       "localizations" : {
@@ -2760,13 +2760,22 @@
         }
       }
     },
-    "Balanced transcript editing (formatting-smart.txt)" : {
-      "comment" : "formatting-smart.txt is a file name — do not translate",
+    "Balanced editing of the transcript." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wyważona redakcja transkrypcji (formatting-smart.txt)"
+            "value" : "Wyważona redakcja transkrypcji."
+          }
+        }
+      }
+    },
+    "Base instructions for the Agent acting on a dictated request. Voice chat uses its own instructions." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podstawowe instrukcje Agenta wykonującego podyktowane polecenie. Rozmowa głosowa korzysta z własnych instrukcji."
           }
         }
       }
@@ -2777,17 +2786,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wielkość domyślna. W trybie agentowym wskaźnik jest proporcjonalnie większy."
-          }
-        }
-      }
-    },
-    "Base system prompt for the Agent (assistive.txt)" : {
-      "comment" : "assistive.txt is a file name — do not translate",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Podstawowy prompt systemowy Agenta (assistive.txt)"
           }
         }
       }
@@ -2868,6 +2866,16 @@
         }
       }
     },
+    "Browse and edit the base prompts. Codescribe may add further instructions to them while it runs." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przeglądaj i edytuj podstawowe prompty. Codescribe może dołączać do nich dodatkowe instrukcje podczas działania."
+          }
+        }
+      }
+    },
     "Buffer delay" : {
       "localizations" : {
         "pl" : {
@@ -2884,16 +2892,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Data kompilacji"
-          }
-        }
-      }
-    },
-    "Built-in fallback" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wbudowany prompt używany zastępczo"
           }
         }
       }
@@ -4233,23 +4231,12 @@
         }
       }
     },
-    "Correction only AI formatting (formatting.txt)" : {
-      "comment" : "formatting.txt is a file name — do not translate",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Formatowanie AI ograniczone do poprawek (formatting.txt)"
-          }
-        }
-      }
-    },
     "Correction prompt" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Korekta"
+            "value" : "Prompt korekty"
           }
         }
       }
@@ -4722,12 +4709,12 @@
         }
       }
     },
-    "Custom file" : {
+    "Custom prompt file in use." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Własny plik"
+            "value" : "Używany jest plik własnego promptu."
           }
         }
       }
@@ -5169,6 +5156,16 @@
         }
       }
     },
+    "Discard unsaved changes" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odrzuć niezapisane zmiany"
+          }
+        }
+      }
+    },
     "Disconnected" : {
       "localizations" : {
         "pl" : {
@@ -5421,16 +5418,6 @@
                 }
               }
             }
-          }
-        }
-      }
-    },
-    "Edits the BASE prompt file. The core still appends its tuning prompt at runtime." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Edytujesz bazowy prompt. Podczas działania Codescribe dodaje do niego dodatkowe instrukcje dostrajające."
           }
         }
       }
@@ -5702,6 +5689,16 @@
         }
       }
     },
+    "File details" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szczegóły pliku"
+          }
+        }
+      }
+    },
     "File missing on disk" : {
       "localizations" : {
         "pl" : {
@@ -5897,6 +5894,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Poziom formatowania"
+          }
+        }
+      }
+    },
+    "Formatting limited to corrections." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie ograniczone do poprawek."
           }
         }
       }
@@ -7190,18 +7197,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Max"
-          }
-        }
-      }
-    },
-    "Maximum supported prose polish (formatting-max.txt)" : {
-      "comment" : "formatting-max.txt is a file name — do not translate",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Najpełniejsze dopracowanie tekstu (formatting-max.txt)"
+            "value" : "Prompt Max"
           }
         }
       }
@@ -7969,6 +7965,16 @@
         }
       }
     },
+    "No custom prompt file yet. Saving creates one at this path." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie ma jeszcze pliku własnego promptu. Zapis utworzy go w tej ścieżce."
+          }
+        }
+      }
+    },
     "No custom providers yet." : {
       "localizations" : {
         "pl" : {
@@ -8361,12 +8367,12 @@
         }
       }
     },
-    "Only this base prompt file will change. The previous version remains recoverable in the prompt backups folder." : {
+    "Only %@ will change. The previous version remains recoverable in the prompt backups folder." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zmieni się tylko ten plik promptu. Poprzednią wersję można odzyskać z folderu kopii zapasowych promptów."
+            "value" : "Zmieni się tylko %@. Poprzednią wersję można odzyskać z folderu kopii zapasowych promptów."
           }
         }
       }
@@ -9178,16 +9184,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Prompty"
-          }
-        }
-      }
-    },
-    "Prompts." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Prompty."
           }
         }
       }
@@ -10412,6 +10408,16 @@
         }
       }
     },
+    "Restore default…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć domyślny…"
+          }
+        }
+      }
+    },
     "Restore only %@" : {
       "localizations" : {
         "pl" : {
@@ -10469,16 +10475,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przywraca jako nową wersję transkrypcję zastąpioną podczas ponownej transkrypcji"
-          }
-        }
-      }
-    },
-    "Restore…" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przywróć…"
           }
         }
       }
@@ -11626,7 +11622,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Smart"
+            "value" : "Prompt Smart"
           }
         }
       }
@@ -11698,6 +11694,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Źródło: %@"
+          }
+        }
+      }
+    },
+    "Source: Built-in prompt" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Źródło: Wbudowany prompt"
+          }
+        }
+      }
+    },
+    "Source: Built-in prompt (file unreadable)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Źródło: Wbudowany prompt (plik nieczytelny)"
+          }
+        }
+      }
+    },
+    "Source: Custom prompt" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Źródło: Własny prompt"
           }
         }
       }
@@ -12930,6 +12956,16 @@
         }
       }
     },
+    "The custom prompt file could not be read, so the built-in prompt is in use." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się odczytać pliku własnego promptu, dlatego używany jest wbudowany prompt."
+          }
+        }
+      }
+    },
     "The endpoint is normalized to the wire's canonical path on save." : {
       "localizations" : {
         "pl" : {
@@ -12946,6 +12982,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Transkrypcja jest nadal dostępna."
+          }
+        }
+      }
+    },
+    "The file exists but could not be read." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plik istnieje, ale nie udało się go odczytać."
+          }
+        }
+      }
+    },
+    "The file exists but is empty, so the built-in prompt is in use." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plik istnieje, ale jest pusty, dlatego używany jest wbudowany prompt."
+          }
+        }
+      }
+    },
+    "The fullest polish of the text." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Najpełniejsze dopracowanie tekstu."
           }
         }
       }
@@ -13792,6 +13858,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Bez weryfikacji"
+          }
+        }
+      }
+    },
+    "Unsaved changes" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niezapisane zmiany"
           }
         }
       }

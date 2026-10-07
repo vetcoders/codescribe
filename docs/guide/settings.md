@@ -108,6 +108,32 @@ Prompts** edits their prompts.
 **Automatic send to the Agent** holds one switch: in Agent mode the untouched
 transcript is sent 5 seconds after the take ends unless you start editing it.
 
+### Agent → Prompts
+
+One segmented picker (**Correction**, **Smart**, **Max**, **Agent**) opens one
+base prompt at a time; the headers read **Correction prompt**, **Smart prompt**,
+**Max prompt** and **Agent prompt**. Each has a single plain sentence under it.
+The Agent prompt is the base of the system prompt for Agent turns that act on a
+dictated request; voice chat carries its own persona and does not read it.
+Codescribe may append further instructions at runtime, so the editor shows the
+base text, not the full prompt a provider receives.
+
+The **Source** line names the prompt in use: **Source: Custom prompt** when your
+file is read, **Source: Built-in prompt** when no custom file exists or the file
+is empty, and **Source: Built-in prompt (file unreadable)** with a red sentence
+when the file could not be read. **File details**, collapsed by default, holds
+the path, whether a custom file exists or would be created there on save, and
+the raw read error.
+
+**Edit** opens the raw text; **Save** (solid accent) writes it and returns to
+the rendered view; **Cancel** drops the unsaved draft. Edit state is kept per
+prompt: switching segments mid-edit keeps that prompt in edit mode with an
+**Unsaved changes** marker, and the rendered view always shows the saved text,
+never a draft. **Restore default…** asks for confirmation that names the prompt
+and changes only that one; the previous text stays in the prompt backups
+folder. Note that restoring writes the built-in text to the custom file, so the
+source afterwards reads **Custom prompt** rather than **Built-in prompt**.
+
 ### Credential access while refreshing
 
 Settings and Setup read provider credentials in the background. The initial
