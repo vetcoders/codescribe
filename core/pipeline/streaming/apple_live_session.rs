@@ -3848,13 +3848,10 @@ impl AppleSealState {
             self.retain_word_decode(&payload);
             self.admit_completed_window(ev_tx, &payload, true);
         } else {
+            // A matched provider failure is not measured uncovered speech.
+            // Debt already recorded by qualification or reconciliation stays.
+            // This return must not invent recovery debt over an admitted floor.
             self.window_plan_receipt(&job.request_identity.range, "failed");
-            for (_, owner) in &job.member_occurrences {
-                self.acoustic_ledger
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .require_text_recovery(owner);
-            }
             self.tail_patch_jobs_skipped = self.tail_patch_jobs_skipped.saturating_add(1);
         }
         self.close_admission_horizon(ev_tx, self.window_plan.admission_horizon());
