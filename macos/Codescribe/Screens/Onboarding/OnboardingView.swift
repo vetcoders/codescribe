@@ -10,6 +10,7 @@ struct OnboardingView: View {
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.colorScheme) private var colorScheme
 
   @State private var hostWindow: NSWindow?
 
@@ -17,15 +18,10 @@ struct OnboardingView: View {
     content
       .frame(minWidth: 680, minHeight: 560)
       .background {
-        Group {
-          if reduceTransparency {
-            Color(nsColor: .windowBackgroundColor)
-          } else if #available(macOS 26, *) {
-            Color.clear.glassEffect(.regular, in: .rect(cornerRadius: 0))
-          } else {
-            Rectangle().fill(.regularMaterial)
-          }
-        }
+        OverlayCanvasBackdrop(
+          palette: OverlayAppearancePalette.resolve(colorScheme),
+          reduceTransparency: reduceTransparency
+        )
         .ignoresSafeArea()
       }
       .csFocusPolicy()
