@@ -161,7 +161,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         localized: String(
           localized: "settings.search.tab.agentStatus",
           defaultValue:
-            "diagnostics, status, environment, connection, installation path, capability, readiness, mcp",
+            "diagnostics, status, environment, connection, installation path, capability, readiness",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))

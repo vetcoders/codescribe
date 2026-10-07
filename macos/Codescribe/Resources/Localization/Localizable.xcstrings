@@ -17404,13 +17404,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "diagnostics, status, environment, connection, installation path, capability, readiness, mcp"
+            "value" : "diagnostics, status, environment, connection, installation path, capability, readiness"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "diagnostyka, stan, środowisko, połączenie, ścieżka instalacji, możliwości, gotowość, mcp, narzędzia"
+            "value" : "diagnostyka, stan, środowisko, połączenie, ścieżka instalacji, możliwości, gotowość, narzędzia"
           }
         }
       }
