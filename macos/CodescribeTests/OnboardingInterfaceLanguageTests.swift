@@ -235,6 +235,22 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
   private func renderedText(_ host: NSView) throws -> String {
     let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
     host.cacheDisplay(in: host.bounds, to: bitmap)
+    let captured = try XCTUnwrap(bitmap.cgImage)
+    // A hidden window has no desktop backdrop. Cache-display leaves glass
+    // regions transparent; OCR must see them over the same semantic window
+    // background, rather than interpreting transparent white text as white.
+    let canvas = try XCTUnwrap(
+      CGContext(
+        data: nil, width: captured.width, height: captured.height,
+        bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+    host.effectiveAppearance.performAsCurrentDrawingAppearance {
+      canvas.setFillColor(NSColor.windowBackgroundColor.cgColor)
+      canvas.fill(CGRect(x: 0, y: 0, width: captured.width, height: captured.height))
+    }
+    canvas.draw(captured, in: CGRect(x: 0, y: 0, width: captured.width, height: captured.height))
+    let image = try XCTUnwrap(canvas.makeImage())
     let request = VNRecognizeTextRequest()
     // `.fast` misreads 13 pt text rendered without a display (a headless
     // session gives the window backing scale 1.0): "Wybierz" came back as
@@ -243,7 +259,7 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
     request.recognitionLevel = .accurate
     request.recognitionLanguages = ["en-US"]
     request.usesLanguageCorrection = false
-    try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
+    try VNImageRequestHandler(cgImage: image).perform([request])
     return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
       .joined(separator: "\n")
 
