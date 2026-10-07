@@ -9621,14 +9621,18 @@ mod c13a_lifecycle_tests {
         assert_eq!(request.admit_sample_start, 0);
         assert_eq!(request.admit_sample_end, 32_000);
         assert_eq!(request.member_occurrences.len(), 2);
-        assert!(request
-            .member_occurrences
-            .iter()
-            .any(|(_, owner)| owner == &first));
-        assert!(request
-            .member_occurrences
-            .iter()
-            .any(|(_, owner)| owner == &second));
+        assert!(
+            request
+                .member_occurrences
+                .iter()
+                .any(|(_, owner)| owner == &first)
+        );
+        assert!(
+            request
+                .member_occurrences
+                .iter()
+                .any(|(_, owner)| owner == &second)
+        );
         assert_eq!(state.tail_patch_awaiting_completion(), 1);
         while event_rx.try_recv().is_ok() {}
 
@@ -10293,7 +10297,9 @@ mod layer1_frontier_contracts {
         // Admission succeeds before transport observes the closed receiver.
         // The stopping partial is the whole 2 s head and finishes the plan.
         assert!(super::c13a_lifecycle_tests::drive_capture_plan(
-            &mut rejected, &tx, true
+            &mut rejected,
+            &tx,
+            true
         ));
         assert!(rejected.refinement_lane_lost);
         assert_eq!(rejected.tail_patch_awaiting_completion(), 0);
@@ -10334,10 +10340,12 @@ mod layer1_frontier_contracts {
             true,
         );
         assert_eq!(offered.len(), 1, "the stopping partial is the held job");
-        assert!(offered[0]
-            .member_occurrences
-            .iter()
-            .any(|(_, owner)| owner == &timed));
+        assert!(
+            offered[0]
+                .member_occurrences
+                .iter()
+                .any(|(_, owner)| owner == &timed)
+        );
         assert_eq!(timed_out.tail_patch_awaiting_completion(), 1);
         assert!(
             timed_out.pending_events.contains_key(&1),
@@ -11211,11 +11219,12 @@ mod rc_w2_acoustic_tests {
                     assert!(deadline <= Instant::now());
                 }
                 let (tx, mut rx) = mpsc::unbounded_channel();
+                let unowned_gap = unowned_speech_gap(&state, &owners);
                 let _offered = settle_claimed_windows(
                     &mut state,
                     &tx,
                     &owners,
-                    unowned_speech_gap(&state, &owners),
+                    unowned_gap,
                     |request, fresh| Some(iwo_words(request, fresh)),
                 );
                 let receipt = reconcile_terminal_coverage(&mut state, &tx);
@@ -11296,13 +11305,10 @@ mod rc_w2_acoustic_tests {
                     assert!(deadline <= Instant::now());
                 }
                 let (tx, mut rx) = mpsc::unbounded_channel();
-                let _offered = settle_claimed_windows(
-                    &mut state,
-                    &tx,
-                    &owners,
-                    None,
-                    |request, fresh| defect_payload(request, fresh, defect),
-                );
+                let _offered =
+                    settle_claimed_windows(&mut state, &tx, &owners, None, |request, fresh| {
+                        defect_payload(request, fresh, defect)
+                    });
                 let receipt = reconcile_terminal_coverage(&mut state, &tx);
                 assert_eq!(
                     receipt.status,
@@ -11466,7 +11472,6 @@ mod rc_w2_acoustic_tests {
         start >= request.admit_sample_start && end <= request.admit_sample_end && start < end
     }
 
-
     fn iwo_words(request: &TailPatchRequest, owners: &[OccurrenceIdentity]) -> TailProviderPayload {
         let mut payload = forensic_stop_recovery_word(&request.provider_request, &owners[0]);
         payload.segments = owners
@@ -11477,11 +11482,7 @@ mod rc_w2_acoustic_tests {
                     .remove(0)
             })
             .collect();
-        payload.text = owners
-            .iter()
-            .map(|_| "Iwo")
-            .collect::<Vec<_>>()
-            .join(" ");
+        payload.text = owners.iter().map(|_| "Iwo").collect::<Vec<_>>().join(" ");
         payload
     }
 
@@ -11546,8 +11547,7 @@ mod rc_w2_acoustic_tests {
         for request in &offered {
             let mut fresh = Vec::new();
             for (index, owner) in owners.iter().enumerate() {
-                if !claimed[index]
-                    && window_contains(request, owner.sample_start, owner.sample_end)
+                if !claimed[index] && window_contains(request, owner.sample_start, owner.sample_end)
                 {
                     claimed[index] = true;
                     fresh.push(owner.clone());
@@ -11555,9 +11555,9 @@ mod rc_w2_acoustic_tests {
             }
             let send_gap = !gap_sent
                 && fresh.is_empty()
-                && gap.as_ref().is_some_and(|gap| {
-                    window_contains(request, gap.sample_start, gap.sample_end)
-                });
+                && gap
+                    .as_ref()
+                    .is_some_and(|gap| window_contains(request, gap.sample_start, gap.sample_end));
             if send_gap {
                 gap_sent = true;
                 let mut payload = gap_payload(&request.provider_request);
@@ -11573,17 +11573,17 @@ mod rc_w2_acoustic_tests {
         }
         assert!(
             owners.iter().all(|owner| {
-                offered.iter().any(|request| {
-                    window_contains(request, owner.sample_start, owner.sample_end)
-                })
+                offered
+                    .iter()
+                    .any(|request| window_contains(request, owner.sample_start, owner.sample_end))
             }),
             "every owner is wholly inside an offered window"
         );
         if let Some(gap) = &gap {
             assert!(
-                offered.iter().any(|request| {
-                    window_contains(request, gap.sample_start, gap.sample_end)
-                }),
+                offered
+                    .iter()
+                    .any(|request| { window_contains(request, gap.sample_start, gap.sample_end) }),
                 "unowned speech is wholly inside an offered window"
             );
         }
@@ -11634,7 +11634,6 @@ mod rc_w2_acoustic_tests {
         }
         Some(payload)
     }
-
 
     #[test]
     fn completed_live_horizon_keeps_incumbents_and_never_redecodes_them_at_stop() {
@@ -12162,11 +12161,12 @@ mod rc_w2_acoustic_tests {
         let deadline = LocalExecutionOwner::default().begin_drain(Duration::ZERO);
         assert!(deadline <= Instant::now());
         let (tx, _rx) = mpsc::unbounded_channel();
+        let unowned_gap = unowned_speech_gap(&state, &occurrences);
         let _offered = settle_claimed_windows(
             &mut state,
             &tx,
             &occurrences,
-            unowned_speech_gap(&state, &occurrences),
+            unowned_gap,
             |request, fresh| Some(iwo_words(request, fresh)),
         );
         let receipt = reconcile_terminal_coverage(&mut state, &tx);
@@ -12248,8 +12248,7 @@ mod rc_w2_acoustic_tests {
         for request in &offered {
             let mut fresh = Vec::new();
             for (index, range) in ranges.iter().enumerate() {
-                if !claimed[index]
-                    && window_contains(request, range.sample_start, range.sample_end)
+                if !claimed[index] && window_contains(request, range.sample_start, range.sample_end)
                 {
                     claimed[index] = true;
                     fresh.push(range.clone());
@@ -12349,7 +12348,9 @@ mod rc_w2_acoustic_tests {
             if foreign {
                 let codes = warning_codes(&mut rx);
                 assert!(
-                    codes.iter().any(|code| code == "tail_patch_identity_mismatch"),
+                    codes
+                        .iter()
+                        .any(|code| code == "tail_patch_identity_mismatch"),
                     "foreign completion identity is refused: {codes:?}"
                 );
             } else {
@@ -12944,9 +12945,7 @@ mod rc_w2_acoustic_tests {
         state.tail_patch = Some(tail_tx);
         state.capture_stopping = true;
         state.pump_capture_windows(&tx);
-        let request = tail_rx
-            .try_recv()
-            .expect("planned stopping window");
+        let request = tail_rx.try_recv().expect("planned stopping window");
         assert!(
             request
                 .member_occurrences
@@ -12954,7 +12953,10 @@ mod rc_w2_acoustic_tests {
                 .any(|(_, owner)| owner == &occurrence),
             "the stopping window names the pending occurrence"
         );
-        assert!(tail_rx.try_recv().is_err(), "a 2s stop emits one partial window");
+        assert!(
+            tail_rx.try_recv().is_err(),
+            "a 2s stop emits one partial window"
+        );
         request
             .provider_request
             .validate_pcm(&request.audio)
@@ -13762,13 +13764,13 @@ mod rc_w2_acoustic_tests {
             .find(|request| window_contains(request, occurrence_start, occurrence_end))
             .expect("a full 9s window contains the short occurrence");
         let heard = request.admit_sample_end - request.admit_sample_start;
-        assert_eq!(heard, 9 * u64::from(RATE), "containing window is one 9s grid");
+        assert_eq!(
+            heard,
+            9 * u64::from(RATE),
+            "containing window is one 9s grid"
+        );
         assert!(request.admit_sample_start < occurrence_start);
-        assert!(window_contains(
-            &request,
-            occurrence_start,
-            occurrence_end
-        ));
+        assert!(window_contains(&request, occurrence_start, occurrence_end));
 
         let context_end = occurrence_start.saturating_sub(400);
         let context_start = request.provider_request.identity.range.sample_start + 800;
@@ -16940,7 +16942,10 @@ mod rc_w2_test_rehab {
         state.capture_stopping = true;
         state.pump_capture_windows(&tx);
         let request = tail_rx.try_recv().expect("owned PCM request");
-        assert!(tail_rx.try_recv().is_err(), "a 6 s head is one stopping partial");
+        assert!(
+            tail_rx.try_recv().is_err(),
+            "a 6 s head is one stopping partial"
+        );
         assert_eq!(request.utterance_id, 1);
         assert_eq!(
             request.committed_text, "uruchom doker",
@@ -16985,7 +16990,7 @@ mod rc_w2_test_rehab {
 
     #[test]
     fn seal_window_clamps_start_after_retention_eviction() {
-        let mut state = state("evicted-head", 200.0);
+        let state = state("evicted-head", 200.0);
         let retained_start = state.audio.retained_start_secs();
         assert!(retained_start > 0.0);
         let retained_samples = (f64::from(retained_start) * f64::from(RATE)) as u64;
@@ -17026,7 +17031,9 @@ mod rc_w2_test_rehab {
         state.pump_capture_windows(&tx);
         let offered = std::iter::from_fn(|| tail_rx.try_recv().ok()).collect::<Vec<_>>();
         assert!(
-            offered.iter().all(|request| request.member_occurrences.is_empty()),
+            offered
+                .iter()
+                .all(|request| request.member_occurrences.is_empty()),
             "the future phrase is not a member of any offer"
         );
         assert!(
@@ -17354,7 +17361,7 @@ mod rc_w2_test_rehab {
 
     #[test]
     fn apple_tail_patch_backpressure_retains_until_capacity_without_stalling_capture() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::unbounded_channel();
         let (tail_tx, mut tail_rx) = mpsc::channel(1);
         let ranges = (0..10)
             .map(|i| (i as f32 * 0.5, i as f32 * 0.5 + 0.4))
@@ -17405,10 +17412,7 @@ mod rc_w2_test_rehab {
         let first = tail_rx.try_recv().expect("the accepted window");
         let mut submitted = BTreeSet::new();
         assert!(submitted.insert(first.submission_sequence));
-        first
-            .provider_request
-            .validate_pcm(&first.audio)
-            .unwrap();
+        first.provider_request.validate_pcm(&first.audio).unwrap();
         state.complete_whisper_window(
             &tx,
             TailPatchCompletion {
@@ -20903,10 +20907,7 @@ mod live_refinement_admission_tests {
             warnings(&mut receiver, RefinementFailure::PcmUnavailable.code()),
             0
         );
-        assert_eq!(
-            state.unsealed_word_owners().len(),
-            12
-        );
+        assert_eq!(state.unsealed_word_owners().len(), 12);
     }
 
     // One physical owner, qualified on the 48 kHz capture clock.
@@ -21138,7 +21139,11 @@ mod live_refinement_admission_tests {
         let now = Instant::now();
         let deadline = now + Duration::from_secs(5);
         assert!(state.stop_refinements_tick(&events, now, deadline));
-        state.complete_whisper_window(&events, forensic_live_transport_word_completion(&request), 20.0);
+        state.complete_whisper_window(
+            &events,
+            forensic_live_transport_word_completion(&request),
+            20.0,
+        );
         let outstanding = state.tail_patch_awaiting_completion();
         let mut residue = 0;
         let waiting = state.stop_refinements_tick(&events, now + LIVE_WORKER_QUANTUM, deadline);
@@ -21207,7 +21212,11 @@ mod live_refinement_admission_tests {
                 0
             );
         }
-        state.complete_whisper_window(&events, forensic_live_transport_word_completion(&request), 20.0);
+        state.complete_whisper_window(
+            &events,
+            forensic_live_transport_word_completion(&request),
+            20.0,
+        );
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(state.tail_patch_jobs_applied, 1);
     }
@@ -21232,7 +21241,9 @@ mod live_refinement_admission_tests {
                 Ok(TailPatchJobResult {
                     utterance_id: request.utterance_id,
                     outcome: TailPatchOutcome::NoChange,
-                    payload: forensic_live_transport_word_completion(&request).payload.unwrap(),
+                    payload: forensic_live_transport_word_completion(&request)
+                        .payload
+                        .unwrap(),
                 })
             } else {
                 Err(anyhow::anyhow!("synthetic provider failure"))
@@ -23481,7 +23492,11 @@ mod relay_l1_overlap_admission_tests {
         close_lexicon(&mut lane, 1, &occurrence, "mowa");
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
-        assert_eq!(requests.len(), 1, "a stopped 3 s head is one capture-grid partial");
+        assert_eq!(
+            requests.len(),
+            1,
+            "a stopped 3 s head is one capture-grid partial"
+        );
         let pin_start = 26_000;
         let pin_end = 46_000;
         assert!(pin_start >= silence_at && pin_end <= end);
@@ -23635,7 +23650,11 @@ mod relay_l1_overlap_admission_tests {
         close_lexicon(lane, 1, &occurrence, text);
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
-        assert_eq!(requests.len(), 2, "a 12 s head yields two 9 s capture windows");
+        assert_eq!(
+            requests.len(),
+            2,
+            "a 12 s head yields two 9 s capture windows"
+        );
         (occurrence, requests)
     }
 
