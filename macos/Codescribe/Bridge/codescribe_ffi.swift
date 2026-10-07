@@ -3935,6 +3935,11 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
     func addServer(server: CsMcpServerInput) throws
 
     /**
+     * Remove the durable per-tool rule so the tool inherits again.
+     */
+    func clearToolPermission(identity: String) throws
+
+    /**
      * Snapshot of durable `agent.permissions` (settings.json).
      */
     func getPermissionPolicy()  -> CsPermissionPolicy
@@ -4067,6 +4072,17 @@ open func addServer(server: CsMcpServerInput)throws   {try rustCallWithError(Ffi
     uniffi_codescribe_ffi_fn_method_codescribemcpadmin_add_server(
             self.uniffiCloneHandle(),
         FfiConverterTypeCsMcpServerInput_lower(server),$0
+    )
+}
+}
+
+    /**
+     * Remove the durable per-tool rule so the tool inherits again.
+     */
+open func clearToolPermission(identity: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribemcpadmin_clear_tool_permission(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(identity),$0
     )
 }
 }
@@ -13729,9 +13745,14 @@ public struct CsToolCapability: Equatable, Hashable {
     public var server: String
     public var risk: String
     /**
-     * Effective level: `allow` | `ask` | `deny`.
+     * Effective level the gate applies to the next call: `allow` | `ask` | `deny`.
      */
     public var effective: String
+    /**
+     * Rule behind `effective`: `tool` (individual), `server` or `default`
+     * (inherited), `thread` (session override).
+     */
+    public var ruleSource: String
     public var requiresApprovalFlag: Bool
 
     // Default memberwise initializers are never public by default, so we
@@ -13741,14 +13762,19 @@ public struct CsToolCapability: Equatable, Hashable {
          * Canonical identity (`server:upstream` or `native:name`).
          */identity: String, origin: String, server: String, risk: String,
         /**
-         * Effective level: `allow` | `ask` | `deny`.
-         */effective: String, requiresApprovalFlag: Bool) {
+         * Effective level the gate applies to the next call: `allow` | `ask` | `deny`.
+         */effective: String,
+        /**
+         * Rule behind `effective`: `tool` (individual), `server` or `default`
+         * (inherited), `thread` (session override).
+         */ruleSource: String, requiresApprovalFlag: Bool) {
         self.name = name
         self.identity = identity
         self.origin = origin
         self.server = server
         self.risk = risk
         self.effective = effective
+        self.ruleSource = ruleSource
         self.requiresApprovalFlag = requiresApprovalFlag
     }
 
@@ -13772,6 +13798,7 @@ public struct FfiConverterTypeCsToolCapability: FfiConverterRustBuffer {
                 server: FfiConverterString.read(from: &buf),
                 risk: FfiConverterString.read(from: &buf),
                 effective: FfiConverterString.read(from: &buf),
+                ruleSource: FfiConverterString.read(from: &buf),
                 requiresApprovalFlag: FfiConverterBool.read(from: &buf)
         )
     }
@@ -13783,6 +13810,7 @@ public struct FfiConverterTypeCsToolCapability: FfiConverterRustBuffer {
         FfiConverterString.write(value.server, into: &buf)
         FfiConverterString.write(value.risk, into: &buf)
         FfiConverterString.write(value.effective, into: &buf)
+        FfiConverterString.write(value.ruleSource, into: &buf)
         FfiConverterBool.write(value.requiresApprovalFlag, into: &buf)
     }
 }
@@ -19668,6 +19696,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_add_server() != 12098) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_clear_tool_permission() != 37009) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_get_permission_policy() != 8244) {
