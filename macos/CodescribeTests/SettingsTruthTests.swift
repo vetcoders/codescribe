@@ -1395,6 +1395,60 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(restored, ["correction", "smart", "max"])
   }
 
+  /// After a restore the refreshed snapshot reads "Built-in prompt": the
+  /// custom file is gone, so the source flips and the path stays.
+  func testPromptRestoreReturnsTheBuiltInSnapshot() throws {
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())
+    XCTAssertEqual(model.formattingPromptSnapshot(level: .correction)?.source, "custom_file")
+    XCTAssertEqual(model.assistivePromptSnapshot().source, "custom_file")
+
+    let formatting = try XCTUnwrap(model.restoreFormattingPromptToDefault(.correction))
+    XCTAssertEqual(formatting.source, "built_in_fallback")
+    XCTAssertEqual(formatting.path, CsPromptSnapshot.sampleFormatting.path)
+    XCTAssertEqual(model.formattingPromptSnapshot(level: .correction)?.source, "built_in_fallback")
+    XCTAssertEqual(
+      model.formattingPromptSnapshot(level: .smart)?.source, "built_in_fallback",
+      "untouched prompts keep their own source")
+
+    let assistive = try XCTUnwrap(model.restoreAssistivePromptToDefault())
+    XCTAssertEqual(assistive.source, "built_in_fallback")
+    XCTAssertEqual(assistive.content, CsSettings.sampleAssistivePrompt)
+    XCTAssertNil(model.lastError)
+  }
+
+  /// A restore the engine refuses returns no snapshot and keeps the error, so
+  /// the panel shows a failure and the custom prompt stays in use.
+  func testPromptRestoreFailureReturnsNoSnapshotAndKeepsTheError() {
+    let engine = MockSettingsEngine(
+      promptRestoreObserver: { _ in
+        throw NSError(
+          domain: "Prompt", code: 7, userInfo: [NSLocalizedDescriptionKey: "removal refused"])
+      }
+    )
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+
+    XCTAssertNil(model.restoreFormattingPromptToDefault(.correction))
+    XCTAssertEqual(model.lastError?.contains("removal refused"), true)
+    XCTAssertEqual(
+      model.formattingPromptSnapshot(level: .correction)?.source, "custom_file",
+      "a failed restore leaves the custom prompt in use")
+    XCTAssertNil(model.restoreAssistivePromptToDefault())
+    XCTAssertEqual(model.assistivePromptSnapshot().source, "custom_file")
+  }
+
+  func testPromptFailureLabelsNameTheOperationAndWhatDidNotChange() {
+    XCTAssertEqual(
+      promptFailureLabel(.restore, title: "Smart prompt"),
+      "Could not restore Smart prompt. The custom prompt is still in use.")
+    XCTAssertEqual(
+      promptFailureLabel(.save, title: "Agent prompt"),
+      "Could not save Agent prompt. The file on disk is unchanged.")
+    XCTAssertEqual(
+      PromptOperationFailure(operation: .restore, detail: "x"),
+      PromptOperationFailure(operation: .restore, detail: "x"))
+  }
+
   func testFormattingPromptSnapshotsExposeDistinctPathsAndProvenance() throws {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())

@@ -130,9 +130,24 @@ the rendered view; **Cancel** drops the unsaved draft. Edit state is kept per
 prompt: switching segments mid-edit keeps that prompt in edit mode with an
 **Unsaved changes** marker, and the rendered view always shows the saved text,
 never a draft. **Restore default…** asks for confirmation that names the prompt
-and changes only that one; the previous text stays in the prompt backups
-folder. Note that restoring writes the built-in text to the custom file, so the
-source afterwards reads **Custom prompt** rather than **Built-in prompt**.
+and changes only that one. Confirming copies the custom file into the prompt
+backups folder, removes it, and records the removal in the prompt audit log,
+so the source afterwards reads **Built-in prompt** and the text follows future
+app updates. If the file cannot be removed, a red line under the source says
+**Could not restore …** with the error, and the custom prompt stays in use; a
+failed save is reported the same way.
+
+### Agent → Workspace
+
+**Folders available to the Agent** lists where the Agent may read and write;
+everything outside the list is out of reach. The same list is where the Agent
+looks for projects and Git repositories (subfolders included, hidden folders
+and build directories skipped), so entries such as `~/.codescribe` or `/tmp`
+sit next to checkouts like `~/Git` — it is one access list, not a list of
+projects. A green dot marks an existing directory, amber one that does not
+resolve. **Add folder…** opens a folder picker and adds the choice as an
+editable row; the minus button (**Remove folder**) drops a row. Nothing is
+written until **Save changes**.
 
 ### Credential access while refreshing
 

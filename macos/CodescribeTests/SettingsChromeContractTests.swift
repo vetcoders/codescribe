@@ -406,6 +406,55 @@ final class SettingsChromeContractTests: XCTestCase {
   /// Round 2 of the Polish pass: the Prompts tab keeps file names and raw
   /// source ids out of the first level, never renders an unsaved draft as the
   /// saved prompt, and names the prompt a restore will replace.
+  /// Round 3: the Workspace tab names folder access, not "projects", and the
+  /// one list stays neutral because one setting feeds both the path policy and
+  /// the project scan.
+  func testWorkspaceTabNamesAgentAccessNotProjects() throws {
+    let sources = try settingsSources()
+    let tab = try XCTUnwrap(sources["SettingsTab.swift"])
+    XCTAssertTrue(tab.contains("String(localized: \"Folders available to the Agent\""))
+    XCTAssertFalse(tab.contains("\"Workspace roots.\""))
+    XCTAssertTrue(
+      tab.contains(
+        "\"The Agent can read and write only inside these folders. It has no access outside them.\""
+      ))
+
+    let section = try XCTUnwrap(sources["WorkspaceRootsSection.swift"])
+    XCTAssertTrue(section.contains("SettingsSectionLabel(String(localized: \"Allowed folders\"))"))
+    XCTAssertFalse(section.contains("(list_projects)"), "tool names stay out of the UI copy")
+    XCTAssertTrue(section.contains("Label(\"Add folder…\", systemImage: \"plus\")"))
+    XCTAssertTrue(section.contains("Button(action: pickFolder)"), "the ellipsis opens a picker")
+    XCTAssertTrue(section.contains("panel.canChooseDirectories = true"))
+    XCTAssertTrue(section.contains("Text(\"Save changes\")"))
+    XCTAssertTrue(section.contains(".help(\"Remove folder\")"))
+    XCTAssertTrue(section.contains(".accessibilityLabel(\"Remove folder\")"))
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "Folders available to the Agent": "Foldery dostępne dla Agenta",
+      "The Agent can read and write only inside these folders. It has no access outside them.":
+        "Agent może odczytywać i zapisywać dane tylko w tych folderach. Poza nimi nie ma dostępu.",
+      "Allowed folders": "Dozwolone foldery",
+      "The Agent looks for projects and Git repositories in these folders. It also searches subfolders, but skips hidden folders and build directories.":
+        "W tych folderach Agent szuka projektów i repozytoriów Git. Przeszukuje też podfoldery, ale pomija foldery ukryte i katalogi build.",
+      "Add folder…": "Dodaj folder…",
+      "Save changes": "Zapisz zmiany",
+      "Remove folder": "Usuń folder",
+      "Choose a folder the Agent may read and write":
+        "Wybierz folder, w którym Agent może odczytywać i zapisywać dane",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    for retired in [
+      "Workspace roots.", "Agent workspace roots", "Add root", "Save roots",
+      "Directories the Agent may read and write. Everything outside them is out of reach.",
+      "Directories the Agent scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped.",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
   func testPromptsTabKeepsFileNamesOutOfTheFirstLevel() throws {
     let sources = try settingsSources()
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
@@ -429,7 +478,15 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("Button(\"Restore default…\")"))
     XCTAssertFalse(panel.contains("Button(\"Restore…\")"))
     XCTAssertTrue(
-      panel.contains("\"Only \\(title) will change."), "the confirmation names the prompt")
+      panel.contains("\"Only \\(title) will change:"), "the confirmation names the prompt")
+    XCTAssertTrue(
+      panel.contains("its custom file is removed and the built-in prompt takes over"),
+      "the confirmation says what restoring does")
+    XCTAssertTrue(panel.contains("failure: failures[file],"), "failures are shown per file")
+    XCTAssertTrue(panel.contains(".accessibilityIdentifier(\"settings-prompt-failure\")"))
+    XCTAssertTrue(
+      panel.contains("failures[file] = PromptOperationFailure("),
+      "a nil snapshot records a failure instead of a refreshed snapshot")
     XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $detailsExpanded)"))
     XCTAssertTrue(panel.contains("Text(\"File details\")"))
     XCTAssertFalse(panel.contains("ScrollView {\n      MarkdownText"), "no nested scrolling")
@@ -454,12 +511,19 @@ final class SettingsChromeContractTests: XCTestCase {
       "Unsaved changes": "Niezapisane zmiany",
       "Edit": "Edytuj",
       "Save": "Zapisz",
+      "Only %@ will change: its custom file is removed and the built-in prompt takes over. The previous version remains recoverable in the prompt backups folder.":
+        "Zmieni się tylko %@: własny plik zostanie usunięty, a w użyciu będzie wbudowany prompt. Poprzednią wersję można odzyskać z folderu kopii zapasowych promptów.",
+      "Could not restore %@. The custom prompt is still in use.":
+        "Nie udało się przywrócić: %@. Własny prompt nadal jest w użyciu.",
+      "Could not save %@. The file on disk is unchanged.":
+        "Nie udało się zapisać: %@. Plik na dysku pozostał bez zmian.",
     ]
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)
     }
     for retired in [
       "Prompts.", "Assistive prompt", "Custom file", "Built-in fallback", "Restore…",
+      "Only %@ will change. The previous version remains recoverable in the prompt backups folder.",
       "Correction only AI formatting (formatting.txt)",
       "Base system prompt for the Agent (assistive.txt)",
       "Edits the BASE prompt file. The core still appends its tuning prompt at runtime.",

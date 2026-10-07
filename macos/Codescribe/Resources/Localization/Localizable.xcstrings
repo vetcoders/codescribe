@@ -1811,22 +1811,33 @@
         }
       }
     },
+    "Add folder" : {
+      "comment" : "Folder picker confirm button",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj folder"
+          }
+        }
+      }
+    },
+    "Add folder…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj folder…"
+          }
+        }
+      }
+    },
     "Add provider" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dodaj dostawcę"
-          }
-        }
-      }
-    },
-    "Add root" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dodaj folder"
           }
         }
       }
@@ -2104,16 +2115,6 @@
         }
       }
     },
-    "Agent workspace roots" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Foldery z projektami Agenta"
-          }
-        }
-      }
-    },
     "Agent · %@" : {
       "localizations" : {
         "pl" : {
@@ -2236,6 +2237,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dla każdego narzędzia można zezwolić na działanie, wymagać zgody lub je zablokować. Blokada ma pierwszeństwo przed wszystkimi innymi ustawieniami."
+          }
+        }
+      }
+    },
+    "Allowed folders" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dozwolone foldery"
           }
         }
       }
@@ -3283,6 +3294,26 @@
         }
       }
     },
+    "Choose a folder the Agent may read and write" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz folder, w którym Agent może odczytywać i zapisywać dane"
+          }
+        }
+      }
+    },
+    "Choose a folder to add to the list" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz folder, który chcesz dodać do listy"
+          }
+        }
+      }
+    },
     "Choose a screen anchor or allow free dragging" : {
       "localizations" : {
         "pl" : {
@@ -4313,6 +4344,26 @@
         }
       }
     },
+    "Could not restore %@. The custom prompt is still in use." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się przywrócić: %@. Własny prompt nadal jest w użyciu."
+          }
+        }
+      }
+    },
+    "Could not save %@. The file on disk is unchanged." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zapisać: %@. Plik na dysku pozostał bez zmian."
+          }
+        }
+      }
+    },
     "Could not save note" : {
       "comment" : "Tray banner: writing the daily note failed",
       "localizations" : {
@@ -5085,26 +5136,6 @@
         }
       }
     },
-    "Directories the Agent may read and write. Everything outside them is out of reach." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Foldery, w których Agent może odczytywać i zapisywać dane. Wszystko poza nimi jest niedostępne."
-          }
-        }
-      }
-    },
-    "Directories the Agent scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "W tych folderach Agent szuka repozytoriów Git, aby ustalić ścieżkę projektu. (list_projects). Przeszukuje też podfoldery, do kilku poziomów w głąb. Pomija foldery ukryte i foldery z plikami kompilacji."
-          }
-        }
-      }
-    },
     "Disable Always on Top" : {
       "localizations" : {
         "pl" : {
@@ -5833,6 +5864,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zwiń tę wiadomość do skróconego widoku"
+          }
+        }
+      }
+    },
+    "Folders available to the Agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Foldery dostępne dla Agenta"
           }
         }
       }
@@ -8367,12 +8408,12 @@
         }
       }
     },
-    "Only %@ will change. The previous version remains recoverable in the prompt backups folder." : {
+    "Only %@ will change: its custom file is removed and the built-in prompt takes over. The previous version remains recoverable in the prompt backups folder." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zmieni się tylko %@. Poprzednią wersję można odzyskać z folderu kopii zapasowych promptów."
+            "value" : "Zmieni się tylko %@: własny plik zostanie usunięty, a w użyciu będzie wbudowany prompt. Poprzednią wersję można odzyskać z folderu kopii zapasowych promptów."
           }
         }
       }
@@ -9413,6 +9454,22 @@
         }
       }
     },
+    "Read" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przeczytano"
+          }
+        }
+      }
+    },
     "Read error" : {
       "localizations" : {
         "pl" : {
@@ -9489,22 +9546,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdzanie ustawienia Codescribe i ewentualnego wymuszenia z konfiguracji zaawansowanej…"
-          }
-        }
-      }
-    },
-    "Read" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Read"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przeczytano"
           }
         }
       }
@@ -9956,6 +9997,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Usuń własnego dostawcę: %@"
+          }
+        }
+      }
+    },
+    "Remove folder" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usuń folder"
           }
         }
       }
@@ -10709,16 +10760,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Zapisz ostatni transkrypt"
-          }
-        }
-      }
-    },
-    "Save roots" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zapisz foldery"
           }
         }
       }
@@ -12763,7 +12804,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Narzędzia terminala i procesów zawsze wymagają „Zezwól raz”. Polecenia i ścieżki są ograniczone do folderów z projektami Agenta."
+            "value" : "Narzędzia terminala i procesów zawsze wymagają „Zezwól raz”. Polecenia i ścieżki są ograniczone do folderów dostępnych dla Agenta."
           }
         }
       }
@@ -12850,6 +12891,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przebieg „%@” nie zwrócił tekstu"
+          }
+        }
+      }
+    },
+    "The Agent can read and write only inside these folders. It has no access outside them." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent może odczytywać i zapisywać dane tylko w tych folderach. Poza nimi nie ma dostępu."
+          }
+        }
+      }
+    },
+    "The Agent looks for projects and Git repositories in these folders. It also searches subfolders, but skips hidden folders and build directories." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "W tych folderach Agent szuka projektów i repozytoriów Git. Przeszukuje też podfoldery, ale pomija foldery ukryte i katalogi build."
           }
         }
       }
@@ -14542,16 +14603,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Obszar roboczy"
-          }
-        }
-      }
-    },
-    "Workspace roots." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Foldery robocze."
           }
         }
       }
@@ -16740,7 +16791,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "roots, directory, repo, path, foldery, katalogi, repozytorium, ścieżka"
+            "value" : "roots, directory, folders, access, repo, path, foldery, katalogi, dostęp, repozytorium, ścieżka"
           }
         }
       }

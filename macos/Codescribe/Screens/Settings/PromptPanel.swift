@@ -23,6 +23,9 @@ struct PromptPanel: View {
   /// left mid-edit comes back as the same unsaved draft in EDIT, never as a
   /// rendered "saved" version.
   @State private var editingFiles: Set<PromptFile> = []
+  /// The last save/restore that returned no refreshed snapshot, per file. A
+  /// failed restore is shown as a failure, never as a completed restore.
+  @State private var failures: [PromptFile: PromptOperationFailure] = [:]
 
   /// One prompt at a time. Four stacked TextEditors in a single scroll meant
   /// every visit wheeled past prompts you did not come for.
@@ -45,6 +48,7 @@ struct PromptPanel: View {
         draft: $drafts[draftOf: file],
         editing: editing(of: file),
         snapshot: snapshots[file],
+        failure: failures[file],
         onSave: save,
         onRestore: restore,
         onDiscard: discard
@@ -71,27 +75,38 @@ struct PromptPanel: View {
   private func save() -> Bool {
     let content = drafts[draftOf: file]
     if let level = file.formattingLevel {
-      return apply(model.saveFormattingPrompt(level, content: content))
+      return apply(model.saveFormattingPrompt(level, content: content), .save)
     }
-    return apply(model.saveAssistivePrompt(content))
+    return apply(model.saveAssistivePrompt(content), .save)
   }
 
+  /// The engine backs the custom file up and removes it; the refreshed
+  /// snapshot then reads "Built-in prompt". Only the shown file is touched.
   private func restore() -> Bool {
     if let level = file.formattingLevel {
-      return apply(model.restoreFormattingPromptToDefault(level))
+      return apply(model.restoreFormattingPromptToDefault(level), .restore)
     }
-    return apply(model.restoreAssistivePromptToDefault())
+    return apply(model.restoreAssistivePromptToDefault(), .restore)
   }
 
   /// Drops the unsaved draft of the shown file; the saved snapshot stands.
   private func discard() {
     drafts[file] = snapshots[file]?.content ?? ""
     editingFiles.remove(file)
+    failures[file] = nil
   }
 
-  /// A failed save/restore returns nil and must not claim a refreshed snapshot.
-  private func apply(_ updated: CsPromptSnapshot?) -> Bool {
-    guard let updated else { return false }
+  /// A failed save/restore returns nil and must not claim a refreshed snapshot:
+  /// the previous snapshot stands and the failure is shown under the source.
+  private func apply(_ updated: CsPromptSnapshot?, _ operation: PromptOperationFailure.Operation)
+    -> Bool
+  {
+    guard let updated else {
+      failures[file] = PromptOperationFailure(
+        operation: operation, detail: model.lastError ?? "")
+      return false
+    }
+    failures[file] = nil
     drafts[file] = updated.content
     snapshots[file] = updated
     return true
@@ -133,6 +148,7 @@ private struct PromptEditor: View {
   @Binding var draft: String
   @Binding var editing: Bool
   let snapshot: CsPromptSnapshot?
+  let failure: PromptOperationFailure?
   let onSave: () -> Bool
   let onRestore: () -> Bool
   let onDiscard: () -> Void
@@ -173,6 +189,11 @@ private struct PromptEditor: View {
       sourceLine
         .padding(.top, 7)
 
+      if let failure {
+        failureLine(failure)
+          .padding(.top, 6)
+      }
+
       fileDetails
         .padding(.top, 4)
 
@@ -188,7 +209,7 @@ private struct PromptEditor: View {
       }
     } message: {
       Text(
-        "Only \(title) will change. The previous version remains recoverable in the prompt backups folder."
+        "Only \(title) will change: its custom file is removed and the built-in prompt takes over. The previous version remains recoverable in the prompt backups folder."
       )
     }
   }
@@ -267,6 +288,24 @@ private struct PromptEditor: View {
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Prompt source")
     .accessibilityValue(Text(verbatim: promptSourceLabel(snapshot?.source)))
+  }
+
+  /// Why the last Save or Restore did nothing. The source line above still
+  /// names the prompt actually in use, so a failed restore cannot pose as done.
+  private func failureLine(_ failure: PromptOperationFailure) -> some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text(promptFailureLabel(failure.operation, title: title))
+        .font(CSFont.ui(11.5, .medium))
+        .foregroundStyle(CSColor.danger)
+      if !failure.detail.isEmpty {
+        Text(failure.detail)
+          .font(CSFont.mono(10.5, .regular))
+          .foregroundStyle(CSColor.danger)
+          .textSelection(.enabled)
+      }
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("settings-prompt-failure")
   }
 
   /// Collapsed by default: the on-disk path, whether a custom file exists or
@@ -357,6 +396,29 @@ func promptSourceLabel(_ source: String?) -> String {
   case "built_in_fallback": return String(localized: "Source: Built-in prompt")
   case "read_error": return String(localized: "Source: Built-in prompt (file unreadable)")
   default: return String(localized: "Source unavailable")
+  }
+}
+
+/// A Save or Restore that returned no refreshed snapshot, with the engine's
+/// error text. Equatable so tests can assert the exact failure shown.
+struct PromptOperationFailure: Equatable {
+  enum Operation: Equatable {
+    case save
+    case restore
+  }
+
+  let operation: Operation
+  let detail: String
+}
+
+/// Names the failed operation and states what did not change, so the line
+/// cannot be read as a success in either direction.
+func promptFailureLabel(_ operation: PromptOperationFailure.Operation, title: String) -> String {
+  switch operation {
+  case .save:
+    return String(localized: "Could not save \(title). The file on disk is unchanged.")
+  case .restore:
+    return String(localized: "Could not restore \(title). The custom prompt is still in use.")
   }
 }
 
