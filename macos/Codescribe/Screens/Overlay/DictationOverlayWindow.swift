@@ -355,7 +355,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 /// keeps the glass panel covering the window 1:1 at any size. Exports no layout
 /// constraints, so the content↔window sizing feedback loop that once hung the app
 /// stays structurally dead.
-private final class OverlayContentContainer: NSView {
+final class OverlayContentContainer: NSView {
   private let hosting: NSView
 
   init(hosting: NSView) {
@@ -388,6 +388,34 @@ private final class OverlayContentContainer: NSView {
       return self
     }
     return super.hitTest(point)
+  }
+
+  /// The resize band owns pointer drags, not scrolling. Its hit lands on this
+  /// container, so deliver the unchanged wheel event to the nearest visible
+  /// existing scroll view, including when the pointer is over a corner.
+  override func scrollWheel(with event: NSEvent) {
+    let point = convert(event.locationInWindow, from: nil)
+    var target: NSScrollView?
+    var distance = CGFloat.infinity
+    func visit(_ view: NSView) {
+      guard !view.isHidden, !view.visibleRect.isEmpty else { return }
+      for child in view.subviews { visit(child) }
+      guard let scroll = view as? NSScrollView else { return }
+      let rect = convert(scroll.visibleRect, from: scroll)
+      let dx = max(rect.minX - point.x, 0, point.x - rect.maxX)
+      let dy = max(rect.minY - point.y, 0, point.y - rect.maxY)
+      let candidateDistance = dx * dx + dy * dy
+      if candidateDistance < distance {
+        target = scroll
+        distance = candidateDistance
+      }
+    }
+    visit(hosting)
+    if let target {
+      target.scrollWheel(with: event)
+    } else {
+      super.scrollWheel(with: event)
+    }
   }
 
   override func resetCursorRects() {
@@ -702,6 +730,7 @@ final class OverlayPresence {
 /// is one or two pixels; this is a forgiving visible-surface target (macOS 15+).
 enum OverlayResizeHit: Sendable {
   static let band: CGFloat = 16
+  static let scrollbarInset: CGFloat = 15
 
   enum Edge: Sendable, Equatable {
     case left, right, top, bottom

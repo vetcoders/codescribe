@@ -26,7 +26,119 @@ private struct MicrophoneFrameCapture: View {
   }
 }
 
+private final class PositionedOverlayWheelEvent: NSEvent {
+  let point: NSPoint
+  init(at point: NSPoint) {
+    self.point = point
+    super.init()
+  }
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+  override var type: NSEvent.EventType { .scrollWheel }
+  override var locationInWindow: NSPoint { point }
+  override var deltaX: CGFloat { 0 }
+  override var deltaY: CGFloat { -40 }
+  override var deltaZ: CGFloat { 0 }
+  override var scrollingDeltaX: CGFloat { 0 }
+  override var scrollingDeltaY: CGFloat { -40 }
+  override var hasPreciseScrollingDeltas: Bool { true }
+  override var isDirectionInvertedFromDevice: Bool { false }
+  override var phase: NSEvent.Phase { [] }
+  override var momentumPhase: NSEvent.Phase { [] }
+}
+
 final class OverlayResizeHitTests: XCTestCase {
+  @MainActor
+  func testResizeBandWheelReachesMountedScrollViewWithoutChangingSelection() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 100, y: 100, width: 400, height: 300),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable],
+      backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    let hosting = NSView(frame: .zero)
+    let scroll = NSScrollView(frame: NSRect(x: 24, y: 24, width: 352, height: 252))
+    scroll.hasVerticalScroller = true
+    let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 330, height: 2_000))
+    text.string = String(repeating: "A transcript line that must remain selectable.\n", count: 100)
+    scroll.documentView = text
+    hosting.addSubview(scroll)
+    let root = OverlayContentContainer(hosting: hosting)
+    panel.contentView = root
+    panel.setContentSize(NSSize(width: 400, height: 300))
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    root.layoutSubtreeIfNeeded()
+    text.setSelectedRange(NSRange(location: 2, length: 5))
+    let originalText = text.string
+    let originalFrame = panel.frame
+    let points = [
+      NSPoint(x: 394, y: 150), NSPoint(x: 6, y: 150),
+      NSPoint(x: 394, y: 6), NSPoint(x: 394, y: 294),
+    ]
+    for point in points {
+      scroll.contentView.scroll(to: NSPoint(x: 0, y: 200))
+      scroll.reflectScrolledClipView(scroll.contentView)
+      let before = scroll.contentView.bounds.origin.y
+      let event = PositionedOverlayWheelEvent(at: point)
+      let hit = try XCTUnwrap(root.hitTest(point))
+      XCTAssertTrue(hit === root)
+      hit.scrollWheel(with: event)
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      XCTAssertNotEqual(scroll.contentView.bounds.origin.y, before, "Wheel at \(point)")
+      XCTAssertEqual(text.selectedRange(), NSRange(location: 2, length: 5))
+      XCTAssertEqual(text.string, originalText)
+      XCTAssertEqual(panel.frame, originalFrame)
+      XCTAssertFalse(panel.isUserResizing)
+      XCTAssertEqual(
+        panel.cursor(at: point),
+        OverlayResizeHit.cursor(
+          for: try XCTUnwrap(OverlayResizeHit.edge(at: point, in: root.bounds))))
+    }
+    panel.sendEvent(
+      mouseEvent(.leftMouseDown, at: points[0], in: panel, timestamp: 1, eventNumber: 9_100))
+    XCTAssertTrue(panel.isUserResizing, "The same band must still begin a resize on mouse down")
+    panel.endUserResize()
+    XCTAssertFalse(panel.isUserResizing)
+  }
+
+  @MainActor
+  func testRealOverlayEdgeWheelScrollsExistingTranscript() throws {
+    let state = OverlayState()
+    state.toggleCollapsed()
+    project(
+      String(repeating: "A long visible transcript line.\n", count: 100), sequence: 1, to: state)
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "OverlayResizeHitTests.edgeWheel"))
+        as? FloatingOverlayPanel)
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    panel.setContentSize(NSSize(width: 470, height: 280))
+    panel.orderFrontRegardless()
+    let root = try XCTUnwrap(panel.contentView)
+    root.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    root.layoutSubtreeIfNeeded()
+    let text = try XCTUnwrap(descendant(of: LiveTranscriptNativeTextView.self, in: root))
+    let scroll = try XCTUnwrap(text.enclosingScrollView)
+    XCTAssertEqual(scroll.scrollerInsets.right, 15)
+    XCTAssertGreaterThan(text.frame.height, scroll.contentView.bounds.height)
+    text.setSelectedRange(NSRange(location: 2, length: 5))
+    scroll.contentView.scroll(to: NSPoint(x: 0, y: 200))
+    scroll.reflectScrolledClipView(scroll.contentView)
+    let before = scroll.contentView.bounds.origin.y
+    let textFrame = root.convert(scroll.bounds, from: scroll)
+    let point = NSPoint(x: root.bounds.maxX - 6, y: textFrame.midY)
+    let hit = try XCTUnwrap(root.hitTest(point))
+    XCTAssertTrue(hit === root)
+    hit.scrollWheel(with: PositionedOverlayWheelEvent(at: point))
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    XCTAssertNotEqual(scroll.contentView.bounds.origin.y, before)
+    XCTAssertEqual(text.selectedRange(), NSRange(location: 2, length: 5))
+  }
+
   @MainActor
   func testPointerResizeKeepsFrameAndEditorThroughLiveRosterUpdates() throws {
     let state = OverlayState.previewFormatted()
