@@ -207,6 +207,22 @@ if ready:
 PYMAKE
 chmod +x "$FAKE_BIN/make"
 
+# The process census and AppleScript belong to this fixture too. A real
+# Codescribe process must never receive Quit from an isolated install test.
+cat >"$FAKE_BIN/pgrep" <<'PYPGREP'
+#!/usr/bin/env python3
+import sys
+
+if sys.argv[1:] != ["-x", "Codescribe"]:
+    raise SystemExit("unexpected fixture process census")
+raise SystemExit(1)
+PYPGREP
+cat >"$FAKE_BIN/osascript" <<'PYOSASCRIPT'
+#!/usr/bin/env python3
+raise SystemExit("isolated install test must not send AppleScript")
+PYOSASCRIPT
+chmod +x "$FAKE_BIN/pgrep" "$FAKE_BIN/osascript"
+
 hold_shared_lock() {
   local path="$1" ready="$2" release="$3"
   python3 - "$path" "$ready" "$release" "$TEST_ROOT" <<'PY' &
