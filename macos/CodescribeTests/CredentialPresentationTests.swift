@@ -8,7 +8,9 @@ private final class CredentialOnboardingEngine: OnboardingEngine {
 
   init(provider: CsProviderOption) { self.provider = provider }
   func shouldShowOnboarding() -> Bool { true }
-  func onboardingProgress() -> UInt32 { 0 }
+  func onboardingProgress() -> UInt32 {
+    UInt32(OnboardingStep.flow.firstIndex(of: .apiKey)!)
+  }
   func saveOnboardingProgress(step: UInt32) {}
   func markOnboardingDone() {}
   func onboardingMode() -> String? { nil }
@@ -42,8 +44,10 @@ final class CredentialPresentationTests: XCTestCase {
       let model = OnboardingViewModel(
         engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
         agentBridge: CredentialTestBridgeInstaller(), probe: MockPermissionProbe(.allGranted))
+      XCTAssertEqual(
+        model.step, .apiKey, "Credential presence belongs to the explained provider step")
       model.refreshProviderAccess()
-      await awaitCondition { !model.providerAccessPending }
+      await awaitCondition { model.providerAccessResolved && !model.providerAccessPending }
 
       XCTAssertEqual(model.selectedProviderAccountConnected, account)
       XCTAssertEqual(
@@ -73,8 +77,9 @@ final class CredentialPresentationTests: XCTestCase {
     let model = OnboardingViewModel(
       engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
       agentBridge: CredentialTestBridgeInstaller(), probe: MockPermissionProbe(.allGranted))
+    XCTAssertEqual(model.step, .apiKey)
     model.refreshProviderAccess()
-    await awaitCondition { !model.providerAccessPending }
+    await awaitCondition { model.providerAccessResolved && !model.providerAccessPending }
     XCTAssertTrue(model.selectedProviderKeySet)
     engine.provider.apiKeySet = false
     model.refreshProviderAccess()

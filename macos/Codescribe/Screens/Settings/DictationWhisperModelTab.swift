@@ -250,7 +250,7 @@ struct WhisperDownloadView: View {
         .fixedSize(horizontal: false, vertical: true)
       } else if !store.status.available {
         if let error = store.error {
-          Text(error).font(.callout).foregroundStyle(CSColor.terracottaLight)
+          Text(error).font(.callout).foregroundStyle(CSColor.terracotta)
             .fixedSize(horizontal: false, vertical: true)
         }
         Button(downloadTitle, action: store.start)
