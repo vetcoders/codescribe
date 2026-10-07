@@ -6,6 +6,74 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testReplySpeechCapabilitySurvivesMirrorsAndRebuildsOlderCachedProjection() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let shared = fixture.root.appendingPathComponent("a-shared.jsonl")
+    var speech = fixture.recipient()
+    speech.merge([
+      "schema": "codescribe.agent-reply.v1", "kind": "agent_reply",
+      "reply_id": String(repeating: "a", count: 24), "text": "Taki sam tekst",
+      "emitted_at": "2026-10-07T14:00:00Z", "spoken": false,
+      "tts_vendor": "xai", "voice": "ara", "speed": 1.25,
+    ]) { _, new in new }
+    try fixture.append(speech)
+    var mirror = speech
+    mirror.removeValue(forKey: "tts_vendor")
+    mirror.removeValue(forKey: "voice")
+    var sharedBytes = try JSONSerialization.data(withJSONObject: mirror)
+    sharedBytes.append(10)
+    try sharedBytes.write(to: shared)
+    var text = mirror
+    text["reply_id"] = String(repeating: "b", count: 24)
+    try fixture.append(text)
+    let sourceBytes = try Data(contentsOf: fixture.bus)
+    func messages(_ snapshot: OverlayChannelDeliverySnapshot) throws -> [OverlayConversationMessage]
+    {
+      try XCTUnwrap(snapshot.conversations.first { $0.owner?.leaseID == Fixture.leaseID }).messages
+    }
+    let initial = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+      .readSnapshot()
+    let replies = try messages(initial)
+    XCTAssertEqual(replies.map(\.text), ["Taki sam tekst", "Taki sam tekst"])
+    XCTAssertEqual(replies.map(\.supportsSpeechPlayback), [true, false])
+    let restarted = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+    let restored = try await restarted.readSnapshot()
+    XCTAssertEqual(try messages(restored), replies)
+    let consumed = await restarted.consumedBytes
+    XCTAssertEqual(consumed, 0)
+
+    let cacheURL = OverlayDeliveryCursorStore.url(root: fixture.root)
+    var cache = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(contentsOf: cacheURL))
+        as? [String: Any])
+    var buses = try XCTUnwrap(cache["buses"] as? [String: [String: Any]])
+    for path in Array(buses.keys) {
+      var entry = try XCTUnwrap(buses[path])
+      let encoded = try XCTUnwrap(entry["projection"] as? String)
+      var projection = try XCTUnwrap(
+        JSONSerialization.jsonObject(
+          with: XCTUnwrap(Data(base64Encoded: encoded))) as? [String: Any])
+      var cachedMessages = try XCTUnwrap(projection["messages"] as? [String: [String: Any]])
+      for id in Array(cachedMessages.keys) {
+        cachedMessages[id]?.removeValue(forKey: "supportsSpeechPlayback")
+      }
+      projection["messages"] = cachedMessages
+      entry["projection"] = try JSONSerialization.data(withJSONObject: projection)
+        .base64EncodedString()
+      buses[path] = entry
+    }
+    cache["buses"] = buses
+    try fixture.write(cache, to: cacheURL)
+    let upgraded = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+    let rebuilt = try await upgraded.readSnapshot()
+    XCTAssertEqual(try messages(rebuilt), replies)
+    let rebuiltBytes = await upgraded.consumedBytes
+    XCTAssertGreaterThan(rebuiltBytes, 0)
+    XCTAssertLessThanOrEqual(rebuiltBytes, 2 * OverlayChannelDeliveryReader.tailWindow)
+    XCTAssertEqual(try Data(contentsOf: fixture.bus), sourceBytes)
+  }
+
   func testBroadcastStreamingKeepsNewestReducerRevisionAcrossDelayedBusCopies() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }

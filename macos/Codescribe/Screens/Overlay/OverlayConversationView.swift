@@ -94,25 +94,37 @@ struct OverlayConversationView: View {
   }
 
   private var navigation: some View {
-    HStack {
-      if conversation.channel == "0" {
-        Text("0 · All").font(.headline)
-      } else {
-        Text(verbatim: conversation.name).font(.headline).lineLimit(1)
-          .help(
-            Text(
-              verbatim: conversation.owner.map { "\($0.provider) · \($0.providerSessionID)" } ?? "")
-          )
+    navigationGlassContainer(
+      HStack {
+        if conversation.channel == "0" {
+          Text("0 · All").font(.headline)
+        } else {
+          Text(verbatim: conversation.name).font(.headline).lineLimit(1)
+            .help(
+              Text(
+                verbatim: conversation.owner.map { "\($0.provider) · \($0.providerSessionID)" }
+                  ?? "")
+            )
+        }
+        Spacer(minLength: 4)
+        if conversation.owner != nil {
+          OverlayAgentAudioControls(
+            open: microphoneOpen, muted: playbackMuted,
+            microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
+            palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback)
+        }
       }
-      Spacer(minLength: 4)
-      if conversation.owner != nil {
-        OverlayAgentAudioControls(
-          open: microphoneOpen, muted: playbackMuted,
-          microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
-          palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback)
-      }
-    }
+    )
     .accessibilityIdentifier("overlay-conversation-navigation")
+  }
+
+  @ViewBuilder
+  private func navigationGlassContainer<Content: View>(_ content: Content) -> some View {
+    if #available(macOS 26.0, *) {
+      GlassEffectContainer(spacing: 6) { content }
+    } else {
+      content
+    }
   }
 
   @ViewBuilder
@@ -154,6 +166,13 @@ struct OverlayConversationView: View {
     } else {
       list
     }
+  }
+
+  static func receiptStatusText(for recipient: OverlayConversationRecipient) -> String {
+    if recipient.acknowledged { return String(localized: "Read") }
+    if recipient.accepted { return String(localized: "Queue accepted") }
+    if recipient.queued { return String(localized: "Queued") }
+    return String(localized: "Addressed")
   }
 
   private func submit() {
@@ -206,21 +225,13 @@ struct OverlayConversationView: View {
         VStack(alignment: .leading, spacing: 2) {
           if conversation.channel == "0" { Text(verbatim: recipient.owner.name) }
           HStack(spacing: 8) {
-            if recipient.acknowledged {
-              Text("Acknowledged")
-            } else if recipient.accepted {
-              Text("Queue accepted")
-            } else if recipient.queued {
-              Text("Queued")
-            } else {
-              Text("Addressed")
-            }
+            Text(Self.receiptStatusText(for: recipient))
           }
         }
         .font(.caption)
         .foregroundStyle(palette.mutedText.color)
       }
-      if message.kind == .reply {
+      if message.kind == .reply && message.supportsSpeechPlayback {
         HStack(spacing: 10) {
           let active = message.playback.map { ["waiting", "playing"].contains($0.state) } ?? false
           if active {

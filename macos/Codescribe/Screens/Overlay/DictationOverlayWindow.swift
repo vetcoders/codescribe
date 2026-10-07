@@ -222,8 +222,17 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       if moved { onUserDragEnded?(frame.origin) }
     default:
       super.sendEvent(event)
-      if event.type == .mouseMoved { cursor(at: event.locationInWindow).set() }
+      if event.type == .mouseMoved { refreshCursor(at: event.locationInWindow) }
     }
+  }
+
+  /// Avoid regenerating the Accessibility cursor image for every mouse event.
+  @discardableResult
+  func refreshCursor(at point: NSPoint) -> Bool {
+    let desired = cursor(at: point)
+    guard NSCursor.current != desired else { return false }
+    desired.set()
+    return true
   }
 
   /// Resolve from this panel's hit surface, never the inactive app below it.
@@ -347,7 +356,7 @@ enum DictationOverlayWindow {
   static let presentationDuration: TimeInterval = 0.28
   static let collapsedHeight: CGFloat = 46
   static let collapsedSize = NSSize(width: 200, height: collapsedHeight)
-  static let midiSize = NSSize(width: 640, height: collapsedHeight)
+  static let midiSize = NSSize(width: 410, height: collapsedHeight)
 
   /// Shared geometry seam: a low-dragged/bottom-anchored bar must not unfold
   /// below the display. Keep its top unchanged whenever the full frame fits.

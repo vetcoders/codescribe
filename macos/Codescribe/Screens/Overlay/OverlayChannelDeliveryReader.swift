@@ -286,6 +286,7 @@ actor OverlayChannelDeliveryReader {
     }
     var result = firstIsNewer ? first : second
     let other = firstIsNewer ? second : first
+    result.supportsSpeechPlayback = first.supportsSpeechPlayback || second.supportsSpeechPlayback
     if let otherOccurrences = other.occurrenceIDs {
       var occurrences = result.occurrenceIDs ?? []
       for occurrence in otherOccurrences where !occurrences.contains(occurrence) {

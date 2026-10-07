@@ -41,8 +41,9 @@ supported systems. Icons use the primary foreground rather than faint muted
 text. The microphone's action is Speak to agent / Stop speaking to agent, with
 Polish copy Mów do agenta / Zakończ dyktowanie do agenta. Playback action and
 accessibility value distinguish muted, enabled and unavailable. The archive X
-shares the native button treatment. The existing root GlassEffectContainer and
-composer remain the glass group. Settings continue to own configuration and
+shares the native button treatment. Glass groups are local to each roster row,
+conversation navigation, and bottom tool group; no root container extracts glass
+from the complete canvas or across the drawer scroll clip. Settings continue to own configuration and
 validation, not a second active roster.
 
 ## Executed verification
@@ -99,5 +100,79 @@ Logs: `/tmp/codescribe-e19c-single-drawer-swift-oct7.log` and
 
 The first background installation attempt stopped in Xcode CopySwiftLibs before
 replacing `/Applications/Codescribe.app`. Installed build2094/80352 and the
-Founder process47373 were retained. Packaging diagnosis and a new installed
-receipt remain pending; no app restart or success ping was performed.
+running application were retained. The repeated Xcode stage passed with the
+same settings; no build-script or runtime-library suppression was introduced.
+
+The complete `make install-app` then passed: installed **0.15.3/build2096,
+c0379990d-dirty**, Developer ID deep/strict verification PASS. All 14 runtime
+manifest files match their hashes; the helper matches source and reports
+0.9.0+gc0379990. The only source dirt at this receipt was Founder AGENTS.md.
+The installed executable no longer carries the duplicate drawer control ID.
+Receipt: `/tmp/codescribe-e19c-c037-installed-receipt-oct7.json`.
+
+Process6696 was observed before replacement. A subsequent process91889 started
+at16:23:27, after signing16:20:56, and its mapped executable inode matches the
+installed artifact. That verifies an observed new-generation launch, not a
+launch or restart invoked by this task, or live UI acceptance. The canonical
+success ping followed signature and launch verification. Same-session helper
+adoption retained the lease, starting cursor, voice profile and pending mailbox;
+the four preserved peer deliveries were read fully before ACK.
+
+## Play, Read, drawer sizing and sampled cursor cost
+
+Founder text-only feedback is handled in the existing reply projection. A reply
+supports playback only when its canonical synthesis declaration contains a
+supported `tts_vendor` and a nonempty `voice`. `spoken: false`, playback failure,
+and matching text do not decide capability. Incomplete bus mirrors preserve a
+known speech declaration. The view omits the whole playback strip for peer text;
+the action entry point rejects stale/programmatic controls for those messages.
+Canonical player, ticket authority, source journals and Python bus are unchanged.
+Old projection caches without the capability field use the reader's existing
+bounded rebuild; tests prove healthy cache restart reads zero new bytes and a
+rebuild leaves source bytes unchanged.
+
+Conversation receipts show Read / Przeczytano only after matching canonical ACK.
+Queue acceptance and queued/addressed states retain their separate labels. No
+bell, delivery submission or reply is treated as an ACK. The new catalog row is
+translated in both languages; the obsolete Acknowledged row is removed.
+
+Midi now occupies 410×46 points and preserves global microphone/fold targets.
+Drawer width follows the current expanded canvas, capped at 360 points. Its
+navigation and roster share one clipped scroll viewport below the Agents header.
+The drawer uses native regular material; the custom opaque palette fill, dimming,
+border and shadow have been removed. Each row's native glass is rendered inside
+that viewport instead of being extracted above the complete overlay. The same
+cached panel, size persistence, retained transcript and explicit routing remain.
+
+Founder supplied a sample of installed 2096/PID 91889 at 16:42:40. Its 453 main-thread
+samples include 90 below FloatingOverlayPanel.sendEvent at the unconditional
+NSCursor.set call, including Accessibility cursor-image generation. The new
+refresh compares NSCursor.current before setting it; a mounted test verifies one
+correction followed by 100 pointer motions without redundant sets. The sample
+also shows nested GlassContainer preference/layout work. Local glass groups
+replace both root-wide containers. The 3.7GB footprint and 5.9GB peak are observations;
+this single sample cannot attribute their ownership or prove a memory leak.
+Native visible acceptance and a comparative live sample remain separate from
+the forthcoming source/test/build/install receipts. No Founder process restart.
+
+System glass grouping reference: [Apple GlassEffectContainer](https://developer.apple.com/documentation/swiftui/glasseffectcontainer).
+
+Final combined UI gate: **387 tests, zero failures, 27.564 seconds**, canonical
+`make test-swift` with Swift6 warnings as errors. Includes real reader/cache
+speech fixtures, canonical ACK versus queue acceptance, mounted minimum/wide
+drawer frames, stable midi microphone/fold positions and the 100-motion cursor
+regression. Initial follow-up runs exposed an authored generic-container call
+cycle and then obsolete source-shape assertions; both repaired, no gate budget
+or warning suppression. Final fresh localization extraction/sync/catalog and
+bridge census PASS: 1430 keys, 1408/1408 Polish, 96 awaiting review. Scoped strict
+Swift formatting and authored diff whitespace PASS (unchanged baseline Delivery
+format diagnostics remain outside the six authored lines).
+
+Logs: `/tmp/codescribe-e19c-ui-followup-swift-final-oct7.log`,
+`/tmp/codescribe-e19c-ui-followup-swift-final-gate-oct7.log`,
+`/tmp/codescribe-e19c-ui-followup-l10n-gates-oct7.log`,
+`/tmp/codescribe-e19c-ui-followup-format-oct7.log`.
+Source is still isolated in PR148 until Lena admits the exact baton. App
+installation must first reconcile her concurrent exclusive bus cut, because
+`make install-app` also installs the packaged bridge helper. Source/gates do not
+claim that the retained Founder process has loaded these new UI changes.

@@ -1223,7 +1223,8 @@ final class OverlayState {
   }
 
   func controlReply(_ message: OverlayConversationMessage, stop: Bool) async {
-    guard message.kind == .reply, let owner = message.owner, let replyID = message.replyID
+    guard message.kind == .reply, message.supportsSpeechPlayback,
+      let owner = message.owner, let replyID = message.replyID
     else { return }
     let active = message.playback.map { ["waiting", "playing"].contains($0.state) } ?? false
     guard stop ? active : !active && !pendingReplyControls.contains(message.id) else { return }

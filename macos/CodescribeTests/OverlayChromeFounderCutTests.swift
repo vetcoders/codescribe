@@ -60,9 +60,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       of: overlay, from: "private var bodySection", to: "private var transcriptScroll")
     XCTAssertFalse(body.contains("OverlayEvidence"))
     let container = try section(
-      of: overlay, from: "private func sharedChromeContainer", to: "private func canvasStack")
+      of: overlay, from: "private func bottomChromeContainer", to: "private func canvasStack")
     XCTAssertTrue(container.contains("GlassEffectContainer(spacing: 0)"))
-    XCTAssertTrue(container.contains("canvasStack(intentRail)"))
+    XCTAssertTrue(container.contains("{ intentRail }"))
+    XCTAssertFalse(
+      container.contains("canvasStack(intentRail)"), "glass must not extract the whole canvas")
     let bottom = try section(
       of: overlay, from: "private func canvasStack",
       to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
@@ -537,6 +539,22 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
   }
 
+  func testRepeatedPointerMotionDoesNotSetAnAlreadyCorrectCursor() throws {
+    let state = OverlayState.previewFormatted()
+    try withPanel(state: state, width: 700) { panel, _ in
+      let previous = NSCursor.current
+      defer { previous.set() }
+      let chrome = NSPoint(x: panel.frame.width - 40, y: panel.frame.height - 23)
+      NSCursor.iBeam.set()
+      XCTAssertTrue(panel.refreshCursor(at: chrome))
+      XCTAssertEqual(NSCursor.current, .arrow)
+      for _ in 0..<100 {
+        XCTAssertFalse(panel.refreshCursor(at: chrome))
+      }
+      XCTAssertEqual(NSCursor.current, .arrow)
+    }
+  }
+
   func testHeaderMicrophoneRevealsMidiAndNextTakeUsesSavedPreference() {
     for expanded in [false, true] {
       let engine = OverlayChromePolicyEngine()
@@ -706,8 +724,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   func testActionsHandleUsesPhaseForSymbolLabelAndTooltip() throws {
     let source = try overlaySource()
+    let normalized = source.components(separatedBy: .whitespacesAndNewlines)
+      .filter { !$0.isEmpty }.joined(separator: " ")
     let handle = try section(
-      of: source, from: "Button {\n                  actions.toggle()",
+      of: normalized, from: "Button { actions.toggle()",
       to: "if actions.phase == .open {")
     XCTAssertTrue(handle.contains("Image(systemName: actions.controlSymbol)"))
     XCTAssertTrue(
@@ -762,7 +782,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(
       canvas.range(
         of:
-          #"if !state\.isCollapsed && state\.showsMyDictation && !state\.showsAgentMonitor \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*HStack\(spacing: 6\)"#,
+          #"if !state\.isCollapsed && state\.showsMyDictation && !state\.showsAgentMonitor \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*bottomChromeContainer\(\s*HStack\(spacing: 6\)"#,
         options: .regularExpression) != nil)
     XCTAssertTrue(
       canvas.range(

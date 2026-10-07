@@ -7,6 +7,7 @@ import XCTest
 @MainActor
 private final class MicrophoneFrameRecorder {
   var frames = OverlayHeaderControlFrames()
+  var drawer = CGRect.zero
 }
 
 @MainActor
@@ -19,10 +20,56 @@ private struct MicrophoneFrameCapture: View {
       .onPreferenceChange(OverlayHeaderControlFramesPreferenceKey.self) {
         recorder.frames = $0
       }
+      .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) {
+        recorder.drawer = $0
+      }
   }
 }
 
 final class OverlayResizeHitTests: XCTestCase {
+  @MainActor
+  func testDrawerFitsMinimumCanvasAndGrowsWithResizedCanvas() throws {
+    var measuredWidths: [CGFloat] = []
+    for size in [
+      CGSize(width: 320, height: 260), CGSize(width: 470, height: 280),
+      CGSize(width: 700, height: 400),
+    ] {
+      let state = OverlayState.previewFormatted()
+      let text = state.activeText
+      let generation = state.captureGeneration
+      let recorder = MicrophoneFrameRecorder()
+      state.showAgentMonitor()
+      let host = NSHostingView(
+        rootView:
+          MicrophoneFrameCapture(state: state, recorder: recorder)
+          .frame(width: size.width, height: size.height))
+      host.sizingOptions = []
+      let panel = NSPanel(
+        contentRect: CGRect(origin: .zero, size: size),
+        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+      panel.contentView = host
+      panel.orderFrontRegardless()
+      defer { panel.orderOut(nil) }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      host.layoutSubtreeIfNeeded()
+      let drawer = recorder.drawer
+      XCTAssertGreaterThan(drawer.width, 200)
+      XCTAssertLessThan(drawer.width, size.width * 0.9, "retained canvas remains visible")
+      XCTAssertGreaterThan(drawer.height, 100)
+      XCTAssertGreaterThanOrEqual(drawer.minX, 0)
+      XCTAssertGreaterThanOrEqual(drawer.minY, 46, "drawer stays below header")
+      XCTAssertLessThanOrEqual(drawer.maxX, size.width + 0.5)
+      XCTAssertLessThanOrEqual(drawer.maxY, size.height + 0.5)
+      measuredWidths.append(drawer.width)
+      XCTAssertEqual(state.presentationMode, .expanded)
+      XCTAssertEqual(state.activeText, text)
+      XCTAssertEqual(state.captureGeneration, generation)
+    }
+    XCTAssertGreaterThan(measuredWidths[1], measuredWidths[0] + 40)
+    XCTAssertGreaterThan(measuredWidths[2], measuredWidths[0] + 80)
+  }
+
   @MainActor
   func testHoverMorphKeepsNativeMicrophoneAndFoldTargetsOnScreen() throws {
     let state = OverlayState.previewListening()
@@ -49,6 +96,7 @@ final class OverlayResizeHitTests: XCTestCase {
     let micX = panel.frame.minX + mic.midX
     let foldX = panel.frame.minX + fold.midX
     state.setPresentationMode(.midi)
+    XCTAssertLessThanOrEqual(panel.frame.width, 420, "midi remains a compact control strip")
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     XCTAssertEqual(

@@ -6,6 +6,84 @@ import XCTest
 @testable import Codescribe
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
+  func testTextReplyDoesNotAcquireSpeechFromItsTextOrPlaybackFailure() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    let id = String(repeating: "d", count: 24)
+    var text = reply(id)
+    text.removeValue(forKey: "tts_vendor")
+    text.removeValue(forKey: "voice")
+    text.removeValue(forKey: "speed")
+    bus.consume(text)
+    bus.consume(
+      playback(
+        id, ticket: String(repeating: "b", count: 24), state: "failed",
+        time: "2026-10-05T04:00:01Z"))
+    let message = try XCTUnwrap(lenaConversation(bus).messages.first)
+    XCTAssertEqual(message.text, "Odpowiedź")
+    XCTAssertEqual(message.playback?.state, "failed")
+    XCTAssertFalse(message.supportsSpeechPlayback)
+  }
+
+  func testSpeechReplyKeepsPlaybackCapabilityBeforeSynthesisAndAcrossMirrors() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    let id = String(repeating: "d", count: 24)
+    let speech = reply(id)
+    bus.consume(speech)
+    XCTAssertTrue(try XCTUnwrap(lenaConversation(bus).messages.first).supportsSpeechPlayback)
+    var mirror = speech
+    mirror.removeValue(forKey: "tts_vendor")
+    mirror.removeValue(forKey: "voice")
+    bus.consume(mirror)
+    let restored = try JSONDecoder().decode(
+      OverlayChannelDelivery.Bus.self,
+      from: JSONEncoder().encode(bus))
+    XCTAssertTrue(try XCTUnwrap(lenaConversation(restored).messages.first).supportsSpeechPlayback)
+  }
+
+  @MainActor
+  func testTextReplyCannotInvokePlaybackEvenThroughAStaleControl() async throws {
+    var bus = OverlayChannelDelivery.Bus()
+    let id = String(repeating: "d", count: 24)
+    var text = reply(id)
+    text.removeValue(forKey: "tts_vendor")
+    text.removeValue(forKey: "voice")
+    bus.consume(text)
+    let message = try XCTUnwrap(lenaConversation(bus).messages.first)
+    let state = OverlayState()
+    await state.controlReply(message, stop: false)
+    await state.controlReply(message, stop: true)
+    XCTAssertTrue(state.pendingReplyControls.isEmpty)
+    XCTAssertTrue(state.replyControlErrors.isEmpty)
+  }
+
+  func testReadLabelRequiresCanonicalAcknowledgmentRatherThanQueueAcceptance() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(occurrence(0, revision: 1))
+    var recipient = try XCTUnwrap(lenaConversation(bus).messages.first?.recipients.first)
+    let delivery = try XCTUnwrap(recipient.deliveryID)
+    XCTAssertEqual(OverlayConversationView.receiptStatusText(for: recipient), "Addressed")
+    recipient.queued = true
+    XCTAssertEqual(OverlayConversationView.receiptStatusText(for: recipient), "Queued")
+    var accepted = owner(leaseA)
+    accepted.merge([
+      "schema": "codescribe.native-queue.receipt.v1", "disposition": "provider_accepted",
+      "delivery_id": delivery,
+    ]) { _, new in new }
+    bus.observeAcceptance(accepted)
+    recipient = try XCTUnwrap(lenaConversation(bus).messages.first?.recipients.first)
+    XCTAssertEqual(OverlayConversationView.receiptStatusText(for: recipient), "Queue accepted")
+    var foreign = owner(leaseB, session: "foreign")
+    foreign.merge(["schema": "codescribe.agent-ack.v1", "delivery_id": delivery]) { _, new in new }
+    bus.consume(foreign)
+    recipient = try XCTUnwrap(lenaConversation(bus).messages.first?.recipients.first)
+    XCTAssertEqual(OverlayConversationView.receiptStatusText(for: recipient), "Queue accepted")
+    var ack = owner(leaseA)
+    ack.merge(["schema": "codescribe.agent-ack.v1", "delivery_id": delivery]) { _, new in new }
+    bus.consume(ack)
+    recipient = try XCTUnwrap(lenaConversation(bus).messages.first?.recipients.first)
+    XCTAssertEqual(OverlayConversationView.receiptStatusText(for: recipient), "Read")
+  }
+
   func testPlayIconKeepsAdjacentPlaybackStateAndExactControls() throws {
     // SwiftUI AX children are unavailable in the hermetic host; pin the visible branches.
     // Existing bus tests separately exercise canonical playback ticket/owner authority.
@@ -406,6 +484,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       "schema": "codescribe.agent-reply.v1", "reply_id": replyID,
       "text": "Odpowiedź", "association": delivery == nil ? "unsolicited" : "addressed",
       "emitted_at": "2026-10-05T04:00:00Z",
+      "tts_vendor": "xai", "voice": "ara", "speed": 1.25,
     ]) { _, new in new }
     if let delivery { row["delivery_id"] = delivery }
     return row

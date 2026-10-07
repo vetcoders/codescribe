@@ -1651,22 +1651,6 @@
         }
       }
     },
-    "Acknowledged" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Acknowledged"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Agent potwierdził odbiór"
-          }
-        }
-      }
-    },
     "Acoustic coverage was measured as complete, but this transcript has no current terminal seal." : {
       "localizations" : {
         "pl" : {
@@ -9454,6 +9438,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdzanie ustawienia Codescribe i ewentualnego wymuszenia z konfiguracji zaawansowanej…"
+          }
+        }
+      }
+    },
+    "Read" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przeczytano"
           }
         }
       }

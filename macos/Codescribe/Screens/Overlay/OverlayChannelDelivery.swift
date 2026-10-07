@@ -482,6 +482,10 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           recipients: [], deliveryID: addressed ? row["delivery_id"] as? String : nil,
           replyTo: addressed ? row["delivery_id"] as? String : nil,
           unsolicited: !addressed, playback: playbackByReply[replyID], busPath: "")
+        message.supportsSpeechPlayback = messages[key]?.supportsSpeechPlayback == true
+          || (["xai", "openai"].contains(row["tts_vendor"] as? String ?? "")
+            && !(row["voice"] as? String ?? "")
+              .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         if addressed, let session = row["session_id"] as? String,
           let messageKey = Self.channelMessageKey(session)
         {
@@ -852,6 +856,8 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   var occurrenceIDs: [String]? = nil
   var sourceChannel: String? = nil
   var sourceRevision: UInt64? = nil
+  /// Canonical reply synthesis metadata, independent of playback outcome.
+  var supportsSpeechPlayback = false
   var replyID: String? { kind == .reply ? String(id.dropFirst("reply:".count)) : nil }
 }
 

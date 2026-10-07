@@ -9,7 +9,7 @@ struct OverlayCanvasSurface<Content: View>: View {
   @ViewBuilder let content: Content
 
   var body: some View {
-    controlSurfaces
+    content
       .background {
         OverlayCanvasBackdrop(
           palette: palette, reduceTransparency: reduceTransparency)
@@ -28,14 +28,6 @@ struct OverlayCanvasSurface<Content: View>: View {
       )
   }
 
-  @ViewBuilder
-  private var controlSurfaces: some View {
-    if #available(macOS 26.0, *) {
-      GlassEffectContainer { content }
-    } else {
-      content
-    }
-  }
 }
 
 struct OverlayCanvasBackdrop: View {
