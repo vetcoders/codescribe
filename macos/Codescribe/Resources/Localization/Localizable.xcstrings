@@ -270,18 +270,6 @@
         }
       }
     },
-    "%@ — show details" : {
-      "comment" : "Agent glyph tooltip; the placeholder is the channel state label",
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ — pokaż szczegóły"
-          }
-        }
-      }
-    },
     "%@ — unavailable" : {
       "localizations" : {
         "pl" : {
@@ -3291,17 +3279,6 @@
         }
       }
     },
-    "Choose a conversation or show agent channel details" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wybierz rozmowę lub pokaż szczegóły kanału agenta"
-          }
-        }
-      }
-    },
     "Choose a screen anchor or allow free dragging" : {
       "localizations" : {
         "pl" : {
@@ -6145,17 +6122,6 @@
         }
       }
     },
-    "Hang up channel" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozłącz kanał"
-          }
-        }
-      }
-    },
     "Hear the real input." : {
       "localizations" : {
         "pl" : {
@@ -8424,17 +8390,6 @@
     },
     "Open Voice Lab" : {
       "shouldTranslate" : false
-    },
-    "Open channel" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "otwórz kanał"
-          }
-        }
-      }
     },
     "Open diagnostics" : {
       "comment" : "Open Agent diagnostics from the Setup global readiness row",
