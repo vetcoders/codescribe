@@ -555,6 +555,31 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
   }
 
+  func testNativeTextCursorIsNotReplacedAfterAppKitDispatch() throws {
+    let state = OverlayState.previewFormatted()
+    try withPanel(state: state, width: 700) { panel, root in
+      let canvas = try XCTUnwrap(findTranscript(in: root))
+      let point = canvas.convert(
+        NSPoint(x: canvas.visibleRect.midX, y: canvas.visibleRect.midY), to: nil)
+      XCTAssertEqual(panel.cursor(at: point), .iBeam)
+      let saved = NSCursor.current
+      defer { saved.set() }
+      // AppKit can choose a link or selection cursor inside an NSTextView.
+      // Reproduce the post-super.sendEvent state rather than a fixed iBeam.
+      for nativeCursor in [NSCursor.pointingHand, .arrow, .iBeam] {
+        nativeCursor.set()
+        for _ in 0..<100 {
+          XCTAssertFalse(panel.refreshCursor(at: point))
+          XCTAssertEqual(NSCursor.current, nativeCursor)
+        }
+      }
+      let edge = NSPoint(x: 1, y: panel.frame.height / 2)
+      NSCursor.pointingHand.set()
+      XCTAssertTrue(panel.refreshCursor(at: edge))
+      XCTAssertEqual(NSCursor.current, OverlayResizeHit.cursor(for: .left))
+    }
+  }
+
   func testHeaderMicrophoneRevealsMidiAndNextTakeUsesSavedPreference() {
     for expanded in [false, true] {
       let engine = OverlayChromePolicyEngine()

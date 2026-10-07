@@ -289,11 +289,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     onWidgetInteractionChanged?(.dragging, false)
   }
 
-  /// Avoid regenerating the Accessibility cursor image for every mouse event.
+  /// Native text tracking has already selected its cursor in super.sendEvent.
+  /// Keep link/selection cursors intact; the panel owns chrome and resize edges.
   @discardableResult
   func refreshCursor(at point: NSPoint) -> Bool {
     let desired = cursor(at: point)
-    guard NSCursor.current != desired else { return false }
+    guard desired != .iBeam, NSCursor.current != desired else { return false }
     desired.set()
     return true
   }
