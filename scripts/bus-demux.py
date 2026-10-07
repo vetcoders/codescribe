@@ -1714,6 +1714,360 @@ def provider_session_from_env(provider: str) -> str | None:
     return value or None
 
 
+class NativeProviderModelReader:
+    """Observe exact-session native metadata without joining the delivery path.
+
+    A bounded tail finds recent metadata quickly. Older metadata is found by
+    progressive overlapping backscan, once; subsequent reads follow appends.
+    The lease keeps the observation and its native record receipt together.
+    """
+
+    READ_BYTES = 1 << 20
+    RECORD_BYTES = 256 << 10
+    DISCOVERY_ENTRIES = 20_000
+    DISCOVERY_SECONDS = 0.1
+    DISCOVERY_INTERVAL = 30.0
+    SESSION_RE = re.compile(r"[A-Za-z0-9_-]{8,128}")
+    MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
+
+    def __init__(
+        self, provider: str, provider_session_id: str, *,
+        home: Path | None = None, previous: dict[str, Any] | None = None,
+    ) -> None:
+        self.provider = provider.casefold()
+        self.session = provider_session_id
+        self.home = (home if home is not None else Path.home()).resolve(strict=False)
+        self.path: Path | None = None
+        self.projection: dict[str, Any] = {}
+        self._previous = previous
+        self._may_restore = True
+        self._next_discovery = 0.0
+        self._reset_source()
+
+    def _reset_source(self) -> None:
+        self.projection = {}
+        self._file_identity: tuple[int, int] | None = None
+        self._last_size = 0
+        self._last_mtime = 0
+        self._head: tuple[int, int, str] | None = None
+        self._identity_offset = 0
+        self._append_offset: int | None = None
+        self._append_anchor: str | None = None
+        self._safe_offset = 0
+        self._pending = b""
+        self._discard_line = False
+        self._backscan_end = 0
+        self._candidate: dict[str, Any] | None = None
+
+    def _discover(self) -> Path | None:
+        if (self.provider not in ("codex", "claude-code")
+                or not self.SESSION_RE.fullmatch(self.session)):
+            return None
+        deadline = time.monotonic() + self.DISCOVERY_SECONDS
+        visited = 0
+
+        def entries(directory: Path) -> Iterator[os.DirEntry[str]]:
+            nonlocal visited
+            with os.scandir(directory) as scan:
+                for entry in scan:
+                    visited += 1
+                    if visited > self.DISCOVERY_ENTRIES or time.monotonic() > deadline:
+                        raise ValueError("native metadata discovery exceeded its bound")
+                    yield entry
+
+        matches: list[Path] = []
+        if self.provider == "codex":
+            root = self.home / ".codex" / "sessions"
+            for year in entries(root):
+                if not re.fullmatch(r"\d{4}", year.name) or not year.is_dir(follow_symlinks=False):
+                    continue
+                for month in entries(Path(year.path)):
+                    if not re.fullmatch(r"\d{2}", month.name) or not month.is_dir(follow_symlinks=False):
+                        continue
+                    for day in entries(Path(month.path)):
+                        if not re.fullmatch(r"\d{2}", day.name) or not day.is_dir(follow_symlinks=False):
+                            continue
+                        for entry in entries(Path(day.path)):
+                            if (entry.name.startswith("rollout-")
+                                    and entry.name.endswith(f"-{self.session}.jsonl")
+                                    and entry.is_file(follow_symlinks=False)):
+                                matches.append(Path(entry.path))
+                                if len(matches) > 1:
+                                    return None
+        else:
+            root = self.home / ".claude" / "projects"
+            for project in entries(root):
+                if not project.is_dir(follow_symlinks=False):
+                    continue
+                candidate = Path(project.path) / f"{self.session}.jsonl"
+                try:
+                    metadata = candidate.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if S_ISREG(metadata.st_mode):
+                    matches.append(candidate)
+                    if len(matches) > 1:
+                        return None
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _decode(raw: bytes) -> dict[str, Any] | None:
+        try:
+            value = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def _records(
+        self, raw: bytes, start: int, aligned: bool,
+    ) -> Iterator[tuple[dict[str, Any], int, bytes]]:
+        position = start
+        for index, line in enumerate(raw.splitlines(keepends=True)):
+            offset = position
+            position += len(line)
+            if (index == 0 and not aligned) or not line.endswith(b"\n") or len(line) > self.RECORD_BYTES:
+                continue
+            value = self._decode(line)
+            if value is not None:
+                yield value, offset, line
+
+    @staticmethod
+    def _window(handle: Any, start: int, end: int) -> tuple[bytes, bool]:
+        if start:
+            handle.seek(start - 1)
+            aligned = handle.read(1) == b"\n"
+        else:
+            aligned = True
+            handle.seek(0)
+        return handle.read(end - start), aligned
+
+    def _is_identity(self, value: dict[str, Any]) -> bool:
+        if self.provider == "codex":
+            if value.get("type") != "session_meta":
+                return False
+            payload = value.get("payload")
+            identity = payload.get("id") if isinstance(payload, dict) else None
+        else:
+            identity = value.get("sessionId")
+            if identity is None:
+                return False
+        if identity != self.session:
+            raise ValueError("native metadata belongs to another provider session")
+        return True
+
+    def _read_identity(self, handle: Any, size: int) -> tuple[int, int, str] | None:
+        if self._head is not None:
+            offset, length, _ = self._head
+            handle.seek(offset)
+            raw = handle.read(length)
+            value = self._decode(raw)
+            if value is not None and raw.endswith(b"\n") and self._is_identity(value):
+                return offset, length, hashlib.sha256(raw).hexdigest()
+            raise ValueError("native session identity record changed or became incomplete")
+        if self.provider == "codex":
+            handle.seek(0)
+            raw = handle.readline(self.RECORD_BYTES + 1)
+            value = self._decode(raw) if len(raw) <= self.RECORD_BYTES and raw.endswith(b"\n") else None
+            if value is not None and self._is_identity(value):
+                return 0, len(raw), hashlib.sha256(raw).hexdigest()
+            return None
+        # Claude has no session_meta header. Find an exact sessionId row by a
+        # bounded progressive prefix scan, independently of the model tail.
+        start = self._identity_offset
+        end = min(size, start + self.READ_BYTES)
+        raw, aligned = self._window(handle, start, end)
+        for value, offset, line in self._records(raw, start, aligned):
+            if self._is_identity(value):
+                return offset, len(line), hashlib.sha256(line).hexdigest()
+        self._identity_offset = max(0, end - min(self.RECORD_BYTES, self.READ_BYTES // 2))
+        return None
+
+    def _model_record(self, value: dict[str, Any], offset: int, raw: bytes) -> dict[str, Any] | None:
+        if self.provider == "codex":
+            if value.get("type") == "session_meta":
+                self._is_identity(value)
+            payload = value.get("payload")
+            if value.get("type") != "turn_context" or not isinstance(payload, dict):
+                return None
+            model = payload.get("model")
+            record_type = "codex.turn_context"
+        else:
+            # Source identity is checked separately. Other-session payloads
+            # in an already validated source cannot replace its observation.
+            message = value.get("message")
+            if (value.get("type") != "assistant" or value.get("sessionId") != self.session
+                    or value.get("isSidechain") is True or value.get("isSynthetic") is True
+                    or not isinstance(message, dict)):
+                return None
+            model = message.get("model")
+            record_type = "claude.assistant"
+        if (not isinstance(model, str) or not self.MODEL_RE.fullmatch(model)
+                or model.casefold() in ("synthetic", "unknown", "default", "auto")):
+            return None
+        timestamp = value.get("timestamp")
+        return {
+            "model": model, "record_type": record_type,
+            "record_offset": offset, "record_length": len(raw),
+            "record_timestamp": timestamp if isinstance(timestamp, str) and len(timestamp) <= 128 else None,
+        }
+
+    def _observe(self, value: dict[str, Any], offset: int, raw: bytes) -> None:
+        candidate = self._model_record(value, offset, raw)
+        if candidate is not None and (self._candidate is None or offset >= self._candidate["record_offset"]):
+            self._candidate = candidate
+
+    def _restore(self, handle: Any, metadata: Any) -> bool:
+        if not self._may_restore:
+            return False
+        self._may_restore = False
+        previous = self._previous or {}
+        receipt = previous.get("model_provenance")
+        if (not isinstance(receipt, dict) or self._head is None
+                or receipt.get("provider") != self.provider
+                or receipt.get("provider_session_id") != self.session
+                or receipt.get("source") != str(self.path)
+                or receipt.get("source_device") != metadata.st_dev
+                or receipt.get("source_inode") != metadata.st_ino
+                or receipt.get("identity_sha256") != self._head[2]):
+            return False
+        offset, length, cursor = (receipt.get(key) for key in ("record_offset", "record_length", "read_offset"))
+        if (any(type(item) is not int for item in (offset, length, cursor))
+                or offset < 0 or not 0 < length <= self.RECORD_BYTES
+                or not offset + length <= cursor <= metadata.st_size):
+            return False
+        handle.seek(cursor - 1)
+        if (handle.read(1) != b"\n"
+                or self._cursor_anchor(handle, cursor) != receipt.get("read_offset_sha256")):
+            return False
+        handle.seek(offset)
+        raw = handle.read(length)
+        value = self._decode(raw) if raw.endswith(b"\n") else None
+        candidate = self._model_record(value, offset, raw) if value is not None else None
+        if (candidate is None or candidate["model"] != previous.get("model")
+                or candidate["record_type"] != receipt.get("record_type")
+                or candidate["record_timestamp"] != receipt.get("record_timestamp")):
+            return False
+        self._candidate = candidate
+        self._append_offset = self._safe_offset = cursor
+        return True
+
+    @staticmethod
+    def _cursor_anchor(handle: Any, offset: int) -> str:
+        start = max(0, offset - 256)
+        handle.seek(start)
+        return hashlib.sha256(handle.read(offset - start)).hexdigest()
+
+    def _backscan(self, handle: Any, end: int, *, initial: bool = False) -> None:
+        start = max(0, end - self.READ_BYTES)
+        raw, aligned = self._window(handle, start, end)
+        for value, offset, line in self._records(raw, start, aligned):
+            self._observe(value, offset, line)
+        last_newline = raw.rfind(b"\n")
+        if last_newline >= 0:
+            self._safe_offset = max(self._safe_offset, start + last_newline + 1)
+        if initial:
+            self._append_offset = end
+            partial = raw[last_newline + 1:]
+            self._discard_line = (last_newline < 0 and start > 0) or len(partial) > self.RECORD_BYTES
+            self._pending = b"" if self._discard_line else partial
+        self._backscan_end = start + min(self.RECORD_BYTES, self.READ_BYTES // 2) if start else 0
+        if self._candidate is not None:
+            self._backscan_end = 0
+
+    def _read_append(self, handle: Any, size: int) -> None:
+        assert self._append_offset is not None
+        start = self._append_offset
+        handle.seek(start)
+        raw = handle.read(min(self.READ_BYTES, size - start))
+        self._append_offset += len(raw)
+        combined = self._pending + raw
+        position = start - len(self._pending)
+        pieces = combined.split(b"\n")
+        for line in pieces[:-1]:
+            offset = position
+            position += len(line) + 1
+            self._safe_offset = position
+            if self._discard_line:
+                self._discard_line = False
+                continue
+            if len(line) + 1 <= self.RECORD_BYTES:
+                value = self._decode(line)
+                if value is not None:
+                    self._observe(value, offset, line + b"\n")
+        partial = pieces[-1]
+        self._discard_line = self._discard_line or len(partial) > self.RECORD_BYTES
+        self._pending = b"" if self._discard_line else partial
+
+    def refresh(self) -> None:
+        """Fail closed on ambiguous identity, fail soft for the mailbox."""
+        now = time.monotonic()
+        try:
+            if now >= self._next_discovery:
+                self._next_discovery = now + self.DISCOVERY_INTERVAL
+                path = self._discover()
+                if path != self.path:
+                    self._reset_source()
+                    self.path = path
+            if self.path is None:
+                return
+            descriptor = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as handle:
+                metadata = os.fstat(handle.fileno())
+                if not S_ISREG(metadata.st_mode):
+                    raise ValueError("native metadata source is not a regular file")
+                identity = (metadata.st_dev, metadata.st_ino)
+                if (identity != self._file_identity or metadata.st_size < self._last_size
+                        or (metadata.st_size == self._last_size and metadata.st_mtime_ns != self._last_mtime)):
+                    self._reset_source()
+                    self._file_identity = identity
+                head = self._read_identity(handle, metadata.st_size)
+                if head is None:
+                    self._last_size, self._last_mtime = metadata.st_size, metadata.st_mtime_ns
+                    return
+                if self._head is not None and head != self._head:
+                    self._reset_source()
+                    self._file_identity = identity
+                if (self._append_offset is not None and self._append_anchor is not None
+                        and self._cursor_anchor(handle, self._append_offset) != self._append_anchor):
+                    # Truncate + regrow can retain both inode and header while
+                    # replacing bytes already consumed by the append cursor.
+                    self._reset_source()
+                    self._file_identity = identity
+                self._head = head
+                if self._append_offset is None and not self._restore(handle, metadata):
+                    self._backscan(handle, metadata.st_size, initial=True)
+                else:
+                    self._read_append(handle, metadata.st_size)
+                    if self._candidate is None and self._backscan_end:
+                        self._backscan(handle, self._backscan_end)
+                assert self._append_offset is not None
+                self._append_anchor = self._cursor_anchor(handle, self._append_offset)
+                after = os.fstat(handle.fileno())
+                current = self.path.stat(follow_symlinks=False)
+                if (identity != (current.st_dev, current.st_ino) or after.st_size < metadata.st_size
+                        or (after.st_size == metadata.st_size and after.st_mtime_ns != metadata.st_mtime_ns)):
+                    raise ValueError("native metadata source changed during observation")
+                self._last_size, self._last_mtime = after.st_size, after.st_mtime_ns
+                self.projection = {}
+                if self._candidate is not None and self._append_offset == after.st_size:
+                    candidate = self._candidate
+                    self.projection = {
+                        "model": candidate["model"],
+                        "model_provenance": {
+                            "provider": self.provider, "provider_session_id": self.session,
+                            "source": str(self.path), "source_device": metadata.st_dev,
+                            "source_inode": metadata.st_ino, "identity_sha256": head[2],
+                            **{key: value for key, value in candidate.items() if key != "model"},
+                            "read_offset": self._safe_offset,
+                            "read_offset_sha256": self._cursor_anchor(handle, self._safe_offset),
+                        },
+                    }
+        except (OSError, ValueError, TypeError, OverflowError):
+            self._reset_source()
+            self.path = None
+            self._next_discovery = now + self.DISCOVERY_INTERVAL
+
+
 def process_is_alive(pid: Any) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
@@ -1785,6 +2139,7 @@ class SessionLease:
         ttl_seconds: float,
         follow_from_end: bool,
         coalesce: bool = False,
+        provider_metadata_home: Path | None = None,
     ) -> None:
         self.root = root
         self.provider = provider.casefold()
@@ -1903,6 +2258,16 @@ class SessionLease:
                     self.cursor = generation_metadata(bus).st_size
                 except FileNotFoundError:
                     self.cursor = 0
+            self._provider_model_reader: NativeProviderModelReader | None = None
+            try:
+                self._provider_model_reader = NativeProviderModelReader(
+                    self.provider, self.provider_session_id,
+                    home=provider_metadata_home, previous=previous,
+                )
+            except (OSError, RuntimeError):
+                # Native provider metadata is optional, unlike lease recovery.
+                pass
+            self.refresh_provider_model()
             self.persist(active=True)
         except BaseException:
             self._release_lock()
@@ -1968,8 +2333,13 @@ class SessionLease:
                 "heartbeat_unix": time.time(),
                 "updated_at": utc_now(),
                 **({"wakeup_configuration": self.wakeup_configuration} if self.wakeup_configuration else {}),
+                **(self._provider_model_reader.projection if self._provider_model_reader is not None else {}),
             },
         )
+
+    def refresh_provider_model(self) -> None:
+        if self._provider_model_reader is not None:
+            self._provider_model_reader.refresh()
 
     def queue_delivery(self, payload: dict[str, Any]) -> bool:
         delivery_id = payload["delivery_id"]
@@ -2880,6 +3250,7 @@ def run(args: argparse.Namespace) -> int:
                     raise ValueError("incomplete storage record")
                 return 0
             if lease and time.monotonic() - last_heartbeat >= 1.0:
+                lease.refresh_provider_model()
                 lease.persist(active=True, cursor=lease.cursor if normalizer.storage.pending else offset)
                 last_heartbeat = time.monotonic()
             assert event_trigger is not None

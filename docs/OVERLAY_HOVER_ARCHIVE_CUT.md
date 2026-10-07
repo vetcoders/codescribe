@@ -292,3 +292,51 @@ desktop capture or physical audio/hotkey test. The clipboard held text when read
 so no new screenshot was available. Reply543d271cea16ace3a68c543c landed on the bus;
 xAI refused speech with credential_rejected/403, without a retry or profile change.
 The updated app artifact is recorded separately after background installation.
+
+## Native text cursor and provider model publication
+
+Bruno's exact commit 7f71e9dcafcf278dc3e65e0dd075092f691f02f6 was admitted
+by fast-forward from 0d3faef3dec8866a1104f1e1ddde921c49d5eabc. The panel now
+leaves text-area cursors to AppKit after event dispatch; native text links,
+selection and the I-beam retain their cursors while chrome and resize edges
+remain panel-owned. Astra's native mounted test run passed 117 tests with zero
+failures in 15.566 seconds, including repeated pointer movement and edge resizing.
+
+The existing lease writer now publishes optional model metadata from the exact
+provider session's native transcript. Codex uses session_meta identity and
+turn_context.model; Claude uses the verified sessionId and real assistant model.
+Unrelated messages, synthetic models and global configuration cannot supply it.
+Missing or ambiguous native files leave the model absent. Metadata failure does
+not stop mailbox persistence, ACK or recovery.
+
+The reader scans a bounded tail, progressively searches older records when
+needed, then follows appends. It publishes only after reaching the current end,
+retains the last complete model across partial JSONL records, and validates
+identity, inode and cursor receipts on restore. Ten unchanged heartbeats plus
+restore read less than 32 KiB from a five MiB fixture. It does not rescan the
+entire transcript per heartbeat or add another model store.
+
+Astra authored and ran 13 model fixtures; the complete Python bus regression
+passed 164 tests in 40.267 seconds. The first regression invocation lacked its
+canonical publisher target; rerunning with the existing isolated Cargo target
+resolved that fixture prerequisite. Full Semgrep, catalog/bridge checks, strict
+Swift formatting, gate ledger and diff whitespace checks passed. The new model
+fixtures are included in make verify. No new interface strings or colors exist.
+
+The additional bus-demux shell script remains RED at its existing rename
+expectation: it explicitly requests name changed, then expects james and a seal
+addressed to james. The unchanged baseline at 7f71 reproduces the same failure;
+this cut does not change name routing or claim that script passed.
+
+A read-only observation with the production reader verified gpt-6.1-sol for
+Astra's exact Codex session and claude-fable-5 for the exact Claude session.
+This proves native metadata reading, not installed follower publication or
+visible UI acceptance. Those require the subsequent installed artifact and
+same-session adoption receipts. No GUI launch, restart, desktop capture or
+physical microphone/speaker/hotkey test was performed.
+
+Runtime class is Fleet Worktree, effective root e19c/codescribe, branch
+codex/widget-hover-261007; Astra is the designated integrator. The bounded native
+helper authored only scripts/bus-demux.py and performed no tests, build, commit
+or install. All fixtures, gates and packaging belong to Astra. Foreign AGENTS.md
+is preserved. The source remains separate from main and from Founder acceptance.
