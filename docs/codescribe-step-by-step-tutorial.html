@@ -795,10 +795,14 @@
             >„Gotowe” w kreatorze nie oznacza jeszcze gotowego
             nagrywania.</strong
           >
-          Kreator ma 13 kroków; w trybie Podstawowym pomija krok konfiguracji
-          klientów Agenta. Nie pobiera modelu Whisper ani nie kalibruje
-          mikrofonu. Pozwala też przejść dalej po pominięciu zgody. Jeżeli nadal
-          widzisz komunikat o wymaganej konfiguracji, sprawdź konkretny brak w
+          Kreator ma dziewięć rozdziałów: język interfejsu, tryb, zgody macOS,
+          język dyktowania, opcjonalny model lokalny, dostawca AI, skróty,
+          klienci Agenta i podsumowanie. W trybie Podstawowym pomija
+          konfigurację klientów Agenta. Model Whisper pobiera się tylko po
+          kliknięciu przycisku; pobieranie trwa dalej po przejściu do kolejnego
+          kroku lub zamknięciu kreatora. Kreator nie kalibruje mikrofonu i
+          pozwala przejść dalej po pominięciu zgody. Jeżeli nadal widzisz
+          komunikat o wymaganej konfiguracji, sprawdź konkretny brak w
           <strong>Dźwięk → Gotowość do nagrywania</strong>, uprawnieniach i
           ustawieniach silnika.
         </div>
@@ -810,10 +814,13 @@
           Providers.
         </p>
         <p class="note">
-          Przy starcie mogą pojawić się systemowe zgody na rozpoznawanie mowy
-          lub dostęp do pęku kluczy, także przed krokiem wyboru dostawcy.
-          Sprawdź, której aplikacji dotyczy monit, i wróć potem do kreatora.
-          Sama zgoda na pęk kluczy nie oznacza połączenia konta Agenta.
+          Pierwszy ekran kreatora pojawia się przed odczytem zapisanych danych
+          dostawcy i licencji. Dostęp do pęku kluczy może być potrzebny na
+          wyjaśnionym kroku dostawcy lub po świadomym ukończeniu konfiguracji.
+          Zgody na mikrofon i rozpoznawanie mowy przyznajesz osobnymi
+          przyciskami; samo „Dalej” nie uruchamia prośby. Sprawdź, której
+          aplikacji dotyczy systemowy monit. Sama zgoda na pęk kluczy nie
+          oznacza połączenia konta Agenta.
         </p>
       </section>
       <section id="permissions">
