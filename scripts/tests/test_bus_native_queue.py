@@ -85,9 +85,11 @@ class NativeQueueTests(unittest.TestCase):
             argv = call.args[0]
             self.assertEqual(argv[:5], ["/fake/codex", "queue", "--thread", self.session, "--message"])
             message = argv[5]
-            self.assertIn(self.pending[0]["text"], message)
+            self.assertNotIn(self.pending[0]["text"], message)
+            self.assertIn("--read-pending", message)
+            self.assertIn("--ack", message)
             self.assertIn(identity, message)
-            self.assertIn('"state_change_allowed": false', message)
+            self.assertIn("Coverage is diagnostic", message)
             self.assertNotIn("sample_start", message)
             self.assertNotIn("/private/audio.wav", message)
             self.assertNotIn("shell", call.kwargs)

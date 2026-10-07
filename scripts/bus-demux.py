@@ -2373,6 +2373,7 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
             args.bridge_home / "acknowledgments" / lease_id / f"{delivery_id}.json",
             {"lease_id": lease_id, "delivery_id": delivery_id,
              "provider": args.provider.casefold(), "provider_session_id": args.session,
+             "read_at": utc_now(),
              "bus": state["bus"],
              "envelope": receipt_envelope(next(payload for payload in pending
                                 if payload.get("delivery_id") == delivery_id), state["bus"])},
@@ -2381,6 +2382,57 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
         withdrawn = withdraw_acknowledged_queue(args.bridge_home, lease_id, delivery_id, retry=True)
         emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id,
               "native_queue_settled": withdrawn})
+    return 0
+
+
+def read_pending_command(args: argparse.Namespace) -> int:
+    """Read a bounded, complete snapshot. Only the conversation may ACK it."""
+    lease_id = lease_identifier(args.provider, args.session)
+    state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
+    if (state.get("schema") != LEASE_SCHEMA or state.get("lease_id") != lease_id
+            or state.get("provider") != args.provider
+            or state.get("provider_session_id") != args.session
+            or not isinstance(state.get("bus"), str)
+            or args.bus_overridden and state["bus"] != str(args.bus.expanduser().resolve(strict=False))):
+        raise ValueError("mailbox does not belong to this provider session and bus")
+    pending = state.get("pending")
+    if not isinstance(pending, list) or any(not isinstance(row, dict) for row in pending):
+        raise ValueError("invalid pending mailbox; nothing read")
+    rows = []
+    for row in pending:
+        identity = row.get("delivery_id")
+        if row.get("kind") in DRAFT_KINDS:
+            continue
+        if (not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{24}", identity)
+                or row.get("lease_id") != lease_id or row.get("provider") != args.provider
+                or row.get("provider_session_id") != args.session
+                or row.get("bus", state["bus"]) != state["bus"]):
+            raise ValueError("foreign or invalid pending envelope; nothing read")
+        owner = row.get("delivery_owner")
+        if not isinstance(owner, dict) or any(owner.get(key) != row[key] for key in (
+                "lease_id", "provider", "provider_session_id")):
+            raise ValueError("foreign pending delivery owner; nothing read")
+        if not delivery_acknowledged(args.bridge_home, lease_id, identity, row):
+            rows.append(row)
+    if not 1 <= args.read_limit <= 256 or not 1 <= args.read_bytes <= 16 * 1024 * 1024:
+        raise ValueError("invalid --read-limit or --read-bytes")
+    result = {"kind": "pending_read", "lease_id": lease_id, "provider": args.provider,
+              "provider_session_id": args.session, "snapshot_cursor": state.get("cursor"),
+              "deliveries": [], "read_delivery_ids": [], "remaining": len(rows)}
+    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > args.read_bytes:
+        raise ValueError("snapshot metadata exceeds --read-bytes; increase the limit")
+    for row in rows[:args.read_limit]:
+        result["deliveries"].append(row)
+        result["read_delivery_ids"].append(row["delivery_id"])
+        result["remaining"] -= 1
+        if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > args.read_bytes:
+            result["deliveries"].pop()
+            result["read_delivery_ids"].pop()
+            result["remaining"] += 1
+            if not result["deliveries"]:
+                raise ValueError("complete envelope exceeds --read-bytes; increase the limit, then read before ACK")
+            break
+    emit(result)
     return 0
 
 
@@ -2486,17 +2538,29 @@ class NativeQueueWakeup:
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 return
-            diagnostic = {"delivery_id": identity, "state_change_allowed": payload.get("state_change_allowed")}
-            if "coverage" in payload:
-                diagnostic["coverage"] = payload["coverage"]
+            import shlex
+            read_command = shlex.join([
+                "cs-bus", "--read-pending", "--provider", "codex", "--session", self.session,
+                "--bridge-home", str(self.root),
+            ])
+            ack_command = shlex.join([
+                "cs-bus", "--provider", "codex", "--session", self.session,
+                "--bridge-home", str(self.root), "--ack",
+            ])
             label = str(self.channel or "?")
             name = str(payload.get("audience") or "agent")
             message = (
-                f"Codescribe channel {label} / {name}:\n{text}\n\n"
-                f"Receipt: {json.dumps(diagnostic, ensure_ascii=False)}\n"
-                "Reply using cs-say with --reply-to " + identity + " and the attached voice profile. "
-                "Acknowledge this delivery_id only after reading. "
-                "Coverage is a transcription diagnostic; use this conversation's normal task permissions."
+                f"Codescribe mailbox bell, channel {label} / {name}.\n"
+                f"Trigger delivery: {identity}; emitted at: {payload.get('emitted_at')}.\n"
+                "This is a notification, not a task or proof of reading. Read the current mailbox now:\n"
+                f"{read_command}\n"
+                "After reading complete envelopes, immediately ACK only their read_delivery_ids, "
+                "before executing tasks or replying:\n"
+                f"{ack_command} ID [ID ...]\n"
+                "Read again until remaining is zero, then check once more for arrivals during the drain. "
+                "Never ACK a truncated result. If the mailbox is empty, this is an obsolete bell: "
+                "do not repeat a task or send a spoken reply for it. Interpret the original envelopes "
+                "with their provenance and timestamps. Coverage is diagnostic; normal task permissions apply."
             )
             receipt = {
                 "schema": "codescribe.native-queue.receipt.v1", **expected,
@@ -5004,6 +5068,9 @@ def main() -> int:
         help="explicitly retry one retained Codex seal after a failed/uncertain queue submission",
     )
     parser.add_argument("--read-delivery", metavar="DELIVERY_ID", help="read one complete pending envelope without acknowledging or resubmitting it")
+    parser.add_argument("--read-pending", action="store_true", help="read complete unread non-draft envelopes as a bounded batch; never ACK automatically")
+    parser.add_argument("--read-limit", type=int, default=None, help="with --read-pending: maximum envelopes, default 8 (1..256)")
+    parser.add_argument("--read-bytes", type=int, default=None, help="with --read-pending: maximum UTF-8 output bytes, default 65536 (up to 16 MiB)")
     parser.add_argument(
         "--attach",
         action="store_true",
@@ -5114,6 +5181,21 @@ def main() -> int:
         f"then {DEFAULT_SPEECH_SPEED}; with --attach it is stored in the profile",
     )
     args = parser.parse_args()
+    if (args.read_limit is not None or args.read_bytes is not None) and not args.read_pending:
+        parser.error("--read-limit and --read-bytes require --read-pending")
+    if args.read_pending and any((
+        args.version, args.print_bus_path, args.print_install_interlock_path,
+        args.print_agent_turn_lease_path, args.assert_install_idle,
+        args.ack, args.attach, args.detach, args.takeover, args.channel is not None,
+        args.status, args.watch, args.follow, args.once, args.from_start, args.from_file,
+        args.read_delivery, args.retry_wakeup, args.say is not None, args.send_text,
+        args.send is not None, args.to is not None, args.lease,
+        args.play_reply, args.stop_reply, args.playback_ticket, args.reply_to,
+        args.all, args.become, args.active_names, args.drafts, args.coalesce,
+        args.mute_agent, args.unmute_agent, args.on_seal, args.voice,
+        args.speed is not None, args.tts_vendor,
+    )):
+        parser.error("--read-pending combines with no other command")
     if (args.mute_agent or args.unmute_agent) and any((
         args.version, args.print_bus_path, args.print_install_interlock_path,
         args.print_agent_turn_lease_path, args.assert_install_idle,
@@ -5181,6 +5263,16 @@ def main() -> int:
         )
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.read_pending:
+        if not args.provider:
+            parser.error("--read-pending requires --provider/--session")
+        args.read_limit = 8 if args.read_limit is None else args.read_limit
+        args.read_bytes = 65536 if args.read_bytes is None else args.read_bytes
+        try:
+            return read_pending_command(args)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: pending read refused: {error}\n")
+            return 3
     if args.takeover and not args.attach:
         parser.error("--takeover requires --attach")
     if args.mute_agent or args.unmute_agent:
@@ -5261,7 +5353,7 @@ def main() -> int:
         if state.get("lease_id") != lease_id or state.get("provider") != args.provider or state.get("provider_session_id") != args.session:
             parser.error("mailbox does not belong to this provider session")
         payload = next((p for p in state.get("pending", []) if p.get("delivery_id") == args.read_delivery), None)
-        if payload is None:
+        if payload is None or delivery_acknowledged(args.bridge_home, lease_id, args.read_delivery, payload):
             parser.error("delivery is not pending in this mailbox")
         emit(payload)
         return 0
