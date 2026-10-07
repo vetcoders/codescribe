@@ -387,6 +387,7 @@ struct DictationOverlayView: View {
               },
               focusRevision: state.conversationFocusRevision,
               followsLiveChannel: state.channelHudStates[conversation.channel]?.open == true,
+              isPresented: !state.isCollapsed,
               draft: Binding(
                 get: { state.conversationDrafts[conversation.id] ?? "" },
                 set: { state.conversationDrafts[conversation.id] = $0 }),

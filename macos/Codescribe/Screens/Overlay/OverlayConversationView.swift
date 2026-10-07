@@ -13,6 +13,7 @@ struct OverlayConversationView: View {
   let onControl: (OverlayConversationMessage, Bool) -> Void
   var focusRevision: UInt64 = 0
   var followsLiveChannel = false
+  var isPresented = true
   @Binding var draft: String
   let sending: Bool
   let sendError: String?
@@ -64,6 +65,14 @@ struct OverlayConversationView: View {
           .onAppear { scrollToLatest(proxy) }
           .onChange(of: conversation.id) { _, _ in scrollToLatest(proxy) }
           .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
+          .onChange(of: isPresented) { _, presented in
+            if presented, followsLatest { scrollToLatest(proxy) }
+          }
+          .onChange(of: geometry.size) { _, size in
+            if isPresented, followsLatest, size.width > 0, size.height > 0 {
+              scrollToLatest(proxy)
+            }
+          }
           .onChange(of: composerHeight) { _, _ in
             if followsLatest { scrollToLatest(proxy) }
           }
@@ -176,6 +185,9 @@ struct OverlayConversationView: View {
         .onScrollGeometryChange(for: Bool.self) { geometry in
           geometry.visibleRect.maxY >= geometry.contentSize.height - 48
         } action: { _, atBottom in
+          // The retained compact canvas has no visible scroll position.
+          // Keep the user's follow/history intent until it is presented again.
+          guard isPresented else { return }
           followsLatest = atBottom
         }
     } else {
@@ -229,6 +241,7 @@ struct OverlayConversationView: View {
 
   private func scrollToLatest(_ proxy: ScrollViewProxy) {
     followsLatest = true
+    guard isPresented else { return }
     proxy.scrollTo("conversation-bottom", anchor: .bottom)
   }
 
