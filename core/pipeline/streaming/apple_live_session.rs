@@ -16589,6 +16589,68 @@ mod rc_w2_test_rehab {
         );
     }
 
+    #[test]
+    fn refused_future_callback_does_not_advance_accepted_apple_cursor() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = state("future-cursor", 2.0);
+        emit(&mut state, &tx, vec![segment("future phrase", 8.0, 9.0)]);
+        assert!(document(&state).is_empty());
+        assert!(raw_finals(&drain(&mut rx)).is_empty());
+        assert_eq!(state.last_apple_segment_end, 0.0);
+    }
+
+    #[test]
+    fn refused_future_callback_preserves_later_in_capture_apple_final() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = state("future-then-owned", 2.0);
+        let owner = qualify(&mut state, 0.0, 1.5);
+        emit(&mut state, &tx, vec![segment("future phrase", 8.0, 9.0)]);
+        drain(&mut rx);
+        emit(&mut state, &tx, vec![segment("owned phrase", 0.0, 1.5)]);
+        assert_eq!(document(&state), "owned phrase");
+        assert_eq!(raw_finals(&drain(&mut rx)), vec!["owned phrase"]);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.occurrences().count(), 1);
+        assert_eq!(ledger.text_of(&owner), Some("owned phrase"));
+        assert!(ledger.is_sealed(&owner));
+        assert_eq!(state.last_apple_segment_end, 1.5);
+    }
+
+    #[test]
+    fn refused_future_callback_cannot_suppress_available_sibling() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = state("mixed-future-owned", 2.0);
+        qualify(&mut state, 0.0, 1.5);
+        emit(
+            &mut state,
+            &tx,
+            vec![
+                segment("future phrase", 8.0, 9.0),
+                segment("owned phrase", 0.0, 1.5),
+            ],
+        );
+        assert_eq!(document(&state), "owned phrase");
+        assert_eq!(raw_finals(&drain(&mut rx)), vec!["owned phrase"]);
+        assert_eq!(state.last_apple_segment_end, 1.5);
+    }
+
+    #[test]
+    fn available_apple_callback_consumes_boundary_and_rejects_replay() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = state("owned-cursor-control", 2.0);
+        qualify(&mut state, 0.0, 1.5);
+        emit(&mut state, &tx, vec![segment("owned phrase", 0.0, 1.5)]);
+        assert_eq!(state.last_apple_segment_end, 1.5);
+        assert_eq!(raw_finals(&drain(&mut rx)), vec!["owned phrase"]);
+        emit(&mut state, &tx, vec![segment("owned phrase", 0.0, 1.5)]);
+        assert!(raw_finals(&drain(&mut rx)).is_empty());
+        assert_eq!(document(&state), "owned phrase");
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().occurrences().count(),
+            1
+        );
+    }
+
     /// Out-of-capture text cannot seal without a nonempty qualified occurrence.
     #[test]
     fn seal_window_beyond_captured_audio_is_counted_unresolved() {
