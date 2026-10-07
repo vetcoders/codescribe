@@ -147,6 +147,8 @@ struct WaveformView: View {
   /// unmistakably "processing", not "listening", and not a hung freeze either.
   var transcribing: Bool = false
   var indicatorMode: CsIndicatorMode = .hold
+  /// Controller-projected channel capture shares the built-in Agent's hue.
+  var agentRouted: Bool = false
   /// Real capture level, when the engine streams it. nil → neutral flat bars.
   var meter: AudioLevelMeter? = nil
   /// Appearance-aware neutral track supplied by the owning surface.
@@ -286,7 +288,7 @@ struct WaveformView: View {
     // dimmer than the live-capture bars.
     if transcribing { return CSColor.modeProcessing.opacity(0.55) }
     guard active, meter?.gain != nil else { return inactiveColor }
-    if indicatorMode == .assistive {
+    if agentRouted || indicatorMode == .assistive {
       return i % 5 == 0 ? CSColor.assistiveLight : CSColor.modeAgent
     }
     return i % 5 == 0 ? CSColor.terracottaTintBars : CSColor.modeRecording

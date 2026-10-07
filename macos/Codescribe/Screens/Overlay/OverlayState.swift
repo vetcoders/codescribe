@@ -1298,6 +1298,12 @@ final class OverlayState {
     channelHudStates.values.contains(where: \.open)
   }
 
+  /// Both agent destinations share one semantic accent. Viewing saved
+  /// conversations alone never turns ordinary dictation into an agent mode.
+  var usesAgentAccent: Bool {
+    channelAudioCaptureActive || indicatorMode == .assistive
+  }
+
   var audioCaptureActive: Bool {
     channelAudioCaptureActive
       || (recording && !finalized && !transcribing && !isFinalPass && mode == .listening)
@@ -1474,7 +1480,9 @@ final class OverlayState {
   /// phase from the reducer, mode from the tray feed, silence from measured
   /// capture level.
   var recordingLight: OverlayRecordingLight? {
-    OverlayRecordingLight.resolve(
+    // A channel owns live capture independently of the ordinary take's phase.
+    if channelAudioCaptureActive { return .agent }
+    return OverlayRecordingLight.resolve(
       mode: mode, terminal: terminal, recording: recording, transcribing: transcribing,
       indicatorMode: indicatorMode, silent: levelMeter.isSilent)
   }
