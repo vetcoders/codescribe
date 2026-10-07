@@ -9712,7 +9712,7 @@ mod c13a_lifecycle_tests {
         assert!(state.pending_events.is_empty());
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
 
-        state.complete_whisper_window(&tx, no_payload_completion(&request), 2.0);
+        state.complete_whisper_window(&tx, no_payload_completion(request), 2.0);
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(event_rx.try_recv().is_err(), "replay emits no second seal");
     }
@@ -9879,7 +9879,7 @@ mod c13a_lifecycle_tests {
 
         // Post-seal immutability: the same completion replayed after the seal
         // cannot reopen either occurrence or move a single label.
-        state.complete_whisper_window(&tx, no_payload_completion(&request), 2.0);
+        state.complete_whisper_window(&tx, no_payload_completion(request), 2.0);
         assert!(
             event_rx.try_recv().is_err(),
             "a replayed completion after the terminal seal emits nothing"
@@ -28268,7 +28268,7 @@ mod tc2_window_contract_tests {
         while f.receiver.try_recv().is_ok() {}
         // These frames have already returned. Replaying diagnostic evidence
         // may remain visible, but cannot reopen a sealed owner or a transport job.
-        assert!(returned_frames.len() >= 1);
+        assert!(!returned_frames.is_empty());
         let late = completion(&returned_frames[0], vec![pin("delta", 434_496, 470_976)]);
         let payload = late.payload.as_ref().unwrap();
         payload.validate().unwrap();
