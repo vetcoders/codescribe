@@ -837,6 +837,14 @@ final class OverlayState {
   /// is still in flight. History, an identical snapshot, ACK, playback, and
   /// manual navigation leave it false, so those repaints do not reopen a panel.
   @ObservationIgnored private(set) var freshReplyPresentationRequested = false
+  /// The mounted composer is the panel's editor, including a blank field.
+  /// A nonempty draft is not this fact.
+  @ObservationIgnored private var composerEditorActive = false
+  /// Monotonic instant when typing protection ends. Checked when a reply is
+  /// admitted. Nothing is scheduled, and expiry does not revisit an id already
+  /// stored in `observedReplyIDs`.
+  @ObservationIgnored private var composerTypingDeadline: TimeInterval?
+  static let composerTypingHorizon: TimeInterval = 15
   private var conversationIsVisible = false
 
   var selectedConversation: OverlayConversation? {
@@ -1169,6 +1177,25 @@ final class OverlayState {
     recording || warmingUp || transcribing
   }
 
+  /// The mounted composer reports focus and typing into presentation metadata.
+  /// Neither fact is a conversation, a draft, or a document.
+  func noteComposerEditorActive(_ active: Bool) {
+    composerEditorActive = active
+  }
+
+  func noteComposerTypingActivity() {
+    composerTypingDeadline = nowProvider() + Self.composerTypingHorizon
+  }
+
+  /// Active editor holds without a clock, blank draft included. Typing holds
+  /// until the monotonic deadline, using the same `remaining > 0` cut as
+  /// auto-hide: the instant at `now == deadline` has elapsed.
+  private var composerRetainsAutomaticReplyFocus: Bool {
+    if composerEditorActive { return true }
+    guard let composerTypingDeadline else { return false }
+    return composerTypingDeadline - nowProvider() > 0
+  }
+
   /// Bring one newly admitted reply's owner into the existing surface.
   /// History, a repeated id, playback or ACK of a known id, and an owner that
   /// is not unique stay where the user already is. Channel number, display
@@ -1179,8 +1206,11 @@ final class OverlayState {
     observedReplyIDs.formUnion(current)
     let establishingInventory = !replyInventoryBaselined
     replyInventoryBaselined = true
+    // Inventory is already updated. A retained composer consumes the admission
+    // here, so the horizon ending later cannot select that owner.
     guard !establishingInventory, !fresh.isEmpty, !preservingControllerFocus,
       !activeCaptureOwnsPresentation,
+      !composerRetainsAutomaticReplyFocus,
       let conversation = ownedConversation(forNewReplies: fresh)
     else { return }
     if selectedConversationID == conversation.id {
