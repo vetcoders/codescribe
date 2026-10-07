@@ -208,7 +208,7 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
   /// `run(until:)` would keep a repeating timer alive for the whole interval.
   @MainActor
   private func tickCommittedRunLoop() {
-    RunLoop.main.run(mode: .common, before: Date().addingTimeInterval(0.02))
+    RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.02))
   }
 
   /// Rust-owned projection admitted through the production boundary, shaped

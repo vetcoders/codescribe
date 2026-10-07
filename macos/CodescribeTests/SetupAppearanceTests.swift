@@ -156,7 +156,7 @@ final class SetupAppearanceTests: XCTestCase {
     host.layoutSubtreeIfNeeded()
     while Date() < deadline {
       let sliceEnd = min(deadline, Date().addingTimeInterval(0.008))
-      RunLoop.main.run(mode: .common, before: sliceEnd)
+      RunLoop.main.run(mode: .default, before: sliceEnd)
       host.layoutSubtreeIfNeeded()
       guard let probe = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { continue }
       appearance.performAsCurrentDrawingAppearance {
@@ -176,7 +176,7 @@ final class SetupAppearanceTests: XCTestCase {
         return drag
       }
       let sliceEnd = min(deadline, Date().addingTimeInterval(0.008))
-      RunLoop.main.run(mode: .common, before: sliceEnd)
+      RunLoop.main.run(mode: .default, before: sliceEnd)
     }
     contentView.layoutSubtreeIfNeeded()
     return firstSubview(of: OnboardingDragView.self, in: contentView)

@@ -164,7 +164,7 @@ final class ChatLayoutPolicyTests: XCTestCase {
     }
     if Date() < emptyDeadline {
       RunLoop.main.run(
-        mode: .common,
+        mode: .default,
         before: min(emptyDeadline, Date().addingTimeInterval(0.016)))
     }
     XCTAssertEqual(
@@ -214,7 +214,7 @@ final class ChatLayoutPolicyTests: XCTestCase {
   private func pumpUntil(deadline: Date, _ ready: () -> Bool) {
     while Date() < deadline {
       let sliceEnd = min(deadline, Date().addingTimeInterval(0.008))
-      RunLoop.main.run(mode: .common, before: sliceEnd)
+      RunLoop.main.run(mode: .default, before: sliceEnd)
       if ready() { return }
     }
   }

@@ -553,7 +553,7 @@ private final class SheetRun {
           break
         }
         let sliceEnd = min(layoutDeadline, Date().addingTimeInterval(layoutPulse))
-        RunLoop.main.run(mode: .common, before: sliceEnd)
+        RunLoop.main.run(mode: .default, before: sliceEnd)
       }
       if surface == "tray" {
         let fitted = host.fittingSize
