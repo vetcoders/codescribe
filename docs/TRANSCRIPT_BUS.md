@@ -2,12 +2,22 @@
 
 ## Conversational read receipt
 
-Native Codex queue entries are mailbox bells with delivery identity and time,
-not copies of task text. The agent reads `cs-bus --read-pending` for its exact
-provider/session, receives complete bounded envelopes and `read_delivery_ids`,
-then immediately calls `--ack` for those IDs before task execution or a reply.
-Reading alone never writes ACK. An empty current mailbox makes a late bell
-obsolete. Re-read after draining to retain arrivals during the read/ACK gap.
+Native Codex queue entries carry complete untruncated message text with compact
+causal identity, sender, reply association, routing and provenance. Watch bells
+remain notifications. The agent reads `cs-bus --read-pending` for its exact
+provider/session, receives complete bounded conversational projections and
+`read_delivery_ids`, then immediately calls `--ack` for those IDs before task
+execution or a reply. Only exact IDs returned as unread may be acted on; an
+absent ID makes its delayed queue copy obsolete even when other messages remain.
+Give a short answer before longer work. Reading alone never writes ACK. Re-read
+after draining to retain arrivals during the read/ACK gap.
+
+The conversational projection copies full text and provenance without PCM
+occurrence arrays, acoustic receipt trees, WAV paths or capture diagnostics.
+It changes presentation only: original lease envelopes, event history, ownership,
+cursors and ACK receipts retain their existing authority. `--read-delivery <id>`
+remains an explicit read of the complete original pending envelope for diagnosis.
+Text is never truncated to accommodate diagnostic size.
 
 ACK records an immutable `read_at`, retains causal coordinates without text,
 and withdraws each exact owned pending Codex submission. This is **read**, not

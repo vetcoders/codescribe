@@ -3,26 +3,33 @@
 ## Codex native queue
 
 `cs-bus --attach --provider codex --session <thread-id> --name <name> --channel <n>`
-automatically selects `codex-queue`. The follower submits a short mailbox bell,
-with the triggering delivery ID and emission time, to `codex queue`. Task text
-stays in the canonical mailbox: a delayed bell must not present obsolete text
-as a new instruction. The installed Codex CLI must support `queue`.
+automatically selects `codex-queue`. The follower submits the complete message
+text with compact ownership and provenance to `codex queue`. The canonical
+mailbox retains the original envelope and its acoustic evidence. The queue
+copy never proves that a delivery is still unread. The installed Codex CLI
+must support `queue`.
 
-On either the watch bell or the native queue bell, read the current mailbox:
+On either the watch bell or a native queue message, read the current mailbox:
 
 ```bash
 cs-bus --read-pending --provider codex --session <thread-id>
 ```
 
-This returns complete unread non-draft envelopes, their `read_delivery_ids`,
-`remaining` count and snapshot cursor. It does not acknowledge anything. The
-default batch is at most eight envelopes and 64 KiB of UTF-8 JSON; use
+This returns complete unread non-draft conversational projections: unchanged
+message text, causal identity, sender, reply association, routing and provenance.
+It includes `read_delivery_ids`, `remaining` count and snapshot cursor. It omits
+PCM occurrences, acoustic receipt trees and WAV paths without altering their
+original storage. It does not acknowledge anything. The default batch is at
+most eight messages and 64 KiB of UTF-8 JSON; use
 `--read-limit` and `--read-bytes` to change those bounded limits. Oversized first
 envelopes refuse instead of truncating: increase the byte limit and read the
 complete result before ACK. Never ACK a truncated tool result.
 
 Immediately after reading each complete batch, ACK exactly its returned IDs
 **before** doing the requested work, sending a reply or waiting for a build.
+Execute or reply only to exact IDs returned as unread by this current read;
+never act on the queue copy alone. An absent queued ID is obsolete even when
+other unread messages remain. Give a short answer before starting longer work.
 Read another batch until `remaining` is zero, then check once more for arrivals
 during the drain. Preserve every distinct request and its provenance. An empty
 snapshot means the bell is obsolete; do not repeat a task, ACK an unread ID,
@@ -50,8 +57,9 @@ Every attachment must start the provider's output-notifying monitor on
 `cs-bus --watch --provider codex --session <thread-id>`. Its default is a short bell;
 `--bell` spells that default explicitly. It is mandatory for active tasks, even
 with native queue. Renew bounded notification windows throughout the task.
-Both paths carry a notice, not a second copy of the task. `--read-delivery <id>`
-also reads one complete original envelope; it refuses an already acknowledged
+The watch remains a notice; native queue carries complete task text and compact
+provenance. `--read-delivery <id>` is the explicit diagnostic read of the complete
+original envelope, including acoustic evidence. It refuses an already acknowledged
 delivery even before the follower sweeps its mailbox. A later bell must not
 repeat the completed task or speak a second answer for an acknowledged delivery.
 
@@ -154,9 +162,10 @@ active listening turn open when post-final wakeup is unavailable.
 ## Acknowledge conversation receipt
 
 The session-scoped helper retains emitted envelopes until explicit receipt.
-After this conversation has received the complete envelope, retain its delivery
-ID and disposition in the conversation record and immediately run, before any
-task execution or reply:
+After this conversation has received the complete conversational projection,
+retain its delivery ID and disposition in the conversation record and immediately
+run, before any task execution or reply. Acoustic diagnostics are not a reading
+prerequisite:
 
 ```bash
 cs-bus \

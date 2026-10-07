@@ -25,10 +25,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | `0.14.1` | 2026-08-18 onward    | Earlier source/release-candidate milestone.                                      |
 | `0.15.1` | 2026-09-13           | Earlier source/daily-build milestone.                                            |
 | `0.15.2` | 2026-10-04           | **Latest published GitHub Release** (`v0.15.2`), signed, notarized, and stapled. |
+| `0.16.0` | 2026-10-07           | Source/daily-build candidate; no public `0.16.0` artifact is published.          |
 
 The sections below distinguish code milestones from public releases. A version
 number in `Cargo.toml` is not evidence that a DMG, tag, appcast, or GitHub
 Release exists.
+
+## [0.16.0] - 2026-10-07
+
+Source/daily-build candidate. The pre-bump verified installation is
+**0.15.3 / build 2115**; it is not a `0.16.0` installation or public release.
+Installation, native acceptance and distribution of `0.16.0` require their own
+receipts. The published download remains `v0.15.2`.
+
+- Keep mini, MIDI and expanded presentations in the existing floating panel.
+  Mini retains the brand, microphone and fold control; MIDI reveals the wider
+  header, and the transcription preference controls automatic expansion.
+- Present the agent drawer above the retained transcript or conversation,
+  with an explicit route to transcription and native audio controls. Per-agent
+  mute, durable reply text, explicit replay and archived conversations remain
+  separate from microphone routing.
+- Bound roster and delivery metadata reads, reuse unchanged source projections,
+  and publish provider/model labels only from metadata validated against the
+  exact provider session. Keep the recording clock's updates outside the
+  conversation projection.
+- Preserve the parked mini origin when MIDI borrows width or is screen-clamped;
+  a real MIDI drag moves the parked mini by the same displacement. Closing and
+  reopening restores that mini position.
+- Keep archived conversations available to cold readers and serialize archive
+  commands through the existing bridge command owner.
+- Deliver complete task text and sender provenance to agent conversations;
+  keep acoustic diagnostics in the original JSON history. Reading and
+  acknowledging a message preserves every PCM occurrence and its receipt.
 
 ## [0.15.3] - 2026-10-05
 

@@ -1,6 +1,6 @@
 # ⌜ Codescribe ⌟
 
-[![Version](https://img.shields.io/badge/version-0.15.3-6a9bcc)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.16.0-6a9bcc)](Cargo.toml)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
 [![Landing](https://img.shields.io/badge/site-vetcoders.github.io%2Fcodescribe-788c5d)](https://vetcoders.github.io/codescribe/)
@@ -64,8 +64,8 @@ flowchart TB
 > Full-file local/cloud Retranscribe is a separate operator action and is never
 > the automatic stop authority.
 
-> **Release status:** current source version is `0.15.3` (see `Cargo.toml`),
-> while the latest published GitHub Release is `v0.15.2`. Version `0.15.3`
+> **Release status:** current source version is `0.16.0` (see `Cargo.toml`),
+> while the latest published GitHub Release is `v0.15.2`. Version `0.16.0`
 > is being prepared. Source builds are candidates, not published distribution
 > artifacts.
 
@@ -177,9 +177,9 @@ Tagged builds publish DMGs through GitHub Releases:
 2. Download `Codescribe_<version>-<builddate>-<sha>.dmg` for the standard build, or the `_full` variant for the larger build with embedded Whisper.
 3. Drag `Codescribe.app` into `Applications`
 
-> **Current truth (2026-10-06):** `v0.15.2` is the latest version published on
-> GitHub Releases. The repository is at `0.15.3`; that candidate has not been
-> published and its release gates remain blocked. A production artifact must be Developer ID signed,
+> **Source and distribution:** the published download remains `v0.15.2`.
+> The repository is at `0.16.0`; this source/daily-build candidate has not been
+> published. A production artifact must be Developer ID signed,
 > notarized, stapled, and pass `verify-dmg`; a source install or ad-hoc `.app` is
 > not a public release.
 
