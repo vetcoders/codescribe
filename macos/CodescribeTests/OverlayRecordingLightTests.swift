@@ -171,6 +171,59 @@ final class OverlayRecordingLightTests: XCTestCase {
     }
   }
 
+  func testBusCaptureUsesAgentLightOverSettledOrdinaryTakeAndQuietMeter() {
+    let state = OverlayState()
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: 1, emittedAt: "2026-10-07T21:00:00Z", sessionId: "settled-ordinary",
+        renderedText: "Saved dictation", phase: "formatted", terminal: true,
+        reducerAction: "session_ended", canCopy: true))
+    XCTAssertTrue(state.terminal)
+    XCTAssertFalse(state.recording)
+    XCTAssertNil(state.recordingLight)
+    let text = state.activeText
+    let revision = state.revision
+    state.applyChannelRoster([
+      .init(
+        channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
+        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+    ])
+    XCTAssertTrue(state.audioCaptureActive)
+    XCTAssertTrue(state.usesAgentAccent)
+    XCTAssertEqual(state.recordingLight, .agent)
+    feed(state, db: -60, from: 0, seconds: 2)
+    XCTAssertTrue(state.levelMeter.isSilent)
+    XCTAssertEqual(state.recordingLight, .agent)
+    XCTAssertEqual(state.activeText, text)
+    XCTAssertEqual(state.revision, revision)
+    state.applyChannelRoster([])
+    XCTAssertFalse(state.audioCaptureActive)
+    XCTAssertFalse(state.usesAgentAccent)
+    XCTAssertNil(state.recordingLight)
+    XCTAssertEqual(state.activeText, text)
+  }
+
+  func testClosedBusRosterKeepsOrdinaryAccentAndBuiltInAgentKeepsViolet() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.applyIndicatorMode(.hold)
+    state.applyChannelRoster([
+      .init(
+        channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
+        open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+    ])
+    XCTAssertFalse(state.channelAudioCaptureActive)
+    XCTAssertFalse(state.usesAgentAccent)
+    XCTAssertEqual(state.recordingLight, .holdToTalk)
+    state.applyIndicatorMode(.toggle)
+    XCTAssertFalse(state.usesAgentAccent)
+    XCTAssertEqual(state.recordingLight, .handsFree)
+    state.applyIndicatorMode(.assistive)
+    XCTAssertTrue(state.usesAgentAccent)
+    XCTAssertEqual(state.recordingLight, .agent)
+  }
+
   // MARK: Silence from measured capture level
 
   func testLiveTakeTurnsYellowOnlyAfterSustainedQuietAndBackOnSpeech() {
