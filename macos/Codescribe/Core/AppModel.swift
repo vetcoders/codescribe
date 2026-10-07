@@ -343,12 +343,17 @@ final class OverlayController: ObservableObject {
           self.resizeForProjectedContent()
         }
       }
+      floating.qualifiedExpandedHeight = { [weak self] width in
+        self?.qualifiedExpandedContentHeight(for: width)
+      }
       floating.onFrameTransitionCompleted = { [weak self] in
         guard let self else { return }
         if self.placementAfterTransition {
           self.placementAfterTransition = false
           self.applyPlacement()
         }
+        // The transition already landed on this height. A later projection
+        // can still grow the settled panel; an equal height writes nothing.
         self.resizeForProjectedContent()
       }
       floating.setPresentationMode(state.presentationMode)
@@ -420,17 +425,10 @@ final class OverlayController: ObservableObject {
   /// native transcript scroll view takes over. Window-frame writes are direct
   /// and unanimated; content keeps its existing reveal transition instead of
   /// morphing the glass panel or exporting hosting constraints.
-  private func resizeForProjectedContent() {
-    if (panel as? FloatingOverlayPanel)?.isUserResizing == true {
-      contentSizeAfterUserResize = true
-      return
-    }
-    guard automaticContentSizingEnabled, !state.isCollapsed,
-      !state.isEditingTranscript, !state.isRevisionDraftDirty, let panel
-    else { return }
-    guard (panel as? FloatingOverlayPanel)?.isFrameTransitioning != true else { return }
-    // Measure the same accepted snapshot the existing canvas paints. Human
-    // review fences automatic sizing; compact text never becomes delivery text.
+  /// Text the expanded panel is showing. An agent conversation scrolls inside
+  /// the frame; its height is not the previous transcript.
+  private func projectedSizingText() -> String {
+    guard state.showsMyDictation, !state.showsAgentMonitor else { return "" }
     let livePaint: CsCompactProjection?
     if !state.terminal, state.mode == .listening || state.mode == .finalizing,
       let paint = state.compactProjection,
@@ -441,14 +439,36 @@ final class OverlayController: ObservableObject {
     } else {
       livePaint = nil
     }
-    let screen = panel.screen ?? NSScreen.main
-    let targetHeight = OverlayContentSizePolicy.preferredHeight(
-      for: livePaint?.text ?? state.canvasText,
-      width: panel.frame.width,
+    return livePaint?.text ?? state.canvasText
+  }
+
+  /// Grow-only expanded height for `width`. Nil keeps the remembered frame
+  /// when the user owns the size or the transcript editor is open.
+  private func qualifiedExpandedContentHeight(for width: CGFloat) -> CGFloat? {
+    guard automaticContentSizingEnabled, !state.isEditingTranscript,
+      !state.isRevisionDraftDirty
+    else { return nil }
+    let screen = panel?.screen ?? NSScreen.main
+    let restingHeight = (panel as? FloatingOverlayPanel)?.sizeForPersistence.height
+      ?? panel?.frame.height
+      ?? DictationOverlayWindow.defaultSize.height
+    return OverlayContentSizePolicy.preferredHeight(
+      for: projectedSizingText(),
+      width: width,
       textScale: textScale.scale,
       screen: screen,
-      currentHeight: panel.frame.height
+      currentHeight: max(restingHeight, DictationOverlayWindow.minSize.height)
     )
+  }
+
+  private func resizeForProjectedContent() {
+    if (panel as? FloatingOverlayPanel)?.isUserResizing == true {
+      contentSizeAfterUserResize = true
+      return
+    }
+    guard !state.isCollapsed, let panel else { return }
+    guard (panel as? FloatingOverlayPanel)?.isFrameTransitioning != true else { return }
+    guard let targetHeight = qualifiedExpandedContentHeight(for: panel.frame.width) else { return }
     guard targetHeight > panel.frame.height + 0.5 else { return }
 
     Self.isApplyingFrame = true
