@@ -714,12 +714,30 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   }
 
   @MainActor
-  private func withPanelComposer(transcriptFirst: Bool) throws {
+  func testActualComposerRetainsRepliesWhileActiveThenReleasesAfterRenewedTypingHorizon() throws {
+    try withPanelComposer(transcriptFirst: true, exerciseReplyProtection: true)
+  }
+
+  @MainActor
+  private func withPanelComposer(
+    transcriptFirst: Bool, exerciseReplyProtection: Bool = false
+  ) throws {
     var draft = ""
+    var now: TimeInterval = 100
+    let state = OverlayState(nowProvider: { now })
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(reply(String(repeating: "c", count: 24)))
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: bus.conversations(busPath: busPath)))
+    let selected = try lenaConversation(bus)
+    state.selectConversation(selected.id)
+    state.setConversationVisible(true)
     let host = NSHostingView(
       rootView: OverlayConversationComposer(
         palette: .dark, draft: Binding(get: { draft }, set: { draft = $0 }),
-        sending: false, onSubmit: {}))
+        sending: false, onSubmit: {},
+        onEditorActive: { state.noteComposerEditorActive($0) },
+        onTypingActivity: { state.noteComposerTypingActivity() }))
     host.frame = NSRect(x: 0, y: 0, width: 600, height: 100)
     let content = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
     content.addSubview(host)
@@ -776,6 +794,27 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     XCTAssertTrue(panel.allowsKeyForTranscript)
     XCTAssertTrue(panel.isKeyWindow)
     XCTAssertTrue(panel.firstResponder === editor)
+    var nextReply = 100
+    func receiveOtherOwnerReply() throws -> OverlayConversation {
+      nextReply += 1
+      var row = reply(String(format: "%024x", nextReply))
+      row.merge(owner(leaseB, session: "agent-b", name: "Astra", channel: "3")) {
+        _, new in new
+      }
+      bus.consume(row)
+      let conversations = bus.conversations(busPath: busPath)
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: conversations))
+      return try XCTUnwrap(conversations.first { $0.owner?.leaseID == leaseB })
+    }
+    if exerciseReplyProtection {
+      now = 1000
+      let other = try receiveOtherOwnerReply()
+      XCTAssertEqual(state.selectedConversationID, selected.id, "blank active field owns focus")
+      XCTAssertEqual(state.unreadReplies(in: other), 1)
+      XCTAssertTrue(panel.firstResponder === editor)
+      XCTAssertTrue(panel.isKeyWindow)
+      XCTAssertEqual(draft, "")
+    }
     let key = try XCTUnwrap(
       NSEvent.keyEvent(
         with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
@@ -784,6 +823,37 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     panel.sendEvent(key)
     XCTAssertEqual(editor.string, "x")
     XCTAssertEqual(draft, "x")
+    if exerciseReplyProtection {
+      editor.setSelectedRange(NSRange(location: 0, length: 1))
+      let focus = state.conversationFocusRevision
+      let other = try receiveOtherOwnerReply()
+      XCTAssertEqual(state.selectedConversationID, selected.id)
+      XCTAssertEqual(state.conversationFocusRevision, focus)
+      XCTAssertEqual(state.unreadReplies(in: other), 2)
+      XCTAssertTrue(panel.firstResponder === editor)
+      XCTAssertEqual(editor.selectedRange(), NSRange(location: 0, length: 1))
+      XCTAssertEqual(draft, "x")
+      now = 1009
+      panel.sendEvent(key)
+      XCTAssertEqual(draft, "x", "typing replaces the selection and renews the horizon")
+      XCTAssertTrue(panel.makeFirstResponder(transcript), "real native responder transition")
+      now = 1023.999
+      let beforeExpiry = try receiveOtherOwnerReply()
+      XCTAssertEqual(state.selectedConversationID, selected.id)
+      XCTAssertEqual(state.unreadReplies(in: beforeExpiry), 3)
+      // Manual navigation remains available even during the hold.
+      state.selectConversation(beforeExpiry.id)
+      XCTAssertEqual(state.selectedConversationID, beforeExpiry.id)
+      state.selectConversation(selected.id)
+      now = 1024
+      state.applyConversationSnapshot(
+        .init(deliveries: [], conversations: bus.conversations(busPath: busPath)))
+      XCTAssertEqual(state.selectedConversationID, selected.id, "expiry never replays a reply")
+      let atExpiry = try receiveOtherOwnerReply()
+      XCTAssertEqual(state.selectedConversationID, atExpiry.id, "fresh reply follows at deadline")
+      XCTAssertTrue(panel.firstResponder === transcript)
+      XCTAssertEqual(draft, "x")
+    }
     // Leaving the panel still returns keyboard ownership to the destination.
     panel.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: panel))
     XCTAssertFalse(panel.allowsKeyForTranscript)

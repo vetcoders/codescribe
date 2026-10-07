@@ -165,7 +165,7 @@ private struct ConversationMessageField: NSViewRepresentable {
 
     override func resignFirstResponder() -> Bool {
       let resigned = super.resignFirstResponder()
-      if resigned, window?.firstResponder !== self { onEditorActive(false) }
+      if resigned { onEditorActive(false) }
       return resigned
     }
 
