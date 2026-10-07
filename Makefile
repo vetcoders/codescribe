@@ -15,6 +15,10 @@
         hooks site-dev
 
 SHELL := /bin/bash
+# Founder 2026-10-07: worktree sources share the main checkout's Cargo cache.
+# Git's common directory belongs to the main checkout, including in worktrees.
+export CARGO_TARGET_DIR := $(abspath $(dir $(shell git rev-parse --git-common-dir))/target)
+export CARGO_BUILD_BUILD_DIR := $(CARGO_TARGET_DIR)
 VERSION_FILE := Cargo.toml
 EDITOR ?= $(shell command -v code || command -v nvim || command -v vim || echo nano)
 # Operator tests may source the daily dotenv for real-API credentials, but the
@@ -146,7 +150,7 @@ app-bindings:
 release-qube: dist-preflight
 	@echo "Building qube-* (release, runtime model resolve from HF cache)..."
 	@CODESCRIBE_NO_EMBED=1 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
-	 cargo build --release --target-dir target-noembed --bin qube-daemon --bin qube-report
+	 cargo build --release --bin qube-daemon --bin qube-report
 
 release: release-codescribe release-qube
 

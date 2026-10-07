@@ -36,6 +36,17 @@ Codescribe-specific runtime laws, thrones of authority, release cadence, and can
 - Wymagania build/test/install w tym pliku wykonuje **integrator**, nie worker.
   Szczegóły i granica technicznego egzekwowania: `docs/COMPILE_EMBARGO.md` §0.
 
+## Wspólny cache kompilacji — Founder 2026-10-07
+
+- Źródła mogą być w worktree; uprawniona kompilacja korzysta z jednego
+  `target` w głównym checkoutcie. `make` wyznacza go przez wspólny katalog Git
+  i eksportuje `CARGO_TARGET_DIR` oraz `CARGO_BUILD_BUILD_DIR`.
+- Przy bezpośrednim wywołaniu Cargo ustaw oba na bezwzględną ścieżkę tego
+  samego głównego `target`. Bez prywatnych targetów ani nazw ukrywających cache
+  przed cleanerem. Profile i zestawy features współdzielą ten katalog.
+- Integracja i instalacja należą do wyznaczonego integratora. Wspólny cache
+  nie znosi embargo workera. Nie czyść cache podczas aktywnej kompilacji.
+
 ## Trony władzy (Runtime authority)
 
 - `acoustic_ledger.rs` (`core/pipeline/acoustic_ledger.rs`): jedyny tron tożsamości PCM (`OccurrenceIdentity`, `ObservationIdentity`, `MutationReceipt`). Tekst jest etykietą przypiętą do occurrence, nigdy kluczem identity.
