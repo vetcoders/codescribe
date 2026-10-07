@@ -130,7 +130,8 @@ final class CredentialPresentationTests: XCTestCase {
     XCTAssertTrue(rejected.discoveryFailed)
     XCTAssertEqual(
       rejected.discoveryDescription,
-      "Could not fetch xAI models. The API key was rejected. Check it under Providers.")
+      "Could not fetch \(provider.displayName) models. The API key was rejected. Check it under Providers."
+    )
     XCTAssertEqual(rejected.discoveryErrorDetails, "{\"error\":\"Incorrect API key provided\"}")
     XCTAssertFalse(
       rejected.discoveryDescription.contains("Incorrect"), "the raw body stays under Error details")
@@ -141,7 +142,8 @@ final class CredentialPresentationTests: XCTestCase {
       discovery: CsModelDiscovery(
         providerId: provider.id, status: "error", message: "connection refused", models: []))
     XCTAssertEqual(
-      outage.discoveryDescription, "Could not fetch xAI models. Check the provider under Providers."
+      outage.discoveryDescription,
+      "Could not fetch \(provider.displayName) models. Check the provider under Providers."
     )
     XCTAssertEqual(outage.discoveryErrorDetails, "connection refused")
     let bare = LLMLaneModel(
