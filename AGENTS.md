@@ -3,18 +3,18 @@
 The Vetcoders Global Agent Charter is authoritative. This file adds only
 Codescribe-specific runtime laws, thrones of authority, release cadence, and canonical pointers.
 
-## Naming & Authority (Founder decision 2026-08-28)
+## Naming & Authority
 
 - **Founder** = Maciej Gad and Monika Szymańska (human voice, decisions, buttons).
 - **Operator** is exclusively an AGENT role (`vc-operator`, integrator). Never call the Founder "operator".
 - **Prawo Cięcia**: Jeden tron na władzę, zero nowych warstw. Konkurent tronu jest bezwzględnie
   USUWANY (`git rm` / wycięcie symbolu), nigdy opakowywany.
-- **Zakazane słowa w diffach, kodzie i commitach**: `shim`, `compat`, `legacy`, `adapter-for-old`,
-  `fallback-to-previous`, `bridge-until`, `TODO remove`. Każde = odrzucony cut. Żadnych fikuśnych garbatych wrapperów.
+- **Unikamy w pracy: w diffach, kodzie i commitach**: `shim`, `compat`, `legacy`, `adapter-for-old`,
+  `fallback-to-previous`, `bridge-until`, `TODO remove`. Kod pisze się szybko. Refaktor monstrualnych i pogmatwanych konstrukcji to męka.
 - **Falsyfikator przed edycją**: test „pięć Iwo” (5 fizycznych wystąpień PCM → 5 w ledgerze → 5 w reducerze → 5 w delivery).
 - Zobacz `CANARY_MAP.md` oraz `AGENT_CANARY.md` dla pełnej mapy kolizji i 7 tronów.
 
-## Worker embargo — Founder decision 2026-10-01
+## Worker embargo — only for `stt engine` related tasks:
 
 - **Worker pisze kod. Testy pisze i uruchamia integrator. Worker nie kompiluje
   i nie uruchamia żadnych testów.**
