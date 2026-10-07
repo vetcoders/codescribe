@@ -14,6 +14,7 @@ The first class drives the real lease mailbox with envelopes shaped like the
 follower's own; the second runs the real follower over channel takes.
 """
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -241,7 +242,7 @@ class FollowerTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        self.home = Path(temp.name)
+        self.home = Path(temp.name).resolve()
         self.root = self.home / "agent-bridge"
         self.bus = self.home / "channel-1.jsonl"
         self.bus.touch()
@@ -299,6 +300,76 @@ class FollowerTests(unittest.TestCase):
 
     def state(self):
         return DEMUX.read_json(self.lease_path)
+
+    def rotate(self):
+        """Close one real generation without changing logical stream identity."""
+        old = self.bus.stat()
+        events = self.home / "events"
+        events.mkdir()
+        closed = events / "closed.jsonl"
+        self.bus.rename(closed)
+        self.bus.touch()
+        active = self.bus.stat()
+        DEMUX.atomic_json(Path(str(self.bus) + ".generations.json"), {
+            "schema": "codescribe.bus-generations.v1", "root": str(self.bus.resolve()),
+            "stream_id": "test-stream", "stream_inode": old.st_ino, "stream_dev": old.st_dev,
+            "stream_birthtime": getattr(old, "st_birthtime", None), "pending": None,
+            "segments": [{"id": "closed", "path": str(closed.resolve()), "start": 0,
+                "length": old.st_size, "dev": old.st_dev, "ino": old.st_ino,
+                "day": "2026-10-07", "compressed": False, "superseded": None,
+                "sha256": hashlib.sha256(closed.read_bytes()).hexdigest()}],
+            "active": {"id": "active", "start": old.st_size,
+                "dev": active.st_dev, "ino": active.st_ino},
+        })
+
+    def test_resume_preserves_logical_cursor_and_five_pcm_after_generation_rotation(self):
+        session = "agent-channel-1-five-physical-words"
+        rows = [self.channel_row(session, "open", "2026-10-07T12:00:00Z"),
+                self.publication(session, 1, "seal_coverage", "Iwo Iwo Iwo Iwo Iwo", 0, range(1, 5)),
+                self.channel_row(session, "sealed", "2026-10-07T12:00:00Z")]
+        self.bus.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        initial = self.follow()
+        final = next(item for item in initial if item.get("kind") == "seal")
+        identities = {(item["occurrence_session_id"], item["capture_epoch"],
+                       item["sample_start"], item["sample_end"]) for item in final["occurrences"]}
+        self.assertEqual(len(identities), 5)
+        self.assertEqual(final["text"], "Iwo Iwo Iwo Iwo Iwo")
+        self.run_demux("--ack", final["delivery_id"])
+        self.follow()
+        cursor = self.state()["cursor"]
+        self.rotate()
+        self.assertGreater(cursor, self.bus.stat().st_size)
+        self.assertEqual(DEMUX.generation_metadata(self.bus).st_size, cursor)
+        resumed = self.follow()
+        attach = next(item for item in resumed if item.get("kind") == "attach")
+        self.assertEqual(attach["cursor"], cursor, "a shorter active chunk is not a new stream")
+        self.assertFalse(any(item.get("kind") in (*DEMUX.DRAFT_KINDS, "seal") for item in resumed))
+        self.assertEqual(self.state()["pending"], [])
+        self.assertEqual(self.state()["unclosed_channel_messages"], {})
+        self.speak("agent-channel-1-next-take", "2026-10-07T12:01:00Z")
+        fresh = [item for item in self.follow() if item.get("kind") == "seal"]
+        self.assertEqual(len(fresh), 1)
+        self.assertNotEqual(fresh[0]["message_id"], final["message_id"])
+
+    def test_rotation_keeps_unclosed_five_pcm_until_a_matching_close(self):
+        session = "agent-channel-1-still-open"
+        row = self.publication(session, 1, "apply_ledger_decision", "Iwo Iwo Iwo Iwo Iwo", 0, range(1, 5))
+        self.bus.write_text(json.dumps(row) + "\n")
+        initial = self.follow()
+        preview = next(item for item in initial if item.get("kind") in DEMUX.DRAFT_KINDS)
+        self.run_demux("--ack", preview["delivery_id"])
+        before = self.state()
+        self.rotate()
+        resumed = self.follow()
+        self.assertEqual(next(item for item in resumed if item.get("kind") == "attach")["cursor"], before["cursor"])
+        self.assertEqual(self.state()["unclosed_channel_messages"], before["unclosed_channel_messages"])
+        self.assertFalse(any(item.get("kind") == "seal" for item in resumed))
+        close = self.channel_row(session, "sealed", "2026-10-07T12:00:00Z")
+        self.bus.write_text(json.dumps(close) + "\n")
+        final = [item for item in self.follow() if item.get("kind") == "seal"]
+        self.assertEqual(len(final), 1)
+        self.assertEqual(len(final[0]["occurrences"]), 5)
+        self.assertEqual(final[0]["message_id"], preview["message_id"])
 
     def test_a_long_session_leaves_only_unacknowledged_seals_in_the_mailbox(self):
         acknowledged = []

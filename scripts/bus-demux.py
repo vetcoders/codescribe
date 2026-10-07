@@ -1847,15 +1847,13 @@ class SessionLease:
                     )
                 self.cursor = saved_cursor
                 try:
-                    extent = os.stat(self.bus).st_size
+                    extent = generation_metadata(Path(self.bus)).st_size
                 except OSError:
                     extent = None
                 if extent is not None and self.cursor > extent:
-                    # The file under the bus path is shorter than the saved
-                    # cursor: the carrier was replaced (bus rotation or a
-                    # reinstall). Tailing past its end would stay silent
-                    # forever and the old unclosed documents no longer
-                    # exist, so start over on the new file.
+                    # Compare logical positions across all journal generations.
+                    # Rotation keeps the stream; only a genuinely shorter
+                    # journal invalidates the recovered cursor and documents.
                     self.cursor = 0
                     previous["unclosed_channel_messages"] = {}
                 self.last_sequence = previous.get("last_sequence")

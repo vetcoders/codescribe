@@ -695,7 +695,7 @@ class PlaybackQueueTests(unittest.TestCase):
             json.dumps({"status": "session_started", "session_id": "first"}) + "\n"
         )
         self.assertFalse(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
         initial_offset = cursor["offset"]
         with self.bus.open("a") as stream:
@@ -703,7 +703,7 @@ class PlaybackQueueTests(unittest.TestCase):
                 json.dumps({"status": "session_ended", "session_id": "first"}) + "\n"
             )
         self.assertTrue(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
         self.assertGreater(cursor["offset"], initial_offset)
         self.bus.rename(self.bus.with_suffix(".old"))
@@ -711,40 +711,40 @@ class PlaybackQueueTests(unittest.TestCase):
             json.dumps({"status": "session_started", "session_id": "second"}) + "\n"
         )
         self.assertFalse(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
         self.bus.write_text("")
         # Erasing history is not a terminal receipt for the observed live take.
         self.assertFalse(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
         self.bus.write_text(
             json.dumps({"status": "session_ended", "session_id": "second"}) + "\n"
         )
         self.assertTrue(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
 
     def test_idle_cursor_refuses_partial_tail_until_the_row_completes(self):
         cursor = {}
         self.assertTrue(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
         self.bus.write_text('{"status": "session_started", "session_id":')
         self.assertFalse(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
         with self.bus.open("a") as stream:
             stream.write('"take"}\n')
         self.assertFalse(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
         with self.bus.open("a") as stream:
             stream.write(
                 json.dumps({"status": "session_ended", "session_id": "take"}) + "\n"
             )
         self.assertTrue(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
 
     # Integrator (2026-10-01): two replies played into the Founder's open

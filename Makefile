@@ -1152,6 +1152,8 @@ verify:
 	python3 -m unittest scripts/tests/test_bus_user_text.py; \
 	python3 -m unittest scripts/tests/test_bus_channel_seal_burst.py; \
 	python3 -m unittest scripts/tests/test_bus_draft_retirement.py; \
+	python3 -m unittest scripts/tests/test_install_bus_payload.py; \
+	python3 -m unittest scripts/tests/test_bus_peer_messages.py; \
 	python3 -m unittest scripts/tests/test_agent_reply_admission.py; \
 	python3 -m unittest scripts/tests/test_agent_publisher_manifest.py; \
 	CODESCRIBE_NO_EMBED=1 cargo build --locked --bin codescribe; \

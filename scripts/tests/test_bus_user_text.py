@@ -144,10 +144,11 @@ class ChannelCaptureMessageTests(unittest.TestCase):
         invoke("--ack", final["delivery_id"])
         for _ in range(2):
             replayed = invoke("--name", "lena", "--from-start", "--drafts")
-            self.assertIn(preview, replayed)
+            self.assertNotIn(preview, replayed)
+            self.assertNotIn(final, replayed)
             state = DEMUX.read_json(self.lease.path)
             self.assertEqual(state["unclosed_channel_messages"], {})
-            self.assertEqual(state["pending"], [preview])
+            self.assertEqual(state["pending"], [])
             DEMUX.require_drained_lease(self.root, self.lease.lease_id)
 
     def envelopes(self, rows):
