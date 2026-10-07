@@ -71,7 +71,7 @@ final class OverlayHoverInteractionTests: XCTestCase {
     XCTAssertNotNil(state.widgetHoverDeadline, "a newly shown widget can hover again")
   }
 
-  func testHeaderRecordingPinsMidiEvenAfterHoverAndDoesNotRewriteTakePreference() throws {
+  func testHeaderRecordingEndsAutomaticHoverAndUsesTheTakePreference() throws {
     let state = OverlayState(micAccessProvider: { true })
     state.engine = OverlayChromePolicyEngine()
     state.attach()
@@ -81,7 +81,7 @@ final class OverlayHoverInteractionTests: XCTestCase {
     state.setPointerHovering(false)
     XCTAssertNil(state.widgetHoverDeadline)
     state.handleRecordingPreparing()
-    XCTAssertEqual(state.presentationMode, .midi)
+    XCTAssertEqual(state.presentationMode, state.expandedByDefault ? .expanded : .mini)
     state.finishControllerRecording()
     state.handleRecordingPreparing()
     XCTAssertEqual(state.presentationMode, state.expandedByDefault ? .expanded : .mini)

@@ -340,3 +340,50 @@ codex/widget-hover-261007; Astra is the designated integrator. The bounded nativ
 helper authored only scripts/bus-demux.py and performed no tests, build, commit
 or install. All fixtures, gates and packaging belong to Astra. Foreign AGENTS.md
 is preserved. The source remains separate from main and from Founder acceptance.
+
+## Take-start preference and newest conversation message
+
+The header microphone used a private one-take midi override, so it ignored
+the persisted Show transcription by default setting. Stop also widened a mini
+widget. That competing presentation choice is removed: every new take uses
+the same persisted preference, whether started in mini, midi or the canvas.
+Stop keeps the current presentation. Hover and explicit preview remain local
+presentation controls; none writes the take-start preference.
+
+Founder delivery 1501fbb12efbab98277d6b4b reported that agent threads needed
+manual scrolling for each new message. The complete envelope was read and ACKed
+before work. A newly admitted message ID now brings the conversation to its
+latest row even after reading earlier history. Updates to an existing message
+keep the existing follow policy. The mounted native fixture covers both a user
+message and an agent reply, and checks that the same NSTextView, draft and
+selection survive. It changes scroll position without requesting input focus.
+
+The d704 baseline failed two preference/Stop fixtures and one native conversation
+fixture. The preference fixture was refined to account for the controller's
+synchronous preparing reservation; the post-preparing and Stop counterexamples
+remain the requirement being tested. After the repair, the five focused cases
+pass. The broader chrome, conversation, hover and eight capture-lifecycle cases
+pass 101 tests in 13.237 seconds. The native resize suite separately passes
+27 tests in 4.519 seconds: 128 tests total, with no failed or empty selections.
+
+Strict formatting passes for the five authored Swift files. Full Semgrep,
+catalog/bridge checks and the gate ledger pass. Current Debug compiler extraction
+reads 132 files: 1430 keys, no additions, removals or newly stale keys, and an
+exact catalog match. This cut adds no interface strings, colors or settings.
+The full Swift formatting gate is RED in 22 files, all byte-identical to d704;
+these unrelated source files were preserved. It is not reported as a PASS.
+
+Founder delivery e8af9e8b6670e958fabd5612 separately reported wheel scrolling
+blocked by the resize band. Astra read and ACKed it, inspected the explicitly
+shared clipboard image, and sent Bruno brief 481875595054bea360f273cc for the
+disjoint native window/resize surface. The image shows a horizontal resize
+cursor at the message-list edge; the wheel failure is the Founder's observation,
+not a physical test by Astra. This repair does not claim that edge issue solved.
+Both requested bus replies landed as text; xAI rejected speech with 403.
+
+Runtime class is Fleet Worktree, parent /Volumes/vc-workspace/vetcoders/codescribe,
+effective root e19c/codescribe, branch codex/widget-hover-261007, baseline
+d704a51227f6a1648aa21af2901cbb146c3b9b60. Astra is the designated integrator and
+authored the fixtures, source and checks. Installed artifact, source admission
+and Founder-native acceptance remain separate receipts. No GUI launch, Quit,
+restart, desktop capture or physical microphone/speaker/hotkey test occurred.
