@@ -203,6 +203,37 @@ final class OverlayRecordingLightTests: XCTestCase {
     XCTAssertEqual(state.activeText, text)
   }
 
+  func testBroadcastAndNamedBusStayVioletDuringOrdinaryFinalization() {
+    for channel in ["0", "4"] {
+      let state = OverlayState()
+      state.applyTranscriptProjection(
+        transcriptProjection(
+          sequence: 1, emittedAt: "2026-10-07T22:00:00Z", sessionId: "ordinary-finalizing",
+          renderedText: "Retained text", phase: "finalizing", terminal: false,
+          reducerAction: "session_ended", canCopy: true))
+      XCTAssertEqual(state.mode, .finalizing)
+      XCTAssertEqual(state.recordingLight, .processing)
+      let text = state.activeText
+      let revision = state.revision
+      state.applyChannelRoster([
+        .init(
+          channel: channel, audience: channel == "0" ? "*" : "bruno", provider: "codex",
+          providerSessionId: "bus-agent", open: true, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: true)
+      ])
+      XCTAssertTrue(state.channelAudioCaptureActive)
+      XCTAssertTrue(state.usesAgentAccent)
+      XCTAssertEqual(state.recordingLight, .agent)
+      XCTAssertEqual(state.activeText, text)
+      XCTAssertEqual(state.revision, revision)
+      state.applyChannelRoster([])
+      XCTAssertFalse(state.usesAgentAccent)
+      XCTAssertEqual(state.recordingLight, .processing)
+      XCTAssertEqual(state.activeText, text)
+      XCTAssertEqual(state.revision, revision)
+    }
+  }
+
   func testClosedBusRosterKeepsOrdinaryAccentAndBuiltInAgentKeepsViolet() {
     let state = OverlayState()
     state.handleRecordingPreparing()
