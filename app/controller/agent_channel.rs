@@ -2394,6 +2394,165 @@ mod tests {
     }
 
     #[test]
+    fn frozen_broadcast_admits_heartbeats_refreshed_during_large_lease_read() {
+        use std::io::Write;
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tempfile::tempdir().expect("temp");
+        let bus = dir.path().join("bus.jsonl");
+        std::fs::write(&bus, "").expect("bus");
+        let bus = bus.canonicalize().expect("canonical bus");
+        let leases = dir.path().join("leases");
+        std::fs::create_dir(&leases).expect("leases");
+        let heartbeat = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs_f64()
+            - 1.0;
+        let mut bindings = serde_json::Map::new();
+        let mut records = Vec::new();
+        for digit in 1..=4 {
+            let session = format!("recipient-clock-{digit}");
+            let lease = hex::encode(Sha256::digest(format!("codex\0{session}").as_bytes()))[..32]
+                .to_string();
+            bindings.insert(
+                digit.to_string(),
+                serde_json::json!({
+                    "audience": format!("agent-{digit}"), "provider": "codex",
+                    "provider_session_id": session, "bus": bus
+                }),
+            );
+            records.push((
+                leases.join(format!("{lease}.json")),
+                serde_json::json!({
+                    "schema": "codescribe.agent-bridge.lease.v1", "lease_id": lease,
+                    "provider": "codex", "provider_session_id": session, "active": true,
+                    "heartbeat_unix": heartbeat, "bus": bus
+                }),
+            ));
+        }
+        let binding = write_binding(
+            dir.path(),
+            &serde_json::json!({
+                "schema": BINDING_SCHEMA, "bindings": bindings
+            })
+            .to_string(),
+        );
+        let (first_path, mut first) = records.remove(0);
+        first["diagnostic_padding"] = serde_json::Value::String("x".repeat(2_200_000));
+        let bytes = serde_json::to_vec(&first).expect("large lease");
+        assert!(bytes.len() > 2 << 20);
+        for (path, record) in &records {
+            std::fs::write(path, serde_json::to_vec(record).expect("json")).expect("lease");
+        }
+        // A fixture-only FIFO gates the real File read without clock or parser
+        // substitutions. Its writer opens only once the function has reached
+        // the first lease, then refreshes later owners before supplying bytes.
+        let name = std::ffi::CString::new(first_path.as_os_str().as_bytes()).expect("path");
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let writer = std::thread::spawn(move || {
+            let mut first_file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(first_path)
+                .expect("gated lease");
+            let refreshed = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("clock")
+                .as_secs_f64();
+            for (path, mut record) in records {
+                record["heartbeat_unix"] = serde_json::json!(refreshed);
+                std::fs::write(path, serde_json::to_vec(&record).expect("json")).expect("refresh");
+            }
+            first_file.write_all(&bytes).expect("large lease bytes");
+        });
+        let started = std::time::Instant::now();
+        let recipients = frozen_channel_recipients(0, &binding, &bus);
+        writer.join().expect("writer");
+        eprintln!(
+            "large-lease recipient selection: {:?}, {} owners",
+            started.elapsed(),
+            recipients.len()
+        );
+        assert_eq!(
+            recipients.len(),
+            4,
+            "Refresh during I/O must not look like a future heartbeat"
+        );
+        assert_eq!(
+            recipients
+                .iter()
+                .map(|row| row["channel"].as_str().expect("channel"))
+                .collect::<Vec<_>>(),
+            vec!["1", "2", "3", "4"]
+        );
+    }
+
+    #[test]
+    fn frozen_broadcast_rejects_stale_future_and_foreign_lease_metadata() {
+        let dir = tempfile::tempdir().expect("temp");
+        let bus = dir.path().join("bus.jsonl");
+        std::fs::write(&bus, "").expect("bus");
+        let bus = bus.canonicalize().expect("canonical bus");
+        std::fs::create_dir(dir.path().join("leases")).expect("leases");
+        let session = "recipient-clock-controls";
+        let lease =
+            hex::encode(Sha256::digest(format!("codex\0{session}").as_bytes()))[..32].to_string();
+        let path = dir.path().join("leases").join(format!("{lease}.json"));
+        let heartbeat = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs_f64();
+        let owned = serde_json::json!({
+            "schema": "codescribe.agent-bridge.lease.v1", "lease_id": lease,
+            "provider": "codex", "provider_session_id": session, "active": true,
+            "heartbeat_unix": heartbeat, "bus": bus
+        });
+        let binding = write_binding(
+            dir.path(),
+            &serde_json::json!({
+                "schema": BINDING_SCHEMA, "bindings": {
+                    "1": {"audience": "owner", "provider": "codex", "provider_session_id": session}
+                }
+            })
+            .to_string(),
+        );
+        std::fs::write(&path, serde_json::to_vec(&owned).expect("json")).expect("lease");
+        assert_eq!(frozen_channel_recipients(0, &binding, &bus).len(), 1);
+        assert_eq!(frozen_channel_recipients(1, &binding, &bus).len(), 1);
+        assert!(frozen_channel_recipients(2, &binding, &bus).is_empty());
+        for (field, value) in [
+            (
+                "heartbeat_unix",
+                serde_json::json!(heartbeat - active_names::LEASE_TTL_SECONDS - 10.0),
+            ),
+            ("heartbeat_unix", serde_json::json!(heartbeat + 30.0)),
+            ("heartbeat_unix", serde_json::Value::Null),
+            ("active", serde_json::json!(false)),
+            ("schema", serde_json::json!("wrong-schema")),
+            ("provider", serde_json::json!("claude-code")),
+            ("provider_session_id", serde_json::json!("another-session")),
+            ("lease_id", serde_json::json!("another-lease")),
+            ("bus", serde_json::json!("/tmp/not-owned.jsonl")),
+        ] {
+            let mut rejected = owned.clone();
+            rejected[field] = value.clone();
+            std::fs::write(&path, serde_json::to_vec(&rejected).expect("json")).expect("lease");
+            assert!(
+                frozen_channel_recipients(0, &binding, &bus).is_empty(),
+                "{field}={value}"
+            );
+            assert!(
+                frozen_channel_recipients(1, &binding, &bus).is_empty(),
+                "direct {field}={value}"
+            );
+        }
+        for bytes in [b"{".to_vec(), vec![b' '; (16 << 20) + 1]] {
+            std::fs::write(&path, bytes).expect("invalid lease");
+            assert!(frozen_channel_recipients(0, &binding, &bus).is_empty());
+        }
+    }
+
+    #[test]
     fn frozen_broadcast_keeps_original_owners_and_refuses_wrong_destinations() {
         let dir = tempfile::tempdir().expect("temp");
         let binding = dir.path().join("binding.json");
