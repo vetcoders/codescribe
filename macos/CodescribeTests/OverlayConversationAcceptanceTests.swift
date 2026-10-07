@@ -630,6 +630,93 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   }
 
   @MainActor
+  func testActualPanelInitialComposerClickTakesKeyAndUpdatesDraft() throws {
+    try withPanelComposer(transcriptFirst: false)
+  }
+
+  @MainActor
+  func testActualPanelTranscriptToComposerClickRetainsKeyAndUpdatesDraft() throws {
+    try withPanelComposer(transcriptFirst: true)
+  }
+
+  @MainActor
+  private func withPanelComposer(transcriptFirst: Bool) throws {
+    var draft = ""
+    let host = NSHostingView(
+      rootView: OverlayConversationComposer(
+        palette: .dark, draft: Binding(get: { draft }, set: { draft = $0 }),
+        sending: false, onSubmit: {}))
+    host.frame = NSRect(x: 0, y: 0, width: 600, height: 100)
+    let content = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+    content.addSubview(host)
+    let transcript = LiveTranscriptTextView.makeTextView()
+    transcript.frame = NSRect(x: 20, y: 160, width: 550, height: 180)
+    transcript.string = "Retained transcript"
+    content.addSubview(transcript)
+    let panel = FloatingOverlayPanel(
+      contentRect: content.frame, styleMask: [.borderless, .nonactivatingPanel, .resizable],
+      backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.delegate = panel
+    panel.becomesKeyOnlyIfNeeded = true
+    panel.contentView = content
+    defer {
+      panel.makeFirstResponder(nil)
+      panel.releaseKeyAfterTranscript()
+      panel.close()
+    }
+    panel.orderFront(nil)
+    host.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
+    func editable(_ view: NSView) -> NSTextView? {
+      if let text = view as? NSTextView, text.isEditable { return text }
+      return view.subviews.lazy.compactMap(editable).first
+    }
+    let editor = try XCTUnwrap(editable(host))
+    func click(_ view: NSView) throws {
+      let local = NSPoint(x: view.bounds.midX, y: view.bounds.midY)
+      let location = view.convert(local, to: nil)
+      let contentLocation = content.convert(location, from: nil)
+      let hit = try XCTUnwrap(content.hitTest(contentLocation))
+      XCTAssertTrue(hit === view || hit.isDescendant(of: view))
+      let down = try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: .leftMouseDown, location: location, modifierFlags: [],
+          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+          context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+      let up = try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: .leftMouseUp, location: location, modifierFlags: [],
+          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+          context: nil, eventNumber: 2, clickCount: 1, pressure: 0))
+      NSApp.postEvent(up, atStart: true)
+      panel.sendEvent(down)
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+    }
+    if transcriptFirst {
+      try click(transcript)
+      XCTAssertTrue(panel.firstResponder === transcript)
+      XCTAssertTrue(panel.isKeyWindow)
+    }
+    try click(editor)
+    XCTAssertTrue(panel.allowsKeyForTranscript)
+    XCTAssertTrue(panel.isKeyWindow)
+    XCTAssertTrue(panel.firstResponder === editor)
+    let key = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+        windowNumber: panel.windowNumber, context: nil, characters: "x",
+        charactersIgnoringModifiers: "x", isARepeat: false, keyCode: 7))
+    panel.sendEvent(key)
+    XCTAssertEqual(editor.string, "x")
+    XCTAssertEqual(draft, "x")
+    // Leaving the panel still returns keyboard ownership to the destination.
+    panel.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: panel))
+    XCTAssertFalse(panel.allowsKeyForTranscript)
+    XCTAssertFalse(panel.firstResponder === editor)
+  }
+
+  @MainActor
   private func withComposer(
     draft: Binding<String>, sending: Bool = false, onSend: @escaping () -> Void,
     inspect: (NSScrollView, NSTextView) throws -> Void
