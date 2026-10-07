@@ -772,7 +772,7 @@ enum LLMLane: String, CaseIterable, Identifiable, Hashable {
 
   var subtitle: String {
     self == .assistive
-      ? String(localized: "Agent and voice-assistant requests")
+      ? String(localized: "The model behind the Agent and the voice assistant")
       : String(localized: "Transcript cleanup and formatting")
   }
 
@@ -822,13 +822,36 @@ struct LLMLaneModel {
       return runtime.unavailableReason
         ?? String(localized: "unavailable", comment: "Lane availability, lower case")
     }
+    // Presence, not validity: a stored key may still be rejected, and a
+    // signed-in account does not open model discovery (`discoveryDescription`).
     if runtime.accountAuth {
-      return String(localized: "account", comment: "Lane auth: signed-in account, lower case")
+      return String(localized: "Connected account", comment: "Lane auth: signed-in account")
     }
     if runtime.keyPresent {
-      return String(localized: "API key", comment: "Lane auth: an API key is stored")
+      return String(localized: "Stored API key", comment: "Lane auth: an API key is stored")
     }
-    return String(localized: "no key required", comment: "Lane auth, lower case")
+    return String(localized: "No key required", comment: "Lane auth: key-optional host")
+  }
+
+  /// A failed fetch (`error`, `key_rejected`); the footer then offers details.
+  var discoveryFailed: Bool {
+    credentialAccessResolved && credentialAccessError == nil
+      && ["error", "key_rejected"].contains(discovery.status)
+  }
+
+  /// The provider's own words about a failed fetch — shown only on request,
+  /// under "Error details", never in the main line.
+  var discoveryErrorDetails: String? {
+    guard discoveryFailed, let message = discovery.message, !message.isEmpty else { return nil }
+    return message
+  }
+
+  /// Both lanes on one provider share one discovery record, so its failure
+  /// would print twice. The Formatting footer defers to the Agent's line then;
+  /// availability stays per lane (an account authorizes Assistive only).
+  func repeatsDiscoveryFailure(of other: LLMLaneModel) -> Bool {
+    lane == .formatting && other.lane == .assistive && providerId == other.providerId
+      && discoveryFailed && other.discoveryFailed
   }
 
   var availabilityTint: Color {
@@ -843,7 +866,7 @@ struct LLMLaneModel {
     case "fresh":
       let count = modelOptions.count
       return count == 0
-        ? String(localized: "No models returned. Enter a Model ID in Settings › Agent › LLM lanes.")
+        ? String(localized: "The provider returned no models. Enter a model ID below.")
         : String(
           localized: "\(count) models discovered from provider",
           comment: "Model discovery status; needs a plural variation"
@@ -860,31 +883,32 @@ struct LLMLaneModel {
       if runtime.accountAuth {
         return String(
           localized:
-            "Account sign-in supports Assistive requests, but model discovery requires a provider API key. Keep the current model or enter a Model ID in Settings › Agent › LLM lanes."
+            "The connected account covers Agent requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below."
         )
       }
       if lane == .formatting, provider?.accountSignedIn == true {
         return String(
           localized:
-            "Formatting requires this provider's API key; an Assistive account does not authorize it. Add the key in Settings › Providers."
+            "Formatting needs this provider's API key; the connected account does not cover it. Add the key under Providers."
         )
       }
       return String(
         localized:
-          "Add this provider's API key in Settings › Providers to discover models, or enter a Model ID in Settings › Agent › LLM lanes."
+          "Add this provider's API key under Providers to list its models, or enter a model ID below."
       )
     case "loading": return String(localized: "discovering models…", comment: "In-progress status")
-    default:
-      if let message = discovery.message, !message.isEmpty {
-        return String(
-          localized:
-            "Model discovery failed: \(message). Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.",
-          comment: "The placeholder is a status message from the core"
-        )
-      }
+    case "key_rejected":
+      // The core classified the refusal (401/403, or a 400 naming the key);
+      // any other failure stays generic so a bad key is never guessed.
       return String(
         localized:
-          "Model discovery failed. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes."
+          "Could not fetch \(providerDisplayName) models. The API key was rejected. Check it under Providers.",
+        comment: "The placeholder is the provider name"
+      )
+    default:
+      return String(
+        localized: "Could not fetch \(providerDisplayName) models. Check the provider under Providers.",
+        comment: "The placeholder is the provider name"
       )
     }
   }

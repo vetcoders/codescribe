@@ -435,7 +435,8 @@ pub struct CsModelOption {
 }
 
 /// Live model discovery result for one provider. `status` is one of:
-/// `"fresh"`, `"cached"`, `"no_key"`, `"error"`. Errors never carry secrets.
+/// `"fresh"`, `"cached"`, `"no_key"`, `"key_rejected"` (the provider refused
+/// the stored API key), `"error"`. Errors never carry secrets.
 #[derive(uniffi::Record)]
 pub struct CsModelDiscovery {
     pub provider_id: String,
@@ -1368,6 +1369,8 @@ impl CodescribeConfig {
             Err(error) => {
                 let status = if provider.key_required && error.code() == "no_key" {
                     "no_key"
+                } else if error.rejects_credential() {
+                    "key_rejected"
                 } else {
                     "error"
                 };

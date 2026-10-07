@@ -24,8 +24,8 @@ struct ProvidersPanel: View {
       SettingsPageHeader(
         String(localized: "Providers"),
         blurb: String(
-          localized: "Connect accounts or add API keys. Models are chosen under Agent › LLM lanes.",
-          comment: "Providers panel blurb; `LLM lanes` is the Agent tab title")
+          localized: "Connect accounts or add API keys. Models are chosen under Agent › AI models.",
+          comment: "Providers panel blurb; `AI models` is the Agent tab title")
       )
 
       if let notice = model.laneResetNotice {

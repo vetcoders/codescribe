@@ -91,9 +91,22 @@ through **Edit**. **Cloud transcription** holds the File and Live lanes
 address reads as one sentence under the field, e.g. **This address needs
 ws:// or wss://.** Secrets are stored separately from account sign-in.
 
-Open **Settings → Agent → LLM lanes** to select a provider and model separately
-for **Assistive** (Agent and voice-assistant requests) and **Formatting**
-(transcript cleanup). **Agent → Prompts** edits their prompts.
+Open **Settings → Agent → AI models** to select a provider and model separately
+for **Assistive** (the model behind the Agent and the voice assistant) and
+**Formatting** (transcript cleanup). Each card shows the provider, the model
+field and one line about the lane's access: **Connected account**, **Stored API
+key** or **No key required**. These describe what is stored, not whether it
+works: a stored key can still be rejected, and a connected account does not open
+model discovery. The model field holds your override; when it is empty, the
+placeholder is the provider default that actually resolved, and the caption
+says **Provider default model** or **Set manually**. **Reset model** clears only
+the override and never touches the provider. The settings keys
+(`LLM_ASSISTIVE_PROVIDER`, `LLM_ASSISTIVE_MODEL`, …) and the resolved endpoints
+sit under **Active configuration details**, collapsed by default. **Agent →
+Prompts** edits their prompts.
+
+**Automatic send to the Agent** holds one switch: in Agent mode the untouched
+transcript is sent 5 seconds after the take ends unless you start editing it.
 
 ### Credential access while refreshing
 
@@ -154,12 +167,18 @@ the account/key snapshot when it regains focus.
 Model discovery queries the provider's model API with its provider API key.
 Account sign-in alone does not supply that key. With account-only Assistive
 access, `/model` shows the currently resolved model and explains the missing
-catalog access. Keep that model, or enter a supported **Model ID** in **Agent →
-LLM lanes**. Adding an API key is optional for Assistive account requests.
+catalog access. Keep that model, or enter a supported model ID in **Agent →
+AI models**. Adding an API key is optional for Assistive account requests.
 
 Fresh and cached catalogs offer selectable models. A provider returning no
-models or a discovery failure gives the corresponding explanation and next
-action. Check **Providers**, then **Refresh** models in **Agent → LLM lanes**.
+models or a discovery failure gives one plain sentence and the next action:
+**Could not fetch xAI models. The API key was rejected. Check it under
+Providers.** when the provider refused the key (HTTP 401/403, or a 400 whose
+body names the API key), otherwise **Could not fetch … models. Check the
+provider under Providers.** The provider's raw response is available under
+**Error details**; it never appears in the main line. When both lanes use the
+same provider, Formatting points to the Agent's line instead of repeating the
+error. **Refresh** retries.
 The palette reuses its model list while you filter it, and refreshes it after
 provider, model or credential changes, including settings edited outside the app.
 Its short cache also expires automatically. If freshness cannot be established,

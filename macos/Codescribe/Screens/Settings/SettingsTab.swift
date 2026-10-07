@@ -43,7 +43,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
   /// the pane, so a long translation costs a scroll, never a clipped pane.
   var title: String {
     switch self {
-    case .agentLanes: String(localized: "LLM lanes", comment: "Settings tab: LLM request lanes")
+    case .agentLanes:
+      String(localized: "AI models", comment: "Settings tab: provider and model per function")
     case .agentPrompts: String(localized: "Prompts", comment: "Settings tab: editable prompts")
     case .agentWorkspace:
       String(localized: "Workspace", comment: "Settings tab: agent workspace roots")
@@ -66,7 +67,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
   var headline: String {
     switch self {
-    case .agentLanes: String(localized: "Request lanes.")
+    case .agentLanes: String(localized: "Model configuration.")
     case .agentPrompts: String(localized: "Prompts.")
     case .agentWorkspace: String(localized: "Workspace roots.")
     case .agentStatus: String(localized: "Connection details.")
@@ -86,7 +87,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentLanes:
       String(
         localized:
-          "Provider and model per request path. Endpoints and keys live on Providers; the resolved runtime truth is below the editors."
+          "Pick a provider and a model separately for the Agent and for transcript formatting. API keys and accounts are set up under Providers."
       )
     case .agentPrompts:
       String(

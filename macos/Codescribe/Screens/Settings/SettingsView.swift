@@ -339,13 +339,15 @@ struct RuntimeRow: View {
   var tint: Bool = false
   var mono: Bool = false
   var trailing: Trailing = .none
+  /// Key column; a table whose Polish keys run long widens it once for all rows.
+  var keyWidth: CGFloat = 160
 
   var body: some View {
     HStack(spacing: 12) {
       Text(key)
         .font(CSFont.mono(12, .medium))
         .foregroundStyle(Color.secondary)
-        .frame(width: 160, alignment: .leading)
+        .frame(width: keyWidth, alignment: .leading)
       Text(value)
         .font(mono ? CSFont.mono(12.5, .semibold) : .body.weight(.semibold))
         .foregroundStyle(.primary)

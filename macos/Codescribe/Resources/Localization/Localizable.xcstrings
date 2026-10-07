@@ -86,7 +86,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Endpoint: %@"
+            "value" : "Adres API: %@"
           }
         }
       }
@@ -202,6 +202,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pole: %@"
+          }
+        }
+      }
+    },
+    "%@ settings keys" : {
+      "comment" : "The placeholder is the lane title; the value lists its settings.json keys",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucze: %@"
           }
         }
       }
@@ -1547,8 +1558,19 @@
         }
       }
     },
+    "AI models" : {
+      "comment" : "Settings tab: provider and model per function",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Modele AI"
+          }
+        }
+      }
+    },
     "API key" : {
-      "comment" : "Lane auth: an API key is stored\nSetup provider API key row label",
+      "comment" : "Setup provider API key row label",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -1641,16 +1663,6 @@
         }
       }
     },
-    "Account sign-in supports Assistive requests, but model discovery requires a provider API key. Keep the current model or enter a Model ID in Settings › Agent › LLM lanes." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Twoje konto ma dostęp do funkcji agentowych. Lista modeli wymaga klucza API."
-          }
-        }
-      }
-    },
     "Acoustic coverage was measured as complete, but this transcript has no current terminal seal." : {
       "localizations" : {
         "pl" : {
@@ -1688,6 +1700,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aktywny silnik rozpoznawania mowy"
+          }
+        }
+      }
+    },
+    "Active configuration details" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szczegóły aktywnej konfiguracji"
           }
         }
       }
@@ -1820,12 +1842,12 @@
         }
       }
     },
-    "Add this provider's API key in Settings › Providers to discover models, or enter a Model ID in Settings › Agent › LLM lanes." : {
+    "Add this provider's API key under Providers to list its models, or enter a model ID below." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dodaj klucz API, aby przeglądać listę modeli lub wpisz nazwę modelu ręcznie."
+            "value" : "Dodaj klucz API tego dostawcy w sekcji Dostawcy, aby pobrać listę modeli, albo wpisz identyfikator modelu poniżej."
           }
         }
       }
@@ -1884,16 +1906,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Konto Agenta"
-          }
-        }
-      }
-    },
-    "Agent and voice-assistant requests" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zapytania Agenta i asystenta głosowego"
           }
         }
       }
@@ -2693,6 +2705,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Automatyczny odsłuch włączony"
+          }
+        }
+      }
+    },
+    "Automatic send to the Agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatyczne wysyłanie do Agenta"
           }
         }
       }
@@ -3869,13 +3891,13 @@
         }
       }
     },
-    "Connect accounts or add API keys. Models are chosen under Agent › LLM lanes." : {
-      "comment" : "Providers panel blurb; `LLM lanes` is the Agent tab title",
+    "Connect accounts or add API keys. Models are chosen under Agent › AI models." : {
+      "comment" : "Providers panel blurb; `AI models` is the Agent tab title",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Połącz konta lub dodaj klucze API. Modele wybierzesz w Agent › Ścieżki modeli AI."
+            "value" : "Połącz konta lub dodaj klucze API. Modele wybierzesz w Agent › Modele AI."
           }
         }
       }
@@ -3919,6 +3941,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Połączono"
+          }
+        }
+      }
+    },
+    "Connected account" : {
+      "comment" : "Lane auth: signed-in account",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połączone konto"
           }
         }
       }
@@ -4227,6 +4260,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zapisano poprawkę. %@"
+          }
+        }
+      }
+    },
+    "Could not fetch %@ models. Check the provider under Providers." : {
+      "comment" : "The placeholder is the provider name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się pobrać modeli %@. Sprawdź dostawcę w sekcji Dostawcy."
+          }
+        }
+      }
+    },
+    "Could not fetch %@ models. The API key was rejected. Check it under Providers." : {
+      "comment" : "The placeholder is the provider name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się pobrać modeli %@. Klucz API został odrzucony. Sprawdź go w sekcji Dostawcy."
           }
         }
       }
@@ -5523,6 +5578,16 @@
         }
       }
     },
+    "Error details" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szczegóły błędu"
+          }
+        }
+      }
+    },
     "Expand sidebar (⌃⌘S)" : {
       "localizations" : {
         "pl" : {
@@ -5836,12 +5901,12 @@
         }
       }
     },
-    "Formatting requires this provider's API key; an Assistive account does not authorize it. Add the key in Settings › Providers." : {
+    "Formatting needs this provider's API key; the connected account does not cover it. Add the key under Providers." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Aby korzystać z trybu formatowania, dodaj klucz API."
+            "value" : "Formatowanie wymaga klucza API tego dostawcy; połączone konto go nie obejmuje. Dodaj klucz w sekcji Dostawcy."
           }
         }
       }
@@ -6296,6 +6361,16 @@
         }
       }
     },
+    "In Agent mode, send the untouched transcript after 5 seconds unless you start editing it." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "W trybie Agenta wyślij niezmienioną transkrypcję po 5 sekundach, jeśli nie rozpoczniesz jej edycji."
+          }
+        }
+      }
+    },
     "In reply to: %@" : {
       "comment" : "Excerpt of the explicitly associated addressed utterance",
       "localizations" : {
@@ -6630,17 +6705,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucze są bezpiecznie przechowywane w pęku kluczy macOS."
-          }
-        }
-      }
-    },
-    "LLM lanes" : {
-      "comment" : "Settings tab: LLM request lanes",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ścieżki modeli AI"
           }
         }
       }
@@ -7386,23 +7450,12 @@
         }
       }
     },
-    "Model discovery failed. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes." : {
+    "Model configuration." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się pobrać listy modeli. Sprawdź Ustawienia › Dostawcy, oraz odśwież listę modeli w Ustawienia › Agent › Ścieżki modeli AI."
-          }
-        }
-      }
-    },
-    "Model discovery failed: %@. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes." : {
-      "comment" : "The placeholder is a status message from the core",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie udało się pobrać listy modeli: %@. Sprawdź Ustawienia › Dostawcy, a następnie odśwież modele w Ustawieniach › Agent › Ścieżki modeli AI."
+            "value" : "Konfiguracja modeli"
           }
         }
       }
@@ -7956,6 +8009,17 @@
         }
       }
     },
+    "No key required" : {
+      "comment" : "Lane auth: key-optional host",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucz API nie jest wymagany"
+          }
+        }
+      }
+    },
     "No matches" : {
       "localizations" : {
         "pl" : {
@@ -7972,16 +8036,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie ma jeszcze wiadomości"
-          }
-        }
-      }
-    },
-    "No models returned. Enter a Model ID in Settings › Agent › LLM lanes." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie znaleziono modeli. Wpisz ID modelu w Ustawienia › Agent › Ścieżki modeli AI."
           }
         }
       }
@@ -8763,12 +8817,12 @@
         }
       }
     },
-    "Pick a provider and a model per request path. Discovery lists what the provider serves; the Model ID field always accepts a name the list does not know." : {
+    "Pick a provider and a model separately for the Agent and for transcript formatting. API keys and accounts are set up under Providers." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wybierz dostawcę i model dla każdej ścieżki żądań. Lista wykrytych modeli pokazuje, co udostępnia dostawca; w polu ID modelu możesz zawsze wpisać nazwę spoza listy."
+            "value" : "Wybierz dostawcę i model osobno dla Agenta oraz formatowania transkrypcji. Klucze API i konta skonfigurujesz w sekcji Dostawcy."
           }
         }
       }
@@ -9200,12 +9254,13 @@
         }
       }
     },
-    "Provider and model per request path. Endpoints and keys live on Providers; the resolved runtime truth is below the editors." : {
+    "Provider default model" : {
+      "comment" : "Model field caption: no override, the provider default resolves",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dla każdego trybu możesz wybrać osobny model i dostawcę. Adresy API i klucze dostępu znajdziesz w sekcji Dostawcy. Poniżej zobaczysz konfigurację aktualnie używaną przez Codescribe."
+            "value" : "Domyślny model dostawcy"
           }
         }
       }
@@ -10119,16 +10174,6 @@
         }
       }
     },
-    "Request lanes." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ścieżki żądań"
-          }
-        }
-      }
-    },
     "Requesting playback" : {
       "localizations" : {
         "en" : {
@@ -10215,16 +10260,6 @@
         }
       }
     },
-    "Reset" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Przywróć domyślny"
-          }
-        }
-      }
-    },
     "Reset %@ model" : {
       "localizations" : {
         "pl" : {
@@ -10295,6 +10330,17 @@
         }
       }
     },
+    "Reset model" : {
+      "comment" : "Clears the lane's model override",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć model domyślny"
+          }
+        }
+      }
+    },
     "Reset to defaults" : {
       "localizations" : {
         "pl" : {
@@ -10311,16 +10357,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przed zapisaniem rozwiąż konflikt wskazany powyżej"
-          }
-        }
-      }
-    },
-    "Resolved runtime truth" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Faktycznie używana konfiguracja"
           }
         }
       }
@@ -10576,6 +10612,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ostrożne"
+          }
+        }
+      }
+    },
+    "Same provider as the Agent; the model list error is shown above." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten sam dostawca co dla Agenta; błąd listy modeli jest pokazany wyżej."
           }
         }
       }
@@ -11081,16 +11127,6 @@
         }
       }
     },
-    "Send an untouched transcript 5 seconds after the take ends." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wyślij niezmienioną transkrypcję do Agenta 5 sekund po zakończeniu nagrania."
-          }
-        }
-      }
-    },
     "Send message" : {
       "localizations" : {
         "pl" : {
@@ -11168,6 +11204,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ustawiono"
+          }
+        }
+      }
+    },
+    "Set manually" : {
+      "comment" : "Model field caption: an override is stored",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ustawiony ręcznie"
           }
         }
       }
@@ -12290,6 +12337,17 @@
         }
       }
     },
+    "Stored API key" : {
+      "comment" : "Lane auth: an API key is stored",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisany klucz API"
+          }
+        }
+      }
+    },
     "Stored calibration cannot be used" : {
       "localizations" : {
         "pl" : {
@@ -12852,6 +12910,16 @@
         }
       }
     },
+    "The connected account covers Agent requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połączone konto obsługuje żądania Agenta, ale lista modeli wymaga klucza API tego dostawcy. Zostaw bieżący model albo wpisz identyfikator modelu poniżej."
+          }
+        }
+      }
+    },
     "The custom dictionary is empty — accepted overlay corrections will appear here." : {
       "localizations" : {
         "pl" : {
@@ -12934,12 +13002,32 @@
         }
       }
     },
+    "The model behind the Agent and the voice assistant" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Model obsługujący Agenta i asystenta głosowego"
+          }
+        }
+      }
+    },
     "The on-device model behind the direct Whisper engine and Local power refinement." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Model działający na tym Macu, używany przez silnik Whisper i do doprecyzowania transkrypcji w trybie lokalnym."
+          }
+        }
+      }
+    },
+    "The provider returned no models. Enter a model ID below." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dostawca nie zwrócił żadnych modeli. Wpisz identyfikator modelu poniżej."
           }
         }
       }
@@ -13354,17 +13442,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Porządkowanie i formatowanie transkrypcji"
-          }
-        }
-      }
-    },
-    "Transcript delivery" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przekazywanie transkrypcji"
+            "value" : "Poprawianie i formatowanie transkrypcji"
           }
         }
       }
@@ -14617,17 +14695,6 @@
         }
       }
     },
-    "account" : {
-      "comment" : "Lane auth: signed-in account, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "konto"
-          }
-        }
-      }
-    },
     "active" : {
       "comment" : "Palette row: the entry currently in use",
       "localizations" : {
@@ -15801,17 +15868,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "nie wstawiono"
-          }
-        }
-      }
-    },
-    "no key required" : {
-      "comment" : "Lane auth, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "klucz API nie jest wymagany"
           }
         }
       }

@@ -115,6 +115,37 @@ impl ModelDiscoveryError {
         }
     }
 
+    /// Whether the provider refused the credential itself, as opposed to the
+    /// network, the body shape or the cache failing. Settings turns this into
+    /// "the API key was rejected, check it under Providers" and keeps the raw
+    /// body out of the main line; every other failure stays a generic fetch
+    /// error so a bad key is never diagnosed from an unrelated problem.
+    ///
+    /// 401 and 403 are credential refusals by definition. xAI answers a bad key
+    /// with 400 and a body that names the API key, so a 400 counts only when the
+    /// body says so.
+    pub fn rejects_credential(&self) -> bool {
+        match self {
+            Self::HttpStatus {
+                status, message, ..
+            } => match *status {
+                401 | 403 => true,
+                400 => {
+                    let lower = message.to_ascii_lowercase();
+                    lower.contains("api key")
+                        || lower.contains("api_key")
+                        || lower.contains("apikey")
+                }
+                _ => false,
+            },
+            Self::NoKey { .. }
+            | Self::Network { .. }
+            | Self::Parse { .. }
+            | Self::Cache { .. }
+            | Self::Cancelled { .. } => false,
+        }
+    }
+
     /// Operator-facing explanation. Also the `reason` recorded when a failure
     /// degrades to [`ModelDiscoveryStatus::Cached`], which is why it never
     /// interpolates key material — only the account's name.
@@ -842,6 +873,52 @@ mod tests {
             err.message(),
             "LLM_CUSTOM_MOCK_BOX_API_KEY is not configured"
         );
+    }
+
+    /// Only a credential refusal reads as a rejected key: 401/403 outright, 400
+    /// when the body names the API key (xAI). Everything else stays a plain
+    /// fetch error, so Settings never blames the key for an outage or a parse
+    /// failure.
+    #[test]
+    fn rejects_credential_only_for_credential_refusals() {
+        let provider = openai_ref();
+        let http = |status: u16, message: &str| ModelDiscoveryError::HttpStatus {
+            provider: provider.clone(),
+            status,
+            message: message.to_string(),
+        };
+
+        assert!(http(401, "Unauthorized").rejects_credential());
+        assert!(http(403, "{\"error\":\"forbidden\"}").rejects_credential());
+        assert!(http(400, "Incorrect API key provided: xai-***").rejects_credential());
+        assert!(http(400, "{\"error\":\"invalid api_key\"}").rejects_credential());
+
+        assert!(!http(400, "model parameter is required").rejects_credential());
+        assert!(!http(404, "Not Found").rejects_credential());
+        assert!(!http(429, "rate limited").rejects_credential());
+        assert!(!http(500, "Incorrect API key provided").rejects_credential());
+        assert!(
+            !ModelDiscoveryError::Network {
+                provider: provider.clone(),
+                message: "connection refused".into(),
+            }
+            .rejects_credential()
+        );
+        assert!(
+            !ModelDiscoveryError::Parse {
+                provider: provider.clone(),
+                message: "expected `data`".into(),
+            }
+            .rejects_credential()
+        );
+        assert!(
+            !ModelDiscoveryError::NoKey {
+                provider: provider.clone(),
+                env_key: "LLM_OPENAI_API_KEY".into(),
+            }
+            .rejects_credential()
+        );
+        assert!(!ModelDiscoveryError::Cancelled { provider }.rejects_credential());
     }
 
     /// A provider outage degrades the picker to the last-good list with the

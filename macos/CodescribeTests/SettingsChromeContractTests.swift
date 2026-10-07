@@ -287,7 +287,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let polish = try polishCatalog()
     for key in [
       "Providers",
-      "Connect accounts or add API keys. Models are chosen under Agent › LLM lanes.",
+      "Connect accounts or add API keys. Models are chosen under Agent › AI models.",
       "Refresh status",
       "Add provider",
       "Add a server that speaks OpenAI Responses or Anthropic Messages.",
@@ -322,6 +322,82 @@ final class SettingsChromeContractTests: XCTestCase {
       "Providers.", "Refresh provider access", "factory endpoint",
       "Speech-to-text Cloud Service", "Advanced · OAuth client id…",
       "secrets live only in the Keychain — presence shown, value hidden",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
+  /// Agent › AI models (round 1 of the Polish pass): plain cards, identifiers
+  /// and endpoints folded under a collapsed details group, the discovery
+  /// failure in one sentence with the provider's words on request, and the
+  /// Polish copy exactly as the Founder specified it.
+  func testAgentModelsTabKeepsIdentifiersOutOfTheCards() throws {
+    let sources = try settingsSources()
+    let tab = try XCTUnwrap(sources["SettingsTab.swift"])
+    XCTAssertTrue(tab.contains("String(localized: \"AI models\""))
+    XCTAssertTrue(tab.contains("case .agentLanes: String(localized: \"Model configuration.\")"))
+    XCTAssertFalse(tab.contains("\"LLM lanes\""))
+
+    let panel = try XCTUnwrap(sources["AgentPanel.swift"])
+    XCTAssertFalse(
+      panel.contains("subtitle: lane.providerKey"), "settings keys left the Provider card")
+    XCTAssertFalse(panel.contains("subtitle: lane.modelKey"), "settings keys left the Model card")
+    XCTAssertTrue(panel.contains("TextField(laneModel.resolvedModel, text: $modelDraft)"))
+    XCTAssertTrue(panel.contains(".onAppear { modelDraft = laneModel.configuredModel }"))
+    XCTAssertTrue(panel.contains("Button(String(localized: \"Reset model\""))
+    XCTAssertTrue(panel.contains(".disabled(!hasOverride)"), "Reset is live only with an override")
+    XCTAssertTrue(panel.contains("model.setLLMModel(\"\", for: lane)"))
+    XCTAssertTrue(panel.contains("DisclosureGroup(\"Error details\")"))
+    XCTAssertTrue(panel.contains("if failureShownOnAgent {"))
+    XCTAssertFalse(panel.contains("Pick a provider and a model per request path"))
+
+    let lanes = try XCTUnwrap(sources["AgentLanesTab.swift"])
+    XCTAssertTrue(lanes.contains("@State private var detailsExpanded = false"))
+    XCTAssertTrue(lanes.contains("DisclosureGroup(isExpanded: $detailsExpanded)"))
+    XCTAssertTrue(lanes.contains("value: \"\\(lane.providerKey) · \\(lane.modelKey)\""))
+    let autoSend = try XCTUnwrap(lanes.range(of: "Automatic send to the Agent"))
+    let details = try XCTUnwrap(lanes.range(of: "Active configuration details"))
+    XCTAssertLessThan(autoSend.lowerBound, details.lowerBound)
+    XCTAssertFalse(lanes.contains("Resolved runtime truth"))
+
+    let model = try XCTUnwrap(sources["SettingsViewModel.swift"])
+    XCTAssertTrue(model.contains("case \"key_rejected\":"))
+    XCTAssertFalse(
+      model.contains("Model discovery failed: \\(message)"), "raw body left the main line")
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "AI models": "Modele AI",
+      "Model configuration.": "Konfiguracja modeli",
+      "Pick a provider and a model separately for the Agent and for transcript formatting. API keys and accounts are set up under Providers.":
+        "Wybierz dostawcę i model osobno dla Agenta oraz formatowania transkrypcji. Klucze API i konta skonfigurujesz w sekcji Dostawcy.",
+      "Assistive": "Agent",
+      "Formatting": "Formatowanie",
+      "The model behind the Agent and the voice assistant":
+        "Model obsługujący Agenta i asystenta głosowego",
+      "Transcript cleanup and formatting": "Poprawianie i formatowanie transkrypcji",
+      "Connected account": "Połączone konto",
+      "Stored API key": "Zapisany klucz API",
+      "Could not fetch %@ models. The API key was rejected. Check it under Providers.":
+        "Nie udało się pobrać modeli %@. Klucz API został odrzucony. Sprawdź go w sekcji Dostawcy.",
+      "Error details": "Szczegóły błędu",
+      "Refresh": "Odśwież",
+      "Reset model": "Przywróć model domyślny",
+      "Active configuration details": "Szczegóły aktywnej konfiguracji",
+      "%@ endpoint": "Adres API: %@",
+      "Automatic send to the Agent": "Automatyczne wysyłanie do Agenta",
+      "In Agent mode, send the untouched transcript after 5 seconds unless you start editing it.":
+        "W trybie Agenta wyślij niezmienioną transkrypcję po 5 sekundach, jeśli nie rozpoczniesz jej edycji.",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    for retired in [
+      "LLM lanes", "Request lanes.", "Transcript delivery", "Resolved runtime truth", "Reset",
+      "account", "no key required",
+      "Model discovery failed. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.",
+      "Model discovery failed: %@. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.",
+      "Connect accounts or add API keys. Models are chosen under Agent › LLM lanes.",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
