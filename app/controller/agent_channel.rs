@@ -133,10 +133,6 @@ fn frozen_channel_recipients(
         return Vec::new();
     };
     let root = binding.parent().unwrap_or_else(|| Path::new("."));
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|duration| duration.as_secs_f64())
-        .unwrap_or(0.0);
     let mut recipients = Vec::new();
     let mut seen = BTreeSet::new();
     for (channel, entry) in &file.bindings {
@@ -155,14 +151,20 @@ fn frozen_channel_recipients(
         let lease_id = hex::encode(Sha256::digest(identity.as_bytes()))[..32].to_string();
         let lease_path = root.join("leases").join(format!("{lease_id}.json"));
         let lease: serde_json::Value = (|| {
-            use std::io::Read;
+            use std::io::{BufReader, Read};
             let file = std::fs::File::open(&lease_path).ok()?;
             if file.metadata().ok()?.len() > 16 << 20 {
                 return None;
             }
-            serde_json::from_reader(file.take(16 << 20)).ok()
+            serde_json::from_reader(BufReader::new(file.take(16 << 20))).ok()
         })()
         .unwrap_or(serde_json::Value::Null);
+        // Clock after this lease's read. A timestamp taken before the scan
+        // treats heartbeats refreshed during a large parse as future.
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|duration| duration.as_secs_f64())
+            .unwrap_or(0.0);
         let age = now
             - lease["heartbeat_unix"]
                 .as_f64()
