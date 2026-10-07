@@ -238,7 +238,13 @@ Root/integrator executed on this exact generation:
 - Full Swift run executed 1116 tests, one skipped, zero failures. Its 64.316 s
   exceeded the unchanged 60 s suite budget: this gate is RED, not a full PASS.
   The slowest individual test was 5.357 s, below the 10 s ceiling. A single
-  warm repeat with the same budget is in progress.
+  warm repeat exited the XCTest host with code0 while running
+  `OverlayStateTests.testActiveChannelCaptureKeepsItsOwnedConversation`. Xcode
+  resumed the remaining470 tests; the xcresult summary reports1116 total,
+  1114 passed, one skipped, one host-exit failure. Overall rc65, not a PASS.
+  The exact case subsequently passed in isolation: one test,0.010s. The cause
+  of the host termination remains unresolved; no production termination path
+  was changed or suppressed to hide it.
 
 Logs: `/tmp/codescribe-e19c-router-integrated-{bindings,swift,gate,semgrep,catalog,l10n-sync,l10n-check,push,full-swift,full-gate}-oct7.log`.
 The live Astra lease now received fresh complete channel3 and general0 takes;
