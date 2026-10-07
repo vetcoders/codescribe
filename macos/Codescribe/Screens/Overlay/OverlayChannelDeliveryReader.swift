@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import OSLog
 
@@ -33,6 +34,40 @@ actor OverlayChannelDeliveryReader {
   /// Total bus bytes this reader consumed from disk. Tests use it to prove a
   /// restart reads only new bytes instead of replaying history.
   private(set) var consumedBytes: UInt64 = 0
+  /// Metadata bytes actually read, independent of the incremental bus cursor.
+  private(set) var consumedMetadataBytes: UInt64 = 0
+  private static let metadataCacheBudget = 8 << 20
+  private static let metadataCacheEntries = 256
+  private var metadataObjects: [URL: MetadataObject] = [:]
+  private var metadataCacheBytes = 0
+  private var metadataAccess: UInt64 = 0
+
+  private struct MetadataObjectStamp: Equatable {
+    let device: dev_t
+    let inode: ino_t
+    let size: off_t
+    let modifiedSeconds: Int
+    let modifiedNanoseconds: Int
+    let changedSeconds: Int
+    let changedNanoseconds: Int
+
+    init(_ value: stat) {
+      device = value.st_dev
+      inode = value.st_ino
+      size = value.st_size
+      modifiedSeconds = value.st_mtimespec.tv_sec
+      modifiedNanoseconds = value.st_mtimespec.tv_nsec
+      changedSeconds = value.st_ctimespec.tv_sec
+      changedNanoseconds = value.st_ctimespec.tv_nsec
+    }
+  }
+
+  private struct MetadataObject {
+    let stamp: MetadataObjectStamp
+    let value: [String: Any]
+    let bytes: Int
+    var access: UInt64
+  }
 
   private struct Cursor {
     var inode: UInt64 = 0
@@ -316,13 +351,52 @@ actor OverlayChannelDeliveryReader {
   }
 
   private func object(at url: URL) throws -> [String: Any] {
-    let handle = try FileHandle(forReadingFrom: url)
-    defer { try? handle.close() }
-    let data = try handle.read(upToCount: (16 << 20) + 1) ?? Data()
-    guard data.count <= 16 << 20,
-      let value = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-    else { throw CocoaError(.fileReadCorruptFile) }
-    return value
+    do {
+      let handle = try FileHandle(forReadingFrom: url)
+      defer { try? handle.close() }
+      var metadata = stat()
+      guard fstat(handle.fileDescriptor, &metadata) == 0 else {
+        throw CocoaError(.fileReadUnknown)
+      }
+      let stamp = MetadataObjectStamp(metadata)
+      metadataAccess &+= 1
+      if var cached = metadataObjects[url], cached.stamp == stamp {
+        cached.access = metadataAccess
+        metadataObjects[url] = cached
+        return cached.value
+      }
+      if let old = metadataObjects.removeValue(forKey: url) { metadataCacheBytes -= old.bytes }
+      let data = try handle.read(upToCount: (16 << 20) + 1) ?? Data()
+      consumedMetadataBytes &+= UInt64(data.count)
+      guard data.count <= 16 << 20,
+        let value = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+      else { throw CocoaError(.fileReadCorruptFile) }
+      // The open descriptor observes atomic replacement and follows symlinks.
+      // In-place writes also invalidate through nanosecond mtime/ctime. Never
+      // retain a parse whose file changed during that read.
+      if data.count <= Self.metadataCacheBudget,
+        fstat(handle.fileDescriptor, &metadata) == 0,
+        MetadataObjectStamp(metadata) == stamp
+      {
+        while metadataCacheBytes + data.count > Self.metadataCacheBudget
+          || metadataObjects.count >= Self.metadataCacheEntries
+        {
+          guard let oldest = metadataObjects.min(by: { $0.value.access < $1.value.access })?.key,
+            let removed = metadataObjects.removeValue(forKey: oldest)
+          else { break }
+          metadataCacheBytes -= removed.bytes
+        }
+        metadataObjects[url] = MetadataObject(
+          stamp: stamp, value: value, bytes: data.count, access: metadataAccess)
+        metadataCacheBytes += data.count
+      }
+      return value
+    } catch {
+      if let removed = metadataObjects.removeValue(forKey: url) {
+        metadataCacheBytes -= removed.bytes
+      }
+      throw error
+    }
   }
 
   private func refresh(_ url: URL) throws {

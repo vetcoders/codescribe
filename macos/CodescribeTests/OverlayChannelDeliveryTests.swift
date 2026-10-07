@@ -6,6 +6,142 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testIdleSnapshotsDoNotRereadMegabyteLeaseMetadata() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let leaseURL = fixture.root.appendingPathComponent("leases/\(Fixture.leaseID).json")
+    var lease = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(contentsOf: leaseURL)) as? [String: Any])
+    lease["diagnostic_padding"] = String(repeating: "x", count: 1 << 20)
+    try fixture.write(lease, to: leaseURL)
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let initial = try await reader.readSnapshot()
+    let coldBytes = await reader.consumedMetadataBytes
+    XCTAssertGreaterThan(coldBytes, 1 << 20)
+    for _ in 0..<20 {
+      let snapshot = try await reader.readSnapshot()
+      XCTAssertEqual(snapshot, initial)
+    }
+    let steadyBytes = await reader.consumedMetadataBytes
+    XCTAssertEqual(steadyBytes, coldBytes, "Idle polls must not repeatedly parse the same lease")
+    try fixture.lease(pending: [fixture.envelope(Fixture.firstID)])
+    let changed = try await reader.readSnapshot()
+    XCTAssertEqual(changed.deliveries.first?.stage, .queued)
+    XCTAssertEqual(
+      changed.conversations.first?.messages.map(\.text),
+      initial.conversations.first?.messages.map(\.text))
+  }
+
+  func testMetadataReplacementWithSameSizeAndTimestampChangesTheDisplayedOwner() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let binding = fixture.root.appendingPathComponent("vc.agent-audience-binding.v1.json")
+    let initialBytes = try Data(contentsOf: binding)
+    let originalDate = try XCTUnwrap(
+      FileManager.default.attributesOfItem(atPath: binding.path)[.modificationDate] as? Date)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    try fixture.append(fixture.seal(1))
+    let initial = try await reader.read()
+    XCTAssertEqual(initial.first?.agent, "james")
+    let changedBytes = Data(
+      try XCTUnwrap(String(data: initialBytes, encoding: .utf8))
+        .replacingOccurrences(of: "james", with: "jamie").utf8)
+    XCTAssertEqual(changedBytes.count, initialBytes.count)
+    try changedBytes.write(to: binding, options: .atomic)
+    try FileManager.default.setAttributes(
+      [.modificationDate: originalDate], ofItemAtPath: binding.path)
+    let changed = try await reader.read()
+    XCTAssertEqual(changed.first?.agent, "jamie")
+  }
+
+  func testInPlaceMetadataWriteWithRestoredTimestampDoesNotReuseOldOwner() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let binding = fixture.root.appendingPathComponent("vc.agent-audience-binding.v1.json")
+    let bytes = try Data(contentsOf: binding)
+    let attributes = try FileManager.default.attributesOfItem(atPath: binding.path)
+    let originalDate = try XCTUnwrap(attributes[.modificationDate] as? Date)
+    let inode = try XCTUnwrap(attributes[.systemFileNumber] as? NSNumber)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    _ = try await reader.read()
+    let changed = Data(
+      try XCTUnwrap(String(data: bytes, encoding: .utf8))
+        .replacingOccurrences(of: "james", with: "jamie").utf8)
+    let handle = try FileHandle(forWritingTo: binding)
+    try handle.write(contentsOf: changed)
+    try handle.close()
+    try FileManager.default.setAttributes(
+      [.modificationDate: originalDate], ofItemAtPath: binding.path)
+    XCTAssertEqual(
+      try FileManager.default.attributesOfItem(atPath: binding.path)[.systemFileNumber]
+        as? NSNumber,
+      inode)
+    let snapshot = try await reader.read()
+    XCTAssertEqual(snapshot.first?.agent, "jamie")
+  }
+
+  func testBrokenAndDeletedMetadataCannotKeepACachedBindingAlive() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let binding = fixture.root.appendingPathComponent("vc.agent-audience-binding.v1.json")
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    _ = try await reader.read()
+    try Data("{".utf8).write(to: binding, options: .atomic)
+    do {
+      _ = try await reader.read()
+      XCTFail("Malformed metadata must not serve its previously valid parse")
+    } catch {}
+    try FileManager.default.removeItem(at: binding)
+    let removed = try await reader.read()
+    XCTAssertTrue(removed.isEmpty)
+    try fixture.bind(session: "another-session")
+    let rebound = try await reader.read()
+    XCTAssertTrue(rebound.isEmpty, "A cached previous owner cannot satisfy a new binding")
+  }
+
+  func testMetadataLargerThanCacheBudgetRemainsReadableWithoutBeingRetained() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let leaseURL = fixture.root.appendingPathComponent("leases/\(Fixture.leaseID).json")
+    var lease = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(contentsOf: leaseURL)) as? [String: Any])
+    lease["diagnostic_padding"] = String(repeating: "x", count: 9 << 20)
+    try fixture.write(lease, to: leaseURL)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let initial = try await reader.readSnapshot()
+    let before = await reader.consumedMetadataBytes
+    let repeated = try await reader.readSnapshot()
+    let after = await reader.consumedMetadataBytes
+    XCTAssertEqual(repeated, initial)
+    XCTAssertGreaterThan(
+      after - before, 9 << 20, "Large metadata is not retained in the bounded cache")
+  }
+
+  func testMultipleLargeLeasesCannotGrowTheMetadataCacheWithoutBound() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    for digit in 1...4 {
+      let identity = String(repeating: String(digit), count: 32)
+      try fixture.write(
+        [
+          "schema": "codescribe.agent-bridge.lease.v1", "lease_id": identity,
+          "provider": "codex", "provider_session_id": "other-\(digit)",
+          "bus": fixture.bus.path, "pending": [],
+          "diagnostic_padding": String(repeating: "x", count: 3 << 20),
+        ], to: fixture.root.appendingPathComponent("leases/\(identity).json"))
+    }
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let initial = try await reader.readSnapshot()
+    let before = await reader.consumedMetadataBytes
+    let repeated = try await reader.readSnapshot()
+    let after = await reader.consumedMetadataBytes
+    XCTAssertEqual(repeated, initial)
+    XCTAssertGreaterThan(
+      after - before, 3 << 20, "Twelve MiB of metadata must not fit in the eight MiB cache")
+  }
+
   func testReplySpeechCapabilitySurvivesMirrorsAndRebuildsOlderCachedProjection() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
