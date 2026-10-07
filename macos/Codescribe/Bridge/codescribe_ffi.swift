@@ -1545,17 +1545,20 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func resetPromptsToDefaults() throws
 
     /**
-     * Restore only the assistive base prompt after explicit UI confirmation.
+     * Restore only the assistive base prompt after explicit UI confirmation:
+     * the override is backed up and removed, so the built-in text is in use.
      */
     func restoreAssistivePromptToDefault() throws
 
     /**
-     * Restore one explicit formatting policy prompt after UI confirmation.
+     * Restore one explicit formatting policy prompt after UI confirmation:
+     * the override is backed up and removed, so the built-in text is in use.
      */
     func restoreFormattingPromptForLevelToDefault(level: String) throws
 
     /**
-     * Restore only the formatting base prompt after explicit UI confirmation.
+     * Restore only the formatting base prompt after explicit UI confirmation:
+     * the override is backed up and removed, so the built-in text is in use.
      */
     func restoreFormattingPromptToDefault() throws
 
@@ -2174,7 +2177,8 @@ open func resetPromptsToDefaults()throws   {try rustCallWithError(FfiConverterTy
 }
 
     /**
-     * Restore only the assistive base prompt after explicit UI confirmation.
+     * Restore only the assistive base prompt after explicit UI confirmation:
+     * the override is backed up and removed, so the built-in text is in use.
      */
 open func restoreAssistivePromptToDefault()throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_restore_assistive_prompt_to_default(
@@ -2184,7 +2188,8 @@ open func restoreAssistivePromptToDefault()throws   {try rustCallWithError(FfiCo
 }
 
     /**
-     * Restore one explicit formatting policy prompt after UI confirmation.
+     * Restore one explicit formatting policy prompt after UI confirmation:
+     * the override is backed up and removed, so the built-in text is in use.
      */
 open func restoreFormattingPromptForLevelToDefault(level: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_restore_formatting_prompt_for_level_to_default(
@@ -2195,7 +2200,8 @@ open func restoreFormattingPromptForLevelToDefault(level: String)throws   {try r
 }
 
     /**
-     * Restore only the formatting base prompt after explicit UI confirmation.
+     * Restore only the formatting base prompt after explicit UI confirmation:
+     * the override is backed up and removed, so the built-in text is in use.
      */
 open func restoreFormattingPromptToDefault()throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_restore_formatting_prompt_to_default(
@@ -19101,13 +19107,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_reset_prompts_to_defaults() != 25156) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_restore_assistive_prompt_to_default() != 32633) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_restore_assistive_prompt_to_default() != 2464) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_restore_formatting_prompt_for_level_to_default() != 25577) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_restore_formatting_prompt_for_level_to_default() != 40675) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_restore_formatting_prompt_to_default() != 40453) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_restore_formatting_prompt_to_default() != 53102) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_save_onboarding_progress() != 8525) {
