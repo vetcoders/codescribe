@@ -526,10 +526,10 @@ final class SettingsChromeContractTests: XCTestCase {
       "Save": "Zapisz",
       "Only %@ will change: its custom file is removed and the built-in prompt takes over. The previous version remains recoverable in the prompt backups folder.":
         "Zmieni się tylko %@: własny plik zostanie usunięty, a w użyciu będzie wbudowany prompt. Poprzednią wersję można odzyskać z folderu kopii zapasowych promptów.",
-      "Could not restore %@. The custom prompt is still in use.":
-        "Nie udało się przywrócić: %@. Własny prompt nadal jest w użyciu.",
-      "Could not save %@. The file on disk is unchanged.":
-        "Nie udało się zapisać: %@. Plik na dysku pozostał bez zmian.",
+      "Could not complete restoring %@. Check the current source shown above.":
+        "Nie udało się dokończyć przywracania: %@. Sprawdź aktualne źródło pokazane powyżej.",
+      "Could not complete saving %@. Check the current source shown above.":
+        "Nie udało się dokończyć zapisu: %@. Sprawdź aktualne źródło pokazane powyżej.",
     ]
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)

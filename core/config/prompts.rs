@@ -519,7 +519,7 @@ fn write_prompt_bytes_unfenced(
 }
 
 /// Return one prompt to its compiled-in default by removing the operator's
-/// override (Founder decision 2026-10-07).
+/// override; the previous text is retained in the backup.
 ///
 /// The override's bytes are copied into `prompts/backups/` first and the audit
 /// trail gets `started` / `completed` (or `failed`) receipts under
@@ -570,7 +570,8 @@ pub fn restore_prompt_to_default(kind: PromptKind) -> std::io::Result<()> {
 ///
 /// Order: read the override, back it up, record `started`, remove, fsync the
 /// directory, record `completed`. A failure after the backup records `failed`
-/// and leaves the override in place — a failed restore never reads as done.
+/// and surfaces an error. An error after removal may leave the override gone;
+/// the backup remains recoverable and callers must refresh the actual source.
 fn remove_prompt_override_at<F>(path: &Path, kind: PromptKind, remove: F) -> std::io::Result<()>
 where
     F: FnOnce(&Path) -> std::io::Result<()>,
@@ -1430,6 +1431,34 @@ mod tests {
         assert_eq!(receipts[1]["old_sha256"], sha256_hex(b"operator override"));
         assert!(receipts[1]["new_sha256"].is_null());
         assert!(receipts[1]["backup_path"].is_string());
+    }
+
+    #[test]
+    fn failed_receipt_after_removal_keeps_backup_but_changes_source() {
+        let sandbox = TempDir::new().expect("prompt sandbox");
+        let path = sandbox.path().join("prompts/formatting-smart.txt");
+        fs::create_dir_all(path.parent().expect("prompt parent")).expect("create prompt dir");
+        fs::write(&path, b"saved custom prompt").expect("seed prompt");
+        remove_prompt_override_at(&path, PromptKind::FormattingSmart, |p| {
+            fs::remove_file(p)?;
+            Err(std::io::Error::other(
+                "directory synchronization failed after removal",
+            ))
+        })
+        .expect_err("post-removal failure surfaces");
+        assert!(
+            !path.exists(),
+            "an error does not prove that the file stayed"
+        );
+        let backups = fs::read_dir(path.parent().unwrap().join("backups"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(backups[0].path()).unwrap(), b"saved custom prompt");
+        let audit = fs::read_to_string(path.parent().unwrap().join("prompt-audit.jsonl")).unwrap();
+        assert!(audit.contains("\"status\":\"failed\""));
+        assert!(!audit.contains("\"status\":\"completed\""));
     }
 
     #[test]

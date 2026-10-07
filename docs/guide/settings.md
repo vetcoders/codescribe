@@ -134,8 +134,10 @@ and changes only that one. Confirming copies the custom file into the prompt
 backups folder, removes it, and records the removal in the prompt audit log,
 so the source afterwards reads **Built-in prompt** and the text follows future
 app updates. If the file cannot be removed, a red line under the source says
-**Could not restore …** with the error, and the custom prompt stays in use; a
-failed save is reported the same way.
+**Could not complete restoring …** with the error and refreshes the actual
+source. An error can occur after the file has changed (for example while
+synchronizing the directory or writing its receipt); the backup remains
+recoverable. A failed save is reported with the same current-source check.
 
 ### Agent → Workspace
 

@@ -102,8 +102,13 @@ struct PromptPanel: View {
     -> Bool
   {
     guard let updated else {
-      failures[file] = PromptOperationFailure(
-        operation: operation, detail: model.lastError ?? "")
+      let detail = model.lastError ?? ""
+      if let level = file.formattingLevel {
+        if let current = model.formattingPromptSnapshot(level: level) { snapshots[file] = current }
+      } else {
+        snapshots[file] = model.assistivePromptSnapshot()
+      }
+      failures[file] = PromptOperationFailure(operation: operation, detail: detail)
       return false
     }
     failures[file] = nil
@@ -416,9 +421,9 @@ struct PromptOperationFailure: Equatable {
 func promptFailureLabel(_ operation: PromptOperationFailure.Operation, title: String) -> String {
   switch operation {
   case .save:
-    return String(localized: "Could not save \(title). The file on disk is unchanged.")
+    return String(localized: "Could not complete saving \(title). Check the current source shown above.")
   case .restore:
-    return String(localized: "Could not restore \(title). The custom prompt is still in use.")
+    return String(localized: "Could not complete restoring \(title). Check the current source shown above.")
   }
 }
 

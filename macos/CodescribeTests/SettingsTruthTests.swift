@@ -1440,10 +1440,10 @@ final class SettingsTruthTests: XCTestCase {
   func testPromptFailureLabelsNameTheOperationAndWhatDidNotChange() {
     XCTAssertEqual(
       promptFailureLabel(.restore, title: "Smart prompt"),
-      "Could not restore Smart prompt. The custom prompt is still in use.")
+      "Could not complete restoring Smart prompt. Check the current source shown above.")
     XCTAssertEqual(
       promptFailureLabel(.save, title: "Agent prompt"),
-      "Could not save Agent prompt. The file on disk is unchanged.")
+      "Could not complete saving Agent prompt. Check the current source shown above.")
     XCTAssertEqual(
       PromptOperationFailure(operation: .restore, detail: "x"),
       PromptOperationFailure(operation: .restore, detail: "x"))

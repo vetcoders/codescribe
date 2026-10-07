@@ -4323,22 +4323,22 @@
         }
       }
     },
-    "Could not restore %@. The custom prompt is still in use." : {
+    "Could not complete restoring %@. Check the current source shown above." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się przywrócić: %@. Własny prompt nadal jest w użyciu."
+            "value" : "Nie udało się dokończyć przywracania: %@. Sprawdź aktualne źródło pokazane powyżej."
           }
         }
       }
     },
-    "Could not save %@. The file on disk is unchanged." : {
+    "Could not complete saving %@. Check the current source shown above." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się zapisać: %@. Plik na dysku pozostał bez zmian."
+            "value" : "Nie udało się dokończyć zapisu: %@. Sprawdź aktualne źródło pokazane powyżej."
           }
         }
       }
