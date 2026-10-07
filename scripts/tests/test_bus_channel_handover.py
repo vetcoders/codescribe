@@ -386,6 +386,23 @@ class ChannelHandoverTests(unittest.TestCase):
         self.delivered(NEW, "Vagabond, melduj się.")
         self.assertEqual(self.lease(NEW)["name"], "vagabond")
 
+    def test_replaced_bus_source_never_blocks_retirement(self):
+        """A shorter file under the bus path is a replaced carrier.
+
+        Live on 2026-10-07: `make install-bus` swapped channel-1.jsonl, the
+        saved cursor pointed past the new file's end, and the reader could
+        be neither drained nor retired - deaf forever, with agent speech
+        refused off ghost unclosed documents from the vanished file.
+        """
+        self.attached(NEW, channel="1")
+        self.speak("James, przed wymianą.")
+        self.delivered(NEW, "James, przed wymianą.")
+        self.bus.write_text("", encoding="utf-8")  # replaced, shorter carrier
+        self.assertEqual(self.detach(NEW).returncode, 0)
+        self.attached(NEW, channel="1")
+        self.speak("James, po wymianie.")
+        self.delivered(NEW, "James, po wymianie.")
+
     def test_takeover_never_claims_another_name(self):
         old = self.attached(OLD)
         before = self.binding.read_bytes()

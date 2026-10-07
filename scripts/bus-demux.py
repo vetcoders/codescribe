@@ -1763,6 +1763,18 @@ class SessionLease:
                         "preserved on disk, attachment refused"
                     )
                 self.cursor = saved_cursor
+                try:
+                    extent = os.stat(self.bus).st_size
+                except OSError:
+                    extent = None
+                if extent is not None and self.cursor > extent:
+                    # The file under the bus path is shorter than the saved
+                    # cursor: the carrier was replaced (bus rotation or a
+                    # reinstall). Tailing past its end would stay silent
+                    # forever and the old unclosed documents no longer
+                    # exist, so start over on the new file.
+                    self.cursor = 0
+                    previous["unclosed_channel_messages"] = {}
                 self.last_sequence = previous.get("last_sequence")
                 # The follower's requested name outranks the recovered lease
                 # name: a channel rename (detach + attach under a new name)
@@ -3973,6 +3985,13 @@ def require_drained_lease(root: Path, lease_id: str) -> None:
         end = generation_metadata(Path(state["bus"])).st_size
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise OSError("source extent unavailable; owner retained") from error
+    if state["cursor"] > end:
+        # The path now holds a shorter file than the saved cursor: the bus
+        # was replaced underneath its reader (observed live 2026-10-07,
+        # channel 1 after `make install-bus` swapped the channel carrier).
+        # Nothing of the old extent can be drained any more, so replacement
+        # never blocks retirement; pending envelopes stay in the lease.
+        return
     if state["cursor"] != end:
         raise OSError("old source is undrained; resume its reader before retiring it")
     documents = state.get("unclosed_channel_messages", {})
