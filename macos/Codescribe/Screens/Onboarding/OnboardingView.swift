@@ -39,7 +39,7 @@ struct OnboardingView: View {
       .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) {
         notification in
         guard let window = notification.object as? NSWindow, window === hostWindow else { return }
-        model.refreshProviderAccess()
+        model.refreshForCurrentStep()
       }
   }
 
@@ -77,12 +77,21 @@ struct OnboardingView: View {
         "waveform",
         nil
       )
-    case .permission:
+    case .permissions:
       return (
         String(
           localized: LocalizedStringResource(
             "Make the connection", locale: model.interfaceLocale, comment: "Setup chapter heading")),
         "hand.raised",
+        nil
+      )
+    case .localModel:
+      return (
+        String(
+          localized: LocalizedStringResource(
+            "Local dictation, when you want it", locale: model.interfaceLocale,
+            comment: "Setup chapter heading for the optional Whisper download")),
+        "arrow.down.circle",
         nil
       )
     case .language, .apiKey, .hotkeyMode:
@@ -157,10 +166,12 @@ struct OnboardingView: View {
       InterfaceLanguageStepView(model: model)
     case .mode:
       ModeStepView(model: model)
-    case .permission(let kind):
-      PermissionStepView(kind: kind, model: model)
+    case .permissions:
+      PermissionsStepView(model: model)
     case .language:
       LanguageStepView(model: model)
+    case .localModel:
+      LocalModelStepView(model: model)
     case .apiKey:
       ApiKeyStepView(model: model)
     case .hotkeyMode:
@@ -238,7 +249,7 @@ struct OnboardingView: View {
   #Preview("Onboarding — Language") {
     OnboardingView(
       model: OnboardingViewModel(
-        engine: MockOnboardingEngine(progress: 8),
+        engine: MockOnboardingEngine(progress: 3),
         hotkeys: MockHotkeysEngine(),
         agentStatus: MockAgentStatusEngine(),
         probe: MockPermissionProbe(.allGranted))
@@ -250,7 +261,7 @@ struct OnboardingView: View {
   #Preview("Onboarding — API key") {
     OnboardingView(
       model: OnboardingViewModel(
-        engine: MockOnboardingEngine(progress: 9),
+        engine: MockOnboardingEngine(progress: 5),
         hotkeys: MockHotkeysEngine(),
         agentStatus: MockAgentStatusEngine(),
         probe: MockPermissionProbe(.allGranted))
@@ -262,7 +273,7 @@ struct OnboardingView: View {
   #Preview("Onboarding — Hotkeys") {
     OnboardingView(
       model: OnboardingViewModel(
-        engine: MockOnboardingEngine(progress: 10),
+        engine: MockOnboardingEngine(progress: 6),
         hotkeys: MockHotkeysEngine(),
         agentStatus: MockAgentStatusEngine(),
         probe: MockPermissionProbe(.allGranted))
@@ -272,7 +283,7 @@ struct OnboardingView: View {
   }
 
   #Preview("Onboarding — Agentic readiness") {
-    let engine = MockOnboardingEngine(progress: 11)
+    let engine = MockOnboardingEngine(progress: 7)
     engine.mode = "agentic"
     return OnboardingView(
       model: OnboardingViewModel(

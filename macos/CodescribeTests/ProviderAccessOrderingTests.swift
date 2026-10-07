@@ -5,7 +5,7 @@ import XCTest
 @MainActor
 private final class ControlledProviderEngine: OnboardingEngine {
   enum Failure: Error { case denied }
-  var progress: UInt32 = 9
+  var progress: UInt32 = 5
   var reads = 0
   var writes = 0
   var keySaveAccounts: [String] = []
@@ -143,9 +143,8 @@ final class ProviderAccessOrderingTests: XCTestCase {
     model.advance()
     await awaitCondition { engine.write != nil }
     engine.resolveWrite(success: true)
-    await awaitCondition { !model.providerMutationPending && engine.read != nil }
-    engine.resolveRead()
-    await awaitCondition { !model.providerAccessPending }
+    await awaitCondition { !model.providerMutationPending && model.step == .hotkeyMode }
+    XCTAssertNil(engine.read, "Leaving the explained provider chapter must not acquire credentials")
     XCTAssertEqual(model.step, .hotkeyMode)
     XCTAssertEqual(model.apiKeyDraft, "")
     XCTAssertFalse(model.apiKeyEditorExpanded)
@@ -384,7 +383,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
       installedPaths: ["/fixture/codex"], detail: "Installed")
     for nativeReady in [true, false] {
       let engine = ControlledProviderEngine()
-      engine.progress = 11
+      engine.progress = 7
       let model = makeModel(
         engine, bridge: OrderingBridgeInstaller(value: installed),
         readiness: CsAgenticReadiness(configPathDisplay: "", ready: nativeReady, rows: []))
@@ -427,16 +426,18 @@ final class ProviderAccessOrderingTests: XCTestCase {
     XCTAssertEqual(model.step, .hotkeyMode)
     XCTAssertEqual(engine.writes, 0, "Continue and Skip must not submit a hidden field")
     XCTAssertEqual(model.apiKeyDraft, "unsaved-provider-draft")
-    await load(model, engine)
+    XCTAssertNil(engine.read, "The hotkey chapter does not read provider credentials")
     model.back()
     model.beginApiKeyEditing()
     XCTAssertEqual(model.apiKeyDraft, "unsaved-provider-draft")
-    await load(model, engine)
+    await awaitCondition { engine.read != nil }
+    engine.resolveRead()
+    await awaitCondition { !model.providerAccessPending }
   }
 
   func testReadyStateRequiresCurrentSuccessfulProviderRead() async {
     let engine = ControlledProviderEngine()
-    engine.progress = 11
+    engine.progress = 7
     let model = makeModel(engine)
     await load(model, engine)
     XCTAssertTrue(model.agentBridgeReadyToGo)
@@ -500,7 +501,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
 
   func testUnavailableAccountKeepsResolvedRegistryAndDoesNotClaimReadiness() async {
     let engine = ControlledProviderEngine()
-    engine.progress = 11
+    engine.progress = 7
     engine.provider.apiKeySet = false
     engine.provider.accountSignedIn = false
     let model = makeModel(engine)
@@ -519,7 +520,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
 
   func testUnavailableAccountPreservesIndependentApiKeyAndRecoversOnNextRead() async {
     let engine = ControlledProviderEngine()
-    engine.progress = 11
+    engine.progress = 7
     engine.provider.apiKeySet = true
     engine.provider.accountSignedIn = false
     let model = makeModel(engine)

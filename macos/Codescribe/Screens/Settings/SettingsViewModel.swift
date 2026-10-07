@@ -1008,59 +1008,6 @@ enum AppRelaunch {
   }
 }
 
-extension CsWhisperModelStatus {
-  /// Placeholder for canvas / engine-less previews (no network, no disk probe).
-  static let sampleUnavailable = CsWhisperModelStatus(
-    available: false,
-    embedded: false,
-    path: nil,
-    modelId: "whisper-large-v3-turbo",
-    repo: "mlx-community/whisper-large-v3-turbo",
-    sizeHint: "~1.6 GB"
-  )
-}
-
-private enum WhisperDownloadEvent: Sendable {
-  case progress(detail: String, fraction: Double?)
-  case complete(path: String)
-}
-
-/// Value-only UniFFI callback adapter; the view model owns the one ordered
-/// MainActor consumer.
-final class WhisperDownloadProgressSink: CsWhisperDownloadListener, Sendable {
-  private let continuation: AsyncStream<WhisperDownloadEvent>.Continuation
-
-  fileprivate init(continuation: AsyncStream<WhisperDownloadEvent>.Continuation) {
-    self.continuation = continuation
-  }
-
-  func onProgress(file: String, bytesDone: UInt64, bytesTotal: Int64) {
-    let fraction: Double?
-    if bytesTotal > 0 {
-      fraction = min(1.0, Double(bytesDone) / Double(bytesTotal))
-    } else {
-      fraction = nil
-    }
-    let mbDone = Double(bytesDone) / 1_048_576.0
-    let detail: String
-    if bytesTotal > 0 {
-      let mbTotal = Double(bytesTotal) / 1_048_576.0
-      detail = String(format: "%@ · %.0f / %.0f MB", file, mbDone, mbTotal)
-    } else {
-      detail = String(format: "%@ · %.0f MB", file, mbDone)
-    }
-    continuation.yield(.progress(detail: detail, fraction: fraction))
-  }
-
-  func onComplete(path: String) {
-    continuation.yield(.complete(path: path))
-  }
-
-  func finish() {
-    continuation.finish()
-  }
-}
-
 /// Quick-start actions from the Creator panel's cards. Navigation cases route
 /// the settings rail; `openOverlay` starts a real dictation session through an
 /// injectable seam so the cards are never inert decorations again
@@ -1224,19 +1171,14 @@ final class SettingsViewModel: ObservableObject {
   private var providerAccessGeneration: UInt64 = 0
   private var providerRefreshRequested = false
 
-  // MARK: - Local Whisper download (Settings → Dictation)
-
-  /// Live availability of default Whisper weights (embedded or on disk).
-  /// Named `localWhisperStatus` so it does not shadow UniFFI free functions
-  /// `whisperModelStatus()` / `downloadWhisperModel(...)`.
-  @Published private(set) var localWhisperStatus: CsWhisperModelStatus = .sampleUnavailable
-  @Published private(set) var whisperDownloadInFlight = false
-  /// Human status under the download control (file name + progress).
-  @Published private(set) var whisperDownloadDetail: String?
-  /// 0...1 when Content-Length is known; nil for indeterminate.
-  @Published private(set) var whisperDownloadFraction: Double?
-  private var whisperDownloadSink: WhisperDownloadProgressSink?
-  private var whisperDownloadEventTask: Task<Void, Never>?
+  // One retained owner shared with onboarding; these are read-only projections.
+  let whisperDownloadStore: WhisperDownloadStore
+  private var whisperDownloadChangeSink: AnyCancellable?
+  var whisperDownloadEnabled: Bool { engine != nil }
+  var localWhisperStatus: CsWhisperModelStatus { whisperDownloadStore.status }
+  var whisperDownloadInFlight: Bool { whisperDownloadStore.inFlight }
+  var whisperDownloadDetail: String? { whisperDownloadStore.detail }
+  var whisperDownloadFraction: Double? { whisperDownloadStore.fraction }
 
   // MARK: - Local Whisper model picker (Settings → Dictation)
 
@@ -1289,6 +1231,7 @@ final class SettingsViewModel: ObservableObject {
     hotkeys: HotkeysEngine? = nil,
     licenseService: LicenseService? = nil,
     buildInfo: AppBuildInfo = .current(),
+    whisperDownloadStore: WhisperDownloadStore = .shared,
     runtimeLlmLaneProvider: @escaping (CsLlmLane) -> CsRuntimeLlmLane = { lane in
       runtimeLlmLane(lane: lane)
     },
@@ -1311,6 +1254,7 @@ final class SettingsViewModel: ObservableObject {
     self.hotkeys = hotkeys
     self.licenseService = licenseService ?? .preview
     self.buildInfo = buildInfo
+    self.whisperDownloadStore = whisperDownloadStore
     self.runtimeLlmLaneProvider = runtimeLlmLaneProvider
     self.audioRecordingControlProvider =
       audioRecordingControlProvider ?? Self.liveAudioRecordingControlProvider(for: engine)
@@ -1326,13 +1270,21 @@ final class SettingsViewModel: ObservableObject {
     self.deferredInsertShortcut = DeferredInsertShortcutOption(
       wireId: initialSettings.deferredInsertShortcut
     )
-    self.keyStatus = engine?.keyStatus() ?? .sampleAllSet
+    self.keyStatus =
+      engine == nil
+      ? .sampleAllSet
+      : CsKeyStatus(
+        llmLibraxisApiKeySet: false, llmOpenaiApiKeySet: false,
+        llmXaiApiKeySet: false, llmAnthropicApiKeySet: false,
+        sttFileApiKeySet: false, sttLiveApiKeySet: false, githubTokenSet: false
+      )
     self.providers = engine == nil ? CsProviderOption.sampleProviders : []
     self.providerAccessResolved = engine == nil
     self.sttLanes = engine?.sttLanes() ?? [.sampleFile, .sampleLive]
     self.configDir = ""
     self.needsOnboarding = false
-    self.agentReadiness = engine == nil ? .sample : CsAgenticReadiness(configPathDisplay: "", ready: false, rows: [])
+    self.agentReadiness =
+      engine == nil ? .sample : CsAgenticReadiness(configPathDisplay: "", ready: false, rows: [])
     self.mcpStatus = .sample
     self.capabilityMatrix = CsCapabilityRow.sampleMatrix
     self.voiceLabReadError = nil
@@ -1350,6 +1302,9 @@ final class SettingsViewModel: ObservableObject {
       for: Self.agentBridgeLaunchSynchronizationDidFinish
     ).sink { [weak self] _ in
       self?.refreshCreatorAgentBridge()
+    }
+    whisperDownloadChangeSink = whisperDownloadStore.objectWillChange.sink { [weak self] _ in
+      self?.objectWillChange.send()
     }
     lastServingVerdict = servingStatusProvider()
   }
@@ -1405,15 +1360,17 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
-  /// Re-read live state (permissions can change while the window is open).
+  /// Re-read passive configuration/permission projections. Only canonical
+  /// completed setup permits automatic provider restoration outside auth UI.
+  /// License reads belong to the explained License surface or its actions.
   func refresh() {
     refreshPermissions()
     refreshServingStatus()
     if let engine {
       applyLoadedSettings(engine.loadSettings())
-      refreshProviderAccess()
       configDir = engine.configDir()
       needsOnboarding = engine.shouldShowOnboarding()
+      if !needsOnboarding { refreshProviderAccess() }
       refreshVoiceLab()
       refreshAudioInput()
     }
@@ -1423,7 +1380,16 @@ final class SettingsViewModel: ObservableObject {
     refreshCreatorAgentBridge()
     reloadMcpServers()
     loadHotkeys()
-    licenseService.refresh()
+  }
+
+  /// Appear/activation and explicit section navigation refresh only the
+  /// explained auth surfaces while setup is incomplete. The existing setup
+  /// sentinel permits restoration elsewhere; there is no separate consent flag.
+  func refreshForCurrentSection() {
+    if section == .keys || engine?.shouldShowOnboarding() == false {
+      refreshProviderAccess()
+    }
+    if section == .license { refreshLicense() }
   }
 
   func refreshPermissions() {
@@ -1451,9 +1417,9 @@ final class SettingsViewModel: ObservableObject {
   /// Re-probe Whisper install state (embedded / on-disk / missing).
   func refreshWhisperModelStatus() {
     // Live UniFFI path; sample mode (engine == nil in pure previews) keeps
-    // the static placeholder so canvas previews stay offline-safe.
+    // shared projection unchanged so canvas previews do no disk/network work.
     guard engine != nil else { return }
-    localWhisperStatus = whisperModelStatus()
+    whisperDownloadStore.refresh()
   }
 
   /// Re-read the canonical local-Whisper catalog (options + saved preference +
@@ -1489,7 +1455,8 @@ final class SettingsViewModel: ObservableObject {
           outcome.applied
           ? String(
             localized: "Saved · applies from the next take",
-            comment: "Whisper model picker: selection persisted and the engine switches at the next take"
+            comment:
+              "Whisper model picker: selection persisted and the engine switches at the next take"
           )
           : outcome.pending
             ? String(
@@ -1508,67 +1475,10 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
-  /// Called from UniFFI download callbacks (main-queue hopped).
-  fileprivate func applyWhisperDownloadProgress(detail: String, fraction: Double?) {
-    whisperDownloadDetail = detail
-    whisperDownloadFraction = fraction
-  }
-
-  /// Download default Whisper into `~/.codescribe/models/…` (idempotent).
+  /// Same background task and progress owner used by first-run setup.
   func startWhisperDownload() {
     guard engine != nil else { return }
-    guard !whisperDownloadInFlight else { return }
-    whisperDownloadInFlight = true
-    whisperDownloadDetail = String(localized: "Starting download…")
-    whisperDownloadFraction = nil
-    lastError = nil
-    let channel = AsyncStream<WhisperDownloadEvent>.makeStream()
-    let sink = WhisperDownloadProgressSink(continuation: channel.continuation)
-    whisperDownloadSink = sink
-    whisperDownloadEventTask = Task { @MainActor [weak self] in
-      for await event in channel.stream {
-        guard let self else { return }
-        switch event {
-        case .progress(let detail, let fraction):
-          self.applyWhisperDownloadProgress(detail: detail, fraction: fraction)
-        case .complete(let path):
-          self.applyWhisperDownloadProgress(
-            detail: String(
-              localized: "Saved · \(path)",
-              comment: "Download finished; the placeholder is a file path"
-            ),
-            fraction: 1.0
-          )
-        }
-      }
-    }
-    Task { @MainActor [weak self] in
-      guard let self else { return }
-      do {
-        let status = try await downloadWhisperModel(listener: sink)
-        self.localWhisperStatus = status
-        let location = status.path ?? status.modelId
-        self.whisperDownloadDetail =
-          status.available
-          ? String(
-            localized: "Ready · \(location)",
-            comment: "The placeholder is a model path or model id"
-          )
-          : String(localized: "Download finished but model still unavailable")
-        self.whisperDownloadFraction = status.available ? 1.0 : nil
-      } catch {
-        self.lastError = String(describing: error)
-        self.whisperDownloadDetail = String(localized: "Download failed")
-        self.whisperDownloadFraction = nil
-      }
-      sink.finish()
-      if let eventTask = self.whisperDownloadEventTask {
-        await eventTask.value
-      }
-      self.whisperDownloadInFlight = false
-      self.whisperDownloadSink = nil
-      self.whisperDownloadEventTask = nil
-    }
+    whisperDownloadStore.start()
   }
 
   /// Re-probe just the agent substrate (readiness + MCP + capability matrix).
@@ -1818,7 +1728,8 @@ final class SettingsViewModel: ObservableObject {
     guard section != target || tab != targetTab else { return }
     if section != target { section = target }
     if tab != targetTab { tab = targetTab }
-    if target == .agent {
+    refreshForCurrentSection()
+    if target == .agent, engine?.shouldShowOnboarding() == false {
       refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
     }
     if target == .engine {
@@ -1992,7 +1903,8 @@ final class SettingsViewModel: ObservableObject {
     // (WHISPER_MODEL) is the cloud HTTP STT model id. Show the value the
     // active engine actually resolves so the label and the runtime path agree.
     let localEngineInPlay = settings.useLocalStt || asrModeId == "local_power"
-    let preference = localEngineInPlay
+    let preference =
+      localEngineInPlay
       ? settings.localModel
       : (settings.whisperModel ?? settings.localModel)
     return preference.isEmpty
@@ -2069,7 +1981,8 @@ final class SettingsViewModel: ObservableObject {
         ?? CsModelDiscovery.sample(for: runtime.providerId),
       credentialAccessResolved: providerAccessResolved,
       credentialAccessError: providerAccessError
-        ?? (lane == .assistive && !runtime.keyPresent ? providerAccountErrors[runtime.providerId] : nil)
+        ?? (lane == .assistive && !runtime.keyPresent
+          ? providerAccountErrors[runtime.providerId] : nil)
     )
   }
 
@@ -2898,7 +2811,10 @@ final class SettingsViewModel: ObservableObject {
   /// invalidates its generation and requests one follow-up after completion.
   func refreshProviderAccess() {
     guard let engine else { return }
-    if providerMutationPending { providerRefreshRequested = true; return }
+    if providerMutationPending {
+      providerRefreshRequested = true
+      return
+    }
     guard !providerAccessPending else { return }
     // This read consumes the queued request; later mutations may queue another.
     providerRefreshRequested = false
@@ -2916,7 +2832,10 @@ final class SettingsViewModel: ObservableObject {
         let snapshot = try await engine.providerAccessSnapshot()
         guard generation == providerAccessGeneration,
           snapshot.revision == engine.providerAccessRevision()
-        else { providerRefreshRequested = true; return }
+        else {
+          providerRefreshRequested = true
+          return
+        }
         applyLoadedSettings(engine.loadSettings())
         providers = snapshot.providers
         providerAccountErrors = snapshot.accountErrors
@@ -3004,8 +2923,7 @@ final class SettingsViewModel: ObservableObject {
   /// Settings + presence + registry after any provider/key mutation.
   private func reloadProviders(_ engine: SettingsEngine) {
     applyLoadedSettings(engine.loadSettings())
-    if providerAccessPending { providerRefreshRequested = true }
-    else { refreshProviderAccess() }
+    if providerAccessPending { providerRefreshRequested = true } else { refreshProviderAccess() }
   }
 
   // MARK: - Keys (Keychain-backed; secrets never read back)

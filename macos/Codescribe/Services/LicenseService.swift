@@ -56,7 +56,7 @@ struct SystemLicenseKeychain: LicenseKeychainStoring {
     add[kSecValueData as String] = data
     add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
     // A signed license is an entitlement, not an authentication secret. It
-    // must load unattended at app launch, so biometric user-presence access
+    // must restore after setup, so biometric user-presence access
     // control would break the local-first restore contract.
     // nosemgrep: swift.biometrics-and-auth.missing-user-auth.keychain-without-user-auth
     let addStatus = SecItemAdd(add as CFDictionary, nil)
@@ -112,7 +112,9 @@ final class LicenseService: ObservableObject {
       licenseKeychainDisabledByEnvironment()
       ? nil
       : SystemLicenseKeychain()
-    return LicenseService(keychain: keychain, autoload: true)
+    // App startup owns restoration after the first-run boundary. Resolving
+    // this shared service for a chat or settings projection is passive.
+    return LicenseService(keychain: keychain, autoload: false)
   }()
   static let preview = LicenseService(keychain: nil, autoload: false)
 

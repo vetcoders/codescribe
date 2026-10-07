@@ -49,7 +49,7 @@ final class SetupAppearanceTests: XCTestCase {
       window.close()
     }
     for dark in [false, true] {
-      for progress in 0...12 {
+      for progress in OnboardingStep.flow.indices {
         let model = OnboardingViewModel(
           engine: MockOnboardingEngine(progress: UInt32(progress)),
           hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
@@ -94,7 +94,7 @@ final class SetupAppearanceTests: XCTestCase {
     window.orderFrontRegardless()
     let contentView = try XCTUnwrap(window.contentView)
 
-    for progress in 0...12 {
+    for progress in OnboardingStep.flow.indices {
       let model = OnboardingViewModel(
         engine: MockOnboardingEngine(progress: UInt32(progress)),
         hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),

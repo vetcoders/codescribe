@@ -1608,17 +1608,6 @@
         }
       }
     },
-    "Accessibility Access" : {
-      "comment" : "Permission step heading",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dostępność"
-          }
-        }
-      }
-    },
     "Account" : {
       "comment" : "Sidebar group of settings sections",
       "localizations" : {
@@ -2168,7 +2157,7 @@
       }
     },
     "Allow %@" : {
-      "comment" : "Button on a permission step; %@ is a privacy scope such as Microphone",
+      "comment" : "Permission row action; the placeholder is a macOS privacy scope",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -2573,17 +2562,6 @@
         }
       }
     },
-    "Audio is processed locally on your computer." : {
-      "comment" : "Why the app asks for the Microphone scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dźwięk jest przetwarzany lokalnie na Twoim komputerze."
-          }
-        }
-      }
-    },
     "Audio retention" : {
       "localizations" : {
         "pl" : {
@@ -2724,16 +2702,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Główny moduł Codescribe jest niedostępny."
-          }
-        }
-      }
-    },
-    "Baked into this fat build · %@" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wbudowany w tę wersję · %@"
           }
         }
       }
@@ -3301,6 +3269,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wybierz agentów, z którymi chcesz pracować głosem."
+          }
+        }
+      }
+    },
+    "Choose which features to allow" : {
+      "comment" : "Heading above the unified onboarding permission checklist",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wybierz funkcje, na które chcesz zezwolić"
           }
         }
       }
@@ -3981,6 +3960,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kontynuuj tę samą konsultację w kolejnych nagraniach albo rozpocznij nową bez usuwania wcześniejszej historii."
+          }
+        }
+      }
+    },
+    "Continue whenever you’re ready. The download keeps running if you leave this step or close setup, and you can check it later in Settings." : {
+      "comment" : "Whisper download never blocks navigation, closing the wizard or completing setup",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Kontynuuj, kiedy chcesz. Pobieranie trwa dalej po przejściu do kolejnego kroku lub zamknięciu konfiguracji. Jego postęp możesz później sprawdzić w Ustawieniach."
           }
         }
       }
@@ -4793,6 +4783,17 @@
         }
       }
     },
+    "Default location: ~/.codescribe/models" : {
+      "comment" : "Default model storage folder; keep ~/.codescribe/models verbatim",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Domyślne miejsce: ~/.codescribe/models"
+          }
+        }
+      }
+    },
     "Defaults" : {
       "localizations" : {
         "pl" : {
@@ -4968,13 +4969,13 @@
         }
       }
     },
-    "Detect keyboard shortcuts to start and stop voice recording." : {
+    "Detects keyboard shortcuts to start and stop recording. Without it, global recording shortcuts are unavailable." : {
       "comment" : "Why the app asks for the Input Monitoring scope",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wykrywa skróty klawiszowe sterujące nagrywaniem głosu."
+            "state" : "needs_review",
+            "value" : "Wykrywa skróty klawiszowe rozpoczynające i kończące nagrywanie. Bez tego uprawnienia globalne skróty nagrywania są niedostępne."
           }
         }
       }
@@ -5178,6 +5179,7 @@
       }
     },
     "Download" : {
+      "comment" : "Opt in to download Whisper from Hugging Face",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5187,17 +5189,19 @@
         }
       }
     },
-    "Download Whisper" : {
+    "Download Whisper from Hugging Face for local dictation. Without it, the Whisper engine and Local power refinement are unavailable; Apple dictation remains available with Speech Recognition permission." : {
+      "comment" : "Explain what the optional model enables and the alternative without downloading",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pobierz Whisper"
+            "state" : "needs_review",
+            "value" : "Pobierz Whisper z Hugging Face, aby dyktować lokalnie. Bez modelu silnik Whisper i poprawki Local power są niedostępne; dyktowanie Apple pozostaje dostępne po przyznaniu uprawnienia Rozpoznawanie mowy."
           }
         }
       }
     },
     "Download failed" : {
+      "comment" : "Whisper download failed status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5208,6 +5212,7 @@
       }
     },
     "Download finished but model still unavailable" : {
+      "comment" : "Whisper download returned without usable weights",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5218,6 +5223,7 @@
       }
     },
     "Downloading…" : {
+      "comment" : "Whisper download progress with no file detail yet",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5381,6 +5387,7 @@
       }
     },
     "Embedded" : {
+      "comment" : "Whisper is included in this app build",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -6274,6 +6281,23 @@
         }
       }
     },
+    "Hugging Face · %@ · %@" : {
+      "comment" : "Download source: first placeholder is a repository id, second is approximate disk size",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Hugging Face · %1$@ · %2$@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Hugging Face · %@ · %@"
+          }
+        }
+      }
+    },
     "Hybrid (both)" : {
       "comment" : "Hotkey preset name: hold and toggle",
       "localizations" : {
@@ -6335,17 +6359,6 @@
       }
     },
     "Input Monitoring" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Monitorowanie wprowadzania"
-          }
-        }
-      }
-    },
-    "Input Monitoring Access" : {
-      "comment" : "Permission step heading",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -6425,16 +6438,6 @@
         }
       }
     },
-    "Install state" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stan instalacji"
-          }
-        }
-      }
-    },
     "Install the agent bridge to control playback." : {
       "localizations" : {
         "pl" : {
@@ -6472,6 +6475,7 @@
       }
     },
     "Installed" : {
+      "comment" : "Whisper weights are available locally",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -6728,39 +6732,6 @@
         }
       }
     },
-    "Lets Codescribe type text directly into other apps." : {
-      "comment" : "Why the app asks for the Accessibility scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pozwala Codescribe wpisywać tekst bezpośrednio do innych aplikacji."
-          }
-        }
-      }
-    },
-    "Lets the Agent read files and use them as context." : {
-      "comment" : "Why the app asks for the Full Disk Access scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pozwala czytać pliki i używać ich jako kontekstu dla Agenta."
-          }
-        }
-      }
-    },
-    "Lets the Agent use your screen as context." : {
-      "comment" : "Why the app asks for the Screen Recording scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pozwala korzystać z obrazu ekranu jako kontekstu dla Agenta."
-          }
-        }
-      }
-    },
     "Libraxis API key" : {
       "comment" : "Libraxis is a company name",
       "localizations" : {
@@ -6915,16 +6886,6 @@
         }
       }
     },
-    "Local FP16 model (%@) for direct Whisper or Local power refinement." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lokalny model FP16 (%@) do pracy bezpośrednio z silnikiem Whisper lub do doprecyzowania w trybie lokalnym."
-          }
-        }
-      }
-    },
     "Local Whisper is not the selected provider." : {
       "localizations" : {
         "pl" : {
@@ -6965,12 +6926,13 @@
         }
       }
     },
-    "Local path" : {
+    "Local dictation, when you want it" : {
+      "comment" : "Setup chapter heading for the optional Whisper download",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ścieżka lokalna"
+            "state" : "needs_review",
+            "value" : "Lokalne dyktowanie, kiedy chcesz"
           }
         }
       }
@@ -7243,17 +7205,6 @@
         }
       }
     },
-    "Microphone Access" : {
-      "comment" : "Permission step heading",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dostęp do mikrofonu"
-          }
-        }
-      }
-    },
     "Microphone access denied" : {
       "localizations" : {
         "pl" : {
@@ -7340,16 +7291,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Środkowy przycisk myszy jako Fn"
-          }
-        }
-      }
-    },
-    "Missing or invalid FP16 bundle · Local power is not ready" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Brakujące lub nieprawidłowe pliki modelu FP16 · Tryb lokalny niedostępny"
           }
         }
       }
@@ -8131,6 +8072,7 @@
       }
     },
     "Not installed" : {
+      "comment" : "Whisper weights are not yet available locally",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8368,7 +8310,7 @@
       }
     },
     "Open System Settings" : {
-      "comment" : "Button that deep-links into the macOS System Settings privacy pane",
+      "comment" : "Open this permission's native macOS privacy pane",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8519,12 +8461,23 @@
       }
     },
     "Optional" : {
-      "comment" : "Status chip",
+      "comment" : "Optional scope skipped in setup\nScreen Recording and Full Disk Access never block setup completion\nStatus chip",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Opcjonalnie"
+          }
+        }
+      }
+    },
+    "Optional local Whisper model" : {
+      "comment" : "Heading for an opt-in local dictation model download",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Opcjonalny lokalny model Whisper"
           }
         }
       }
@@ -8539,12 +8492,24 @@
         }
       }
     },
-    "Optional — skip it to limit file-aware features only." : {
+    "Optional — lets the Agent read protected files you choose as context. Without it, those files stay inaccessible; dictation still works." : {
+      "comment" : "Why the app asks for the Full Disk Access scope",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Opcjonalne — możesz pominąć ten krok; ograniczy to tylko funkcje korzystające z plików."
+            "state" : "needs_review",
+            "value" : "Opcjonalne — pozwala Agentowi czytać chronione pliki, które wybierzesz jako kontekst. Bez tego uprawnienia te pliki pozostają niedostępne; dyktowanie nadal działa."
+          }
+        }
+      }
+    },
+    "Optional — lets the Agent use your screen as context. Without it, screen context is unavailable; dictation still works." : {
+      "comment" : "Why the app asks for the Screen Recording scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Opcjonalne — pozwala Agentowi korzystać z ekranu jako kontekstu. Bez tego uprawnienia kontekst ekranu jest niedostępny; dyktowanie nadal działa."
           }
         }
       }
@@ -8741,17 +8706,6 @@
         }
       }
     },
-    "Permission · %@" : {
-      "comment" : "Eyebrow on a permission step; %@ is a privacy scope such as Microphone",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Uprawnienie · %@"
-          }
-        }
-      }
-    },
     "Permissions" : {
       "comment" : "Settings tab: macOS permission matrix",
       "localizations" : {
@@ -8920,13 +8874,13 @@
         }
       }
     },
-    "Powers Apple live dictation on your computer. The recording never leaves your device." : {
+    "Powers Apple live dictation on your computer. Without it, Apple dictation is unavailable; downloaded Whisper can still transcribe locally." : {
       "comment" : "Why the app asks for the Speech Recognition scope",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pozwala korzystać z dyktowania na żywo Apple bezpośrednio na Twoim komputerze. Nagranie nie opuszcza urządzenia."
+            "state" : "needs_review",
+            "value" : "Umożliwia dyktowanie na żywo przez Apple na Twoim komputerze. Bez tego uprawnienia dyktowanie Apple jest niedostępne; pobrany Whisper nadal może transkrybować lokalnie."
           }
         }
       }
@@ -9469,16 +9423,6 @@
         }
       }
     },
-    "Ready for Whisper engine · %@" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Gotowy dla silnika Whisper · %@"
-          }
-        }
-      }
-    },
     "Ready to go ✓" : {
       "comment" : "Agent setup status below the client cards",
       "localizations" : {
@@ -9533,7 +9477,7 @@
       }
     },
     "Ready · %@" : {
-      "comment" : "The placeholder is a model path or model id",
+      "comment" : "Whisper is ready; model path or id",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9564,6 +9508,7 @@
       }
     },
     "Recheck" : {
+      "comment" : "Recheck local Whisper availability without downloading",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9748,6 +9693,17 @@
         }
       }
     },
+    "Records your voice for dictation. Without it, voice recording is unavailable." : {
+      "comment" : "Why the app asks for the Microphone scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nagrywa Twój głos do dyktowania. Bez tego uprawnienia nagrywanie głosu jest niedostępne."
+          }
+        }
+      }
+    },
     "Recovered text — review before using" : {
       "localizations" : {
         "pl" : {
@@ -9830,6 +9786,7 @@
       }
     },
     "Refresh status" : {
+      "comment" : "Refresh all onboarding permission statuses without prompting",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10165,42 +10122,12 @@
         }
       }
     },
-    "Required by the direct Whisper engine or Local power live refinement" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wymagany do pracy bezpośrednio z silnikiem Whisper lub do doprecyzowania na żywo w trybie lokalnym"
-          }
-        }
-      }
-    },
-    "Required for Apple live dictation. Without it Codescribe cannot run on-device Speech." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wymagane do dyktowania na żywo przez Apple. Bez tego Codescribe nie może korzystać z rozpoznawania mowy na urządzeniu."
-          }
-        }
-      }
-    },
     "Required for committed utterances; stored in Settings." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wymagane do zatwierdzania wypowiedzi. Zapisywane w ustawieniach Codescribe."
-          }
-        }
-      }
-    },
-    "Required local FP16 model (%@). Missing or invalid weights keep Local power not ready." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wymagany lokalny model FP16 (%@). Brakujące lub nieprawidłowe pliki blokują Tryb lokalny."
           }
         }
       }
@@ -10769,7 +10696,7 @@
       }
     },
     "Saved · %@" : {
-      "comment" : "Download finished; the placeholder is a file path",
+      "comment" : "Download callback completed; the placeholder is a file path",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10928,17 +10855,6 @@
       }
     },
     "Screen Recording" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nagrywanie ekranu i dźwięku systemowego"
-          }
-        }
-      }
-    },
-    "Screen Recording Access" : {
-      "comment" : "Permission step heading",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -11731,17 +11647,6 @@
         }
       }
     },
-    "Speech Recognition Access" : {
-      "comment" : "Permission step heading",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozpoznanie mowy"
-          }
-        }
-      }
-    },
     "Speech Recognition access is unavailable — check System Settings › Privacy & Security › Speech Recognition" : {
       "localizations" : {
         "pl" : {
@@ -12021,6 +11926,7 @@
       }
     },
     "Starting download…" : {
+      "comment" : "Whisper download starting status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -13078,16 +12984,6 @@
         }
       }
     },
-    "This build embeds Whisper (fat SKU). Runtime download is not required." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ta wersja ma wbudowany model Whisper — nie trzeba go pobierać."
-          }
-        }
-      }
-    },
     "This build embeds Whisper — the on-disk model selection is ignored." : {
       "localizations" : {
         "pl" : {
@@ -13541,7 +13437,7 @@
       }
     },
     "Try again" : {
-      "comment" : "Setup API key save retry button\nSetup provider access retry button\nSetup provider selection retry button",
+      "comment" : "Retry the failed Whisper model download\nSetup API key save retry button\nSetup provider access retry button\nSetup provider selection retry button",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -13578,6 +13474,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Napisz wiadomość…"
+          }
+        }
+      }
+    },
+    "Types dictated text into other apps. Without it, automatic text insertion is unavailable." : {
+      "comment" : "Why the app asks for the Accessibility scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wpisuje dyktowany tekst w innych aplikacjach. Bez tego uprawnienia automatyczne wstawianie tekstu jest niedostępne."
           }
         }
       }
@@ -14300,6 +14207,7 @@
       }
     },
     "Whisper model" : {
+      "comment" : "Shared Whisper download control heading",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -14471,12 +14379,13 @@
         }
       }
     },
-    "You can continue without granting this, but the matching feature stays off until you do." : {
+    "You can continue with missing permissions. The features listed below stay unavailable until you grant access in System Settings." : {
+      "comment" : "Permissions do not block Continue; each row explains its feature consequence",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Możesz kontynuować bez tego uprawnienia, ale powiązana funkcja pozostanie wyłączona."
+            "state" : "needs_review",
+            "value" : "Możesz kontynuować bez tych uprawnień. Wymienione poniżej funkcje będą niedostępne, dopóki nie przyznasz dostępu w Ustawieniach systemowych."
           }
         }
       }
