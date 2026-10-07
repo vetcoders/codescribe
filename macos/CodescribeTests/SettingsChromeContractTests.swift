@@ -153,7 +153,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(tools.components(separatedBy: "defaultRow(title: \"").count, 4)
     let levels = ["Allow", "Ask", "Deny"]
     let polishLevels = try levels.map { try XCTUnwrap(polish[$0]) }
-    XCTAssertEqual(polishLevels, ["Zezwalaj", "Pytaj o zgodę", "Odmów"])
+    XCTAssertEqual(polishLevels, ["Zezwalaj", "Pytaj o zgodę", "Blokuj"])
     // The tools column at the minimum window: the detail column minus the pane
     // padding, the 190 pt server column, the gap between them and the row's
     // own padding. A row keeps at least 96 pt for the tool name.
@@ -534,6 +534,75 @@ final class SettingsChromeContractTests: XCTestCase {
       "Correction only AI formatting (formatting.txt)",
       "Base system prompt for the Agent (assistive.txt)",
       "Edits the BASE prompt file. The core still appends its tuning prompt at runtime.",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
+  /// The Tools tab is a permissions screen: Polish headline without a repeated
+  /// section label, category defaults named by what they cover, a whole-catalog
+  /// count, native as a UI label only, readable names above raw identifiers and
+  /// an inheritance caption with a way back from an individual rule.
+  func testToolsTabReadsAsAPermissionScreen() throws {
+    let sources = try settingsSources()
+    let tab = try XCTUnwrap(sources["SettingsTab.swift"])
+    XCTAssertTrue(tab.contains("case .agentTools: String(localized: \"Tool permissions\")"))
+    XCTAssertFalse(tab.contains("\"Tool permissions.\""))
+    XCTAssertFalse(tab.contains("Deny wins over everything"))
+    XCTAssertTrue(
+      tab.contains(
+        "\"Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse.\""
+      ))
+
+    let section = try XCTUnwrap(sources["ToolPermissionsSection.swift"])
+    XCTAssertFalse(
+      section.contains("SettingsSectionLabel(String(localized: \"Tool permissions\"))"),
+      "the tab headline already says it")
+    XCTAssertFalse(section.contains("Defaults: read-only allow, side-effectful ask"))
+    XCTAssertTrue(section.contains("defaultRow(title: \"Read data\""))
+    XCTAssertTrue(section.contains("defaultRow(title: \"Changes, processes and network\""))
+    XCTAssertTrue(section.contains("defaultRow(title: \"Unclassified tools\""))
+    XCTAssertTrue(section.contains("\"Per-tool permissions · \\(model.toolCapabilities.count)\""))
+    XCTAssertFalse(section.contains("Tool overrides"))
+    XCTAssertTrue(section.contains("A rule set for one tool outranks its server's rule"))
+    XCTAssertTrue(section.contains("Text(item.displayName)"))
+    XCTAssertTrue(section.contains("Text(item.identity)"), "the raw identifier stays")
+    XCTAssertTrue(section.contains("ToolPermissionLabels.risk(item.risk)"))
+    XCTAssertTrue(section.contains("ToolPermissionLabels.ruleCaption(item.ruleSource)"))
+    XCTAssertTrue(section.contains("if item.hasIndividualRule, let restoreInheritance {"))
+    XCTAssertFalse(section.contains("Text(item.name)"), "the raw name is not the headline")
+
+    let serverTab = try XCTUnwrap(sources["ToolServerTab.swift"])
+    XCTAssertTrue(serverTab.contains("Text(ToolPermissionLabels.source(server))"))
+    let search = try XCTUnwrap(sources["ToolSearchField.swift"])
+    XCTAssertTrue(search.contains("Text(\"\\(serverCount) tool sources\""))
+    XCTAssertFalse(search.contains("\\(serverCount) servers"))
+    let browser = try XCTUnwrap(sources["ToolOverridesBrowser.swift"])
+    XCTAssertTrue(browser.contains("model.clearToolPermission(identity: item.identity)"))
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "Tool permissions": "Uprawnienia narzędzi",
+      "Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse.":
+        "Ustaw, kiedy Agent może korzystać z narzędzi bez pytania, kiedy potrzebuje Twojej zgody, a kiedy ma odmówić wykonania działania.",
+      "Deny": "Blokuj",
+      "Read data": "Odczyt danych",
+      "Changes, processes and network": "Zmiany, procesy i sieć",
+      "Unclassified tools": "Niesklasyfikowane narzędzia",
+      "Per-tool permissions · %lld": "Uprawnienia poszczególnych narzędzi · %lld",
+      "Native": "Natywne",
+      "Changes": "Zmiany",
+      "Network": "Sieć",
+      "Individual rule": "Własna reguła",
+      "Inherited from the category default": "Dziedziczone z ustawienia kategorii",
+      "Restore inheritance": "Przywróć dziedziczenie",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    for retired in [
+      "Tool permissions.", "Allow, ask, or deny — per tool. Deny wins over everything.",
+      "Tool overrides · %lld", "Read-only", "Side effects", "Global / unknown", "%lld servers",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }

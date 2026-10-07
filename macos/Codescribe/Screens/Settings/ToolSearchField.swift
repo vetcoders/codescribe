@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Search field for the tool-overrides browser, with the visible server count.
+/// Search field for the per-tool permissions browser, with the count of
+/// visible tool sources (native plus every MCP server).
 struct ToolSearchField: View {
   @Binding var text: String
   let serverCount: Int
@@ -30,7 +31,7 @@ struct ToolSearchField: View {
         CSFocusOutline(isFocused: searchFocused, cornerRadius: CSSpace.sm)
       }
 
-      Text("\(serverCount) servers")
+      Text("\(serverCount) tool sources", comment: "Plural: native plus MCP servers")
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(Color.secondary)
     }

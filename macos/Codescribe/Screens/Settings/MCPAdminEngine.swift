@@ -25,6 +25,9 @@ protocol MCPAdminEngine {
   func setPermissionDefaults(
     defaultLevel: String, readOnlyDefault: String, sideEffectDefault: String) throws
   func setToolPermission(identity: String, level: String) throws
+  /// Drop the individual rule so the tool inherits its server rule or
+  /// category default again.
+  func clearToolPermission(identity: String) throws
   func setServerPermission(server: String, level: String) throws
   /// Live capabilities from the same registry the dispatcher uses.
   func listToolCapabilities() -> [CsToolCapability]
@@ -49,6 +52,7 @@ extension MCPAdminEngine {
     defaultLevel: String, readOnlyDefault: String, sideEffectDefault: String
   ) throws {}
   func setToolPermission(identity: String, level: String) throws {}
+  func clearToolPermission(identity: String) throws {}
   func setServerPermission(server: String, level: String) throws {}
   func listToolCapabilities() -> [CsToolCapability] { [] }
   func loadPermissionSurface() async -> (CsPermissionPolicy, [CsToolCapability]) {
@@ -81,6 +85,9 @@ final class RealMCPAdminEngine: MCPAdminEngine {
   }
   func setToolPermission(identity: String, level: String) throws {
     try admin.setToolPermission(identity: identity, level: level)
+  }
+  func clearToolPermission(identity: String) throws {
+    try admin.clearToolPermission(identity: identity)
   }
   func setServerPermission(server: String, level: String) throws {
     try admin.setServerPermission(server: server, level: level)

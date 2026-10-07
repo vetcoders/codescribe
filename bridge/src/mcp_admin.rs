@@ -126,8 +126,11 @@ pub struct CsToolCapability {
     pub origin: String,
     pub server: String,
     pub risk: String,
-    /// Effective level: `allow` | `ask` | `deny`.
+    /// Effective level the gate applies to the next call: `allow` | `ask` | `deny`.
     pub effective: String,
+    /// Rule behind `effective`: `tool` (individual), `server` or `default`
+    /// (inherited), `thread` (session override).
+    pub rule_source: String,
     pub requires_approval_flag: bool,
 }
 
@@ -281,6 +284,11 @@ impl CodescribeMcpAdmin {
         AgentPermissions::set_tool_level(&identity, level).map_err(config_err)
     }
 
+    /// Remove the durable per-tool rule so the tool inherits again.
+    pub fn clear_tool_permission(&self, identity: String) -> Result<(), CsError> {
+        AgentPermissions::clear_tool_level(&identity).map_err(config_err)
+    }
+
     /// Set durable per-MCP-server preference.
     pub fn set_server_permission(&self, server: String, level: String) -> Result<(), CsError> {
         let level = PermissionLevel::parse(&level).map_err(config_err)?;
@@ -304,6 +312,7 @@ impl CodescribeMcpAdmin {
                 server: c.server.unwrap_or_default(),
                 risk: c.risk,
                 effective: c.effective.as_str().to_string(),
+                rule_source: c.source.as_str().to_string(),
                 requires_approval_flag: c.requires_approval_flag,
             })
             .collect()

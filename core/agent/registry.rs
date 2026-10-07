@@ -6,9 +6,11 @@
 //! frontmost app is gated exactly like an MCP write; and absence of an operator
 //! preference fails closed, so an unclassified tool asks rather than runs.
 //!
-//! Resolution order is thread override, then durable per-tool rule, then
-//! per-server rule, then legacy grant. Only when none of those speak do the
-//! risk-based migration defaults apply.
+//! Resolution order is thread override, then durable per-tool rule (legacy
+//! grants merge in here), then per-server rule, then the operator's category
+//! default for the tool's risk class. [`AgentPermissions::resolve_with_source`]
+//! is the single resolver: the Settings list and the gate read the same
+//! answer, so the level a row shows is the level the next call gets.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -17,7 +19,9 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use super::permissions::{AgentPermissions, PermissionLevel, ToolCapability, tool_identity};
+use super::permissions::{
+    AgentPermissions, PermissionLevel, PermissionSource, ToolCapability, tool_identity,
+};
 use super::types::ImageAsset;
 
 /// Wire-level declaration of a tool as the model sees it: the name it calls,
@@ -134,9 +138,8 @@ pub struct ToolExecutionPolicy {
 }
 
 impl ToolExecutionPolicy {
-    /// Native tool with a declared risk class. Risk drives the migration
-    /// default (read-only → allow, side-effectful → ask); an explicit operator
-    /// rule still outranks it.
+    /// Native tool with a declared risk class. Risk picks the category default
+    /// (read-only / side effects); an explicit operator rule still outranks it.
     pub fn native(risk: ToolRisk) -> Self {
         Self {
             origin: ToolOrigin::Native,
@@ -257,12 +260,7 @@ impl ToolRegistry {
                     ToolOrigin::Native => "native".to_string(),
                     ToolOrigin::Mcp { server, .. } => format!("mcp:{server}"),
                 };
-                let effective = self.policy.resolve_for_origin(
-                    name,
-                    &tool.policy.origin,
-                    tool.policy.risk,
-                    &self.thread_overrides,
-                );
+                let (effective, source) = self.effective_level(&self.policy, name, tool);
                 ToolCapability {
                     name: name.clone(),
                     identity,
@@ -270,6 +268,7 @@ impl ToolRegistry {
                     server,
                     risk: tool.policy.risk.as_str().to_string(),
                     effective,
+                    source,
                     requires_approval_flag: tool.policy.requires_approval,
                 }
             })
@@ -379,41 +378,10 @@ impl ToolRegistry {
         } else {
             &self.policy
         };
-        let identity = tool_identity(&tool.policy.origin, name);
-        let level = if self.has_explicit_rule(policy, &identity, &tool.policy.origin) {
-            // Explicit operator preference (thread / tool / server / grant).
-            policy.resolve_for_origin(
-                name,
-                &tool.policy.origin,
-                tool.policy.risk,
-                &self.thread_overrides,
-            )
-        } else {
-            // Migration defaults when no preference is stored. Origin does not
-            // participate: a native tool that injects keystrokes into the
-            // frontmost app is exactly as side-effectful as an MCP one, so the
-            // gate is driven by risk alone (review P1-06). Unknown → ask keeps
-            // an unclassified tool fail-closed.
-            // - requires_approval flag → ask
-            // - read-only → allow
-            // - mutating / process / network / unknown → ask
-            // - destructive → deny
-            match (tool.policy.requires_approval, tool.policy.risk) {
-                (true, _) => PermissionLevel::Ask,
-                (false, ToolRisk::ReadOnly) => PermissionLevel::Allow,
-                (
-                    false,
-                    ToolRisk::Mutating
-                    | ToolRisk::ProcessControl
-                    | ToolRisk::Network
-                    | ToolRisk::Unknown,
-                ) => PermissionLevel::Ask,
-                (false, ToolRisk::Destructive) => PermissionLevel::Deny,
-            }
-        };
+        let (level, _) = self.effective_level(policy, name, tool);
 
         // Secret-path escalation (review S-P0-01): an Allow — whether the
-        // read-only migration default or a durable operator rule — never
+        // read-only category default or a durable operator rule — never
         // silently covers a credential-bearing path (.env, mcp.json env
         // blocks, key material). Escalate to Ask so the operator sees the
         // exact path on the approval card; no rule lifts this back to silent.
@@ -454,33 +422,33 @@ impl ToolRegistry {
         }
     }
 
-    /// Does the operator have a stored preference for this tool (thread, tool,
-    /// or server level)? Separates "the operator decided" from "nobody decided
-    /// yet", which is what lets the migration defaults apply only to the latter.
-    fn has_explicit_rule(
+    /// The one resolution both [`Self::capabilities`] and [`Self::decide`]
+    /// use. Origin does not participate: a native tool that injects keystrokes
+    /// into the frontmost app is exactly as side-effectful as an MCP one, so
+    /// the category defaults are driven by risk alone (review P1-06). The
+    /// `requires_approval` ratchet turns an inherited Allow into Ask; an
+    /// explicit operator rule (thread, tool, server) is left as written.
+    fn effective_level(
         &self,
         policy: &AgentPermissions,
-        identity: &str,
-        origin: &ToolOrigin,
-    ) -> bool {
-        if self.thread_overrides.contains_key(identity) {
-            return true;
-        }
-        if policy.tools.contains_key(identity) {
-            return true;
-        }
-        if let ToolOrigin::Mcp { server, .. } = origin {
-            let key = server.to_ascii_lowercase();
-            if policy.servers.contains_key(&key)
-                || policy
-                    .servers
-                    .keys()
-                    .any(|name| name.eq_ignore_ascii_case(server))
-            {
-                return true;
-            }
-        }
-        false
+        name: &str,
+        tool: &RegisteredTool,
+    ) -> (PermissionLevel, PermissionSource) {
+        let (level, source) = policy.resolve_for_origin_with_source(
+            name,
+            &tool.policy.origin,
+            tool.policy.risk,
+            &self.thread_overrides,
+        );
+        let level = if tool.policy.requires_approval
+            && source == PermissionSource::Default
+            && level == PermissionLevel::Allow
+        {
+            PermissionLevel::Ask
+        } else {
+            level
+        };
+        (level, source)
     }
 
     /// Run a tool. This performs the side effect unconditionally — the gate is
@@ -977,6 +945,111 @@ mod tests {
         registry.set_policy(policy);
         assert_eq!(
             registry.decide("future_native", &json!({}), "c", "s", "t"),
+            ToolDecision::Allow
+        );
+    }
+
+    /// The category defaults the operator stores in Settings are what the gate
+    /// applies: the level a capability row shows is the level `decide` returns,
+    /// with no second table of hard-coded defaults in between.
+    #[test]
+    fn decide_and_capabilities_agree_on_stored_category_defaults() {
+        let mut registry = ToolRegistry::new();
+        register_native_tool(&mut registry, "read_file", ToolRisk::ReadOnly);
+        register_native_tool(&mut registry, "type_text", ToolRisk::Mutating);
+        registry
+            .register(
+                ToolDefinition {
+                    name: "future_native".into(),
+                    description: "unclassified".into(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(|_| Box::pin(async { Vec::new() })),
+            )
+            .expect("register");
+        registry.set_policy(AgentPermissions {
+            default: PermissionLevel::Deny,
+            read_only_default: PermissionLevel::Deny,
+            side_effect_default: PermissionLevel::Allow,
+            ..Default::default()
+        });
+
+        let shown: std::collections::HashMap<String, (PermissionLevel, PermissionSource)> =
+            registry
+                .capabilities()
+                .into_iter()
+                .map(|c| (c.name, (c.effective, c.source)))
+                .collect();
+        assert_eq!(
+            shown["read_file"],
+            (PermissionLevel::Deny, PermissionSource::Default)
+        );
+        assert_eq!(
+            shown["type_text"],
+            (PermissionLevel::Allow, PermissionSource::Default)
+        );
+        assert_eq!(
+            shown["future_native"],
+            (PermissionLevel::Deny, PermissionSource::Default)
+        );
+
+        assert!(matches!(
+            registry.decide("read_file", &json!({}), "c", "s", "t"),
+            ToolDecision::Deny(_)
+        ));
+        assert_eq!(
+            registry.decide("type_text", &json!({}), "c", "s", "t"),
+            ToolDecision::Allow
+        );
+        assert!(matches!(
+            registry.decide("future_native", &json!({}), "c", "s", "t"),
+            ToolDecision::Deny(_)
+        ));
+    }
+
+    /// `requires_approval` lifts an inherited Allow to Ask in both the list and
+    /// the gate; an explicit tool rule is honoured as written in both.
+    #[test]
+    fn requires_approval_ratchet_is_visible_in_capabilities() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register_with_policy(
+                ToolDefinition {
+                    name: "peek".into(),
+                    description: "read with approval".into(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(|_| Box::pin(async { Vec::new() })),
+                ToolExecutionPolicy {
+                    origin: ToolOrigin::Mcp {
+                        server: "srv".into(),
+                        upstream_tool: "peek".into(),
+                    },
+                    risk: ToolRisk::ReadOnly,
+                    requires_approval: true,
+                },
+                None,
+            )
+            .expect("register");
+
+        let row = registry.capabilities().remove(0);
+        assert_eq!(row.effective, PermissionLevel::Ask);
+        assert_eq!(row.source, PermissionSource::Default);
+        assert!(matches!(
+            registry.decide("peek", &json!({}), "c", "s", "t"),
+            ToolDecision::RequireApproval(_)
+        ));
+
+        let mut policy = AgentPermissions::default();
+        policy
+            .tools
+            .insert("srv:peek".into(), PermissionLevel::Allow);
+        registry.set_policy(policy);
+        let row = registry.capabilities().remove(0);
+        assert_eq!(row.effective, PermissionLevel::Allow);
+        assert_eq!(row.source, PermissionSource::Tool);
+        assert_eq!(
+            registry.decide("peek", &json!({}), "c", "s", "t"),
             ToolDecision::Allow
         );
     }

@@ -1340,7 +1340,7 @@
         }
       }
     },
-    "%lld servers" : {
+    "%lld tool sources" : {
       "localizations" : {
         "en" : {
           "variations" : {
@@ -1348,13 +1348,13 @@
               "one" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld server"
+                  "value" : "%lld tool source"
                 }
               },
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld servers"
+                  "value" : "%lld tool sources"
                 }
               }
             }
@@ -1363,34 +1363,35 @@
         "pl" : {
           "variations" : {
             "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld źródło narzędzi"
+                }
+              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld serwery"
+                  "value" : "%lld źródła narzędzi"
                 }
               },
               "many" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld serwerów"
-                }
-              },
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld serwer"
+                  "value" : "%lld źródeł narzędzi"
                 }
               },
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld serwera"
+                  "value" : "%lld źródła narzędzi"
                 }
               }
             }
           }
         }
-      }
+      },
+      "comment" : "Plural: native plus MCP servers"
     },
     "%lld tools" : {
       "localizations" : {
@@ -1705,6 +1706,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Naciśnij Fn, aby rozpocząć dyktowanie, i ponownie, aby je zakończyć. Przytrzymanie Fn działa jak „naciśnij i mów”.\n\nAby uniknąć konfliktu z dyktowaniem macOS, ustaw działanie klawisza Fn na „Nic nie rób”."
+          }
+        }
+      }
+    },
+    "A rule set for one tool outranks its server's rule, and both outrank the category defaults. Destructive tools are always blocked, and reading a path that may hold secrets always asks first." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reguła ustawiona dla narzędzia ma pierwszeństwo przed regułą serwera, a obie przed ustawieniami kategorii. Narzędzia destrukcyjne są zawsze blokowane, a odczyt ścieżki mogącej zawierać sekrety zawsze wymaga zgody."
           }
         }
       }
@@ -2410,26 +2421,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zezwól raz"
-          }
-        }
-      }
-    },
-    "Allow · Ask · Deny. Defaults: read-only allow, side-effectful ask. \"Always allow\" from the approval card writes the same identity key." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zezwalaj · Pytaj o zgodę · Odmów. Domyślnie operacje tylko do odczytu są dozwolone, a operacje wprowadzające zmiany wymagają potwierdzenia. Opcja „Zawsze zezwalaj” na karcie potwierdzenia zapisuje tutaj zgodę dla tego samego narzędzia."
-          }
-        }
-      }
-    },
-    "Allow, ask, or deny — per tool. Deny wins over everything." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dla każdego narzędzia można zezwolić na działanie, wymagać zgody lub je zablokować. Blokada ma pierwszeństwo przed wszystkimi innymi ustawieniami."
           }
         }
       }
@@ -3360,6 +3351,27 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zmienione słowa"
+          }
+        }
+      }
+    },
+    "Changes" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmiany"
+          }
+        }
+      },
+      "comment" : "Tool risk class"
+    },
+    "Changes, processes and network" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmiany, procesy i sieć"
           }
         }
       }
@@ -5312,10 +5324,21 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Odmów"
+            "value" : "Blokuj"
           }
         }
       }
+    },
+    "Destructive" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Destrukcyjne"
+          }
+        }
+      },
+      "comment" : "Tool risk class"
     },
     "Details" : {
       "localizations" : {
@@ -6408,16 +6431,6 @@
         }
       }
     },
-    "Global / unknown" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Globalne / nieznane"
-          }
-        }
-      }
-    },
     "Global chord pastes the armed transcript at the caret. Apps bound to the same chord will also react." : {
       "localizations" : {
         "pl" : {
@@ -6760,6 +6773,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Nieaktywna"
+          }
+        }
+      }
+    },
+    "Individual rule" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Własna reguła"
+          }
+        }
+      }
+    },
+    "Inherited from the category default" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dziedziczone z ustawienia kategorii"
+          }
+        }
+      }
+    },
+    "Inherited from the server rule" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dziedziczone z reguły serwera"
           }
         }
       }
@@ -8152,6 +8195,17 @@
         }
       }
     },
+    "Native" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Natywne"
+          }
+        }
+      },
+      "comment" : "Tool source: built-in tools"
+    },
     "Native container" : {
       "shouldTranslate" : false
     },
@@ -8176,6 +8230,17 @@
         }
       },
       "comment" : "Capability summary counts"
+    },
+    "Network" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sieć"
+          }
+        }
+      },
+      "comment" : "Tool risk class"
     },
     "Network error" : {
       "localizations" : {
@@ -9252,6 +9317,16 @@
         }
       }
     },
+    "Overridden for the current thread" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nadpisane dla bieżącego wątku"
+          }
+        }
+      }
+    },
     "Override OAuth client id…" : {
       "localizations" : {
         "pl" : {
@@ -9340,6 +9415,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ścieżka niedostępna"
+          }
+        }
+      }
+    },
+    "Per-tool permissions · %lld" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uprawnienia poszczególnych narzędzi · %lld"
           }
         }
       }
@@ -9697,6 +9782,17 @@
         }
       }
     },
+    "Processes" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Procesy"
+          }
+        }
+      },
+      "comment" : "Tool risk class"
+    },
     "Processing..." : {
       "comment" : "Tray status: transcribing",
       "localizations" : {
@@ -10012,22 +10108,23 @@
         }
       }
     },
+    "Read data" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odczyt danych"
+          }
+        }
+      },
+      "comment" : "Tool risk class"
+    },
     "Read error" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Błąd odczytu"
-          }
-        }
-      }
-    },
-    "Read-only" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tylko odczyt"
           }
         }
       }
@@ -11012,6 +11109,16 @@
         }
       }
     },
+    "Restore inheritance" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć dziedziczenie"
+          }
+        }
+      }
+    },
     "Restore only %@" : {
       "localizations" : {
         "pl" : {
@@ -11831,6 +11938,16 @@
         }
       }
     },
+    "Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ustaw, kiedy Agent może korzystać z narzędzi bez pytania, kiedy potrzebuje Twojej zgody, a kiedy ma odmówić wykonania działania."
+          }
+        }
+      }
+    },
     "Settings" : {
       "localizations" : {
         "pl" : {
@@ -12124,16 +12241,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokazuje aktualny zakres zmian i informuje, czy bazowe prompty zostaną zachowane. Przeniesienie danych do kosza wymaga wpisania %@."
-          }
-        }
-      }
-    },
-    "Side effects" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wprowadzanie zmian"
           }
         }
       }
@@ -14062,16 +14169,6 @@
         }
       }
     },
-    "Tool overrides · %lld" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wyjątki dla narzędzi · %lld"
-          }
-        }
-      }
-    },
     "Tool permissions" : {
       "localizations" : {
         "pl" : {
@@ -14088,16 +14185,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Uprawnieniami narzędzi zarządzasz w zakładce Narzędzia."
-          }
-        }
-      }
-    },
-    "Tool permissions." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Uprawnienia do używania narzędzi."
           }
         }
       }
@@ -14428,6 +14515,27 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Niedostępne — brak narzędzia wbudowanego i działającego serwera MCP"
+          }
+        }
+      }
+    },
+    "Unclassified" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niesklasyfikowane"
+          }
+        }
+      },
+      "comment" : "Tool risk class"
+    },
+    "Unclassified tools" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niesklasyfikowane narzędzia"
           }
         }
       }
@@ -17428,7 +17536,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "permission, allow, ask, deny, tool, uprawnienia, zezwalaj, zgoda, pytaj, blokuj, odmowa, narzędzie"
+            "value" : "permission, allow, ask, deny, tool, uprawnienia, zezwalaj, zgoda, pytaj, blokuj, narzędzie, narzędzia"
           }
         }
       }

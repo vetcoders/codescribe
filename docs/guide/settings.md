@@ -242,6 +242,29 @@ and after launch synchronization finishes. A direct link refreshes even if
 Diagnostics is already selected. These inspections do not install skills or
 attach listeners.
 
+### Agent → Tools
+
+Tools is the permissions screen: when the Agent may use a tool without
+asking (Allow), when it needs approval (Ask), and when it must refuse (Deny).
+
+- **Defaults** — one row per category: Read data, Changes/processes/network,
+  Unclassified tools. These are the stored category defaults and apply to every
+  tool without a more specific rule.
+- **Resolution order** — a rule set for one tool outranks its server's rule,
+  and both outrank the category defaults. External destructive tools are
+  always refused, and an Allow never silently covers a path that may hold
+  secrets (`.env`, key material): that call asks first.
+- **Per-tool permissions · N** — N is the whole tool catalog, not the number
+  of individual rules. Tool sources down the left (Native plus every MCP
+  server, names verbatim), the selected source's tools on the right. Each row
+  shows a readable name above the raw identity, the source and localized risk
+  class, and whether the level is an individual rule or inherited (from the
+  server rule or the category default). "Restore inheritance" removes an
+  individual rule; the row then shows the inherited level again.
+- The level a row shows is the level the gate applies to the tool's next call:
+  Settings and the runtime read the same resolver, so a category default
+  changed here takes effect without an explicit rule per tool.
+
 ### Agent → Diagnostics
 
 Diagnostics is a status screen and the entry point for troubleshooting, not an

@@ -73,7 +73,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       String(localized: "Folders available to the Agent", comment: "Settings tab: Agent folders")
     case .agentStatus:
       String(localized: "Agent environment status", comment: "Settings tab: Diagnostics headline")
-    case .agentTools: String(localized: "Tool permissions.")
+    case .agentTools: String(localized: "Tool permissions")
     case .agentMcp: String(localized: "MCP servers.")
     case .dictationEngine: String(localized: "Active speech engine.")
     case .dictationWhisper: String(localized: "Local Whisper model.")
@@ -104,7 +104,10 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentStatus:
       String(localized: "Configuration state of the Agent, its available tools and integrations.")
     case .agentTools:
-      String(localized: "Allow, ask, or deny — per tool. Deny wins over everything.")
+      String(
+        localized:
+          "Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse."
+      )
     case .agentMcp:
       String(localized: "External MCP servers the Agent can call, and their transports.")
     case .dictationEngine:

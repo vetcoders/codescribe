@@ -60,6 +60,35 @@ impl PermissionLevel {
     }
 }
 
+/// Which rule produced an effective level. The Tools tab shows it next to the
+/// picker so an inherited level is never mistaken for an individual rule, and
+/// the registry uses it to apply the `requires_approval` ratchet only where no
+/// operator rule speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionSource {
+    /// Session-local override for the active thread.
+    Thread,
+    /// Durable per-tool rule (Settings or "Always allow").
+    Tool,
+    /// Durable per-server rule.
+    Server,
+    /// Category default (read-only / side effects / unclassified).
+    Default,
+}
+
+impl PermissionSource {
+    /// Wire spelling (`thread` | `tool` | `server` | `default`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Thread => "thread",
+            Self::Tool => "tool",
+            Self::Server => "server",
+            Self::Default => "default",
+        }
+    }
+}
+
 /// Durable permission section stored under `agent.permissions` in settings.json.
 ///
 /// Migration defaults for existing users (absent section):
@@ -133,11 +162,24 @@ impl AgentPermissions {
         risk: ToolRisk,
         thread_override: Option<PermissionLevel>,
     ) -> PermissionLevel {
+        self.resolve_with_source(identity, server, risk, thread_override)
+            .0
+    }
+
+    /// [`Self::resolve`] plus the rule that won. One resolver for the gate and
+    /// the Settings list: whatever this returns is what the next call does.
+    pub fn resolve_with_source(
+        &self,
+        identity: &str,
+        server: Option<&str>,
+        risk: ToolRisk,
+        thread_override: Option<PermissionLevel>,
+    ) -> (PermissionLevel, PermissionSource) {
         if let Some(level) = thread_override {
-            return level;
+            return (level, PermissionSource::Thread);
         }
         if let Some(level) = self.tools.get(identity) {
-            return *level;
+            return (*level, PermissionSource::Tool);
         }
         if let Some(server) = server {
             let server_key = server.to_ascii_lowercase();
@@ -153,13 +195,14 @@ impl AgentPermissions {
                 // they granted it — not a tool the server grows later. Unknown
                 // risk means "we have never classified this", so it still asks
                 // (review P2-16). Deny/Ask stay authoritative.
-                return match (level, risk) {
+                let level = match (level, risk) {
                     (PermissionLevel::Allow, ToolRisk::Unknown) => PermissionLevel::Ask,
                     _ => level,
                 };
+                return (level, PermissionSource::Server);
             }
         }
-        match risk {
+        let level = match risk {
             ToolRisk::ReadOnly => self.read_only_default,
             ToolRisk::Destructive => PermissionLevel::Deny,
             ToolRisk::Mutating | ToolRisk::ProcessControl | ToolRisk::Network => {
@@ -168,7 +211,8 @@ impl AgentPermissions {
             // Unknown falls to the product-facing global default so operators
             // can tighten new tools without reclassifying risk tables.
             ToolRisk::Unknown => self.default,
-        }
+        };
+        (level, PermissionSource::Default)
     }
 
     /// Convenience: resolve using origin + registered tool name.
@@ -179,13 +223,25 @@ impl AgentPermissions {
         risk: ToolRisk,
         thread_overrides: &HashMap<String, PermissionLevel>,
     ) -> PermissionLevel {
+        self.resolve_for_origin_with_source(tool_name, origin, risk, thread_overrides)
+            .0
+    }
+
+    /// [`Self::resolve_for_origin`] plus the rule that won.
+    pub fn resolve_for_origin_with_source(
+        &self,
+        tool_name: &str,
+        origin: &ToolOrigin,
+        risk: ToolRisk,
+        thread_overrides: &HashMap<String, PermissionLevel>,
+    ) -> (PermissionLevel, PermissionSource) {
         let identity = tool_identity(origin, tool_name);
         let server = match origin {
             ToolOrigin::Mcp { server, .. } => Some(server.as_str()),
             ToolOrigin::Native => None,
         };
         let thread = thread_overrides.get(&identity).copied();
-        self.resolve(&identity, server, risk, thread)
+        self.resolve_with_source(&identity, server, risk, thread)
     }
 
     /// Record "always allow" for one MCP tool into settings.json.
@@ -222,6 +278,25 @@ impl AgentPermissions {
                     let _ = tool_grants::revoke(identity);
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Drop the durable tool-level rule so the tool inherits its server rule
+    /// or category default again. Also revokes the legacy grant, which would
+    /// otherwise be merged back in as `Allow` on the next load.
+    pub fn clear_tool_level(identity: &str) -> Result<()> {
+        let identity = identity.trim();
+        if identity.is_empty() {
+            bail!("tool identity must not be empty");
+        }
+        let mut policy = Self::load();
+        policy.tools.remove(identity);
+        policy.save()?;
+        if let Some((server, _)) = identity.split_once(':')
+            && server != "native"
+        {
+            let _ = tool_grants::revoke(identity);
         }
         Ok(())
     }
@@ -279,8 +354,12 @@ pub struct ToolCapability {
     pub server: Option<String>,
     /// Risk class label used by the risk-default rules.
     pub risk: String,
-    /// Level [`AgentPermissions::resolve`] currently returns for this tool.
+    /// Level the gate returns for this tool's next call — the same resolution
+    /// [`crate::agent::ToolRegistry::decide`] performs, ratchet included.
     pub effective: PermissionLevel,
+    /// Rule that produced `effective`: individual (`tool`), inherited from the
+    /// server rule or the category default, or a thread override.
+    pub source: PermissionSource,
     /// Whether the tool declares approval-required independently of policy.
     pub requires_approval_flag: bool,
 }
@@ -403,6 +482,63 @@ mod tests {
         assert_eq!(
             tool_identity(&ToolOrigin::Native, "read_file"),
             "native:read_file"
+        );
+    }
+
+    /// The winning rule is reported alongside the level, so Settings can tell
+    /// an individual rule from an inherited one.
+    #[test]
+    fn resolve_with_source_names_the_winning_rule() {
+        let mut policy = AgentPermissions::default();
+        policy
+            .servers
+            .insert("desktop-commander".into(), PermissionLevel::Deny);
+        let identity = tool_grants::grant_key("desktop-commander", "write_file");
+        policy
+            .tools
+            .insert(identity.clone(), PermissionLevel::Allow);
+
+        assert_eq!(
+            policy.resolve_with_source(
+                &identity,
+                Some("desktop-commander"),
+                ToolRisk::Mutating,
+                Some(PermissionLevel::Ask),
+            ),
+            (PermissionLevel::Ask, PermissionSource::Thread)
+        );
+        assert_eq!(
+            policy.resolve_with_source(
+                &identity,
+                Some("desktop-commander"),
+                ToolRisk::Mutating,
+                None
+            ),
+            (PermissionLevel::Allow, PermissionSource::Tool)
+        );
+        assert_eq!(
+            policy.resolve_with_source(
+                "desktop-commander:other",
+                Some("desktop-commander"),
+                ToolRisk::Mutating,
+                None,
+            ),
+            (PermissionLevel::Deny, PermissionSource::Server)
+        );
+        assert_eq!(
+            policy.resolve_with_source("native:read_file", None, ToolRisk::ReadOnly, None),
+            (PermissionLevel::Allow, PermissionSource::Default)
+        );
+        // Removing the individual rule returns the tool to inheritance.
+        policy.tools.remove(&identity);
+        assert_eq!(
+            policy.resolve_with_source(
+                &identity,
+                Some("desktop-commander"),
+                ToolRisk::Mutating,
+                None
+            ),
+            (PermissionLevel::Deny, PermissionSource::Server)
         );
     }
 

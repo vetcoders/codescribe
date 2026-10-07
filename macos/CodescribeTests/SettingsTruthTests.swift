@@ -408,7 +408,7 @@ final class SettingsTruthTests: XCTestCase {
     let admin = RecordingPermissionAdmin(capabilities: [
       CsToolCapability(
         name: "search", identity: "loctree-mcp:search", origin: "mcp", server: "loctree-mcp",
-        risk: "read_only", effective: "allow", requiresApprovalFlag: false)
+        risk: "read_only", effective: "allow", ruleSource: "tool", requiresApprovalFlag: false)
     ])
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
@@ -424,6 +424,8 @@ final class SettingsTruthTests: XCTestCase {
     model[toolLevel: "loctree-mcp:search"] = "deny"
     XCTAssertEqual(admin.toolWrites.map(\.identity), ["loctree-mcp:search"])
     XCTAssertEqual(admin.toolWrites.map(\.level), ["deny"])
+    model.clearToolPermission(identity: "loctree-mcp:search")
+    XCTAssertEqual(admin.toolClears, ["loctree-mcp:search"])
 
     model.readOnlyDefaultPicker = "deny"
     XCTAssertEqual(admin.defaultWrites.last?.readOnlyDefault, "deny")
@@ -529,6 +531,43 @@ final class SettingsTruthTests: XCTestCase {
       }
     }
     XCTAssertTrue(AgentPanel.ownedCapabilities.contains(.toolPermissions))
+  }
+
+  /// The Tools tab shows a readable name above the raw identifier, localizes
+  /// the risk class and tells an individual rule from an inherited one; the
+  /// identity string itself is never touched.
+  func testToolPermissionLabelsHumanizeNamesAndKeepIdentifiers() {
+    XCTAssertEqual(ToolPermissionLabels.displayName(for: "apply_patch"), "Apply patch")
+    XCTAssertEqual(ToolPermissionLabels.displayName(for: "brave-web-search"), "Brave web search")
+    XCTAssertEqual(ToolPermissionLabels.displayName(for: "mcp__dc__write_file"), "Write file")
+    XCTAssertEqual(ToolPermissionLabels.displayName(for: "ls"), "Ls")
+    XCTAssertEqual(ToolPermissionLabels.displayName(for: ""), "")
+
+    XCTAssertEqual(ToolPermissionLabels.source("native"), "Native")
+    XCTAssertEqual(ToolPermissionLabels.source("Desktop-Commander"), "Desktop-Commander")
+    XCTAssertEqual(ToolPermissionLabels.origin("mcp:brave-search"), "MCP")
+    XCTAssertEqual(ToolPermissionLabels.risk("read_only"), "Read data")
+    XCTAssertEqual(ToolPermissionLabels.risk("process_control"), "Processes")
+    XCTAssertEqual(ToolPermissionLabels.risk("unknown"), "Unclassified")
+    XCTAssertEqual(ToolPermissionLabels.risk("exotic"), "exotic", "unknown classes stay raw")
+
+    let inherited = ToolPermissionItem(
+      capability: CsToolCapability(
+        name: "apply_patch", identity: "native:apply_patch", origin: "native", server: "",
+        risk: "mutating", effective: "ask", ruleSource: "default", requiresApprovalFlag: false))
+    XCTAssertEqual(inherited.displayName, "Apply patch")
+    XCTAssertEqual(inherited.identity, "native:apply_patch")
+    XCTAssertFalse(inherited.hasIndividualRule)
+    XCTAssertEqual(
+      ToolPermissionLabels.ruleCaption(inherited.ruleSource), "Inherited from the category default")
+    let individual = ToolPermissionItem(
+      capability: CsToolCapability(
+        name: "search", identity: "loctree-mcp:search", origin: "mcp:loctree-mcp",
+        server: "loctree-mcp", risk: "read_only", effective: "deny", ruleSource: "tool",
+        requiresApprovalFlag: false))
+    XCTAssertTrue(individual.hasIndividualRule)
+    XCTAssertEqual(ToolPermissionLabels.ruleCaption("tool"), "Individual rule")
+    XCTAssertEqual(ToolPermissionLabels.ruleCaption("server"), "Inherited from the server rule")
   }
 
   /// P0-9 residual: permissions hierarchy groups server→tool, filters by query,
@@ -1950,6 +1989,7 @@ final class SettingsTruthTests: XCTestCase {
 @MainActor
 private final class RecordingPermissionAdmin: MCPAdminEngine {
   private(set) var toolWrites: [(identity: String, level: String)] = []
+  private(set) var toolClears: [String] = []
   private(set) var defaultWrites: [CsPermissionPolicy] = []
   private var policy = CsPermissionPolicy(
     defaultLevel: "ask", readOnlyDefault: "allow", sideEffectDefault: "ask", tools: [], servers: [])
@@ -1978,5 +2018,6 @@ private final class RecordingPermissionAdmin: MCPAdminEngine {
   func setToolPermission(identity: String, level: String) throws {
     toolWrites.append((identity, level))
   }
+  func clearToolPermission(identity: String) throws { toolClears.append(identity) }
   func listToolCapabilities() -> [CsToolCapability] { capabilities }
 }
