@@ -66,7 +66,7 @@ if sys.argv[1:2] == ["auth"]:
             "cs-say auth requires the Grok CLI for xAI authentication.", file=sys.stderr
         )
         sys.exit(3)
-    options = {"oauth": ["--oauth"], "device-code": ["--oauth", "--device-auth"]}
+    options = {"oauth": ["--oauth"], "device-code": ["--device-auth"]}
     os.execv(executable, [executable, "login", *options[auth.login_type]])
 if sys.argv[1:] == ["--version"]:
     os.execv(

@@ -7,6 +7,91 @@ import XCTest
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
   @MainActor
+  func testBusMarkdownUsesChatCodeWellAndKeepsResizeMarginAcrossZoom() throws {
+    let raw = """
+      ## Wynik pracy
+
+      **Gotowe** i [źródło](https://example.test/receipt).
+
+      - pierwszy krok
+      - drugi krok
+
+      ```swift
+      let result = "przeczytano"
+      print(result)
+      ```
+      """
+    var bus = OverlayChannelDelivery.Bus()
+    var row = reply(String(repeating: "9", count: 24))
+    row["text"] = raw
+    row.removeValue(forKey: "tts_vendor")
+    bus.consume(row)
+    let restored = try JSONDecoder().decode(
+      OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus))
+    let conversation = try lenaConversation(restored)
+    XCTAssertEqual(
+      conversation.messages.first?.text, raw, "rendering must preserve the exact receipt")
+    let key = "OverlayMarkdownZoom.\(UUID().uuidString)"
+    defer { UserDefaults.standard.removeObject(forKey: key) }
+    let scale = TextScaleController(key: key)
+    let view = OverlayConversationView(
+      conversation: conversation, palette: .light, topInset: 50, bottomInset: 20,
+      pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+      draft: .constant("Zachowaj szkic"), sending: false, sendError: nil, onSend: {})
+    let host = NSHostingView(
+      rootView: TextScaleRoot(controller: scale) { view }
+        .background(OverlayAppearancePalette.light.desktopBackground.color)
+        .preferredColorScheme(.light))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 532, height: 500)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    func settle() {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+      host.layoutSubtreeIfNeeded()
+    }
+    func scrollViews(_ root: NSView) -> [NSScrollView] {
+      (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
+    }
+    func editor(_ root: NSView) -> NSTextView? {
+      if let text = root as? NSTextView, text.isEditable { return text }
+      return root.subviews.lazy.compactMap { editor($0) }.first
+    }
+    settle()
+    let scroll = try XCTUnwrap(scrollViews(host).first { $0.bounds.height > 150 })
+    let document = try XCTUnwrap(scroll.documentView)
+    let originalEditor = try XCTUnwrap(editor(host))
+    originalEditor.setSelectedRange(NSRange(location: 2, length: 5))
+    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    var codeWellPixels = 0
+    for y in stride(from: 100, to: bitmap.pixelsHigh - 100, by: 4) {
+      for x in stride(from: 30, to: bitmap.pixelsWide / 2, by: 4) {
+        guard let color = bitmap.colorAt(x: x, y: y) else { continue }
+        if min(color.redComponent, color.greenComponent, color.blueComponent) > 0.97 {
+          codeWellPixels += 1
+        }
+      }
+    }
+    XCTAssertGreaterThan(
+      codeWellPixels, 100, "a fenced block must render the shared native code well")
+    for _ in 0..<6 { scale.increase() }
+    settle()
+    let viewport = scroll.convert(scroll.bounds, to: host)
+    XCTAssertEqual(host.bounds.maxX - viewport.maxX, 15, accuracy: 1)
+    XCTAssertEqual(viewport.height, host.bounds.height, accuracy: 1)
+    XCTAssertLessThanOrEqual(document.bounds.width, viewport.width + 1)
+    XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
+    XCTAssertEqual(originalEditor.string, "Zachowaj szkic")
+    XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 5))
+    XCTAssertEqual(try XCTUnwrap(originalEditor.font).pointSize, 22.4, accuracy: 0.05)
+  }
+
+  @MainActor
   func testConversationZoomRetainsEditorDraftSelectionAndTypingFont() throws {
     let key = "OverlayConversationZoom.\(UUID().uuidString)"
     defer { UserDefaults.standard.removeObject(forKey: key) }
@@ -461,7 +546,8 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       XCTAssertGreaterThan(neutralLeft, 100, "agent bubble has a neutral interior")
       XCTAssertGreaterThan(neutralRight, 100, "human bubble has the same neutral interior")
       XCTAssertLessThan(warmCount * 10, neutralCount, "orange is a hairline, never a filled bubble")
-      XCTAssertGreaterThan(warmX / Double(max(1, warmCount)), Double(bitmap.pixelsWide) / 2)
+      let viewportMidpoint = Double(viewport.midX) * Double(bitmap.pixelsWide) / host.bounds.width
+      XCTAssertGreaterThan(warmX / Double(max(1, warmCount)), viewportMidpoint)
 
     }
   }
