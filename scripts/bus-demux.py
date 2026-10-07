@@ -5709,7 +5709,8 @@ def main() -> int:
                 pass
         if not manifest:
             manifest = read_json(Path(__file__).resolve().parent.parent / "manifest.json") or {}
-        version = manifest.get("helper_version") or manifest.get("bundle_version") or "source"
+        # Commands share the product version; skill metadata has its own version.
+        version = manifest.get("bundle_version") or "source"
         commit = manifest.get("source_commit")
         slug = f"+g{commit[:8]}" if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40,64}", commit) else ""
         dirty = ".dirty" if manifest.get("source_dirty") is True else ""

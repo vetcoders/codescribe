@@ -120,8 +120,9 @@ manifest = {
     "files": files,
 }
 skill_header = (skill_source / "SKILL.md").read_text(encoding="utf-8")
-helper_version = re.search(r'^\s+version:\s*"([^"\n]+)"', skill_header, re.MULTILINE)
-manifest["helper_version"] = helper_version.group(1) if helper_version else bundle_version
+skill_version = re.search(r'^\s+version:\s*"([^"\n]+)"', skill_header, re.MULTILINE)
+manifest["helper_version"] = bundle_version
+manifest["skill_version"] = skill_version.group(1) if skill_version else None
 try:
     manifest["source_commit"] = subprocess.check_output(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, text=True
