@@ -129,7 +129,7 @@ fn trial_digest(trial: &WordTrial) -> [u8; 32] {
     Sha256::digest(serde_json::to_vec(trial).expect("serializable word trial")).into()
 }
 
-fn label_equal(a: &str, b: &str) -> bool {
+pub(super) fn label_equal(a: &str, b: &str) -> bool {
     // Equality is evidence about a resolved component, never a target finder.
     normalize_word_token(a) == normalize_word_token(b)
 }

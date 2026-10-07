@@ -662,7 +662,8 @@ impl AcousticLedger {
                 if self.successful_empty_decodes.contains(*candidate) {
                     return self.empty_decode_scope_accounted(candidate, *start, *end);
                 }
-                self.word_pin_observations.contains(*candidate)
+                (self.word_pin_observations.contains(*candidate)
+                    || self.confirmed_word_decode(candidate, *start, *end))
                     && (self
                         .complete_decoded_words
                         .get(*candidate)
@@ -679,6 +680,39 @@ impl AcousticLedger {
             }
         }
         cursor >= source.sample_end
+    }
+
+    /// A confirmed trial also authenticates its earlier complete corroborating
+    /// decode. The earlier label refusal stays in the trail; only its exact
+    /// decoder work can account for recovery, never another PCM identity.
+    fn confirmed_word_decode(
+        &self,
+        observation: &ObservationIdentity,
+        start: u64,
+        end: u64,
+    ) -> bool {
+        self.word_choices().iter().any(|choice| {
+            choice.observation.occurrence == observation.occurrence
+                && choice.accepted
+                && choice.lexical_resolved
+                && choice.reason == "trial_confirmed"
+                && choice.candidate.complete
+                && choice.candidate.acoustic_boundaries_complete
+                && choice.candidate.decode != Some((start, end))
+                && choice.support.iter().any(|support| {
+                    support.observation == *observation
+                        && support.decode == Some((start, end))
+                        && support.complete
+                        && support.acoustic_boundaries_complete
+                        && support
+                            .original_text
+                            .as_deref()
+                            .zip(choice.candidate.original_text.as_deref())
+                            .is_some_and(|(earlier, confirmed)| {
+                                super::word_adjudication::label_equal(earlier, confirmed)
+                            })
+                })
+        })
     }
 
     /// Accepted decode windows account for transcription work. Frontier
