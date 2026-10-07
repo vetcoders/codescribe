@@ -50,6 +50,7 @@ struct SettingsView: View {
       sidebarSelection = model.section
       model.refresh()
       consumePendingDeepLink()
+      model.refreshForCurrentSection()
     }
     .task {
       // The health footer must include the controller's real recording
@@ -61,7 +62,7 @@ struct SettingsView: View {
       guard let window = notification.object as? NSWindow,
         window === hostWindow, window.isVisible
       else { return }
-      model.refreshProviderAccess()
+      model.refreshForCurrentSection()
     }
     .onReceive(
       NotificationCenter.default.publisher(

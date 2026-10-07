@@ -40,21 +40,10 @@ fn onboarding_progress_path() -> PathBuf {
     Config::config_dir().join("onboarding_progress")
 }
 
-/// Canonical first-run wizard step count: `Welcome`, `Mode`, 6× `Permission`
-/// (mic → accessibility → input → screen → speech → full-disk), `Language`,
-/// `ApiKey`, `HotkeyMode`, `AgenticReadiness`, `Done`. Mirrors the SwiftUI
-/// `OnboardingStep` flow; kept here so the persisted resume index can be
-/// clamped without depending on the (excised) AppKit step table.
-const TOTAL_ONBOARDING_STEPS: usize = 13;
-
-/// Version tag for the persisted resume marker. A bare integer (no tag) is the
-/// legacy 12-step layout from before the Speech Recognition step existed; it is
-/// remapped on read so mid-onboarding users resume on the same screen after an
-/// update instead of a shifted one.
-const ONBOARDING_PROGRESS_VERSION_PREFIX: &str = "v2:";
-
-/// Index where the Speech Recognition permission step was inserted (v1 → v2).
-const SPEECH_STEP_INSERT_INDEX: usize = 6;
+/// Nine semantic chapters, matching Swift `OnboardingStep.flow`.
+const TOTAL_ONBOARDING_STEPS: usize = 9;
+const ONBOARDING_PROGRESS_VERSION_PREFIX: &str = "v3:";
+const PERMISSIONS_CHAPTER_INDEX: usize = 2;
 
 /// Persist the wizard's current step so a relaunch resumes where the user left
 /// off. Writer half of the `onboarding_progress` marker; the SwiftUI wizard is
@@ -66,7 +55,10 @@ pub fn save_onboarding_progress(step_index: usize) {
     }
     let _ = fs::write(
         path,
-        format!("{ONBOARDING_PROGRESS_VERSION_PREFIX}{step_index}"),
+        format!(
+            "{ONBOARDING_PROGRESS_VERSION_PREFIX}{}",
+            step_index.min(TOTAL_ONBOARDING_STEPS - 1)
+        ),
     );
 }
 
@@ -82,18 +74,31 @@ pub fn load_onboarding_progress() -> usize {
     step.min(TOTAL_ONBOARDING_STEPS.saturating_sub(1))
 }
 
-/// Parse a persisted marker in either format. `v2:<n>` is the current 13-step
-/// layout verbatim; a bare integer is the pre-Speech 12-step layout, so indices
-/// at or past the insertion point shift up by one.
+/// v3 contains chapter indices. v2 contains the former 13-screen layout.
+/// Bare markers predate the Speech Recognition insertion at index six: apply
+/// that insertion first, then collapse permission screens into their chapter.
 fn parse_onboarding_progress(raw: &str) -> Option<usize> {
     if let Some(current) = raw.strip_prefix(ONBOARDING_PROGRESS_VERSION_PREFIX) {
         return current.trim().parse::<usize>().ok();
     }
-    let legacy = raw.parse::<usize>().ok()?;
-    Some(if legacy >= SPEECH_STEP_INSERT_INDEX {
-        legacy + 1
+    let old_step = if let Some(v2) = raw.strip_prefix("v2:") {
+        v2.trim().parse::<usize>().ok()?
     } else {
-        legacy
+        let bare = raw.parse::<usize>().ok()?;
+        if bare >= 6 {
+            bare.saturating_add(1)
+        } else {
+            bare
+        }
+    };
+    Some(match old_step {
+        0..=1 => old_step,
+        2..=7 => PERMISSIONS_CHAPTER_INDEX,
+        8 => 3,
+        9 => 5,
+        10 => 6,
+        11 => 7,
+        _ => 8,
     })
 }
 
@@ -109,43 +114,14 @@ pub fn mark_onboarding_done() {
     let _ = fs::write(setup_done, "done");
 }
 
-/// TCC scopes that must be Granted before `setup_done` may remain valid.
-///
-/// Full Disk Access is intentionally absent — optional step, never a gate.
-const REQUIRED_SETUP_PERMISSIONS: [PermissionKind; 5] = [
+/// Required grants can reopen setup. Screen Recording and Full Disk Access
+/// are optional feature scopes and never invalidate the completion sentinel.
+const REQUIRED_SETUP_PERMISSIONS: [PermissionKind; 4] = [
     PermissionKind::Microphone,
     PermissionKind::Accessibility,
     PermissionKind::InputMonitoring,
-    PermissionKind::ScreenRecording,
     PermissionKind::SpeechRecognition,
 ];
-
-/// Leading non-permission wizard steps (`Welcome`, `Mode`) that precede the
-/// permission block. This offset defines the resume-step layout persisted to
-/// the `onboarding_progress` marker; it must match whatever onboarding surface
-/// consumes that marker (none does today — the legacy wizard was excised).
-const WIZARD_STEPS_BEFORE_PERMISSIONS: usize = 2;
-
-/// Permission steps in resume-flow order, immediately following the leading
-/// steps. Must match Swift `OnboardingStep.flow` permission slots.
-const PERMISSION_STEP_ORDER: [PermissionKind; 6] = [
-    PermissionKind::Microphone,
-    PermissionKind::Accessibility,
-    PermissionKind::InputMonitoring,
-    PermissionKind::ScreenRecording,
-    PermissionKind::SpeechRecognition,
-    PermissionKind::FullDiskAccess,
-];
-
-/// Resolve a permission's index within the resume flow (leading steps +
-/// permission offset). Self-contained so this module does not depend on the
-/// removed `app/ui` wizard.
-fn permission_step_index(kind: PermissionKind) -> Option<usize> {
-    PERMISSION_STEP_ORDER
-        .iter()
-        .position(|candidate| *candidate == kind)
-        .map(|offset| WIZARD_STEPS_BEFORE_PERMISSIONS + offset)
-}
 
 /// Whether this process is running from inside an `.app` bundle.
 ///
@@ -167,22 +143,22 @@ fn executable_is_app_bundle(path: &std::path::Path) -> bool {
 /// Pick one permission's status out of an already-probed snapshot.
 ///
 /// Taking the statuses as parameters keeps the decision logic pure and
-/// testable. `FullDiskAccess` is answered `Granted` unconditionally because it
-/// is optional — it appears in the step order but never in
-/// `REQUIRED_SETUP_PERMISSIONS`, so it must never invalidate the sentinel.
+/// testable. `FullDiskAccess` and `ScreenRecording` are answered `Granted`
+/// because they are optional. Neither appears in `REQUIRED_SETUP_PERMISSIONS`,
+/// so neither may invalidate the sentinel.
 fn permission_status_from_snapshot(
     kind: PermissionKind,
     microphone: PermissionStatus,
     accessibility: PermissionStatus,
     input_monitoring: PermissionStatus,
-    screen_recording: PermissionStatus,
+    _screen_recording: PermissionStatus,
     speech_recognition: PermissionStatus,
 ) -> PermissionStatus {
     match kind {
         PermissionKind::Microphone => microphone,
         PermissionKind::Accessibility => accessibility,
         PermissionKind::InputMonitoring => input_monitoring,
-        PermissionKind::ScreenRecording => screen_recording,
+        PermissionKind::ScreenRecording => PermissionStatus::Granted,
         PermissionKind::SpeechRecognition => speech_recognition,
         PermissionKind::FullDiskAccess => PermissionStatus::Granted,
     }
@@ -192,9 +168,7 @@ fn permission_status_from_snapshot(
 /// standing.
 ///
 /// Pure decision core of [`invalidate_setup_done_if_permissions_missing`].
-/// Returns the *earliest* required permission that is not granted, in
-/// `REQUIRED_SETUP_PERMISSIONS` order, so the user resumes at the first gap
-/// rather than the last one probed.
+/// Returns the shared permissions chapter for any missing required grant.
 fn setup_done_refresh_target(
     setup_done_exists: bool,
     app_bundle_runtime: bool,
@@ -220,11 +194,11 @@ fn setup_done_refresh_target(
                 speech_recognition,
             ) != PermissionStatus::Granted
         })
-        .and_then(permission_step_index)
+        .map(|_| PERMISSIONS_CHAPTER_INDEX)
 }
 
 /// Revoke a `setup_done` that no longer reflects reality, and leave a resume
-/// marker pointing at the first missing scope.
+/// marker pointing at the shared permissions chapter.
 ///
 /// A user can grant permissions during onboarding and revoke them later in
 /// System Settings; without this the app would keep believing setup is done
@@ -249,7 +223,7 @@ fn invalidate_setup_done_if_permissions_missing() {
         permission_status(PermissionKind::Microphone),
         permission_status(PermissionKind::Accessibility),
         permission_status(PermissionKind::InputMonitoring),
-        permission_status(PermissionKind::ScreenRecording),
+        PermissionStatus::Granted,
         permission_status(PermissionKind::SpeechRecognition),
     ) else {
         return;
