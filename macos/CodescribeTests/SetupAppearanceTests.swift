@@ -36,7 +36,7 @@ final class SetupAppearanceTests: XCTestCase {
     preferences.set([language.rawValue], forKey: "AppleLanguages")
     defer { preferences.removePersistentDomain(forName: suite) }
     for dark in [false, true] {
-      for progress in 0...12 {
+      for progress in OnboardingStep.flow.indices {
         let model = OnboardingViewModel(
           engine: MockOnboardingEngine(progress: UInt32(progress)),
           hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
@@ -79,7 +79,7 @@ final class SetupAppearanceTests: XCTestCase {
   }
 
   func testTitledOnboardingWindowHasARealHeaderDragHitTargetAcrossAllSteps() throws {
-    for progress in 0...12 {
+    for progress in OnboardingStep.flow.indices {
       do {
         let model = OnboardingViewModel(
           engine: MockOnboardingEngine(progress: UInt32(progress)),

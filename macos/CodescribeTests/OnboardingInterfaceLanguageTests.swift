@@ -35,11 +35,9 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
     XCTAssertEqual(InterfaceLanguage.preferred(from: []), .english)
   }
 
-  func testResumeIndicesStillIdentifyTheOriginalPermissionAndDictationSteps() throws {
+  func testResumeIndicesIdentifyGroupedSetupChapters() throws {
     let expected: [OnboardingStep] = [
-      .interfaceLanguage, .mode, .permission(.microphone), .permission(.accessibility),
-      .permission(.inputMonitoring), .permission(.screenRecording),
-      .permission(.speechRecognition), .permission(.fullDiskAccess), .language,
+      .interfaceLanguage, .mode, .permissions, .language, .localModel,
       .apiKey, .hotkeyMode, .agenticReadiness, .done,
     ]
     try withPreferences { preferences, _ in
@@ -48,7 +46,7 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
         engine.fixture.progress = UInt32(index)
         let resumed = model(preferences: preferences, engine: engine)
         XCTAssertEqual(resumed.step, step, "Persisted index \(index)")
-        XCTAssertEqual(resumed.totalSteps, 13)
+        XCTAssertEqual(resumed.totalSteps, 9)
         XCTAssertTrue(engine.configWrites.isEmpty)
       }
     }
@@ -175,11 +173,11 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
       preferences.set(["en"], forKey: "AppleLanguages")
       let wizard = model(preferences: preferences)
       XCTAssertEqual(wizard.primaryLabel, "Continue")
-      XCTAssertEqual(wizard.progressLabel, "Step 1 of 13")
+      XCTAssertEqual(wizard.progressLabel, "Step 1 of 9")
       let englishTitle = wizard.windowTitle
       wizard.selectInterfaceLanguage(.polish)
       XCTAssertEqual(wizard.primaryLabel, "Uruchom ponownie i kontynuuj")
-      XCTAssertEqual(wizard.progressLabel, "Krok 1 z 13")
+      XCTAssertEqual(wizard.progressLabel, "Krok 1 z 9")
       XCTAssertNotEqual(wizard.windowTitle, englishTitle)
       XCTAssertEqual(
         PermissionKind.microphone.onboardingTitle(locale: wizard.interfaceLocale),
@@ -187,7 +185,7 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
       XCTAssertEqual(PermissionState.granted.label(locale: wizard.interfaceLocale), "Przyznano")
       wizard.selectInterfaceLanguage(.english)
       XCTAssertEqual(wizard.primaryLabel, "Continue")
-      XCTAssertEqual(wizard.progressLabel, "Step 1 of 13")
+      XCTAssertEqual(wizard.progressLabel, "Step 1 of 9")
       XCTAssertEqual(wizard.windowTitle, englishTitle)
       XCTAssertEqual(
         PermissionKind.microphone.onboardingTitle(locale: wizard.interfaceLocale),

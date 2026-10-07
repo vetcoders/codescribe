@@ -299,61 +299,40 @@ pub fn should_show_onboarding() -> bool {
     !setup_done_path().exists()
 }
 
-/// Resume-flow layout, required-permission gates, and legacy marker remaps.
+/// Persisted setup chapters and permission requirements across wizard versions.
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Wizard steps after the permission block in Swift `OnboardingStep.flow`:
-    /// `Language`, `ApiKey`, `HotkeyMode`, `AgenticReadiness`, `Done`.
-    const WIZARD_STEPS_AFTER_PERMISSIONS: usize = 5;
-
-    /// The persisted `onboarding_progress` marker is a raw index into the Swift
-    /// `OnboardingStep.flow` table, so the Rust step count must stay arithmetically
-    /// tied to the same layout. Drifting either side silently resumes users on the
-    /// wrong screen.
     #[test]
-    fn total_steps_match_swift_flow_layout() {
-        assert_eq!(
-            TOTAL_ONBOARDING_STEPS,
-            WIZARD_STEPS_BEFORE_PERMISSIONS
-                + PERMISSION_STEP_ORDER.len()
-                + WIZARD_STEPS_AFTER_PERMISSIONS
-        );
-        assert_eq!(TOTAL_ONBOARDING_STEPS, 13);
+    fn grouped_setup_has_nine_chapters() {
+        assert_eq!(TOTAL_ONBOARDING_STEPS, 9);
+        assert_eq!(ONBOARDING_PROGRESS_VERSION_PREFIX, "v3:");
     }
 
-    /// Literal indices mirror `OnboardingStep.flow`. Speech Recognition sits after
-    /// Screen Recording and before the optional Full Disk Access step.
     #[test]
-    fn permission_step_indices_mirror_swift_flow() {
-        assert_eq!(permission_step_index(PermissionKind::Microphone), Some(2));
-        assert_eq!(
-            permission_step_index(PermissionKind::Accessibility),
-            Some(3)
-        );
-        assert_eq!(
-            permission_step_index(PermissionKind::InputMonitoring),
-            Some(4)
-        );
-        assert_eq!(
-            permission_step_index(PermissionKind::ScreenRecording),
-            Some(5)
-        );
-        assert_eq!(
-            permission_step_index(PermissionKind::SpeechRecognition),
-            Some(6)
-        );
-        assert_eq!(
-            permission_step_index(PermissionKind::FullDiskAccess),
-            Some(7)
-        );
+    fn every_missing_required_grant_resumes_the_permissions_chapter() {
+        for missing in [0, 1, 2, 4] {
+            let mut statuses = [PermissionStatus::Granted; 5];
+            statuses[missing] = PermissionStatus::Denied;
+            assert_eq!(
+                setup_done_refresh_target(
+                    true,
+                    true,
+                    statuses[0],
+                    statuses[1],
+                    statuses[2],
+                    statuses[3],
+                    statuses[4],
+                ),
+                Some(2),
+                "missing permission position {missing}"
+            );
+        }
     }
 
-    /// Apple live dictation is unusable without the Speech TCC grant, so a missing
-    /// one must invalidate `setup_done` like the other required scopes.
     #[test]
-    fn speech_recognition_is_required_for_setup_done() {
+    fn speech_recognition_remains_a_required_grant() {
         assert!(REQUIRED_SETUP_PERMISSIONS.contains(&PermissionKind::SpeechRecognition));
         assert_eq!(
             setup_done_refresh_target(
@@ -365,11 +344,30 @@ mod tests {
                 PermissionStatus::Granted,
                 PermissionStatus::NotDetermined,
             ),
-            Some(6)
+            Some(2)
         );
     }
 
-    /// All five required grants leave `setup_done` intact (no resume step).
+    #[test]
+    fn optional_screen_and_disk_access_never_invalidate_setup_done() {
+        assert!(!REQUIRED_SETUP_PERMISSIONS.contains(&PermissionKind::ScreenRecording));
+        assert!(!REQUIRED_SETUP_PERMISSIONS.contains(&PermissionKind::FullDiskAccess));
+        for screen in [PermissionStatus::Denied, PermissionStatus::NotDetermined] {
+            assert_eq!(
+                setup_done_refresh_target(
+                    true,
+                    true,
+                    PermissionStatus::Granted,
+                    PermissionStatus::Granted,
+                    PermissionStatus::Granted,
+                    screen,
+                    PermissionStatus::Granted,
+                ),
+                None
+            );
+        }
+    }
+
     #[test]
     fn all_required_permissions_granted_keeps_setup_done() {
         assert_eq!(
@@ -386,43 +384,6 @@ mod tests {
         );
     }
 
-    /// Full Disk Access is optional — it is in the step order but never in
-    /// `REQUIRED_SETUP_PERMISSIONS`, so it can never invalidate `setup_done`.
-    #[test]
-    fn full_disk_access_never_invalidates_setup_done() {
-        assert!(!REQUIRED_SETUP_PERMISSIONS.contains(&PermissionKind::FullDiskAccess));
-        assert_eq!(
-            permission_status_from_snapshot(
-                PermissionKind::FullDiskAccess,
-                PermissionStatus::Denied,
-                PermissionStatus::Denied,
-                PermissionStatus::Denied,
-                PermissionStatus::Denied,
-                PermissionStatus::Denied,
-            ),
-            PermissionStatus::Granted
-        );
-    }
-
-    /// Resume lands on the *earliest* missing scope, not the last one probed.
-    #[test]
-    fn earliest_missing_permission_wins_the_resume_step() {
-        assert_eq!(
-            setup_done_refresh_target(
-                true,
-                true,
-                PermissionStatus::Denied,
-                PermissionStatus::Granted,
-                PermissionStatus::Granted,
-                PermissionStatus::Granted,
-                PermissionStatus::Denied,
-            ),
-            Some(2)
-        );
-    }
-
-    /// Outside an app bundle (dev/CLI runs) the TCC model does not apply, and with
-    /// no `setup_done` there is nothing to invalidate.
     #[test]
     fn non_bundle_or_missing_sentinel_never_invalidates() {
         let all_missing = |bundle: bool, sentinel: bool| {
@@ -440,28 +401,38 @@ mod tests {
         assert_eq!(all_missing(true, false), None);
     }
 
-    /// Legacy bare-integer markers come from the 12-step layout without the
-    /// Speech Recognition step: indices at or past the insertion point must
-    /// shift by one so the user resumes on the same *screen*, not the same raw
-    /// number (e.g. legacy 8 = ApiKey → 9 = ApiKey in the 13-step flow).
     #[test]
-    fn legacy_progress_markers_remap_across_the_speech_step_insertion() {
-        // Before the insertion point: unchanged.
-        assert_eq!(parse_onboarding_progress("0"), Some(0));
-        assert_eq!(parse_onboarding_progress("5"), Some(5));
-        // At/after the insertion point: shifted by one.
-        assert_eq!(parse_onboarding_progress("6"), Some(7));
-        assert_eq!(parse_onboarding_progress("8"), Some(9));
-        assert_eq!(parse_onboarding_progress("11"), Some(12));
-        // Current format passes through verbatim.
-        assert_eq!(parse_onboarding_progress("v2:6"), Some(6));
-        assert_eq!(parse_onboarding_progress("v2:12"), Some(12));
-        // Garbage is unparsable in both formats.
-        assert_eq!(parse_onboarding_progress("v2:x"), None);
-        assert_eq!(parse_onboarding_progress("not-a-number"), None);
+    fn version_two_markers_keep_their_semantic_chapter() {
+        let expected = [0, 1, 2, 2, 2, 2, 2, 2, 3, 5, 6, 7, 8];
+        for (index, chapter) in expected.into_iter().enumerate() {
+            assert_eq!(
+                parse_onboarding_progress(&format!("v2:{index}")),
+                Some(chapter)
+            );
+        }
     }
 
-    /// Bundle path under `*.app/Contents/MacOS/` vs bare cargo/bin install.
+    #[test]
+    fn bare_markers_include_the_speech_insertion_before_grouping() {
+        let expected = [0, 1, 2, 2, 2, 2, 2, 3, 5, 6, 7, 8];
+        for (index, chapter) in expected.into_iter().enumerate() {
+            assert_eq!(parse_onboarding_progress(&index.to_string()), Some(chapter));
+        }
+    }
+
+    #[test]
+    fn version_three_markers_keep_current_chapters_and_reject_malformed_values() {
+        for index in 0..9 {
+            assert_eq!(
+                parse_onboarding_progress(&format!("v3:{index}")),
+                Some(index)
+            );
+        }
+        for malformed in ["v3:x", "v2:x", "not-a-number", "-1", "v4:5", ""] {
+            assert_eq!(parse_onboarding_progress(malformed), None, "{malformed}");
+        }
+    }
+
     #[test]
     fn app_bundle_detection_matches_bundle_layout() {
         assert!(executable_is_app_bundle(std::path::Path::new(
