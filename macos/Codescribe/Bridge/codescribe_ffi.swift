@@ -10808,7 +10808,8 @@ public func FfiConverterTypeCsModelDirectory_lower(_ value: CsModelDirectory) ->
 
 /**
  * Live model discovery result for one provider. `status` is one of:
- * `"fresh"`, `"cached"`, `"no_key"`, `"error"`. Errors never carry secrets.
+ * `"fresh"`, `"cached"`, `"no_key"`, `"key_rejected"` (the provider refused
+ * the stored API key), `"error"`. Errors never carry secrets.
  */
 public struct CsModelDiscovery: Equatable, Hashable {
     public var providerId: String
