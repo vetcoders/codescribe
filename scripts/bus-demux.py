@@ -18,6 +18,24 @@ Drafts are useful for live replies; only a ``transcript_sealed`` envelope sets
 Exact names take precedence. A unique one-edit opening name can match a
 registered recipient; competing matches produce a non-executable ambiguity
 notice. The original transcript is never rewritten.
+
+Table of contents — grep for the ``§ N.`` banner to jump to a section:
+
+  § 1.  Schemas and constants
+  § 2.  Runtime paths and environment
+  § 3.  Generational bus journal
+  § 4.  Installation interlock and CLI session activity
+  § 5.  Names, audiences and recipient resolution
+  § 6.  Event decoding and evidence normalization
+  § 7.  Follower emission and delivery admission
+  § 8.  Session lease, persistence and the delivery mailbox
+  § 9.  Native queue wakeup
+  § 10. Follower run loop
+  § 11. Speech: credentials, voice profiles, TTS and playback
+  § 12. Reply publication and spoken replies
+  § 13. Messages: Founder typed text and agent peer text
+  § 14. Channel bindings and session handover
+  § 15. Status, watch and the CLI entrypoint
 """
 
 from __future__ import annotations
@@ -38,6 +56,10 @@ from pathlib import Path
 from stat import S_ISREG
 from typing import Any, Iterator
 from types import SimpleNamespace
+
+# =============================================================================
+# § 1. Schemas and constants
+# =============================================================================
 
 BUS_FILENAME = "transcript-events.jsonl"
 CLEAN_SCHEMA = "codescribe.transcript.v1"
@@ -103,6 +125,11 @@ BUS_PATH_ENV_KEYS = (
     "XDG_STATE_HOME",
     "CODESCRIBE_DATA_DIR",
 )
+
+
+# =============================================================================
+# § 2. Runtime paths and environment
+# =============================================================================
 
 
 def _config_dir(env: dict[str, str]) -> Path:
@@ -179,6 +206,11 @@ def agent_turn_lease_path() -> Path:
     # Held shared by the app only while an agent turn streams or runs tools.
     # Same invariant directory as the runtime interlock.
     return install_interlock_path().with_name(AGENT_TURN_LEASE_FILENAME)
+
+
+# =============================================================================
+# § 3. Generational bus journal
+# =============================================================================
 
 
 def generation_sources(path: Path) -> tuple[list[dict[str, Any]], int, int, float | None]:
@@ -310,6 +342,11 @@ class GenerationFile:
                 break
             out.extend(raw)
         return bytes(out)
+
+
+# =============================================================================
+# § 4. Installation interlock and CLI session activity
+# =============================================================================
 
 
 def installation_idle(
@@ -662,6 +699,11 @@ def _cli_session_abandoned(emitted_at: str | None, now: float) -> bool:
     return now - started.timestamp() > CLI_ABANDONED_AFTER_SECONDS
 
 
+# =============================================================================
+# § 5. Names, audiences and recipient resolution
+# =============================================================================
+
+
 def bridge_home() -> Path:
     override = os.environ.get("CODESCRIBE_AGENT_BRIDGE_HOME", "").strip()
     if override:
@@ -804,6 +846,11 @@ def assigned_session_wav(
     return str(_config_dir(env) / "sessions" / f"{sid}.wav")
 
 
+# =============================================================================
+# § 6. Event decoding and evidence normalization
+# =============================================================================
+
+
 def slim(
     event: dict[str, Any], audience: str, kind: str | None = None
 ) -> dict[str, Any]:
@@ -937,6 +984,9 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         EVIDENCE_SCHEMA,
         CHANNEL_SESSION_SCHEMA,
         AGENT_USER_MESSAGE_SCHEMA,
+        # Replies enter the follower stream only for the peer text lane;
+        # admission drops every reply that does not name a peer recipient.
+        AGENT_REPLY_SCHEMA,
         "codescribe.bus-chunk.v1",
     ):
         return None
@@ -1314,6 +1364,11 @@ class EvidenceNormalizer:
         return clean
 
 
+# =============================================================================
+# § 7. Follower emission and delivery admission
+# =============================================================================
+
+
 def emit(payload: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
     sys.stdout.flush()
@@ -1386,6 +1441,29 @@ def consider(
     debug: bool,
     recipients: set[str] | None = None,
 ) -> dict[str, Any] | None:
+    if event.get("schema") == AGENT_REPLY_SCHEMA:
+        # Agent-to-agent text lane. Only a reply that explicitly names a peer
+        # recipient is a delivery; ordinary spoken replies carry no `peer_to`
+        # and never re-enter any mailbox, so replying cannot echo-loop.
+        peer_to = event.get("peer_to")
+        sender = event.get("sender")
+        if (event.get("kind") != "agent_reply" or not isinstance(peer_to, str)
+                or not isinstance(event.get("text"), str) or not event["text"].strip()
+                or not isinstance(event.get("reply_id"), str)
+                or not re.fullmatch(r"[0-9a-f]{24}", event["reply_id"])
+                or event.get("message_id") != event["reply_id"]
+                or event.get("source_event_id") != event["reply_id"]
+                or not isinstance(sender, dict)
+                or any(not isinstance(sender.get(key), str) or not sender[key]
+                       for key in ("name", "provider", "provider_session_id", "lease_id"))):
+            return None
+        if not name or peer_to.casefold() != name.casefold():
+            return None
+        # Peer text is coordination between agents, never Founder authority:
+        # it must not inherit the typed lane's state_change_allowed=True.
+        return {**event, "schema": EVENT_SCHEMA, "kind": "message",
+                "producer_schema": AGENT_REPLY_SCHEMA, "state_change_allowed": False,
+                "routing_match": "audience"}
     if event.get("schema") == AGENT_USER_MESSAGE_SCHEMA:
         if (event.get("kind") != "agent_user_message" or event.get("source") != "typed"
                 or not isinstance(event.get("text"), str) or not event["text"].strip()
@@ -1562,6 +1640,11 @@ def replay(path: Path) -> Iterator[str]:
                 yield raw.decode("utf-8", errors="strict")
     except FileNotFoundError:
         return
+
+
+# =============================================================================
+# § 8. Session lease, persistence and the delivery mailbox
+# =============================================================================
 
 
 def utc_now() -> str:
@@ -2303,6 +2386,11 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
     return 0
 
 
+# =============================================================================
+# § 9. Native queue wakeup
+# =============================================================================
+
+
 def effective_wakeup(args: argparse.Namespace) -> str:
     requested = getattr(args, "wakeup", "auto")
     if requested != "auto":
@@ -2472,6 +2560,11 @@ def fire_seal_hook(command: str, payload: dict[str, Any]) -> None:
         )
     except OSError as error:
         sys.stderr.write(f"bus-demux: on-seal hook failed to spawn: {error}\n")
+
+
+# =============================================================================
+# § 10. Follower run loop
+# =============================================================================
 
 
 def run(args: argparse.Namespace) -> int:
@@ -2740,6 +2833,11 @@ def run(args: argparse.Namespace) -> int:
             event_trigger.close()
         if lease:
             lease.close()
+
+
+# =============================================================================
+# § 11. Speech: credentials, voice profiles, TTS and playback
+# =============================================================================
 
 
 def _xai_speech_key() -> str | None:
@@ -3373,6 +3471,11 @@ def _speak_openai(
     return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus, control=control)
 
 
+# =============================================================================
+# § 12. Reply publication and spoken replies
+# =============================================================================
+
+
 def lease_name(root: Path, provider: str, session: str) -> str | None:
     """The name a provider session's lease already carries, if any."""
     lease_id = lease_identifier(provider, session)
@@ -3763,6 +3866,11 @@ def say_reply(args: argparse.Namespace) -> int:
     return speak_published_reply(args, bus, reply, os.urandom(12).hex(), automatic=True)
 
 
+# =============================================================================
+# § 13. Messages: Founder typed text and agent peer text
+# =============================================================================
+
+
 def send_text_command(args: argparse.Namespace) -> int:
     """Publish explicit user text to the selected immutable channel owner."""
     root = args.bridge_home
@@ -3812,6 +3920,114 @@ def send_text_command(args: argparse.Namespace) -> int:
             raise ValueError("publication has no durable receipt; do not automatically resend")
     emit({"kind": "message_published", "message_id": identity, "source": receipt})
     return 0
+
+
+def send_peer_command(args: argparse.Namespace) -> int:
+    """Publish one agent-authored text message to a peer mailbox or channel 0.
+
+    The wire shape is an agent reply — the canonical publisher's only
+    agent-authored text lane — extended with explicit peer routing: `peer_to`
+    names the one recipient of each per-bus copy, `sender` carries the
+    authoring lease, and the top-level `channel` records the origin ("0" for
+    a broadcast, the target's digit for a direct). Followers admit it as a
+    "message" delivery with state_change_allowed=False.
+
+    A broadcast (`--to 0`) writes one copy per bound peer bus, excluding the
+    sender's own lease; each copy shares one message identity, so a reader
+    bound to several channels still dedupes it within its lease.
+    """
+    root = args.bridge_home
+    lease_id = lease_identifier(args.provider, args.session)
+    lease = read_json(root / "leases" / f"{lease_id}.json") or {}
+    if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
+            or lease.get("provider") != args.provider.casefold()
+            or lease.get("provider_session_id") != args.session):
+        raise ValueError("sender has no lease here; attach before sending")
+    sender_name = lease.get("name")
+    if not isinstance(sender_name, str) or not sender_name:
+        raise ValueError("sender lease has no attached name")
+    text = args.send
+    if not text.strip():
+        raise ValueError("empty message")
+    if len(text.encode("utf-8")) > 65536:
+        raise ValueError("message exceeds 64 KiB")
+    target = args.to
+    path = root / AUDIENCE_BINDING_FILENAME
+    with path.with_suffix(".lock").open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+        state = read_json(path) or {}
+        bindings = (state.get("bindings")
+                    if state.get("schema") == AUDIENCE_BINDING_SCHEMA else None)
+        if not isinstance(bindings, dict) or not bindings:
+            raise ValueError("no channel bindings exist")
+        rows: list[tuple[str, dict[str, Any], str]] = []
+        sender_channel = None
+        for channel, binding in sorted(bindings.items()):
+            if not isinstance(binding, dict):
+                continue
+            owner_lease = lease_identifier(str(binding.get("provider") or ""),
+                                           str(binding.get("provider_session_id") or ""))
+            if owner_lease == lease_id:
+                sender_channel = str(channel)
+            rows.append((str(channel), binding, owner_lease))
+        if target == "0":
+            selected = [(channel, binding) for channel, binding, owner_lease in rows
+                        if owner_lease != lease_id]
+            if not selected:
+                raise ValueError("no other agent is bound to any channel")
+            origin = "0"
+        else:
+            selected = [(channel, binding) for channel, binding, _ in rows
+                        if str(binding.get("audience") or "").casefold() == target.casefold()]
+            if not selected:
+                raise ValueError(f"no channel is bound to the name {target!r}")
+            selected = selected[:1]
+            origin = selected[0][0]
+        identity = os.urandom(12).hex()
+        sender = {"name": sender_name, "provider": args.provider.casefold(),
+                  "provider_session_id": args.session, "lease_id": lease_id,
+                  "channel": sender_channel}
+        deliveries: list[dict[str, Any]] = []
+        for channel, binding in selected:
+            owner_lease = lease_identifier(str(binding.get("provider") or ""),
+                                           str(binding.get("provider_session_id") or ""))
+            audience = binding.get("audience")
+            if not isinstance(audience, str) or not audience:
+                raise ValueError(f"channel {channel} has no audience")
+            bus = Path(str(binding.get("bus") or "")).expanduser().resolve(strict=False)
+            owner = {"provider": str(binding.get("provider") or "").casefold(),
+                     "provider_session_id": binding.get("provider_session_id"),
+                     "lease_id": owner_lease, "channel": channel,
+                     "audience": audience, "name": audience, "bus": str(bus)}
+            event = {"schema": AGENT_REPLY_SCHEMA, "kind": "agent_reply",
+                     "emitted_at": utc_now(), "reply_id": identity,
+                     # source_event_id keys the delivery phase (enrich), so two
+                     # peer messages never collapse into one delivery identity.
+                     "message_id": identity, "source_event_id": identity,
+                     "name": sender_name,
+                     "provider": args.provider.casefold(),
+                     "provider_session_id": args.session, "lease_id": lease_id,
+                     "text": text, "spoken": False, "association": "unsolicited",
+                     "delivery_id": None, "peer_to": audience,
+                     "channel": origin, "sender": sender, "recipients": [owner]}
+            receipt = publish_reply_event(bus, event, bridge_root=root)
+            if (any(type(receipt.get(key)) is not int or receipt[key] < 0
+                    for key in ("stream_dev", "stream_inode", "offset", "length"))
+                    or not 0 < receipt["length"] <= REPLY_READ_LIMIT
+                    or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
+                raise ValueError("publication has no durable receipt; do not automatically resend")
+            deliveries.append({"peer": audience, "channel": channel,
+                               "follower_live": bool(live_follower_pid(root, owner_lease)),
+                               "source": receipt})
+    emit({"kind": "peer_message_published", "message_id": identity,
+          "origin_channel": origin, "sender": sender_name,
+          "recipients": deliveries})
+    return 0
+
+
+# =============================================================================
+# § 14. Channel bindings and session handover
+# =============================================================================
 
 
 def follower_pidfile(root: Path, lease_id: str) -> Path:
@@ -4484,6 +4700,11 @@ def attach_command(args: argparse.Namespace) -> int:
     return 0
 
 
+# =============================================================================
+# § 15. Status, watch and the CLI entrypoint
+# =============================================================================
+
+
 def status_command(args: argparse.Namespace) -> int:
     """One truthful read of a session's channel.
 
@@ -4864,6 +5085,8 @@ def main() -> int:
         "vendor TTS; --name defaults to the name on this session's lease",
     )
     parser.add_argument("--send-text", action="store_true", help="send user text from stdin to an exact channel owner; --channel, --lease and --bus required")
+    parser.add_argument("--send", metavar="TEXT", help="agent-authored text message; requires --to and an attached --provider/--session sender")
+    parser.add_argument("--to", metavar="NAME|0", help="recipient agent name for --send, or 0 to broadcast to every other bound agent")
     parser.add_argument("--reply-to", metavar="DELIVERY_ID", help="associate --say with this owned delivery envelope")
     playback = parser.add_mutually_exclusive_group()
     playback.add_argument("--play-reply", metavar="REPLY_ID", help="explicitly play one durable reply")
@@ -4904,6 +5127,7 @@ def main() -> int:
         args.attach, args.takeover, args.channel is not None, args.status, args.watch,
         args.follow, args.once, args.from_start, args.ack, args.lease,
         args.from_file is not None, args.say is not None, args.send_text,
+        args.send is not None, args.to is not None,
         args.read_delivery, args.retry_wakeup, args.play_reply, args.stop_reply,
         args.playback_ticket, args.reply_to, args.all, args.become, args.active_names,
         args.mute_agent, args.unmute_agent,
@@ -4979,7 +5203,8 @@ def main() -> int:
     if args.send_text:
         if (not args.provider or args.channel not in tuple(str(n) for n in range(1, 10))
                 or not args.lease or not args.bus_overridden
-                or any((args.say is not None, args.ack, args.attach, args.status, args.watch,
+                or any((args.say is not None, args.send is not None, args.to is not None,
+                        args.ack, args.attach, args.status, args.watch,
                         args.follow, args.once, args.read_delivery, args.retry_wakeup,
                         args.play_reply, args.stop_reply, args.reply_to))):
             parser.error("--send-text requires an exact --provider/--session/--lease/--channel/--bus owner")
@@ -4987,6 +5212,17 @@ def main() -> int:
             return send_text_command(args)
         except (OSError, ValueError, RuntimeError) as error:
             sys.stderr.write(f"cs-bus: message publication refused: {error}\n")
+            return 3
+    if args.send is not None or args.to is not None:
+        if (args.send is None or args.to is None or not args.provider
+                or any((args.say is not None, args.ack, args.attach, args.status, args.watch,
+                        args.follow, args.once, args.read_delivery, args.retry_wakeup,
+                        args.play_reply, args.stop_reply, args.reply_to, args.lease))):
+            parser.error("--send requires --to <name|0> and an attached --provider/--session sender")
+        try:
+            return send_peer_command(args)
+        except (OSError, ValueError, RuntimeError) as error:
+            sys.stderr.write(f"cs-bus: peer message refused: {error}\n")
             return 3
     if args.reply_to and (args.say is None or not re.fullmatch(r"[0-9a-f]{24}", args.reply_to)):
         parser.error("--reply-to requires --say and a delivery id")
