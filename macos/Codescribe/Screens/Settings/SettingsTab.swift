@@ -71,7 +71,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentPrompts: String(localized: "Prompts", comment: "Settings tab: editable prompts")
     case .agentWorkspace:
       String(localized: "Folders available to the Agent", comment: "Settings tab: Agent folders")
-    case .agentStatus: String(localized: "Connection details.")
+    case .agentStatus:
+      String(localized: "Agent environment status", comment: "Settings tab: Diagnostics headline")
     case .agentTools: String(localized: "Tool permissions.")
     case .agentMcp: String(localized: "MCP servers.")
     case .dictationEngine: String(localized: "Active speech engine.")
@@ -101,10 +102,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
           "The Agent can read and write only inside these folders. It has no access outside them."
       )
     case .agentStatus:
-      String(
-        localized:
-          "Readiness, installation paths, MCP status, and what the local agent substrate can currently do."
-      )
+      String(localized: "Configuration state of the Agent, its available tools and integrations.")
     case .agentTools:
       String(localized: "Allow, ask, or deny — per tool. Deny wins over everything.")
     case .agentMcp:
@@ -162,7 +160,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       settingsSearchTerms(
         localized: String(
           localized: "settings.search.tab.agentStatus",
-          defaultValue: "diagnostics, connection, installation path, capability, readiness",
+          defaultValue:
+            "diagnostics, status, environment, connection, installation path, capability, readiness, mcp",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))

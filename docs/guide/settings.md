@@ -230,16 +230,46 @@ Palette labels and grant actions follow the macOS interface language through
 the app's String Catalog. Model IDs, provider IDs and tool grant keys remain
 unchanged.
 
-Open **Settings → Agent → Diagnostics** for the complete agent connection
-report: the core readiness rows, managed skill status and installation paths,
-capability matrix, MCP status, and a single Refresh action. Native-tool or
-workspace failures remain visible there even when credentials are valid.
-Long diagnostic values wrap within the pane, keeping labels and controls
-visible when the sidebar is open.
+Open **Settings → Agent → Diagnostics** (headline "Agent environment status")
+for the agent status screen: the readiness verdict with its prerequisite rows,
+the detected skill installations, one summary line each for capabilities and
+MCP servers, and a single Refresh action. Native-tool or workspace failures
+remain visible there even when credentials are valid. Long diagnostic values
+wrap within the pane, keeping labels and controls visible when the sidebar is
+open. See "Agent → Diagnostics" below for what each part shows.
 Managed skill status is read when Settings opens, when Diagnostics is selected
 and after launch synchronization finishes. A direct link refreshes even if
 Diagnostics is already selected. These inspections do not install skills or
 attach listeners.
+
+### Agent → Diagnostics
+
+Diagnostics is a status screen and the entry point for troubleshooting, not an
+inventory. The core reports every row as a stable facet and state with its
+structured parts (counts, provider or server name, error cause); the app
+renders the interface-language text from those, so the Polish and English
+screens never depend on parsing the English probe text.
+
+- **Agent readiness** — the verdict pill plus one row per prerequisite:
+  Overall status, Model provider, Native tools, Folders available to the Agent,
+  then the optional operator tooling (VibeCrafted runtime, AICX MCP, Loctree MCP,
+  PRView integration). Every row ends with a status mark: a dot and a word
+  (Good, Warning, Error, Not checked) that is also the tooltip and the
+  VoiceOver label.
+- **Detected installations and runtime** — one block per detected client
+  (Claude Code, Codex) with its managed skill path, the installer's evidence
+  line, and the launch synchronization notice folded under "Technical details".
+- **Available tools and integrations** — one line of counts (Native · Enhanced
+  · Unavailable). "Show details" expands the capability matrix with localized
+  tier badges and a readable headline per operation; the core's raw reason is
+  the dot's tooltip. Permissions are managed in the Tools tab.
+- **MCP servers** — the configuration source path, one line of counts
+  (Configured · Tested · Issues), and a note when every server still waits for
+  the agent's first turn. "Show servers" expands one merged table: server name,
+  runtime status from the probe, and the cached test result. Servers are added,
+  tested and removed in the MCP tab. Without any configured server the section
+  shows the single configuration state row instead (no mcp.json, empty config,
+  or the concrete read error).
 
 Setup keeps the Agent step to one decision: which clients to connect. It shows
 only a short ready state or an inline setup action and error. The preceding

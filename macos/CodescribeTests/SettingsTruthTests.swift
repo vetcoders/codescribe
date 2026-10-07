@@ -1395,6 +1395,108 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(restored, ["correction", "smart", "max"])
   }
 
+  /// Diagnostics renders rows from the core's facet + state, never by parsing
+  /// the English value: the structured parts land in the sentence.
+  func testDiagnosticsRowsRenderFromFacetAndStateNotTheEnglishValue() {
+    let ready = CsMcpStatusRow(
+      label: "Agentic readiness:", value: "ready — raw english", tone: .good,
+      facet: .readiness, state: .ready, count: 26, subject: "xAI (Grok)", detail: "")
+    XCTAssertEqual(ready.localizedLabel, "Overall status")
+    XCTAssertEqual(
+      ready.localizedValue, "Ready — xAI (Grok) configured, access available, 26 native tools")
+
+    let provider = CsMcpStatusRow(
+      label: "Provider:", value: "", tone: .bad,
+      facet: .provider, state: .accessUnavailable, count: nil, subject: "OpenAI",
+      detail: "OPENAI_API_KEY")
+    XCTAssertEqual(provider.localizedLabel, "Model provider")
+    XCTAssertEqual(provider.localizedValue, "OpenAI — no access (sign in or set OPENAI_API_KEY)")
+
+    let roots = CsMcpStatusRow(
+      label: "Workspace roots:", value: "", tone: .good,
+      facet: .workspaceRoots, state: .synchronized, count: 1, subject: "", detail: "")
+    XCTAssertEqual(roots.localizedLabel, "Folders available to the Agent")
+    XCTAssertEqual(roots.localizedValue, "1 folder — native tools synchronized")
+
+    let prview = CsMcpStatusRow(
+      label: "PRView integration:", value: "", tone: .warn,
+      facet: .prviewIntegration, state: .configured, count: nil, subject: "prview-mcp", detail: "")
+    XCTAssertEqual(prview.localizedLabel, "PRView integration")
+    XCTAssertEqual(prview.localizedValue, "Configured — agent not started yet (server prview-mcp)")
+
+    let server = CsMcpStatusRow(
+      label: "curl:", value: "", tone: .bad,
+      facet: .mcpServer, state: .failed, count: nil, subject: "curl", detail: "command not found")
+    XCTAssertEqual(server.localizedLabel, "curl")
+    XCTAssertEqual(server.localizedValue, "Failed: command not found")
+
+    XCTAssertEqual(CsMcpRowTone.good.label, "Good")
+    XCTAssertEqual(CsMcpRowTone.warn.label, "Warning")
+    XCTAssertEqual(CsMcpRowTone.bad.label, "Error")
+    XCTAssertEqual(CsMcpRowTone.neutral.label, "Not checked")
+  }
+
+  /// The capability summary counts tiers; the row headline comes from tier +
+  /// provider so the English reason stays a tooltip.
+  func testCapabilitySummaryCountsTiersAndHeadlinesDropTheRawReason() {
+    let summary = CapabilitySummary(rows: CsCapabilityRow.sampleMatrix)
+    XCTAssertEqual(summary.native, 1)
+    XCTAssertEqual(summary.enhanced, 1)
+    XCTAssertEqual(summary.unavailable, 1)
+    XCTAssertEqual(summary.line, "Native: 1 · Enhanced: 1 · Unavailable: 1")
+
+    let rows = CsCapabilityRow.sampleMatrix
+    XCTAssertEqual(rows[0].localizedTier, "Native")
+    XCTAssertEqual(rows[0].localizedHeadline, "Built-in Codescribe tool")
+    XCTAssertEqual(rows[0].localizedDetail, "tool: list_directory · source: native")
+    XCTAssertEqual(
+      rows[1].localizedHeadline, "Built-in tool, enriched by Loctree while it is healthy")
+    XCTAssertEqual(rows[2].localizedTier, "Unavailable")
+    XCTAssertEqual(
+      rows[2].localizedHeadline, "Unavailable — no built-in tool and no healthy MCP server")
+    XCTAssertNil(
+      CsCapabilityRow(op: "x", tier: "unavailable", provider: "", nativeTool: "", reason: "")
+        .localizedDetail)
+  }
+
+  /// One MCP table line per configured server: the probe row joins by name
+  /// and the cached test result becomes its own column.
+  func testMcpServerLinesMergeProbeRowsWithTestResults() {
+    let servers = [
+      CsMcpServer(
+        name: "loctree-mcp", command: "loct", args: [], envKeys: [], enabled: true,
+        transport: "stdio",
+        endpoint: "", authRef: ""),
+      CsMcpServer(
+        name: "aicx-mcp", command: "aicx", args: [], envKeys: [], enabled: true, transport: "stdio",
+        endpoint: "", authRef: ""),
+      CsMcpServer(
+        name: "orphan", command: "x", args: [], envKeys: [], enabled: true, transport: "stdio",
+        endpoint: "", authRef: ""),
+    ]
+    let results = [
+      "loctree-mcp": CsMcpTestResult(
+        ok: true, toolCount: 9, serverName: "loctree-mcp", serverVersion: "1.2",
+        protocolVersion: "", error: ""),
+      "aicx-mcp": CsMcpTestResult(
+        ok: false, toolCount: 0, serverName: "aicx-mcp", serverVersion: "", protocolVersion: "",
+        error: "timeout"),
+    ]
+    let lines = McpServerLine.merge(
+      servers: servers, statusRows: CsMcpStatusReport.sample.rows, results: results,
+      pending: ["orphan"])
+    XCTAssertEqual(lines.map(\.name), ["loctree-mcp", "aicx-mcp", "orphan"])
+    XCTAssertEqual(lines[0].status?.localizedValue, "Live — 9 tools")
+    XCTAssertEqual(lines[0].testText, "OK — 9 tools · v1.2")
+    XCTAssertEqual(lines[0].testTone, .good)
+    XCTAssertEqual(lines[1].status?.state, .configured)
+    XCTAssertEqual(lines[1].testText, "Failed: timeout")
+    XCTAssertEqual(lines[1].testTone, .bad)
+    XCTAssertNil(lines[2].status, "a server without a probe row keeps its test column only")
+    XCTAssertEqual(lines[2].testText, "Testing…")
+    XCTAssertEqual(lines[2].testTone, .warn)
+  }
+
   /// After a restore the refreshed snapshot reads "Built-in prompt": the
   /// custom file is gone, so the source flips and the path stays.
   func testPromptRestoreReturnsTheBuiltInSnapshot() throws {
