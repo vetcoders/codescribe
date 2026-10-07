@@ -28,8 +28,10 @@
   reopens the same bundle only after the old PID exits; setup resumes even when
   the wizard was opened manually. A busy or unreadable runtime retains the picker
   and shows a retry message. Selecting the running language needs no restart.
-  The initial step occupies the existing resume slot
-  zero, so permission and dictation step indices remain unchanged.
+  The initial step occupies resume slot zero. Setup has nine semantic chapters;
+  Rust writes v3 resume markers and maps v2 and bare markers into the matching
+  chapter. All permissions share chapter two; the optional local-model chapter
+  follows the dictation-language choice.
 - The dictation language (`CsLanguage`, `WHISPER_LANGUAGE`) is an STT setting.
   It is unrelated to the interface language and must stay unrelated.
 

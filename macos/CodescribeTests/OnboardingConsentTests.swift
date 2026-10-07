@@ -51,6 +51,26 @@ final class OnboardingConsentTests: XCTestCase {
     XCTAssertTrue(model.providerAccessResolved)
   }
 
+  func testMissingPermissionsCanContinueWithoutOpeningARequestOrReadingCredentials() {
+    let engine = ConsentRecordingEngine()
+    engine.fixture.progress = 2
+    let missing = PermissionSnapshot(
+      microphone: .notDetermined, accessibility: .denied, inputMonitoring: .denied,
+      screenRecording: .notDetermined, speechRecognition: .denied, fullDiskAccess: .denied)
+    let model = OnboardingViewModel(
+      engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+      agentBridge: ConsentTestBridge(), probe: MockPermissionProbe(missing),
+      preferredLanguages: ["en"], processInterfaceLanguage: .english)
+    XCTAssertEqual(model.step, .permissions)
+    model.advance()
+    XCTAssertEqual(model.step, .language)
+    XCTAssertEqual(model.permissions, missing)
+    XCTAssertEqual(engine.snapshotReads, 0)
+    XCTAssertEqual(engine.keyReads, 0)
+    XCTAssertEqual(
+      PermissionKind.allCases.filter(\.isOptionalForSetup), [.screenRecording, .fullDiskAccess])
+  }
+
   private func makeModel(_ engine: ConsentRecordingEngine) -> OnboardingViewModel {
     OnboardingViewModel(
       engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),

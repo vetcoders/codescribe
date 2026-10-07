@@ -412,24 +412,34 @@ struct PermissionsStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text(String(localized: LocalizedStringResource(
-        "Choose which features to allow", locale: model.interfaceLocale,
-        comment: "Heading above the unified onboarding permission checklist")))
-        .font(.title2.weight(.semibold))
-      Text(String(localized: LocalizedStringResource(
-        "You can continue with missing permissions. The features listed below stay unavailable until you grant access in System Settings.",
-        locale: model.interfaceLocale,
-        comment: "Permissions do not block Continue; each row explains its feature consequence")))
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "Choose which features to allow", locale: model.interfaceLocale,
+            comment: "Heading above the unified onboarding permission checklist"))
+      )
+      .font(.title2.weight(.semibold))
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "You can continue with missing permissions. The features listed below stay unavailable until you grant access in System Settings.",
+            locale: model.interfaceLocale,
+            comment: "Permissions do not block Continue; each row explains its feature consequence")
+        )
+      )
+      .font(.callout)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
       ForEach(PermissionKind.allCases) { kind in
         OnboardingPermissionRow(kind: kind, model: model)
         Divider()
       }
-      Button(String(localized: LocalizedStringResource(
-        "Refresh status", locale: model.interfaceLocale,
-        comment: "Refresh all onboarding permission statuses without prompting"))) {
+      Button(
+        String(
+          localized: LocalizedStringResource(
+            "Refresh status", locale: model.interfaceLocale,
+            comment: "Refresh all onboarding permission statuses without prompting"))
+      ) {
         model.refreshPermissions()
       }
       .csAction()
@@ -444,13 +454,15 @@ private struct OnboardingPermissionRow: View {
 
   private var actionTitle: String {
     if state == .notDetermined, kind.supportsInAppPermissionRequest {
-      return String(localized: LocalizedStringResource(
-        "Allow \(kind.displayName(locale: model.interfaceLocale))", locale: model.interfaceLocale,
-        comment: "Permission row action; the placeholder is a macOS privacy scope"))
+      return String(
+        localized: LocalizedStringResource(
+          "Allow \(kind.displayName(locale: model.interfaceLocale))", locale: model.interfaceLocale,
+          comment: "Permission row action; the placeholder is a macOS privacy scope"))
     }
-    return String(localized: LocalizedStringResource(
-      "Open System Settings", locale: model.interfaceLocale,
-      comment: "Open this permission's native macOS privacy pane"))
+    return String(
+      localized: LocalizedStringResource(
+        "Open System Settings", locale: model.interfaceLocale,
+        comment: "Open this permission's native macOS privacy pane"))
   }
 
   var body: some View {
@@ -459,11 +471,14 @@ private struct OnboardingPermissionRow: View {
         HStack(spacing: 8) {
           Text(kind.displayName(locale: model.interfaceLocale)).font(.body.weight(.semibold))
           if kind.isOptionalForSetup {
-            Text(String(localized: LocalizedStringResource(
-              "Optional", locale: model.interfaceLocale,
-              comment: "Screen Recording and Full Disk Access never block setup completion")))
-              .font(.caption)
-              .foregroundStyle(.secondary)
+            Text(
+              String(
+                localized: LocalizedStringResource(
+                  "Optional", locale: model.interfaceLocale,
+                  comment: "Screen Recording and Full Disk Access never block setup completion"))
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
           }
         }
         Text(kind.onboardingReason(locale: model.interfaceLocale))
@@ -496,25 +511,36 @@ struct LocalModelStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      Text(String(localized: LocalizedStringResource(
-        "Optional local Whisper model", locale: model.interfaceLocale,
-        comment: "Heading for an opt-in local dictation model download")))
-        .font(.title2.weight(.semibold))
-      Text(String(localized: LocalizedStringResource(
-        "Download Whisper from Hugging Face for local dictation. Without it, the Whisper engine and Local power refinement are unavailable; Apple dictation remains available with Speech Recognition permission.",
-        locale: model.interfaceLocale,
-        comment: "Explain what the optional model enables and the alternative without downloading")))
-        .font(.body)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "Optional local Whisper model", locale: model.interfaceLocale,
+            comment: "Heading for an opt-in local dictation model download"))
+      )
+      .font(.title2.weight(.semibold))
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "Download Whisper from Hugging Face for local dictation. Without it, the Whisper engine and Local power refinement are unavailable; Apple dictation remains available with Speech Recognition permission.",
+            locale: model.interfaceLocale,
+            comment:
+              "Explain what the optional model enables and the alternative without downloading"))
+      )
+      .font(.body)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
       WhisperDownloadView(store: model.whisperDownloadStore)
-      Text(String(localized: LocalizedStringResource(
-        "Continue whenever you’re ready. The download keeps running if you leave this step or close setup, and you can check it later in Settings.",
-        locale: model.interfaceLocale,
-        comment: "Whisper download never blocks navigation, closing the wizard or completing setup")))
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "Continue whenever you’re ready. The download keeps running if you leave this step or close setup, and you can check it later in Settings.",
+            locale: model.interfaceLocale,
+            comment:
+              "Whisper download never blocks navigation, closing the wizard or completing setup"))
+      )
+      .font(.callout)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
     }
   }
 }
@@ -846,8 +872,10 @@ struct DoneStepView: View {
             done: model.permissions.state(kind).isGranted,
             doneLabel: model.permissions.state(kind).label(locale: model.interfaceLocale),
             missingLabel: kind.isOptionalForSetup
-              ? String(localized: LocalizedStringResource(
-                "Optional", locale: model.interfaceLocale, comment: "Optional scope skipped in setup"))
+              ? String(
+                localized: LocalizedStringResource(
+                  "Optional", locale: model.interfaceLocale,
+                  comment: "Optional scope skipped in setup"))
               : model.permissions.state(kind).label(locale: model.interfaceLocale))
         }
         if model.selectedProviderRequiresApiKey {
@@ -922,22 +950,26 @@ extension PermissionKind {
     case .microphone:
       return String(
         localized: LocalizedStringResource(
-          "Records your voice for dictation. Without it, voice recording is unavailable.", locale: locale,
+          "Records your voice for dictation. Without it, voice recording is unavailable.",
+          locale: locale,
           comment: "Why the app asks for the Microphone scope"))
     case .accessibility:
       return String(
         localized: LocalizedStringResource(
-          "Types dictated text into other apps. Without it, automatic text insertion is unavailable.", locale: locale,
+          "Types dictated text into other apps. Without it, automatic text insertion is unavailable.",
+          locale: locale,
           comment: "Why the app asks for the Accessibility scope"))
     case .inputMonitoring:
       return String(
         localized: LocalizedStringResource(
-          "Detects keyboard shortcuts to start and stop recording. Without it, global recording shortcuts are unavailable.", locale: locale,
+          "Detects keyboard shortcuts to start and stop recording. Without it, global recording shortcuts are unavailable.",
+          locale: locale,
           comment: "Why the app asks for the Input Monitoring scope"))
     case .screenRecording:
       return String(
         localized: LocalizedStringResource(
-          "Optional — lets the Agent use your screen as context. Without it, screen context is unavailable; dictation still works.", locale: locale,
+          "Optional — lets the Agent use your screen as context. Without it, screen context is unavailable; dictation still works.",
+          locale: locale,
           comment: "Why the app asks for the Screen Recording scope"))
     case .speechRecognition:
       return String(
@@ -948,7 +980,8 @@ extension PermissionKind {
     case .fullDiskAccess:
       return String(
         localized: LocalizedStringResource(
-          "Optional — lets the Agent read protected files you choose as context. Without it, those files stay inaccessible; dictation still works.", locale: locale,
+          "Optional — lets the Agent read protected files you choose as context. Without it, those files stay inaccessible; dictation still works.",
+          locale: locale,
           comment: "Why the app asks for the Full Disk Access scope"))
     }
   }

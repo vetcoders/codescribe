@@ -58,7 +58,8 @@ final class WhisperDownloadProgressSink: CsWhisperDownloadListener, Sendable {
 @MainActor
 final class WhisperDownloadStore: ObservableObject {
   typealias StatusProvider = @MainActor () -> CsWhisperModelStatus
-  typealias Download = @Sendable (any CsWhisperDownloadListener) async throws -> CsWhisperModelStatus
+  typealias Download =
+    @Sendable (any CsWhisperDownloadListener) async throws -> CsWhisperModelStatus
 
   static let shared = WhisperDownloadStore()
 
@@ -131,10 +132,12 @@ final class WhisperDownloadStore: ObservableObject {
       case .success(let installed):
         status = installed
         let location = installed.path ?? installed.modelId
-        detail = installed.available
+        detail =
+          installed.available
           ? String(localized: "Ready · \(location)", comment: "Whisper is ready; model path or id")
-          : String(localized: "Download finished but model still unavailable",
-                   comment: "Whisper download returned without usable weights")
+          : String(
+            localized: "Download finished but model still unavailable",
+            comment: "Whisper download returned without usable weights")
         fraction = installed.available ? 1 : nil
         if !installed.available { error = detail }
       case .failure(let failure):

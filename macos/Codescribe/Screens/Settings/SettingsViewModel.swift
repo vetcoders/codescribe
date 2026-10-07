@@ -1270,17 +1270,21 @@ final class SettingsViewModel: ObservableObject {
     self.deferredInsertShortcut = DeferredInsertShortcutOption(
       wireId: initialSettings.deferredInsertShortcut
     )
-    self.keyStatus = engine == nil ? .sampleAllSet : CsKeyStatus(
-      llmLibraxisApiKeySet: false, llmOpenaiApiKeySet: false,
-      llmXaiApiKeySet: false, llmAnthropicApiKeySet: false,
-      sttFileApiKeySet: false, sttLiveApiKeySet: false, githubTokenSet: false
-    )
+    self.keyStatus =
+      engine == nil
+      ? .sampleAllSet
+      : CsKeyStatus(
+        llmLibraxisApiKeySet: false, llmOpenaiApiKeySet: false,
+        llmXaiApiKeySet: false, llmAnthropicApiKeySet: false,
+        sttFileApiKeySet: false, sttLiveApiKeySet: false, githubTokenSet: false
+      )
     self.providers = engine == nil ? CsProviderOption.sampleProviders : []
     self.providerAccessResolved = engine == nil
     self.sttLanes = engine?.sttLanes() ?? [.sampleFile, .sampleLive]
     self.configDir = ""
     self.needsOnboarding = false
-    self.agentReadiness = engine == nil ? .sample : CsAgenticReadiness(configPathDisplay: "", ready: false, rows: [])
+    self.agentReadiness =
+      engine == nil ? .sample : CsAgenticReadiness(configPathDisplay: "", ready: false, rows: [])
     self.mcpStatus = .sample
     self.capabilityMatrix = CsCapabilityRow.sampleMatrix
     self.voiceLabReadError = nil
@@ -1451,7 +1455,8 @@ final class SettingsViewModel: ObservableObject {
           outcome.applied
           ? String(
             localized: "Saved · applies from the next take",
-            comment: "Whisper model picker: selection persisted and the engine switches at the next take"
+            comment:
+              "Whisper model picker: selection persisted and the engine switches at the next take"
           )
           : outcome.pending
             ? String(
@@ -1898,7 +1903,8 @@ final class SettingsViewModel: ObservableObject {
     // (WHISPER_MODEL) is the cloud HTTP STT model id. Show the value the
     // active engine actually resolves so the label and the runtime path agree.
     let localEngineInPlay = settings.useLocalStt || asrModeId == "local_power"
-    let preference = localEngineInPlay
+    let preference =
+      localEngineInPlay
       ? settings.localModel
       : (settings.whisperModel ?? settings.localModel)
     return preference.isEmpty
@@ -1975,7 +1981,8 @@ final class SettingsViewModel: ObservableObject {
         ?? CsModelDiscovery.sample(for: runtime.providerId),
       credentialAccessResolved: providerAccessResolved,
       credentialAccessError: providerAccessError
-        ?? (lane == .assistive && !runtime.keyPresent ? providerAccountErrors[runtime.providerId] : nil)
+        ?? (lane == .assistive && !runtime.keyPresent
+          ? providerAccountErrors[runtime.providerId] : nil)
     )
   }
 
@@ -2804,7 +2811,10 @@ final class SettingsViewModel: ObservableObject {
   /// invalidates its generation and requests one follow-up after completion.
   func refreshProviderAccess() {
     guard let engine else { return }
-    if providerMutationPending { providerRefreshRequested = true; return }
+    if providerMutationPending {
+      providerRefreshRequested = true
+      return
+    }
     guard !providerAccessPending else { return }
     // This read consumes the queued request; later mutations may queue another.
     providerRefreshRequested = false
@@ -2822,7 +2832,10 @@ final class SettingsViewModel: ObservableObject {
         let snapshot = try await engine.providerAccessSnapshot()
         guard generation == providerAccessGeneration,
           snapshot.revision == engine.providerAccessRevision()
-        else { providerRefreshRequested = true; return }
+        else {
+          providerRefreshRequested = true
+          return
+        }
         applyLoadedSettings(engine.loadSettings())
         providers = snapshot.providers
         providerAccountErrors = snapshot.accountErrors
@@ -2910,8 +2923,7 @@ final class SettingsViewModel: ObservableObject {
   /// Settings + presence + registry after any provider/key mutation.
   private func reloadProviders(_ engine: SettingsEngine) {
     applyLoadedSettings(engine.loadSettings())
-    if providerAccessPending { providerRefreshRequested = true }
-    else { refreshProviderAccess() }
+    if providerAccessPending { providerRefreshRequested = true } else { refreshProviderAccess() }
   }
 
   // MARK: - Keys (Keychain-backed; secrets never read back)

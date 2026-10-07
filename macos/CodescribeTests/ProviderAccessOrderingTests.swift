@@ -143,9 +143,8 @@ final class ProviderAccessOrderingTests: XCTestCase {
     model.advance()
     await awaitCondition { engine.write != nil }
     engine.resolveWrite(success: true)
-    await awaitCondition { !model.providerMutationPending && engine.read != nil }
-    engine.resolveRead()
-    await awaitCondition { !model.providerAccessPending }
+    await awaitCondition { !model.providerMutationPending && model.step == .hotkeyMode }
+    XCTAssertNil(engine.read, "Leaving the explained provider chapter must not acquire credentials")
     XCTAssertEqual(model.step, .hotkeyMode)
     XCTAssertEqual(model.apiKeyDraft, "")
     XCTAssertFalse(model.apiKeyEditorExpanded)
@@ -427,11 +426,13 @@ final class ProviderAccessOrderingTests: XCTestCase {
     XCTAssertEqual(model.step, .hotkeyMode)
     XCTAssertEqual(engine.writes, 0, "Continue and Skip must not submit a hidden field")
     XCTAssertEqual(model.apiKeyDraft, "unsaved-provider-draft")
-    await load(model, engine)
+    XCTAssertNil(engine.read, "The hotkey chapter does not read provider credentials")
     model.back()
     model.beginApiKeyEditing()
     XCTAssertEqual(model.apiKeyDraft, "unsaved-provider-draft")
-    await load(model, engine)
+    await awaitCondition { engine.read != nil }
+    engine.resolveRead()
+    await awaitCondition { !model.providerAccessPending }
   }
 
   func testReadyStateRequiresCurrentSuccessfulProviderRead() async {

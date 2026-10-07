@@ -180,16 +180,16 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
       XCTAssertEqual(wizard.progressLabel, "Krok 1 z 9")
       XCTAssertNotEqual(wizard.windowTitle, englishTitle)
       XCTAssertEqual(
-        PermissionKind.microphone.onboardingTitle(locale: wizard.interfaceLocale),
-        "Dostęp do mikrofonu")
+        PermissionKind.microphone.displayName(locale: wizard.interfaceLocale),
+        "Mikrofon")
       XCTAssertEqual(PermissionState.granted.label(locale: wizard.interfaceLocale), "Przyznano")
       wizard.selectInterfaceLanguage(.english)
       XCTAssertEqual(wizard.primaryLabel, "Continue")
       XCTAssertEqual(wizard.progressLabel, "Step 1 of 9")
       XCTAssertEqual(wizard.windowTitle, englishTitle)
       XCTAssertEqual(
-        PermissionKind.microphone.onboardingTitle(locale: wizard.interfaceLocale),
-        "Microphone Access")
+        PermissionKind.microphone.displayName(locale: wizard.interfaceLocale),
+        "Microphone")
     }
   }
 
@@ -238,24 +238,26 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
     // A hidden window has no desktop backdrop. Cache-display leaves glass
     // regions transparent; OCR must see them over the same semantic window
     // background, rather than interpreting transparent white text as white.
+    let imageBounds = CGRect(
+      x: 0, y: 0, width: captured.width * 2, height: captured.height * 2)
     let canvas = try XCTUnwrap(
       CGContext(
-        data: nil, width: captured.width, height: captured.height,
+        data: nil, width: captured.width * 2, height: captured.height * 2,
         bitsPerComponent: 8, bytesPerRow: 0,
         space: CGColorSpaceCreateDeviceRGB(),
         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
     host.effectiveAppearance.performAsCurrentDrawingAppearance {
       canvas.setFillColor(NSColor.windowBackgroundColor.cgColor)
-      canvas.fill(CGRect(x: 0, y: 0, width: captured.width, height: captured.height))
+      canvas.fill(imageBounds)
     }
-    canvas.draw(captured, in: CGRect(x: 0, y: 0, width: captured.width, height: captured.height))
+    canvas.interpolationQuality = .high
+    canvas.draw(captured, in: imageBounds)
     let image = try XCTUnwrap(canvas.makeImage())
     let request = VNRecognizeTextRequest()
-    // `.fast` misreads 13 pt text rendered without a display (a headless
-    // session gives the window backing scale 1.0): "Wybierz" came back as
-    // "Wyblerz" on Sztudio over SSH while the same bitmap reads cleanly on a
-    // Retina session. `.accurate` reads both renderings (probe 2026-10-05).
-    request.recognitionLevel = .accurate
+    // Enlarge the cached pixels so `.fast` can read 13 pt text even when
+    // the hidden window has a 1.0 backing scale. This avoids provisioning
+    // the accurate recognition model; all visible-copy assertions remain.
+    request.recognitionLevel = .fast
     request.recognitionLanguages = ["en-US"]
     request.usesLanguageCorrection = false
     try VNImageRequestHandler(cgImage: image).perform([request])
