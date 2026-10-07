@@ -285,7 +285,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
   }
 
   func testOnboardingContinueInstallsChangedSelectionAndDoesNotReinstallOnReturn() {
-    let engine = MockOnboardingEngine(progress: 11)
+    let engine = MockOnboardingEngine(progress: 7)
     engine.mode = "agentic"
     engine.language = .polish
     let bridge = RecordingAgentBridgeInstaller()
@@ -316,7 +316,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
   }
 
   func testOnboardingBackDoesNotInstallAndEmptyUnchangedSelectionCanContinue() {
-    let engine = MockOnboardingEngine(progress: 11)
+    let engine = MockOnboardingEngine(progress: 7)
     engine.mode = "agentic"
     let bridge = RecordingAgentBridgeInstaller()
     let model = OnboardingViewModel(
@@ -338,7 +338,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
   }
 
   func testOnboardingInstallationFailureRetainsStepAndSelectionForRetry() {
-    let engine = MockOnboardingEngine(progress: 11)
+    let engine = MockOnboardingEngine(progress: 7)
     engine.mode = "agentic"
     let bridge = RecordingAgentBridgeInstaller()
     bridge.failInstallation = true
@@ -361,7 +361,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
   }
 
   func testOnboardingContinueAppliesDeselectionOfTheLastManagedClient() throws {
-    let engine = MockOnboardingEngine(progress: 11)
+    let engine = MockOnboardingEngine(progress: 7)
     engine.mode = "agentic"
     let bridge = RecordingAgentBridgeInstaller()
     _ = try bridge.install(selectedClients: [.claudeCode])
@@ -388,7 +388,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
   func testAddingCodexFailureBelongsToCodexInsteadOfExistingClaude() throws {
     let bridge = RecordingAgentBridgeInstaller()
     _ = try bridge.install(selectedClients: [.claudeCode])
-    let engine = MockOnboardingEngine(progress: 11)
+    let engine = MockOnboardingEngine(progress: 7)
     engine.mode = "agentic"
     let model = OnboardingViewModel(
       engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
@@ -407,7 +407,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
   func testMultipleClientFailureIsSelectionWideWithoutGuessingACard() {
     let bridge = RecordingAgentBridgeInstaller()
     bridge.failInstallation = true
-    let engine = MockOnboardingEngine(progress: 11)
+    let engine = MockOnboardingEngine(progress: 7)
     engine.mode = "agentic"
     let model = OnboardingViewModel(
       engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
@@ -532,7 +532,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
       case "unreadable-receipt": try Data("invalid json".utf8).write(to: receiptURL)
       default: try FileManager.default.removeItem(at: folder)
       }
-      let engine = MockOnboardingEngine(progress: 11)
+      let engine = MockOnboardingEngine(progress: 7)
       engine.mode = "agentic"
       let model = OnboardingViewModel(
         engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
@@ -570,7 +570,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
     let original = Data("user-maintained instructions".utf8)
     let skill = folder.appendingPathComponent("SKILL.md")
     try original.write(to: skill)
-    let engine = MockOnboardingEngine(progress: 11)
+    let engine = MockOnboardingEngine(progress: 7)
     engine.mode = "agentic"
     let model = OnboardingViewModel(
       engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
@@ -609,7 +609,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
       XCTAssertEqual(installer.status().clientsNeedingRepair, [.codex], drift)
       XCTAssertEqual(try Data(contentsOf: receiptURL), receiptBeforeInspection)
       XCTAssertEqual(try fileNumber(receiptURL), inodeBeforeInspection, "Inspection is passive")
-      let engine = MockOnboardingEngine(progress: 11)
+      let engine = MockOnboardingEngine(progress: 7)
       engine.mode = "agentic"
       let model = OnboardingViewModel(
         engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
@@ -680,7 +680,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
       let preserved = Data("retained runtime state\n".utf8)
       try preserved.write(to: state)
       let runtimeInode = try fileNumber(runtime)
-      let engine = MockOnboardingEngine(progress: 11)
+      let engine = MockOnboardingEngine(progress: 7)
       engine.mode = "agentic"
       let model = OnboardingViewModel(
         engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),

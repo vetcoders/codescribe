@@ -5,7 +5,7 @@ import XCTest
 @MainActor
 private final class ControlledProviderEngine: OnboardingEngine {
   enum Failure: Error { case denied }
-  var progress: UInt32 = 9
+  var progress: UInt32 = 5
   var reads = 0
   var writes = 0
   var keySaveAccounts: [String] = []
@@ -384,7 +384,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
       installedPaths: ["/fixture/codex"], detail: "Installed")
     for nativeReady in [true, false] {
       let engine = ControlledProviderEngine()
-      engine.progress = 11
+      engine.progress = 7
       let model = makeModel(
         engine, bridge: OrderingBridgeInstaller(value: installed),
         readiness: CsAgenticReadiness(configPathDisplay: "", ready: nativeReady, rows: []))
@@ -436,7 +436,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
 
   func testReadyStateRequiresCurrentSuccessfulProviderRead() async {
     let engine = ControlledProviderEngine()
-    engine.progress = 11
+    engine.progress = 7
     let model = makeModel(engine)
     await load(model, engine)
     XCTAssertTrue(model.agentBridgeReadyToGo)
@@ -500,7 +500,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
 
   func testUnavailableAccountKeepsResolvedRegistryAndDoesNotClaimReadiness() async {
     let engine = ControlledProviderEngine()
-    engine.progress = 11
+    engine.progress = 7
     engine.provider.apiKeySet = false
     engine.provider.accountSignedIn = false
     let model = makeModel(engine)
@@ -519,7 +519,7 @@ final class ProviderAccessOrderingTests: XCTestCase {
 
   func testUnavailableAccountPreservesIndependentApiKeyAndRecoversOnNextRead() async {
     let engine = ControlledProviderEngine()
-    engine.progress = 11
+    engine.progress = 7
     engine.provider.apiKeySet = true
     engine.provider.accountSignedIn = false
     let model = makeModel(engine)
