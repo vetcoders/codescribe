@@ -220,7 +220,8 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
       settle(host)
       let polish = try renderedText(host)
       XCTAssertTrue(polish.contains("kontynuuj"), polish)
-      XCTAssertTrue(polish.contains("Wybierz"), polish)
+      // OCR may change letter case; the exact localized copy is asserted above.
+      XCTAssertTrue(polish.localizedCaseInsensitiveContains("Wybierz"), polish)
       XCTAssertFalse(polish.contains("Continue"), polish)
       XCTAssertFalse(window.isVisible, "No live screen or system input is used")
     }

@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -733,7 +733,9 @@ fn read_marker(
         return Ok(None);
     }
     let file = fs::File::open(path)?;
-    let value: Value = match serde_json::from_reader(file.take(1 << 20)) {
+    // Keep the physical read bound inside the buffer. Serde's reader otherwise
+    // turns the recurring marker scan into one file syscall for every byte.
+    let value: Value = match serde_json::from_reader(BufReader::new(file.take(1 << 20))) {
         Ok(value) => value,
         Err(_) => return Ok(None),
     };

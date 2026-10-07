@@ -429,3 +429,119 @@ codex/widget-hover-261007, baseline99760a12b70f6863c5df33d1ab84276236e910fb.
 No GUI launch, Quit, restart, desktop capture, microphone or hotkey test was
 performed. Installed source, running generation and Founder-native acceptance
 require their own receipts; passing mounted fixtures is not live acceptance.
+
+## Full Swift verification and explicit canvas fixtures
+
+The integrator ran the unfiltered `make test-swift` on7fd1 with the existing
+isolated Rust artifact root and default60-second/per-test10-second limits.
+It executed1155 tests, one skip and13 failed assertions in72.373 seconds.
+An isolated22-test run reproduced every assertion failure.
+
+Three edit/focus tests were exercising the default mini presentation while
+expecting an editable canvas. Their fixtures now explicitly open the full
+canvas, as does the native read-only selection fixture. The product still
+starts mini and prevents editing the hidden retained canvas. A close-hover
+source assertion was updated for the existing interaction hold. The Polish
+onboarding bitmap correctly rendered the localized heading, but OCR returned
+lowercase `wybierz`; that recognition assertion now ignores letter case. The
+exact Foundation localization assertions remain intact. Existing formatting
+diagnostics in the touched test file were corrected without runtime changes.
+
+The repaired edit/chrome selection passes13 tests in1.705 seconds. The second
+unfiltered run executes1155 tests, one skip andzero failed assertions in72.299
+seconds. `xcodebuild` reports success, but the canonical Make gate remains
+**RED**, rc4, because72.299 exceeds the unchanged60-second suite budget.
+The slowest test is5.348 seconds, below the unchanged10-second ceiling. This
+is an assertion repair, not a full Swift gate PASS or product acceptance.
+
+The authored unit changes only three test files and this report. No app/helper
+code, localization key, timing budget or recording setting is changed. Logs:
+`/tmp/codescribe-e19c-full-swift-7fd1-goal-oct7.log`,
+`/tmp/codescribe-e19c-focus-isolation-7fd1-goal-oct7.log`,
+`/tmp/codescribe-e19c-edit-fixtures-fixed-oct7.log`,
+`/tmp/codescribe-e19c-full-swift-fixtures-fixed-goal-oct7.log`.
+
+Read-only process observations of the loaded2106/7fd1 generation showed
+101.1–109.2% CPU and about3.34GiB RSS; the canonical bus idle guard returned0
+at the latter observation. These measurements do not attribute CPU/memory
+ownership or establish a leak. A read-only two-second process-stack sample at
+19:55:37 local is stored at
+`/tmp/codescribe-e19c-live-cpu-2106-oct7.sample.txt`. The main thread waited in
+the run loop for662 of664 samples. The Rust channel guard spent416 samples in
+`presentation::agent_ack::scan` reading JSON through unbuffered `Take<File>`;
+the Swift delivery reader also repeatedly parsed lease and receipt JSON.
+These background costs are separate from the cursor repair. No desktop
+capture, microphone, audio, GUI launch, Quit or restart was performed by
+Astra during this verification.
+
+Bruno subsequently reported source1839/build2113, a verified launch and124
+mounted UI tests. Independent readback finds Living Tree tip1839 and process
+65091, with97.3% CPU at20:07 local. His cursor cut and installed-artifact
+receipt remain distinct from this test-only unit; native cursor acceptance
+is still pending. Lena owns the concurrent channel-zero recipient diagnosis
+in `controller/agent_channel.rs`; this unit does not touch that source.
+
+## Background metadata reads and channel-zero heartbeat clock
+
+The next source cut addresses the background costs demonstrated by the2106
+stack sample. ACK marker reads now put the existing1MiB physical limit inside
+a BufReader, avoiding one file syscall per JSON byte. Ownership validation,
+history and emission semantics are unchanged. All14 existing ACK tests pass
+in0.91seconds.
+
+The existing Swift delivery-reader actor retains unchanged parsed metadata in
+memory, bounded to256 entries and8MiB of encoded input. This is an encoded-byte
+budget, not a claim about physical memory usage. Every lookup opens the current
+file and compares descriptor device, inode, size and nanosecond mtime/ctime.
+Atomic replacement and in-place edits invalidate the parse; malformed, missing
+or rebound metadata cannot retain a previous owner. A changed descriptor during
+reading is not cached. Files above the cache budget remain readable under the
+existing16MiB input limit. There is no additional persistent state, UI copy,
+palette or configuration source.
+
+Six new hermetic Swift regressions exercise a1MiB unchanged lease across20
+polls, changed pending state, same-size/same-mtime atomic replacement, in-place
+write with restored mtime, invalid/deleted/rebound binding and individual or
+aggregate cache bounds. The final reader/archive/resize selection passes82
+tests in12.049seconds. This proves bounded I/O and ownership behavior in the
+fixtures; native CPU and memory improvement requires a newly loaded generation.
+
+Founder dispatch `work-261007-201043-51766` produced Grok source-only commit
+33372cb8381ce2c9a761f74c9751f913557e7694 from baseline1839be5c. It buffers the
+existing16MiB lease read and samples the heartbeat clock after each parse.
+Astra wrote and committed the regressions before admitting that patch. The
+actual production function is exercised with four bound owners and a FIFO
+fixture that refreshes the later owners while the first large lease is read.
+The baseline rejects three owners as future heartbeats: one of four retained,
+1.200seconds, one RED/two PASS. The candidate retains all four in64.208ms;
+all three tests pass in0.13seconds. Stale, genuinely future, foreign, malformed
+and oversized lease guards remain covered. This is a filesystem/unit proof,
+not a live channel-zero capture or native microphone acceptance.
+
+Grok authored only the recipient function. Its exact patch is retained in
+af0c5c1630bf5542f6f26c0b1b45b94473efcee3 after the root-owned regression commit
+89aa6157; Bruno's1839 cursor patch is retained separately in1bfb7966. Astra is
+the designated integrator for fixtures, checks and admission. These candidates
+are in Fleet Worktree e19c on codex/widget-hover-261007. Living Tree admission
+of the new clock/cache unit is pending and is not implied by a cherry-pick.
+
+Current combined-source full Semgrep, scoped strict Swift formatting, catalog
+structure and diff checks pass. Production workspace Clippy with warnings
+denied passes in27.34seconds; it does not compile the broken core test target.
+The unfiltered canonical Swift run executes
+1162 tests, one skip andzero failed assertions in73.510seconds, but remains
+**RED** against the unchanged60-second budget. The slowest test is5.337seconds.
+Fresh `cargo test --workspace --lib --no-run` fails with163 core test compilation
+errors; this is a compile failure, not an executed test result. Both broad
+gates remain unresolved despite the selected regression passes.
+
+Logs are `/tmp/codescribe-e19c-metadata-cache-bounds-oct7.log`,
+`/tmp/codescribe-e19c-ack-buffer-rust-gate-oct7.log`,
+`/tmp/codescribe-e19c-channel0-clock-baseline-oct7.log`,
+`/tmp/codescribe-e19c-channel0-clock-candidate-oct7.log`,
+`/tmp/codescribe-e19c-full-swift-metadata-clock-oct7.log`, and
+`/tmp/codescribe-e19c-workspace-test-compile-oct7.log`. The sample and source
+receipts preserve the distinction between build2113/1839 reported by Bruno,
+the current feature source and any later installed artifact. Astra performs
+no GUI launch, Quit, restart, desktop capture or physical microphone/hotkey
+test. Founder-native acceptance remains pending.
