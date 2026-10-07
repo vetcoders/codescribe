@@ -54,7 +54,7 @@ extension RealAgentBridgeInstaller {
         let path = root.appendingPathComponent("leases/\(candidate.leaseID).json")
         guard let handle = try? FileHandle(forReadingFrom: path) else { continue }
         defer { try? handle.close() }
-        guard let data = try? handle.read(upToCount: (4 << 20) + 1), data.count <= (4 << 20),
+        guard let data = try? handle.read(upToCount: (16 << 20) + 1), data.count <= (16 << 20),
           let row = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           row["schema"] as? String == "codescribe.agent-bridge.lease.v1",
           row["lease_id"] as? String == candidate.leaseID,

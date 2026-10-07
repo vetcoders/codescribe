@@ -272,6 +272,7 @@
     },
     "%@ — show details" : {
       "comment" : "Agent glyph tooltip; the placeholder is the channel state label",
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3276,6 +3277,7 @@
       }
     },
     "Choose a conversation or show agent channel details" : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -6034,6 +6036,7 @@
       }
     },
     "Hang up channel" : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8352,6 +8355,7 @@
       "shouldTranslate" : false
     },
     "Open channel" : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {

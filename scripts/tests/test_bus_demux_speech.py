@@ -312,6 +312,18 @@ class SayReplyTests(unittest.TestCase):
         self.assertFalse(DEMUX.agent_playback_muted(
             self.home, "claude-code", "session-b", self.bus))
 
+    def test_large_valid_mailbox_can_be_muted_without_losing_history(self):
+        self.attach_lease("session-a", "filip")
+        lease = self.home / "leases" / f"{DEMUX.lease_identifier('claude-code', 'session-a')}.json"
+        row = json.loads(lease.read_text())
+        row["pending"] = [{"text": "x" * (5 << 20)}]
+        lease.write_text(json.dumps(row))
+        before = lease.read_bytes()
+        self.mute("session-a")
+        self.assertEqual(lease.read_bytes(), before)
+        self.assertTrue(DEMUX.agent_playback_muted(
+            self.home, "claude-code", "session-a", self.bus))
+
     def test_manual_replay_works_while_automatic_speech_is_muted(self):
         self.attach_lease("session-a", "filip")
         self.mute("session-a")

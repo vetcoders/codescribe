@@ -751,15 +751,15 @@ final class OverlayIntentRailTests: XCTestCase {
       rootView: OverlayHeaderControlFramesCapture(
         state: collapsedState, recorder: collapsedRecorder
       )
-      .frame(width: size.width, height: size.height)
+      .frame(width: 180, height: DictationOverlayWindow.collapsedHeight)
       .preferredColorScheme(.dark)
     )
-    collapsedHost.frame = CGRect(origin: .zero, size: size)
+    collapsedHost.frame = CGRect(x: 0, y: 0, width: 180, height: DictationOverlayWindow.collapsedHeight)
     collapsedHost.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.03))
     try assertHeaderControlsFit(
       collapsedRecorder.frames,
-      inside: size.width,
+      inside: 180,
       context: "collapsed listening header",
       compactMeter: true
     )

@@ -3505,7 +3505,7 @@ def agent_playback_muted(root: Path, provider: str, session: str, bus: Path) -> 
 def set_agent_muted(args: argparse.Namespace) -> int:
     bus = args.bus.expanduser().resolve(strict=False)
     lease_id = lease_identifier(args.provider, args.session)
-    lease = read_reply_json(args.bridge_home / "leases" / f"{lease_id}.json", 4 << 20)
+    lease = read_reply_json(args.bridge_home / "leases" / f"{lease_id}.json")
     if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
             or lease.get("provider") != args.provider.casefold()
             or lease.get("provider_session_id") != args.session

@@ -58,7 +58,11 @@ Actually unfinished source and an unconsumed source extent still refuse takeover
 - UniFFI generation and host dylib build completed. Swift compilation exposed a
   new asynchronous `Thread.sleep` error; it was replaced with cancellable
   `Task.sleep` and scoped child-process cleanup. Full Swift run executed 1101 tests with 30 failures, predominantly outdated
-  overlay-shape assertions; the affected suites are being updated and rerun.
+  overlay-shape assertions. The final affected-suite run passed **410 tests**
+  with zero failures in 17.224 seconds, including persistent microphone visibility.
+- String Catalog synchronization consumed 132 fresh compiler extraction files;
+  catalog lint and bridge census passed.
+- Scoped Semgrep: one configured rule, 33 tracked targets, zero findings.
 - The rendered AppKit collapse test now asserts the actual 180-point panel width.
   Old assertions requiring the removed native channel menu were retired; passive
   navigation and recording ownership retain their behavioral tests.
@@ -70,7 +74,8 @@ Actually unfinished source and an unconsumed source extent still refuse takeover
   No fetched branch contains a complete migration. The separate five-Iwo geometry
   iterator lint is corrected without changing its occurrence assertions.
 - The structural verifier also needs the newer fail-closed manifest/test correction
-  from `fb2c16be`; no broad verify PASS is claimed.
+  from `fb2c16be`, admitted here as patch-equivalent `791e6d1c`. Live and
+  instrument checks are running; no broad verify PASS is claimed.
 
 Outstanding: final Swift verdict, catalog
 extraction/synchronization, full Rust fixture migration, security/static gates and
