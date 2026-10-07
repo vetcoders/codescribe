@@ -9362,6 +9362,22 @@
         }
       }
     },
+    "Read" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przeczytano"
+          }
+        }
+      }
+    },
     "Read error" : {
       "localizations" : {
         "pl" : {
@@ -9438,22 +9454,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdzanie ustawienia Codescribe i ewentualnego wymuszenia z konfiguracji zaawansowanej…"
-          }
-        }
-      }
-    },
-    "Read" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Read"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przeczytano"
           }
         }
       }
