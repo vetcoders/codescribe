@@ -9,11 +9,13 @@
 //! is the open-mic fact the overlay paints from.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Result, anyhow};
 use codescribe_core::config::Config;
@@ -93,6 +95,19 @@ pub struct BoundAgentSession {
     /// Dedicated channel bus from the binding (W5). `None` keeps the shared
     /// bus, so pre-W5 bindings migrate without a rewrite.
     pub bus: Option<PathBuf>,
+}
+
+/// One frozen archive intent. The canonical helper remains the binding writer;
+/// the controller only guards capture admission until that helper has exited.
+#[derive(Debug, Clone)]
+pub struct AgentArchiveRequest {
+    pub channel: u8,
+    pub provider: String,
+    pub provider_session_id: String,
+    pub lease_id: String,
+    pub bus: PathBuf,
+    pub executable: PathBuf,
+    pub bridge_home: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -581,30 +596,153 @@ fn refusal(error: ChannelOpenRefusal) -> anyhow::Error {
     anyhow!("{error}")
 }
 
+fn archive_agent_with_helper(request: AgentArchiveRequest) -> Result<String> {
+    const RECEIPT_LIMIT: usize = 65_536;
+    let bus = request
+        .bus
+        .to_str()
+        .ok_or_else(|| anyhow!("agent archive bus path is not UTF-8"))?;
+    let channel = request.channel.to_string();
+    // The app creates this request from RealAgentBridgeInstaller.commandURL
+    // after verifying its managed command marker; bus text never selects it.
+    // Values below are separate fixed-option argv entries, never shell source.
+    // nosemgrep: rust.actix.command-injection.rust-actix-command-injection.rust-actix-command-injection -- app-owned managed helper path, argv-only spawn; no HTTP, transcript or agent-tool command input.
+    let mut child = Command::new(&request.executable)
+        .args([
+            "--archive-agent",
+            &channel,
+            "--provider",
+            &request.provider,
+            "--session",
+            &request.provider_session_id,
+            "--lease",
+            &request.lease_id,
+            "--bus",
+            bus,
+            "--bridge-home",
+        ])
+        .arg(&request.bridge_home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let killed = child.kill();
+                let waited = child.wait();
+                killed?;
+                waited?;
+                return Err(anyhow!("agent archive helper timed out"));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let waited = child.wait();
+                waited?;
+                return Err(error.into());
+            }
+        }
+    };
+    if !status.success() {
+        return Err(anyhow!("agent archive helper failed: {status}"));
+    }
+    let output = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("agent archive helper returned no receipt"))?;
+    let mut bytes = Vec::new();
+    output
+        .take((RECEIPT_LIMIT + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > RECEIPT_LIMIT {
+        return Err(anyhow!("agent archive receipt exceeds its size limit"));
+    }
+    let receipt: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if receipt["schema"].as_str() != Some("codescribe.agent-archive.v1")
+        || receipt["released"].as_bool() != Some(true)
+        || receipt["provider"].as_str() != Some(request.provider.as_str())
+        || receipt["provider_session_id"].as_str() != Some(request.provider_session_id.as_str())
+        || receipt["lease_id"].as_str() != Some(request.lease_id.as_str())
+        || receipt["channel"].as_str() != Some(channel.as_str())
+        || receipt["bus"].as_str() != Some(bus)
+    {
+        return Err(anyhow!(
+            "agent archive receipt does not match the frozen owner"
+        ));
+    }
+    Ok(String::from_utf8(bytes)?)
+}
+
 impl RecordingController {
+    /// Share the hotkey/autoseal lifecycle lock through canonical binding release.
+    /// The blocking task owns the guard, so cancelling a foreign waiter cannot
+    /// admit capture while its already-started helper still changes the binding.
+    pub async fn archive_agent_channel(&self, request: AgentArchiveRequest) -> Result<String> {
+        if !(1..=9).contains(&request.channel)
+            || request.provider.is_empty()
+            || request.provider_session_id.is_empty()
+            || request.lease_id.is_empty()
+            || !request.bus.is_absolute()
+            || !request.executable.is_absolute()
+            || !request.bridge_home.is_absolute()
+        {
+            return Err(anyhow!("invalid frozen agent archive request"));
+        }
+        let serial = Arc::clone(&self.serial_lock).lock_owned().await;
+        {
+            let channels = self.agent_channels.lock().await;
+            if channels.contains_key(&request.channel) {
+                return Err(anyhow!("cannot archive an open agent channel"));
+            }
+        }
+        tokio::task::spawn_blocking(move || {
+            let _serial = serial;
+            archive_agent_with_helper(request)
+        })
+        .await
+        .map_err(|error| anyhow!("agent archive task failed: {error}"))?
+    }
+
     /// Fn+digit toggle. A second press of the same digit hangs up: the
     /// session seals with `reason: hangup` and does not reopen. Dictation
     /// state is not changed.
     pub async fn toggle_agent_channel(&self, digit: u8) -> Result<()> {
-        let _serial = self.serial_lock.lock().await;
+        self.toggle_agent_channel_at(
+            digit,
+            &binding_path(),
+            &crate::presentation::transcript_bus::transcript_bus_path(),
+            ChannelOpenMode::Live,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn toggle_agent_channel_at(
+        &self,
+        digit: u8,
+        binding_file: &Path,
+        shared_bus: &Path,
+        mode: ChannelOpenMode,
+    ) -> Result<bool> {
+        let _serial = Arc::clone(&self.serial_lock).lock_owned().await;
         if self.current_state().await == super::State::Idle {
             self.cancel_pending_hold_start().await;
         }
         let opened = self
-            .dispatch_agent_channel(
-                digit,
-                &binding_path(),
-                &crate::presentation::transcript_bus::transcript_bus_path(),
-                ChannelOpenMode::Live,
-            )
+            .dispatch_agent_channel(digit, binding_file, shared_bus, mode)
             .await?;
-        if opened {
+        if opened && matches!(mode, ChannelOpenMode::Live) {
             let settings = self.runtime_settings_arc().await;
             if settings.values().beep_on_start {
                 crate::audio::play_sound_with_volume("Pop", settings.values().sound_volume);
             }
         }
-        Ok(())
+        Ok(opened)
     }
 
     /// `shared_bus` carries the rows and receipts of a channel whose binding

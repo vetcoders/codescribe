@@ -82,9 +82,13 @@ protocol DictationEngine: AnyObject {
   func transcribeTake(sessionId: String, path: String) async throws -> CsTranscription
   func channelRosterSnapshot() async -> [CsChannelRosterState]
   func toggleAgentChannel(digit: UInt8) async throws
+  func archiveAgent(request: CsAgentArchiveRequest) async throws -> String
 }
 
 extension DictationEngine {
+  func archiveAgent(request _: CsAgentArchiveRequest) async throws -> String {
+    throw CocoaError(.fileWriteUnknown)
+  }
   func cloudRetranscribeConfigured() -> Bool { false }
   func documentHistory(sessionId _: String) async throws -> [CsDocumentHistoryEntry] { [] }
   func restoreDocumentRevision(
@@ -807,9 +811,7 @@ final class OverlayState {
   private(set) var pendingAgentArchives: Set<OverlayConversationOwner> = []
   private(set) var agentArchiveError: String?
   @ObservationIgnored private var agentArchiveRevision: UInt64 = 0
-  @ObservationIgnored var archiveAgentCommand: (OverlayConversationOwner) async throws -> Void = {
-    try await RealAgentBridgeInstaller.archiveBusAgent(owner: $0)
-  }
+  @ObservationIgnored var archiveAgentCommand: ((OverlayConversationOwner) async throws -> Void)?
   private(set) var selectedConversationID: String?
   private(set) var showsAgentMonitor = false
   @ObservationIgnored var onAgentSidebarPresented: (() -> Void)?
@@ -865,7 +867,14 @@ final class OverlayState {
     agentArchiveError = nil
     defer { pendingAgentArchives.remove(owner) }
     do {
-      try await archiveAgentCommand(owner)
+      if let archiveAgentCommand {
+        try await archiveAgentCommand(owner)
+      } else {
+        guard let engine else { throw CocoaError(.fileWriteUnknown) }
+        try await RealAgentBridgeInstaller.archiveBusAgent(owner: owner) { request in
+          try await engine.archiveAgent(request: request)
+        }
+      }
       agentArchiveRevision &+= 1
       archivedAgentOwners.insert(owner)
       onChannelPresentationChanged?()
@@ -1129,6 +1138,14 @@ final class OverlayState {
     }
     let controllerPending = pendingChannelConversation != nil
     conversations = snapshot.conversations
+    // Loading saved history is an inventory change, not a fresh reply admission.
+    // Its mirrored broadcast ids must stay passive as well.
+    observedReplyIDs.formUnion(snapshot.historyReplyIDs)
+    observedReplyIDs.formUnion(
+      conversations.filter { conversation in
+        guard let owner = conversation.owner else { return false }
+        return archivedAgentOwners.contains { $0.id == owner.id && $0.channel == owner.channel }
+      }.flatMap(\.replyIDs))
     if let selectedConversationID,
       !conversations.contains(where: { $0.id == selectedConversationID })
     {
@@ -1292,15 +1309,26 @@ final class OverlayState {
     channelObservationTask?.cancel()
     channelObservationTask = Task { @MainActor [weak self] in
       while !Task.isCancelled {
+        guard self != nil else { return }
         if let snapshot = await self?.engine?.channelRosterSnapshot() {
           guard !Task.isCancelled, let self else { return }
           self.applyChannelRoster(snapshot)
         }
         do {
           let archiveRevision = self?.agentArchiveRevision
-          let snapshot = try await reader.readSnapshot()
+          let focusRevision = self?.conversationFocusRevision
+          let selectedOwner = self?.selectedConversation?.owner
+          let archivedOwner = selectedOwner.flatMap { owner in
+            self?.archivedAgentOwners.first { $0.id == owner.id && $0.channel == owner.channel }
+          }
+          let snapshot = try await reader.readSnapshot(selectedOwner: archivedOwner)
           guard !Task.isCancelled, self != nil else { return }
-          if archiveRevision == self?.agentArchiveRevision {
+          // A focus change can discard this paint, but not turn that archive's
+          // first-read history into a fresh admission on the next poll.
+          self?.observedReplyIDs.formUnion(snapshot.historyReplyIDs)
+          if archiveRevision == self?.agentArchiveRevision,
+            focusRevision == self?.conversationFocusRevision
+          {
             self?.applyConversationSnapshot(snapshot)
           }
         } catch {
@@ -4017,5 +4045,8 @@ final class ControllerDictationEngine: DictationEngine {
   }
   func toggleAgentChannel(digit: UInt8) async throws {
     try await hotkeys.toggleAgentChannel(digit: digit)
+  }
+  func archiveAgent(request: CsAgentArchiveRequest) async throws -> String {
+    try await hotkeys.archiveAgentChannel(request: request)
   }
 }

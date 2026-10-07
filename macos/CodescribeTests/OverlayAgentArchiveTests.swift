@@ -71,7 +71,7 @@ final class OverlayAgentArchiveTests: XCTestCase {
     let busBytes = try Data(contentsOf: fixture.bus)
     do {
       try await RealAgentBridgeInstaller.archiveBusAgent(
-        owner: fixture.owner, installer: fixture.installer)
+        owner: fixture.owner, installer: fixture.installer, archive: fixture.execute)
     } catch {
       XCTFail("Managed archive command: \(error)")
       return
@@ -114,7 +114,7 @@ final class OverlayAgentArchiveTests: XCTestCase {
     let lease = try Data(contentsOf: fixture.lease)
     do {
       try await RealAgentBridgeInstaller.archiveBusAgent(
-        owner: fixture.owner, installer: fixture.installer)
+        owner: fixture.owner, installer: fixture.installer, archive: fixture.execute)
       XCTFail("a stale owner must be refused")
     } catch {}
     XCTAssertEqual(try Data(contentsOf: fixture.binding), binding)
@@ -128,6 +128,13 @@ final class OverlayAgentArchiveTests: XCTestCase {
     defer { fixture.remove() }
     try FileManager.default.removeItem(at: fixture.binding)
     var expected: [String: String] = [:]
+    var archiveBuses: [String: URL] = [:]
+    let otherRow: [String: Any] = [
+      "provider": "codex", "provider_session_id": "other-session", "channel": "7",
+      "lease_id": AgentPlaybackIdentity.leaseIdentifier(
+        provider: "codex", session: "other-session"),
+      "name": "other-agent",
+    ]
     for index in 0..<17 {
       let session = "saved-session-\(index)"
       let lease = AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session)
@@ -139,15 +146,23 @@ final class OverlayAgentArchiveTests: XCTestCase {
       let bus = fixture.home.appendingPathComponent("saved-\(index).jsonl")
       let text = "Retained archive \(index)"
       expected[owner.id] = text
+      archiveBuses[owner.id] = bus
       try fixture.write(
         [
           "schema": "codescribe.transcript.v1", "status": "transcript_sealed", "sequence": 1,
           "session_id": "saved-take-\(index)", "utterance_id": "u1", "audience": owner.name,
           "text": text, "recipients": [row.merging(["bus": bus.path]) { _, value in value }],
         ], to: bus, newline: true)
+      try fixture.append(
+        otherRow.merging([
+          "schema": "codescribe.agent-reply.v1", "reply_id": String(format: "%024x", index + 1001),
+          "text": "Historical mirrored reply \(index)", "association": "unsolicited",
+          "emitted_at": "2026-10-05T04:00:00Z",
+        ]) { _, value in value }, to: bus)
       try fixture.write(
         row.merging([
           "schema": "codescribe.agent-archive.v1", "released": true, "bus": bus.path,
+          "name": "Renamed saved label \(index)",
         ]) { _, value in value },
         to: fixture.root.appendingPathComponent("archives/\(lease)-4.json"))
     }
@@ -160,8 +175,13 @@ final class OverlayAgentArchiveTests: XCTestCase {
       XCTAssertLessThanOrEqual(
         saved.filter { !$0.messages.isEmpty }.count, 16, "Background polling remains bounded")
       let unloaded = try XCTUnwrap(saved.first { $0.messages.isEmpty })
+      XCTAssertFalse(unloaded.historyLoaded)
       let state = OverlayState()
       state.applyConversationSnapshot(snapshot)
+      var unsolicitedPresentations = 0
+      state.onChannelPresentationChanged = { [weak state] in
+        if state?.freshReplyPresentationRequested == true { unsolicitedPresentations += 1 }
+      }
       state.observeChannelDelivery(using: reader)
       state.selectConversation(unloaded.id)
       let deadline = ContinuousClock.now.advanced(by: .seconds(2))
@@ -169,7 +189,24 @@ final class OverlayAgentArchiveTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(20))
       }
       XCTAssertEqual(state.selectedConversation?.messages.first?.text, expected[unloaded.id])
+      XCTAssertTrue(try XCTUnwrap(state.selectedConversation).historyLoaded)
       XCTAssertEqual(state.selectedConversationID, unloaded.id)
+      XCTAssertEqual(unsolicitedPresentations, 0, "Loading archive mirrors is passive history")
+      let bytesBefore = await reader.consumedBytes
+      _ = try await reader.readSnapshot(selectedOwner: unloaded.owner)
+      let bytesAfter = await reader.consumedBytes
+      XCTAssertEqual(bytesAfter, bytesBefore, "Loaded archive polls must not replay its bytes")
+      let newReplyID = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(24)
+        .lowercased()
+      try fixture.append(
+        otherRow.merging([
+          "schema": "codescribe.agent-reply.v1", "reply_id": newReplyID,
+          "text": "A newly appended reply", "association": "unsolicited",
+          "emitted_at": "2026-10-07T04:00:00Z",
+        ]) { _, value in value }, to: try XCTUnwrap(archiveBuses[unloaded.id]))
+      state.applyConversationSnapshot(try await reader.readSnapshot(selectedOwner: unloaded.owner))
+      XCTAssertEqual(state.selectedConversation?.owner?.providerSessionID, "other-session")
+      XCTAssertEqual(unsolicitedPresentations, 1, "Later fresh replies retain existing navigation")
     }
   }
 
@@ -256,6 +293,32 @@ final class OverlayAgentArchiveTests: XCTestCase {
           ],
         ], to: binding)
     }
+
+    @MainActor
+    func execute(_ request: CsAgentArchiveRequest) async throws -> String {
+      // Scratch helper execution verifies the native request facade. The real
+      // RecordingController lifecycle and cancellation are covered in Rust.
+      try await Task.detached {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: request.executable)
+        process.arguments = [
+          "--archive-agent", String(request.channel), "--provider", request.provider,
+          "--session", request.providerSessionId, "--lease", request.leaseId,
+          "--bus", request.bus, "--bridge-home", request.bridgeHome,
+        ]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+          let bytes = try output.fileHandleForReading.read(upToCount: 65537), bytes.count <= 65536,
+          let receipt = String(data: bytes, encoding: .utf8)
+        else { throw CocoaError(.fileWriteUnknown) }
+        return receipt
+      }.value
+    }
     func writeArchive() throws {
       try write(
         [
@@ -270,6 +333,14 @@ final class OverlayAgentArchiveTests: XCTestCase {
       var data = try JSONSerialization.data(withJSONObject: row, options: [.sortedKeys])
       if newline { data.append(10) }
       try data.write(to: path, options: .atomic)
+    }
+    func append(_ row: [String: Any], to path: URL) throws {
+      var data = try JSONSerialization.data(withJSONObject: row, options: [.sortedKeys])
+      data.append(10)
+      let handle = try FileHandle(forWritingTo: path)
+      defer { try? handle.close() }
+      try handle.seekToEnd()
+      try handle.write(contentsOf: data)
     }
     func remove() { try? FileManager.default.removeItem(at: home) }
   }
