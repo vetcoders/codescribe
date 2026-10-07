@@ -195,3 +195,57 @@ Receipt: `.vibecrafted/astra-demux-adoption-20261007.json`. Peer text reached
 this conversation through its native queue and the causal response was spoken.
 Fresh spoken-take reception remains a separate acceptance boundary.
 No app restart, app install or older helper replacement was performed.
+
+## Native presentation router on the PR integration — 2026-10-07
+
+The terminal UI code commit is `bdbbb881dd008d3ce36d6d9b6a12bb7d1560b634`.
+The current branch was rebased onto the actual integration generation
+`a7be709e5a0fe41f129f6982c1dbae3be7f6b9dd`, including the settings/site/Stop
+PR union and the onboarding offscreen fixture correction. That exact integration
+is an ancestor, independently checked. Only unpublished commits were rebased;
+origin's feature tip remains an ancestor. Normal non-force push completed with
+production Clippy and full Semgrep hooks passing. Founder AGENTS.md was retained
+byte-for-byte and excluded from authored commits.
+
+`OverlayPresentationMode` is the single presentation router. Mini is 200×46:
+close dot, codescribe wordmark, recording control and fold. Midi is 640×46 and
+adds waveform, elapsed time, direct transcription preview, drawer and placement.
+The fold routes mini→midi→expanded→mini with right/down/left glyphs. A manual
+header microphone click in mini requests midi for that take; ordinary new takes
+honor the persistent transcription preference. Capture and document authority
+remain with their existing owners.
+
+The drawer always expands the panel first and slides over the mounted current
+canvas, retaining editor/draft identity. It offers explicit Transcription and
+0 · All destinations using the existing reader-owned aggregate conversation.
+A Ready agent without messages paints normal text rather than a disabled
+conversation button. Frame morphs preserve the expanded size and top anchor,
+can reverse, suppress resize/placement competition, and honor Reduce Motion.
+
+Root/integrator executed on this exact generation:
+
+- Fresh production binding generation succeeded; no binding API delta.
+- 414 affected Swift tests passed, zero failures, 38.218 s; slowest 5.358 s.
+  Includes drawer-from-midi expansion, empty aggregate conversation navigation,
+  retained draft/editor, microphone presentation, interrupted morph and geometry.
+- Localization compiler sync/check and strict catalog lint passed; all four
+  new keys have Polish translations. Scoped strict Swift format passed.
+- Scoped Semgrep passed: zero findings, one rule, 221 tracked targets. The
+  separate normal pre-push scan and production Clippy also passed.
+- React strict TypeScript and browser transitions/navigation/retained draft,
+  320px layout, dark appearance and reduced-motion checks passed. Updated
+  standalone mockup opened in Chromium; generated previews only were captured.
+- Full Swift run executed 1116 tests, one skipped, zero failures. Its 64.316 s
+  exceeded the unchanged 60 s suite budget: this gate is RED, not a full PASS.
+  The slowest individual test was 5.357 s, below the 10 s ceiling. A single
+  warm repeat with the same budget is in progress.
+
+Logs: `/tmp/codescribe-e19c-router-integrated-{bindings,swift,gate,semgrep,catalog,l10n-sync,l10n-check,push,full-swift,full-gate}-oct7.log`.
+The live Astra lease now received fresh complete channel3 and general0 takes;
+accepted envelopes were ACKed before their causal voice replies. Coverage remains
+an independent transcription diagnostic. No app installation, restart or success
+Ping was performed for this router cut. The historical2051/f252 installed receipt
+above does not describe this source generation. Lena owns the shared final app
+producer; this UI baton must be admitted there before installed acceptance.
+Rust lib-test fixture compilation remains a separate incomplete gate (196→163
+obsolete references at the retained test-only checkpoint, fixtures not executed).
