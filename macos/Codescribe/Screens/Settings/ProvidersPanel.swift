@@ -33,15 +33,6 @@ struct ProvidersPanel: View {
           .padding(.top, 12)
       }
 
-      if model.providerAccessPending || model.providerMutationPending {
-        ProgressView()
-          .controlSize(.small)
-          .padding(.top, 12)
-        Text(model.providerMutationPending
-          ? String(localized: "Updating provider access…")
-          : String(localized: "Checking provider access…"))
-          .font(CSFont.ui(11.5))
-      }
       if let error = model.providerAccessError {
         Text(model.providerAccessResolved
           ? String(localized: "Provider access is unavailable. The last checked values are shown below.")
@@ -50,9 +41,14 @@ struct ProvidersPanel: View {
           .padding(.top, 12)
         Text(error).font(CSFont.mono(10.5)).textSelection(.enabled)
       }
-      Button("Refresh status") { model.refreshProviderAccess() }
-        .disabled(model.providerAccessPending || model.providerMutationPending)
-        .padding(.top, 12)
+      HStack(spacing: CSSpace.md) {
+        Button("Refresh status") { model.refreshProviderAccess() }
+          .disabled(model.providerAccessPending || model.providerMutationPending)
+        ProviderAccessStatusSlot(
+          accessPending: model.providerAccessPending,
+          mutationPending: model.providerMutationPending)
+      }
+      .padding(.top, 12)
       if model.providerAccessResolved {
         VStack(spacing: 8) {
           ForEach(model.vendorProviders, id: \.id) { provider in
@@ -92,6 +88,36 @@ struct ProvidersPanel: View {
       CustomProviderForm(model: model, target: target)
     }
   }
+}
+
+/// Refresh feedback that reserves its line. The spinner and its label fade in
+/// and out next to `Refresh status` instead of being inserted above it, so a
+/// refresh never reflows the cards below (the one-frame tear seen on build 1986
+/// came from that insertion). Width and height are the same in every state.
+struct ProviderAccessStatusSlot: View {
+  let accessPending: Bool
+  let mutationPending: Bool
+
+  var busy: Bool { accessPending || mutationPending }
+
+  var body: some View {
+    HStack(spacing: CSSpace.sm) {
+      ProgressView()
+        .controlSize(.small)
+      Text(mutationPending
+        ? String(localized: "Updating provider access…")
+        : String(localized: "Checking provider access…"))
+        .font(CSFont.ui(11.5))
+        .lineLimit(1)
+    }
+    .frame(height: ProviderAccessStatusSlot.height, alignment: .leading)
+    .opacity(busy ? 1 : 0)
+    .accessibilityHidden(!busy)
+    .animation(nil, value: busy)
+  }
+
+  /// One fixed line: tall enough for the small spinner on every macOS build.
+  static let height: CGFloat = 20
 }
 
 /// What the custom-provider sheet is editing. `Identifiable` so `.sheet(item:)`
