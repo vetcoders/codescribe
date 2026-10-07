@@ -60,6 +60,12 @@ final class SettingsChromeContractTests: XCTestCase {
     let tabs = try XCTUnwrap(pane.range(of: "SettingsTabBar(model: model, section: section)"))
     XCTAssertLessThan(tabs.lowerBound, scroll.lowerBound)
     XCTAssertTrue(pane[scroll.lowerBound...].contains(".id(model.currentTab)"))
+    // The per-tab identity swap must not crossfade: without an identity
+    // transition the outgoing and incoming tabs paint over each other.
+    let transition = try XCTUnwrap(pane.range(of: ".transition(.identity)"))
+    let identity = try XCTUnwrap(pane.range(of: ".id(model.currentTab)"))
+    XCTAssertLessThan(scroll.lowerBound, transition.lowerBound)
+    XCTAssertLessThan(transition.lowerBound, identity.lowerBound)
 
     for token in [
       "CSColor.terracotta",
