@@ -1,185 +1,113 @@
-# Overlay agents and mini widget — source checkpoint
+# Overlay agents and mini widget — integration receipt
 
-Date: 2026-10-06
-Role: worker, source author in the interactive Founder session.
-Runtime: Fleet Worktree, current checkout; no relocation or delegation.
-Root: `/Users/polyversai/.vibecrafted/worktrees/e19c/codescribe`.
-Baseline: detached HEAD, `d9e4233153cac7cd3dd6c4e45e6ee4d1e1c11d79`, clean.
-Integrator: **not designated in this session**. The worker does not assume that role.
-Phase: W1 source checkpoint, operational worker embargo (grade B).
-The repository hook guard exists, but no phase marker is active. Its wrappers
-do not control pre-commit's hook-environment bootstrap. No execution sandbox is
-claimed.
-Integration disposition: still isolated; no destination admission is claimed.
+Updated: 2026-10-07.
+Owner and integrator: this Codex session, explicitly assigned by the Founder.
+Runtime: Fleet Worktree; `/Users/polyversai/.vibecrafted/worktrees/e19c/codescribe`.
+Branch: `codex/overlay-integrate-261007`.
+Baseline: `d9e4233153cac7cd3dd6c4e45e6ee4d1e1c11d79`.
+Source checkpoints: `3c1d183b8f64ed8019b156f854120285955bd912`,
+`0970cd49e8ea1c5ff102f9181e47962c668715a8`,
+`8baeccaec28e220dbcbbc3a173814a749dfc47ea`.
+Disposition: isolated branch; no trunk integration or distribution release claimed.
 
-## Founder direction and implemented shape
+## Implemented product shape
 
-The 6 October request replaces the verbose recording-channel list with an
-embedded agent sidebar, gives each agent independent microphone and speaker
-controls in the sidebar and conversation, unifies header controls, moves elapsed
-time next to the waveform, increases waveform height, enlarges the close dot,
-and folds the panel toward the upper-right into a small floating widget.
+- One embedded agent sidebar replaces the verbose recording-channel list. The
+  header and conversation hamburger open it. Dictation remains on the header
+  microphone, outside the agent roster. Names, concise status, unread counts,
+  microphone and speaker controls share the existing design tokens.
+- Wide windows reserve 280 points for the sidebar; narrow windows use a drawer
+  that blocks input to covered content. Opening releases the text responder;
+  selected conversation and drafts retain their existing owners.
+- Shared microphone/speaker controls also appear beside the conversation name.
+  Saved conversations cannot toggle a reassigned session's microphone.
+- The close dot grows from 7 to 9 points, waveform maximum height doubles,
+  elapsed time follows the waveform, and header controls share circular chrome.
+- The diagonal fold produces a floating 180 × 46 panel. The microphone is always visible
+  and becomes Stop during capture; hover exposes the agent control. Expansion restores the full
+  size; persistence stores the expanded size. Existing all-Spaces behavior stays.
 
-- The header and conversation hamburger open the same sidebar. Agent names,
-  concise receipt/listening state, unread counts and two circular controls are
-  visible. Saved conversations stay behind a disclosure. Dictation is available
-  from the header microphone and its context menu, outside the agent roster.
-- At widths of at least 640 points the sidebar reserves 280 points. Smaller
-  windows use a drawer over the canvas and suspend interaction with covered
-  content. Opening the sidebar releases the current text responder. Selection,
-  drafts and bus messages remain in their existing owners.
-- The close dot grows from 7 to 9 points, including hover. The compact waveform
-  track and bars double their maximum height. Position, agents, microphone and
-  fold controls share circular chrome. The timer immediately follows waveform.
-- Mini is 180 × 46 points. It keeps the waveform, close dot and expand control;
-  agents and microphone appear on hover. The microphone/Stop remains visible
-  during recording. Expansion restores the saved full size and clamps it to the
-  screen; persistence uses the expanded size. The panel keeps its existing
-  nonactivating, floating, all-Spaces behavior.
+## Playback and delivery authority
 
-## Playback ownership
+`bus-demux.py` owns durable automatic-playback mute receipts. Swift invokes the
+installed managed `cs-bus --mute-agent` / `--unmute-agent` command and projects
+bounded receipts read off the UI thread. Identity is provider, provider session
+and resolved bus, not the display name or channel digit. Unknown receipts never
+permit automatic speech. Poll/click ordering preserves newer choices.
 
-`bus-demux.py` remains the speech owner and the sole writer of playback mute
-receipts. `AgentBridgeCommands.swift` invokes that installed managed command
-and resolves the actual bus from each roster session's lease, including custom
-bus paths, before reading its bounded, immutable mute receipts off the UI thread. `OverlayState`
-projects them into both control surfaces. No new recorder, document reducer,
-or bus writer is introduced; PCM identity and text projection are untouched.
+Automatic replies publish their text and source before considering mute. A
+muted reply exits successfully with playback `refused`, reason `muted`, without
+requesting synthesis. Capture and agent work continue. Manual Play remains
+available. Unmute permits future replies without replaying history. No new
+recorder, transcript reducer, PCM authority or bus writer was introduced.
 
-The new commands are `cs-bus --mute-agent` and `--unmute-agent`, with explicit
-`--provider`, `--session`, `--bus` and optional `--bridge-home`. The command
-validates the existing provider/session lease and its bus before writing.
+Channel recovery now obtains terminal closure from canonical source evidence.
+Unread drafts are history and cannot reopen a closed capture after restart.
+Actually unfinished source and an unconsumed source extent still refuse takeover.
 
-The control receipt is `codescribe.agent-playback-mute.v1` at
-`<bridge-home>/runtime/playback-mutes/<key>.json`, privately and atomically
-written by the existing `atomic_json` owner. Its fields are schema, provider,
-provider_session_id, lease_id, bus, muted and emitted_at. The filename is the
-first 12 SHA-256 bytes of the UTF-8 NUL-joined provider, session and resolved
-absolute bus path. Provider identifiers come from the existing lowercase vendor
-registry. This is session playback control state, independent of microphone
-`loud` and the immutable settings snapshot.
+## Current verification
 
-Mute lasts until explicitly cleared, including an app restart. Another session
-of an agent with the same display name has its own state. An unreadable receipt
-prevents automatic speech and shows unavailable status. A delayed UI poll cannot
-overwrite a click's newer receipt.
+- Canonical helper recovery: 34 tests passed again on 7 October after rebuilding the publisher; scoped
+  Semgrep found no findings; installed helper and successful takeover were verified.
+- All 239 inherited Lena deliveries were read and acknowledged through `cs-bus`;
+  both mailbox backlogs and unacknowledged seals were zero after cleanup.
+- 7 October speech suite: **43 tests passed**, with isolated publication and
+  substituted synthesis/player; no network, credentials or speakers were used.
+  Added coverage proves persisted muted text without synthesis, unmute, same-name
+  session isolation, wrong-bus refusal, manual audition, malformed-receipt refusal.
+- UniFFI generation and host dylib build completed. Swift compilation exposed a
+  new asynchronous `Thread.sleep` error; it was replaced with cancellable
+  `Task.sleep` and scoped child-process cleanup. Full Swift run executed 1101 tests with 30 failures, predominantly outdated
+  overlay-shape assertions; the affected suites are being updated and rerun.
+- The rendered AppKit collapse test now asserts the actual 180-point panel width.
+  Old assertions requiring the removed native channel menu were retired; passive
+  navigation and recording ownership retain their behavioral tests.
+- Fixed-WAV five-Iwo gate: the real PCM → ledger → reducer → delivery
+  fixture passed (1 selected test, zero failures); no live microphone was opened.
+- Workspace all-target Clippy remains red on 265 stale Rust unit-fixture references
+  in the baseline (194 Apple session, 69 Silero, 2 seal coverage). Those source files
+  are identical across the baseline and all three overlay/recovery checkpoints.
+  No fetched branch contains a complete migration. The separate five-Iwo geometry
+  iterator lint is corrected without changing its occurrence assertions.
+- The structural verifier also needs the newer fail-closed manifest/test correction
+  from `fb2c16be`; no broad verify PASS is claimed.
 
-Automatic `cs-say` publishes durable reply text and source coordinates first.
-A muted reply then finishes with playback state `refused`, reason `muted`,
-spoken false, and successful command exit. It makes no TTS request when already
-muted. Muting while queued or playing is observed by the existing playback poll;
-only that automatic player stops. Capture and agent work continue. Unmuting
-affects future replies and does not replay the backlog. Explicit Play on a
-retained reply is a deliberate audition and remains available while automatic
-playback is muted.
+Outstanding: final Swift verdict, catalog
+extraction/synchronization, full Rust fixture migration, security/static gates and
+installed-product acceptance. Static checks and fixtures do not prove live UI or
+live audio behavior.
 
-Polish copy for new controls/status is in the existing String Catalog as
-`needs_review`. Compiler extraction and catalog synchronization are integrator
-gates; the worker did not run them.
+## Branch comparison after remote refresh
 
-## Source review and execution boundary
+Counts below are unique commits on this branch / the other branch, excluding
+uncommitted edits. None of these refs contains the overlay source checkpoint.
 
-Loctree project atlas, scoped overlay context, slices and window impact were
-read. The String Catalog is outside Loctree's indexed language coverage; its
-keys were inspected directly and feedback was appended to the central log.
-AICX supplied historical intent only; the current request determines the cut.
+| Compared ref                                 | Ours / theirs | Integration concern                                                                               |
+| -------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------- |
+| `origin/main`                                | 1561 / 0      | Main is an ancestor; this is a large existing feature history, not a three-commit PR against main |
+| `origin/fix/useless-whisper-wandering`       | 4 / 0         | Contains our feature baseline, lacks our bounded cuts                                             |
+| `div0/fix/useless-whisper-wandering`         | 3 / 10        | New Stop, word-dispute, ACK, bell and release-readiness cuts                                      |
+| `codex/stop-admission-261006`                | 3 / 8         | Shared bus helper and overlay delivery readers/tests; requires integration review                 |
+| `origin/fix/settings-tool-permissions-width` | 71 / 19       | Shared String Catalog and bindings; preserve newer translation/settings work                      |
+| `origin/fix/roster-lease-size-cap`           | 71 / 4        | Shared lease-size and retirement contracts                                                        |
 
-The worker's admitted checks are source inspection, Loctree, literal/reference
-censuses, bounded static security scan and `git diff --check`. Source review
-covered exact playback ownership, publication before mute, session/bus isolation,
-manual replay, unknown status, poll/click ordering, saved microphone ownership,
-responder release, covered-canvas interaction and full/mini sizing paths.
+Earlier Lena header-glyph work (`680e7f59`) is already an ancestor. Duplicate
+admission is unnecessary. No blind merges, trunk updates or deployment occurred.
 
-The final local Semgrep scan ran one generic secrets rule over the Python speech
-owner, overlay directory, AppModel and Swift command surface, with 34 tracked
-targets, full reported parsing and zero findings. This does not
-certify Python behavior or Swift concurrency/type correctness.
+## Delivery boundary and historical checkpoint
 
-Tests/fixtures, compilation, formatter execution, benchmarks, models, product
-execution, audio/desktop probes and installation are **NOT_ASSESSED** under
-`docs/COMPILE_EMBARGO.md` §0. Five physical Iwo occurrences through PCM, ledger,
-reducer and delivery are also **NOT_ASSESSED**. Nothing in this source checkpoint
-claims that capture falsifier passed.
+The Founder explicitly asked that app installation happen in the background via
+`make install-app`, without closing a running Codescribe; restart belongs to the
+Founder. Current session instructions supersede the older idle-install wording.
+After a verified artifact installation, report version/build/source and signature;
+launch receipt requires the new artifact to actually run. A running old process
+is not that receipt. No success ping precedes verified installation and launch.
 
-This local W1 checkpoint uses `--no-verify` under §5.1: the command guard cannot
-defer pre-commit's environment bootstrap, including formatter dependency
-installation. That execution is outside the worker's authority. Every bypassed
-hook is recorded here: trailing-whitespace, end-of-file-fixer, check-merge-conflict,
-mixed-line-ending, detect-private-key, cargo-check, cargo-fmt, prettier,
-commit-msg-provenance. Pre-push gates cargo-clippy and semgrep are not invoked;
-no push is planned from detached HEAD. The checkpoint certifies preservation,
-not admission or execution success.
-
-## Integrator acceptance contracts
-
-The designated integrator authors fixtures/tests and runs gates on the admitted
-generation. Required contracts include:
-
-1. Two agents sharing a name, differing sessions, differing bus paths and
-   renamed agents: only the exact selected identity mutes. Wrong/missing lease,
-   malformed receipt, invalid boolean, oversized receipt, contradictory CLI
-   commands and unreadable state never authorize playback.
-2. Muted `cs-say`: text and reply source persist; no synthesis/player starts;
-   playback reason is muted; exit is successful. Queued/active automatic speech
-   stops on mute. Explicit replay, unmute and another session keep working.
-3. Sidebar and conversation speakers paint one receipt. Repeat clicks are
-   serialized; delayed polls cannot revert the current choice. Saved or
-   reassigned conversations cannot toggle another agent's microphone.
-4. Sidebar toggling preserves selected conversation/drafts and capture. Narrow
-   drawers block covered canvas input; opening releases the text responder;
-   unread replies are not marked viewed behind an open sidebar.
-5. Full/mini transitions at narrow, wide, bottom, right, custom and multi-screen
-   positions preserve 180 × 46 mini size, full size persistence, visible
-   expansion and floating behavior. Hover, Stop during capture, drag, keyboard
-   navigation, VoiceOver, reduced motion/transparency and Polish copy must work.
-6. The existing five-Iwo PCM → ledger → reducer → delivery falsifier and capture
-   lifecycle gates remain required, as does installed-product acceptance.
-
-Run `make check`, `make verify`, `make test-swift` and the applicable Python
-speech-owner suite. Rebuild and run `make l10n-sync`/catalog gates with fresh
-extraction. Inspect receipt labels for intentionally muted speech. Then perform
-the repository's `make install-if-idle`, without ending a take or agent turn;
-verify installed version/build/commit, signature and launch. Obtain explicit
-authorization before new screenshot or audio capture/probes. The success ping
-belongs only after verified installation and launch.
-
-## Definition of Undone for this cut
-
-### Goal continuation: current-source acceptance inventory
-
-The objective attachment was reread after checkpoint
-`3c1d183b8f64ed8019b156f854120285955bd912`. The worktree was clean and that
-commit remained HEAD. The previous turn made source progress; it did not
-complete installed-product acceptance. No integrator designation has arrived.
-
-| Explicit requirement | Current source evidence | Remaining proof |
-| --- | --- | --- |
-| Concise embedded agent list, without dictation | `OverlayChannelStatusView.details`, `channelRow`, filtered channels in `DictationOverlayView.channelStatusView` | Complete live roster, narrow/wide layout and Polish rendering |
-| Microphone and persistent mute for each agent | Shared `OverlayAgentAudioControls`, exact playback identity/receipt, automatic `say_reply` route | Isolation, mute during speech, preserved reply history and later manual replay |
-| Same controls beside conversation name and hamburger | `OverlayConversationView.navigation` | Correct session, keyboard and accessibility behavior |
-| Larger close dot and waveform | 9-point `closeButton`, doubled `WaveformView.maxBarHeight` | Rendered appearance and hit target |
-| Timer near waveform and circular header controls | `justifiedHeader`, `OverlayPlacementMenu` and shared glyph | Layout at supported widths |
-| Diagonal fold into minimal floating widget | 45-degree chevron, `miniHeader`, 180 × 46 `collapsedSize`, saved expanded size, `.floating` rest level and all-Spaces collection behavior | Actual collapse, hover, drag, restore and display transitions |
-
-Source review also identified an existing test that contradicts the new
-Founder-requested interface:
-`OverlayChannelDeliveryTests.testChannelChromeIsOutsideCollapseGateAndDragStillPrecedesGlass`
-asserts the old native `Menu`, hidden menu indicator, `Capture channels` button
-and `overlay-channel-open-` marker. The integrator must replace those old-shape
-assertions with evidence for the embedded sidebar and shared audio controls,
-while preserving passive navigation and microphone ownership. Tests were read,
-not changed or executed by the worker. Existing collapsed-height checks do not
-establish the new 180-point width; the integrator must add that assertion and
-restoration coverage. Source agreement is not a runtime verdict.
-
-| Surface | State |
-| --- | --- |
-| Source and Polish draft copy | Authored; static review only |
-| Test and compiler verdict | NOT_ASSESSED; integrator required |
-| Catalog extraction synchronization | NOT_ASSESSED; integrator required |
-| Installed app, UI, microphone and sound acceptance | NOT_ASSESSED |
-| Destination integration | Still isolated |
-| Distribution/release/public claims | No release performed |
-
-No sales/readiness claim follows from this source checkpoint. The next required
-handoff is designation of the integrator and admission of this exact cut.
+The initial source checkpoint mistakenly treated this interactive ownership run
+as a worker with no integrator. That restriction was corrected by the Founder and
+is not a current blocker. The original source commit used `--no-verify` and recorded
+these omitted hooks: trailing-whitespace, end-of-file-fixer, check-merge-conflict,
+mixed-line-ending, detect-private-key, cargo-check, cargo-fmt, prettier and
+commit-msg-provenance. This historical checkpoint is not a gate PASS. Subsequent
+recovery commit ran normal hooks. Keep executed gates, installation and destination
+admission as separate evidence.

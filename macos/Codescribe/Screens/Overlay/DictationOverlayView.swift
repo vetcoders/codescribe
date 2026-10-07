@@ -636,8 +636,18 @@ struct DictationOverlayView: View {
       closeButton
       chromeWaveform(barCount: 4)
         .frame(minWidth: 12, maxWidth: .infinity)
+        .background {
+          GeometryReader { geometry in
+            Color.clear.preference(
+              key: OverlayHeaderControlFramesPreferenceKey.self,
+              value: OverlayHeaderControlFrames(
+                waveform: geometry.frame(in: .named("overlay-header"))))
+          }
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+        }
       if pointerInsideOverlay { channelStatusView }
-      recordingControls(compact: true, showsMicrophone: pointerInsideOverlay || state.recording)
+      recordingControls(compact: true)
     }
     .frame(height: 26)
     .accessibilityIdentifier("overlay-mini-widget")
@@ -735,7 +745,7 @@ struct DictationOverlayView: View {
       HStack(spacing: compact ? 4 : 8) {
         if showsDiagnostics && state.compactProjection?.degraded == true {
           OverlayMicrophoneGlyph(
-            symbol: "waveform.badge.magnifyingglass", tint: palette.mutedText.color)
+            symbol: "waveform.badge.magnifyingglass", tint: palette.processingStatus.color)
             .help(OverlayWarningCopy.liveTranscriptBehind.sentence)
             .accessibilityLabel(OverlayWarningCopy.liveTranscriptBehind.sentence)
             .accessibilityIdentifier("overlay-acoustic-warning")

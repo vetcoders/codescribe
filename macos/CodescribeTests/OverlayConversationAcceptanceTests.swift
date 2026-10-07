@@ -23,7 +23,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     XCTAssertTrue(source.contains(".accessibilityLabel(\"Play\")"))
     XCTAssertTrue(source.contains(".help(\"Play\")"))
     XCTAssertTrue(
-      source.contains("if let playback = message.playback { Text(playbackLabel(playback.state))"))
+      source.contains("if let playback = message.playback { Text(playbackLabel(playback.state, reason: playback.reason))"))
     XCTAssertTrue(source.contains("case \"spoken\": String(localized: \"Spoken\")"))
     XCTAssertFalse(source.contains("Play again"))
     XCTAssertTrue(

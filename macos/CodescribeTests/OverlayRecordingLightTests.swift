@@ -375,7 +375,7 @@ final class OverlayRecordingLightTests: XCTestCase {
         .deletingLastPathComponent()
         .appendingPathComponent("Codescribe/Screens/Overlay/DictationOverlayView.swift"),
       encoding: .utf8)
-    let start = try XCTUnwrap(source.range(of: "private func justifiedHeader"))
+    let start = try XCTUnwrap(source.range(of: "private func recordingControls"))
     let end = try XCTUnwrap(source.range(of: "private func chromeWaveform"))
     let header = String(source[start.lowerBound..<end.lowerBound])
     XCTAssertFalse(header.contains("OverlayRecordingLightView("))

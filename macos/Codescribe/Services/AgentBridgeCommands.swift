@@ -132,8 +132,11 @@ extension RealAgentBridgeInstaller {
       process.standardOutput = FileHandle.nullDevice
       process.standardError = FileHandle.nullDevice
       try process.run()
+      defer { if process.isRunning { process.terminate() } }
       let deadline = Date().addingTimeInterval(15)
-      while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+      while process.isRunning, Date() < deadline {
+        try await Task.sleep(for: .milliseconds(50))
+      }
       if process.isRunning { process.terminate() }
       guard !process.isRunning, process.terminationReason == .exit,
         process.terminationStatus == 0

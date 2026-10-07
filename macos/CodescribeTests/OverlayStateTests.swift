@@ -705,7 +705,7 @@ final class OverlayStateTests: XCTestCase {
       palette: .dark, animates: false, onShowMonitor: state.showAgentMonitor)
     header.showMonitor()
     XCTAssertTrue(state.showsAgentMonitor)
-    XCTAssertFalse(state.showsMyDictation)
+    XCTAssertTrue(state.showsMyDictation, "Sidebar preserves the selected canvas")
     XCTAssertFalse(state.isCollapsed)
     XCTAssertEqual(state.channelDelivery, [channel])
     XCTAssertTrue(engine.toggledDigits.isEmpty)

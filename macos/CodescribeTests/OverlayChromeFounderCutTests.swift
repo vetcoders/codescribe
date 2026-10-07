@@ -398,6 +398,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       settle(root)
       XCTAssertEqual(panel.frame.maxY, expanded.maxY, accuracy: 0.5)
       XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.width, 180, accuracy: 0.5)
       XCTAssertEqual(panel.sizeForPersistence, expanded.size)
       XCTAssertEqual(state.activeText, text)
       XCTAssertTrue(findTranscript(in: root) === native, "Folding must not recreate the editor")
@@ -590,7 +591,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(
       canvas.range(
         of:
-          #"if !state\.isCollapsed && state\.showsMyDictation \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*HStack\(spacing: 6\)"#,
+          #"if !state\.isCollapsed && state\.showsMyDictation && !state\.showsAgentMonitor \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*HStack\(spacing: 6\)"#,
         options: .regularExpression) != nil)
     XCTAssertTrue(
       canvas.range(
@@ -779,7 +780,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(chrome.contains("sideIndicatorAnimation(reduceMotion: reduceMotion)"))
     XCTAssertTrue(chrome.contains("transaction.disablesAnimations = true"))
     XCTAssertTrue(source.contains("pointerInsideOverlay = inside"))
-    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 4)
+    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 5)
     XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 3)
     XCTAssertFalse(chrome.contains("DragGesture"))
   }
@@ -795,8 +796,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       XCTAssertFalse(elements.isEmpty, "The rendered accessibility hierarchy must be observable")
       let header = try headerSource(overlaySource())
       let close = try section(
-        of: header, from: "Button {\n          state.relayIntent(.close)",
-        to: "Text(verbatim: \"codescribe\")")
+        of: header, from: "Button { state.relayIntent(.close)",
+        to: "private func recordingControls")
       XCTAssertTrue(close.contains("ModeDot("))
       XCTAssertTrue(close.contains("color: CSColor.terracotta"))
       XCTAssertTrue(close.contains("if closeDotHovered {"))
@@ -822,8 +823,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let source = try overlaySource()
     let header = try headerSource(source)
     let close = try section(
-      of: header, from: "Button {\n          state.relayIntent(.close)",
-      to: "Text(verbatim: \"codescribe\")")
+      of: header, from: "Button { state.relayIntent(.close)",
+      to: "private func recordingControls")
     XCTAssertTrue(
       close.contains("state.relayIntent(.close)"),
       "The brand dot must relay the close intent")
@@ -839,7 +840,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(header.components(separatedBy: "overlay-brand-close-dot").count - 1, 1)
     // The dot keeps its pre-b83e95538 place: the hit target grows through the
     // content shape, never through a frame that shifts the dot or the wordmark.
-    XCTAssertTrue(close.contains("size: 7"))
+    XCTAssertTrue(close.contains("size: 9"))
     XCTAssertFalse(close.contains("compact ?"), "Close size must not depend on header width")
     XCTAssertFalse(close.contains("state.mode"), "Close must not signal engine state")
     XCTAssertFalse(close.contains("size: closeDotHovered"))
@@ -849,7 +850,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertLessThan(
       scale, hitShape, "Hover growth must not change the button's layout or hit shape")
     XCTAssertTrue(close.contains(".onHover { closeDotHovered = $0 }"))
-    XCTAssertTrue(close.contains(".contentShape(Circle().inset(by: -8.5))"))
+    XCTAssertTrue(close.contains(".contentShape(Circle().inset(by: -7.5))"))
     XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")
     XCTAssertTrue(header.contains("Text(verbatim: \"codescribe\")"))
     XCTAssertTrue(header.contains(".allowsHitTesting(false)"))
@@ -947,7 +948,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   func testRecordingControlMorphsBetweenIdleLiveAndFinalizing() throws {
     let source = try overlaySource()
-    XCTAssertTrue(source.contains("HStack(spacing: compact ? 4 : 7) {\n      recordingButton"))
+    XCTAssertTrue(source.contains("if showsRecordingButton { recordingButton }"))
     XCTAssertTrue(
       source.contains("OverlayMicrophoneGlyph(symbol: recordingSymbol, tint: recordingTint)"))
     XCTAssertTrue(source.contains(".accessibilityIdentifier(recordingIdentifier)"))
@@ -1029,7 +1030,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   /// narrowHeader, so one guard covers both widths.
   private func headerSource(_ source: String) throws -> String {
     try section(
-      of: source, from: "private func justifiedHeader(compact: Bool)",
+      of: source, from: "private var closeButton: some View",
       to: "private func chromeWaveform")
   }
 

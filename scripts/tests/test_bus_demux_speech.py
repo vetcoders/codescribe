@@ -276,6 +276,68 @@ class SayReplyTests(unittest.TestCase):
             "Zrobione.", "rex", 1.1, playback_root=self.home, bus=self.bus, control=ANY
         )
 
+    def mute(self, session, muted=True, bus=None):
+        args = DEMUX.argparse.Namespace(
+            provider="claude-code", session=session, bus=bus or self.bus,
+            bridge_home=self.home, mute_agent=muted,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(DEMUX.set_agent_muted(args), 0)
+
+    def test_muted_reply_keeps_text_without_synthesis_and_unmute_allows_next_reply(self):
+        self.attach_lease("session-a", "filip")
+        self.mute("session-a")
+        code, reply, spoken = self.say("--session", "session-a")
+        self.assertEqual(code, 0)
+        spoken.assert_not_called()
+        self.assertEqual(self.outcome["state"], "refused")
+        self.assertEqual(self.outcome["reason"], "muted")
+        rows = [json.loads(line) for line in self.bus.read_text().splitlines()]
+        self.assertEqual(rows[0]["reply_id"], reply["reply_id"])
+        self.assertEqual(rows[0]["text"], "Zrobione.")
+        self.mute("session-a", False)
+        code, _, spoken = self.say("--session", "session-a")
+        self.assertEqual(code, 0)
+        spoken.assert_called_once()
+
+    def test_same_name_other_session_stays_audible_and_wrong_bus_cannot_mute(self):
+        self.attach_lease("session-a", "filip")
+        self.attach_lease("session-b", "filip")
+        self.mute("session-a")
+        code, _, spoken = self.say("--session", "session-b")
+        self.assertEqual(code, 0)
+        spoken.assert_called_once()
+        with self.assertRaises(ValueError):
+            self.mute("session-b", bus=self.bus.with_name("other.jsonl"))
+        self.assertFalse(DEMUX.agent_playback_muted(
+            self.home, "claude-code", "session-b", self.bus))
+
+    def test_manual_replay_works_while_automatic_speech_is_muted(self):
+        self.attach_lease("session-a", "filip")
+        self.mute("session-a")
+        _, reply, _ = self.say("--session", "session-a")
+        args = DEMUX.argparse.Namespace(bridge_home=self.home)
+        with (
+            patch.object(DEMUX, "_speak_xai", return_value=(True, None, None)) as spoken,
+            patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(DEMUX.speak_published_reply(
+                args, self.bus, reply, "a" * 24), 0)
+        spoken.assert_called_once()
+
+    def test_malformed_mute_receipt_never_authorizes_automatic_speech(self):
+        self.attach_lease("session-a", "filip")
+        self.mute("session-a")
+        path = DEMUX.playback_mute_path(self.home, "claude-code", "session-a", self.bus)
+        row = json.loads(path.read_text())
+        for field, invalid in (("muted", "false"), ("provider_session_id", "other")):
+            with self.subTest(field=field):
+                path.write_text(json.dumps({**row, field: invalid}))
+                code, _, spoken = self.say("--session", "session-a")
+                self.assertEqual(code, 0)
+                spoken.assert_not_called()
+
     def test_explicit_name_still_wins(self):
         self.attach_lease("session-a", "filip")
         code, reply, spoken = self.say("--session", "session-a", "--name", "roman")

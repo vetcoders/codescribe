@@ -740,10 +740,11 @@ final class OverlayIntentRailTests: XCTestCase {
       expandedRecorder.frames,
       inside: size.width,
       context: "expanded listening header",
-      compactMeter: false
+      compactMeter: true
     )
 
     let collapsedState = OverlayState.previewListening()
+    collapsedState.handleRecordingPreparing()
     collapsedState.toggleCollapsed()
     let collapsedRecorder = OverlayHeaderControlFramesRecorder()
     let collapsedHost = NSHostingView(
@@ -760,7 +761,7 @@ final class OverlayIntentRailTests: XCTestCase {
       collapsedRecorder.frames,
       inside: size.width,
       context: "collapsed listening header",
-      compactMeter: false
+      compactMeter: true
     )
 
     let bitmap = try XCTUnwrap(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))

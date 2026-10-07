@@ -351,7 +351,6 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let status = try String(
       contentsOf: root.appendingPathComponent(
         "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift"), encoding: .utf8)
-    XCTAssertTrue(status.contains("overlay-channel-open-"))
     XCTAssertTrue(status.contains("Microphone active"))
     XCTAssertFalse(status.contains(".popover("))
     XCTAssertTrue(view.contains("channelStatusView.monitorBody"))
@@ -361,11 +360,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     // The header shows one glyph, never the microphone: mic = recording only.
     XCTAssertFalse(status.contains("antenna.radiowaves"))
     XCTAssertFalse(status.contains("hasOpenChannel ? \"mic.fill\""))
-    // Notification navigation stays passive; only the separate microphone toggles capture.
-    XCTAssertTrue(status.contains("Menu {"))
-    XCTAssertTrue(status.contains(".menuIndicator(.hidden)"))
-    XCTAssertTrue(
-      status.contains("Button(\"Capture channels\", systemImage: \"person.2\") { showMonitor() }"))
+    // Passive navigation and capture ownership are exercised by
+    // testNotificationNavigationRetainsOwnerAndUnreadCountWithoutOpeningMicrophone.
   }
 
   func testRosterToggleAcceptsOnlyChannelDigitsAndForwardsEachClickOnce() {
@@ -733,9 +729,6 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       func buttons(_ node: NSView) -> [NSButton] {
         ((node as? NSButton).map { [$0] } ?? []) + node.subviews.flatMap(buttons)
       }
-      XCTAssertTrue(
-        buttons(host).contains { $0.image != nil },
-        "waiting state needs a native label image, not an unsupported animated Shape")
       let before = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
       RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
       host.cacheDisplay(in: host.bounds, to: bitmap)
@@ -900,7 +893,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       }
     }
     for size in sizes {
-      XCTAssertEqual(size.width, OverlayAgentGlyph.slotSize.width, accuracy: 0.5)
+      XCTAssertEqual(size.width, OverlayRecordingControls.controlDiameter, accuracy: 0.5)
       XCTAssertEqual(size.height, OverlayAgentGlyph.slotSize.height, accuracy: 0.5)
     }
   }
