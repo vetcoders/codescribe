@@ -214,8 +214,25 @@ actor OverlayChannelDeliveryReader {
 
   private static func merge(_ first: OverlayConversationMessage, _ second: OverlayConversationMessage)
     -> OverlayConversationMessage {
-    var result = first.emittedAt > second.emittedAt ? first : second
-    let other = first.emittedAt > second.emittedAt ? second : first
+    // Capture opening time stays constant while the source document evolves.
+    // Delayed mirrors must follow its revision, never replace it by path order.
+    let firstIsNewer: Bool
+    if let firstRevision = first.sourceRevision, let secondRevision = second.sourceRevision,
+      firstRevision != secondRevision
+    {
+      firstIsNewer = firstRevision > secondRevision
+    } else {
+      firstIsNewer = first.emittedAt > second.emittedAt
+    }
+    var result = firstIsNewer ? first : second
+    let other = firstIsNewer ? second : first
+    if let otherOccurrences = other.occurrenceIDs {
+      var occurrences = result.occurrenceIDs ?? []
+      for occurrence in otherOccurrences where !occurrences.contains(occurrence) {
+        occurrences.append(occurrence)
+      }
+      result.occurrenceIDs = occurrences
+    }
     for recipient in other.recipients {
       if let index = result.recipients.firstIndex(where: { $0.owner.id == recipient.owner.id }) {
         if result.recipients[index].deliveryID == recipient.deliveryID {

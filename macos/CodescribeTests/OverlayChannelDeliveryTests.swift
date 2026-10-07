@@ -6,6 +6,98 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testBroadcastStreamingKeepsNewestReducerRevisionAcrossDelayedBusCopies() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let shared = fixture.root.appendingPathComponent("a-shared.jsonl")
+    func row(_ revision: Int, _ text: String) -> [String: Any] {
+      [
+        "schema": "codescribe.transcript-evidence.v1",
+        "session_id": "agent-channel-0-streaming-fixture", "audience": "*",
+        "sequence": revision, "reducer_revision": revision,
+        "reducer_action": "commit_delta", "rendered_text": text,
+        "occurrence_session_id": "agent-channel-0-streaming-fixture",
+        "capture_epoch": 1, "sample_start": 3200, "sample_end": 9600,
+        "document_index": 0, "recipients": [fixture.recipient()],
+        "emitted_at": "2026-10-07T10:00:0\(revision)Z",
+      ]
+    }
+    func appendShared(_ value: [String: Any]) throws {
+      var bytes = try JSONSerialization.data(withJSONObject: value)
+      bytes.append(10)
+      if !FileManager.default.fileExists(atPath: shared.path) {
+        try bytes.write(to: shared)
+      } else {
+        let handle = try FileHandle(forWritingTo: shared)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: bytes)
+      }
+    }
+    try fixture.append(row(1, "Pierwsze słowo"))
+    try appendShared(row(1, "Pierwsze słowo"))
+    try appendShared(row(4, "Pierwsze słowo i cała dalsza wypowiedź"))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+    var snapshot = try await reader.readSnapshot()
+    var message = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" }?.messages.first)
+    XCTAssertEqual(message.text, "Pierwsze słowo i cała dalsza wypowiedź")
+    XCTAssertEqual(snapshot.conversations.first { $0.id == "0" }?.messages.count, 1)
+    let identity = message.id
+
+    // A delayed mirror must not rewind the visible document. A later source
+    // correction may shorten it: neither string length nor opening time wins.
+    try fixture.append(row(2, "Pierwsze słowo i"))
+    try appendShared(row(5, "Poprawiona wypowiedź"))
+    snapshot = try await reader.readSnapshot()
+    message = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" }?.messages.first)
+    XCTAssertEqual(message.text, "Poprawiona wypowiedź")
+    XCTAssertEqual(message.id, identity)
+    XCTAssertEqual(snapshot.conversations.first { $0.id == "0" }?.messages.count, 1)
+
+    let restarted = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+      .readSnapshot()
+    XCTAssertEqual(
+      restarted.conversations.first { $0.id == "0" }?.messages.first?.text,
+      "Poprawiona wypowiedź")
+  }
+
+  func testBroadcastMirrorMergeRetainsFivePCMEntriesAndSeparateCaptures() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let shared = fixture.root.appendingPathComponent("a-shared.jsonl")
+    var sharedBytes = Data()
+    for capture in ["one", "two"] {
+      for index in 0..<5 {
+        let row: [String: Any] = [
+          "schema": "codescribe.transcript-evidence.v1",
+          "session_id": "agent-channel-0-\(capture)", "audience": "*",
+          "sequence": index + 1, "reducer_revision": index == 4 ? 3 : 4,
+          "reducer_action": "commit_delta", "rendered_text": "Iwo Iwo Iwo Iwo Iwo",
+          "occurrence_session_id": "agent-channel-0-\(capture)", "capture_epoch": 1,
+          "sample_start": 3200 + index * 1280, "sample_end": 4480 + index * 1280,
+          "document_index": 0, "recipients": [fixture.recipient()],
+          "emitted_at": "2026-10-07T10:00:00Z",
+        ]
+        if index == 4 {
+          try fixture.append(row)
+        } else {
+          sharedBytes.append(try JSONSerialization.data(withJSONObject: row))
+          sharedBytes.append(10)
+        }
+      }
+    }
+    try sharedBytes.write(to: shared)
+    let snapshot = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+      .readSnapshot()
+    let messages = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" }).messages
+    XCTAssertEqual(messages.count, 2, "equal words in separate captures keep separate identity")
+    XCTAssertEqual(Set(messages.map(\.id)).count, 2)
+    for message in messages {
+      XCTAssertEqual(message.text, "Iwo Iwo Iwo Iwo Iwo")
+      XCTAssertEqual(Set(message.occurrenceIDs ?? []).count, 5)
+    }
+  }
+
   func testRestartRestoresVisibleReceiptWithoutNeedingAnotherBusEvent() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }

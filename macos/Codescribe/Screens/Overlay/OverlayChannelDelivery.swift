@@ -245,6 +245,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       let ordered = messageOrder.compactMap { messages[$0] }.map { message in
         var result = message
         result.busPath = busPath
+        result.sourceRevision = messageRevisions[message.id]
         return result
       }
       let broadcastQuestions = ordered.filter {
@@ -850,6 +851,7 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   var replyToOccurrenceID: String? = nil
   var occurrenceIDs: [String]? = nil
   var sourceChannel: String? = nil
+  var sourceRevision: UInt64? = nil
   var replyID: String? { kind == .reply ? String(id.dropFirst("reply:".count)) : nil }
 }
 
