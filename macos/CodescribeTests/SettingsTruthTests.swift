@@ -1704,6 +1704,58 @@ final class SettingsTruthTests: XCTestCase {
     )
   }
 
+  /// A flipped `enabled` flag invalidates the cached handshake: the card must
+  /// not keep saying "passed" about a configuration that was just edited.
+  func testToggleMcpServerDropsTheStaleTestResult() async {
+    let admin = ScriptedMcpAdmin(servers: [
+      CsMcpServer(
+        name: "loctree-mcp", command: "loct", args: ["mcp"], envKeys: [], enabled: true,
+        transport: "stdio", endpoint: "", authRef: "")
+    ])
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
+    model.reloadMcpServers()
+    model.testMcpServer("loctree-mcp")
+    for _ in 0..<100 where model.mcpTestPending.contains("loctree-mcp") { await Task.yield() }
+    XCTAssertEqual(model.mcpTestResults["loctree-mcp"]?.ok, true)
+
+    model.toggleMcpServer(model.mcpServers[0])
+
+    XCTAssertNil(model.mcpTestResults["loctree-mcp"])
+    XCTAssertEqual(model.mcpServers.first?.enabled, false)
+    XCTAssertEqual(admin.updates, ["loctree-mcp"])
+  }
+
+  /// A rejected add hands the store's message back to the form, which keeps
+  /// the typed fields; a successful add returns nil.
+  func testAddMcpServerReportsTheStoreFailure() {
+    let admin = ScriptedMcpAdmin(servers: [], addFailure: "server name already exists")
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
+
+    XCTAssertEqual(
+      model.addMcpServer(name: "prview", command: "prview", args: ["mcp"]),
+      "server name already exists")
+    XCTAssertEqual(model.lastError, "server name already exists")
+    XCTAssertTrue(model.mcpServers.isEmpty)
+
+    admin.addFailure = nil
+    XCTAssertNil(model.addMcpServer(name: "prview", command: "prview", args: ["mcp"]))
+    XCTAssertEqual(model.mcpServers.map(\.name), ["prview"])
+  }
+
+  /// The card reads the server rule from the live policy instead of a literal.
+  func testMcpServerPermissionLevelReadsTheLivePolicy() async {
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(),
+      mcpAdmin: ScriptedMcpAdmin(servers: [], rules: ["prview=ask", "dc=deny"]))
+    model.reloadToolPermissions()
+    for _ in 0..<100 where model.permissionPolicy.servers.isEmpty { await Task.yield() }
+    XCTAssertEqual(model.mcpServerPermissionLevel("prview"), "ask")
+    XCTAssertEqual(model.mcpServerPermissionLevel("dc"), "deny")
+    XCTAssertNil(model.mcpServerPermissionLevel("loctree-mcp"))
+  }
+
   func testClearMcpConfigurationUsesDedicatedEngineContract() {
     var calls = 0
     let model = SettingsViewModel(
@@ -2020,4 +2072,58 @@ private final class RecordingPermissionAdmin: MCPAdminEngine {
   }
   func clearToolPermission(identity: String) throws { toolClears.append(identity) }
   func listToolCapabilities() -> [CsToolCapability] { capabilities }
+}
+
+/// MCP admin double with a scripted add failure and a recorded update log.
+@MainActor
+private final class ScriptedMcpAdmin: MCPAdminEngine {
+  struct StoreFailure: Error, CustomStringConvertible {
+    let description: String
+  }
+
+  private var servers: [CsMcpServer]
+  private let serverRules: [String]
+  var addFailure: String?
+  private(set) var updates: [String] = []
+
+  init(servers: [CsMcpServer], addFailure: String? = nil, rules serverRules: [String] = []) {
+    self.servers = servers
+    self.addFailure = addFailure
+    self.serverRules = serverRules
+  }
+
+  func listServers() throws -> [CsMcpServer] { servers }
+
+  func addServer(_ input: CsMcpServerInput) throws {
+    if let addFailure { throw StoreFailure(description: addFailure) }
+    servers.append(
+      CsMcpServer(
+        name: input.name, command: input.command, args: input.args, envKeys: [],
+        enabled: input.enabled, transport: input.endpoint.isEmpty ? "stdio" : "remote",
+        endpoint: input.endpoint, authRef: input.authRef))
+  }
+
+  func updateServer(name: String, input: CsMcpServerInput) throws {
+    updates.append(name)
+    guard let index = servers.firstIndex(where: { $0.name == name }) else { return }
+    servers[index] = CsMcpServer(
+      name: input.name, command: input.command, args: input.args,
+      envKeys: servers[index].envKeys, enabled: input.enabled,
+      transport: input.endpoint.isEmpty ? "stdio" : "remote",
+      endpoint: input.endpoint, authRef: input.authRef)
+  }
+
+  func removeServer(name: String) throws { servers.removeAll { $0.name == name } }
+
+  func testServer(_ name: String) async -> CsMcpTestResult {
+    CsMcpTestResult(
+      ok: true, toolCount: 3, serverName: name, serverVersion: "1.0", protocolVersion: "",
+      error: "")
+  }
+
+  func getPermissionPolicy() -> CsPermissionPolicy {
+    CsPermissionPolicy(
+      defaultLevel: "ask", readOnlyDefault: "allow", sideEffectDefault: "ask", tools: [],
+      servers: serverRules)
+  }
 }

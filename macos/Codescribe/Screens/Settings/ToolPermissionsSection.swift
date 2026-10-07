@@ -199,6 +199,16 @@ enum ToolPermissionLabels {
     }
   }
 
+  /// Interface-language name of a permission level (`allow` / `ask` / `deny`).
+  static func level(_ raw: String) -> String {
+    switch raw {
+    case "allow": return String(localized: "Allow", comment: "Tool permission level")
+    case "ask": return String(localized: "Ask", comment: "Tool permission level")
+    case "deny": return String(localized: "Deny", comment: "Tool permission level")
+    default: return raw
+    }
+  }
+
   static func ruleCaption(_ source: String) -> String {
     switch source {
     case "tool": return String(localized: "Individual rule")

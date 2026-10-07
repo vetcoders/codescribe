@@ -1,27 +1,28 @@
 import SwiftUI
 
-// Editable MCP server management, rendered inside the Engine panel below the
-// read-only AgentStatusSection. Where AgentStatusSection reports discovery
-// truth, THIS section writes it: add / enable-disable / remove servers in
-// ~/.codescribe/mcp.json (through the atomic, unknown-field-preserving store)
-// and test one on demand. A missing config degrades to an empty list + the add
-// form, which creates the file on first add.
+// Editable MCP server management on the Agent › MCP tab. Where the
+// Diagnostics tab reports discovery truth, THIS section writes it: add /
+// enable-disable / remove servers in ~/.codescribe/mcp.json (through the
+// atomic, unknown-field-preserving store) and run a one-off handshake on
+// demand. A missing config degrades to an empty list + the add form, which
+// creates the file on first add.
+//
+// The screen reads as a list of servers, not as a config dump: a card shows
+// the name, the configured state (enabled / disabled is a config flag, not a
+// live connection), the result of the last handshake and two actions. The
+// launch command, URL, environment keys, authentication, permission rule and
+// handshake identity live behind a per-card disclosure, and the on-disk
+// mechanics behind the tab-level "Technical details".
 
 struct MCPServersSection: View {
   @ObservedObject var model: SettingsViewModel
   @State private var confirmingClear = false
+  @State private var showingTechnicalDetails = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel(String(localized: "Manage MCP servers"))
-
-      Text("Edited on disk in mcp.json. Hand edits (env, custom fields) are preserved.")
-        .font(CSFont.mono(11, .medium))
-        .foregroundStyle(Color.secondary)
-        .padding(.top, 4)
-
       if model.mcpServers.isEmpty {
-        emptyState.padding(.top, CSSpace.control)
+        emptyState
       } else {
         VStack(spacing: 8) {
           ForEach(model.mcpServers, id: \.name) { server in
@@ -29,13 +30,13 @@ struct MCPServersSection: View {
               server: server,
               pending: model.mcpTestPending.contains(server.name),
               result: model.mcpTestResults[server.name],
+              permissionLevel: model.mcpServerPermissionLevel(server.name),
               onToggle: { model.toggleMcpServer(server) },
               onTest: { model.testMcpServer(server.name) },
               onRemove: { model.removeMcpServer(server.name) }
             )
           }
         }
-        .padding(.top, CSSpace.control)
       }
 
       MCPAddServerForm { name, command, args, endpoint, token in
@@ -46,18 +47,37 @@ struct MCPServersSection: View {
       }
       .padding(.top, 12)
 
-      Button(role: .destructive) {
-        confirmingClear = true
+      DisclosureGroup(isExpanded: $showingTechnicalDetails) {
+        VStack(alignment: .leading, spacing: 6) {
+          Text("Edited on disk in mcp.json. Hand edits (env, custom fields) are preserved.")
+            .font(CSFont.mono(11, .medium))
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+          Text(verbatim: "~/.codescribe/mcp.json")
+            .font(CSFont.mono(10, .medium))
+            .foregroundStyle(Color.secondary)
+            .textSelection(.enabled)
+          Button(role: .destructive) {
+            confirmingClear = true
+          } label: {
+            Text("Move MCP configuration to Trash…")
+              .font(CSFont.mono(10.5, .semibold))
+              .foregroundStyle(CSColor.danger)
+          }
+          .csFocusRing()
+          .padding(.top, 6)
+          .accessibilityHint("Moves only mcp.json to Trash after confirmation.")
+        }
+        .padding(.top, 6)
       } label: {
-        Text("Clear MCP configuration…")
-          .font(CSFont.mono(10.5, .semibold))
-          .foregroundStyle(CSColor.danger)
+        Text("Technical details")
+          .font(CSFont.ui(11.5))
+          .foregroundStyle(Color.secondary)
       }
-      .csFocusRing()
-      .padding(.top, 13)
-      .accessibilityHint("Moves only mcp.json to Trash after confirmation.")
+      .padding(.top, 14)
+      .accessibilityIdentifier("settings-mcp-technical-details")
     }
-    .alert("Clear MCP configuration?", isPresented: $confirmingClear) {
+    .alert("Move MCP configuration to Trash?", isPresented: $confirmingClear) {
       Button("Cancel", role: .cancel) {}
       Button("Move mcp.json to Trash", role: .destructive) {
         model.clearMcpConfiguration()
@@ -95,15 +115,22 @@ struct MCPServersSection: View {
   }
 }
 
-// MARK: - One server row (identity · command · test result · actions)
+// MARK: - One server card (name · state · last test · actions · details)
 
 private struct MCPServerRow: View {
   let server: CsMcpServer
   let pending: Bool
   let result: CsMcpTestResult?
+  /// The server-wide permission rule from the live policy, nil when the
+  /// server inherits the category defaults.
+  let permissionLevel: String?
   let onToggle: () -> Void
   let onTest: () -> Void
   let onRemove: () -> Void
+
+  @State private var showingDetails = false
+
+  private var isRemote: Bool { server.transport == "remote" }
 
   private var accent: Color {
     guard server.enabled else { return Color.secondary }
@@ -113,8 +140,7 @@ private struct MCPServerRow: View {
   }
 
   private var commandLine: String {
-    if server.transport == "remote" { return server.endpoint }
-    return server.args.isEmpty
+    server.args.isEmpty
       ? server.command
       : "\(server.command) \(server.args.joined(separator: " "))"
   }
@@ -132,35 +158,12 @@ private struct MCPServerRow: View {
         removeButton
       }
 
-      Text(commandLine)
-        .font(CSFont.mono(11.5, .regular))
-        .foregroundStyle(Color.secondary)
-        .lineLimit(1)
-        .truncationMode(.middle)
-        .frame(maxWidth: .infinity, alignment: .leading)
-
-      if !server.envKeys.isEmpty {
-        Text(verbatim: "env: \(server.envKeys.joined(separator: ", "))")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(Color.secondary)
-          .lineLimit(1)
-          .truncationMode(.middle)
-      }
-
-      if server.transport == "remote" {
-        Text(
-          server.authRef.isEmpty
-            ? "remote · no authentication · policy: ask"
-            : "remote · token in Keychain · policy: ask"
-        )
-        .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(CSColor.oliveLight)
-      }
+      lastTestLine
 
       if server.name == "desktop-commander" {
-        // No hardcoded per-level counts here: the Permissions panel
-        // renders them from the live registry. A frozen literal drifts
-        // from the policy it claims to describe (review P2-12).
+        // No hardcoded per-level counts here: the Tools tab renders them from
+        // the live registry. A frozen literal drifts from the policy it
+        // claims to describe (review P2-12).
         Text(
           "Terminal and process tools always require Allow once. Commands and paths remain constrained to Agent workspace roots."
         )
@@ -169,36 +172,12 @@ private struct MCPServerRow: View {
         .fixedSize(horizontal: false, vertical: true)
       }
 
-      if pending {
-        resultLine(text: String(localized: "connecting…"), color: CSColor.amber)
-      } else if let result {
-        if result.ok {
-          resultLine(
-            text: String(localized: "connected — \(Int(result.toolCount)) tools"),
-            color: CSColor.oliveLight
-          )
-          if let identity = Self.handshakeIdentity(result) {
-            Text(identity)
-              .font(CSFont.mono(10, .medium))
-              .foregroundStyle(Color.secondary)
-              .lineLimit(1)
-              .truncationMode(.middle)
-          }
-        } else {
-          resultLine(
-            text: String(
-              localized: "degraded — \(result.error)",
-              comment: "The placeholder is an error message from the MCP handshake"),
-            color: CSColor.terracotta
-          )
-        }
-      } else {
-        resultLine(
-          text: server.enabled
-            ? String(localized: "disconnected — not tested")
-            : String(localized: "disconnected — disabled"),
-          color: Color.secondary
-        )
+      DisclosureGroup(isExpanded: $showingDetails) {
+        details.padding(.top, 6)
+      } label: {
+        Text("Details")
+          .font(CSFont.ui(11))
+          .foregroundStyle(Color.secondary)
       }
     }
     .padding(.horizontal, 15)
@@ -213,14 +192,25 @@ private struct MCPServerRow: View {
     )
   }
 
-  /// Compact identity advertised by the server in the `initialize` handshake:
-  /// name · version · protocol. Nil when the server exposed none of them.
-  static func handshakeIdentity(_ result: CsMcpTestResult) -> String? {
-    var parts: [String] = []
-    if !result.serverName.isEmpty { parts.append(result.serverName) }
-    if !result.serverVersion.isEmpty { parts.append("v\(result.serverVersion)") }
-    if !result.protocolVersion.isEmpty { parts.append("proto \(result.protocolVersion)") }
-    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+  // MARK: Last handshake
+
+  /// One line about the most recent one-off handshake. It is a test result,
+  /// never a live connection indicator: the Agent spawns servers per turn.
+  @ViewBuilder private var lastTestLine: some View {
+    if pending {
+      resultLine(text: String(localized: "Checking the connection…"), color: CSColor.amber)
+    } else if let result {
+      if result.ok {
+        resultLine(
+          text: String(localized: "Last test: passed · \(Int(result.toolCount)) tools"),
+          color: CSColor.oliveLight
+        )
+      } else {
+        resultLine(text: String(localized: "Last test: failed"), color: CSColor.terracotta)
+      }
+    } else {
+      resultLine(text: String(localized: "Connection not tested"), color: Color.secondary)
+    }
   }
 
   private func resultLine(text: String, color: Color) -> some View {
@@ -231,21 +221,94 @@ private struct MCPServerRow: View {
       .frame(maxWidth: .infinity, alignment: .leading)
   }
 
+  // MARK: Details (collapsed by default)
+
+  private var details: some View {
+    VStack(alignment: .leading, spacing: 5) {
+      detailRow(
+        String(localized: "Transport"),
+        isRemote
+          ? String(localized: "HTTP connection") : String(localized: "Local process"))
+      if isRemote {
+        detailRow(String(localized: "Server URL"), server.endpoint)
+        detailRow(
+          String(localized: "Authentication"),
+          server.authRef.isEmpty
+            ? String(localized: "No authentication") : String(localized: "Token in Keychain"))
+      } else {
+        detailRow(String(localized: "Launch command"), commandLine)
+      }
+      if !server.envKeys.isEmpty {
+        detailRow(
+          String(localized: "Environment variables"), server.envKeys.joined(separator: ", "))
+      }
+      if let permissionLevel {
+        detailRow(
+          String(localized: "Permission rule"), ToolPermissionLabels.level(permissionLevel))
+      }
+      if let result, !pending {
+        if result.ok, let identity = Self.handshakeIdentity(result) {
+          detailRow(String(localized: "Server identity"), identity)
+        }
+        if !result.ok, !result.error.isEmpty {
+          detailRow(String(localized: "Error details"), result.error)
+        }
+      }
+    }
+  }
+
+  private func detailRow(_ label: String, _ value: String) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Text(label)
+        .font(CSFont.ui(11, .medium))
+        .foregroundStyle(Color.secondary)
+        .frame(width: 150, alignment: .leading)
+      Text(verbatim: value)
+        .font(CSFont.mono(10.5, .regular))
+        .foregroundStyle(Color.primary)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  /// Compact identity advertised by the server in the `initialize` handshake:
+  /// name · version · protocol. Nil when the server exposed none of them.
+  static func handshakeIdentity(_ result: CsMcpTestResult) -> String? {
+    var parts: [String] = []
+    if !result.serverName.isEmpty { parts.append(result.serverName) }
+    if !result.serverVersion.isEmpty { parts.append("v\(result.serverVersion)") }
+    if !result.protocolVersion.isEmpty { parts.append("proto \(result.protocolVersion)") }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+  }
+
+  // MARK: Actions
+
+  /// The configured state. Clicking flips the `enabled` flag in mcp.json; it
+  /// never connects or disconnects anything by itself.
   private var enabledButton: some View {
     Button(action: onToggle) {
-      Text(server.enabled ? "enabled" : "disabled")
-        .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(server.enabled ? CSColor.oliveLight : Color.secondary)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(
-          RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(accent.opacity(0.10))
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .strokeBorder(accent.opacity(0.22), lineWidth: 1)
-        )
+      HStack(spacing: 5) {
+        CSIconView(
+          icon: .power, size: 8, weight: .semibold,
+          color: server.enabled ? CSColor.oliveLight : Color.secondary)
+        Text(
+          server.enabled
+            ? String(localized: "mcp.server.enabled", defaultValue: "Enabled")
+            : String(localized: "mcp.server.disabled", defaultValue: "Disabled"))
+      }
+      .font(CSFont.mono(10, .semibold))
+      .foregroundStyle(server.enabled ? CSColor.oliveLight : Color.secondary)
+      .padding(.horizontal, 9)
+      .padding(.vertical, 5)
+      .background(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(accent.opacity(0.10))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .strokeBorder(accent.opacity(0.22), lineWidth: 1)
+      )
     }
     .csFocusRing()
     .help(server.enabled ? "Disable this server" : "Enable this server")
@@ -286,6 +349,7 @@ private struct MCPServerRow: View {
         )
     }
     .csFocusRing()
+    .accessibilityLabel(Text("Remove", comment: "Button label: remove an MCP server"))
     .help("Remove this server from mcp.json")
   }
 }
@@ -293,11 +357,13 @@ private struct MCPServerRow: View {
 // MARK: - Add-server form
 
 private struct MCPAddServerForm: View {
+  /// Returns nil on success, otherwise the error the store reported. A failed
+  /// add keeps every field as typed so the fix is one edit away.
   let onAdd:
     (
       _ name: String, _ command: String, _ args: [String],
       _ endpoint: String, _ token: String
-    ) -> Void
+    ) -> String?
 
   @State private var remote = false
   @State private var name: String = ""
@@ -305,6 +371,7 @@ private struct MCPAddServerForm: View {
   @State private var argsText: String = ""
   @State private var endpoint: String = ""
   @State private var token: String = ""
+  @State private var addError: String?
   @FocusState private var focusedField: Field?
 
   private enum Field { case name, endpoint, token, command, args }
@@ -326,19 +393,40 @@ private struct MCPAddServerForm: View {
 
       Picker("Transport", selection: $remote) {
         Text("Local process").tag(false)
-        Text("Remote HTTP").tag(true)
+        Text("HTTP connection").tag(true)
       }
       .pickerStyle(.segmented)
+      .labelsHidden()
 
-      field(placeholder: "name (e.g. prview)", text: $name, focus: .name)
+      labeledField("Server name", placeholder: "e.g. prview", text: $name, focus: .name)
       if remote {
-        field(placeholder: "endpoint (https://…/mcp)", text: $endpoint, focus: .endpoint)
-        SecureField("bearer token (optional, saved in Keychain)", text: $token)
-          .focused($focusedField, equals: .token)
-          .settingsInputChrome(isFocused: focusedField == .token)
+        labeledField(
+          "Server URL", placeholder: "https://…/mcp", text: $endpoint, focus: .endpoint)
+        VStack(alignment: .leading, spacing: 4) {
+          fieldLabel("Access token (optional)")
+          SecureField(text: $token, prompt: nil) { EmptyView() }
+            .focused($focusedField, equals: .token)
+            .settingsInputChrome(isFocused: focusedField == .token)
+            .onSubmit(submit)
+          Text("The token is stored in the macOS Keychain, never in mcp.json.")
+            .font(CSFont.ui(10.5))
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       } else {
-        field(placeholder: "command (e.g. prview)", text: $command, focus: .command)
-        field(placeholder: "args, space-separated (e.g. mcp)", text: $argsText, focus: .args)
+        labeledField(
+          "Launch command", placeholder: "e.g. prview", text: $command, focus: .command)
+        labeledField(
+          "Command arguments", placeholder: "e.g. mcp", text: $argsText, focus: .args)
+      }
+
+      if let addError {
+        Text(verbatim: addError)
+          .font(CSFont.mono(10.5, .medium))
+          .foregroundStyle(CSColor.terracotta)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("settings-mcp-add-error")
       }
 
       HStack {
@@ -358,13 +446,23 @@ private struct MCPAddServerForm: View {
     )
   }
 
-  private func field(
-    placeholder: LocalizedStringKey, text: Binding<String>, focus: Field
+  private func fieldLabel(_ title: LocalizedStringKey) -> some View {
+    Text(title)
+      .font(CSFont.ui(11, .medium))
+      .foregroundStyle(Color.secondary)
+  }
+
+  private func labeledField(
+    _ title: LocalizedStringKey, placeholder: LocalizedStringKey, text: Binding<String>,
+    focus: Field
   ) -> some View {
-    TextField(placeholder, text: text)
-      .focused($focusedField, equals: focus)
-      .settingsInputChrome(isFocused: focusedField == focus)
-      .onSubmit(submit)
+    VStack(alignment: .leading, spacing: 4) {
+      fieldLabel(title)
+      TextField(placeholder, text: text)
+        .focused($focusedField, equals: focus)
+        .settingsInputChrome(isFocused: focusedField == focus)
+        .onSubmit(submit)
+    }
   }
 
   private func submit() {
@@ -373,13 +471,14 @@ private struct MCPAddServerForm: View {
       argsText
       .split(whereSeparator: { $0 == " " || $0 == "\t" })
       .map(String.init)
-    onAdd(
+    addError = onAdd(
       name.trimmingCharacters(in: .whitespaces),
       remote ? "" : command.trimmingCharacters(in: .whitespaces),
       remote ? [] : args,
       remote ? endpoint.trimmingCharacters(in: .whitespaces) : "",
       remote ? token : ""
     )
+    guard addError == nil else { return }
     name = ""
     command = ""
     argsText = ""

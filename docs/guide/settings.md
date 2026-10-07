@@ -294,6 +294,42 @@ screens never depend on parsing the English probe text.
   shows the single configuration state row instead (no mcp.json, empty config,
   or the concrete read error).
 
+### Agent → MCP
+
+The MCP tab is the editing surface for `~/.codescribe/mcp.json`; Diagnostics
+only reports it. The headline says what the tab is for (add servers, manage
+the tools the Agent may use) and the list reads as servers, not as a config
+dump.
+
+- **Server card** — the name, the configured state as a flag button (Enabled /
+  Disabled flips `enabled` in `mcp.json`; it never connects or disconnects
+  anything), the last handshake, and the Test / Remove actions. "Details"
+  folds the transport, the launch command or server URL, environment keys,
+  authentication (token in Keychain or none), the server-wide permission rule
+  read from the live policy, the identity the server advertised (name,
+  version, protocol) and the raw error of a failed handshake. Identifiers,
+  paths and URLs stay verbatim.
+- **Last handshake** — Test spawns the server once and lists its tools. The
+  card shows "Connection not tested", "Checking the connection…", "Last test:
+  passed · N tools" or "Last test: failed" (reason under Details). It is a
+  test result, not a live connection indicator: the Agent starts servers per
+  turn. Toggling the flag drops the cached result, so a card never reports a
+  configuration that was just changed.
+- **Add server** — a segmented choice between a local process and an HTTP
+  connection, then labelled fields: server name, launch command and command
+  arguments, or server URL and an optional access token. The token goes to
+  the macOS Keychain, never into `mcp.json`. A rejected add shows the store's
+  message under the fields and keeps everything typed.
+- **Technical details** — the on-disk note (hand edits and unknown fields are
+  preserved), the file path, and "Move MCP configuration to Trash…", which
+  after confirmation moves only `mcp.json` to Trash.
+
+Removing a single server also deletes its Keychain token without a separate
+confirmation; the row's Remove action is the confirmation.
+
+The Settings window carries the title "Settings" for Mission Control, App
+Exposé and the Window menu while the toolbar shows the wordmark instead.
+
 Setup keeps the Agent step to one decision: which clients to connect. It shows
 only a short ready state or an inline setup action and error. The preceding
 provider step presents account and API-key presence from the provider credential

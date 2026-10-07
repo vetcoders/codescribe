@@ -1813,6 +1813,16 @@
         }
       }
     },
+    "Access token (optional)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token dostępu (opcjonalnie)"
+          }
+        }
+      }
+    },
     "Accessibility" : {
       "localizations" : {
         "pl" : {
@@ -1980,6 +1990,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dodaj"
+          }
+        }
+      }
+    },
+    "Add MCP servers and manage the tools the Agent may use." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodawaj serwery MCP i zarządzaj narzędziami, z których może korzystać Agent."
           }
         }
       }
@@ -2801,6 +2821,16 @@
         }
       }
     },
+    "Authentication" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uwierzytelnianie"
+          }
+        }
+      }
+    },
     "Auto" : {
       "comment" : "Dictation language picker: detect the spoken language automatically",
       "localizations" : {
@@ -3509,6 +3539,16 @@
         }
       }
     },
+    "Checking the connection…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdzanie połączenia…"
+          }
+        }
+      }
+    },
     "Choose Stop recording or use your recording shortcut to finish this take." : {
       "localizations" : {
         "pl" : {
@@ -3604,26 +3644,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyczyść: %@"
-          }
-        }
-      }
-    },
-    "Clear MCP configuration?" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wyczyścić konfigurację MCP?"
-          }
-        }
-      }
-    },
-    "Clear MCP configuration…" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wyczyść konfigurację MCP…"
           }
         }
       }
@@ -4001,6 +4021,16 @@
         }
       }
     },
+    "Command arguments" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Argumenty polecenia"
+          }
+        }
+      }
+    },
     "Command during Fn hold" : {
       "localizations" : {
         "pl" : {
@@ -4290,6 +4320,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Połączono jako %@"
+          }
+        }
+      }
+    },
+    "Connection not tested" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie sprawdzono połączenia"
           }
         }
       }
@@ -5894,6 +5934,16 @@
         }
       }
     },
+    "Environment variables" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmienne środowiskowe"
+          }
+        }
+      }
+    },
     "Error" : {
       "comment" : "Tray status: the backend is unavailable",
       "localizations" : {
@@ -5995,16 +6045,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Eksporty trafiają do folderu Transkrypcje"
-          }
-        }
-      }
-    },
-    "External MCP servers the Agent can call, and their transports." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zewnętrzne serwery MCP dostępne dla Agenta i sposoby łączenia się z nimi."
           }
         }
       }
@@ -6499,6 +6539,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przyznaje Codescribe dostęp do mikrofonu wybranego powyżej"
+          }
+        }
+      }
+    },
+    "HTTP connection" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połączenie HTTP"
           }
         }
       }
@@ -7128,6 +7178,78 @@
         }
       }
     },
+    "Last test: failed" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ostatni test: nieudany"
+          }
+        }
+      }
+    },
+    "Last test: passed · %lld tools" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Last test: passed · %lld tool"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Last test: passed · %lld tools"
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Ostatni test: pomyślny · %lld narzędzie"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Ostatni test: pomyślny · %lld narzędzia"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Ostatni test: pomyślny · %lld narzędzi"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Ostatni test: pomyślny · %lld narzędzi"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Launch command" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Polecenie uruchomieniowe"
+          }
+        }
+      }
+    },
     "Leave empty to keep the stored key" : {
       "localizations" : {
         "pl" : {
@@ -7543,16 +7665,6 @@
         }
       }
     },
-    "MCP servers." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Serwery MCP."
-          }
-        }
-      }
-    },
     "Make the connection" : {
       "comment" : "Setup chapter heading",
       "localizations" : {
@@ -7571,16 +7683,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zarządzaj"
-          }
-        }
-      }
-    },
-    "Manage MCP servers" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zarządzaj serwerami MCP"
           }
         }
       }
@@ -7929,6 +8031,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Więcej działań"
+          }
+        }
+      }
+    },
+    "Move MCP configuration to Trash?" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przenieść konfigurację MCP do Kosza?"
+          }
+        }
+      }
+    },
+    "Move MCP configuration to Trash…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przenieś konfigurację MCP do Kosza…"
           }
         }
       }
@@ -8370,6 +8492,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Brak zapisanego nagrania dla tego wpisu. Plik last_session.wav nie zostanie użyty w zamian."
+          }
+        }
+      }
+    },
+    "No authentication" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez uwierzytelniania"
           }
         }
       }
@@ -9455,6 +9587,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wymagane uprawnienie"
+          }
+        }
+      }
+    },
+    "Permission rule" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reguła uprawnień"
           }
         }
       }
@@ -10591,16 +10733,6 @@
         }
       }
     },
-    "Remote HTTP" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zdalny (HTTP)"
-          }
-        }
-      }
-    },
     "Remove" : {
       "localizations" : {
         "pl" : {
@@ -10609,7 +10741,8 @@
             "value" : "Usuń"
           }
         }
-      }
+      },
+      "comment" : "Button label: remove an MCP server"
     },
     "Remove %@?" : {
       "localizations" : {
@@ -11870,6 +12003,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Przerwa uznawana za koniec zdania"
+          }
+        }
+      }
+    },
+    "Server URL" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Adres URL serwera"
+          }
+        }
+      }
+    },
+    "Server identity" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tożsamość serwera"
+          }
+        }
+      }
+    },
+    "Server name" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nazwa serwera"
           }
         }
       }
@@ -13930,6 +14093,16 @@
         }
       }
     },
+    "The token is stored in the macOS Keychain, never in mcp.json." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token jest zapisywany w pęku kluczy macOS, nie w pliku mcp.json."
+          }
+        }
+      }
+    },
     "The transcriber was unsure of this word" : {
       "localizations" : {
         "pl" : {
@@ -14155,6 +14328,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż lub ukryj pełną transkrypcję dla tej poprawki"
+          }
+        }
+      }
+    },
+    "Token in Keychain" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token w pęku kluczy"
           }
         }
       }
@@ -15617,16 +15800,6 @@
         }
       }
     },
-    "args, space-separated (e.g. mcp)" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "argumenty oddzielone spacjami (np. mcp)"
-          }
-        }
-      }
-    },
     "attach file / image" : {
       "comment" : "Composer hint: what can be attached",
       "localizations" : {
@@ -15652,16 +15825,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zezwól"
-          }
-        }
-      }
-    },
-    "bearer token (optional, saved in Keychain)" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "token bearer (opcjonalnie, zapisywany w pęku kluczy)"
           }
         }
       }
@@ -15854,78 +16017,6 @@
         }
       }
     },
-    "command (e.g. prview)" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "polecenie (np. prview)"
-          }
-        }
-      }
-    },
-    "connected — %lld tools" : {
-      "localizations" : {
-        "en" : {
-          "variations" : {
-            "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "connected — %lld tool"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "connected — %lld tools"
-                }
-              }
-            }
-          }
-        },
-        "pl" : {
-          "variations" : {
-            "plural" : {
-              "few" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "połączony — %lld narzędzia"
-                }
-              },
-              "many" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "połączony — %lld narzędzi"
-                }
-              },
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "połączony — %lld narzędzie"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "połączony — %lld narzędzia"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "connecting…" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "łączenie…"
-          }
-        }
-      }
-    },
     "context" : {
       "localizations" : {
         "pl" : {
@@ -16007,17 +16098,6 @@
         }
       }
     },
-    "degraded — %@" : {
-      "comment" : "The placeholder is an error message from the MCP handshake",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "działa z problemami — %@"
-          }
-        }
-      }
-    },
     "dictionary.correction.header" : {
       "comment" : "Dictionary: header of one correction card",
       "extractionState" : "extracted_with_value",
@@ -16036,16 +16116,6 @@
         }
       }
     },
-    "disabled" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "wyłączony"
-          }
-        }
-      }
-    },
     "disabled · AI formatting off" : {
       "comment" : "Formatting status: the AI formatting master switch is off",
       "localizations" : {
@@ -16053,26 +16123,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "wyłączone · formatowanie AI wyłączone"
-          }
-        }
-      }
-    },
-    "disconnected — disabled" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "rozłączony — wyłączony"
-          }
-        }
-      }
-    },
-    "disconnected — not tested" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "rozłączony — nie sprawdzono"
           }
         }
       }
@@ -16099,12 +16149,22 @@
         }
       }
     },
-    "enabled" : {
+    "e.g. mcp" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "włączony"
+            "value" : "np. mcp"
+          }
+        }
+      }
+    },
+    "e.g. prview" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "np. prview"
           }
         }
       }
@@ -16126,16 +16186,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "adres API: %@"
-          }
-        }
-      }
-    },
-    "endpoint (https://…/mcp)" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "adres (https://…/mcp)"
           }
         }
       }
@@ -16493,6 +16543,16 @@
         }
       }
     },
+    "https://…/mcp" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "https://…/mcp"
+          }
+        }
+      }
+    },
     "incomplete coverage" : {
       "localizations" : {
         "pl" : {
@@ -16743,6 +16803,24 @@
         }
       }
     },
+    "mcp.server.enabled" : {
+      "comment" : "MCP server state",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Enabled"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Włączony"
+          }
+        }
+      }
+    },
     "measured profile" : {
       "localizations" : {
         "pl" : {
@@ -16769,16 +16847,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "model %@"
-          }
-        }
-      }
-    },
-    "name (e.g. prview)" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "nazwa (np. prview)"
           }
         }
       }
@@ -17058,26 +17126,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "odzyskiwanie nie powiodło się — tekst zachowany"
-          }
-        }
-      }
-    },
-    "remote · no authentication · policy: ask" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "zdalny · bez uwierzytelniania · zasada: pytaj o zgodę"
-          }
-        }
-      }
-    },
-    "remote · token in Keychain · policy: ask" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "zdalny · token w pęku kluczy · zasada: pytaj o zgodę"
           }
         }
       }

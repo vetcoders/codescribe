@@ -688,6 +688,85 @@ final class SettingsChromeContractTests: XCTestCase {
     }
   }
 
+  /// The MCP tab reads as a list of servers: Polish headline, the configured
+  /// state as a flag, the last handshake as a test result, technical detail
+  /// collapsed, labelled form fields that survive a failed add.
+  func testMcpTabReadsAsAServerScreen() throws {
+    let sources = try settingsSources()
+    let tab = try XCTUnwrap(sources["SettingsTab.swift"])
+    XCTAssertTrue(tab.contains("case .agentMcp: String(localized: \"MCP servers\")"))
+    XCTAssertFalse(tab.contains("\"MCP servers.\""))
+    XCTAssertTrue(
+      tab.contains("\"Add MCP servers and manage the tools the Agent may use.\""))
+
+    let view = try XCTUnwrap(sources["SettingsView.swift"])
+    XCTAssertTrue(view.contains(".navigationTitle(Text(\"Settings\"))"))
+    XCTAssertFalse(view.contains(".navigationTitle(Text(verbatim: \"\"))"))
+    XCTAssertTrue(view.contains("window?.titleVisibility = .hidden"))
+    XCTAssertTrue(view.contains("private func adoptHostWindow(_ window: NSWindow?)"))
+
+    let section = try XCTUnwrap(sources["MCPServersSection.swift"])
+    XCTAssertFalse(section.contains("Manage MCP servers"), "the tab headline already says it")
+    XCTAssertTrue(section.contains("String(localized: \"Connection not tested\")"))
+    XCTAssertTrue(section.contains("String(localized: \"Checking the connection…\")"))
+    XCTAssertTrue(section.contains("String(localized: \"Last test: failed\")"))
+    XCTAssertTrue(section.contains("Last test: passed · \\(Int(result.toolCount)) tools"))
+    XCTAssertFalse(section.contains("policy: ask"), "no frozen policy literal on the card")
+    XCTAssertTrue(section.contains("ToolPermissionLabels.level(permissionLevel)"))
+    XCTAssertTrue(section.contains("@State private var showingDetails = false"))
+    XCTAssertTrue(section.contains("DisclosureGroup(isExpanded: $showingDetails)"))
+    XCTAssertTrue(section.contains("@State private var showingTechnicalDetails = false"))
+    XCTAssertTrue(section.contains("DisclosureGroup(isExpanded: $showingTechnicalDetails)"))
+    XCTAssertTrue(section.contains("Text(\"Move MCP configuration to Trash…\")"))
+    XCTAssertFalse(section.contains("Clear MCP configuration"))
+    XCTAssertTrue(
+      section.contains("String(localized: \"mcp.server.enabled\", defaultValue: \"Enabled\")"))
+    XCTAssertTrue(view.contains("HostingWindowReader(onWindow: adoptHostWindow)"))
+    for label in ["Server name", "Launch command", "Command arguments", "Server URL"] {
+      XCTAssertTrue(section.contains("labeledField(\"\(label)\""), label)
+    }
+    XCTAssertTrue(section.contains("fieldLabel(\"Access token (optional)\")"))
+    XCTAssertTrue(
+      section.contains("guard addError == nil else { return }"),
+      "a failed add keeps the typed fields")
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "MCP servers": "Serwery MCP",
+      "Add MCP servers and manage the tools the Agent may use.":
+        "Dodawaj serwery MCP i zarządzaj narzędziami, z których może korzystać Agent.",
+      "Connection not tested": "Nie sprawdzono połączenia",
+      "Checking the connection…": "Sprawdzanie połączenia…",
+      "Last test: failed": "Ostatni test: nieudany",
+      "mcp.server.enabled": "Włączony",
+      "mcp.server.disabled": "Wyłączony",
+      "Local process": "Proces lokalny",
+      "HTTP connection": "Połączenie HTTP",
+      "Server name": "Nazwa serwera",
+      "Launch command": "Polecenie uruchomieniowe",
+      "Command arguments": "Argumenty polecenia",
+      "Server URL": "Adres URL serwera",
+      "Access token (optional)": "Token dostępu (opcjonalnie)",
+      "The token is stored in the macOS Keychain, never in mcp.json.":
+        "Token jest zapisywany w pęku kluczy macOS, nie w pliku mcp.json.",
+      "Move MCP configuration to Trash…": "Przenieś konfigurację MCP do Kosza…",
+      "Move MCP configuration to Trash?": "Przenieść konfigurację MCP do Kosza?",
+      "Test": "Sprawdź",
+      "Settings": "Ustawienia",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    for retired in [
+      "MCP servers.", "Manage MCP servers", "Remote HTTP", "disconnected — not tested",
+      "disconnected — disabled", "connecting…", "degraded — %@",
+      "remote · no authentication · policy: ask", "remote · token in Keychain · policy: ask",
+      "Clear MCP configuration…", "name (e.g. prview)", "endpoint (https://…/mcp)",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
   func testAvailabilityTintsUseSolidTerracotta() throws {
     let model = try XCTUnwrap(settingsSources()["SettingsViewModel.swift"])
     XCTAssertEqual(
