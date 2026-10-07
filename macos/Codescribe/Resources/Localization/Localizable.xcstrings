@@ -86,7 +86,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Endpoint: %@"
+            "value" : "Adres API: %@"
           }
         }
       }
@@ -202,6 +202,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pole: %@"
+          }
+        }
+      }
+    },
+    "%@ settings keys" : {
+      "comment" : "The placeholder is the lane title; the value lists its settings.json keys",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucze: %@"
           }
         }
       }
@@ -1547,8 +1558,19 @@
         }
       }
     },
+    "AI models" : {
+      "comment" : "Settings tab: provider and model per function",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Modele AI"
+          }
+        }
+      }
+    },
     "API key" : {
-      "comment" : "Lane auth: an API key is stored\nSetup provider API key row label",
+      "comment" : "Setup provider API key row label",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -1630,16 +1652,6 @@
         }
       }
     },
-    "Account sign-in supports Assistive requests, but model discovery requires a provider API key. Keep the current model or enter a Model ID in Settings › Agent › LLM lanes." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Twoje konto ma dostęp do funkcji agentowych. Lista modeli wymaga klucza API."
-          }
-        }
-      }
-    },
     "Acoustic coverage was measured as complete, but this transcript has no current terminal seal." : {
       "localizations" : {
         "pl" : {
@@ -1677,6 +1689,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aktywny silnik rozpoznawania mowy"
+          }
+        }
+      }
+    },
+    "Active configuration details" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szczegóły aktywnej konfiguracji"
           }
         }
       }
@@ -1778,22 +1800,33 @@
         }
       }
     },
+    "Add folder" : {
+      "comment" : "Folder picker confirm button",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj folder"
+          }
+        }
+      }
+    },
+    "Add folder…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj folder…"
+          }
+        }
+      }
+    },
     "Add provider" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dodaj dostawcę"
-          }
-        }
-      }
-    },
-    "Add root" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dodaj folder"
           }
         }
       }
@@ -1809,12 +1842,12 @@
         }
       }
     },
-    "Add this provider's API key in Settings › Providers to discover models, or enter a Model ID in Settings › Agent › LLM lanes." : {
+    "Add this provider's API key under Providers to list its models, or enter a model ID below." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dodaj klucz API, aby przeglądać listę modeli lub wpisz nazwę modelu ręcznie."
+            "value" : "Dodaj klucz API tego dostawcy w sekcji Dostawcy, aby pobrać listę modeli, albo wpisz identyfikator modelu poniżej."
           }
         }
       }
@@ -1873,16 +1906,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Konto Agenta"
-          }
-        }
-      }
-    },
-    "Agent and voice-assistant requests" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zapytania Agenta i asystenta głosowego"
           }
         }
       }
@@ -2020,6 +2043,16 @@
         }
       }
     },
+    "Agent prompt" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prompt Agenta"
+          }
+        }
+      }
+    },
     "Agent provider and MCP connector secrets are present and will be deleted permanently." : {
       "localizations" : {
         "pl" : {
@@ -2067,16 +2100,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Agent nie jest przypięty. Włącz „Zawsze na wierzchu”."
-          }
-        }
-      }
-    },
-    "Agent workspace roots" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Foldery z projektami Agenta"
           }
         }
       }
@@ -2130,17 +2153,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Agenci"
-          }
-        }
-      }
-    },
-    "Setup summary" : {
-      "comment" : "Setup step eyebrow",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Podsumowanie konfiguracji"
           }
         }
       }
@@ -2203,6 +2215,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dla każdego narzędzia można zezwolić na działanie, wymagać zgody lub je zablokować. Blokada ma pierwszeństwo przed wszystkimi innymi ustawieniami."
+          }
+        }
+      }
+    },
+    "Allowed folders" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dozwolone foldery"
           }
         }
       }
@@ -2460,16 +2482,6 @@
         }
       }
     },
-    "Assistive prompt" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent"
-          }
-        }
-      }
-    },
     "Attach" : {
       "comment" : "Open panel confirm button",
       "localizations" : {
@@ -2675,6 +2687,16 @@
         }
       }
     },
+    "Automatic send to the Agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatyczne wysyłanie do Agenta"
+          }
+        }
+      }
+    },
     "Awaiting receipt" : {
       "localizations" : {
         "pl" : {
@@ -2706,13 +2728,22 @@
         }
       }
     },
-    "Balanced transcript editing (formatting-smart.txt)" : {
-      "comment" : "formatting-smart.txt is a file name — do not translate",
+    "Balanced editing of the transcript." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wyważona redakcja transkrypcji (formatting-smart.txt)"
+            "value" : "Wyważona redakcja transkrypcji."
+          }
+        }
+      }
+    },
+    "Base instructions for the Agent acting on a dictated request. Voice chat uses its own instructions." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podstawowe instrukcje Agenta wykonującego podyktowane polecenie. Rozmowa głosowa korzysta z własnych instrukcji."
           }
         }
       }
@@ -2723,17 +2754,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wielkość domyślna. W trybie agentowym wskaźnik jest proporcjonalnie większy."
-          }
-        }
-      }
-    },
-    "Base system prompt for the Agent (assistive.txt)" : {
-      "comment" : "assistive.txt is a file name — do not translate",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Podstawowy prompt systemowy Agenta (assistive.txt)"
           }
         }
       }
@@ -2814,6 +2834,16 @@
         }
       }
     },
+    "Browse and edit the base prompts. Codescribe may add further instructions to them while it runs." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przeglądaj i edytuj podstawowe prompty. Codescribe może dołączać do nich dodatkowe instrukcje podczas działania."
+          }
+        }
+      }
+    },
     "Buffer delay" : {
       "localizations" : {
         "pl" : {
@@ -2830,16 +2860,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Data kompilacji"
-          }
-        }
-      }
-    },
-    "Built-in fallback" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wbudowany prompt używany zastępczo"
           }
         }
       }
@@ -3231,6 +3251,26 @@
         }
       }
     },
+    "Choose a folder the Agent may read and write" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz folder, w którym Agent może odczytywać i zapisywać dane"
+          }
+        }
+      }
+    },
+    "Choose a folder to add to the list" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz folder, który chcesz dodać do listy"
+          }
+        }
+      }
+    },
     "Choose a screen anchor or allow free dragging" : {
       "localizations" : {
         "pl" : {
@@ -3337,17 +3377,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Usuń własne ustawienie modelu"
-          }
-        }
-      }
-    },
-    "Finish saves your choices. Features with missing permissions remain unavailable." : {
-      "comment" : "Setup completion explanation; Finish is the button label",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Przycisk „Gotowe” zapisuje Twoje wybory. Funkcje bez wymaganych uprawnień pozostają niedostępne."
           }
         }
       }
@@ -3848,13 +3877,13 @@
         }
       }
     },
-    "Connect accounts or add API keys. Models are chosen under Agent › LLM lanes." : {
-      "comment" : "Providers panel blurb; `LLM lanes` is the Agent tab title",
+    "Connect accounts or add API keys. Models are chosen under Agent › AI models." : {
+      "comment" : "Providers panel blurb; `AI models` is the Agent tab title",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Połącz konta lub dodaj klucze API. Modele wybierzesz w Agent › Ścieżki modeli AI."
+            "value" : "Połącz konta lub dodaj klucze API. Modele wybierzesz w Agent › Modele AI."
           }
         }
       }
@@ -3898,6 +3927,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Połączono"
+          }
+        }
+      }
+    },
+    "Connected account" : {
+      "comment" : "Lane auth: signed-in account",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połączone konto"
           }
         }
       }
@@ -4190,23 +4230,12 @@
         }
       }
     },
-    "Correction only AI formatting (formatting.txt)" : {
-      "comment" : "formatting.txt is a file name — do not translate",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Formatowanie AI ograniczone do poprawek (formatting.txt)"
-          }
-        }
-      }
-    },
     "Correction prompt" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Korekta"
+            "value" : "Prompt korekty"
           }
         }
       }
@@ -4217,6 +4246,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zapisano poprawkę. %@"
+          }
+        }
+      }
+    },
+    "Could not fetch %@ models. Check the provider under Providers." : {
+      "comment" : "The placeholder is the provider name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się pobrać modeli %@. Sprawdź dostawcę w sekcji Dostawcy."
+          }
+        }
+      }
+    },
+    "Could not fetch %@ models. The API key was rejected. Check it under Providers." : {
+      "comment" : "The placeholder is the provider name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się pobrać modeli %@. Klucz API został odrzucony. Sprawdź go w sekcji Dostawcy."
           }
         }
       }
@@ -4257,6 +4308,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się ponownie wczytać wątków. Wyświetlana jest poprzednia lista."
+          }
+        }
+      }
+    },
+    "Could not restore %@. The custom prompt is still in use." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się przywrócić: %@. Własny prompt nadal jest w użyciu."
+          }
+        }
+      }
+    },
+    "Could not save %@. The file on disk is unchanged." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zapisać: %@. Plik na dysku pozostał bez zmian."
           }
         }
       }
@@ -4657,12 +4728,12 @@
         }
       }
     },
-    "Custom file" : {
+    "Custom prompt file in use." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Własny plik"
+            "value" : "Używany jest plik własnego promptu."
           }
         }
       }
@@ -5044,26 +5115,6 @@
         }
       }
     },
-    "Directories the Agent may read and write. Everything outside them is out of reach." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Foldery, w których Agent może odczytywać i zapisywać dane. Wszystko poza nimi jest niedostępne."
-          }
-        }
-      }
-    },
-    "Directories the Agent scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "W tych folderach Agent szuka repozytoriów Git, aby ustalić ścieżkę projektu. (list_projects). Przeszukuje też podfoldery, do kilku poziomów w głąb. Pomija foldery ukryte i foldery z plikami kompilacji."
-          }
-        }
-      }
-    },
     "Disable Always on Top" : {
       "localizations" : {
         "pl" : {
@@ -5095,6 +5146,16 @@
         }
       }
     },
+    "Discard changes" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odrzuć zmiany"
+          }
+        }
+      }
+    },
     "Discard previous take" : {
       "localizations" : {
         "pl" : {
@@ -5111,6 +5172,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odrzuć szkic transkrypcji"
+          }
+        }
+      }
+    },
+    "Discard unsaved changes" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odrzuć niezapisane zmiany"
           }
         }
       }
@@ -5376,16 +5447,6 @@
         }
       }
     },
-    "Edits the BASE prompt file. The core still appends its tuning prompt at runtime." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Edytujesz bazowy prompt. Podczas działania Codescribe dodaje do niego dodatkowe instrukcje dostrajające."
-          }
-        }
-      }
-    },
     "Embedded" : {
       "comment" : "Whisper is included in this app build",
       "localizations" : {
@@ -5530,6 +5591,16 @@
         }
       }
     },
+    "Error details" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szczegóły błędu"
+          }
+        }
+      }
+    },
     "Expand sidebar (⌃⌘S)" : {
       "localizations" : {
         "pl" : {
@@ -5644,6 +5715,16 @@
         }
       }
     },
+    "File details" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szczegóły pliku"
+          }
+        }
+      }
+    },
     "File missing on disk" : {
       "localizations" : {
         "pl" : {
@@ -5718,6 +5799,17 @@
         }
       }
     },
+    "Finish saves your choices. Features with missing permissions remain unavailable." : {
+      "comment" : "Setup completion explanation; Finish is the button label",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Przycisk „Gotowe” zapisuje Twoje wybory. Funkcje bez wymaganych uprawnień pozostają niedostępne."
+          }
+        }
+      }
+    },
     "Finish setup above" : {
       "localizations" : {
         "pl" : {
@@ -5778,6 +5870,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zwiń tę wiadomość do skróconego widoku"
+          }
+        }
+      }
+    },
+    "Folders available to the Agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Foldery dostępne dla Agenta"
           }
         }
       }
@@ -5843,12 +5945,22 @@
         }
       }
     },
-    "Formatting requires this provider's API key; an Assistive account does not authorize it. Add the key in Settings › Providers." : {
+    "Formatting limited to corrections." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Aby korzystać z trybu formatowania, dodaj klucz API."
+            "value" : "Formatowanie ograniczone do poprawek."
+          }
+        }
+      }
+    },
+    "Formatting needs this provider's API key; the connected account does not cover it. Add the key under Providers." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie wymaga klucza API tego dostawcy; połączone konto go nie obejmuje. Dodaj klucz w sekcji Dostawcy."
           }
         }
       }
@@ -6021,6 +6133,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Skrót globalny wkleja transkrypcję oczekującą na wklejenie w miejscu kursora tekstowego. Aplikacje używające tego samego skrótu również na niego zareagują."
+          }
+        }
+      }
+    },
+    "Go back to the saved list" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wróć do zapisanej listy"
           }
         }
       }
@@ -6316,6 +6438,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Gotowość"
+          }
+        }
+      }
+    },
+    "In Agent mode, send the untouched transcript after 5 seconds unless you start editing it." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "W trybie Agenta wyślij niezmienioną transkrypcję po 5 sekundach, jeśli nie rozpoczniesz jej edycji."
           }
         }
       }
@@ -6634,17 +6766,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucze są bezpiecznie przechowywane w pęku kluczy macOS."
-          }
-        }
-      }
-    },
-    "LLM lanes" : {
-      "comment" : "Settings tab: LLM request lanes",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ścieżki modeli AI"
           }
         }
       }
@@ -7088,18 +7209,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Max"
-          }
-        }
-      }
-    },
-    "Maximum supported prose polish (formatting-max.txt)" : {
-      "comment" : "formatting-max.txt is a file name — do not translate",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Najpełniejsze dopracowanie tekstu (formatting-max.txt)"
+            "value" : "Prompt Max"
           }
         }
       }
@@ -7327,23 +7437,12 @@
         }
       }
     },
-    "Model discovery failed. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes." : {
+    "Model configuration." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się pobrać listy modeli. Sprawdź Ustawienia › Dostawcy, oraz odśwież listę modeli w Ustawienia › Agent › Ścieżki modeli AI."
-          }
-        }
-      }
-    },
-    "Model discovery failed: %@. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes." : {
-      "comment" : "The placeholder is a status message from the core",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie udało się pobrać listy modeli: %@. Sprawdź Ustawienia › Dostawcy, a następnie odśwież modele w Ustawieniach › Agent › Ścieżki modeli AI."
+            "value" : "Konfiguracja modeli"
           }
         }
       }
@@ -7857,6 +7956,16 @@
         }
       }
     },
+    "No custom prompt file yet. Saving creates one at this path." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie ma jeszcze pliku własnego promptu. Zapis utworzy go w tej ścieżce."
+          }
+        }
+      }
+    },
     "No custom providers yet." : {
       "localizations" : {
         "pl" : {
@@ -7897,6 +8006,17 @@
         }
       }
     },
+    "No key required" : {
+      "comment" : "Lane auth: key-optional host",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucz API nie jest wymagany"
+          }
+        }
+      }
+    },
     "No matches" : {
       "localizations" : {
         "pl" : {
@@ -7913,16 +8033,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie ma jeszcze wiadomości"
-          }
-        }
-      }
-    },
-    "No models returned. Enter a Model ID in Settings › Agent › LLM lanes." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie znaleziono modeli. Wpisz ID modelu w Ustawienia › Agent › Ścieżki modeli AI."
           }
         }
       }
@@ -8249,12 +8359,12 @@
         }
       }
     },
-    "Only this base prompt file will change. The previous version remains recoverable in the prompt backups folder." : {
+    "Only %@ will change: its custom file is removed and the built-in prompt takes over. The previous version remains recoverable in the prompt backups folder." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zmieni się tylko ten plik promptu. Poprzednią wersję można odzyskać z folderu kopii zapasowych promptów."
+            "value" : "Zmieni się tylko %@: własny plik zostanie usunięty, a w użyciu będzie wbudowany prompt. Poprzednią wersję można odzyskać z folderu kopii zapasowych promptów."
           }
         }
       }
@@ -8717,12 +8827,12 @@
         }
       }
     },
-    "Pick a provider and a model per request path. Discovery lists what the provider serves; the Model ID field always accepts a name the list does not know." : {
+    "Pick a provider and a model separately for the Agent and for transcript formatting. API keys and accounts are set up under Providers." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wybierz dostawcę i model dla każdej ścieżki żądań. Lista wykrytych modeli pokazuje, co udostępnia dostawca; w polu ID modelu możesz zawsze wpisać nazwę spoza listy."
+            "value" : "Wybierz dostawcę i model osobno dla Agenta oraz formatowania transkrypcji. Klucze API i konta skonfigurujesz w sekcji Dostawcy."
           }
         }
       }
@@ -9082,16 +9192,6 @@
         }
       }
     },
-    "Prompts." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Prompty."
-          }
-        }
-      }
-    },
     "Provider" : {
       "localizations" : {
         "pl" : {
@@ -9154,12 +9254,13 @@
         }
       }
     },
-    "Provider and model per request path. Endpoints and keys live on Providers; the resolved runtime truth is below the editors." : {
+    "Provider default model" : {
+      "comment" : "Model field caption: no override, the provider default resolves",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dla każdego trybu możesz wybrać osobny model i dostawcę. Adresy API i klucze dostępu znajdziesz w sekcji Dostawcy. Poniżej zobaczysz konfigurację aktualnie używaną przez Codescribe."
+            "value" : "Domyślny model dostawcy"
           }
         }
       }
@@ -9192,6 +9293,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fioletowy — głos trafia do Agenta"
+          }
+        }
+      }
+    },
+    "Put %@ back" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć %@ na listę"
           }
         }
       }
@@ -9866,6 +9977,16 @@
         }
       }
     },
+    "Remove folder" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usuń folder"
+          }
+        }
+      }
+    },
     "Remove from list and move to archive" : {
       "localizations" : {
         "en" : {
@@ -10076,16 +10197,6 @@
         }
       }
     },
-    "Request lanes." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ścieżki żądań"
-          }
-        }
-      }
-    },
     "Requesting playback" : {
       "localizations" : {
         "en" : {
@@ -10138,16 +10249,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wymaga potwierdzenia i zachowuje kopię zapasową, którą można przywrócić."
-          }
-        }
-      }
-    },
-    "Reset" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Przywróć domyślny"
           }
         }
       }
@@ -10222,6 +10323,17 @@
         }
       }
     },
+    "Reset model" : {
+      "comment" : "Clears the lane's model override",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć model domyślny"
+          }
+        }
+      }
+    },
     "Reset to defaults" : {
       "localizations" : {
         "pl" : {
@@ -10238,16 +10350,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przed zapisaniem rozwiąż konflikt wskazany powyżej"
-          }
-        }
-      }
-    },
-    "Resolved runtime truth" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Faktycznie używana konfiguracja"
           }
         }
       }
@@ -10299,6 +10401,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przywróć domyślny szablon znacznika transkrypcji"
+          }
+        }
+      }
+    },
+    "Restore default…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć domyślny…"
           }
         }
       }
@@ -10364,16 +10476,6 @@
         }
       }
     },
-    "Restore…" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przywróć…"
-          }
-        }
-      }
-    },
     "Retranscribe" : {
       "localizations" : {
         "pl" : {
@@ -10420,6 +10522,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż w Finderze"
+          }
+        }
+      }
+    },
+    "Review your setup." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Sprawdź swoją konfigurację."
           }
         }
       }
@@ -10503,6 +10615,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ostrożne"
+          }
+        }
+      }
+    },
+    "Same provider as the Agent; the model list error is shown above." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten sam dostawca co dla Agenta; błąd listy modeli jest pokazany wyżej."
           }
         }
       }
@@ -10594,16 +10716,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Zapisz ostatni transkrypt"
-          }
-        }
-      }
-    },
-    "Save roots" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zapisz foldery"
           }
         }
       }
@@ -10997,16 +11109,6 @@
         }
       }
     },
-    "Send an untouched transcript 5 seconds after the take ends." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wyślij niezmienioną transkrypcję do Agenta 5 sekund po zakończeniu nagrania."
-          }
-        }
-      }
-    },
     "Send message" : {
       "localizations" : {
         "pl" : {
@@ -11084,6 +11186,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ustawiono"
+          }
+        }
+      }
+    },
+    "Set manually" : {
+      "comment" : "Model field caption: an override is stored",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ustawiony ręcznie"
           }
         }
       }
@@ -11178,6 +11291,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Postęp konfiguracji"
+          }
+        }
+      }
+    },
+    "Setup summary" : {
+      "comment" : "Setup step eyebrow",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Podsumowanie konfiguracji"
           }
         }
       }
@@ -11495,7 +11619,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Smart"
+            "value" : "Prompt Smart"
           }
         }
       }
@@ -11567,6 +11691,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Źródło: %@"
+          }
+        }
+      }
+    },
+    "Source: Built-in prompt" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Źródło: Wbudowany prompt"
+          }
+        }
+      }
+    },
+    "Source: Built-in prompt (file unreadable)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Źródło: Wbudowany prompt (plik nieczytelny)"
+          }
+        }
+      }
+    },
+    "Source: Custom prompt" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Źródło: Własny prompt"
           }
         }
       }
@@ -12196,6 +12350,17 @@
         }
       }
     },
+    "Stored API key" : {
+      "comment" : "Lane auth: an API key is stored",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisany klucz API"
+          }
+        }
+      }
+    },
     "Stored calibration cannot be used" : {
       "localizations" : {
         "pl" : {
@@ -12585,7 +12750,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Narzędzia terminala i procesów zawsze wymagają „Zezwól raz”. Polecenia i ścieżki są ograniczone do folderów z projektami Agenta."
+            "value" : "Narzędzia terminala i procesów zawsze wymagają „Zezwól raz”. Polecenia i ścieżki są ograniczone do folderów dostępnych dla Agenta."
           }
         }
       }
@@ -12676,6 +12841,26 @@
         }
       }
     },
+    "The Agent can read and write only inside these folders. It has no access outside them." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent może odczytywać i zapisywać dane tylko w tych folderach. Poza nimi nie ma dostępu."
+          }
+        }
+      }
+    },
+    "The Agent looks for projects and Git repositories in these folders. It also searches subfolders, but skips hidden folders and build directories." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "W tych folderach Agent szuka projektów i repozytoriów Git. Przeszukuje też podfoldery, ale pomija foldery ukryte i katalogi build."
+          }
+        }
+      }
+    },
     "The Codescribe skill folder for %@ will be moved to a retained backup beside it, then replaced with the copy bundled in this app. Your other skills and agent configuration are not changed. No listener will be started." : {
       "localizations" : {
         "pl" : {
@@ -12758,12 +12943,32 @@
         }
       }
     },
+    "The connected account covers Agent requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połączone konto obsługuje żądania Agenta, ale lista modeli wymaga klucza API tego dostawcy. Zostaw bieżący model albo wpisz identyfikator modelu poniżej."
+          }
+        }
+      }
+    },
     "The custom dictionary is empty — accepted overlay corrections will appear here." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Własny słownik jest pusty. Pojawią się tu poprawki zatwierdzone w overlayu."
+          }
+        }
+      }
+    },
+    "The custom prompt file could not be read, so the built-in prompt is in use." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się odczytać pliku własnego promptu, dlatego używany jest wbudowany prompt."
           }
         }
       }
@@ -12784,6 +12989,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Transkrypcja jest nadal dostępna."
+          }
+        }
+      }
+    },
+    "The file exists but could not be read." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plik istnieje, ale nie udało się go odczytać."
+          }
+        }
+      }
+    },
+    "The file exists but is empty, so the built-in prompt is in use." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plik istnieje, ale jest pusty, dlatego używany jest wbudowany prompt."
+          }
+        }
+      }
+    },
+    "The fullest polish of the text." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Najpełniejsze dopracowanie tekstu."
           }
         }
       }
@@ -12840,12 +13075,32 @@
         }
       }
     },
+    "The model behind the Agent and the voice assistant" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Model obsługujący Agenta i asystenta głosowego"
+          }
+        }
+      }
+    },
     "The on-device model behind the direct Whisper engine and Local power refinement." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Model działający na tym Macu, używany przez silnik Whisper i do doprecyzowania transkrypcji w trybie lokalnym."
+          }
+        }
+      }
+    },
+    "The provider returned no models. Enter a model ID below." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dostawca nie zwrócił żadnych modeli. Wpisz identyfikator modelu poniżej."
           }
         }
       }
@@ -13250,17 +13505,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Porządkowanie i formatowanie transkrypcji"
-          }
-        }
-      }
-    },
-    "Transcript delivery" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przekazywanie transkrypcji"
+            "value" : "Poprawianie i formatowanie transkrypcji"
           }
         }
       }
@@ -13520,6 +13765,16 @@
         }
       }
     },
+    "Undo remove" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cofnij usunięcie"
+          }
+        }
+      }
+    },
     "Undo retranscribe" : {
       "localizations" : {
         "pl" : {
@@ -13621,6 +13876,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Bez weryfikacji"
+          }
+        }
+      }
+    },
+    "Unsaved changes" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niezapisane zmiany"
           }
         }
       }
@@ -14300,16 +14565,6 @@
         }
       }
     },
-    "Workspace roots." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Foldery robocze."
-          }
-        }
-      }
-    },
     "Wrap delivered dictation in an explicit source tag" : {
       "localizations" : {
         "pl" : {
@@ -14425,16 +14680,6 @@
         }
       }
     },
-    "Review your setup." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Sprawdź swoją konfigurację."
-          }
-        }
-      }
-    },
     "Your assistive.txt and three formatting prompt files will also move to Trash." : {
       "comment" : "assistive.txt is a file name — keep it verbatim",
       "localizations" : {
@@ -14522,17 +14767,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "_Nie ustawiono promptu._"
-          }
-        }
-      }
-    },
-    "account" : {
-      "comment" : "Lane auth: signed-in account, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "konto"
           }
         }
       }
@@ -15714,17 +15948,6 @@
         }
       }
     },
-    "no key required" : {
-      "comment" : "Lane auth, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "klucz API nie jest wymagany"
-          }
-        }
-      }
-    },
     "no paste" : {
       "localizations" : {
         "pl" : {
@@ -16517,7 +16740,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "roots, directory, repo, path, foldery, katalogi, repozytorium, ścieżka"
+            "value" : "roots, directory, folders, access, repo, path, foldery, katalogi, dostęp, repozytorium, ścieżka"
           }
         }
       }

@@ -9,7 +9,10 @@
 //! Writes are the sharp edge: these are files the operator may have authored by
 //! hand, so [`write_prompt_bytes`] runs backup → temp → rename → fsync and
 //! appends a digest receipt to `prompt-audit.jsonl`. A failed write leaves the
-//! previous bytes exactly as they were.
+//! previous bytes exactly as they were. Restoring the built-in default is the
+//! mirror image: [`restore_prompt_to_default`] backs the override up, removes
+//! it, and records the removal, so the read path falls back to the compiled-in
+//! text instead of a frozen copy of it.
 
 use chrono::{SecondsFormat, Utc};
 use sha2::{Digest, Sha256};
@@ -515,16 +518,152 @@ fn write_prompt_bytes_unfenced(
     )
 }
 
-/// Overwrite one override with its compiled-in default.
+/// Return one prompt to its compiled-in default by removing the operator's
+/// override (Founder decision 2026-10-07).
 ///
-/// This is a normal audited write, so the operator's previous text survives in
-/// `prompts/backups/` and stays recoverable.
+/// The override's bytes are copied into `prompts/backups/` first and the audit
+/// trail gets `started` / `completed` (or `failed`) receipts under
+/// `remove_base_prompt`, so the text stays recoverable and the action
+/// traceable. Afterwards [`prompt_snapshot`] reads
+/// [`PromptSource::BuiltInFallback`], and the built-in text keeps following the
+/// app as it evolves. An override that is unreadable is not removed: without a
+/// backup there is nothing to recover, so the read error surfaces instead.
+/// A missing override is already the default; only a receipt is written.
+///
+/// ```
+/// use codescribe_core::config::prompts::{
+///     PromptKind, PromptWriteReason, prompt_snapshot, restore_prompt_to_default, write_prompt,
+/// };
+/// use codescribe_core::config::settings::PromptSource;
+///
+/// let sandbox = tempfile::tempdir().unwrap();
+/// // SAFETY: a doctest is its own single-threaded process.
+/// unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", sandbox.path()) };
+/// let kind = PromptKind::FormattingSmart;
+/// write_prompt(kind, "operator override", PromptWriteReason::SettingsSave).unwrap();
+/// assert_eq!(prompt_snapshot(kind).source, PromptSource::CustomFile);
+///
+/// restore_prompt_to_default(kind).unwrap();
+///
+/// let restored = prompt_snapshot(kind);
+/// assert_eq!(restored.source, PromptSource::BuiltInFallback);
+/// assert_eq!(restored.content, kind.default_content());
+/// let prompts = sandbox.path().join("prompts");
+/// assert!(!prompts.join(kind.filename()).exists());
+/// let backed_up = std::fs::read_dir(prompts.join("backups")).unwrap().any(|entry| {
+///     std::fs::read(entry.unwrap().path()).unwrap() == b"operator override"
+/// });
+/// assert!(backed_up, "the removed override is kept as a backup");
+/// let audit = std::fs::read_to_string(prompts.join("prompt-audit.jsonl")).unwrap();
+/// assert!(audit.contains("\"action\":\"remove_base_prompt\""));
+/// assert!(audit.contains("\"reason\":\"restore_default\""));
+/// assert!(audit.contains("\"status\":\"completed\""));
+/// ```
 pub fn restore_prompt_to_default(kind: PromptKind) -> std::io::Result<()> {
-    write_prompt(
+    let _data_io = super::storage_reset::begin_app_data_io().map_err(std::io::Error::other)?;
+    remove_prompt_override_at(&prompts_dir().join(kind.filename()), kind, |path| {
+        fs::remove_file(path)
+    })
+}
+
+/// The removal contract, with the file removal injected so tests can fail it.
+///
+/// Order: read the override, back it up, record `started`, remove, fsync the
+/// directory, record `completed`. A failure after the backup records `failed`
+/// and leaves the override in place — a failed restore never reads as done.
+fn remove_prompt_override_at<F>(path: &Path, kind: PromptKind, remove: F) -> std::io::Result<()>
+where
+    F: FnOnce(&Path) -> std::io::Result<()>,
+{
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "prompt path has no parent",
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    let timestamp = Utc::now();
+    let reason = PromptWriteReason::RestoreDefault;
+
+    let old_bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            append_prompt_audit(PromptAuditEvent {
+                action: "remove_base_prompt",
+                path,
+                timestamp: &timestamp,
+                kind,
+                reason,
+                status: "completed",
+                old_digest: None,
+                new_digest: None,
+                backup_path: None,
+                error: None,
+            })?;
+            info!(
+                prompt = kind.filename(),
+                "Built-in prompt already in use; nothing to remove"
+            );
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    let old_digest = sha256_hex(&old_bytes);
+    let backup_path = write_prompt_backup(path, &old_bytes)?;
+    append_prompt_audit(PromptAuditEvent {
+        action: "remove_base_prompt",
+        path,
+        timestamp: &timestamp,
         kind,
-        kind.default_content(),
-        PromptWriteReason::RestoreDefault,
-    )
+        reason,
+        status: "started",
+        old_digest: Some(&old_digest),
+        new_digest: None,
+        backup_path: Some(&backup_path),
+        error: None,
+    })?;
+
+    let outcome = (|| -> std::io::Result<()> {
+        remove(path)?;
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Config::config_dir plus closed PromptKind filenames only.
+        File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+
+    if let Err(error) = outcome {
+        let _ = append_prompt_audit(PromptAuditEvent {
+            action: "remove_base_prompt",
+            path,
+            timestamp: &timestamp,
+            kind,
+            reason,
+            status: "failed",
+            old_digest: Some(&old_digest),
+            new_digest: None,
+            backup_path: Some(&backup_path),
+            error: Some(&error.to_string()),
+        });
+        return Err(error);
+    }
+
+    append_prompt_audit(PromptAuditEvent {
+        action: "remove_base_prompt",
+        path,
+        timestamp: &timestamp,
+        kind,
+        reason,
+        status: "completed",
+        old_digest: Some(&old_digest),
+        new_digest: None,
+        backup_path: Some(&backup_path),
+        error: None,
+    })?;
+    info!(
+        prompt = kind.filename(),
+        backup = %backup_path.display(),
+        "Removed user-owned base prompt override; built-in default in use"
+    );
+    Ok(())
 }
 
 /// Restore every user-owned prompt to its default, stopping at the first error.
@@ -573,13 +712,14 @@ where
     };
     let timestamp = Utc::now();
     append_prompt_audit(PromptAuditEvent {
+        action: "write_base_prompt",
         path,
         timestamp: &timestamp,
         kind,
         reason,
         status: "started",
         old_digest: old_digest.as_deref(),
-        new_digest: &new_digest,
+        new_digest: Some(&new_digest),
         backup_path: backup_path.as_deref(),
         error: None,
     })?;
@@ -607,13 +747,14 @@ where
     if let Err(error) = outcome {
         let _ = fs::remove_file(&temp_path);
         let _ = append_prompt_audit(PromptAuditEvent {
+            action: "write_base_prompt",
             path,
             timestamp: &timestamp,
             kind,
             reason,
             status: "failed",
             old_digest: old_digest.as_deref(),
-            new_digest: &new_digest,
+            new_digest: Some(&new_digest),
             backup_path: backup_path.as_deref(),
             error: Some(&error.to_string()),
         });
@@ -621,13 +762,14 @@ where
     }
 
     append_prompt_audit(PromptAuditEvent {
+        action: "write_base_prompt",
         path,
         timestamp: &timestamp,
         kind,
         reason,
         status: "completed",
         old_digest: old_digest.as_deref(),
-        new_digest: &new_digest,
+        new_digest: Some(&new_digest),
         backup_path: backup_path.as_deref(),
         error: None,
     })?;
@@ -666,8 +808,11 @@ fn write_prompt_backup(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
     Ok(backup_path)
 }
 
-/// One line of the prompt audit trail, borrowed for the duration of a write.
+/// One line of the prompt audit trail, borrowed for the duration of a write
+/// or removal.
 struct PromptAuditEvent<'a> {
+    /// `write_base_prompt` or `remove_base_prompt`.
+    action: &'static str,
     /// Prompt file the receipt is about.
     path: &'a Path,
     /// Shared across the `started` and terminal receipts of a single write.
@@ -680,8 +825,8 @@ struct PromptAuditEvent<'a> {
     status: &'a str,
     /// Digest of the replaced bytes; `None` when the file did not exist.
     old_digest: Option<&'a str>,
-    /// Digest of the bytes being written.
-    new_digest: &'a str,
+    /// Digest of the bytes being written; `None` for a removal.
+    new_digest: Option<&'a str>,
     /// Backup holding the replaced bytes, when one was made.
     backup_path: Option<&'a Path>,
     /// Failure detail on a `failed` receipt.
@@ -697,7 +842,7 @@ fn append_prompt_audit(event: PromptAuditEvent<'_>) -> std::io::Result<()> {
     let audit_path = parent.join("prompt-audit.jsonl");
     let entry = serde_json::json!({
         "timestamp": event.timestamp.to_rfc3339_opts(SecondsFormat::Millis, true),
-        "action": "write_base_prompt",
+        "action": event.action,
         "prompt": event.kind.filename(),
         "reason": event.reason.as_str(),
         "status": event.status,
@@ -1065,9 +1210,30 @@ mod tests {
             );
 
             restore_prompt_to_default(kind).expect("restore built-in default");
-            assert_eq!(
-                fs::read(&path).expect("read restored default"),
-                kind.default_content().as_bytes()
+            assert!(
+                !path.exists(),
+                "restore removes the override of {}",
+                kind.filename()
+            );
+            let restored = prompt_snapshot(kind);
+            assert_eq!(restored.source, PromptSource::BuiltInFallback);
+            assert_eq!(restored.content, kind.default_content());
+            let has_replacement_backup = fs::read_dir(&backup_dir)
+                .expect("read prompt backups")
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(kind.filename())
+                })
+                .any(
+                    |entry| matches!(fs::read(entry.path()), Ok(bytes) if bytes == b"replacement"),
+                );
+            assert!(
+                has_replacement_backup,
+                "restore must back up the removed override of {}",
+                kind.filename()
             );
 
             let audit = fs::read_to_string(prompts_dir().join("prompt-audit.jsonl"))
@@ -1075,10 +1241,12 @@ mod tests {
             assert!(audit.contains(kind.filename()));
             assert!(audit.contains("\"reason\":\"settings_save\""));
             assert!(audit.contains("\"reason\":\"restore_default\""));
+            assert!(audit.contains("\"action\":\"remove_base_prompt\""));
             assert!(audit.contains("\"status\":\"failed\""));
             assert!(audit.contains("\"status\":\"completed\""));
 
-            fs::remove_file(&path).expect("simulate reset moving prompt away");
+            // The override is already gone after the restore, exactly as a reset
+            // leaves it before the preserved bytes come back.
             write_prompt_bytes(kind, &original, PromptWriteReason::AppResetPreservation)
                 .expect("restore exact reset bytes");
             assert_eq!(
@@ -1219,6 +1387,75 @@ mod tests {
                 .lines()
                 .any(|line| line.contains("\"status\":\"failed\""))
         );
+    }
+
+    #[test]
+    /// A restore that cannot remove the override keeps it, keeps the backup, and
+    /// records `failed` — it must never look like a completed restore.
+    fn injected_remove_failure_keeps_the_override_and_records_failure() {
+        let sandbox = TempDir::new().expect("prompt sandbox");
+        let path = sandbox.path().join("prompts/formatting-smart.txt");
+        fs::create_dir_all(path.parent().expect("prompt parent")).expect("create prompt dir");
+        fs::write(&path, b"operator override").expect("seed prompt");
+
+        let error = remove_prompt_override_at(&path, PromptKind::FormattingSmart, |_| {
+            Err(std::io::Error::other("injected removal failure"))
+        })
+        .expect_err("removal failure must surface");
+
+        assert!(error.to_string().contains("injected removal failure"));
+        assert_eq!(
+            fs::read(&path).expect("read override"),
+            b"operator override"
+        );
+        let backups = fs::read_dir(path.parent().unwrap().join("backups"))
+            .expect("read backups")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect backups");
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            fs::read(backups[0].path()).expect("read backup"),
+            b"operator override"
+        );
+        let receipts = fs::read_to_string(path.parent().unwrap().join("prompt-audit.jsonl"))
+            .expect("read audit")
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("parse audit line"))
+            .collect::<Vec<_>>();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(receipts[0]["action"], "remove_base_prompt");
+        assert_eq!(receipts[0]["status"], "started");
+        assert_eq!(receipts[1]["status"], "failed");
+        assert_eq!(receipts[1]["reason"], "restore_default");
+        assert_eq!(receipts[1]["old_sha256"], sha256_hex(b"operator override"));
+        assert!(receipts[1]["new_sha256"].is_null());
+        assert!(receipts[1]["backup_path"].is_string());
+    }
+
+    #[test]
+    /// Restoring a prompt that already runs on the built-in text removes nothing,
+    /// makes no backup, and still leaves a receipt of the operator's action.
+    fn restoring_a_missing_override_only_records_a_receipt() {
+        let sandbox = TempDir::new().expect("prompt sandbox");
+        let path = sandbox.path().join("prompts/assistive.txt");
+
+        remove_prompt_override_at(&path, PromptKind::Assistive, |_| {
+            panic!("nothing to remove")
+        })
+        .expect("missing override is already the default");
+
+        assert!(!path.exists());
+        assert!(!path.parent().unwrap().join("backups").exists());
+        let receipts = fs::read_to_string(path.parent().unwrap().join("prompt-audit.jsonl"))
+            .expect("read audit")
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("parse audit line"))
+            .collect::<Vec<_>>();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0]["action"], "remove_base_prompt");
+        assert_eq!(receipts[0]["status"], "completed");
+        assert!(receipts[0]["old_sha256"].is_null());
+        assert!(receipts[0]["backup_path"].is_null());
     }
 }
 

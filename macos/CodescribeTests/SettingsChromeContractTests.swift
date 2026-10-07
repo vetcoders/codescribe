@@ -60,6 +60,12 @@ final class SettingsChromeContractTests: XCTestCase {
     let tabs = try XCTUnwrap(pane.range(of: "SettingsTabBar(model: model, section: section)"))
     XCTAssertLessThan(tabs.lowerBound, scroll.lowerBound)
     XCTAssertTrue(pane[scroll.lowerBound...].contains(".id(model.currentTab)"))
+    // The per-tab identity swap must not crossfade: without an identity
+    // transition the outgoing and incoming tabs paint over each other.
+    let transition = try XCTUnwrap(pane.range(of: ".transition(.identity)"))
+    let identity = try XCTUnwrap(pane.range(of: ".id(model.currentTab)"))
+    XCTAssertLessThan(scroll.lowerBound, transition.lowerBound)
+    XCTAssertLessThan(transition.lowerBound, identity.lowerBound)
 
     for token in [
       "CSColor.terracotta",
@@ -287,7 +293,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let polish = try polishCatalog()
     for key in [
       "Providers",
-      "Connect accounts or add API keys. Models are chosen under Agent › LLM lanes.",
+      "Connect accounts or add API keys. Models are chosen under Agent › AI models.",
       "Refresh status",
       "Add provider",
       "Add a server that speaks OpenAI Responses or Anthropic Messages.",
@@ -322,6 +328,218 @@ final class SettingsChromeContractTests: XCTestCase {
       "Providers.", "Refresh provider access", "factory endpoint",
       "Speech-to-text Cloud Service", "Advanced · OAuth client id…",
       "secrets live only in the Keychain — presence shown, value hidden",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
+  /// Agent › AI models (round 1 of the Polish pass): plain cards, identifiers
+  /// and endpoints folded under a collapsed details group, the discovery
+  /// failure in one sentence with the provider's words on request, and the
+  /// Polish copy exactly as the Founder specified it.
+  func testAgentModelsTabKeepsIdentifiersOutOfTheCards() throws {
+    let sources = try settingsSources()
+    let tab = try XCTUnwrap(sources["SettingsTab.swift"])
+    XCTAssertTrue(tab.contains("String(localized: \"AI models\""))
+    XCTAssertTrue(tab.contains("case .agentLanes: String(localized: \"Model configuration.\")"))
+    XCTAssertFalse(tab.contains("\"LLM lanes\""))
+
+    let panel = try XCTUnwrap(sources["AgentPanel.swift"])
+    XCTAssertFalse(
+      panel.contains("subtitle: lane.providerKey"), "settings keys left the Provider card")
+    XCTAssertFalse(panel.contains("subtitle: lane.modelKey"), "settings keys left the Model card")
+    XCTAssertTrue(panel.contains("TextField(laneModel.resolvedModel, text: $modelDraft)"))
+    XCTAssertTrue(panel.contains(".onAppear { modelDraft = laneModel.configuredModel }"))
+    XCTAssertTrue(panel.contains("Button(String(localized: \"Reset model\""))
+    XCTAssertTrue(panel.contains(".disabled(!hasOverride)"), "Reset is live only with an override")
+    XCTAssertTrue(panel.contains("model.setLLMModel(\"\", for: lane)"))
+    XCTAssertTrue(panel.contains("DisclosureGroup(\"Error details\")"))
+    XCTAssertTrue(panel.contains("if failureShownOnAgent {"))
+    XCTAssertFalse(panel.contains("Pick a provider and a model per request path"))
+
+    let lanes = try XCTUnwrap(sources["AgentLanesTab.swift"])
+    XCTAssertTrue(lanes.contains("@State private var detailsExpanded = false"))
+    XCTAssertTrue(lanes.contains("DisclosureGroup(isExpanded: $detailsExpanded)"))
+    XCTAssertTrue(lanes.contains("value: \"\\(lane.providerKey) · \\(lane.modelKey)\""))
+    let autoSend = try XCTUnwrap(lanes.range(of: "Automatic send to the Agent"))
+    let details = try XCTUnwrap(lanes.range(of: "Active configuration details"))
+    XCTAssertLessThan(autoSend.lowerBound, details.lowerBound)
+    XCTAssertFalse(lanes.contains("Resolved runtime truth"))
+
+    let model = try XCTUnwrap(sources["SettingsViewModel.swift"])
+    XCTAssertTrue(model.contains("case \"key_rejected\":"))
+    XCTAssertFalse(
+      model.contains("Model discovery failed: \\(message)"), "raw body left the main line")
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "AI models": "Modele AI",
+      "Model configuration.": "Konfiguracja modeli",
+      "Pick a provider and a model separately for the Agent and for transcript formatting. API keys and accounts are set up under Providers.":
+        "Wybierz dostawcę i model osobno dla Agenta oraz formatowania transkrypcji. Klucze API i konta skonfigurujesz w sekcji Dostawcy.",
+      "Assistive": "Agent",
+      "Formatting": "Formatowanie",
+      "The model behind the Agent and the voice assistant":
+        "Model obsługujący Agenta i asystenta głosowego",
+      "Transcript cleanup and formatting": "Poprawianie i formatowanie transkrypcji",
+      "Connected account": "Połączone konto",
+      "Stored API key": "Zapisany klucz API",
+      "Could not fetch %@ models. The API key was rejected. Check it under Providers.":
+        "Nie udało się pobrać modeli %@. Klucz API został odrzucony. Sprawdź go w sekcji Dostawcy.",
+      "Error details": "Szczegóły błędu",
+      "Refresh": "Odśwież",
+      "Reset model": "Przywróć model domyślny",
+      "Active configuration details": "Szczegóły aktywnej konfiguracji",
+      "%@ endpoint": "Adres API: %@",
+      "Automatic send to the Agent": "Automatyczne wysyłanie do Agenta",
+      "In Agent mode, send the untouched transcript after 5 seconds unless you start editing it.":
+        "W trybie Agenta wyślij niezmienioną transkrypcję po 5 sekundach, jeśli nie rozpoczniesz jej edycji.",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    for retired in [
+      "LLM lanes", "Request lanes.", "Transcript delivery", "Resolved runtime truth", "Reset",
+      "account", "no key required",
+      "Model discovery failed. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.",
+      "Model discovery failed: %@. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.",
+      "Connect accounts or add API keys. Models are chosen under Agent › LLM lanes.",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
+  /// Round 2 of the Polish pass: the Prompts tab keeps file names and raw
+  /// source ids out of the first level, never renders an unsaved draft as the
+  /// saved prompt, and names the prompt a restore will replace.
+  /// Round 3: the Workspace tab names folder access, not "projects", and the
+  /// one list stays neutral because one setting feeds both the path policy and
+  /// the project scan.
+  func testWorkspaceTabNamesAgentAccessNotProjects() throws {
+    let sources = try settingsSources()
+    let tab = try XCTUnwrap(sources["SettingsTab.swift"])
+    XCTAssertTrue(tab.contains("String(localized: \"Folders available to the Agent\""))
+    XCTAssertFalse(tab.contains("\"Workspace roots.\""))
+    XCTAssertTrue(
+      tab.contains(
+        "\"The Agent can read and write only inside these folders. It has no access outside them.\""
+      ))
+
+    let section = try XCTUnwrap(sources["WorkspaceRootsSection.swift"])
+    XCTAssertTrue(section.contains("SettingsSectionLabel(String(localized: \"Allowed folders\"))"))
+    XCTAssertFalse(section.contains("(list_projects)"), "tool names stay out of the UI copy")
+    XCTAssertTrue(section.contains("Label(\"Add folder…\", systemImage: \"plus\")"))
+    XCTAssertTrue(section.contains("Button(action: pickFolder)"), "the ellipsis opens a picker")
+    XCTAssertTrue(section.contains("panel.canChooseDirectories = true"))
+    XCTAssertTrue(section.contains("Text(\"Save changes\")"))
+    XCTAssertTrue(section.contains(".help(\"Remove folder\")"))
+    XCTAssertTrue(section.contains(".accessibilityLabel(\"Remove folder\")"))
+    XCTAssertTrue(
+      section.contains("Label(\"Undo remove\", systemImage: \"arrow.uturn.backward\")"),
+      "an accidental remove is undoable before Save")
+    XCTAssertTrue(section.contains("rows.insert(last.path, at: min(last.index, rows.count))"))
+    XCTAssertTrue(section.contains("Text(\"Discard changes\")"))
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "Folders available to the Agent": "Foldery dostępne dla Agenta",
+      "The Agent can read and write only inside these folders. It has no access outside them.":
+        "Agent może odczytywać i zapisywać dane tylko w tych folderach. Poza nimi nie ma dostępu.",
+      "Allowed folders": "Dozwolone foldery",
+      "The Agent looks for projects and Git repositories in these folders. It also searches subfolders, but skips hidden folders and build directories.":
+        "W tych folderach Agent szuka projektów i repozytoriów Git. Przeszukuje też podfoldery, ale pomija foldery ukryte i katalogi build.",
+      "Add folder…": "Dodaj folder…",
+      "Save changes": "Zapisz zmiany",
+      "Remove folder": "Usuń folder",
+      "Undo remove": "Cofnij usunięcie",
+      "Discard changes": "Odrzuć zmiany",
+      "Choose a folder the Agent may read and write":
+        "Wybierz folder, w którym Agent może odczytywać i zapisywać dane",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    for retired in [
+      "Workspace roots.", "Agent workspace roots", "Add root", "Save roots",
+      "Directories the Agent may read and write. Everything outside them is out of reach.",
+      "Directories the Agent scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped.",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
+  func testPromptsTabKeepsFileNamesOutOfTheFirstLevel() throws {
+    let sources = try settingsSources()
+    let tab = try XCTUnwrap(sources["SettingsTab.swift"])
+    XCTAssertTrue(
+      tab.contains(
+        "case .agentPrompts: String(localized: \"Prompts\", comment: \"Settings tab: editable prompts\")"
+      ), "the Prompts headline lost its trailing period")
+    XCTAssertFalse(tab.contains("Edits the BASE prompt file"))
+
+    let files = try XCTUnwrap(sources["PromptFile.swift"])
+    XCTAssertFalse(files.contains(".txt)"), "file names left the prompt descriptions")
+
+    let panel = try XCTUnwrap(sources["PromptPanel.swift"])
+    XCTAssertTrue(panel.contains("@State private var editingFiles: Set<PromptFile> = []"))
+    XCTAssertTrue(
+      panel.contains("private var savedText: String { snapshot?.content ?? \"\" }"),
+      "VIEW renders the saved snapshot, never the draft")
+    XCTAssertTrue(panel.contains("raw: savedText.isEmpty"))
+    XCTAssertTrue(panel.contains("TextEditor(text: $draft)"))
+    XCTAssertTrue(panel.contains("Button(\"Cancel\", action: onDiscard)"))
+    XCTAssertTrue(panel.contains("Button(\"Restore default…\")"))
+    XCTAssertFalse(panel.contains("Button(\"Restore…\")"))
+    XCTAssertTrue(
+      panel.contains("\"Only \\(title) will change:"), "the confirmation names the prompt")
+    XCTAssertTrue(
+      panel.contains("its custom file is removed and the built-in prompt takes over"),
+      "the confirmation says what restoring does")
+    XCTAssertTrue(panel.contains("failure: failures[file],"), "failures are shown per file")
+    XCTAssertTrue(panel.contains(".accessibilityIdentifier(\"settings-prompt-failure\")"))
+    XCTAssertTrue(
+      panel.contains("failures[file] = PromptOperationFailure("),
+      "a nil snapshot records a failure instead of a refreshed snapshot")
+    XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $detailsExpanded)"))
+    XCTAssertTrue(panel.contains("Text(\"File details\")"))
+    XCTAssertFalse(panel.contains("ScrollView {\n      MarkdownText"), "no nested scrolling")
+    let source = try XCTUnwrap(panel.range(of: "sourceLine\n"))
+    let details = try XCTUnwrap(panel.range(of: "fileDetails\n"))
+    XCTAssertLessThan(source.lowerBound, details.lowerBound, "the path sits under the source line")
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "Prompts": "Prompty",
+      "Browse and edit the base prompts. Codescribe may add further instructions to them while it runs.":
+        "Przeglądaj i edytuj podstawowe prompty. Codescribe może dołączać do nich dodatkowe instrukcje podczas działania.",
+      "Correction": "Korekta",
+      "Correction prompt": "Prompt korekty",
+      "Smart prompt": "Prompt Smart",
+      "Max prompt": "Prompt Max",
+      "Agent prompt": "Prompt Agenta",
+      "Source: Built-in prompt": "Źródło: Wbudowany prompt",
+      "Source: Custom prompt": "Źródło: Własny prompt",
+      "File details": "Szczegóły pliku",
+      "Restore default…": "Przywróć domyślny…",
+      "Unsaved changes": "Niezapisane zmiany",
+      "Edit": "Edytuj",
+      "Save": "Zapisz",
+      "Only %@ will change: its custom file is removed and the built-in prompt takes over. The previous version remains recoverable in the prompt backups folder.":
+        "Zmieni się tylko %@: własny plik zostanie usunięty, a w użyciu będzie wbudowany prompt. Poprzednią wersję można odzyskać z folderu kopii zapasowych promptów.",
+      "Could not restore %@. The custom prompt is still in use.":
+        "Nie udało się przywrócić: %@. Własny prompt nadal jest w użyciu.",
+      "Could not save %@. The file on disk is unchanged.":
+        "Nie udało się zapisać: %@. Plik na dysku pozostał bez zmian.",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    for retired in [
+      "Prompts.", "Assistive prompt", "Custom file", "Built-in fallback", "Restore…",
+      "Only %@ will change. The previous version remains recoverable in the prompt backups folder.",
+      "Correction only AI formatting (formatting.txt)",
+      "Base system prompt for the Agent (assistive.txt)",
+      "Edits the BASE prompt file. The core still appends its tuning prompt at runtime.",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }

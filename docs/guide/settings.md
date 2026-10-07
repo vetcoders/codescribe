@@ -91,9 +91,64 @@ through **Edit**. **Cloud transcription** holds the File and Live lanes
 address reads as one sentence under the field, e.g. **This address needs
 ws:// or wss://.** Secrets are stored separately from account sign-in.
 
-Open **Settings → Agent → LLM lanes** to select a provider and model separately
-for **Assistive** (Agent and voice-assistant requests) and **Formatting**
-(transcript cleanup). **Agent → Prompts** edits their prompts.
+Open **Settings → Agent → AI models** to select a provider and model separately
+for **Assistive** (the model behind the Agent and the voice assistant) and
+**Formatting** (transcript cleanup). Each card shows the provider, the model
+field and one line about the lane's access: **Connected account**, **Stored API
+key** or **No key required**. These describe what is stored, not whether it
+works: a stored key can still be rejected, and a connected account does not open
+model discovery. The model field holds your override; when it is empty, the
+placeholder is the provider default that actually resolved, and the caption
+says **Provider default model** or **Set manually**. **Reset model** clears only
+the override and never touches the provider. The settings keys
+(`LLM_ASSISTIVE_PROVIDER`, `LLM_ASSISTIVE_MODEL`, …) and the resolved endpoints
+sit under **Active configuration details**, collapsed by default. **Agent →
+Prompts** edits their prompts.
+
+**Automatic send to the Agent** holds one switch: in Agent mode the untouched
+transcript is sent 5 seconds after the take ends unless you start editing it.
+
+### Agent → Prompts
+
+One segmented picker (**Correction**, **Smart**, **Max**, **Agent**) opens one
+base prompt at a time; the headers read **Correction prompt**, **Smart prompt**,
+**Max prompt** and **Agent prompt**. Each has a single plain sentence under it.
+The Agent prompt is the base of the system prompt for Agent turns that act on a
+dictated request; voice chat carries its own persona and does not read it.
+Codescribe may append further instructions at runtime, so the editor shows the
+base text, not the full prompt a provider receives.
+
+The **Source** line names the prompt in use: **Source: Custom prompt** when your
+file is read, **Source: Built-in prompt** when no custom file exists or the file
+is empty, and **Source: Built-in prompt (file unreadable)** with a red sentence
+when the file could not be read. **File details**, collapsed by default, holds
+the path, whether a custom file exists or would be created there on save, and
+the raw read error.
+
+**Edit** opens the raw text; **Save** (solid accent) writes it and returns to
+the rendered view; **Cancel** drops the unsaved draft. Edit state is kept per
+prompt: switching segments mid-edit keeps that prompt in edit mode with an
+**Unsaved changes** marker, and the rendered view always shows the saved text,
+never a draft. **Restore default…** asks for confirmation that names the prompt
+and changes only that one. Confirming copies the custom file into the prompt
+backups folder, removes it, and records the removal in the prompt audit log,
+so the source afterwards reads **Built-in prompt** and the text follows future
+app updates. If the file cannot be removed, a red line under the source says
+**Could not restore …** with the error, and the custom prompt stays in use; a
+failed save is reported the same way.
+
+### Agent → Workspace
+
+**Folders available to the Agent** lists where the Agent may read and write;
+everything outside the list is out of reach. The same list is where the Agent
+looks for projects and Git repositories (subfolders included, hidden folders
+and build directories skipped), so entries such as `~/.codescribe` or `/tmp`
+sit next to checkouts like `~/Git` — it is one access list, not a list of
+projects. A green dot marks an existing directory, amber one that does not
+resolve. **Add folder…** opens a folder picker and adds the choice as an
+editable row; the minus button (**Remove folder**) drops a row, and **Undo
+remove** puts the last removed row back where it was. Nothing is written until
+**Save changes**; **Discard changes** returns to the saved list.
 
 ### Credential access while refreshing
 
@@ -154,12 +209,18 @@ the account/key snapshot when it regains focus.
 Model discovery queries the provider's model API with its provider API key.
 Account sign-in alone does not supply that key. With account-only Assistive
 access, `/model` shows the currently resolved model and explains the missing
-catalog access. Keep that model, or enter a supported **Model ID** in **Agent →
-LLM lanes**. Adding an API key is optional for Assistive account requests.
+catalog access. Keep that model, or enter a supported model ID in **Agent →
+AI models**. Adding an API key is optional for Assistive account requests.
 
 Fresh and cached catalogs offer selectable models. A provider returning no
-models or a discovery failure gives the corresponding explanation and next
-action. Check **Providers**, then **Refresh** models in **Agent → LLM lanes**.
+models or a discovery failure gives one plain sentence and the next action:
+**Could not fetch xAI models. The API key was rejected. Check it under
+Providers.** when the provider refused the key (HTTP 401/403, or a 400 whose
+body names the API key), otherwise **Could not fetch … models. Check the
+provider under Providers.** The provider's raw response is available under
+**Error details**; it never appears in the main line. When both lanes use the
+same provider, Formatting points to the Agent's line instead of repeating the
+error. **Refresh** retries.
 The palette reuses its model list while you filter it, and refreshes it after
 provider, model or credential changes, including settings edited outside the app.
 Its short cache also expires automatically. If freshness cannot be established,

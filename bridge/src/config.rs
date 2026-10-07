@@ -435,7 +435,8 @@ pub struct CsModelOption {
 }
 
 /// Live model discovery result for one provider. `status` is one of:
-/// `"fresh"`, `"cached"`, `"no_key"`, `"error"`. Errors never carry secrets.
+/// `"fresh"`, `"cached"`, `"no_key"`, `"key_rejected"` (the provider refused
+/// the stored API key), `"error"`. Errors never carry secrets.
 #[derive(uniffi::Record)]
 pub struct CsModelDiscovery {
     pub provider_id: String,
@@ -1368,6 +1369,8 @@ impl CodescribeConfig {
             Err(error) => {
                 let status = if provider.key_required && error.code() == "no_key" {
                     "no_key"
+                } else if error.rejects_credential() {
+                    "key_rejected"
                 } else {
                     "error"
                 };
@@ -1504,12 +1507,14 @@ impl CodescribeConfig {
         .map_err(CsError::from)
     }
 
-    /// Restore only the formatting base prompt after explicit UI confirmation.
+    /// Restore only the formatting base prompt after explicit UI confirmation:
+    /// the override is backed up and removed, so the built-in text is in use.
     pub fn restore_formatting_prompt_to_default(&self) -> Result<(), CsError> {
         restore_prompt_to_default(PromptKind::Formatting).map_err(CsError::from)
     }
 
-    /// Restore one explicit formatting policy prompt after UI confirmation.
+    /// Restore one explicit formatting policy prompt after UI confirmation:
+    /// the override is backed up and removed, so the built-in text is in use.
     pub fn restore_formatting_prompt_for_level_to_default(
         &self,
         level: String,
@@ -1517,7 +1522,8 @@ impl CodescribeConfig {
         restore_prompt_to_default(formatting_prompt_kind(&level)?).map_err(CsError::from)
     }
 
-    /// Restore only the assistive base prompt after explicit UI confirmation.
+    /// Restore only the assistive base prompt after explicit UI confirmation:
+    /// the override is backed up and removed, so the built-in text is in use.
     pub fn restore_assistive_prompt_to_default(&self) -> Result<(), CsError> {
         restore_prompt_to_default(PromptKind::Assistive).map_err(CsError::from)
     }
