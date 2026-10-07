@@ -390,6 +390,7 @@ private struct ThreadRow: View {
           Text(tag)
             .lineLimit(1)
             .truncationMode(.tail)
+            .fixedSize(horizontal: measuring, vertical: false)
             .font(CSFont.mono(9, .semibold))
             .foregroundStyle(isActive ? CSColor.modeAgent : CSColor.textTertiary)
             .padding(.horizontal, 6)
