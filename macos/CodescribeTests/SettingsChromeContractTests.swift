@@ -723,8 +723,9 @@ final class SettingsChromeContractTests: XCTestCase {
       section.contains("String(localized: \"mcp.server.enabled\", defaultValue: \"Enabled\")"))
     XCTAssertTrue(view.contains("HostingWindowReader(onWindow: adoptHostWindow)"))
     for label in ["Server name", "Launch command", "Command arguments", "Server URL"] {
-      XCTAssertTrue(section.contains("labeledField(\"\(label)\""), label)
+      XCTAssertTrue(section.contains("\"\(label)\", placeholder: \""), label)
     }
+    XCTAssertEqual(section.components(separatedBy: "labeledField(").count, 6)
     XCTAssertTrue(section.contains("fieldLabel(\"Access token (optional)\")"))
     XCTAssertTrue(
       section.contains("guard addError == nil else { return }"),
