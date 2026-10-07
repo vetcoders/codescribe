@@ -303,6 +303,83 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   }
 
   @MainActor
+  func testNewAgentMessageRevealsTheLatestRowAfterReadingEarlierHistory() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    for index in 0..<18 {
+      bus.consume(
+        occurrence(
+          index * 3200, revision: index + 1,
+          text: String(repeating: "Wcześniejsza wiadomość w historii. ", count: 8),
+          captureSession: "agent-channel-2-take-\(index)"))
+      endCapture(&bus, session: "agent-channel-2-take-\(index)")
+    }
+    func view() throws -> OverlayConversationView {
+      OverlayConversationView(
+        conversation: try lenaConversation(bus), palette: .light, topInset: 50, bottomInset: 20,
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+        draft: .constant("Zachowaj ten szkic"), sending: false, sendError: nil, onSend: {})
+    }
+    let host = NSHostingView(rootView: try view())
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 532, height: 300)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    func settle() {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+      host.layoutSubtreeIfNeeded()
+    }
+    func scrollViews(_ root: NSView) -> [NSScrollView] {
+      (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
+    }
+    func editor(_ root: NSView) -> NSTextView? {
+      if let text = root as? NSTextView, text.isEditable { return text }
+      return root.subviews.lazy.compactMap { editor($0) }.first
+    }
+    settle()
+    let scroll = try XCTUnwrap(scrollViews(host).first { $0.bounds.height > 150 })
+    let document = try XCTUnwrap(scroll.documentView)
+    let originalEditor = try XCTUnwrap(editor(host))
+    originalEditor.setSelectedRange(NSRange(location: 5, length: 7))
+    scroll.contentView.scroll(to: .zero)
+    scroll.reflectScrolledClipView(scroll.contentView)
+    settle()
+    XCTAssertLessThan(scroll.documentVisibleRect.maxY, document.bounds.height - 100)
+
+    bus.consume(
+      occurrence(
+        18 * 3200, revision: 19,
+        text: String(repeating: "Najnowsza wiadomość ma być widoczna bez szukania. ", count: 10),
+        captureSession: "agent-channel-2-take-18"))
+    endCapture(&bus, session: "agent-channel-2-take-18")
+    host.rootView = try view()
+    settle()
+    XCTAssertGreaterThan(
+      scroll.documentVisibleRect.maxY, document.bounds.height - 50,
+      "a newly admitted message must reveal the newest row even after reading history")
+    XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
+    XCTAssertEqual(originalEditor.string, "Zachowaj ten szkic")
+    XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 5, length: 7))
+
+    scroll.contentView.scroll(to: .zero)
+    scroll.reflectScrolledClipView(scroll.contentView)
+    settle()
+    let delivery = try XCTUnwrap(
+      try lenaConversation(bus).messages.last?.recipients.first?.deliveryID)
+    bus.consume(reply(String(repeating: "8", count: 24), delivery: delivery))
+    host.rootView = try view()
+    settle()
+    XCTAssertGreaterThan(
+      scroll.documentVisibleRect.maxY, document.bounds.height - 50,
+      "an agent reply must also reveal the latest row")
+    XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
+    XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 5, length: 7))
+  }
+
+  @MainActor
   func testConversationOpensAtLatestAndBubblesHaveOppositeEdges() throws {
     var bus = OverlayChannelDelivery.Bus()
     for index in 0..<12 {

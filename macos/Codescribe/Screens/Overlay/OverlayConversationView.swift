@@ -66,8 +66,10 @@ struct OverlayConversationView: View {
           .onChange(of: composerHeight) { _, _ in
             if followsLatest { scrollToLatest(proxy) }
           }
-          .onChange(of: orderedMessages.last) { _, _ in
-            if followsLatest || followsLiveChannel { scrollToLatest(proxy) }
+          .onChange(of: orderedMessages.last) { previous, latest in
+            if previous?.id != latest?.id || followsLatest || followsLiveChannel {
+              scrollToLatest(proxy)
+            }
           }
           .onChange(of: textScale) { _, _ in
             if followsLatest { scrollToLatest(proxy) }

@@ -230,6 +230,49 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.finishControllerRecording()
   }
 
+  func testHeaderStartHonorsThePersistedTakeStartPreference() {
+    for expanded in [false, true] {
+      for initialMode in [OverlayPresentationMode.mini, .midi, .expanded] {
+        let engine = OverlayChromePolicyEngine()
+        engine.expanded = expanded
+        let state = OverlayState(micAccessProvider: { true })
+        state.engine = engine
+        state.attach()
+        state.setPresentationMode(initialMode)
+
+        state.requestHeaderRecording(.startRecording)
+        XCTAssertEqual(state.presentationMode, expanded ? .expanded : .mini)
+        state.handleRecordingPreparing()
+        XCTAssertEqual(state.presentationMode, expanded ? .expanded : .mini)
+        state.handleRecordingStarted()
+        XCTAssertEqual(state.presentationMode, expanded ? .expanded : .mini)
+        XCTAssertEqual(state.expandedByDefault, expanded)
+        XCTAssertTrue(engine.expansionWrites.isEmpty)
+        state.finishControllerRecording()
+      }
+    }
+  }
+
+  func testHeaderStopKeepsTheCurrentWidgetAndDoesNotArmTheNextTake() {
+    let engine = OverlayChromePolicyEngine()
+    engine.expanded = false
+    let state = OverlayState(micAccessProvider: { true })
+    state.engine = engine
+    state.attach()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    XCTAssertEqual(state.presentationMode, .mini)
+
+    state.requestHeaderRecording(.finish)
+    XCTAssertEqual(state.presentationMode, .mini)
+    state.finishControllerRecording()
+    engine.expanded = true
+    state.handleRecordingPreparing()
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertTrue(engine.expansionWrites.isEmpty)
+    state.finishControllerRecording()
+  }
+
   func testChevronCollapseIsLocalAndNextTakeExpandsWithoutWritingPreference() {
     let engine = OverlayChromePolicyEngine()
     let state = OverlayState()
@@ -580,7 +623,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
   }
 
-  func testHeaderMicrophoneRevealsMidiAndNextTakeUsesSavedPreference() {
+  func testHeaderMicrophoneAndTheNextTakeUseTheSavedPreference() {
     for expanded in [false, true] {
       let engine = OverlayChromePolicyEngine()
       engine.expanded = expanded
@@ -588,11 +631,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       state.engine = engine
       state.attach()
       state.requestHeaderRecording(.startRecording)
-      XCTAssertEqual(state.presentationMode, .midi)
+      XCTAssertEqual(state.presentationMode, expanded ? .expanded : .mini)
       state.handleRecordingPreparing()
       state.handleRecordingStarted()
-      XCTAssertEqual(
-        state.presentationMode, .midi, "the explicit header choice survives the take callbacks")
+      XCTAssertEqual(state.presentationMode, expanded ? .expanded : .mini)
       XCTAssertTrue(engine.expansionWrites.isEmpty)
       state.finishControllerRecording()
       state.handleRecordingPreparing()

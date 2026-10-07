@@ -499,7 +499,6 @@ final class OverlayState {
   private(set) var expandedByDefault = true
   private(set) var keepVisibleBetweenTakes = false
   private(set) var expansionPreferenceError: String?
-  @ObservationIgnored private var requestedCapturePresentation: OverlayPresentationMode?
   @ObservationIgnored var onPresentationModeChanged: ((OverlayPresentationMode) -> Void)?
   private(set) var widgetHoverDeadline: ContinuousClock.Instant?
   @ObservationIgnored private var widgetHoverTarget: OverlayPresentationMode?
@@ -514,10 +513,6 @@ final class OverlayState {
   }
 
   func requestHeaderRecording(_ intent: OverlayIntent) {
-    if isCollapsed {
-      setPresentationMode(.midi)
-      if intent == .startRecording { requestedCapturePresentation = .midi }
-    }
     if intent == .startRecording { selectConversation(nil) }
     relayIntent(intent)
   }
@@ -587,15 +582,10 @@ final class OverlayState {
     applyPreferredExpansion()
   }
 
-  private func applyPreferredExpansion(forNewCapture: Bool = false) {
+  private func applyPreferredExpansion() {
     guard let engine else { return }
     expandedByDefault = engine.overlayExpandedByDefault()
-    if forNewCapture, let requestedCapturePresentation {
-      self.requestedCapturePresentation = nil
-      setPresentationMode(requestedCapturePresentation)
-    } else {
-      setPresentationMode(expandedByDefault ? .expanded : .mini)
-    }
+    setPresentationMode(expandedByDefault ? .expanded : .mini)
   }
 
   func setKeepVisibleBetweenTakes(_ enabled: Bool) {
@@ -1700,7 +1690,6 @@ final class OverlayState {
   private func runStart(assistive: Bool, language: CsLanguage?) async {
     guard let engine else { return }
     guard micAccessProvider() else {
-      requestedCapturePresentation = nil
       presentTerminalError(
         message: String(
           localized:
@@ -1726,7 +1715,6 @@ final class OverlayState {
       }
       try await engine.startRecording(assistive: assistive, language: language)
     } catch {
-      requestedCapturePresentation = nil
       await handleStartFailure(error, assistive: assistive, language: language)
     }
   }
@@ -2468,7 +2456,7 @@ final class OverlayState {
       resetTranscript()
       errorMessage = nil
       beginCaptureClock()
-      applyPreferredExpansion(forNewCapture: true)
+      applyPreferredExpansion()
     }
     recording = true
     refreshOverlayPolicyTruth()
@@ -2490,7 +2478,7 @@ final class OverlayState {
       resetTranscript()
       errorMessage = nil
       beginCaptureClock()
-      applyPreferredExpansion(forNewCapture: true)
+      applyPreferredExpansion()
     }
     if captureStartedAtUptime == nil {
       beginCaptureClock()
