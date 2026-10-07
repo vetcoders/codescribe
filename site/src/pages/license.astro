@@ -1,6 +1,8 @@
 ---
 import Layout from '../layouts/Layout.astro';
 import LegalPage from '../components/LegalPage.astro';
+import { page } from '../lib/asset';
+const isPagesCopy = import.meta.env.BASE_URL.startsWith('/codescribe');
 ---
 
 <Layout
@@ -8,15 +10,19 @@ import LegalPage from '../components/LegalPage.astro';
   description="Generate your codescribe licence code. Open beta: enter your email, paste the code into Settings → License."
   path="license"
 >
-  <LegalPage title="Get a licence" eyebrow="Open beta · Licence">
+  <LegalPage title="Get a licence" eyebrow="Open beta · Licence" updated="2026-10-06">
     <p>
       Codescribe is in open beta. Enter your email and you get a licence code
       on the spot — paste it into <strong>Settings → License</strong> in the
-      app. The code is bound to a hash of your email; the email itself never
-      leaves this form in plain text and we do not build a mailing list from
-      it.
+      app. Your email is sent over HTTPS to our licence service. The signed code
+      contains its SHA-256 hash rather than the address. The service records
+      that hash, your IP address, and the issue time; see the
+      <a href={page("privacy")}>Privacy Policy</a>.
     </p>
 
+    {isPagesCopy && <p>Licence issuance is hosted on the main website.
+      <a href="https://codescribe.vetcoders.io/license/">Open the licence form</a>.</p>}
+    <div hidden={isPagesCopy}>
     <form id="licence-form" autocomplete="email">
       <label for="licence-email">Email</label>
       <div class="licence-row">
@@ -47,6 +53,7 @@ import LegalPage from '../components/LegalPage.astro';
     </div>
 
     <p id="licence-error" role="alert" hidden></p>
+    </div>
 
     <h2>What the code contains</h2>
     <ul>
