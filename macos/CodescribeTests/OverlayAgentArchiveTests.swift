@@ -170,7 +170,6 @@ final class OverlayAgentArchiveTests: XCTestCase {
       }
       XCTAssertEqual(state.selectedConversation?.messages.first?.text, expected[unloaded.id])
       XCTAssertEqual(state.selectedConversationID, unloaded.id)
-      state.detach()
     }
   }
 
