@@ -2571,6 +2571,11 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func admissionReadiness() async throws  -> CsAdmissionReadiness
 
     /**
+     * Complete the canonical archive helper under the capture lifecycle lock.
+     */
+    func archiveAgentChannel(request: CsAgentArchiveRequest) async throws  -> String
+
+    /**
      * The closed set of gestures a mode can bind to, with display labels. Drives
      * the Settings picker (no free-form key capture — the binding space is a
      * fixed enum, see `HOTKEYS_CONTRACT`).
@@ -2993,6 +2998,26 @@ open func admissionReadiness()async throws  -> CsAdmissionReadiness  {
             completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterTypeCsAdmissionReadiness_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * Complete the canonical archive helper under the capture lifecycle lock.
+     */
+open func archiveAgentChannel(request: CsAgentArchiveRequest)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_archive_agent_channel(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeCsAgentArchiveRequest_lower(request)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
 }
@@ -8082,6 +8107,81 @@ public func FfiConverterTypeCsAdmissionReadiness_lift(_ buf: RustBuffer) throws 
 #endif
 public func FfiConverterTypeCsAdmissionReadiness_lower(_ value: CsAdmissionReadiness) -> RustBuffer {
     return FfiConverterTypeCsAdmissionReadiness.lower(value)
+}
+
+
+/**
+ * Frozen owner and verified helper paths supplied by the app's archive action.
+ */
+public struct CsAgentArchiveRequest: Equatable, Hashable {
+    public var channel: UInt8
+    public var provider: String
+    public var providerSessionId: String
+    public var leaseId: String
+    public var bus: String
+    public var executable: String
+    public var bridgeHome: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(channel: UInt8, provider: String, providerSessionId: String, leaseId: String, bus: String, executable: String, bridgeHome: String) {
+        self.channel = channel
+        self.provider = provider
+        self.providerSessionId = providerSessionId
+        self.leaseId = leaseId
+        self.bus = bus
+        self.executable = executable
+        self.bridgeHome = bridgeHome
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsAgentArchiveRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsAgentArchiveRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsAgentArchiveRequest {
+        return
+            try CsAgentArchiveRequest(
+                channel: FfiConverterUInt8.read(from: &buf),
+                provider: FfiConverterString.read(from: &buf),
+                providerSessionId: FfiConverterString.read(from: &buf),
+                leaseId: FfiConverterString.read(from: &buf),
+                bus: FfiConverterString.read(from: &buf),
+                executable: FfiConverterString.read(from: &buf),
+                bridgeHome: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsAgentArchiveRequest, into buf: inout [UInt8]) {
+        FfiConverterUInt8.write(value.channel, into: &buf)
+        FfiConverterString.write(value.provider, into: &buf)
+        FfiConverterString.write(value.providerSessionId, into: &buf)
+        FfiConverterString.write(value.leaseId, into: &buf)
+        FfiConverterString.write(value.bus, into: &buf)
+        FfiConverterString.write(value.executable, into: &buf)
+        FfiConverterString.write(value.bridgeHome, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAgentArchiveRequest_lift(_ buf: RustBuffer) throws -> CsAgentArchiveRequest {
+    return try FfiConverterTypeCsAgentArchiveRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAgentArchiveRequest_lower(_ value: CsAgentArchiveRequest) -> RustBuffer {
+    return FfiConverterTypeCsAgentArchiveRequest.lower(value)
 }
 
 
@@ -19185,6 +19285,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_admission_readiness() != 59942) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_archive_agent_channel() != 55624) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_available_bindings() != 35701) {

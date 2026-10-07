@@ -187,7 +187,11 @@ struct OverlayConversationView: View {
   private func messageList(maxBubbleWidth: CGFloat) -> some View {
     let list = ScrollView {
       LazyVStack(alignment: .leading, spacing: 12) {
-        if orderedMessages.isEmpty {
+        if !conversation.historyLoaded {
+          ProgressView()
+            .controlSize(.small)
+            .accessibilityIdentifier("overlay-conversation-history-loading")
+        } else if orderedMessages.isEmpty {
           Text("No conversation messages yet")
             .font(.system(size: 13 * textScale))
             .foregroundStyle(palette.mutedText.color)

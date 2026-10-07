@@ -19,6 +19,12 @@ data  CsAdmissionReadiness.calibratedDevices
 data  CsAdmissionReadiness.sealLaneSource
 data  CsAdmissionReadiness.sealLaneEnv
 prose CsAgentAvailability.detail
+data  CsAgentArchiveRequest.provider
+data  CsAgentArchiveRequest.providerSessionId
+data  CsAgentArchiveRequest.leaseId
+data  CsAgentArchiveRequest.bus
+data  CsAgentArchiveRequest.executable
+data  CsAgentArchiveRequest.bridgeHome
 data  CsAgenticReadiness.configPathDisplay
 data  CsAnnotationKind.kind
 prose CsAnnotationKind.label

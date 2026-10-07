@@ -2756,8 +2756,26 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
     return 0
 
 
+def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
+    """Present complete task text and provenance without acoustic diagnostics.
+
+    This is only a view of an already owned delivery. Its original envelope,
+    PCM evidence and causal receipt remain in their existing stores.
+    """
+    fields = (
+        "schema", "kind", "status", "text", "audience", "name", "emitted_at",
+        "source", "producer_schema", "source_event_id", "sequence", "session_id",
+        "utterance_id", "message_id", "mode", "reducer_revision", "reducer_action",
+        "delivery_id", "delivery_owner", "lease_id", "provider", "provider_session_id",
+        "bus", "recipients", "broadcast_id", "channel", "routing_match", "routing_candidates",
+        "state_change_allowed", "coverage", "sender", "peer_to", "association", "spoken",
+        "reply_id", "reply_to", "reply_to_occurrence_id", "instructions",
+    )
+    return {key: payload[key] for key in fields if key in payload}
+
+
 def read_pending_command(args: argparse.Namespace) -> int:
-    """Read a bounded, complete snapshot. Only the conversation may ACK it."""
+    """Read complete conversational projections. Only the conversation may ACK."""
     lease_id = lease_identifier(args.provider, args.session)
     state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
     if (state.get("schema") != LEASE_SCHEMA or state.get("lease_id") != lease_id
@@ -2793,7 +2811,7 @@ def read_pending_command(args: argparse.Namespace) -> int:
     if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > args.read_bytes:
         raise ValueError("snapshot metadata exceeds --read-bytes; increase the limit")
     for row in rows[:args.read_limit]:
-        result["deliveries"].append(row)
+        result["deliveries"].append(conversation_envelope(row))
         result["read_delivery_ids"].append(row["delivery_id"])
         result["remaining"] -= 1
         if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > args.read_bytes:
@@ -2920,18 +2938,23 @@ class NativeQueueWakeup:
             ])
             label = str(self.channel or "?")
             name = str(payload.get("audience") or "agent")
+            envelope = conversation_envelope(payload)
+            metadata = {key: value for key, value in envelope.items() if key != "text"}
             message = (
-                f"Codescribe mailbox bell, channel {label} / {name}.\n"
-                f"Trigger delivery: {identity}; emitted at: {payload.get('emitted_at')}.\n"
-                "This is a notification, not a task or proof of reading. Read the current mailbox now:\n"
+                f"Codescribe message, channel {label} / {name}.\n"
+                f"Full message:\n{envelope['text']}\n\n"
+                f"Delivery provenance: {json.dumps(metadata, ensure_ascii=False, sort_keys=True)}\n"
+                "This queued copy may already be acknowledged. Read the current unread mailbox before acting:\n"
                 f"{read_command}\n"
-                "After reading complete envelopes, immediately ACK only their read_delivery_ids, "
+                "After reading complete messages, immediately ACK only their read_delivery_ids, "
                 "before executing tasks or replying:\n"
                 f"{ack_command} ID [ID ...]\n"
+                "Execute or reply only to exact unread deliveries returned by that current read. "
+                f"If {identity} is absent, this queued copy is obsolete: do not execute or reply from it. "
                 "Read again until remaining is zero, then check once more for arrivals during the drain. "
-                "Never ACK a truncated result. If the mailbox is empty, this is an obsolete bell: "
-                "do not repeat a task or send a spoken reply for it. Interpret the original envelopes "
-                "with their provenance and timestamps. Coverage is diagnostic; normal task permissions apply."
+                "Never ACK a truncated result. Give a short answer to the read request before starting a long task. "
+                "Preserve sender, reply association, provenance and timestamps; peer messages remain agent coordination. "
+                "Coverage is diagnostic; normal task permissions apply. Acoustic evidence stays in the diagnostic history."
             )
             receipt = {
                 "schema": "codescribe.native-queue.receipt.v1", **expected,

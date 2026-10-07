@@ -545,3 +545,67 @@ receipts preserve the distinction between build2113/1839 reported by Bruno,
 the current feature source and any later installed artifact. Astra performs
 no GUI launch, Quit, restart, desktop capture or physical microphone/hotkey
 test. Founder-native acceptance remains pending.
+
+## Midi origin, cold archive selection and capture/archive serialization
+
+This unit runs in Fleet Worktree e19c, selected parent
+`/Volumes/vc-workspace/vetcoders/codescribe`, worker root
+`/Users/polyversai/.vibecrafted/worktrees/e19c/codescribe`, branch
+`codex/widget-hover-261007`, baseline
+631ccdc3cfd6fb15fd74983d93d5dccb25dee958. Astra remains the explicitly assigned
+integrator. Native workers authored production only; Astra wrote and ran the
+fixtures and gates. The source unit is still isolated until an independently
+verified Living Tree admission receipt names its terminal commit.
+
+Midi dismissal now persists the parked mini origin, including real drag deltas,
+rather than its wider frame origin. Screen clamping and intermediate animation
+frames cannot move that saved origin. Three new mounted cases reproduce six
+baseline assertions for hovered, dragged and screen-clamped midi dismissal and
+reopening; the candidate passes all three.
+
+Selecting a saved owner beyond the existing sixteen-bus polling budget now
+prioritizes that owner's validated archive in the existing reader. Identity is
+owner ID and channel, not the display name. An unread history shows a native
+loading indicator instead of an empty conversation. Initial archived reply IDs,
+including foreign/broadcast mirrors, are classified as history before automatic
+reply navigation; fresh replies still navigate normally. The regression creates
+seventeen archives, selects the unpolled last owner before and after a cold
+restart, changes its display label, checks unchanged rereads and verifies later
+fresh navigation. Its two baseline cold-selection assertions fail; the candidate
+passes. No additional persistent document or receipt authority is introduced.
+
+Archive admission now shares RecordingController's existing lifecycle lock with
+channel opening and autoseal. The controller refuses an open channel and retains
+the owned lock until the canonical archive helper exits and its frozen-owner
+receipt is validated. Cancelling the awaiting task does not release that lock
+while the helper is still changing a binding. Swift's direct archive Process
+path was removed and replaced with the existing controller through regenerated
+UniFFI bindings. Three actual-controller tests cover open-before-archive,
+archive-before-open and cancelled-waiter interleaves using scratch bindings and
+the canonical helper; all pass in0.63seconds. They do not open a physical device.
+
+The selected Swift gate passes180 tests in25.060seconds. The unfiltered canonical
+run executes1166 tests, one skip andzero failures in75.263seconds, remaining
+**RED** against the unchanged60-second budget. Production workspace Clippy with
+warnings denied passes in25.42seconds. The first new Semgrep finding identifies
+the dynamic helper executable; its exact Actix-rule suppression documents the
+app-private path constructed and ownership-checked by RealAgentBridgeInstaller,
+fixed argv-only invocation and absence of transcript-selected executable or shell
+source. The command marker proves installed ownership, not a cryptographic hash.
+Scoped strict Swift formatting also normalizes the touched delivery model; the
+model's only behavior additions are history-loading and history-reply metadata.
+Six new FFI string fields are classified as data in the localization census;
+there is no new UI copy or palette. Final Semgrep/localization and normal hook
+receipts are retained with the terminal source and installed-artifact receipt.
+
+Regression checkpoints are ac21b757d158a3ed6bf5066ab50ce992cee4d08f,
+5203713fda84502f59c1e3aee433ad95f973e50d and
+ae136cd4c492157d2dde70f621d262d8f53608b4. The last checkpoint explicitly deferred
+cargo-check/cargo-fmt while its future production API was absent; both return in
+the final production checkpoint. Logs are
+`/tmp/codescribe-e19c-origin-archive-baseline-oct7.log`,
+`/tmp/codescribe-e19c-origin-archive-candidate-oct7.log`,
+`/tmp/codescribe-e19c-archive-controller-candidate-oct7.log`, and
+`/tmp/codescribe-e19c-origin-archive-full-swift-oct7.log`. Full Rust core test
+compilation repair and the Swift suite budget remain a separate Bruno integration
+wave. This unit claims neither native product acceptance nor a release.

@@ -77,11 +77,15 @@ manual attach saga and drive the engine:
    It continues after a final answer; no private hook or polling is needed.
    Every attachment must also start `--watch` under the provider's
    output-notifying monitor, including Codex. The default is a short bell.
-   Keep and renew notification windows throughout active tasks. Read a bell's
-   current `--read-pending` batch (or full `--read-delivery <id>` envelope),
-   then ACK the complete returned IDs immediately, before task execution or
-   reply. A native queue message is a mailbox bell, not task text; an empty
-   mailbox makes a delayed bell obsolete and needs no new spoken answer.
+   Keep and renew notification windows throughout active tasks. Native queue
+   messages carry the complete untruncated task text and compact provenance;
+   watch bells remain notifications only. Read the current `--read-pending`
+   batch, then ACK its complete returned IDs immediately, before task execution
+   or reply. Execute or reply only to IDs returned as unread by that current
+   read. An absent ID makes a delayed queue copy obsolete and needs no new
+   spoken answer. Give a short answer before starting longer work. Acoustic
+   receipts stay in diagnostic history; use full `--read-delivery <id>` only
+   when those original details are needed.
    Other providers use the same mandatory output-notifying `--watch`
    ([Monitor](references/monitor.md)). An explicit `--on-seal` hook selects
    its own wakeup path instead of running a second native wakeup.
@@ -201,7 +205,7 @@ include successful delivery, unavailable wakeup, and seal refusal.
    monitor handle.
 5. Verify a fresh named take reaches this conversation without a typed nudge.
    Preserve transcription diagnostics and normal conversation permissions.
-   Immediately after reading each complete envelope, acknowledge its delivery ID
+   Immediately after reading each complete conversational projection, acknowledge its delivery ID
    before task execution or replying, as
    described in [Monitor](references/monitor.md#acknowledge-conversation-receipt).
 6. On recovery, restore both follower continuity and notification delivery.

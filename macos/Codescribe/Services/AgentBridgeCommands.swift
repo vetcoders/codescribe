@@ -74,14 +74,18 @@ extension RealAgentBridgeInstaller {
   @MainActor
   static func archiveBusAgent(
     owner: OverlayConversationOwner,
-    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller(),
+    archive: @escaping @MainActor @Sendable (CsAgentArchiveRequest) async throws -> String
   ) async throws {
+    guard let channel = UInt8(owner.channel), (1...9).contains(channel) else {
+      throw CocoaError(.fileReadCorruptFile)
+    }
     let executable = installer.commandURL("cs-bus")
     guard installer.fileManager.isExecutableFile(atPath: executable.path),
       installer.managedCommandID(executable) != nil
     else { throw CocoaError(.fileNoSuchFile) }
     let root = installer.bridgeRoot
-    try await Task.detached(priority: .userInitiated) {
+    let bus = try await Task.detached(priority: .userInitiated) {
       let leaseURL = root.appendingPathComponent("leases/\(owner.leaseID).json")
       let leaseData = try Data(contentsOf: leaseURL)
       guard leaseData.count <= 16 << 20,
@@ -92,33 +96,21 @@ extension RealAgentBridgeInstaller {
         lease["lease_id"] as? String == owner.leaseID,
         let bus = lease["bus"] as? String, bus.hasPrefix("/")
       else { throw CocoaError(.fileReadCorruptFile) }
-      let process = Process()
-      let output = Pipe()
-      process.executableURL = executable
-      process.arguments = [
-        "--archive-agent", owner.channel, "--provider", owner.provider,
-        "--session", owner.providerSessionID, "--lease", owner.leaseID,
-        "--bus", bus, "--bridge-home", root.path,
-      ]
-      process.standardInput = FileHandle.nullDevice
-      process.standardOutput = output
-      process.standardError = FileHandle.nullDevice
-      try process.run()
-      defer { if process.isRunning { process.terminate() } }
-      let deadline = ContinuousClock.now.advanced(by: .seconds(15))
-      while process.isRunning, ContinuousClock.now < deadline {
-        try await Task.sleep(for: .milliseconds(50))
-      }
-      guard !process.isRunning, process.terminationReason == .exit, process.terminationStatus == 0,
-        let data = try output.fileHandleForReading.read(upToCount: 65537), data.count <= 65536,
-        let receipt = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-        receipt["schema"] as? String == "codescribe.agent-archive.v1",
-        receipt["released"] as? Bool == true,
-        let archivedOwner = OverlayConversationOwner(row: receipt),
-        archivedOwner.id == owner.id, archivedOwner.channel == owner.channel,
-        receipt["bus"] as? String == bus
-      else { throw CocoaError(.fileWriteUnknown) }
+      return bus
     }.value
+    let request = CsAgentArchiveRequest(
+      channel: channel, provider: owner.provider, providerSessionId: owner.providerSessionID,
+      leaseId: owner.leaseID, bus: bus, executable: executable.path, bridgeHome: root.path)
+    let receiptText = try await archive(request)
+    let data = Data(receiptText.utf8)
+    guard data.count <= 65536,
+      let receipt = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+      receipt["schema"] as? String == "codescribe.agent-archive.v1",
+      receipt["released"] as? Bool == true,
+      let archivedOwner = OverlayConversationOwner(row: receipt),
+      archivedOwner.id == owner.id, archivedOwner.channel == owner.channel,
+      receipt["bus"] as? String == bus
+    else { throw CocoaError(.fileWriteUnknown) }
   }
 
   /// Resolve each live roster session to its actual leased bus, including custom buses.

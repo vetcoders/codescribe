@@ -223,6 +223,57 @@ final class OverlayPlacementTests: XCTestCase {
   }
 
   @MainActor
+  func testDismissingHoveredMidiReopensAtParkedMiniOrigin() throws {
+    try assertMidiDismissalPreservesMiniOrigin(drag: .zero, atLeftEdge: false)
+  }
+
+  @MainActor
+  func testDismissingDraggedMidiReopensAtItsMovedMiniOrigin() throws {
+    try assertMidiDismissalPreservesMiniOrigin(
+      drag: NSSize(width: 35, height: -25), atLeftEdge: false)
+  }
+
+  @MainActor
+  func testDismissingScreenClampedMidiDoesNotMoveParkedMini() throws {
+    try assertMidiDismissalPreservesMiniOrigin(drag: .zero, atLeftEdge: true)
+  }
+
+  @MainActor
+  private func assertMidiDismissalPreservesMiniOrigin(drag: NSSize, atLeftEdge: Bool) throws {
+    let savedSize = DictationOverlayWindow.restoredContentSize()
+    defer { DictationOverlayWindow.persist(size: savedSize) }
+    try withDragPanel(showsPanel: true) { state, panel, controller in
+      state.selectFreeMotion()
+      state.setPresentationMode(.mini)
+      panel.settleFrameTransition()
+      let visible = try XCTUnwrap(panel.screen?.visibleFrame)
+      let proposed = NSPoint(
+        x: atLeftEdge ? visible.minX + 20 : visible.midX,
+        y: visible.midY)
+      panel.setFrameOrigin(proposed)
+      panel.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: panel))
+      let parked = panel.frame.origin
+      state.setPresentationMode(.midi)
+      panel.settleFrameTransition()
+      XCTAssertEqual(panel.frame.width, DictationOverlayWindow.midiSize.width)
+      if drag != .zero {
+        for event in try dragEvents(in: panel, delta: drag) { panel.sendEvent(event) }
+      }
+      let expected = NSPoint(x: parked.x + drag.width, y: parked.y + drag.height)
+      controller.dismiss()
+      XCTAssertFalse(panel.isVisible)
+      XCTAssertEqual(
+        OverlayPlacement.restoredOrigin(size: .zero, on: nil), expected,
+        "Temporary hover width must not become the persisted mini origin")
+      controller.showWidget()
+      panel.settleFrameTransition()
+      XCTAssertEqual(state.presentationMode, .mini)
+      XCTAssertTrue(panel.isVisible)
+      assertFrameOrigin(expected, on: panel)
+    }
+  }
+
+  @MainActor
   private func withDragPanel(
     showsPanel: Bool = false,
     _ check: (OverlayState, FloatingOverlayPanel, OverlayController) throws -> Void

@@ -102,7 +102,9 @@ actor OverlayChannelDeliveryReader {
 
   func read() throws -> [OverlayChannelDelivery] { try readSnapshot().deliveries }
 
-  func readSnapshot() throws -> OverlayChannelDeliverySnapshot {
+  func readSnapshot(selectedOwner: OverlayConversationOwner? = nil) throws
+    -> OverlayChannelDeliverySnapshot
+  {
     if persisted == nil { persisted = OverlayDeliveryCursorStore.load(root: root) }
     let bindingsURL = root.appendingPathComponent("vc.agent-audience-binding.v1.json")
     var bindings: [String: [String: Any]] = [:]
@@ -195,6 +197,19 @@ actor OverlayChannelDeliveryReader {
     {
       paths.append(path)
     }
+    // Manual archive navigation takes one slot in the existing polling budget.
+    // Resolve its path from validated metadata, never a reused channel number.
+    var openedArchiveBus: URL?
+    if let selectedOwner,
+      let archive = archives.first(where: {
+        $0.owner.id == selectedOwner.id && $0.owner.channel == selectedOwner.channel
+      })
+    {
+      let bus = URL(fileURLWithPath: archive.bus).standardizedFileURL
+      if buses[bus] == nil { openedArchiveBus = bus }
+      paths.removeAll { $0 == archive.bus }
+      paths.insert(archive.bus, at: 0)
+    }
     let usedBuses = Set(paths.prefix(16).map { URL(fileURLWithPath: $0).standardizedFileURL })
     for bus in usedBuses.sorted(by: { $0.path < $1.path }) {
       if FileManager.default.fileExists(atPath: bus.path) {
@@ -258,9 +273,11 @@ actor OverlayChannelDeliveryReader {
     savedRevisions = savedRevisions.filter { usedBuses.contains($0.key) }
     var named: [String: OverlayConversation] = [:]
     var all: [String: OverlayConversationMessage] = [:]
+    var historyReplyIDs: Set<String> = []
     for bus in buses.keys.sorted(by: { $0.path < $1.path }) {
       guard let cursor = buses[bus] else { continue }
       for conversation in cursor.projection.conversations(busPath: bus.path) {
+        if bus == openedArchiveBus { historyReplyIDs.formUnion(conversation.replyIDs) }
         if conversation.id == "0" {
           for message in conversation.messages {
             all[message.id] = all[message.id].map { Self.merge($0, message) } ?? message
@@ -293,7 +310,8 @@ actor OverlayChannelDeliveryReader {
     for archive in archives where named[archive.owner.id] == nil {
       let owner = archive.owner
       named[owner.id] = OverlayConversation(
-        id: owner.id, channel: owner.channel, name: owner.name, owner: owner, messages: [])
+        id: owner.id, channel: owner.channel, name: owner.name, owner: owner, messages: [],
+        historyLoaded: buses[URL(fileURLWithPath: archive.bus).standardizedFileURL] != nil)
     }
     return OverlayChannelDeliverySnapshot(
       deliveries: deliveries,
@@ -301,7 +319,7 @@ actor OverlayChannelDeliveryReader {
         + named.values.sorted {
           if $0.channel != $1.channel { return $0.channel < $1.channel }
           return $0.id < $1.id
-        }, archivedOwners: Set(archives.map(\.owner)))
+        }, archivedOwners: Set(archives.map(\.owner)), historyReplyIDs: historyReplyIDs)
   }
 
   private static func merge(

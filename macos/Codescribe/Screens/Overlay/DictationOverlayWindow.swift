@@ -21,7 +21,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onFrameTransitionCompleted: (() -> Void)?
   var onWidgetInteractionChanged: ((OverlayWidgetInteraction, Bool) -> Void)?
   fileprivate var presence: OverlayPresence?
-  private var dragStart: (mouse: NSPoint, frame: NSRect)?
+  private var dragStart: (mouse: NSPoint, frame: NSRect, miniFrame: NSRect?)?
   private var dragMoved = false
   private var resizeStart: (mouse: NSPoint, frame: NSRect, edge: OverlayResizeHit.Edge)?
   private var pendingResizePresentation: (mode: OverlayPresentationMode, animated: Bool)?
@@ -37,6 +37,21 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private(set) var isFrameTransitioning = false
   var isUserResizing: Bool { resizeStart != nil }
   var sizeForPersistence: NSSize { expandedSize ?? frame.size }
+  /// MIDI borrows width around the parked mini; its temporary left edge is
+  /// never the saved position. A real drag moves that mini by the same edges.
+  var originForPersistence: NSPoint {
+    let positionedFrame = frameTransitionTarget ?? frame
+    guard presentationMode == .midi else { return positionedFrame.origin }
+    if let miniFrame {
+      guard let dragStart, let parked = dragStart.miniFrame else { return miniFrame.origin }
+      return NSPoint(
+        x: parked.minX + positionedFrame.maxX - dragStart.frame.maxX,
+        y: parked.minY + positionedFrame.maxY - dragStart.frame.maxY)
+    }
+    return NSPoint(
+      x: positionedFrame.maxX - DictationOverlayWindow.collapsedSize.width,
+      y: positionedFrame.maxY - DictationOverlayWindow.collapsedSize.height)
+  }
 
   /// Grow leftward so the microphone and fold controls keep their screen position.
   /// Display containment wins when the complete strip cannot fit to the left.
@@ -231,7 +246,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       endUserResize()
     case .leftMouseDown where isWindowDragHit(at: event.locationInWindow):
       settleFrameTransition()
-      dragStart = (screenPoint(for: event), frame)
+      dragStart = (screenPoint(for: event), frame, miniFrame)
       onWidgetInteractionChanged?(.dragging, true)
     case .leftMouseDragged where dragStart != nil:
       guard let dragStart else { return }
@@ -245,11 +260,15 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       )
       dragMoved = dragMoved || frame.origin != previousOrigin
     case .leftMouseUp where dragStart != nil:
-      dragStart = nil
+      let origin = originForPersistence
       let moved = dragMoved
+      if moved, presentationMode == .midi {
+        miniFrame = NSRect(origin: origin, size: DictationOverlayWindow.collapsedSize)
+      }
+      dragStart = nil
       dragMoved = false
       onWidgetInteractionChanged?(.dragging, false)
-      if moved { onUserDragEnded?(frame.origin) }
+      if moved { onUserDragEnded?(origin) }
     default:
       super.sendEvent(event)
       if event.type == .mouseMoved { refreshCursor(at: event.locationInWindow) }
@@ -343,7 +362,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   func windowDidMove(_ notification: Notification) {
     guard !isFrameTransitioning else { return }
-    if !OverlayController.isApplyingFrame { resetPresentationPosition() }
+    if !OverlayController.isApplyingFrame, presentationMode != .midi {
+      resetPresentationPosition()
+    }
     onUserMove?()
   }
 

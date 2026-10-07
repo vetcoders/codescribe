@@ -589,6 +589,11 @@ struct OverlayChannelStatusView: View {
           }
         }
         Spacer(minLength: 8)
+        if saved, !conversation.historyLoaded, selectedConversationID == conversation.id {
+          ProgressView()
+            .controlSize(.small)
+            .accessibilityIdentifier("overlay-saved-conversation-history-loading")
+        }
         if let count = unreadCounts[conversation.id], count > 0 {
           Text(verbatim: String(count))
             .font(.system(size: 11 * textScale, weight: .semibold, design: .monospaced))

@@ -322,7 +322,8 @@ final class OverlayController: ObservableObject {
       floating.onUserMove = { [weak self] in
         guard let self, !Self.isApplyingFrame, let panel = self.panel else { return }
         if self.state.freeMotion {
-          OverlayPlacement.persistOrigin(panel.frame.origin)
+          OverlayPlacement.persistOrigin(
+            (panel as? FloatingOverlayPanel)?.originForPersistence ?? panel.frame.origin)
         }
         self.state.userDraggedOverlay()
       }
@@ -525,7 +526,8 @@ final class OverlayController: ObservableObject {
       DictationOverlayWindow.persist(
         size: (panel as? FloatingOverlayPanel)?.sizeForPersistence ?? panel.frame.size)
       if state.freeMotion {
-        OverlayPlacement.persistOrigin(panel.frame.origin)
+        OverlayPlacement.persistOrigin(
+          (panel as? FloatingOverlayPanel)?.originForPersistence ?? panel.frame.origin)
       }
       (panel as? FloatingOverlayPanel)?.invalidatePresence()
     }
@@ -541,7 +543,8 @@ final class OverlayController: ObservableObject {
     DictationOverlayWindow.persist(
       size: (panel as? FloatingOverlayPanel)?.sizeForPersistence ?? panel.frame.size)
     if state.freeMotion {
-      OverlayPlacement.persistOrigin(panel.frame.origin)
+      OverlayPlacement.persistOrigin(
+        (panel as? FloatingOverlayPanel)?.originForPersistence ?? panel.frame.origin)
     }
     // Bind the completion to the exact panel AND the capture it is fading out.
     // The panel object is cached and reused, so the old completion re-read

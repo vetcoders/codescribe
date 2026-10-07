@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use codescribe::controller::{
-    CaptureStopOutcome, HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State,
-    admission,
+    AgentArchiveRequest, CaptureStopOutcome, HotkeyAction, HotkeyInput, HotkeyType,
+    RecordingController, State, admission,
 };
 use codescribe::os::hold_badge::BadgeMode;
 use codescribe::os::hotkeys::{self, HoldAction, HoldMode, HotkeyEvent};
@@ -1555,8 +1555,49 @@ pub struct CsChannelRosterState {
     pub follower_alive: Option<bool>,
 }
 
+/// Frozen owner and verified helper paths supplied by the app's archive action.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsAgentArchiveRequest {
+    pub channel: u8,
+    pub provider: String,
+    pub provider_session_id: String,
+    pub lease_id: String,
+    pub bus: String,
+    pub executable: String,
+    pub bridge_home: String,
+}
+
 #[uniffi::export]
 impl CodescribeHotkeys {
+    /// Complete the canonical archive helper under the capture lifecycle lock.
+    pub async fn archive_agent_channel(
+        &self,
+        request: CsAgentArchiveRequest,
+    ) -> Result<String, CsError> {
+        application_runtime::run(async move {
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "agent archive unavailable: recording controller not started yet"
+                        .to_string(),
+                })?;
+            controller
+                .archive_agent_channel(AgentArchiveRequest {
+                    channel: request.channel,
+                    provider: request.provider,
+                    provider_session_id: request.provider_session_id,
+                    lease_id: request.lease_id,
+                    bus: request.bus.into(),
+                    executable: request.executable.into(),
+                    bridge_home: request.bridge_home.into(),
+                })
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
     /// Toggle the per-digit agent channel — the exact engine entry ctrl+N
     /// uses. A roster click is a channel toggle only: it never starts,
     /// resumes, or resurrects an agent session (Founder veto, 2026-09-30).
