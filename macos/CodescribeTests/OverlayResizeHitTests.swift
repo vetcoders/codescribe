@@ -57,7 +57,57 @@ private final class CursorTrackingTextView: NSTextView {
   }
 }
 
+@MainActor
+private final class CursorTrackingSurface: NSView {
+  var motions = 0
+  var pointer: NSCursor = .pointingHand
+  override func mouseMoved(with event: NSEvent) {
+    motions += 1
+    pointer.set()
+  }
+}
+
 final class OverlayResizeHitTests: XCTestCase {
+  @MainActor
+  func testPanelPreservesNativeInteriorPointerAfterTracking() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 100, y: 100, width: 400, height: 300),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable],
+      backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    let surface = CursorTrackingSurface(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+    panel.contentView = OverlayContentContainer(hosting: surface)
+    panel.acceptsMouseMovedEvents = true
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    surface.addTrackingArea(
+      NSTrackingArea(
+        rect: surface.bounds, options: [.mouseMoved, .activeAlways], owner: surface, userInfo: nil))
+    let saved = NSCursor.current
+    defer { saved.set() }
+    for pointer in [NSCursor.iBeam, NSCursor.pointingHand] {
+      surface.pointer = pointer
+      for index in 0..<10 {
+        let event = try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: .mouseMoved, location: NSPoint(x: 200, y: 150), modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+            context: nil, eventNumber: index, clickCount: 0, pressure: 0))
+        // Native pointer tracking can belong to SwiftUI's hosting surface,
+        // not an NSTextView returned by hitTest. Exercise its cursor choice
+        // followed by the panel's post-dispatch policy from the live sample.
+        surface.mouseMoved(with: event)
+        _ = panel.refreshCursor(at: event.locationInWindow)
+        XCTAssertEqual(NSCursor.current, pointer, "Panel must preserve the native interior pointer")
+      }
+    }
+    XCTAssertEqual(surface.motions, 20)
+    let edge = NSPoint(x: 2, y: 150)
+    XCTAssertTrue(panel.refreshCursor(at: edge))
+    XCTAssertEqual(NSCursor.current, panel.cursor(at: edge))
+    XCTAssertFalse(panel.refreshCursor(at: edge), "The same resize pointer needs no second write")
+  }
+
   @MainActor
   func testResizeMotionDoesNotDispatchOverlappingNativeTextTracking() throws {
     let panel = FloatingOverlayPanel(

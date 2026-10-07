@@ -340,11 +340,16 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     onWidgetInteractionChanged?(.dragging, false)
   }
 
-  /// Native text tracking has already selected its cursor in super.sendEvent.
-  /// Keep link/selection cursors intact; the panel owns chrome and resize edges.
+  /// Native tracking owns the interior, including SwiftUI text and links
+  /// whose hit surface is not an NSTextView. Only resize edges and the
+  /// explicitly inert window-drag chrome override it.
   @discardableResult
   func refreshCursor(at point: NSPoint) -> Bool {
-    let desired = cursor(at: point)
+    guard let contentView else { return false }
+    let resizeEdge = styleMask.contains(.resizable)
+      && OverlayResizeHit.edge(at: point, in: contentView.bounds) != nil
+    guard resizeEdge || isWindowDragHit(at: point) else { return false }
+    let desired = resizeEdge ? cursor(at: point) : NSCursor.arrow
     guard desired != .iBeam, NSCursor.current != desired else { return false }
     desired.set()
     return true
@@ -422,9 +427,10 @@ final class OverlayContentContainer: NSView {
   required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
   override func setFrameSize(_ newSize: NSSize) {
+    let previousBounds = bounds
     super.setFrameSize(newSize)
     if hosting.frame != bounds { hosting.frame = bounds }
-    window?.invalidateCursorRects(for: self)
+    if previousBounds != bounds { window?.invalidateCursorRects(for: self) }
   }
 
   override func layout() {

@@ -470,6 +470,7 @@ final class OverlayController: ObservableObject {
     guard (panel as? FloatingOverlayPanel)?.isFrameTransitioning != true else { return }
     guard let targetHeight = qualifiedExpandedContentHeight(for: panel.frame.width) else { return }
     guard targetHeight > panel.frame.height + 0.5 else { return }
+    let screen = panel.screen ?? NSScreen.main
 
     Self.isApplyingFrame = true
     defer { Self.isApplyingFrame = false }
