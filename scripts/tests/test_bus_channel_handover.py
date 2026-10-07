@@ -370,6 +370,22 @@ class ChannelHandoverTests(unittest.TestCase):
         self.assertEqual(closed.returncode, 3, closed.stdout)
         self.assertIn("inherited read refused", closed.stderr)
 
+    def test_rename_on_the_same_session_takes_effect_on_resume(self):
+        """Detach + attach under a new name re-points direct routing.
+
+        Live on 2026-10-07, channel 1: a session renamed jozek -> vagabond
+        kept the old lease name on resume, so takes addressed to the new
+        name never reached the mailbox while broadcasts still arrived.
+        """
+        self.attached(NEW, name="jozek", channel="1")
+        self.assertEqual(self.detach(NEW).returncode, 0)
+        self.attached(NEW, name="vagabond", channel="1")
+        # The delivery proves the routing; the lease file may lag behind the
+        # attach receipt until the follower's first persist.
+        self.speak("Vagabond, melduj się.", name="vagabond")
+        self.delivered(NEW, "Vagabond, melduj się.")
+        self.assertEqual(self.lease(NEW)["name"], "vagabond")
+
     def test_takeover_never_claims_another_name(self):
         old = self.attached(OLD)
         before = self.binding.read_bytes()

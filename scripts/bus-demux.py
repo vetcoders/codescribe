@@ -1764,7 +1764,12 @@ class SessionLease:
                     )
                 self.cursor = saved_cursor
                 self.last_sequence = previous.get("last_sequence")
-                self.name = previous.get("name") or self.name
+                # The follower's requested name outranks the recovered lease
+                # name: a channel rename (detach + attach under a new name)
+                # must take effect on resume, or the lease pins its first
+                # name forever and direct routing to the new name goes deaf
+                # while broadcasts still arrive.
+                self.name = self.name or previous.get("name")
                 pending = previous.get("pending", [])
                 if not isinstance(pending, list) or any(
                     not isinstance(payload, dict)
