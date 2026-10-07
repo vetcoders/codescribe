@@ -36,6 +36,7 @@ struct OverlayConversationView: View {
     GeometryReader { geometry in
       ScrollViewReader { proxy in
         trackedMessages(maxBubbleWidth: max(0, min(660, (geometry.size.width - 40) * 0.82)))
+          .padding(.trailing, OverlayResizeHit.scrollbarInset)
           .overlay(alignment: .top) {
             VStack(spacing: 0) {
               Color.clear.frame(height: topInset)
@@ -260,9 +261,7 @@ struct OverlayConversationView: View {
           .foregroundStyle(palette.mutedText.color)
           .lineLimit(2)
       }
-      Text(verbatim: message.text)
-        .font(.system(size: 13 * textScale))
-        .textSelection(.enabled)
+      MarkdownText(raw: message.text, size: 13, bodyColor: palette.primaryText.color)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
       ForEach(message.recipients, id: \.owner.id) { recipient in

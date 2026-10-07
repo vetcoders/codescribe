@@ -387,3 +387,45 @@ d704a51227f6a1648aa21af2901cbb146c3b9b60. Astra is the designated integrator and
 authored the fixtures, source and checks. Installed artifact, source admission
 and Founder-native acceptance remain separate receipts. No GUI launch, Quit,
 restart, desktop capture or physical microphone/speaker/hotkey test occurred.
+
+## Shared Bus Markdown, resize-edge scrolling and device login
+
+Founder4941751cf796eece57455b60 requested the existing AgentChat Markdown
+renderer in Bus conversations. Both message kinds now use MarkdownText with
+base size13 and the existing primary-text palette. Headings, lists, inline
+formatting and fenced code use the same renderer and selection semantics as
+the chat. Exact message text and causal receipts stay unchanged; no additional
+parser, formatter, settings, color palette or document state was introduced.
+The mounted native fixture renders the existing native code well, exercises
+zoom, retains the same editor/draft/selection and checks bounded document width.
+
+Founderacfb26aeb8c12e230d6cb7b7 refined the edge repair: preserve resize and
+move the scrollbar about15px left. Bruno's2b6da4e2 source was admitted as
+cf9e2f10 with identical parent blobs and exact stable patch identity; authorship
+is retained. Pointer resize and cursor hit testing stay unchanged. Wheel
+events reaching the resize container go to its nearest visible existing
+NSScrollView. The native transcript scrollbar and the Bus list both use
+OverlayResizeHit.scrollbarInset15; header and composer retain full width.
+
+On the combined source,123 Swift tests pass in16.590seconds with no failures.
+The first Markdown run passed its new native fixture and exposed one prior
+bubble-position assertion comparing with the whole window midpoint. That
+assertion now uses the inset list viewport midpoint. Strict formatting of all
+five changed Swift files, catalog/bridge and diff checks pass. The previously
+reported whole-repository format and Rust/PCM gates remain separate unresolved
+results; this cut does not declare the full release ready.
+
+Founder573262ab00ad3c2d64a7b85e and5af61080e32c9b45cf524ac9 explicitly
+requested xAI device-code login through the Bus helper. cs-say incorrectly
+passed both --oauth and --device-auth; installed Grok rejects these mutually
+exclusive flags. Device-code now passes only --device-auth. Six helper-entry
+tests pass against a fixture enforcing the actual CLI mutual exclusion.
+make install-bus preserves the manifest-verified publisher and completes
+without replacing the app. The requested cs-say auth flow then completed
+successfully. Credentials and voice profiles were not printed or edited.
+
+Astra remains the designated integrator in Fleet Worktree e19c, branch
+codex/widget-hover-261007, baseline99760a12b70f6863c5df33d1ab84276236e910fb.
+No GUI launch, Quit, restart, desktop capture, microphone or hotkey test was
+performed. Installed source, running generation and Founder-native acceptance
+require their own receipts; passing mounted fixtures is not live acceptance.
