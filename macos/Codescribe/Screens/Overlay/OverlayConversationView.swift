@@ -26,6 +26,8 @@ struct OverlayConversationView: View {
   var onPlayback: () -> Void = {}
   var playbackError: String?
   var agentDescriptor: String? = nil
+  var onComposerEditorActive: (Bool) -> Void = { _ in }
+  var onComposerTypingActivity: () -> Void = {}
 
   @State private var followsLatest = true
   @State private var composerHeight: CGFloat = 0
@@ -94,7 +96,8 @@ struct OverlayConversationView: View {
     VStack(spacing: 8) {
       if conversation.owner != nil {
         OverlayConversationComposer(
-          palette: palette, draft: $draft, sending: sending, onSubmit: submit)
+          palette: palette, draft: $draft, sending: sending, onSubmit: submit,
+          onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity)
         if let sendError {
           Text(verbatim: sendError)
             .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)

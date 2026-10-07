@@ -402,7 +402,9 @@ struct DictationOverlayView: View {
               onMicrophone: { Task { await state.toggleConversationMicrophone(conversation) } },
               onPlayback: { Task { await state.toggleConversationPlayback(conversation) } },
               playbackError: state.playbackPreferenceError,
-              agentDescriptor: state.conversationAgentDescriptor(conversation)
+              agentDescriptor: state.conversationAgentDescriptor(conversation),
+              onComposerEditorActive: { state.noteComposerEditorActive($0) },
+              onComposerTypingActivity: { state.noteComposerTypingActivity() }
             )
             .opacity(state.isCollapsed ? 0 : 1)
             .allowsHitTesting(!state.isCollapsed)

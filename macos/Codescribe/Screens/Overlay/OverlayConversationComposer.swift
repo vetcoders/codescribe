@@ -8,6 +8,8 @@ struct OverlayConversationComposer: View {
   @Binding var draft: String
   let sending: Bool
   let onSubmit: () -> Void
+  var onEditorActive: (Bool) -> Void = { _ in }
+  var onTypingActivity: () -> Void = {}
 
   var body: some View {
     composerContent.modifier(OverlayControlGlass())
@@ -17,7 +19,8 @@ struct OverlayConversationComposer: View {
     HStack(alignment: .bottom, spacing: 8) {
       ConversationMessageField(
         text: $draft, textColor: palette.primaryText.nsColor, fontSize: 14 * textScale,
-        sending: sending, onSubmit: onSubmit
+        sending: sending, onSubmit: onSubmit, onEditorActive: onEditorActive,
+        onTypingActivity: onTypingActivity
       )
       .fixedSize(horizontal: false, vertical: true)
       .accessibilityIdentifier("overlay-conversation-composer")
@@ -53,6 +56,8 @@ private struct ConversationMessageField: NSViewRepresentable {
   let fontSize: CGFloat
   let sending: Bool
   let onSubmit: () -> Void
+  var onEditorActive: (Bool) -> Void = { _ in }
+  var onTypingActivity: () -> Void = {}
 
   func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -98,9 +103,13 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.insertionPointColor = textColor
     editor.sending = sending
     editor.submit = { context.coordinator.submit($0) }
+    editor.onEditorActive = { context.coordinator.noteEditorActive($0) }
+    editor.onTypingActivity = { context.coordinator.noteTyping() }
     if editor.string != text {
+      context.coordinator.applyingExternalText = true
       editor.string = text
       editor.setSelectedRange(NSRange(location: text.utf16.count, length: 0))
+      context.coordinator.applyingExternalText = false
     }
   }
 
@@ -119,10 +128,21 @@ private struct ConversationMessageField: NSViewRepresentable {
   @MainActor
   final class Coordinator: NSObject, NSTextViewDelegate {
     var parent: ConversationMessageField
+    var applyingExternalText = false
     init(_ parent: ConversationMessageField) { self.parent = parent }
 
     func textDidChange(_ notification: Notification) {
+      guard !applyingExternalText else { return }
       if let editor = notification.object as? NSTextView { parent.text = editor.string }
+      parent.onTypingActivity()
+    }
+
+    func noteEditorActive(_ active: Bool) {
+      parent.onEditorActive(active)
+    }
+
+    func noteTyping() {
+      parent.onTypingActivity()
     }
 
     func submit(_ text: String) {
@@ -134,6 +154,20 @@ private struct ConversationMessageField: NSViewRepresentable {
   private final class MessageTextView: NSTextView {
     var sending = false
     var submit: ((String) -> Void)?
+    var onEditorActive: (Bool) -> Void = { _ in }
+    var onTypingActivity: () -> Void = {}
+
+    override func becomeFirstResponder() -> Bool {
+      let accepted = super.becomeFirstResponder()
+      if accepted { onEditorActive(true) }
+      return accepted
+    }
+
+    override func resignFirstResponder() -> Bool {
+      let resigned = super.resignFirstResponder()
+      if resigned, window?.firstResponder !== self { onEditorActive(false) }
+      return resigned
+    }
 
     override func keyDown(with event: NSEvent) {
       let alternate = event.modifierFlags.intersection([.shift, .option, .control, .command])
@@ -144,10 +178,14 @@ private struct ConversationMessageField: NSViewRepresentable {
         return
       }
       super.keyDown(with: event)
+      if event.modifierFlags.intersection([.command, .control]).isEmpty {
+        onTypingActivity()
+      }
     }
 
     override func mouseDown(with event: NSEvent) {
       (window as? FloatingOverlayPanel)?.takeKeyForTranscript()
+      onEditorActive(true)
       super.mouseDown(with: event)
     }
   }
