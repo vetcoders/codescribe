@@ -78,8 +78,9 @@ Actually unfinished source and an unconsumed source extent still refuse takeover
   iterator lint is corrected without changing its occurrence assertions.
 - The structural verifier also needs the newer fail-closed manifest/test correction
   from `fb2c16be`, admitted here as patch-equivalent `791e6d1c`. Live and
-  instrument self-tests passed (112 tests); the wired source check will rerun
-  on the stable integration generation. No broad verify PASS is claimed.
+  instrument self-tests passed (112 tests); the wired source check at
+  `f252cb412f3bb4e62fa1b39d8cbd7db7d7c12a8d` returned
+  `STRUCTURALLY_WIRED`. No broad verify PASS is claimed.
 
 - Integrated roster/mailbox, renamed-session, carrier replacement and same-session
   retirement changes: 82 Python tests passed, including 44 speech tests.
@@ -88,10 +89,22 @@ Actually unfinished source and an unconsumed source extent still refuse takeover
   including a 5 MiB custom-bus lease and rejection above 16 MiB.
 - First background installation succeeded with a verified signature: v0.15.3,
   build 2040, source stamp `791e6d1c5-dirty`. It predates the final integration;
-  a new build is required. The Founder app was not restarted.
+  superseded by the final verified installation below. No restart was invoked.
 
-Outstanding: full Rust fixture migration, wired structural gate and installed-product
-acceptance of the final generation. Static checks and fixtures do not prove live UI or
+- Final background installation: **v0.15.3 build 2051**, source
+  `f252cb412-dirty`. Signature verified with `codesign --verify --deep --strict`;
+  Developer ID authority is Maciej Gad (MW223P3NPX). Installed helper bytes match
+  source. The only tracked dirty path is the Founder-owned `AGENTS.md`.
+- No restart command was issued. During installation, the observed app PID changed
+  from 4225 to 98120; the latter started at 13:33:09, before final signing/install
+  completed. This does not prove launch of build 2051. No success ping was played.
+- Code generation was pushed to origin and attached as draft PR #146, based on
+  `fix/useless-whisper-wandering`. No trunk integration or distribution release.
+- Production pre-push Clippy and full Semgrep passed on the code generation;
+  the final receipt-only push reuses that Semgrep result (no executable/config changes).
+
+Outstanding: full Rust fixture migration and installed-product acceptance of the
+final generation. Static checks and fixtures do not prove live UI or
 live audio behavior.
 
 ## Branch comparison after remote refresh
