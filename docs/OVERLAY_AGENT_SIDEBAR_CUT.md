@@ -161,3 +161,11 @@ mixed-line-ending, detect-private-key, cargo-check, cargo-fmt, prettier and
 commit-msg-provenance. This historical checkpoint is not a gate PASS. Subsequent
 recovery commit ran normal hooks. Keep executed gates, installation and destination
 admission as separate evidence.
+
+## Integrator test-fixture migration checkpoint
+
+Test-only migration replaces retired owner-specific scheduling with actual capture-grid requests in the relay and live-admission fixtures. Measured PCM, owner registration, original request identities, replay refusal, overlap admission, retained lineage and absolute Stop deadline remain explicit. The unused private archive repair benchmark was removed; the public PCM and live-producer coverage remains.
+
+The compiler diagnostic count fell from 196 to 163 retained obsolete references (`/tmp/codescribe-e19c-reservation-fixtures-oct7.log`). These private fixtures have not executed because the whole lib-test target still cannot compile. Separately, all 17 capture-window geometry integration tests passed. Scoped Rust 2024 formatting and diff hygiene passed. This checkpoint skips `cargo-check` for that known compilation failure and `cargo-fmt` because its `git add -u` would stage foreign Founder edits; formatting was executed directly. No application code or installed generation changed.
+
+The unrelated onboarding-language offscreen test also reproduces the Polish bitmap failure in isolation. Appearance/redraw diagnostics did not fix it and were preserved only in the ignored local handoff area, then removed from the tracked test. No full Swift-suite PASS is claimed.
