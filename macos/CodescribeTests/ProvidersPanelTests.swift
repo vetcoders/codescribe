@@ -33,6 +33,23 @@ final class ProvidersPanelTests: XCTestCase {
     return model
   }
 
+  /// Refresh feedback keeps its line in every state, so a `Refresh status`
+  /// click never moves the cards below it (build 1986: one-frame tear from the
+  /// spinner being inserted above the button).
+  func testProviderAccessStatusSlotKeepsItsSizeAcrossStates() {
+    var sizes: [CGSize] = []
+    for (accessPending, mutationPending) in [(false, false), (true, false), (false, true), (true, true)] {
+      let slot = ProviderAccessStatusSlot(
+        accessPending: accessPending, mutationPending: mutationPending)
+      let host = NSHostingView(rootView: slot.fixedSize())
+      host.layoutSubtreeIfNeeded()
+      sizes.append(host.fittingSize)
+      XCTAssertEqual(host.fittingSize.height, ProviderAccessStatusSlot.height, accuracy: 0.5)
+    }
+    let heights = Set(sizes.map { ($0.height * 2).rounded() })
+    XCTAssertEqual(heights.count, 1, "height must not depend on pending state: \(sizes)")
+  }
+
   func testAddCustomProviderAppearsInLanePicker() async throws {
     let model = await makeModel()
     XCTAssertEqual(model.customProviders.map(\.id), [])

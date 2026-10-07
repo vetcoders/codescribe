@@ -249,6 +249,12 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(panel.contains("SettingsSectionLabel(String(localized: \"Vendors\"))"))
     XCTAssertFalse(panel.contains("help:"), "URL rows do not warn ahead of a rejected save")
     XCTAssertFalse(panel.contains("Text(lane.title)"), "lane titles are named by id")
+    // Refresh feedback reserves its line beside the button; it is never
+    // inserted above it, which reflowed the cards for one frame.
+    XCTAssertFalse(
+      panel.contains("if model.providerAccessPending || model.providerMutationPending {"),
+      "status spinner must not be conditionally inserted")
+    XCTAssertTrue(panel.contains("ProviderAccessStatusSlot("))
     // The wire line is a developer-build fact, and only under Advanced.
     let accepts = try XCTUnwrap(panel.range(of: "Text(lane.accepts)"))
     let gate = try XCTUnwrap(panel.range(of: "if DeveloperSurface.isEnabled() {"))
