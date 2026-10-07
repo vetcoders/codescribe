@@ -20,8 +20,24 @@ final class OnboardingConsentTests: XCTestCase {
   }
 
   func testSetupHasOnePermissionChapterAndAnOptionalLocalModelChapter() {
-    XCTAssertEqual(OnboardingStep.count, 9,
-      "Language, mode, permissions, dictation language, local model, provider, hotkeys, agent, done")
+    XCTAssertEqual(
+      OnboardingStep.count, 9,
+      "Language, mode, permissions, dictation language, local model, provider, hotkeys, agent, done"
+    )
+  }
+
+  func testPermissionAndLocalModelNavigationDoesNotReadProviderCredentials() async throws {
+    let providerIndex = try XCTUnwrap(OnboardingStep.flow.firstIndex(of: .apiKey))
+    for index in 0..<providerIndex {
+      let engine = ConsentRecordingEngine()
+      engine.fixture.progress = UInt32(index)
+      let model = makeModel(engine)
+      model.refreshForCurrentStep()
+      model.refreshProviderAccess()
+      for _ in 0..<8 { await Task.yield() }
+      XCTAssertEqual(engine.keyReads, 0, "Chapter \(index) has no credential consent")
+      XCTAssertEqual(engine.snapshotReads, 0, "Chapter \(index) has no credential consent")
+    }
   }
 
   func testProviderChapterStillLoadsCredentialState() async throws {
@@ -56,11 +72,15 @@ private final class ConsentRecordingEngine: OnboardingEngine {
   func setOnboardingMode(_ mode: String) throws { try fixture.setOnboardingMode(mode) }
   func currentLanguage() -> CsLanguage { fixture.currentLanguage() }
   func assistiveProvider() -> String? { fixture.assistiveProvider() }
-  func keyStatus() -> CsKeyStatus { keyReads += 1; return fixture.keyStatus() }
+  func keyStatus() -> CsKeyStatus {
+    keyReads += 1
+    return fixture.keyStatus()
+  }
   func availableProviders() -> [CsProviderOption] { fixture.availableProviders() }
   func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
     snapshotReads += 1
-    return CsProviderAccessSnapshot(providers: fixture.availableProviders(), accountErrors: [:],
+    return CsProviderAccessSnapshot(
+      providers: fixture.availableProviders(), accountErrors: [:],
       keyStatus: fixture.keyStatus(), sttLanes: [], revision: 0)
   }
   func setApiKey(account: String, secret: String) throws {}
@@ -69,7 +89,9 @@ private final class ConsentRecordingEngine: OnboardingEngine {
 
 private struct ConsentTestBridge: AgentBridgeInstalling {
   func status() -> AgentBridgeInstallationStatus {
-    .init(payloadAvailable: false, bundleVersion: nil, installedClients: [], installedPaths: [], detail: "")
+    .init(
+      payloadAvailable: false, bundleVersion: nil, installedClients: [], installedPaths: [],
+      detail: "")
   }
   func install(selectedClients: Set<AgentBridgeClient>) throws -> AgentBridgeInstallationStatus {
     throw AgentBridgeInstallationError.payloadUnavailable
