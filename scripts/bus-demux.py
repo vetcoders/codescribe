@@ -3965,8 +3965,18 @@ def source_closes_retained_documents(bus: Path, documents: dict[str, Any]) -> bo
     return not remaining
 
 
-def require_drained_lease(root: Path, lease_id: str) -> None:
-    """A saved cursor must cover the source before its reader can be retired."""
+def require_drained_lease(
+    root: Path, lease_id: str, *, lenient_catch_up: bool = False
+) -> None:
+    """A saved cursor must cover the source before its reader can be retired.
+
+    ``lenient_catch_up`` is only for a SAME-SESSION detach, where the lease
+    (cursor, pending, unclosed documents) is inherited by the successor: a
+    live reader gets a moment to catch up to the extent measured at entry,
+    and unclosed documents never veto. A cross-session takeover keeps the
+    strict contract - its new lease inherits nothing, so every row and every
+    open document of the old owner must be settled first.
+    """
     path = root / "leases" / f"{lease_id}.json"
     state = read_json(path)
     if (not isinstance(state, dict) or state.get("schema") != LEASE_SCHEMA
@@ -3986,16 +3996,34 @@ def require_drained_lease(root: Path, lease_id: str) -> None:
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise OSError("source extent unavailable; owner retained") from error
     if state["cursor"] > end:
-        # The path now holds a shorter file than the saved cursor: the bus
-        # was replaced underneath its reader (observed live 2026-10-07,
-        # channel 1 after `make install-bus` swapped the channel carrier).
-        # Nothing of the old extent can be drained any more, so replacement
-        # never blocks retirement; pending envelopes stay in the lease.
+        # The saved cursor sits past the journal's logical extent: the bus
+        # was replaced underneath its reader. Nothing of the old extent can
+        # be drained any more, so replacement never blocks retirement;
+        # pending envelopes stay in the lease.
         return
-    if state["cursor"] != end:
+    if lenient_catch_up and state["cursor"] < end:
+        # A live producer appends while retirement is being decided, so
+        # exact cursor == end never holds on an active channel (observed
+        # live 2026-10-07: the app's evidence stream made detach refuse
+        # forever). Rows are only lost if the READER is behind: give a
+        # live follower a moment to catch up to the extent measured at
+        # entry; rows appended after that snapshot are inherited through
+        # the lease cursor by the same-session successor.
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            time.sleep(0.15)
+            state = read_json(path)
+            if not isinstance(state, dict) or type(state.get("cursor")) is not int:
+                break
+            if state["cursor"] >= end:
+                break
+    if (not isinstance(state, dict) or type(state.get("cursor")) is not int
+            or state["cursor"] < end
+            or (not lenient_catch_up and (
+                state["cursor"] != end))):
         raise OSError("old source is undrained; resume its reader before retiring it")
     documents = state.get("unclosed_channel_messages", {})
-    if documents and not source_closes_retained_documents(Path(state["bus"]), documents):
+    if not lenient_catch_up and documents and not source_closes_retained_documents(Path(state["bus"]), documents):
         raise OSError("old source has an unfinished capture; owner retained")
 
 
@@ -4039,7 +4067,8 @@ def verified_follower(root: Path, lease_id: str, session: str, pid: int) -> bool
 
 @contextlib.contextmanager
 def retirement_guard(
-    root: Path, lease_id: str, session: str, *, bound: bool = True
+    root: Path, lease_id: str, session: str, *, bound: bool = True,
+    lenient_catch_up: bool = False,
 ) -> Iterator[tuple[int | None, str]]:
     """Keep the existing lease lock through a verified, drained handover."""
     import signal
@@ -4061,7 +4090,7 @@ def retirement_guard(
                 yield pid, "unverified_retained"
                 return
             try:
-                require_drained_lease(root, lease_id)
+                require_drained_lease(root, lease_id, lenient_catch_up=lenient_catch_up)
             except OSError:
                 yield pid, "undrained_retained"
                 return
@@ -4094,7 +4123,7 @@ def retirement_guard(
             yield None, "not_running"
             return
         try:
-            require_drained_lease(root, lease_id)
+            require_drained_lease(root, lease_id, lenient_catch_up=lenient_catch_up)
         except OSError:
             yield pid, "undrained_stopped" if stopped else "undrained_retained"
             return
@@ -4186,11 +4215,11 @@ def detach_command(args: argparse.Namespace) -> int:
                     and entry.get("provider_session_id") == args.session
                 }
                 pid, follower_state = retirements.enter_context(
-                    retirement_guard(root, lease_id, args.session, bound=bool(original_entries))
+                    retirement_guard(root, lease_id, args.session, bound=bool(original_entries), lenient_catch_up=True)
                 )
                 if follower_state in HANDOVER_CLEAR_STATES:
                     if original_entries or (root / "leases" / f"{lease_id}.json").exists():
-                        require_drained_lease(root, lease_id)
+                        require_drained_lease(root, lease_id, lenient_catch_up=True)
                     released = sorted(original_entries)
                     for slot in released:
                         del bindings[slot]

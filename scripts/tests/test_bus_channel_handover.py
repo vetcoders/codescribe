@@ -403,6 +403,22 @@ class ChannelHandoverTests(unittest.TestCase):
         self.speak("James, po wymianie.")
         self.delivered(NEW, "James, po wymianie.")
 
+    def test_live_producer_does_not_block_retirement(self):
+        """Rows appended during retirement are the successor's, not a veto.
+
+        Live on 2026-10-07: the app's continuous evidence stream kept
+        cursor != end at every instant, so detach refused forever on an
+        active channel. A live follower gets a moment to catch up to the
+        extent measured at entry; later rows ride the lease cursor.
+        """
+        self.attached(NEW, channel="1")
+        self.speak("James, dostarczona.")
+        self.delivered(NEW, "James, dostarczona.")
+        # Appended immediately before detach, with no wait for delivery:
+        # the reader is behind at entry and must be allowed to catch up.
+        self.speak("Eve, cudza w locie.", name="eve")
+        self.assertEqual(self.detach(NEW).returncode, 0)
+
     def test_takeover_never_claims_another_name(self):
         old = self.attached(OLD)
         before = self.binding.read_bytes()
