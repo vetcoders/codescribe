@@ -850,15 +850,21 @@ struct DoneStepView: View {
       EyebrowLabel(
         text: String(
           localized: LocalizedStringResource(
-            "All set", locale: model.interfaceLocale, comment: "Setup step eyebrow")))
-      Text("You're ready to talk.")
-        .font(.title2.weight(.semibold))
-        .foregroundStyle(.primary)
+            "Setup summary", locale: model.interfaceLocale, comment: "Setup step eyebrow")))
       Text(
         String(
           localized: LocalizedStringResource(
-            "Click Finish to close setup.", locale: model.interfaceLocale,
-            comment: "Setup completion explanation; Finish is the button label"))
+            "Review your setup.", locale: model.interfaceLocale,
+            comment: "Review setup choices without claiming recording readiness"))
+      )
+      .font(.title2.weight(.semibold))
+      .foregroundStyle(.primary)
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "Finish saves your choices. Features with missing permissions remain unavailable.",
+            locale: model.interfaceLocale,
+            comment: "Finish closes setup without promising that every feature is ready"))
       )
       .font(.body)
       .lineSpacing(3)

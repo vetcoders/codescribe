@@ -2134,13 +2134,13 @@
         }
       }
     },
-    "All set" : {
+    "Setup summary" : {
       "comment" : "Setup step eyebrow",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Gotowe"
+            "state" : "needs_review",
+            "value" : "Podsumowanie konfiguracji"
           }
         }
       }
@@ -3341,13 +3341,13 @@
         }
       }
     },
-    "Click Finish to close setup." : {
+    "Finish saves your choices. Features with missing permissions remain unavailable." : {
       "comment" : "Setup completion explanation; Finish is the button label",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kliknij „Gotowe”, aby zakończyć konfigurację."
+            "state" : "needs_review",
+            "value" : "Przycisk „Gotowe” zapisuje Twoje wybory. Funkcje bez wymaganych uprawnień pozostają niedostępne."
           }
         }
       }
@@ -14425,12 +14425,12 @@
         }
       }
     },
-    "You're ready to talk." : {
+    "Review your setup." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Możesz zaczynać."
+            "state" : "needs_review",
+            "value" : "Sprawdź swoją konfigurację."
           }
         }
       }
