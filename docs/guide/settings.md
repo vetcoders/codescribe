@@ -101,8 +101,11 @@ Settings and Setup read provider credentials in the background. The initial
 read shows **Checking provider access…** rather than claiming an account or
 key is missing. An access error remains visible with **Try again** in Setup;
 a previous successful snapshot is labeled as the last checked state. Settings
-also offers **Refresh status**. Returning focus refreshes only the
-owning Settings or Setup window, and repeated requests share the pending read.
+also offers **Refresh status**; while the read runs, the spinner and
+**Checking provider access…** sit in a fixed slot beside the button, and once
+it lands the slot keeps **Checked at HH:MM:SS** so even an instant refresh
+leaves a visible receipt. Returning focus refreshes only the owning Settings
+or Setup window, and repeated requests share the pending read.
 Permission changes refresh permissions and hotkeys separately.
 
 Saving or removing credentials and custom providers shows pending work. A

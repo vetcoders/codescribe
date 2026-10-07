@@ -3201,6 +3201,17 @@
         }
       }
     },
+    "Checked at %@" : {
+      "comment" : "Setup provider panel receipt next to Refresh status; the argument is the wall-clock time (HH:MM:SS) the last snapshot landed",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdzono o %@"
+          }
+        }
+      }
+    },
     "Checking provider access…" : {
       "comment" : "Setup Agent readiness while the provider snapshot is loading\nSetup provider row status while credentials are loading",
       "localizations" : {

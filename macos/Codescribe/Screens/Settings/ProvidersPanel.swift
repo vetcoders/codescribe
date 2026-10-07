@@ -46,7 +46,8 @@ struct ProvidersPanel: View {
           .disabled(model.providerAccessPending || model.providerMutationPending)
         ProviderAccessStatusSlot(
           accessPending: model.providerAccessPending,
-          mutationPending: model.providerMutationPending)
+          mutationPending: model.providerMutationPending,
+          checkedAt: model.providerAccessCheckedAt)
       }
       .padding(.top, 12)
       if model.providerAccessResolved {
@@ -97,23 +98,45 @@ struct ProvidersPanel: View {
 struct ProviderAccessStatusSlot: View {
   let accessPending: Bool
   let mutationPending: Bool
+  /// Set once a snapshot has landed; the slot then reads "Checked at HH:MM:SS"
+  /// so a refresh that finishes in a blink still leaves a visible receipt.
+  let checkedAt: Date?
 
   var busy: Bool { accessPending || mutationPending }
+  var showsReceipt: Bool { !busy && checkedAt != nil }
 
   var body: some View {
-    HStack(spacing: CSSpace.sm) {
-      ProgressView()
-        .controlSize(.small)
-      Text(mutationPending
-        ? String(localized: "Updating provider access…")
-        : String(localized: "Checking provider access…"))
+    // Both layers stay mounted and only trade opacity: swapping views here
+    // would crossfade them, which is the two-layer tear this slot exists to avoid.
+    ZStack(alignment: .leading) {
+      HStack(spacing: CSSpace.sm) {
+        ProgressView()
+          .controlSize(.small)
+        Text(mutationPending
+          ? String(localized: "Updating provider access…")
+          : String(localized: "Checking provider access…"))
+          .font(CSFont.ui(11.5))
+          .lineLimit(1)
+      }
+      .opacity(busy ? 1 : 0)
+      .accessibilityHidden(!busy)
+
+      Text(receipt)
         .font(CSFont.ui(11.5))
+        .foregroundStyle(Color.secondary)
         .lineLimit(1)
+        .opacity(showsReceipt ? 1 : 0)
+        .accessibilityHidden(!showsReceipt)
     }
     .frame(height: ProviderAccessStatusSlot.height, alignment: .leading)
-    .opacity(busy ? 1 : 0)
-    .accessibilityHidden(!busy)
     .animation(nil, value: busy)
+    .animation(nil, value: checkedAt)
+  }
+
+  private var receipt: String {
+    guard let checkedAt else { return "" }
+    let time = checkedAt.formatted(date: .omitted, time: .standard)
+    return String(localized: "Checked at \(time)")
   }
 
   /// One fixed line: tall enough for the small spinner on every macOS build.

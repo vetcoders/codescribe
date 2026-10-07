@@ -1219,6 +1219,9 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var providerAccessPending = false
   @Published private(set) var providerMutationPending = false
   @Published private(set) var providerAccessResolved = false
+  /// When the last provider snapshot landed; the receipt the Providers panel
+  /// shows next to `Refresh status` once the spinner is gone.
+  @Published private(set) var providerAccessCheckedAt: Date?
   @Published private(set) var providerAccessError: String?
   @Published private(set) var providerAccountErrors: [String: String] = [:]
   private var providerAccessGeneration: UInt64 = 0
@@ -2923,6 +2926,7 @@ final class SettingsViewModel: ObservableObject {
         keyStatus = snapshot.keyStatus
         sttLanes = snapshot.sttLanes
         providerAccessResolved = true
+        providerAccessCheckedAt = Date()
         providerAccessError = nil
         refreshAgentStatus()
         refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
