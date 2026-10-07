@@ -106,15 +106,20 @@ final class ChatLayoutPolicyTests: XCTestCase {
         ChatThread(
           title: String(repeating: "Long thread title ", count: 8), meta: "now", model: "gpt-6-sol")
       ])
-    let host = NSHostingController(rootView: AgentChatView(store: store))
+    let host = NSHostingController(
+      rootView: AgentChatView(store: store)
+        .transaction { $0.disablesAnimations = true }
+    )
     let window = NSWindow(contentViewController: host)
     window.setContentSize(NSSize(width: 1120, height: 720))
     window.orderFrontRegardless()
     defer { window.orderOut(nil) }
-    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     func find(_ view: NSView) -> NSSplitViewController? {
       if let split = view as? NSSplitView { return split.delegate as? NSSplitViewController }
       return view.subviews.lazy.compactMap { find($0) }.first
+    }
+    pumpUntil(ceiling: 0.1) {
+      find(host.view) != nil && window.title == "Agent — gpt-6-sol"
     }
     XCTAssertEqual(window.title, "Agent — gpt-6-sol")
     let split = try XCTUnwrap(find(host.view), "Native split must be reachable after attachment")
@@ -123,42 +128,62 @@ final class ChatLayoutPolicyTests: XCTestCase {
     XCTAssertEqual(item.maximumThickness, 360)
 
     store.threads[0].title = "Short"
-    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    pumpUntil(ceiling: 0.15) { item.maximumThickness == 267 }
     XCTAssertEqual(item.maximumThickness, 267)
     XCTAssertLessThanOrEqual(item.viewController.view.frame.width, 268)
     let shortWidth = item.viewController.view.frame.width
     store.threads[0].title = "Moderately descriptive thread title"
-    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    pumpUntil(ceiling: 0.15) {
+      item.maximumThickness > 267 && item.maximumThickness < 360
+    }
     XCTAssertGreaterThan(item.maximumThickness, 267)
     XCTAssertLessThan(
       item.maximumThickness, 360,
       "Intrinsic measurement must produce intermediate widths, not only floor/ceiling buckets")
     store.threads[0].title = String(repeating: "Long thread title ", count: 8)
-    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    pumpUntil(ceiling: 0.15) { item.maximumThickness == 360 }
     XCTAssertEqual(item.maximumThickness, 360)
     XCTAssertEqual(
       item.viewController.view.frame.width, shortWidth, accuracy: 1,
       "A wider content cap must not expand the user's divider")
     store.threads[0].title = "Short again"
-    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    pumpUntil(ceiling: 0.15) { item.maximumThickness == 267 }
     XCTAssertEqual(item.maximumThickness, 267)
     store.threads[0].model = String(repeating: "model-name-", count: 10)
-    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    pumpUntil(ceiling: 0.15) { item.maximumThickness == 360 }
     XCTAssertEqual(item.maximumThickness, 360, "Metadata participates in intrinsic row width")
     let retainedThreads = store.threads
+    let sidebarBeforeEmpty = sidebarSignature(item.viewController.view)
     store.threads = []
-    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    // Thickness is already 360. Leaving on that value would skip the update
+    // that this assertion exists to watch. Wait until the rail actually
+    // changes, then one more turn inside the same 0.15s ceiling.
+    let emptyDeadline = Date().addingTimeInterval(0.15)
+    pumpUntil(deadline: emptyDeadline) {
+      sidebarSignature(item.viewController.view) != sidebarBeforeEmpty
+    }
+    if Date() < emptyDeadline {
+      RunLoop.main.run(
+        mode: .common,
+        before: min(emptyDeadline, Date().addingTimeInterval(0.016)))
+    }
     XCTAssertEqual(
       item.maximumThickness, 360, "Transient empty search results must not reset the cap")
     store.threads = retainedThreads
     store.threads[0].title = String(repeating: "Long thread title ", count: 8)
-    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    pumpUntil(ceiling: 0.15) { item.maximumThickness == 360 }
     for windowWidth in [1120.0, 640.0, 1800.0, 800.0] {
       window.setContentSize(NSSize(width: windowWidth, height: 720))
       for proposed in [1600.0, 50.0, 300.0, 900.0, 0.0] {
+        let beforeWidth = item.viewController.view.frame.width
         split.splitView.setPosition(proposed, ofDividerAt: 0)
         split.splitView.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let target = min(
+          AgentSidebarMetrics.maximumWidth, max(AgentSidebarMetrics.minimumWidth, proposed))
+        pumpUntil(ceiling: 0.05) {
+          let width = item.viewController.view.frame.width
+          return abs(width - beforeWidth) > 0.5 || abs(width - target) <= 1
+        }
         let width = item.viewController.view.frame.width
         XCTAssertFalse(item.isCollapsed)
         XCTAssertGreaterThanOrEqual(width, 266)
@@ -166,13 +191,53 @@ final class ChatLayoutPolicyTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(split.splitViewItems[1].viewController.view.frame.width, 319)
       }
       item.isCollapsed = true
-      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      pumpUntil(ceiling: 0.05) { item.isCollapsed }
       XCTAssertTrue(item.isCollapsed)
       item.isCollapsed = false
-      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      pumpUntil(ceiling: 0.05) {
+        let width = item.viewController.view.frame.width
+        return !item.isCollapsed && width >= 266 && width <= 361
+      }
       XCTAssertGreaterThanOrEqual(item.viewController.view.frame.width, 266)
       XCTAssertLessThanOrEqual(item.viewController.view.frame.width, 361)
     }
+  }
+
+  /// One short slice, then return as soon as `ready` is true. The ceiling is
+  /// the old fixed sleep for that beat, never a larger budget.
+  @MainActor
+  private func pumpUntil(ceiling: TimeInterval, _ ready: () -> Bool) {
+    pumpUntil(deadline: Date().addingTimeInterval(ceiling), ready)
+  }
+
+  @MainActor
+  private func pumpUntil(deadline: Date, _ ready: () -> Bool) {
+    while Date() < deadline {
+      let sliceEnd = min(deadline, Date().addingTimeInterval(0.008))
+      RunLoop.main.run(mode: .common, before: sliceEnd)
+      if ready() { return }
+    }
+  }
+
+  /// Sidebar tree identity. Used only so an already-true thickness of 360
+  /// cannot satisfy the empty-search wait before the rail updates.
+  @MainActor
+  private func sidebarSignature(_ view: NSView) -> Int {
+    var hasher = Hasher()
+    func walk(_ node: NSView) {
+      hasher.combine(ObjectIdentifier(type(of: node)))
+      hasher.combine(node.subviews.count)
+      hasher.combine(Int(node.frame.width.rounded()))
+      hasher.combine(Int(node.frame.height.rounded()))
+      if let field = node as? NSTextField {
+        hasher.combine(field.stringValue)
+      }
+      for child in node.subviews {
+        walk(child)
+      }
+    }
+    walk(view)
+    return hasher.finalize()
   }
 
   // MARK: - R1 window-collapse clamps
