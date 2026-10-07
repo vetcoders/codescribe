@@ -107,15 +107,14 @@ struct OverlayRecordingControls: View {
   }
   var previewAccessibilityLabel: String {
     switch presentationMode {
-    case .mini: String(localized: "Show controls")
-    case .midi: String(localized: "Show live preview")
-    case .expanded: String(localized: "Hide live preview")
+    case .mini, .midi: String(localized: "Expand widget")
+    case .expanded: String(localized: "Collapse widget")
     }
   }
-  /// Horizontal expansion, vertical expansion, then return to the small widget.
+  /// Full view is always an explicit click; hover reveals only the midi strip.
   var previewSymbol: String {
     switch presentationMode {
-    case .mini: OverlayControlSymbols.miniToMidi
+    case .mini: OverlayControlSymbols.miniToTranscript
     case .midi: OverlayControlSymbols.midiToTranscript
     case .expanded: OverlayControlSymbols.returnToMini
     }
@@ -337,6 +336,12 @@ struct DictationOverlayView: View {
     .onHover { inside in
       pointerInsideOverlay = inside
       state.setPointerHovering(inside)
+    }
+    .task(id: state.widgetHoverDeadline) {
+      guard let deadline = state.widgetHoverDeadline else { return }
+      do { try await ContinuousClock().sleep(until: deadline) } catch { return }
+      guard !Task.isCancelled else { return }
+      state.expireWidgetHover()
     }
     .onAppear {
       FontLoader.register()
@@ -628,7 +633,7 @@ struct DictationOverlayView: View {
 
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, state.isMini ? 10 : 16)
+    .padding(.horizontal, 16)
     .padding(.vertical, 10)
     .coordinateSpace(name: "overlay-header")
     // Keep the explicit drag region above the passive glass background.
@@ -638,7 +643,7 @@ struct DictationOverlayView: View {
     // The cached panel survives orderOut. Observe its window outside
     // ViewThatFits so hidden header candidates cannot compete for visibility.
     .background {
-      OverlayRenderVisibility { visible in
+      OverlayRenderVisibility(onHidden: { state.clearWidgetHover() }) { visible in
         state.setConversationVisible(visible)
         guard overlayVisible != visible else { return }
         var transaction = Transaction(animation: nil)
@@ -666,7 +671,7 @@ struct DictationOverlayView: View {
         .fixedSize()
         .accessibilityIdentifier("overlay-mini-brand")
       Spacer(minLength: 4)
-      recordingControls(compact: true)
+      recordingControls(compact: false)
     }
     .frame(height: 26)
     .accessibilityIdentifier("overlay-mini-widget")
@@ -692,7 +697,10 @@ struct DictationOverlayView: View {
         .contentShape(Circle().inset(by: -7.5))
     }
     .buttonStyle(.plain)
-    .onHover { closeDotHovered = $0 }
+    .onHover {
+      closeDotHovered = $0
+      state.setWidgetInteraction(.closeControl, held: $0)
+    }
     .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: closeDotHovered)
     .focusable(false)
     .help(OverlayIntent.close.helpText)
@@ -705,14 +713,14 @@ struct DictationOverlayView: View {
       canFinish: state.recording && !state.transcribing,
       presentationMode: state.presentationMode, compact: compact, palette: palette,
       onIntent: state.requestHeaderRecording,
-      onPreviewToggle: state.cyclePresentation,
+      onPreviewToggle: state.toggleCollapsed,
       isFinalizing: !state.terminal
         && (state.transcribing || state.mode == .finalizing
           || (!state.recording && state.showsSessionTimer)),
       recordingLight: state.recordingLight, animates: overlayVisible)
     controls.showsRecordingButton = showsMicrophone
     controls.onShowDictation = state.showTranscription
-    return controls
+    return controls.onHover { state.setWidgetInteraction(.primaryControls, held: $0) }
   }
 
   private func justifiedHeader(compact: Bool) -> some View {
@@ -810,6 +818,14 @@ struct DictationOverlayView: View {
     view.onDismissMonitor = state.hideAgentSidebar
     view.onShowTranscription = state.showTranscription
     view.playbackError = state.playbackPreferenceError
+    view.archiveCandidates = Dictionary(
+      uniqueKeysWithValues: state.visibleChannelRows.compactMap {
+        state.archiveCandidate(for: $0.channel).map { ($0.channel, $0) }
+      })
+    view.pendingArchives = state.pendingAgentArchives
+    view.archivedOwners = state.archivedAgentOwners
+    view.onArchiveAgent = { owner in Task { await state.archiveAgent(owner) } }
+    view.archiveError = state.agentArchiveError
     return view
   }
 
@@ -984,7 +1000,7 @@ struct DictationOverlayView: View {
         text: livePaint?.text ?? state.canvasText,
         // Committed confidence ranges cannot index an ephemeral snapshot.
         uncertainWords: livePaint == nil ? state.canvasUncertainWords : [],
-        isEditable: state.isTranscriptEditable,
+        isEditable: state.isTranscriptEditable && !state.isCollapsed,
         appearance: palette.appearance,
         showsDiagnostics: showsDiagnostics,
         contentInsets: NSEdgeInsets(
@@ -1173,24 +1189,29 @@ struct DictationOverlayView: View {
 
 /// Only reports the hosting window's visibility; it owns no capture state.
 private struct OverlayRenderVisibility: NSViewRepresentable {
+  let onHidden: () -> Void
   let onChange: (Bool) -> Void
 
   func makeNSView(context: Context) -> VisibilityView {
     let view = VisibilityView()
+    view.onHidden = onHidden
     view.onChange = onChange
     return view
   }
 
   func updateNSView(_ nsView: VisibilityView, context: Context) {
+    nsView.onHidden = onHidden
     nsView.onChange = onChange
   }
 
   static func dismantleNSView(_ nsView: VisibilityView, coordinator: ()) {
     NotificationCenter.default.removeObserver(nsView)
+    nsView.onHidden = nil
     nsView.onChange = nil
   }
 
   final class VisibilityView: NSView {
+    var onHidden: (() -> Void)?
     var onChange: ((Bool) -> Void)?
 
     override func viewDidMoveToWindow() {
@@ -1213,6 +1234,9 @@ private struct OverlayRenderVisibility: NSViewRepresentable {
       // window on the next actor turn, so an old notification cannot revive it.
       Task { @MainActor [weak self] in
         guard let self else { return }
+        // Occlusion during a frame morph suppresses painting, but does not
+        // dismiss the widget or cancel the hover that is growing it.
+        if window?.isVisible != true { onHidden?() }
         onChange?(window?.isVisible == true && window?.occlusionState.contains(.visible) == true)
       }
     }

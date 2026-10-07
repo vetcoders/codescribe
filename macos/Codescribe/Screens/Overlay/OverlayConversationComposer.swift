@@ -102,6 +102,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     return CGSize(width: width, height: min(112, max(28, height)))
   }
 
+  @MainActor
   final class Coordinator: NSObject, NSTextViewDelegate {
     var parent: ConversationMessageField
     init(_ parent: ConversationMessageField) { self.parent = parent }

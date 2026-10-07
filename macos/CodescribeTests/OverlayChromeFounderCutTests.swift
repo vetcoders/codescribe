@@ -400,8 +400,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let fullSize = panel.frame.size
       state.setPresentationMode(.mini)
       settle(root)
-      for mode in [OverlayPresentationMode.midi, .expanded, .mini] {
-        state.cyclePresentation()
+      for mode in [OverlayPresentationMode.expanded, .mini, .expanded, .mini] {
+        state.toggleCollapsed()
         settle(root)
         XCTAssertEqual(state.presentationMode, mode)
         XCTAssertEqual(panel.frame.height, mode == .expanded ? fullSize.height : 46, accuracy: 0.5)
@@ -410,7 +410,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         XCTAssertEqual(state.activeText, text)
         XCTAssertEqual(state.captureGeneration, generation)
       }
-      state.cyclePresentation()
+      state.setPresentationMode(.midi)
       settle(root)
       XCTAssertEqual(panel.frame.width, DictationOverlayWindow.midiSize.width, accuracy: 0.5)
       state.showAgentMonitor()
@@ -430,8 +430,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let frame = panel.frame
       state.setPresentationMode(.mini)
       XCTAssertTrue(panel.isFrameTransitioning)
-      state.cyclePresentation()
-      state.cyclePresentation()
+      state.setPresentationMode(.midi)
+      state.toggleCollapsed()
       settle(root)
       XCTAssertEqual(state.presentationMode, .expanded)
       XCTAssertEqual(panel.frame.size, frame.size)
@@ -440,6 +440,100 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       panel.setPresentationMode(.mini, animated: false)
       XCTAssertFalse(panel.isFrameTransitioning)
       XCTAssertEqual(panel.frame.size, DictationOverlayWindow.collapsedSize)
+    }
+  }
+
+  func testClampedHoverStripReturnsToItsOriginalMiniPosition() throws {
+    let state = OverlayState.previewFormatted()
+    try withPanel(state: state, width: 700) { panel, root in
+      state.setPresentationMode(.mini)
+      settle(root)
+      let screen = try XCTUnwrap(panel.screen?.visibleFrame)
+      panel.setFrameOrigin(NSPoint(x: screen.minX + 20, y: screen.maxY - 120))
+      let original = panel.frame
+      state.setPresentationMode(.midi)
+      settle(root)
+      XCTAssertGreaterThanOrEqual(panel.frame.minX, screen.minX)
+      XCTAssertLessThanOrEqual(panel.frame.maxX, screen.maxX)
+      state.setPresentationMode(.mini)
+      settle(root)
+      XCTAssertEqual(
+        panel.frame, original, "hover at the screen edge must not move the parked widget")
+    }
+  }
+
+  func testOpenWidgetUsesTheCachedPanelAndPreservesContentAndPreference() throws {
+    let state = OverlayState.previewFormatted()
+    let text = state.activeText
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "Widget.Tray")) as? FloatingOverlayPanel)
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    var creations = 0
+    let controller = OverlayController(
+      state: state, engine: nil,
+      overlayEnabledProvider: { false }, assistiveStatusProvider: { false },
+      panelFactory: { _, _ in
+        creations += 1
+        return panel
+      },
+      orderPanelFront: { $0.orderFrontRegardless() }, orderPanelOut: { $0.orderOut(nil) })
+    let preference = state.expandedByDefault
+    controller.showWidget()
+    let root = try XCTUnwrap(panel.contentView)
+    settle(root)
+    let canvas = try XCTUnwrap(findTranscript(in: root))
+    XCTAssertEqual(state.presentationMode, .mini)
+    XCTAssertTrue(panel.isVisible)
+    state.showTranscription()
+    settle(root)
+    controller.showWidget()
+    XCTAssertEqual(
+      state.presentationMode, .expanded, "opening an already visible widget keeps its view")
+    controller.dismiss()
+    XCTAssertFalse(panel.isVisible)
+    controller.showWidget()
+    settle(root)
+    XCTAssertEqual(state.presentationMode, .mini)
+    XCTAssertTrue(findTranscript(in: root) === canvas)
+    XCTAssertEqual(creations, 1)
+    XCTAssertEqual(state.activeText, text)
+    XCTAssertEqual(state.expandedByDefault, preference)
+    XCTAssertFalse(state.transcriptOverlayEnabled, "an explicit open is not a preference write")
+  }
+
+  func testOverlayCursorComesFromItsOwnNativeHitSurface() throws {
+    let state = OverlayState.previewFormatted()
+    try withPanel(state: state, width: 700) { panel, root in
+      let canvas = try XCTUnwrap(findTranscript(in: root))
+      let textPoint = canvas.convert(
+        NSPoint(x: canvas.visibleRect.midX, y: canvas.visibleRect.midY), to: nil)
+      XCTAssertEqual(
+        panel.cursor(at: textPoint), .iBeam,
+        "Text hit \(textPoint), visible \(canvas.visibleRect), panel \(panel.frame), native hit \(String(describing: panel.contentView?.hitTest(textPoint)))"
+      )
+      XCTAssertEqual(
+        panel.cursor(at: NSPoint(x: 1, y: panel.frame.height / 2)),
+        OverlayResizeHit.cursor(for: .left))
+      let chromePoint = NSPoint(x: panel.frame.width - 40, y: panel.frame.height - 23)
+      XCTAssertEqual(panel.cursor(at: chromePoint), .arrow)
+      let saved = NSCursor.current
+      defer { saved.set() }
+      NSCursor.iBeam.set()
+      let moved = try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: .mouseMoved, location: chromePoint, modifierFlags: [],
+          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+          context: nil, eventNumber: 1, clickCount: 0, pressure: 0))
+      panel.sendEvent(moved)
+      XCTAssertEqual(
+        NSCursor.current, .arrow, "the inactive app below cannot leave its text cursor here")
+      state.setPresentationMode(.mini)
+      settle(root)
+      XCTAssertEqual(panel.cursor(at: NSPoint(x: 1, y: 23)), .arrow, "mini has no resize cursor")
     }
   }
 
@@ -926,7 +1020,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let hitShape = try XCTUnwrap(close.range(of: ".contentShape(")?.lowerBound)
     XCTAssertLessThan(
       scale, hitShape, "Hover growth must not change the button's layout or hit shape")
-    XCTAssertTrue(close.contains(".onHover { closeDotHovered = $0 }"))
+    XCTAssertTrue(close.contains("closeDotHovered = $0"))
+    XCTAssertTrue(close.contains("state.setWidgetInteraction(.closeControl, held: $0)"))
     XCTAssertTrue(close.contains(".contentShape(Circle().inset(by: -7.5))"))
     XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")
     XCTAssertTrue(header.contains("Text(verbatim: \"codescribe\")"))
@@ -999,17 +1094,18 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.setPresentationMode(.mini)
     let text = state.activeText
     for (mode, symbol, label) in [
-      (OverlayPresentationMode.mini, "chevron.right", "Show controls"),
-      (.midi, "chevron.down", "Show live preview"),
-      (.expanded, "chevron.left", "Hide live preview"),
+      (OverlayPresentationMode.mini, "arrow.down.left", "Expand widget"),
+      (.midi, "chevron.down", "Expand widget"),
+      (.expanded, "arrow.up.right", "Collapse widget"),
     ] {
-      XCTAssertEqual(state.presentationMode, mode)
+      state.setPresentationMode(mode)
       let controls = OverlayRecordingControls(
         canFinish: true, presentationMode: state.presentationMode, compact: false,
-        palette: .dark, onIntent: { _ in }, onPreviewToggle: state.cyclePresentation)
+        palette: .dark, onIntent: { _ in }, onPreviewToggle: state.toggleCollapsed)
       XCTAssertEqual(controls.previewSymbol, symbol)
       XCTAssertEqual(controls.previewAccessibilityLabel, label)
       controls.togglePreview()
+      XCTAssertEqual(state.presentationMode, mode == .expanded ? .mini : .expanded)
       XCTAssertEqual(state.activeText, text)
     }
     XCTAssertEqual(state.presentationMode, .mini)
@@ -1153,7 +1249,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 }
 
 @MainActor
-private final class OverlayChromePolicyEngine: DictationEngine {
+final class OverlayChromePolicyEngine: DictationEngine {
   var expansionWrites: [Bool] = []
   var pinWrites: [Bool] = []
   var pinEnabled = false

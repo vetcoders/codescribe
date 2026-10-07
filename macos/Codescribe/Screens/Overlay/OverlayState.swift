@@ -5,14 +5,10 @@ import SwiftUI
 /// Window presentation only; the reducer continues to own the transcript.
 enum OverlayPresentationMode: CaseIterable {
   case mini, midi, expanded
+}
 
-  var next: Self {
-    switch self {
-    case .mini: .midi
-    case .midi: .expanded
-    case .expanded: .mini
-    }
-  }
+enum OverlayWidgetInteraction: Hashable {
+  case primaryControls, closeControl, menu, dragging
 }
 
 // View model for the dictation overlay, backed by the redesign hotkey/controller
@@ -505,17 +501,20 @@ final class OverlayState {
   private(set) var expansionPreferenceError: String?
   @ObservationIgnored private var requestedCapturePresentation: OverlayPresentationMode?
   @ObservationIgnored var onPresentationModeChanged: ((OverlayPresentationMode) -> Void)?
+  private(set) var widgetHoverDeadline: ContinuousClock.Instant?
+  @ObservationIgnored private var widgetHoverTarget: OverlayPresentationMode?
+  @ObservationIgnored private var widgetHoverInteractions: Set<OverlayWidgetInteraction> = []
+  @ObservationIgnored private var widgetMidiIsAutomatic = false
+  @ObservationIgnored private var widgetHoverSuppressedUntilExit = false
 
   func toggleCollapsed() {
-    setPresentationMode(isCollapsed ? .expanded : .mini)
-  }
-
-  func cyclePresentation() {
-    setPresentationMode(presentationMode.next)
+    let target: OverlayPresentationMode = isCollapsed ? .expanded : .mini
+    setPresentationMode(target)
+    if target == .mini { widgetHoverSuppressedUntilExit = isPointerHovering }
   }
 
   func requestHeaderRecording(_ intent: OverlayIntent) {
-    if isMini {
+    if isCollapsed {
       setPresentationMode(.midi)
       if intent == .startRecording { requestedCapturePresentation = .midi }
     }
@@ -524,9 +523,58 @@ final class OverlayState {
   }
 
   func setPresentationMode(_ mode: OverlayPresentationMode) {
+    widgetHoverDeadline = nil
+    widgetHoverTarget = nil
+    widgetMidiIsAutomatic = false
     guard presentationMode != mode else { return }
     presentationMode = mode
+    if mode != .expanded { showsAgentMonitor = false }
     onPresentationModeChanged?(mode)
+  }
+
+  func setWidgetInteraction(_ interaction: OverlayWidgetInteraction, held: Bool) {
+    let changed =
+      held
+      ? widgetHoverInteractions.insert(interaction).inserted
+      : widgetHoverInteractions.remove(interaction) != nil
+    if changed { scheduleWidgetHover() }
+  }
+
+  private func scheduleWidgetHover() {
+    widgetHoverDeadline = nil
+    widgetHoverTarget = nil
+    guard widgetHoverInteractions.isEmpty, !isEditingTranscript else { return }
+    if isPointerHovering && isMini && !widgetHoverSuppressedUntilExit {
+      widgetHoverTarget = .midi
+      widgetHoverDeadline = .now.advanced(by: .milliseconds(160))
+    } else if !isPointerHovering && presentationMode == .midi && widgetMidiIsAutomatic {
+      widgetHoverTarget = .mini
+      widgetHoverDeadline = .now.advanced(by: .milliseconds(420))
+    }
+  }
+
+  /// The view sleeps until this deadline; stale entry/exit tasks cannot route a
+  /// later user action, capture or menu interaction.
+  func expireWidgetHover(at now: ContinuousClock.Instant = .now) {
+    guard let deadline = widgetHoverDeadline, now >= deadline,
+      let target = widgetHoverTarget, widgetHoverInteractions.isEmpty, !isEditingTranscript
+    else { return }
+    guard
+      (target == .midi && isPointerHovering && isMini)
+        || (target == .mini && !isPointerHovering && presentationMode == .midi
+          && widgetMidiIsAutomatic)
+    else { return }
+    setPresentationMode(target)
+    widgetMidiIsAutomatic = target == .midi
+  }
+
+  func clearWidgetHover() {
+    widgetHoverDeadline = nil
+    widgetHoverTarget = nil
+    widgetHoverInteractions.removeAll()
+    widgetMidiIsAutomatic = false
+    widgetHoverSuppressedUntilExit = false
+    isPointerHovering = false
   }
 
   /// The menu toggle alone persists the take-start preference.
@@ -764,6 +812,13 @@ final class OverlayState {
   private(set) var channelRosterNames: [String: String] = [:]
   private(set) var channelToggleError: String?
   private(set) var conversations: [OverlayConversation] = []
+  private(set) var archivedAgentOwners: Set<OverlayConversationOwner> = []
+  private(set) var pendingAgentArchives: Set<OverlayConversationOwner> = []
+  private(set) var agentArchiveError: String?
+  @ObservationIgnored private var agentArchiveRevision: UInt64 = 0
+  @ObservationIgnored var archiveAgentCommand: (OverlayConversationOwner) async throws -> Void = {
+    try await RealAgentBridgeInstaller.archiveBusAgent(owner: $0)
+  }
   private(set) var selectedConversationID: String?
   private(set) var showsAgentMonitor = false
   @ObservationIgnored var onAgentSidebarPresented: (() -> Void)?
@@ -795,6 +850,39 @@ final class OverlayState {
     conversations.first { $0.id == selectedConversationID }
   }
   var showsMyDictation: Bool { selectedConversationID == nil }
+
+  func archiveCandidate(for channel: String) -> OverlayConversationOwner? {
+    guard !channelStatusUnavailable, channel.count == 1, "123456789".contains(channel),
+      let hud = channelHudStates[channel], hud.followerAlive == false, !hud.open,
+      let provider = hud.provider, !provider.isEmpty,
+      let session = hud.providerSessionID, !session.isEmpty,
+      let name = channelRosterNames[channel]
+    else { return nil }
+    let owner = OverlayConversationOwner(row: [
+      "provider": provider, "provider_session_id": session, "channel": channel, "name": name,
+      "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: provider, session: session),
+    ])
+    guard let owner, !archivedAgentOwners.contains(owner) else { return nil }
+    return owner
+  }
+
+  func archiveAgent(_ owner: OverlayConversationOwner) async {
+    guard archiveCandidate(for: owner.channel) == owner,
+      !pendingAgentArchives.contains(owner)
+    else { return }
+    pendingAgentArchives.insert(owner)
+    agentArchiveError = nil
+    defer { pendingAgentArchives.remove(owner) }
+    do {
+      try await archiveAgentCommand(owner)
+      agentArchiveRevision &+= 1
+      archivedAgentOwners.insert(owner)
+      onChannelPresentationChanged?()
+    } catch {
+      agentArchiveError = String(
+        localized: "Couldn't archive agent. The channel and conversation are retained.")
+    }
+  }
 
   private func playbackIdentity(for conversation: OverlayConversation) -> AgentPlaybackIdentity? {
     guard let owner = conversation.owner, let bus = conversation.messages.first?.busPath else {
@@ -844,6 +932,7 @@ final class OverlayState {
 
   func canToggleConversationMicrophone(_ conversation: OverlayConversation) -> Bool {
     guard !channelStatusUnavailable, let owner = conversation.owner,
+      !archivedAgentOwners.contains(where: { $0.id == owner.id && $0.channel == owner.channel }),
       OverlayChannelStatusView.toggleDigit(for: conversation.channel) != nil,
       let hud = channelHudStates[conversation.channel], hud.provider == owner.provider,
       hud.providerSessionID == owner.providerSessionID
@@ -1017,6 +1106,10 @@ final class OverlayState {
   }
 
   func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot) {
+    if archivedAgentOwners != snapshot.archivedOwners {
+      archivedAgentOwners = snapshot.archivedOwners
+      onChannelPresentationChanged?()
+    }
     applyChannelDelivery(snapshot.deliveries)
     guard conversations != snapshot.conversations else {
       // The first snapshot can already match the stored inventory, including
@@ -1163,7 +1256,13 @@ final class OverlayState {
         channel: digit, agent: audience, deliveryID: nil, stage: nil,
         isOpen: channelHudStates[digit]?.open ?? false)
     }
-    return (channelDelivery + boundWithoutDelivery).sorted { $0.channel < $1.channel }
+    return (channelDelivery + boundWithoutDelivery).filter { row in
+      !archivedAgentOwners.contains { owner in
+        let hud = channelHudStates[row.channel]
+        return owner.channel == row.channel && owner.provider == hud?.provider
+          && owner.providerSessionID == hud?.providerSessionID
+      }
+    }.sorted { $0.channel < $1.channel }
   }
   var hasOpenChannel: Bool {
     visibleChannelRows.contains { channel in
@@ -1182,9 +1281,12 @@ final class OverlayState {
           self.applyChannelRoster(snapshot)
         }
         do {
+          let archiveRevision = self?.agentArchiveRevision
           let snapshot = try await reader.readSnapshot()
           guard !Task.isCancelled, self != nil else { return }
-          self?.applyConversationSnapshot(snapshot)
+          if archiveRevision == self?.agentArchiveRevision {
+            self?.applyConversationSnapshot(snapshot)
+          }
         } catch {
           guard !Task.isCancelled, let self else { return }
           if !channelStatusUnavailable {
@@ -2054,6 +2156,8 @@ final class OverlayState {
   func setPointerHovering(_ hovering: Bool) {
     guard hovering != isPointerHovering else { return }
     isPointerHovering = hovering
+    if !hovering { widgetHoverSuppressedUntilExit = false }
+    scheduleWidgetHover()
     guard isTerminalMode else { return }
     if hovering {
       cancelAutoHide()

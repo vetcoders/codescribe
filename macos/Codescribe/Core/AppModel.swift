@@ -252,6 +252,14 @@ final class OverlayController: ObservableObject {
     state.prepareForExternalStart()
   }
 
+  /// An explicit Tray entry uses the same cached panel and leaves capture,
+  /// transcript selection, drafts and recording preferences with their owners.
+  func showWidget() {
+    readOverlayPreference()
+    if panel?.isVisible != true { state.setPresentationMode(.mini) }
+    show()
+  }
+
   /// Show the overlay for a dictation session, honouring the "Transcription
   /// Overlay" toggle. When disabled, dictation runs headless — hold the hotkey,
   /// dictate, and the text lands at the cursor (+ clipboard) with no window.
@@ -350,6 +358,7 @@ final class OverlayController: ObservableObject {
     }
     Self.isApplyingFrame = true
     defer { Self.isApplyingFrame = false }
+    (panel as? FloatingOverlayPanel)?.resetPresentationPosition()
     let screen = NSScreen.main
     let clamped = DictationOverlayWindow.clamp(panel.frame.size, to: screen)
     let size: NSSize
@@ -475,6 +484,7 @@ final class OverlayController: ObservableObject {
   }
 
   private func orderOut() {
+    state.clearWidgetHover()
     // Persist the user's chosen size for next launch (replaces frame autosave,
     // which used to write back the old feedback loop's runaway sizes) — and,
     // in free motion, the dragged origin.

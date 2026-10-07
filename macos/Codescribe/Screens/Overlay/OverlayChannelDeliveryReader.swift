@@ -78,21 +78,57 @@ actor OverlayChannelDeliveryReader {
       else { throw CocoaError(.fileReadCorruptFile) }
       bindings = values
     }
+    let archivesURL = root.appendingPathComponent("archives", isDirectory: true)
+    var archives: [(owner: OverlayConversationOwner, bus: String)] = []
+    if FileManager.default.fileExists(atPath: archivesURL.path) {
+      for file in try FileManager.default.contentsOfDirectory(
+        at: archivesURL, includingPropertiesForKeys: nil
+      ).sorted(by: { $0.path < $1.path })
+      where file.pathExtension == "json" {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { continue }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 65537), data.count <= 65536,
+          let row = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          row["schema"] as? String == "codescribe.agent-archive.v1",
+          row["released"] as? Bool == true, let owner = OverlayConversationOwner(row: row),
+          owner.channel.count == 1, "123456789".contains(owner.channel),
+          file.lastPathComponent == "\(owner.leaseID)-\(owner.channel).json",
+          owner.leaseID
+            == AgentPlaybackIdentity.leaseIdentifier(
+              provider: owner.provider, session: owner.providerSessionID),
+          let bus = row["bus"] as? String, bus.hasPrefix("/")
+        else { continue }
+        // Publication precedes binding release. A write failure or deliberate
+        // same-session reattachment leaves this owner on the active list.
+        let binding = bindings[owner.channel]
+        if binding?["provider"] as? String == owner.provider,
+          binding?["provider_session_id"] as? String == owner.providerSessionID
+        {
+          continue
+        }
+        archives.append((owner, bus))
+      }
+    }
     let leasesURL = root.appendingPathComponent("leases", isDirectory: true)
     var leases: [[String: Any]] = []
     if FileManager.default.fileExists(atPath: leasesURL.path) {
       let files = try FileManager.default.contentsOfDirectory(
-        at: leasesURL, includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }
+        at: leasesURL, includingPropertiesForKeys: nil
+      ).filter { $0.pathExtension == "json" }
       var selected: [URL] = []
       for binding in bindings.values {
         guard let provider = binding["provider"] as? String,
-          let session = binding["provider_session_id"] as? String else { continue }
-        let identity = SHA256.hash(data: Data([provider.lowercased(), session].joined(separator: "\0").utf8))
-          .prefix(16).map { String(format: "%02x", $0) }.joined()
+          let session = binding["provider_session_id"] as? String
+        else { continue }
+        let identity = SHA256.hash(
+          data: Data([provider.lowercased(), session].joined(separator: "\0").utf8)
+        )
+        .prefix(16).map { String(format: "%02x", $0) }.joined()
         let file = leasesURL.appendingPathComponent(identity + ".json")
         if !selected.contains(file) { selected.append(file) }
       }
-      for file in files.sorted(by: { $0.path < $1.path }).prefix(16) where !selected.contains(file) {
+      for file in files.sorted(by: { $0.path < $1.path }).prefix(16) where !selected.contains(file)
+      {
         selected.append(file)
       }
       for file in selected {
@@ -105,19 +141,23 @@ actor OverlayChannelDeliveryReader {
     }
     var paths: [String] = sharedBus.map { [$0.path] } ?? []
     for channel in bindings.keys.sorted() {
-      guard let binding = bindings[channel], let lease = leases.first(where: {
-        $0["provider"] as? String == binding["provider"] as? String
-          && $0["provider_session_id"] as? String == binding["provider_session_id"] as? String
-      }), let path = lease["bus"] as? String, path.hasPrefix("/"), !paths.contains(path) else { continue }
+      guard let binding = bindings[channel],
+        let lease = leases.first(where: {
+          $0["provider"] as? String == binding["provider"] as? String
+            && $0["provider_session_id"] as? String == binding["provider_session_id"] as? String
+        }), let path = lease["bus"] as? String, path.hasPrefix("/"), !paths.contains(path)
+      else { continue }
       paths.append(path)
     }
+    for archive in archives where !paths.contains(archive.bus) { paths.append(archive.bus) }
     for lease in leases {
       if let path = lease["bus"] as? String, path.hasPrefix("/"), !paths.contains(path) {
         paths.append(path)
       }
     }
     // Closed channels retain their last verified projection even with no live follower.
-    for path in (persisted ?? [:]).keys.sorted() where !paths.contains(path) && path.hasPrefix("/") {
+    for path in (persisted ?? [:]).keys.sorted() where !paths.contains(path) && path.hasPrefix("/")
+    {
       paths.append(path)
     }
     let usedBuses = Set(paths.prefix(16).map { URL(fileURLWithPath: $0).standardizedFileURL })
@@ -129,14 +169,16 @@ actor OverlayChannelDeliveryReader {
       }
     }
     var deliveries: [OverlayChannelDelivery] = []
-    for channel in bindings.keys.sorted() where channel.count == 1 && "123456789".contains(channel) {
+    for channel in bindings.keys.sorted() where channel.count == 1 && "123456789".contains(channel)
+    {
       guard let binding = bindings[channel] else { continue }
       let owners = leases.filter {
         $0["provider"] as? String == binding["provider"] as? String
           && $0["provider_session_id"] as? String == binding["provider_session_id"] as? String
       }
       guard owners.count == 1, let lease = owners.first,
-        let path = lease["bus"] as? String else { continue }
+        let path = lease["bus"] as? String
+      else { continue }
       let bus = URL(fileURLWithPath: path).standardizedFileURL
       guard var cursor = buses[bus] else { continue }
       cursor.projection.observeLease(lease, channel: channel, binding: binding)
@@ -148,14 +190,17 @@ actor OverlayChannelDeliveryReader {
     for bus in usedBuses {
       guard var cursor = buses[bus] else { continue }
       for (owner, delivery) in cursor.projection.receiptCoordinates() {
-        guard delivery.count == 24, delivery.allSatisfy({ "0123456789abcdef".contains($0) }) else { continue }
+        guard delivery.count == 24, delivery.allSatisfy({ "0123456789abcdef".contains($0) }) else {
+          continue
+        }
         let wakeup = root.appendingPathComponent("wakeups").appendingPathComponent(owner.leaseID)
           .appendingPathComponent(delivery + ".json")
         if let receipt = try? object(at: wakeup) { cursor.projection.observeAcceptance(receipt) }
         let acknowledgment = root.appendingPathComponent("acknowledgments")
           .appendingPathComponent(owner.leaseID).appendingPathComponent(delivery + ".json")
         if let receipt = try? object(at: acknowledgment) {
-          cursor.projection.observeAcknowledgment(receipt, owner: owner, delivery: delivery, busPath: bus.path)
+          cursor.projection.observeAcknowledgment(
+            receipt, owner: owner, delivery: delivery, busPath: bus.path)
         }
       }
       buses[bus] = cursor
@@ -190,12 +235,16 @@ actor OverlayChannelDeliveryReader {
           for message in conversation.messages {
             rows[message.id] = rows[message.id].map { Self.merge($0, message) } ?? message
           }
-          named[conversation.id] = OverlayConversation(id: existing.id, channel: existing.channel,
-            name: existing.name, owner: existing.owner, messages: rows.values.sorted {
+          named[conversation.id] = OverlayConversation(
+            id: existing.id, channel: existing.channel,
+            name: existing.name, owner: existing.owner,
+            messages: rows.values.sorted {
               if $0.emittedAt != $1.emittedAt { return $0.emittedAt < $1.emittedAt }
               return $0.order < $1.order
             })
-        } else { named[conversation.id] = conversation }
+        } else {
+          named[conversation.id] = conversation
+        }
       }
     }
     let ordered = all.values.sorted {
@@ -203,17 +252,28 @@ actor OverlayChannelDeliveryReader {
       if $0.order != $1.order { return $0.order < $1.order }
       return $0.id < $1.id
     }
-    let broadcast = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil,
+    let broadcast = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil,
       messages: Array(ordered.suffix(256)))
-    return OverlayChannelDeliverySnapshot(deliveries: deliveries,
-      conversations: [broadcast] + named.values.sorted {
-        if $0.channel != $1.channel { return $0.channel < $1.channel }
-        return $0.id < $1.id
-      })
+    for archive in archives where named[archive.owner.id] == nil {
+      let owner = archive.owner
+      named[owner.id] = OverlayConversation(
+        id: owner.id, channel: owner.channel, name: owner.name, owner: owner, messages: [])
+    }
+    return OverlayChannelDeliverySnapshot(
+      deliveries: deliveries,
+      conversations: [broadcast]
+        + named.values.sorted {
+          if $0.channel != $1.channel { return $0.channel < $1.channel }
+          return $0.id < $1.id
+        }, archivedOwners: Set(archives.map(\.owner)))
   }
 
-  private static func merge(_ first: OverlayConversationMessage, _ second: OverlayConversationMessage)
-    -> OverlayConversationMessage {
+  private static func merge(
+    _ first: OverlayConversationMessage, _ second: OverlayConversationMessage
+  )
+    -> OverlayConversationMessage
+  {
     // Capture opening time stays constant while the source document evolves.
     // Delayed mirrors must follow its revision, never replace it by path order.
     let firstIsNewer: Bool
@@ -237,13 +297,18 @@ actor OverlayChannelDeliveryReader {
       if let index = result.recipients.firstIndex(where: { $0.owner.id == recipient.owner.id }) {
         if result.recipients[index].deliveryID == recipient.deliveryID {
           result.recipients[index].queued = result.recipients[index].queued || recipient.queued
-          result.recipients[index].accepted = result.recipients[index].accepted || recipient.accepted
-          result.recipients[index].acknowledged = result.recipients[index].acknowledged || recipient.acknowledged
+          result.recipients[index].accepted =
+            result.recipients[index].accepted || recipient.accepted
+          result.recipients[index].acknowledged =
+            result.recipients[index].acknowledged || recipient.acknowledged
         }
-      } else { result.recipients.append(recipient) }
+      } else {
+        result.recipients.append(recipient)
+      }
     }
     if let playback = other.playback,
-      result.playback == nil || (result.playback?.emittedAt ?? "") < playback.emittedAt {
+      result.playback == nil || (result.playback?.emittedAt ?? "") < playback.emittedAt
+    {
       result.playback = playback
     }
     return result
@@ -277,10 +342,13 @@ actor OverlayChannelDeliveryReader {
     if !cursor.headHash.isEmpty {
       let stale = !file.linked && size >= cursor.offset && size - cursor.offset > Self.tailWindow
       let headHash = try file.headHash(length: cursor.headLength)
-      let adoptsLinkedStream = file.linked && cursor.streamID == file.originalFileStreamID
+      let adoptsLinkedStream =
+        file.linked && cursor.streamID == file.originalFileStreamID
         && cursor.inode == inode && headHash == cursor.headHash
-      if cursor.inode != inode || (cursor.streamID != file.streamID && !adoptsLinkedStream) || size < cursor.offset
-        || stale || headHash != cursor.headHash {
+      if cursor.inode != inode || (cursor.streamID != file.streamID && !adoptsLinkedStream)
+        || size < cursor.offset
+        || stale || headHash != cursor.headHash
+      {
         // Unlinked rotation, truncation, or a gap larger than the window resets
         // to a fresh tail. A linked cursor keeps its logical offset: the stream
         // inode does not change when the hot file rolls over.
@@ -355,7 +423,8 @@ actor OverlayChannelDeliveryReader {
     else { return nil }
     guard (0...256).contains(mark.headLength) else { return nil }
     savedRevisions[url] = projection.revision
-    var cursor = Cursor(inode: mark.inode, offset: mark.offset, headHash: mark.headHash,
+    var cursor = Cursor(
+      inode: mark.inode, offset: mark.offset, headHash: mark.headHash,
       headLength: mark.headLength, streamID: mark.streamID, projection: projection)
     cursor.storage.discardsLeadingParts = mark.discardsLeadingParts
     cursor.dropsCutRow = mark.dropsCutRow
@@ -365,14 +434,18 @@ actor OverlayChannelDeliveryReader {
   private func persist(_ url: URL, cursor: Cursor, size: UInt64) throws {
     var marks = persisted ?? [:]
     let offset = cursor.storageStart ?? (cursor.offset - UInt64(cursor.partial.count))
-    let attempt = PersistenceAttempt(offset: offset, inode: cursor.inode,
+    let attempt = PersistenceAttempt(
+      offset: offset, inode: cursor.inode,
       headHash: cursor.headHash, streamID: cursor.streamID, revision: cursor.projection.revision,
       headLength: cursor.headLength, discardsLeadingParts: cursor.storage.discardsLeadingParts,
       dropsCutRow: cursor.dropsCutRow)
     if persistenceAttempts[url] == attempt { return }
     if let previous = marks[url.path], savedRevisions[url] == cursor.projection.revision,
       previous.offset == offset, previous.inode == cursor.inode,
-      previous.headHash == cursor.headHash, previous.streamID == cursor.streamID { return }
+      previous.headHash == cursor.headHash, previous.streamID == cursor.streamID
+    {
+      return
+    }
     // The durable offset points past the last consumed newline; an unfinished
     // trailing row is re-read by the next generation once it completes.
     let encoder = JSONEncoder()
@@ -386,7 +459,8 @@ actor OverlayChannelDeliveryReader {
     guard marks[url.path] != mark else { return }
     marks[url.path] = mark
     if marks.count > 16 {
-      for path in marks.keys.sorted() where path != url.path && buses[URL(fileURLWithPath: path)] == nil {
+      for path in marks.keys.sorted()
+      where path != url.path && buses[URL(fileURLWithPath: path)] == nil {
         marks.removeValue(forKey: path)
         if marks.count <= 16 { break }
       }

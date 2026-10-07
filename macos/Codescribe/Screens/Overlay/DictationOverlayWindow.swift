@@ -18,27 +18,41 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserDragEnded: ((NSPoint) -> Void)?
   var onUserResize: (() -> Void)?
   var onFrameTransitionCompleted: (() -> Void)?
+  var onWidgetInteractionChanged: ((OverlayWidgetInteraction, Bool) -> Void)?
   fileprivate var presence: OverlayPresence?
   private var dragStart: (mouse: NSPoint, frame: NSRect)?
   private var dragMoved = false
   private var expandedSize: NSSize?
+  private var miniFrame: NSRect?
   private var presentationMode: OverlayPresentationMode = .expanded
   private var transitionTop: CGFloat?
+  private var transitionRight: CGFloat?
   private var frameTransitionTarget: NSRect?
   private var frameTransitionGeneration: UInt64 = 0
+  private var menuObservers: [NSObjectProtocol] = []
+  private var trackingMenus: Set<ObjectIdentifier> = []
   private(set) var isFrameTransitioning = false
   var sizeForPersistence: NSSize { expandedSize ?? frame.size }
 
-  /// Preserve the top edge and size where the selected display can contain them.
+  /// Grow leftward so the microphone and fold controls keep their screen position.
+  /// Display containment wins when the complete strip cannot fit to the left.
   func setPresentationMode(_ mode: OverlayPresentationMode, animated: Bool = false) {
     guard mode != presentationMode else { return }
     let previous = presentationMode
+    if previous == .mini { miniFrame = frameTransitionTarget ?? frame }
     presentationMode = mode
     let wasApplyingFrame = OverlayController.isApplyingFrame
     OverlayController.isApplyingFrame = true
     defer { OverlayController.isApplyingFrame = wasApplyingFrame }
     let top = isFrameTransitioning ? transitionTop ?? frame.maxY : frame.maxY
+    let right =
+      if previous == .midi, let miniFrame {
+        miniFrame.maxX
+      } else {
+        isFrameTransitioning ? transitionRight ?? frame.maxX : frame.maxX
+      }
     transitionTop = top
+    transitionRight = right
     let size: NSSize
     if mode != .expanded {
       // A hidden editor must not keep accepting the Founder's keystrokes.
@@ -57,7 +71,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     contentMinSize = minSize
     styleMask.remove(.resizable)
     let proposed = NSRect(
-      x: frame.minX, y: top - size.height, width: size.width, height: size.height)
+      x: right - size.width, y: top - size.height, width: size.width, height: size.height)
     let restored = DictationOverlayWindow.visibleExpansionFrame(
       proposed, in: screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
     frameTransitionGeneration &+= 1
@@ -81,11 +95,13 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     isFrameTransitioning = false
     frameTransitionTarget = nil
     transitionTop = nil
+    transitionRight = nil
     minSize = presentationMode == .expanded ? DictationOverlayWindow.minSize : frame.size
     contentMinSize = minSize
     if presentationMode == .expanded {
       styleMask.insert(.resizable)
       expandedSize = nil
+      miniFrame = nil
     }
     onFrameTransitionCompleted?()
   }
@@ -99,12 +115,40 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     completeFrameTransition(generation: frameTransitionGeneration)
   }
 
+  func resetPresentationPosition() { miniFrame = nil }
+
   func startPresence() {
     presence?.start()
+    guard menuObservers.isEmpty else { return }
+    for (name, tracking) in [
+      (NSMenu.didBeginTrackingNotification, true), (NSMenu.didEndTrackingNotification, false),
+    ] {
+      menuObservers.append(
+        NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) {
+          [weak self] notification in
+          guard let menu = notification.object as? NSMenu else { return }
+          let identity = ObjectIdentifier(menu)
+          MainActor.assumeIsolated {
+            guard let self, !self.menuObservers.isEmpty else { return }
+            if tracking {
+              guard self.isVisible else { return }
+              self.trackingMenus.insert(identity)
+            } else {
+              self.trackingMenus.remove(identity)
+            }
+            self.onWidgetInteractionChanged?(.menu, !self.trackingMenus.isEmpty)
+          }
+        })
+    }
   }
 
   func invalidatePresence() {
     presence?.invalidate()
+    menuObservers.forEach(NotificationCenter.default.removeObserver)
+    menuObservers.removeAll()
+    trackingMenus.removeAll()
+    onWidgetInteractionChanged?(.menu, false)
+    onWidgetInteractionChanged?(.dragging, false)
   }
 
   override var canBecomeKey: Bool { allowsKeyForTranscript }
@@ -150,6 +194,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// untouched.
   override func sendEvent(_ event: NSEvent) {
     if event.type == .leftMouseDown {
+      if dragStart != nil { onWidgetInteractionChanged?(.dragging, false) }
       dragStart = nil
       dragMoved = false
     }
@@ -157,6 +202,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     case .leftMouseDown where isWindowDragHit(at: event.locationInWindow):
       settleFrameTransition()
       dragStart = (screenPoint(for: event), frame)
+      onWidgetInteractionChanged?(.dragging, true)
     case .leftMouseDragged where dragStart != nil:
       guard let dragStart else { return }
       let current = screenPoint(for: event)
@@ -172,10 +218,28 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       dragStart = nil
       let moved = dragMoved
       dragMoved = false
+      onWidgetInteractionChanged?(.dragging, false)
       if moved { onUserDragEnded?(frame.origin) }
     default:
       super.sendEvent(event)
+      if event.type == .mouseMoved { cursor(at: event.locationInWindow).set() }
     }
+  }
+
+  /// Resolve from this panel's hit surface, never the inactive app below it.
+  func cursor(at point: NSPoint) -> NSCursor {
+    guard let contentView else { return .arrow }
+    if styleMask.contains(.resizable),
+      let edge = OverlayResizeHit.edge(at: point, in: contentView.bounds)
+    {
+      return OverlayResizeHit.cursor(for: edge)
+    }
+    var hit = contentView.hitTest(point)
+    while let view = hit {
+      if view is NSTextView { return .iBeam }
+      hit = view.superview
+    }
+    return .arrow
   }
 
   func isWindowDragHit(at point: NSPoint) -> Bool {
@@ -197,6 +261,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   func windowDidMove(_ notification: Notification) {
     guard !isFrameTransitioning else { return }
+    if !OverlayController.isApplyingFrame { resetPresentationPosition() }
     onUserMove?()
   }
 
@@ -255,6 +320,9 @@ private final class OverlayContentContainer: NSView {
 
   override func resetCursorRects() {
     discardCursorRects()
+    // A non-activating glass panel still owns the cursor above its chrome.
+    // Descendant NSTextView cursor rects retain native selection/editing cursors.
+    addCursorRect(bounds, cursor: .arrow)
     guard window?.styleMask.contains(.resizable) == true else { return }
     for (rect, cursor) in OverlayResizeHit.cursorRects(in: bounds) {
       addCursorRect(rect, cursor: cursor)
@@ -366,6 +434,9 @@ enum DictationOverlayWindow {
       guard !OverlayController.isApplyingFrame else { return }
       state?.userResizedOverlay()
     }
+    panel.onWidgetInteractionChanged = { [weak state] interaction, held in
+      state?.setWidgetInteraction(interaction, held: held)
+    }
     panel.contentView = OverlayContentContainer(hosting: hosting)
 
     // User-resizable: borderless windows still honour edge-drag resize when
@@ -395,6 +466,7 @@ enum DictationOverlayWindow {
     panel.isFloatingPanel = true
     panel.becomesKeyOnlyIfNeeded = true
     panel.hidesOnDeactivate = false
+    panel.acceptsMouseMovedEvents = true
     // One explicit AppKit path owns dragging on every supported OS version.
     panel.isMovableByWindowBackground = false
 
@@ -405,8 +477,8 @@ enum DictationOverlayWindow {
     panel.standardWindowButton(.zoomButton)?.isHidden = true
 
     let presence = OverlayPresence(panel: panel)
-    presence.start()
     panel.presence = presence
+    panel.startPresence()
 
     panel.setPresentationMode(state.presentationMode)
 

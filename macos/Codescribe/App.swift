@@ -388,6 +388,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       switch intent {
       case .openChat:
         self.showAgent()
+      case .openWidget:
+        self.trayPanel.dismiss()
+        self.model.overlay.showWidget()
       case .revealChat:
         self.revealAgentForDelivery()
       }
@@ -714,7 +717,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // jobs, so the cleanup and deadline tasks behind that reply would never
     // execute and the app would sit in `terminate:` forever (2026-10-05).
     // Leave the job first: the run loop itself calls `terminate:` next tick.
-    RunLoop.main.perform { NSApp.terminate(nil) }
+    RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
   }
 
   static let languageRelaunchScript = """

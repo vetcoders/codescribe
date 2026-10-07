@@ -14,7 +14,10 @@ struct AgentPlaybackIdentity: Hashable, Sendable {
     self.bus = URL(fileURLWithPath: bus).resolvingSymlinksInPath().path
   }
 
-  var leaseID: String { Self.digest([provider, session], bytes: 16) }
+  var leaseID: String { Self.leaseIdentifier(provider: provider, session: session) }
+  static func leaseIdentifier(provider: String, session: String) -> String {
+    Self.digest([provider.lowercased(), session], bytes: 16)
+  }
   var storageKey: String { Self.digest([provider, session, bus], bytes: 12) }
 
   private static func digest(_ parts: [String], bytes: Int) -> String {
@@ -42,6 +45,57 @@ private struct AgentPlaybackMuteReceipt: Decodable, Sendable {
 /// apart from `AgentBridgeInstaller.swift` because they reference app types,
 /// and that file is also compiled on its own by `make install-bus`.
 extension RealAgentBridgeInstaller {
+  /// Archive one dead, frozen owner through the binding file's only writer.
+  @MainActor
+  static func archiveBusAgent(
+    owner: OverlayConversationOwner,
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async throws {
+    let executable = installer.commandURL("cs-bus")
+    guard installer.fileManager.isExecutableFile(atPath: executable.path),
+      installer.managedCommandID(executable) != nil
+    else { throw CocoaError(.fileNoSuchFile) }
+    let root = installer.bridgeRoot
+    try await Task.detached(priority: .userInitiated) {
+      let leaseURL = root.appendingPathComponent("leases/\(owner.leaseID).json")
+      let leaseData = try Data(contentsOf: leaseURL)
+      guard leaseData.count <= 16 << 20,
+        let lease = try JSONSerialization.jsonObject(with: leaseData) as? [String: Any],
+        lease["schema"] as? String == "codescribe.agent-bridge.lease.v1",
+        lease["provider"] as? String == owner.provider,
+        lease["provider_session_id"] as? String == owner.providerSessionID,
+        lease["lease_id"] as? String == owner.leaseID,
+        let bus = lease["bus"] as? String, bus.hasPrefix("/")
+      else { throw CocoaError(.fileReadCorruptFile) }
+      let process = Process()
+      let output = Pipe()
+      process.executableURL = executable
+      process.arguments = [
+        "--archive-agent", owner.channel, "--provider", owner.provider,
+        "--session", owner.providerSessionID, "--lease", owner.leaseID,
+        "--bus", bus, "--bridge-home", root.path,
+      ]
+      process.standardInput = FileHandle.nullDevice
+      process.standardOutput = output
+      process.standardError = FileHandle.nullDevice
+      try process.run()
+      defer { if process.isRunning { process.terminate() } }
+      let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+      while process.isRunning, ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(50))
+      }
+      guard !process.isRunning, process.terminationReason == .exit, process.terminationStatus == 0,
+        let data = try output.fileHandleForReading.read(upToCount: 65537), data.count <= 65536,
+        let receipt = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        receipt["schema"] as? String == "codescribe.agent-archive.v1",
+        receipt["released"] as? Bool == true,
+        let archivedOwner = OverlayConversationOwner(row: receipt),
+        archivedOwner.id == owner.id, archivedOwner.channel == owner.channel,
+        receipt["bus"] as? String == bus
+      else { throw CocoaError(.fileWriteUnknown) }
+    }.value
+  }
+
   /// Resolve each live roster session to its actual leased bus, including custom buses.
   @MainActor
   static func boundPlaybackIdentities(
@@ -108,9 +162,12 @@ extension RealAgentBridgeInstaller {
     guard installer.fileManager.isExecutableFile(atPath: executable.path),
       installer.managedCommandID(executable) != nil
     else {
-      throw NSError(domain: "Codescribe.BusPlayback", code: 1, userInfo: [
-        NSLocalizedDescriptionKey: String(localized: "Install the agent bridge to control playback.")
-      ])
+      throw NSError(
+        domain: "Codescribe.BusPlayback", code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey: String(
+            localized: "Install the agent bridge to control playback.")
+        ])
     }
     let arguments = [
       muted ? "--mute-agent" : "--unmute-agent", "--provider", identity.provider,
@@ -143,9 +200,12 @@ extension RealAgentBridgeInstaller {
       guard !process.isRunning, process.terminationReason == .exit,
         process.terminationStatus == 0
       else {
-        throw NSError(domain: "Codescribe.BusPlayback", code: 2, userInfo: [
-          NSLocalizedDescriptionKey: String(localized: "Agent playback preference could not be saved.")
-        ])
+        throw NSError(
+          domain: "Codescribe.BusPlayback", code: 2,
+          userInfo: [
+            NSLocalizedDescriptionKey: String(
+              localized: "Agent playback preference could not be saved.")
+          ])
       }
     }.value
   }

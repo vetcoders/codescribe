@@ -104,6 +104,7 @@ AUDIENCE_BINDING_SCHEMA = "vc.agent-audience-binding.v1"
 AUDIENCE_BINDING_FILENAME = "vc.agent-audience-binding.v1.json"
 ATTACH_RECEIPT_SCHEMA = "codescribe.agent-bridge.attach-receipt.v1"
 DETACH_RECEIPT_SCHEMA = "codescribe.agent-bridge.detach-receipt.v1"
+AGENT_ARCHIVE_SCHEMA = "codescribe.agent-archive.v1"
 TAKEOVER_RECEIPT_SCHEMA = "codescribe.agent-bridge.takeover-receipt.v1"
 #: Follower states a handover reports. Only these two authorize rebinding a
 #: channel; the other two mean the previous reader is still sitting on it.
@@ -4106,6 +4107,68 @@ def channel_bindings(root: Path) -> Iterator[dict[str, Any]]:
                 ) from error
 
 
+def archive_agent(args: argparse.Namespace) -> dict[str, Any]:
+    """Release one exact dead owner; retain its mailbox and conversation sources.
+
+    Lock order matches attachment: binding first, lease second. A stale UI
+    click cannot release a replacement session or stop a living reader.
+    """
+    root: Path = args.bridge_home
+    provider = args.provider.casefold()
+    lease_id = lease_identifier(provider, args.session)
+    if args.lease != lease_id:
+        raise ValueError("archive lease does not belong to this provider session")
+    channel = args.archive_agent
+    archive_path = root / "archives" / f"{lease_id}-{channel}.json"
+    bus = str(args.bus.expanduser().resolve(strict=False))
+    with contextlib.ExitStack() as holds, channel_bindings(root) as bindings:
+        current = bindings.get(channel)
+        previous = read_json(archive_path)
+        if current is None:
+            if (previous and previous.get("schema") == AGENT_ARCHIVE_SCHEMA
+                    and previous.get("provider") == provider
+                    and previous.get("provider_session_id") == args.session
+                    and previous.get("lease_id") == lease_id
+                    and previous.get("channel") == channel
+                    and isinstance(previous.get("bus"), str)
+                    and str(Path(previous["bus"]).resolve(strict=False)) == bus):
+                return previous
+            raise ValueError("channel has no matching owner to archive")
+        if (not isinstance(current, dict) or current.get("provider") != provider
+                or current.get("provider_session_id") != args.session):
+            raise ValueError("channel owner changed; nothing archived or released")
+        lock_path = root / "leases" / f"{lease_id}.lock"
+        lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock = holds.enter_context(open(lock_path, "a+b"))
+        os.fchmod(lock.fileno(), 0o600)
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError("agent reader is running; channel retained") from error
+        if live_follower_pid(root, lease_id) is not None:
+            raise ValueError("agent reader is alive; channel retained")
+        lease = read_json(root / "leases" / f"{lease_id}.json")
+        if (not lease or lease.get("schema") != LEASE_SCHEMA
+                or lease.get("lease_id") != lease_id
+                or lease.get("provider") != provider
+                or lease.get("provider_session_id") != args.session
+                or not isinstance(lease.get("bus"), str)
+                or str(Path(lease["bus"]).resolve(strict=False)) != bus):
+            raise ValueError("agent mailbox is unreadable or changed; channel retained")
+        receipt = {
+            "schema": AGENT_ARCHIVE_SCHEMA, "kind": "agent_archive",
+            "provider": provider, "provider_session_id": args.session,
+            "lease_id": lease_id, "channel": channel,
+            "name": current.get("audience") or lease.get("name") or provider,
+            "bus": lease["bus"], "archived_at": utc_now(), "released": True,
+        }
+        # Metadata precedes release. A failed binding write keeps the agent
+        # active: readers ignore archive metadata while this owner is bound.
+        atomic_json(archive_path, receipt)
+        del bindings[channel]
+    return receipt
+
+
 def occupied_refusal(
     channel: str, current: Any, bindings: dict[str, Any], same_name: bool = False
 ) -> str:
@@ -5025,6 +5088,8 @@ def main() -> int:
         help="release this session's channels, stop its own follower, print a "
         "detach receipt, and exit; the lease and its backlog stay",
     )
+    parser.add_argument("--archive-agent", metavar="CHANNEL",
+                        help="archive one disconnected exact --provider/--session/--lease/--bus owner and release its channel")
     parser.add_argument(
         "--status",
         action="store_true",
@@ -5114,6 +5179,22 @@ def main() -> int:
         f"then {DEFAULT_SPEECH_SPEED}; with --attach it is stored in the profile",
     )
     args = parser.parse_args()
+    if args.archive_agent is not None and (
+        args.archive_agent not in tuple(str(n) for n in range(1, 10))
+        or not args.provider or not args.session or not args.lease or args.bus is None
+        or any((args.attach, args.detach, args.takeover, args.channel is not None,
+                args.status, args.watch, args.follow, args.once, args.from_start,
+                args.ack, args.from_file, args.say is not None, args.send_text,
+                args.send is not None, args.to is not None, args.read_delivery,
+                args.retry_wakeup, args.play_reply, args.stop_reply,
+                args.playback_ticket, args.reply_to, args.all, args.become,
+                args.active_names, args.mute_agent, args.unmute_agent,
+                args.version, args.print_bus_path, args.print_install_interlock_path,
+                args.print_agent_turn_lease_path, args.assert_install_idle,
+                args.name, args.voice, args.speed is not None, args.tts_vendor,
+                args.drafts, args.coalesce, args.on_seal))
+    ):
+        parser.error("--archive-agent requires only exact --provider/--session/--lease/--bus/--bridge-home")
     if (args.mute_agent or args.unmute_agent) and any((
         args.version, args.print_bus_path, args.print_install_interlock_path,
         args.print_agent_turn_lease_path, args.assert_install_idle,
@@ -5183,6 +5264,13 @@ def main() -> int:
         parser.error("--lease requires --provider and --session")
     if args.takeover and not args.attach:
         parser.error("--takeover requires --attach")
+    if args.archive_agent is not None:
+        try:
+            emit(archive_agent(args))
+            return 0
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: agent archive refused: {error}\n")
+            return 3
     if args.mute_agent or args.unmute_agent:
         if (not args.provider or not args.bus_overridden
                 or any((args.send_text, args.say is not None, args.ack, args.attach,

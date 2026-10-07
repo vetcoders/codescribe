@@ -867,4 +867,5 @@ struct OverlayConversation: Equatable, Identifiable, Sendable {
 struct OverlayChannelDeliverySnapshot: Equatable, Sendable {
   let deliveries: [OverlayChannelDelivery]
   let conversations: [OverlayConversation]
+  var archivedOwners: Set<OverlayConversationOwner> = []
 }

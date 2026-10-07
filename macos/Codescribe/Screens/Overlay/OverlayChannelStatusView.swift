@@ -134,7 +134,7 @@ struct OverlayAgentStatusMark: View {
   }
 }
 
-/// One microphone treatment for the header and channel controls; actions stay with their owners.
+/// Compact recording glyph for the widget header; capture stays with its owner.
 struct OverlayMicrophoneGlyph: View {
   @Environment(\.displayScale) private var displayScale
   let symbol: String
@@ -155,6 +155,18 @@ struct OverlayMicrophoneGlyph: View {
   }
 }
 
+/// The system owns button material, contrast and pointer feedback alongside the composer.
+private struct OverlayAgentControlStyle: ViewModifier {
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if #available(macOS 26.0, *) {
+      content.buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.regular)
+    } else {
+      content.buttonStyle(.bordered).buttonBorderShape(.circle).controlSize(.regular)
+    }
+  }
+}
+
 /// Identical controls in the roster and conversation; neither owns capture or playback.
 struct OverlayAgentAudioControls: View {
   let open: Bool
@@ -166,10 +178,11 @@ struct OverlayAgentAudioControls: View {
   let onPlayback: () -> Void
 
   private var microphoneLabel: String {
-    open ? String(localized: "Disconnect microphone") : String(localized: "Connect microphone")
+    open ? String(localized: "Stop speaking to agent") : String(localized: "Speak to agent")
   }
   private var playbackLabel: String {
-    muted == true
+    if muted == nil { return String(localized: "Playback status unavailable") }
+    return muted == true
       ? String(localized: "Unmute agent replies") : String(localized: "Mute agent replies")
   }
   private var playbackValue: String {
@@ -182,11 +195,12 @@ struct OverlayAgentAudioControls: View {
   var body: some View {
     HStack(spacing: 6) {
       Button(action: onMicrophone) {
-        OverlayMicrophoneGlyph(
-          symbol: open ? "mic.fill" : "mic.slash",
-          tint: open ? palette.listeningStatus.color : palette.mutedText.color)
+        Image(systemName: open ? "mic.fill" : "mic")
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(open ? palette.listeningStatus.color : palette.primaryText.color)
+          .frame(width: 16, height: 16)
       }
-      .buttonStyle(.plain).csFocusOutline()
+      .csFocusOutline()
       .disabled(!microphoneEnabled)
       .help(microphoneLabel)
       .accessibilityLabel(microphoneLabel)
@@ -196,19 +210,23 @@ struct OverlayAgentAudioControls: View {
       .accessibilityIdentifier("overlay-agent-microphone")
 
       Button(action: onPlayback) {
-        OverlayMicrophoneGlyph(
-          symbol: muted == nil
+        Image(
+          systemName: muted == nil
             ? "speaker.badge.exclamationmark"
-            : muted == true ? "speaker.slash.fill" : "speaker.wave.2",
-          tint: muted == false ? palette.listeningStatus.color : palette.mutedText.color)
+            : muted == true ? "speaker.slash.fill" : "speaker.wave.2"
+        )
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(palette.primaryText.color)
+        .frame(width: 16, height: 16)
       }
-      .buttonStyle(.plain).csFocusOutline()
+      .csFocusOutline()
       .disabled(!playbackEnabled || muted == nil)
       .help(playbackLabel)
       .accessibilityLabel(playbackLabel)
       .accessibilityValue(playbackValue)
       .accessibilityIdentifier("overlay-agent-speaker")
     }
+    .modifier(OverlayAgentControlStyle())
   }
 }
 
@@ -236,6 +254,11 @@ struct OverlayChannelStatusView: View {
   var onDismissMonitor: (() -> Void)?
   var onShowTranscription: (() -> Void)?
   var playbackError: String?
+  var archiveCandidates: [String: OverlayConversationOwner] = [:]
+  var pendingArchives: Set<OverlayConversationOwner> = []
+  var archivedOwners: Set<OverlayConversationOwner> = []
+  var onArchiveAgent: ((OverlayConversationOwner) -> Void)?
+  var archiveError: String?
 
   init(
     channels: [OverlayChannelDelivery], unavailable: Bool,
@@ -374,6 +397,11 @@ struct OverlayChannelStatusView: View {
   var currentConversations: [OverlayConversation] {
     conversations.filter { conversation in
       if conversation.channel == "0" { return true }
+      if let owner = conversation.owner,
+        archivedOwners.contains(where: { $0.id == owner.id && $0.channel == owner.channel })
+      {
+        return false
+      }
       guard let owner = conversation.owner, let hud = hudStates[conversation.channel],
         hud.provider == owner.provider, hud.providerSessionID == owner.providerSessionID
       else { return false }
@@ -473,6 +501,22 @@ struct OverlayChannelStatusView: View {
         onPlayback: { onTogglePlayback?(channel.channel) }
       )
       .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
+      if let owner = archiveCandidates[channel.channel], onArchiveAgent != nil {
+        Button {
+          onArchiveAgent?(owner)
+        } label: {
+          Image(systemName: "xmark")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(palette.primaryText.color)
+            .frame(width: 16, height: 16)
+        }
+        .modifier(OverlayAgentControlStyle())
+        .csFocusOutline()
+        .disabled(pendingArchives.contains(owner))
+        .help("Remove from list and move to archive")
+        .accessibilityLabel("Remove from list and move to archive")
+        .accessibilityIdentifier("overlay-archive-agent-\(channel.channel)")
+      }
     }
     .padding(.vertical, 7)
     .padding(.horizontal, 6)
@@ -587,6 +631,12 @@ struct OverlayChannelStatusView: View {
           .font(.system(size: 11))
           .foregroundStyle(palette.errorStatus.color)
           .accessibilityIdentifier("overlay-agent-playback-error")
+      }
+      if let archiveError {
+        Text(verbatim: archiveError)
+          .font(.system(size: 11))
+          .foregroundStyle(palette.errorStatus.color)
+          .accessibilityIdentifier("overlay-agent-archive-error")
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)

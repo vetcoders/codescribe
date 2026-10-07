@@ -24,6 +24,42 @@ private struct MicrophoneFrameCapture: View {
 
 final class OverlayResizeHitTests: XCTestCase {
   @MainActor
+  func testHoverMorphKeepsNativeMicrophoneAndFoldTargetsOnScreen() throws {
+    let state = OverlayState.previewListening()
+    state.setPresentationMode(.mini)
+    let recorder = MicrophoneFrameRecorder()
+    let host = NSHostingView(rootView: MicrophoneFrameCapture(state: state, recorder: recorder))
+    host.sizingOptions = []
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 900, y: 500, width: 200, height: 46),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.contentView = host
+    panel.setPresentationMode(.mini)
+    state.onPresentationModeChanged = { mode in
+      panel.setPresentationMode(mode)
+      host.frame = NSRect(origin: .zero, size: panel.frame.size)
+    }
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    host.frame = NSRect(origin: .zero, size: panel.frame.size)
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    let mic = try XCTUnwrap(recorder.frames.stop)
+    let fold = try XCTUnwrap(recorder.frames.preview)
+    let micX = panel.frame.minX + mic.midX
+    let foldX = panel.frame.minX + fold.midX
+    state.setPresentationMode(.midi)
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    XCTAssertEqual(
+      panel.frame.minX + (try XCTUnwrap(recorder.frames.stop)).midX, micX, accuracy: 0.5)
+    XCTAssertEqual(
+      panel.frame.minX + (try XCTUnwrap(recorder.frames.preview)).midX, foldX, accuracy: 0.5)
+    XCTAssertEqual(try XCTUnwrap(recorder.frames.stop).size, mic.size)
+    XCTAssertEqual(try XCTUnwrap(recorder.frames.preview).size, fold.size)
+  }
+
+  @MainActor
   func testConversationKeepsCommonHeaderControlsWhenFoldedAndReopened() throws {
     let owner = try XCTUnwrap(
       OverlayConversationOwner(row: [
