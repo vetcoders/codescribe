@@ -630,6 +630,80 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   }
 
   @MainActor
+  func testRestoredConversationLatestBubbleIsVisibleOnFullCanvas() throws {
+    for count in [1, 173] {
+      for initiallyMini in [false, true] {
+        var bus = OverlayChannelDelivery.Bus()
+        for index in 0..<count {
+          var row = reply(String(format: "%024x", index + 1))
+          row["text"] =
+            index == count - 1
+            ? "LATEST VISIBLE BUBBLE\n\nLast retained message must appear immediately."
+            : String(repeating: "Retained multiline conversation.\n\n", count: 5)
+          bus.consume(row)
+        }
+        let restored = try JSONDecoder().decode(
+          OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus))
+        let conversation = try lenaConversation(restored)
+        XCTAssertEqual(conversation.messages.count, count)
+        XCTAssertNotNil(conversation.messages.last)
+        let state = OverlayState.previewFormatted()
+        state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+        state.selectConversation(conversation.id, expand: false)
+        state.conversationDrafts[conversation.id] = "Retained unsent draft"
+        state.setPresentationMode(initiallyMini ? .mini : .expanded)
+        let host = NSHostingView(rootView: DictationOverlayView(state: state))
+        host.sizingOptions = []
+        let panel = FloatingOverlayPanel(
+          contentRect: NSRect(x: 800, y: 300, width: 600, height: 500),
+          styleMask: [.borderless, .nonactivatingPanel, .resizable],
+          backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        panel.contentView = host
+        panel.setPresentationMode(initiallyMini ? .mini : .expanded)
+        state.onPresentationModeChanged = { [weak panel] mode in
+          panel?.setPresentationMode(mode, animated: false)
+        }
+        panel.orderFrontRegardless()
+        defer { panel.close() }
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
+        let revision = state.conversationFocusRevision
+        if initiallyMini {
+          state.toggleCollapsed()
+          XCTAssertEqual(state.conversationFocusRevision, revision)
+        }
+        // Permit the existing presentation animation and native layout to
+        // settle, without a wheel, reselect, forced scroll or identity reset.
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.35))
+        func elements(_ object: Any) -> [any NSAccessibilityProtocol] {
+          guard let element = object as? any NSAccessibilityProtocol else { return [] }
+          let native = (object as? NSView)?.subviews ?? []
+          return [element] + ((element.accessibilityChildren() ?? []) + native).flatMap(elements)
+        }
+        let tree = elements(host)
+        let candidates = tree.filter {
+          $0.accessibilityRole() == .staticText
+            && (($0.accessibilityLabel() ?? "").contains("LATEST VISIBLE BUBBLE")
+              || ($0.accessibilityValue() as? String ?? "").contains("LATEST VISIBLE BUBBLE"))
+        }
+        let nativeViewport = panel.convertToScreen(host.bounds)
+          .insetBy(dx: 20, dy: 90)
+        XCTAssertTrue(
+          candidates.contains { element in
+            let frame = element.accessibilityFrame()
+            return !frame.isEmpty && nativeViewport.intersects(frame)
+          },
+          "count=\(count) mini=\(initiallyMini): latest bubble missing from viewport \(nativeViewport); frames=\(candidates.map { $0.accessibilityFrame() })"
+        )
+        XCTAssertEqual(state.selectedConversationID, conversation.id)
+        XCTAssertEqual(state.selectedConversation?.messages, conversation.messages)
+        XCTAssertEqual(state.conversationDrafts[conversation.id], "Retained unsent draft")
+      }
+    }
+  }
+
+  @MainActor
   func testActualPanelInitialComposerClickTakesKeyAndUpdatesDraft() throws {
     try withPanelComposer(transcriptFirst: false)
   }
