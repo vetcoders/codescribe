@@ -6,22 +6,22 @@ const isPagesCopy = import.meta.env.BASE_URL.startsWith('/codescribe');
 ---
 
 <Layout
-  title="Get a licence — codescribe"
-  description="Generate your codescribe licence code. Open beta: enter your email, paste the code into Settings → License."
+  title="Get a license key — codescribe"
+  description="Get your Codescribe license key and activate it in Settings → License."
   path="license"
 >
-  <LegalPage title="Get a licence" eyebrow="Open beta · Licence" updated="2026-10-06">
+  <LegalPage title="Get a license key" eyebrow="Open beta" updated="2026-10-06">
     <p>
-      Codescribe is in open beta. Enter your email and you get a licence code
-      on the spot — paste it into <strong>Settings → License</strong> in the
-      app. Your email is sent over HTTPS to our licence service. The signed code
+      Codescribe is in open beta. Enter your email to get a license key,
+      then paste it into <strong>Settings → License</strong> in the
+      app. Your email is sent over HTTPS to our license service. The signed key
       contains its SHA-256 hash rather than the address. The service records
       that hash, your IP address, and the issue time; see the
       <a href={page("privacy")}>Privacy Policy</a>.
     </p>
 
-    {isPagesCopy && <p>Licence issuance is hosted on the main website.
-      <a href="https://codescribe.vetcoders.io/license/">Open the licence form</a>.</p>}
+    {isPagesCopy && <p>License issuance is hosted on the main website.
+      <a href="https://codescribe.vetcoders.io/license/">Open the license form</a>.</p>}
     <div hidden={isPagesCopy}>
     <form id="licence-form" autocomplete="email">
       <label for="licence-email">Email</label>
@@ -34,38 +34,25 @@ const isPagesCopy = import.meta.env.BASE_URL.startsWith('/codescribe');
           placeholder="you@example.com"
           inputmode="email"
         />
-        <button type="submit" id="licence-submit">Generate licence</button>
+        <button type="submit" id="licence-submit">Get license key</button>
       </div>
     </form>
 
     <div id="licence-result" hidden>
-      <h2>Your licence code</h2>
+      <h2>License key</h2>
       <pre id="licence-code" tabindex="0"></pre>
       <p>
-        <button type="button" id="licence-copy">Copy code</button>
+        <button type="button" id="licence-copy">Copy key</button>
         <span id="licence-meta"></span>
       </p>
       <p>
-        Open the app → <strong>Settings → License</strong> → paste the code.
-        Keep it somewhere safe; the same code works on up to the listed number
-        of machines.
+        Paste the key into <strong>Settings → License</strong> in Codescribe.
       </p>
     </div>
 
     <p id="licence-error" role="alert" hidden></p>
     </div>
 
-    <h2>What the code contains</h2>
-    <ul>
-      <li>A SHA-256 hash of your email — not the email itself</li>
-      <li>Issue date and the date until which updates are covered</li>
-      <li>A seat limit (how many Macs may use the code)</li>
-      <li>An Ed25519 signature the app verifies fully offline</li>
-    </ul>
-    <p>
-      Validation happens inside the app against a public key baked into the
-      build — no account, no phone-home, no activation server.
-    </p>
   </LegalPage>
 </Layout>
 
@@ -113,21 +100,21 @@ const isPagesCopy = import.meta.env.BASE_URL.startsWith('/codescribe');
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
       codeEl.textContent = body.license;
-      metaEl.textContent = `${body.sku} · issued ${body.issued} · updates until ${body.updates_until} · ${body.seat_limit} seat(s)`;
+      metaEl.textContent = `Updates through ${body.updates_until} · Device limit: ${body.seat_limit}`;
       result.hidden = false;
     } catch (error) {
       errorEl.textContent =
-        error instanceof Error ? error.message : 'Licence service is unreachable — try again in a minute.';
+        error instanceof Error ? error.message : 'License service is unreachable — try again in a minute.';
       errorEl.hidden = false;
     } finally {
       submit.disabled = false;
-      submit.textContent = 'Generate licence';
+      submit.textContent = 'Get license key';
     }
   });
 
   copyBtn.addEventListener('click', async () => {
     await navigator.clipboard.writeText(codeEl.textContent ?? '');
     copyBtn.textContent = 'Copied';
-    setTimeout(() => (copyBtn.textContent = 'Copy code'), 1500);
+    setTimeout(() => (copyBtn.textContent = 'Copy key'), 1500);
   });
 </script>

@@ -1,4 +1,7 @@
+import AppKit
 import XCTest
+
+@testable import Codescribe
 
 /// Source contract for the Settings appearance cut. The compiler is embargoed
 /// for this worker, so these checks lock the structure a later build will compile:
@@ -44,8 +47,13 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(view.contains("focusEffectDisabled"))
 
     let tabBar = try XCTUnwrap(sources["SettingsTabBar.swift"])
-    XCTAssertTrue(tabBar.contains(".pickerStyle(.segmented)"))
+    XCTAssertTrue(tabBar.contains("NSSegmentedControl()"))
+    XCTAssertTrue(tabBar.contains("control.segmentDistribution = .fit"))
+    XCTAssertTrue(tabBar.contains("ScrollView(.horizontal, showsIndicators: false) { bar }"))
     XCTAssertTrue(tabBar.contains(".controlSize(.regular)"))
+    // A bar pinned to its natural width widens the pane past the window.
+    XCTAssertFalse(tabBar.contains(".fixedSize()"))
+    XCTAssertFalse(tabBar.contains(".pickerStyle(.segmented)"))
 
     let pane = try XCTUnwrap(sources["SettingsTabbedPane.swift"])
     let scroll = try XCTUnwrap(pane.range(of: "ScrollView {"))
@@ -65,6 +73,252 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(containsToken(joined, "CSColor.olive"))
     XCTAssertGreaterThan(joined.components(separatedBy: "SettingsPageHeader(").count, 2)
     XCTAssertGreaterThan(joined.components(separatedBy: ".settingsGroupedInset(").count, 2)
+  }
+
+  /// The six tabs of a tabbed section fit the narrowest detail column, in
+  /// English and in Polish. A language that breaks this still gets the
+  /// scrolling bar, but the label is then too long and should be shortened
+  /// before it ships.
+  @MainActor
+  func testTabBarsFitTheMinimumWindowInEnglishAndPolish() throws {
+    let sources = try settingsSources()
+    let view = try XCTUnwrap(sources["SettingsView.swift"])
+    XCTAssertTrue(view.contains(".navigationSplitViewColumnWidth(min: 196, ideal: 216, max: 300)"))
+    // An 880 pt window with the sidebar at its ideal width.
+    XCTAssertEqual(SettingsView.detailMinWidth, 880 - 216)
+    let pane = try XCTUnwrap(sources["SettingsTabbedPane.swift"])
+    XCTAssertTrue(pane.contains(".padding(.horizontal, CSSpace.xl)"))
+    // Detail column minus the bar's horizontal padding and the column divider.
+    let column: CGFloat = SettingsView.detailMinWidth - 1 - 2 * CSSpace.xl
+
+    let polish = try polishCatalog()
+    let tabbed = SettingsSection.allCases.filter { !SettingsTab.tabs(in: $0).isEmpty }
+    XCTAssertEqual(tabbed.count, 2)
+    for section in tabbed {
+      let english = SettingsTab.tabs(in: section).map(\.title)
+      XCTAssertEqual(english.count, 6, "\(section.rawValue)")
+      // Brand names ("MCP", "Whisper") are not catalog keys and read the same.
+      let translated = english.map { polish[$0] ?? $0 }
+      XCTAssertNotEqual(translated, english, "\(section.rawValue): no Polish labels resolved")
+      for (language, titles) in [("en", english), ("pl", translated)] {
+        let width = SettingsTabSegments.control(titles: titles).fittingSize.width
+        XCTAssertGreaterThan(width, 0)
+        XCTAssertLessThanOrEqual(
+          width, column, "\(section.rawValue) tabs in \(language): \(titles)")
+      }
+    }
+  }
+
+  /// The window minimum sits on the detail column. A minimum width on the
+  /// split view itself makes the opening sidebar stop halfway and jump
+  /// (measured on macOS 27 below a 1096 pt window).
+  func testWindowMinimumIsCarriedByTheDetailColumn() throws {
+    let view = try XCTUnwrap(settingsSources()["SettingsView.swift"])
+    let detail = try XCTUnwrap(view.range(of: "} detail: {"))
+    let minimum = try XCTUnwrap(view.range(of: ".frame(minWidth: Self.detailMinWidth)"))
+    let toolbar = try XCTUnwrap(view.range(of: ".navigationTitle("))
+    XCTAssertLessThan(detail.lowerBound, minimum.lowerBound)
+    XCTAssertLessThan(minimum.lowerBound, toolbar.lowerBound)
+    XCTAssertTrue(
+      view.contains(".frame(maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)"))
+    XCTAssertFalse(view.contains("minWidth: 880"))
+  }
+
+  /// A segmented control cannot shrink below its labels, and the Settings
+  /// window follows the content minimum. `Allow · Ask · Deny` pinned to 180 pt
+  /// spilled over its card in Polish (255 pt) and, three abreast, forced the
+  /// window wider than the screen whenever Agent › Tools opened (Founder,
+  /// 2026-10-07). Tool-permission pickers sit at their own width, one default
+  /// per row; every picker that keeps a fixed frame is measured against its
+  /// Polish labels here.
+  @MainActor
+  func testSegmentedPickersFitTheirFramesInEnglishAndPolish() throws {
+    let sources = try settingsSources()
+    let polish = try polishCatalog()
+    func width(_ titles: [String]) -> CGFloat {
+      SettingsTabSegments.control(titles: titles).fittingSize.width
+    }
+
+    let tools = try XCTUnwrap(sources["ToolPermissionsSection.swift"])
+    XCTAssertEqual(tools.components(separatedBy: ".pickerStyle(.segmented)").count, 3)
+    XCTAssertEqual(tools.components(separatedBy: ".fixedSize()").count, 3)
+    XCTAssertFalse(tools.contains(".frame(width: 180)"))
+    XCTAssertFalse(tools.contains(".frame(maxWidth: 180)"))
+    XCTAssertEqual(tools.components(separatedBy: "defaultRow(title: \"").count, 4)
+    let levels = ["Allow", "Ask", "Deny"]
+    let polishLevels = try levels.map { try XCTUnwrap(polish[$0]) }
+    XCTAssertEqual(polishLevels, ["Zezwalaj", "Pytaj o zgodę", "Odmów"])
+    // The tools column at the minimum window: the detail column minus the pane
+    // padding, the 190 pt server column, the gap between them and the row's
+    // own padding. A row keeps at least 96 pt for the tool name.
+    let browser = try XCTUnwrap(sources["ToolOverridesBrowser.swift"])
+    XCTAssertTrue(browser.contains(".frame(width: 190)"))
+    let column = SettingsView.detailMinWidth - 2 * CSSpace.xl - 190 - CSSpace.md - 2 * 14
+    for titles in [levels, polishLevels] {
+      let picker = width(titles)
+      XCTAssertGreaterThan(picker, 0)
+      XCTAssertLessThanOrEqual(picker + 8 + 96, column, "\(titles)")
+    }
+
+    // Pickers that keep a fixed frame hold their Polish labels.
+    let fixed: [(file: String, picker: String, titles: [String?])] = [
+      (
+        "CreatorPanel.swift", "Picker(\"\", selection: formattingLevelBinding)",
+        [
+          polish["settings.formatting.level.off"], polish["Correction"], polish["Smart"],
+          polish["Max"],
+        ]
+      ),
+      ("ShortcutsPanel.swift", "Picker(\"Arm modifier\"", ["Shift", "Command"]),
+      (
+        "ShortcutsPanel.swift", "Picker(\"Pointer indicator\"",
+        [polish["settings.holdBadge.size.off"], "4px", "8px", "12px"]
+      ),
+      ("ShortcutsPanel.swift", "Picker(\"Agent channel modifier\"", ["Ctrl", "Fn"]),
+    ]
+    for entry in fixed {
+      let source = try XCTUnwrap(sources[entry.file])
+      let start = try XCTUnwrap(source.range(of: entry.picker), entry.picker)
+      let tail = String(source[start.upperBound...].prefix(600))
+      let frame = try XCTUnwrap(fixedFrameWidth(in: tail), "\(entry.picker): no fixed frame")
+      let titles = try entry.titles.map { try XCTUnwrap($0, entry.picker) }
+      XCTAssertLessThanOrEqual(width(titles), frame, "\(entry.picker): \(titles)")
+    }
+  }
+
+  /// The sidebar footer is one sentence-case line per state, and empty while
+  /// the state is undetermined. The healthy line must stay on one line in the
+  /// narrowest sidebar, in English and Polish.
+  @MainActor
+  func testHealthFooterReadsAsOneSentenceCaseLine() throws {
+    let states = [
+      healthState(stt: true, recording: true, keys: .available, agent: true, formatting: true),
+      healthState(stt: false, recording: true, keys: .available, agent: true, formatting: true),
+      healthState(stt: true, recording: false, keys: .available, agent: true, formatting: true),
+      healthState(stt: true, recording: true, keys: .missing, agent: false, formatting: true),
+      healthState(stt: true, recording: true, keys: .available, agent: false, formatting: true),
+      healthState(stt: true, recording: true, keys: .available, agent: true, formatting: false),
+      healthState(stt: true, recording: nil, keys: .available, agent: true, formatting: true),
+    ]
+    let messages = try states.map { try XCTUnwrap($0.message) }
+    XCTAssertEqual(Set(messages).count, states.count)
+
+    let undetermined = healthState(
+      stt: nil, recording: true, keys: .available, agent: true, formatting: true)
+    XCTAssertNil(undetermined.message)
+    XCTAssertNil(undetermined.targetSection)
+
+    let polish = try polishCatalog()
+    for message in messages {
+      let translated = try XCTUnwrap(polish[message], "no Polish row: \(message)")
+      for line in [message, translated] {
+        XCTAssertEqual(line.first?.isUppercase, true, line)
+        XCTAssertFalse(line.contains("·"), line)
+      }
+    }
+
+    let view = try XCTUnwrap(settingsSources()["SettingsView.swift"])
+    XCTAssertTrue(view.contains("Circle().fill(health.level.color).frame(width: 6, height: 6)"))
+    XCTAssertTrue(view.contains("if let message = health.message {"))
+    XCTAssertTrue(view.contains("Text(message)\n        .font(CSFont.mono(10, .medium))"))
+    // Narrowest sidebar minus the footer padding, the status dot and its gap.
+    let slot: CGFloat = 196 - 2 * 16 - 6 - 8
+    XCTAssertEqual(states.first?.level, .healthy)
+    let healthy = try XCTUnwrap(messages.first)
+    for line in [healthy, try XCTUnwrap(polish[healthy])] {
+      let width = (line as NSString).size(withAttributes: [.font: CSFont.nsMono(10)]).width
+      XCTAssertLessThanOrEqual(width, slot, line)
+    }
+  }
+
+  /// Providers shows what a user acts on and nothing that explains the
+  /// architecture: Keychain account names, factory endpoints, wire keys and
+  /// the OAuth client-id override sit under one `Advanced` disclosure per
+  /// card; a key row is one line with `Change` / `Add`; the account row has
+  /// one action; URL rows carry no pre-emptive help text. Every first-level
+  /// string has a Polish row.
+  func testProvidersPanelKeepsTheFirstLevelPlain() throws {
+    let sources = try settingsSources()
+    let panel = try XCTUnwrap(sources["ProvidersPanel.swift"])
+    let rows = try XCTUnwrap(sources["KeyRows.swift"])
+
+    XCTAssertEqual(panel.components(separatedBy: "DisclosureGroup(\"Advanced\")").count, 3)
+    XCTAssertTrue(panel.contains("String(localized: \"Providers\")"))
+    XCTAssertFalse(panel.contains("\"Providers.\""))
+    XCTAssertFalse(panel.contains("factory endpoint"))
+    XCTAssertFalse(panel.contains("SettingsSectionLabel(String(localized: \"Vendors\"))"))
+    XCTAssertFalse(panel.contains("help:"), "URL rows do not warn ahead of a rejected save")
+    XCTAssertFalse(panel.contains("Text(lane.title)"), "lane titles are named by id")
+    // The wire line is a developer-build fact, and only under Advanced.
+    let accepts = try XCTUnwrap(panel.range(of: "Text(lane.accepts)"))
+    let gate = try XCTUnwrap(panel.range(of: "if DeveloperSurface.isEnabled() {"))
+    XCTAssertLessThan(gate.lowerBound, accepts.lowerBound)
+    XCTAssertLessThan(
+      accepts.lowerBound.utf16Offset(in: panel) - gate.lowerBound.utf16Offset(in: panel), 80)
+
+    // Key row: label and state on one line, the editor behind the chip, no account name.
+    let keyRow = try XCTUnwrap(rows.range(of: "struct KeyRow: View"))
+    let keyRowEnd = try XCTUnwrap(rows.range(of: "extension KeyRow {"))
+    let keyRowSource = rows[keyRow.lowerBound..<keyRowEnd.lowerBound]
+    XCTAssertFalse(keyRowSource.contains("Text(account)"))
+    XCTAssertTrue(keyRowSource.contains("isSet ? \"Change\" : \"Add\""))
+    XCTAssertTrue(
+      keyRowSource.contains("isSet ? \"Set\" : (optional ? \"Optional\" : \"Not set\")"))
+    let chip = try XCTUnwrap(keyRowSource.range(of: "editing.toggle()"))
+    let field = try XCTUnwrap(keyRowSource.range(of: "if editing {"))
+    XCTAssertLessThan(chip.lowerBound, field.lowerBound)
+
+    // Account row: Sign out XOR Sign in.
+    let account = try XCTUnwrap(rows.range(of: "struct AccountLoginRow: View"))
+    let accountSource = rows[account.lowerBound...]
+    XCTAssertTrue(
+      accountSource.contains("if signedIn {\n        SettingsChipButton(\n          \"Sign out\""))
+    XCTAssertTrue(
+      accountSource.contains(
+        "} else {\n        SettingsChipButton(\n          enabled: provider.accountLoginEnabled"))
+    XCTAssertFalse(accountSource.contains("Advanced · OAuth client id…"))
+
+    let polish = try polishCatalog()
+    for key in [
+      "Providers",
+      "Connect accounts or add API keys. Models are chosen under Agent › LLM lanes.",
+      "Refresh status",
+      "Add provider",
+      "Add a server that speaks OpenAI Responses or Anthropic Messages.",
+      "Cloud transcription",
+      "Your recordings leave your machine.",
+      "Cloud mode is switched on under Dictation. The connection is set up here.",
+      "File transcription",
+      "Live transcription",
+      "Endpoint",
+      "API key",
+      "Gateway session URL",
+      "Optional. Used for live transcription.",
+      "Keys are stored securely in the macOS Keychain.",
+      "Advanced",
+      "Keychain account",
+      "Settings keys",
+      "OAuth client id…",
+      "Set", "Not set", "Optional", "Change", "Add",
+      "%@ account", "Connected", "Connected as %@", "Not connected", "Sign out", "Sign in with %@",
+      "This address needs http:// or https://.",
+      "This address needs ws:// or wss://.",
+    ] {
+      let translated = try XCTUnwrap(polish[key], "no Polish row: \(key)")
+      XCTAssertEqual(translated.first?.isUppercase, true, "\(key) → \(translated)")
+    }
+    XCTAssertEqual(polish["Providers"], "Dostawcy")
+    XCTAssertEqual(polish["Cloud transcription"], "Transkrypcje w chmurze")
+    XCTAssertEqual(polish["File transcription"], "Transkrypcja plików")
+    XCTAssertEqual(polish["Live transcription"], "Transkrypcja na żywo")
+    XCTAssertEqual(polish["Connected as %@"], "Połączono jako %@")
+    for retired in [
+      "Providers.", "Refresh provider access", "factory endpoint",
+      "Speech-to-text Cloud Service", "Advanced · OAuth client id…",
+      "secrets live only in the Keychain — presence shown, value hidden",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
   }
 
   func testAvailabilityTintsUseSolidTerracotta() throws {
@@ -92,6 +346,38 @@ final class SettingsChromeContractTests: XCTestCase {
       sources[file.lastPathComponent] = try String(contentsOf: file, encoding: .utf8)
     }
     return sources
+  }
+
+  /// English key to Polish value, straight from the source catalog.
+  private func polishCatalog() throws -> [String: String] {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Resources/Localization/Localizable.xcstrings")
+    let catalog = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    let strings = try XCTUnwrap(catalog["strings"] as? [String: Any])
+    var polish: [String: String] = [:]
+    for (key, entry) in strings {
+      guard let localizations = (entry as? [String: Any])?["localizations"] as? [String: Any],
+        let unit = (localizations["pl"] as? [String: Any])?["stringUnit"] as? [String: Any],
+        let value = unit["value"] as? String
+      else { continue }
+      polish[key] = value
+    }
+    return polish
+  }
+
+  /// The first fixed width (`frame(width:)` or `frame(maxWidth:)`) in `source`.
+  private func fixedFrameWidth(in source: String) -> CGFloat? {
+    let hits = [".frame(width: ", ".frame(maxWidth: "].compactMap {
+      key -> (String.Index, CGFloat)? in
+      guard let range = source.range(of: key) else { return nil }
+      let digits = String(source[range.upperBound...].prefix { $0.isNumber || $0 == "." })
+      guard let value = Double(digits) else { return nil }
+      return (range.lowerBound, CGFloat(value))
+    }
+    return hits.min { $0.0 < $1.0 }?.1
   }
 
   private func joinedSettingsSources() throws -> String {

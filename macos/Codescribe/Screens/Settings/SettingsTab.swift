@@ -36,8 +36,11 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
   }
 
-  /// Segment label. Short on purpose: macOS sizes every segment to the widest
-  /// label, and six of them must fit the pane at the 880pt minimum window.
+  /// Segment label. Short on purpose: six of them share one tab bar, and they
+  /// should fit the pane at the 880pt minimum window. Each segment hugs its own
+  /// label, so one long title no longer sets the width of all six; when the six
+  /// still do not fit, `SettingsTabBar` scrolls horizontally instead of widening
+  /// the pane, so a long translation costs a scroll, never a clipped pane.
   var title: String {
     switch self {
     case .agentLanes: String(localized: "LLM lanes", comment: "Settings tab: LLM request lanes")

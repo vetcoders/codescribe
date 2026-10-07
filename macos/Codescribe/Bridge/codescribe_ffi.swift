@@ -11916,6 +11916,8 @@ public func FfiConverterTypeCsProviderAccessSnapshot_lower(_ value: CsProviderAc
 
 /**
  * Provider identity and credential presence; never a returned secret.
+ * `account_identity` is who the stored id token says is signed in (email,
+ * else subject) — `None` while signed out or without such a claim.
  */
 public struct CsProviderOption: Equatable, Hashable {
     public var id: String
@@ -11929,11 +11931,12 @@ public struct CsProviderOption: Equatable, Hashable {
     public var accountSignedIn: Bool
     public var accountLoginEnabled: Bool
     public var accountStatusMessage: String
+    public var accountIdentity: String?
     public var oauthClientId: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, kind: String, displayName: String, wire: String, endpoint: String, apiKeyAccount: String, apiKeySet: Bool, keyRequired: Bool, accountSignedIn: Bool, accountLoginEnabled: Bool, accountStatusMessage: String, oauthClientId: String?) {
+    public init(id: String, kind: String, displayName: String, wire: String, endpoint: String, apiKeyAccount: String, apiKeySet: Bool, keyRequired: Bool, accountSignedIn: Bool, accountLoginEnabled: Bool, accountStatusMessage: String, accountIdentity: String?, oauthClientId: String?) {
         self.id = id
         self.kind = kind
         self.displayName = displayName
@@ -11945,6 +11948,7 @@ public struct CsProviderOption: Equatable, Hashable {
         self.accountSignedIn = accountSignedIn
         self.accountLoginEnabled = accountLoginEnabled
         self.accountStatusMessage = accountStatusMessage
+        self.accountIdentity = accountIdentity
         self.oauthClientId = oauthClientId
     }
 
@@ -11973,6 +11977,7 @@ public struct FfiConverterTypeCsProviderOption: FfiConverterRustBuffer {
                 accountSignedIn: FfiConverterBool.read(from: &buf),
                 accountLoginEnabled: FfiConverterBool.read(from: &buf),
                 accountStatusMessage: FfiConverterString.read(from: &buf),
+                accountIdentity: FfiConverterOptionString.read(from: &buf),
                 oauthClientId: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -11989,6 +11994,7 @@ public struct FfiConverterTypeCsProviderOption: FfiConverterRustBuffer {
         FfiConverterBool.write(value.accountSignedIn, into: &buf)
         FfiConverterBool.write(value.accountLoginEnabled, into: &buf)
         FfiConverterString.write(value.accountStatusMessage, into: &buf)
+        FfiConverterOptionString.write(value.accountIdentity, into: &buf)
         FfiConverterOptionString.write(value.oauthClientId, into: &buf)
     }
 }

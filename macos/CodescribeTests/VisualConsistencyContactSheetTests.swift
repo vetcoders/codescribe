@@ -120,8 +120,8 @@ final class VisualConsistencyContactSheetTests: XCTestCase {
 }
 
 // Production floors. Wide overlay/settings cells are larger sheets, not a second
-// minimum: Settings content minimum is 880×620 (SettingsView and the window
-// minimum). Agent floors come from AgentWindowMetrics. Overlay floor is
+// minimum: Settings content minimum is 880×620 with the sidebar open
+// (SettingsView.detailMinWidth plus the sidebar). Agent floors come from AgentWindowMetrics. Overlay floor is
 // DictationOverlayWindow.minSize.
 private let overlayFloor = CGSize(
   width: DictationOverlayWindow.minSize.width,

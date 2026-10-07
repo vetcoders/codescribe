@@ -31,22 +31,84 @@ website, the docs, the CLI and model prompts are outside this ledger.
 
 ## 2. Where the app stands
 
-`Localizable.xcstrings` holds **1417 keys** (1394 translatable). Before this
-work the compiler extracted 468 — the literals SwiftUI localizes by itself; the
-rest was plain `String` and invisible to any translation. **Polish is complete**
-in both catalogs (1394/1394 and 4/4), imported from the translator worksheet
+`Localizable.xcstrings` holds **1420 keys** (1398 translatable, source inventory
+2026-10-06). Before the initial localization work the compiler extracted 468 —
+the literals SwiftUI localizes by itself; the
+rest was plain `String` and invisible to any translation. **Polish copy covers
+every translatable key** in both catalogs (1398/1398 and 4/4), initially imported from the translator worksheet
 (`scripts/l10n-sheet.py`); the catalog is the source of the translation from
 here on.
 
-| Measure                                       | Count    |
-| --------------------------------------------- | -------- |
-| Keys in `Localizable.xcstrings`               | 1417     |
-| Keys translated to Polish                     | 1394     |
-| Keys with a translator comment                | 441      |
-| Keys with English plural forms                | 26       |
-| Keys written as identifiers (`defaultValue:`) | 37       |
-| Permission prompts in `InfoPlist.xcstrings`   | 4        |
-| Swift sources in the app target / touched     | 128 / 77 |
+| Measure                                        | Count    |
+| ---------------------------------------------- | -------- |
+| Keys in `Localizable.xcstrings`                | 1420     |
+| Keys with Polish copy                          | 1398     |
+| License keys awaiting Polish review            | 19       |
+| Tray keys awaiting Polish review               | 6        |
+| Keys with a translator comment                 | 471      |
+| Keys with English plural forms                 | 27       |
+| Keys written as identifiers (`defaultValue:`)  | 53       |
+| Permission prompts in `InfoPlist.xcstrings`    | 4        |
+| Swift sources in the original census / touched | 128 / 77 |
+
+The license copy cut marks 19 agent-authored Polish entries as `needs_review`.
+The Founder-confirmed mode names, license-panel blurb and Remove key label
+remain `translated`. Drafts provide coverage,
+not evidence of UI review; the review process is in `LOCALIZATION.md` §6.
+
+The tray revision marks six additional Polish entries as `needs_review`: the
+stop action, the Agent-mode start/stop actions, the start-in-Agent-mode toggle,
+and the copy/save transcript actions. Exact Founder-provided labels are
+`translated`. The Settings disclosure contains the seven existing toggles and
+ends with Open Settings; its previous standalone row was removed. Action
+routing and Notes Mode behavior are unchanged by this menu revision.
+
+The Setup Wizard copy revision removes nine keys the screen no longer shows
+(the permission-checklist label, the language-chooser subtitle, the AI
+formatting and formatting-level subtitles, the agent-section blurb, the agent
+client subtitle, the installation-status button, the Test mic subtitle, and the
+placeholder form of the language footnote) and adds five with Founder-provided
+Polish: `Recognition language`, `Formatting level`, the footnote
+`Domain vocabulary and Dictionary entries improve speech recognition.`,
+`Install or update the skill directly from Codescribe.`, and the identifier key
+`creator.agentBridge.clientInstalled` (English `Installed`, Polish
+`Zainstalowano`) — an explicit key under `LOCALIZATION.md` §R7, because the
+shared `Installed` key carries the Whisper-model wording `Zainstalowany`. The
+screen reuses the existing `Permissions` and `Refresh status` keys rather than
+retranslating them. `Whisper language`, `Auto Format` and `Hotkeys` stay in the
+catalog for the runtime rows, the tray and the settings rail. All new Polish
+entries are `translated`: the wording is the Founder's own.
+
+A follow-up Founder review of the installed build removed the Creator screen's
+collapsed `Details` disclosure — the key itself stays in the catalog, since
+`LicensePanel.swift` still uses it — and dropped the two remaining quick-start
+card subtitles. `Levels and recognition` and `Start a dictation session` are
+removed from the catalog entirely: no Swift source references either any
+longer. The same review corrected the Polish value of `Refresh status` from
+„Sprawdź ponownie” to „Odśwież stan”.
+
+A Founder sketch polishes the License panel's card. The single combined
+`Mode` row (no key, state readable) now shows the short `license.mode.basic`
+value (`Basic` / `Podstawowy`) instead of the removed `Basic mode` key. Once a
+license state beyond "no key" is known, the card adds a separate `Mode` row
+whose value is the short `license.mode.agent` / `license.mode.basic` pair
+(`Agent` / `Agentowy`, `Basic` / `Podstawowy`) — new identifier keys under
+`LOCALIZATION.md` §R7, chosen because the bare English words collide with
+other catalog keys (`Basic`, the dictation-lane name, already shares
+`Podstawowy`). The value is derived from `licenseAllowsAgentMode`, never the
+raw SKU, which no longer renders anywhere in the panel. A `License` row
+(reusing the existing `License` key) appears only for the `agentic-lifetime`
+SKU, with the new identifier key `license.offer.agentLifetime` (`Agent · one-time purchase` / `Agent · zakup jednorazowy`); any other non-nil SKU shows
+no License row and no raw identifier. The `Updates through` row is removed
+entirely pending the `updates_until`/Sparkle contract, and its catalog key is
+removed since nothing else referenced it. The header blurb is reworded from
+`Transcription is available in Basic mode. A license unlocks Agent mode.` to
+`Basic mode stays free. A license unlocks Agent mode.` (old key removed, new
+key `translated`), and a new footnote, `The key is verified locally and stored in the macOS Keychain.`, is added below the actions/error block. The
+bare English catalog keys `Agent mode` and `Basic mode` are removed: a
+repo-wide grep found both were referenced only by the two `LicensePanel.swift`
+call sites this change replaces, so the working assumption that they were
+still used elsewhere did not hold. Catalog count: 1418 -> 1419.
 
 By area:
 
@@ -173,7 +235,7 @@ hits minus doc comments, pattern matches and test code).
 
 - **User-actionable (20)** tell the person what is wrong with their input or
   setup, e.g. "Cloud pass needs a file transcription endpoint (Providers ›
-  Speech-to-text)".
+  Cloud transcription)".
 - **Internal failure (55)** are lock, IO and invariant failures the person can
   only retry or report, e.g. "account login state lock poisoned" (the same
   literal four times in `config.rs`).
@@ -209,8 +271,12 @@ Swift-side notes:
   `Agent(msg: "…")` — instead of the message. This predates the localization
   work and was left alone because fixing it changes what those notices say;
   the fix is `error.userFacingMessage` at each site.
-- `LicenseService` reports keychain failures the same way, so
-  `LicenseKeychainError.errorDescription` is localized but may never be shown.
+- `LicenseService` now owns localized read, verification, activation and removal
+  error summaries. The underlying error remains in `lastErrorDetails`, shown
+  only in the license panel's expandable Details section. Activation reports
+  key-verification failure separately from failure to save the verified key
+  on this Mac; checking and saving use separate catches. No bridge error
+  prose is parsed to determine the summary.
 - `OnboardingViewModel.lastError` receives bridge text at five sites and is read
   by no view. Those messages never reach a person today.
 
@@ -422,21 +488,23 @@ Polish is recorded here for the Polish Handbook.
 
 ## 7. Layout that will meet longer text
 
-No layout was changed. These are the slots where a translation 15–30 % longer
-than English clips or truncates first.
+Only the settings tab bar changed: its segments now hug their own labels and the
+bar scrolls horizontally instead of widening the pane. These are the slots where
+a translation 15–30 % longer than English clips or truncates first.
 
-| Surface                          | Slot                                                                                                                         |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Settings tab bar                 | Segmented control sized to its widest segment, up to six segments at the 880 pt minimum window                               |
-| Settings sidebar                 | 196–300 pt; health footer is two lines in 196 pt                                                                             |
-| Tool permissions                 | `Allow · Ask · Deny` in a picker pinned to 180 pt — the tightest slot in Settings                                            |
-| Agent status                     | Label column 160 pt, capability columns 120 / 96 pt, one-line rows                                                           |
-| Providers, MCP servers, key rows | One-line status chips and rows; editor sheet 480 pt                                                                          |
-| Shortcuts, Creator, Audio        | Pickers pinned to 230–330 pt; a 92 pt readout                                                                                |
-| Tray                             | Panel is 300 pt; status pills are one line and fixed-size; `Status: %@` and banners are one line                             |
-| Onboarding                       | Welcome cards `minHeight` 135; readiness label column 150 pt                                                                 |
-| Overlay                          | Footer notice is one line (the tightest slot in the app); coverage chip one line; popovers 250–300 pt; minimum window 320 pt |
-| Agent chat                       | Thread title is one line beside the status pill; inspect labels in a 64 pt column; collapsed rail section titles             |
+| Surface                          | Slot                                                                                                                                                                                              |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Settings tab bar                 | Segments hug their own labels; the bar scrolls horizontally once six of them exceed the pane at 880 pt                                                                                            |
+| Settings sidebar                 | 196–300 pt; health footer is one sentence-case line (`Ready to work`), absent while undetermined; a problem line may wrap                                                                         |
+| Settings detail column           | Never narrower than 664 pt: an 880 pt window with the sidebar open, 664 pt with it hidden                                                                                                         |
+| Tool permissions                 | `Allow · Ask · Deny` pickers at their own width (255 pt in Polish), one per row; a fixed frame narrower than the labels spills over the card and widens the window                                |
+| Agent status                     | Label column 160 pt, capability columns 120 / 96 pt, one-line rows                                                                                                                                |
+| Providers, MCP servers, key rows | One-line status chips and rows; a key row is label + `Set` + `Change`, the editor opens behind the chip; account names, factory endpoints and wire keys sit under `Advanced`; editor sheet 480 pt |
+| Shortcuts, Creator, Audio        | Pickers pinned to 230–330 pt; a 92 pt readout                                                                                                                                                     |
+| Tray                             | Panel is 300 pt; status pills are one line and fixed-size; `Status: %@` and banners are one line                                                                                                  |
+| Onboarding                       | Welcome cards `minHeight` 135; readiness label column 150 pt                                                                                                                                      |
+| Overlay                          | Footer notice is one line (the tightest slot in the app); coverage chip one line; popovers 250–300 pt; minimum window 320 pt                                                                      |
+| Agent chat                       | Thread title is one line beside the status pill; inspect labels in a 64 pt column; collapsed rail section titles                                                                                  |
 
 ---
 

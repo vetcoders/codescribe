@@ -1060,14 +1060,14 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(
       healthState(stt: true, recording: true, keys: .available, agent: true, formatting: true),
       SettingsHealthState(
-        level: .healthy, message: "speech, assistive and formatting setup ready", targetSection: nil
+        level: .healthy, message: "Ready to work", targetSection: nil
       )
     )
     XCTAssertEqual(
       healthState(stt: true, recording: true, keys: .missing, agent: false, formatting: true),
       SettingsHealthState(
         level: .degraded,
-        message: "assistive lane: credential missing",
+        message: "Agent needs setup",
         targetSection: .keys
       )
     )
@@ -1075,7 +1075,7 @@ final class SettingsTruthTests: XCTestCase {
       healthState(stt: false, recording: true, keys: .available, agent: true, formatting: true),
       SettingsHealthState(
         level: .offline,
-        message: "speech engine: unavailable",
+        message: "Transcription unavailable",
         targetSection: .engine
       )
     )
@@ -1083,7 +1083,7 @@ final class SettingsTruthTests: XCTestCase {
       healthState(stt: true, recording: true, keys: .available, agent: false, formatting: true),
       SettingsHealthState(
         level: .offline,
-        message: "assistive lane: not ready",
+        message: "Agent unavailable",
         targetSection: .agent
       )
     )
@@ -1091,15 +1091,15 @@ final class SettingsTruthTests: XCTestCase {
       healthState(stt: nil, recording: true, keys: .available, agent: true, formatting: true),
       SettingsHealthState(
         level: .unknown,
-        message: "system health: unknown",
-        targetSection: .engine
+        message: nil,
+        targetSection: nil
       )
     )
     XCTAssertEqual(
       healthState(stt: true, recording: false, keys: .available, agent: true, formatting: true),
       SettingsHealthState(
         level: .offline,
-        message: "recording setup: action needed",
+        message: "Recording needs setup",
         targetSection: .audio
       )
     )
@@ -1107,7 +1107,7 @@ final class SettingsTruthTests: XCTestCase {
       healthState(stt: true, recording: nil, keys: .available, agent: true, formatting: true),
       SettingsHealthState(
         level: .unknown,
-        message: "recording setup: checking",
+        message: "Checking recording…",
         targetSection: .audio
       )
     )
@@ -1125,8 +1125,7 @@ final class SettingsTruthTests: XCTestCase {
       stt: true, recording: true, keys: .available, agent: true,
       formatting: false, formattingRequired: false)
     XCTAssertEqual(disabled.level, .healthy)
-    XCTAssertEqual(
-      disabled.message, "speech and assistive setup ready · cloud formatting not required")
+    XCTAssertEqual(disabled.message, "Ready to work")
     XCTAssertEqual(
       healthState(stt: false, recording: true, keys: .available, agent: true, formatting: false)
         .level,
@@ -1144,16 +1143,15 @@ final class SettingsTruthTests: XCTestCase {
     )
     XCTAssertEqual(choices[1].accessibilityValue(isSelected: true), "Selected")
     XCTAssertEqual(choices[2].accessibilityValue(isSelected: false), "Not selected")
-    // The dictionary name derives from the SettingsSection title owner, so a
-    // rail rename (e.g. Dictionary → Teacher) flows through automatically.
+    // The footnote names the rail section literally: Polish needs the
+    // locative, so the title cannot be interpolated. A rail rename must fail
+    // here until the sentence is reworded with it.
     XCTAssertEqual(
       LanguageIdentityPresentation.supportingCopy,
-      "Programming vocabulary and your \(SettingsSection.voiceLab.title) entries enrich the selected language."
+      "Domain vocabulary and Dictionary entries improve speech recognition."
     )
-    XCTAssertEqual(
-      LanguageIdentityPresentation.supportingCopy,
-      "Programming vocabulary and your Dictionary entries enrich the selected language."
-    )
+    XCTAssertTrue(
+      LanguageIdentityPresentation.supportingCopy.contains(SettingsSection.voiceLab.title))
     XCTAssertFalse(LanguageIdentityPresentation.supportingCopy.contains("model weights"))
   }
 
@@ -1634,7 +1632,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(model.activeSTT, "Apple")
   }
 
-  func testAsrModePickerPersistsPromotedKeysAndRequiresCloudConsent() {
+  func testAsrModePickerPersistsPromotedKeysAndRequiresCloudConsent() throws {
     var writes: [(String, String)] = []
     var persisted = CsSettings.sample
     persisted.asrMode = "cloud"
@@ -1683,13 +1681,13 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(writes.map(\.1), ["apple_only"])
     XCTAssertEqual(model.asrModeId, "apple_only")
 
-    model.setSttLaneEndpoint("live", "wss://asr.example/v1/audio/transcribe")
+    try model.setSttLaneEndpoint("live", "wss://asr.example/v1/audio/transcribe")
     XCTAssertEqual(writes.last?.0, "STT_LIVE_ENDPOINT")
     XCTAssertEqual(model.sttLanes.last?.endpoint, "wss://asr.example/v1/audio/transcribe")
-    model.setSttLaneEndpoint("file", "https://asr.example/v1/audio/transcriptions")
+    try model.setSttLaneEndpoint("file", "https://asr.example/v1/audio/transcriptions")
     XCTAssertEqual(writes.last?.0, "STT_FILE_ENDPOINT")
     XCTAssertEqual(model.sttLanes.first?.endpoint, "https://asr.example/v1/audio/transcriptions")
-    model.setAsrGatewayUrl("https://gateway.example/session")
+    try model.setAsrGatewayUrl("https://gateway.example/session")
     XCTAssertEqual(writes.last?.0, "CODESCRIBE_ASR_GATEWAY_URL")
   }
 

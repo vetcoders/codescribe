@@ -1068,7 +1068,7 @@ extension CsProviderOption {
       apiKeyAccount: account, apiKeySet: keySet, keyRequired: kind == "vendor",
       accountSignedIn: false, accountLoginEnabled: login,
       accountStatusMessage: login ? "not signed in" : "provider account login unavailable",
-      oauthClientId: nil)
+      accountIdentity: nil, oauthClientId: nil)
   }
 
   /// Preview seed mirroring `ALL_PROVIDERS` with factory endpoints; the mock

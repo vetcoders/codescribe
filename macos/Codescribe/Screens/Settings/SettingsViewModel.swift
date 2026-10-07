@@ -541,13 +541,16 @@ enum SettingsHealthLevel: Equatable {
 
 struct SettingsHealthState: Equatable {
   let level: SettingsHealthLevel
-  let message: String
+  /// `nil` when nothing operational can be said yet: the footer stays empty.
+  let message: String?
   let targetSection: SettingsSection?
 }
 
 /// Pure aggregate used by the rail footer and its XCTest matrix. Known failures
 /// beat unknown inputs so the footer never hides a concrete problem behind a
-/// muted "unknown" state.
+/// muted "unknown" state. Every message is one sentence-case line that names
+/// the area, never the cause: the owning panel explains. An undetermined state
+/// has no message, except the recording check, which says it is running.
 func healthState(
   stt: Bool?,
   recording: Bool?,
@@ -560,8 +563,8 @@ func healthState(
     return SettingsHealthState(
       level: .offline,
       message: String(
-        localized: "speech engine: unavailable",
-        comment: "Settings health footer, lower case"
+        localized: "Transcription unavailable",
+        comment: "Settings health footer, sentence case"
       ),
       targetSection: .engine
     )
@@ -570,8 +573,8 @@ func healthState(
     return SettingsHealthState(
       level: .offline,
       message: String(
-        localized: "recording setup: action needed",
-        comment: "Settings health footer, lower case"
+        localized: "Recording needs setup",
+        comment: "Settings health footer, sentence case"
       ),
       targetSection: .audio
     )
@@ -579,10 +582,8 @@ func healthState(
   if keys == .missing {
     return SettingsHealthState(
       level: .degraded,
-      message: String(
-        localized: "assistive lane: credential missing",
-        comment: "Settings health footer, lower case: no supported account or API key"
-      ),
+      // Shares the onboarding row: no supported account or API key.
+      message: String(localized: "Agent needs setup"),
       targetSection: .keys
     )
   }
@@ -590,8 +591,8 @@ func healthState(
     return SettingsHealthState(
       level: .offline,
       message: String(
-        localized: "assistive lane: not ready",
-        comment: "Settings health footer, lower case"
+        localized: "Agent unavailable",
+        comment: "Settings health footer, sentence case"
       ),
       targetSection: .agent
     )
@@ -599,7 +600,10 @@ func healthState(
   if formattingRequired && formatting == false {
     return SettingsHealthState(
       level: .degraded,
-      message: String(localized: "formatting lane: unavailable", comment: "Settings health footer"),
+      message: String(
+        localized: "Formatting unavailable",
+        comment: "Settings health footer, sentence case"
+      ),
       targetSection: .agent
     )
   }
@@ -610,25 +614,19 @@ func healthState(
       level: .unknown,
       message: recording == nil
         ? String(
-          localized: "recording setup: checking",
-          comment: "Settings health footer, lower case"
+          localized: "Checking recording…",
+          comment: "Settings health footer, sentence case"
         )
-        : String(
-          localized: "system health: unknown",
-          comment: "Settings health footer, lower case"
-        ),
-      targetSection: recording == nil ? .audio : .engine
+        : nil,
+      targetSection: recording == nil ? .audio : nil
     )
   }
   return SettingsHealthState(
     level: .healthy,
-    message: formattingRequired
-      ? String(
-        localized: "speech, assistive and formatting setup ready", comment: "Settings health footer"
-      )
-      : String(
-        localized: "speech and assistive setup ready · cloud formatting not required",
-        comment: "Settings health footer"),
+    message: String(
+      localized: "Ready to work",
+      comment: "Settings health footer, sentence case: nothing needs attention"
+    ),
     targetSection: nil
   )
 }
@@ -1142,6 +1140,10 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var creatorAgentBridgeStatus = AgentBridgeInstallationStatus.unavailable
   @Published private(set) var creatorAgentBridgeError: String?
   @Published private(set) var creatorAgentBridgeNotice: String?
+  /// Launch-synchronization diagnostics, not a user-facing notice: `App.swift`
+  /// writes this detail to the app log, and Agent Diagnostics → Connection
+  /// details shows it under the installed paths.
+  @Published private(set) var creatorAgentBridgeLaunchDetail: String?
   @Published private(set) var settings: CsSettings
   @Published private(set) var newMaxConsultationPending = false
   @Published private(set) var maxConsultationNotice: String?
@@ -1203,6 +1205,7 @@ final class SettingsViewModel: ObservableObject {
   var licenseStatus: CsLicenseStatus { licenseService.status }
   var licenseReadState: LicenseService.ReadState { licenseService.readState }
   var licenseBusy: Bool { licenseService.isBusy }
+  var licenseAllowsAgentMode: Bool { licenseService.canUseAgentic }
   private var licenseChangeSink: AnyCancellable?
   private var agentBridgeSynchronizationSink: AnyCancellable?
   /// Provider ids with a "Sign in with ChatGPT" flow in flight (browser open,
@@ -1354,9 +1357,7 @@ final class SettingsViewModel: ObservableObject {
   /// Passive inspection of the bundled installer; never attaches an agent.
   func refreshCreatorAgentBridge() {
     creatorAgentBridgeStatus = creatorAgentBridge.status()
-    if creatorAgentBridgeNotice == nil {
-      creatorAgentBridgeNotice = Self.agentBridgeLaunchNotice
-    }
+    creatorAgentBridgeLaunchDetail = Self.agentBridgeLaunchNotice
   }
 
   /// Add/update one client while preserving other managed clients. Creator
@@ -1436,6 +1437,7 @@ final class SettingsViewModel: ObservableObject {
   func refreshLicense() { licenseService.refresh() }
 
   var licenseError: String? { licenseService.lastError }
+  var licenseErrorDetails: String? { licenseService.lastErrorDetails }
 
   @discardableResult
   func activateLicense(_ key: String) async -> Bool {
@@ -2633,8 +2635,9 @@ final class SettingsViewModel: ObservableObject {
 
   var asrGatewayUrl: String { settings.asrGatewayUrl ?? "" }
 
-  func setAsrGatewayUrl(_ value: String) {
-    persist("CODESCRIBE_ASR_GATEWAY_URL", value.trimmingCharacters(in: .whitespaces))
+  /// Throws the bridge's rejection so the row can show it under the field.
+  func setAsrGatewayUrl(_ value: String) throws {
+    try persistOrThrow("CODESCRIBE_ASR_GATEWAY_URL", value.trimmingCharacters(in: .whitespaces))
   }
 
   var localWhisperRuntimeState: LocalWhisperRuntimeState {
@@ -2788,11 +2791,13 @@ final class SettingsViewModel: ObservableObject {
 
   /// Persist one lane's endpoint (`STT_FILE_ENDPOINT` / `STT_LIVE_ENDPOINT`). Blank
   /// clears; the bridge validates the scheme per lane and a rejection lands in `lastError`.
-  func setSttLaneEndpoint(_ id: String, _ value: String) {
+  /// Throws the bridge's rejection (wrong scheme for the lane, plaintext off
+  /// loopback, credentials in the URL) so the row can show it under the field.
+  func setSttLaneEndpoint(_ id: String, _ value: String) throws {
     guard let lane = sttLanes.first(where: { $0.id == id }) else { return }
     providerAccessGeneration &+= 1
-    persist(lane.endpointWireKey, value.trimmingCharacters(in: .whitespaces))
-    if let engine { sttLanes = engine.sttLanes() }
+    defer { if let engine { sttLanes = engine.sttLanes() } }
+    try persistOrThrow(lane.endpointWireKey, value.trimmingCharacters(in: .whitespaces))
   }
 
   func setWhisperAdaptiveBuffer(_ enabled: Bool) {
@@ -2806,13 +2811,18 @@ final class SettingsViewModel: ObservableObject {
   }
 
   private func persist(_ key: String, _ value: String) {
-    guard let engine else { return }
     do {
-      try engine.updateConfig(key: key, value: value)
-      applyLoadedSettings(engine.loadSettings())
+      try persistOrThrow(key, value)
     } catch {
       lastError = String(describing: error)
     }
+  }
+
+  /// `persist` for rows that present the rejection inline instead of as `lastError`.
+  private func persistOrThrow(_ key: String, _ value: String) throws {
+    guard let engine else { return }
+    try engine.updateConfig(key: key, value: value)
+    applyLoadedSettings(engine.loadSettings())
   }
 
   private func persistMany(_ entries: [CsConfigEntry]) {

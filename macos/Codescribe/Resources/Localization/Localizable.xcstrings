@@ -1539,16 +1539,6 @@
         }
       }
     },
-    "A signed CSK1 key unlocks the Agentic lane. Validation is local and the key stays in the macOS Keychain." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Podpisany klucz CSK1 odblokowuje tryb agentowy. Weryfikacja odbywa się lokalnie, a klucz zostaje w pęku kluczy macOS."
-          }
-        }
-      }
-    },
     "A transcript revision cannot be empty" : {
       "localizations" : {
         "pl" : {
@@ -1610,12 +1600,12 @@
         }
       }
     },
-    "About" : {
+    "About codescribe" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "O aplikacji"
+            "value" : "O codescribe"
           }
         }
       }
@@ -1699,12 +1689,23 @@
         }
       }
     },
-    "Activate / Restore" : {
+    "Activate" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aktywuj / przywróć"
+            "state" : "needs_review",
+            "value" : "Aktywuj"
+          }
+        }
+      }
+    },
+    "Active" : {
+      "comment" : "License status: active",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Aktywna"
           }
         }
       }
@@ -1729,12 +1730,55 @@
         }
       }
     },
-    "Active · Agentic unlocked" : {
+    "Active · %lld days left" : {
+      "comment" : "License status; the count is days left in the local activation period, not days without internet",
       "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "new",
+                  "value" : "Active · %lld day left"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "new",
+                  "value" : "Active · %lld days left"
+                }
+              }
+            }
+          }
+        },
         "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aktywna · tryb agentowy odblokowany"
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "Aktywna · pozostały %lld dni"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "Aktywna · pozostało %lld dni"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "Aktywna · pozostał %lld dzień"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "Aktywna · pozostało %lld dnia"
+                }
+              }
+            }
           }
         }
       }
@@ -1753,12 +1797,12 @@
         }
       }
     },
-    "Add custom provider" : {
+    "Add a server that speaks OpenAI Responses or Anthropic Messages." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dodaj własnego dostawcę"
+            "value" : "Dodaj serwer zgodny z OpenAI Responses lub Anthropic Messages."
           }
         }
       }
@@ -1836,16 +1880,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zaawansowane"
-          }
-        }
-      }
-    },
-    "Advanced · OAuth client id…" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zaawansowane · identyfikator klienta OAuth…"
           }
         }
       }
@@ -1984,6 +2018,16 @@
         }
       }
     },
+    "Agent mode requires a license. Open Settings → License." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Tryb agentowy wymaga licencji. Otwórz Ustawienia → Licencja."
+          }
+        }
+      }
+    },
     "Agent needs setup" : {
       "comment" : "Global provider or native readiness problem, not a client installation",
       "localizations" : {
@@ -2045,6 +2089,17 @@
         }
       }
     },
+    "Agent unavailable" : {
+      "comment" : "Settings health footer, sentence case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent niedostępny"
+          }
+        }
+      }
+    },
     "Agent unpinned, enable Always on Top" : {
       "localizations" : {
         "pl" : {
@@ -2075,18 +2130,6 @@
         }
       }
     },
-    "Agent · one-time purchase" : {
-      "comment" : "License plan name",
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent · zakup jednorazowy"
-          }
-        }
-      }
-    },
     "Agent — %@" : {
       "comment" : "The placeholder is a model name",
       "localizations" : {
@@ -2105,16 +2148,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Agentowy"
-          }
-        }
-      }
-    },
-    "Agentic requires a license. Basic dictation remains free." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tryb agentowy wymaga licencji. Dyktowanie w trybie podstawowym pozostaje bezpłatne."
           }
         }
       }
@@ -2318,16 +2351,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz API Anthropic"
-          }
-        }
-      }
-    },
-    "Any host speaking the OpenAI Responses or Anthropic Messages wire — a local model server, a gateway, a relay. The key is optional; add as many as you need." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Możesz dodać dowolny serwer obsługujący API OpenAI Responses lub Anthropic Messages, np. lokalny serwer modeli, bramę lub serwer pośredniczący. Klucz jest opcjonalny. Dodaj tylu dostawców, ilu potrzebujesz."
           }
         }
       }
@@ -2786,12 +2809,13 @@
         }
       }
     },
-    "Basic stays free." : {
+    "Basic mode stays free. A license unlocks Agent mode." : {
+      "comment" : "License panel: what is available without a key and what a license unlocks",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tryb podstawowy pozostaje bezpłatny."
+            "value" : "Tryb podstawowy pozostaje bezpłatny. Licencja odblokowuje tryb agentowy."
           }
         }
       }
@@ -3165,22 +3189,12 @@
         }
       }
     },
-    "Check for Updates…" : {
+    "Check for Updates" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sprawdź uaktualnienia…"
-          }
-        }
-      }
-    },
-    "Check levels & engine" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdź poziom dźwięku i rozpoznawanie mowy"
+            "value" : "Sprawdź uaktualnienia"
           }
         }
       }
@@ -3215,16 +3229,6 @@
         }
       }
     },
-    "Checking license… Basic dictation remains free." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdzanie licencji… Podstawowe dyktowanie jest zawsze dostępne."
-          }
-        }
-      }
-    },
     "Checking provider access…" : {
       "comment" : "Setup Agent readiness while the provider snapshot is loading\nSetup provider row status while credentials are loading",
       "localizations" : {
@@ -3252,6 +3256,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdzanie gotowości do nagrywania…"
+          }
+        }
+      }
+    },
+    "Checking recording…" : {
+      "comment" : "Settings health footer, sentence case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdzanie nagrywania…"
           }
         }
       }
@@ -3293,16 +3308,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wybierz stałą pozycję na ekranie albo pozwól na swobodne przeciąganie"
-          }
-        }
-      }
-    },
-    "Choose automatic detection or a language-specialized path" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybierz automatyczne wykrywanie albo model dopasowany do języka"
           }
         }
       }
@@ -3549,12 +3554,12 @@
         }
       }
     },
-    "Cloud mode and consent stay on Dictation; endpoints and keys live here." : {
+    "Cloud mode is switched on under Dictation. The connection is set up here." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tryb chmurowy i zgodę na przesyłanie nagrań ustawisz w sekcji Dyktowanie. Tutaj znajdziesz adresy API i klucze dostępu."
+            "value" : "Tryb chmurowy włączysz w Dyktowanie. Tutaj konfigurujesz połączenie."
           }
         }
       }
@@ -3571,6 +3576,17 @@
     },
     "Cloud provider" : {
       "shouldTranslate" : false
+    },
+    "Cloud transcription" : {
+      "comment" : "Providers section: cloud STT lanes",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcje w chmurze"
+          }
+        }
+      }
     },
     "Cloud — live refinement through the Libraxis gateway. Requires your explicit consent to send audio off this Mac; the app stores no vendor keys." : {
       "localizations" : {
@@ -3611,16 +3627,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się zapisać pliku Markdown dla „%@”. Sprawdź wskazany w ustawieniach folder Transkrypcje i spróbuj ponownie."
-          }
-        }
-      }
-    },
-    "Codescribe does not phone home while you work. A future fulfillment service may refresh the validation timestamp explicitly; offline grace is 30 days." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe nie łączy się z serwerem podczas Twojej pracy. W przyszłości usługa licencyjna może jawnie odświeżać datę weryfikacji. Bez połączenia aplikacja działa do 30 dni."
           }
         }
       }
@@ -3892,6 +3898,17 @@
         }
       }
     },
+    "Connect accounts or add API keys. Models are chosen under Agent › LLM lanes." : {
+      "comment" : "Providers panel blurb; `LLM lanes` is the Agent tab title",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połącz konta lub dodaj klucze API. Modele wybierzesz w Agent › Ścieżki modeli AI."
+          }
+        }
+      }
+    },
     "Connect an AI provider" : {
       "comment" : "Setup step heading",
       "localizations" : {
@@ -3941,6 +3958,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Połączono"
+          }
+        }
+      }
+    },
+    "Connected as %@" : {
+      "comment" : "Provider account row; the placeholder is the signed-in email",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połączono jako %@"
           }
         }
       }
@@ -4102,8 +4130,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kopiuj ostatnią transkrypcję"
+            "state" : "needs_review",
+            "value" : "Kopiuj ostatni transkrypt"
           }
         }
       }
@@ -4238,16 +4266,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zapisano poprawkę. %@"
-          }
-        }
-      }
-    },
-    "Correction, balanced editing, or a tool-enabled Max consultation" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Korekta, Smart lub konsultacja Max z dostępem do narzędzi"
           }
         }
       }
@@ -4456,6 +4474,26 @@
         }
       }
     },
+    "Couldn't read the saved license. Try again in Settings → License." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie można odczytać zapisanej licencji. Spróbuj ponownie w Ustawieniach → Licencja."
+          }
+        }
+      }
+    },
+    "Couldn't read the saved license. Try again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie można odczytać zapisanej licencji. Spróbuj ponownie."
+          }
+        }
+      }
+    },
     "Couldn't read tool grants" : {
       "localizations" : {
         "pl" : {
@@ -4477,6 +4515,16 @@
         }
       }
     },
+    "Couldn't remove the key. Try again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się usunąć klucza. Spróbuj ponownie."
+          }
+        }
+      }
+    },
     "Couldn't restore transcript version: %@" : {
       "comment" : "The placeholder is the engine's own failure text",
       "localizations" : {
@@ -4494,6 +4542,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się zapisać ustawienia overlay."
+          }
+        }
+      }
+    },
+    "Couldn't save the key on this Mac. Try again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się zapisać klucza na tym Macu. Spróbuj ponownie."
           }
         }
       }
@@ -4546,6 +4604,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się cofnąć ponownej transkrypcji: %@"
+          }
+        }
+      }
+    },
+    "Couldn't verify the key. Check that it's correct and complete." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się zweryfikować klucza. Sprawdź, czy jest poprawny i kompletny."
+          }
+        }
+      }
+    },
+    "Couldn't verify the saved license. Enter your key again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie można zweryfikować zapisanej licencji. Wprowadź klucz ponownie."
           }
         }
       }
@@ -4903,6 +4981,16 @@
         }
       }
     },
+    "Details" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Szczegóły"
+          }
+        }
+      }
+    },
     "Detect keyboard shortcuts to start and stop voice recording." : {
       "comment" : "Why the app asks for the Input Monitoring scope",
       "localizations" : {
@@ -5075,6 +5163,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odrzuć"
+          }
+        }
+      }
+    },
+    "Domain vocabulary and Dictionary entries improve speech recognition." : {
+      "comment" : "Dictionary is the name of the Voice Lab settings section",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Słownictwo branżowe i wpisy w Słowniku poprawiają rozpoznawanie mowy."
           }
         }
       }
@@ -5364,12 +5463,12 @@
         }
       }
     },
-    "Endpoints and keys live on Providers › Speech-to-text Cloud Service." : {
+    "Endpoints and keys live on Providers › Cloud transcription." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Adresy API i klucze ustawisz w: Dostawcy › Usługa rozpoznawania mowy w chmurze."
+            "value" : "Adresy API i klucze ustawisz w: Dostawcy › Transkrypcje w chmurze."
           }
         }
       }
@@ -5416,13 +5515,12 @@
         }
       }
     },
-    "Enter a CSK1 license key." : {
-      "comment" : "CSK1 is the license-key prefix — keep it verbatim",
+    "Enter a license key." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wpisz klucz licencyjny zaczynający się od CSK1."
+            "state" : "needs_review",
+            "value" : "Wprowadź klucz licencyjny."
           }
         }
       }
@@ -5443,16 +5541,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wprowadź klucz licencyjny"
-          }
-        }
-      }
-    },
-    "Enter or restore key" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wprowadź lub przywróć klucz"
           }
         }
       }
@@ -5578,6 +5666,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Brak pliku na dysku"
+          }
+        }
+      }
+    },
+    "File transcription" : {
+      "comment" : "Cloud transcription lane: recorded files",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcja plików"
           }
         }
       }
@@ -5750,6 +5849,16 @@
         }
       }
     },
+    "Formatting level" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poziom formatowania"
+          }
+        }
+      }
+    },
     "Formatting requires this provider's API key; an Assistive account does not authorize it. Add the key in Settings › Providers." : {
       "localizations" : {
         "pl" : {
@@ -5766,6 +5875,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Formatowanie wersji…"
+          }
+        }
+      }
+    },
+    "Formatting unavailable" : {
+      "comment" : "Settings health footer, sentence case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie niedostępne"
           }
         }
       }
@@ -5859,12 +5979,12 @@
         }
       }
     },
-    "Get license" : {
+    "Get license key" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Uzyskaj licencję"
+            "state" : "needs_review",
+            "value" : "Uzyskaj klucz"
           }
         }
       }
@@ -5897,16 +6017,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Token GitHub"
-          }
-        }
-      }
-    },
-    "GitHub token. Speech-to-text endpoints and keys live in the section above." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Token GitHub. Adresy API i klucze do rozpoznawania mowy są w sekcji powyżej."
           }
         }
       }
@@ -6257,6 +6367,17 @@
         }
       }
     },
+    "Inactive" : {
+      "comment" : "License status: a time limit has elapsed",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nieaktywna"
+          }
+        }
+      }
+    },
     "Input Monitoring" : {
       "localizations" : {
         "pl" : {
@@ -6328,6 +6449,16 @@
         }
       }
     },
+    "Install or update the skill directly from Codescribe." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zainstaluj lub zaktualizuj skill bezpośrednio z Codescribe."
+          }
+        }
+      }
+    },
     "Install skill" : {
       "localizations" : {
         "pl" : {
@@ -6344,16 +6475,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Stan instalacji"
-          }
-        }
-      }
-    },
-    "Install the Codescribe skill and bus helper from this app. No repository clone or manual file copying is needed." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zainstaluj skill Codescribe i proces pomocniczy prosto z tej aplikacji. Nie trzeba klonować repozytorium ani ręcznie kopiować plików."
           }
         }
       }
@@ -6526,6 +6647,16 @@
         }
       }
     },
+    "Keychain account" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konto w pęku kluczy"
+          }
+        }
+      }
+    },
     "Keychain error %@" : {
       "comment" : "Fallback when macOS has no message; the placeholder is the status code",
       "localizations" : {
@@ -6537,12 +6668,12 @@
         }
       }
     },
-    "Keys and endpoints. Vendors always use their factory endpoint; a custom provider is any host that speaks /v1/responses or /v1/messages. Which model each lane sends lives under Agent › Request lanes." : {
+    "Keys are stored securely in the macOS Keychain." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Klucze i adresy API. Wbudowani dostawcy zawsze korzystają ze swoich domyślnych adresów. Dostawcą niestandardowym może być dowolny host obsługujący /v1/responses lub /v1/messages. Model używany przez każdą ścieżkę ustawisz w Agent › Ścieżki żądań."
+            "value" : "Klucze są bezpiecznie przechowywane w pęku kluczy macOS."
           }
         }
       }
@@ -6696,42 +6827,22 @@
         }
       }
     },
-    "License access is unavailable. Retry in Settings › License. Basic dictation remains free." : {
+    "License access ended. Check Settings → License." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie można teraz sprawdzić licencji. Spróbuj ponownie w Ustawieniach › Licencja. Podstawowe dyktowanie pozostaje bezpłatne."
+            "state" : "needs_review",
+            "value" : "Licencja jest nieaktywna. Sprawdź Ustawienia → Licencja."
           }
         }
       }
     },
-    "License access is unavailable. The last verified license still follows its original expiry." : {
+    "License key" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdzenie licencji jest niedostępne. Data wygaśnięcia licencji pozostaje bez zmian."
-          }
-        }
-      }
-    },
-    "License access unavailable" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie można sprawdzić licencji."
-          }
-        }
-      }
-    },
-    "License status" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stan licencji"
+            "state" : "needs_review",
+            "value" : "Klucz licencyjny"
           }
         }
       }
@@ -6823,6 +6934,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz do transkrypcji na żywo"
+          }
+        }
+      }
+    },
+    "Live transcription" : {
+      "comment" : "Cloud transcription lane: live socket",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcja na żywo"
           }
         }
       }
@@ -6997,16 +7119,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zarządzaj serwerami MCP"
-          }
-        }
-      }
-    },
-    "Master switch. The Off level below always skips the LLM." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Główny przełącznik. Poziom „Wyłączone” poniżej zawsze pomija model językowy."
           }
         }
       }
@@ -7293,6 +7405,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "W szablonie brakuje {text}. Transkrypcja zostanie dodana na jego końcu."
+          }
+        }
+      }
+    },
+    "Mode" : {
+      "comment" : "License panel: operating mode",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Tryb"
           }
         }
       }
@@ -7606,16 +7729,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nazwa"
-          }
-        }
-      }
-    },
-    "Named voice messages to your existing conversation" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wysyłaj wiadomości głosowe bezpośrednio do agenta"
           }
         }
       }
@@ -8029,16 +8142,6 @@
         }
       }
     },
-    "Not a secret. Blank clears the lane; the bridge rejects a URL whose scheme does not fit this lane." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "To nie jest poufna informacja. Wyczyść pole, aby usunąć adres dla tego połączenia. Codescribe nie zaakceptuje adresu z protokołem niezgodnym z tym typem połączenia."
-          }
-        }
-      }
-    },
     "Not connected" : {
       "comment" : "Setup Agent account row status",
       "localizations" : {
@@ -8145,6 +8248,16 @@
         }
       }
     },
+    "OAuth client id…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Identyfikator klienta OAuth…"
+          }
+        }
+      }
+    },
     "OK" : {
       "localizations" : {
         "pl" : {
@@ -8192,58 +8305,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyłączenie zadziała od następnego nagrania. Historia tekstu pozostanie dostępna."
-          }
-        }
-      }
-    },
-    "Offline grace · %lld days left" : {
-      "localizations" : {
-        "en" : {
-          "variations" : {
-            "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Offline grace · %lld day left"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Offline grace · %lld days left"
-                }
-              }
-            }
-          }
-        },
-        "pl" : {
-          "variations" : {
-            "plural" : {
-              "few" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Praca bez połączenia · zostały %lld dni"
-                }
-              },
-              "many" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Praca bez połączenia · zostało %lld dni"
-                }
-              },
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Praca bez połączenia · został %lld dzień"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Praca bez połączenia · zostało %lld dnia"
-                }
-              }
-            }
           }
         }
       }
@@ -8330,6 +8391,16 @@
         }
       }
     },
+    "Open Settings" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz ustawienia"
+          }
+        }
+      }
+    },
     "Open System Settings" : {
       "comment" : "Button that deep-links into the macOS System Settings privacy pane",
       "localizations" : {
@@ -8365,16 +8436,6 @@
         }
       }
     },
-    "Open codescribe.vetcoders.io/license — enter your email, paste the key back here" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Otwórz codescribe.vetcoders.io/license, podaj adres e-mail i wklej tutaj otrzymany klucz"
-          }
-        }
-      }
-    },
     "Open diagnostics" : {
       "comment" : "Open Agent diagnostics from the Setup global readiness row",
       "localizations" : {
@@ -8382,16 +8443,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Otwórz diagnostykę"
-          }
-        }
-      }
-    },
-    "Open history" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Otwórz historię"
           }
         }
       }
@@ -8442,6 +8493,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Otwórz pełny tekst w przewijanym widoku."
+          }
+        }
+      }
+    },
+    "Open the license-key page" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Otwiera stronę wydawania kluczy"
           }
         }
       }
@@ -8519,6 +8580,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Opcjonalne — możesz pominąć ten krok; ograniczy to tylko funkcje korzystające z plików."
+          }
+        }
+      }
+    },
+    "Optional. Used for live transcription." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opcjonalny. Używany do transkrypcji na żywo."
           }
         }
       }
@@ -8671,16 +8742,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Test każdego serwera"
-          }
-        }
-      }
-    },
-    "Permission checklist" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lista uprawnień"
           }
         }
       }
@@ -9071,17 +9132,6 @@
         }
       }
     },
-    "Programming vocabulary and your %@ entries enrich the selected language." : {
-      "comment" : "The placeholder is the name of the Voice Lab settings section",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Słownictwo programistyczne i Twoje wpisy w sekcji %@ poprawiają rozpoznawanie wybranego języka."
-          }
-        }
-      }
-    },
     "Prompt file" : {
       "localizations" : {
         "pl" : {
@@ -9206,16 +9256,6 @@
         }
       }
     },
-    "Providers." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dostawcy."
-          }
-        }
-      }
-    },
     "Pulsing red" : {
       "comment" : "Recording light colour",
       "localizations" : {
@@ -9273,16 +9313,6 @@
         }
       }
     },
-    "Quick settings" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Szybkie ustawienia"
-          }
-        }
-      }
-    },
     "Quick start" : {
       "localizations" : {
         "pl" : {
@@ -9304,13 +9334,12 @@
         }
       }
     },
-    "Quit codescribe" : {
-      "comment" : "Tray row; codescribe is the product name, kept lowercase",
+    "Quit" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zakończ codescribe"
+            "value" : "Zakończ"
           }
         }
       }
@@ -9511,6 +9540,17 @@
         }
       }
     },
+    "Ready to work" : {
+      "comment" : "Settings health footer, sentence case: nothing needs attention",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gotowe do pracy"
+          }
+        }
+      }
+    },
     "Ready · %@" : {
       "comment" : "The placeholder is a model path or model id",
       "localizations" : {
@@ -9548,6 +9588,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdź ponownie"
+          }
+        }
+      }
+    },
+    "Recognition language" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Język rozpoznawania"
           }
         }
       }
@@ -9621,6 +9671,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Trwa nagrywanie"
+          }
+        }
+      }
+    },
+    "Recording needs setup" : {
+      "comment" : "Settings health footer, sentence case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nagrywanie wymaga konfiguracji"
           }
         }
       }
@@ -9777,16 +9838,6 @@
         }
       }
     },
-    "Refresh installation status" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdź ponownie stan instalacji"
-          }
-        }
-      }
-    },
     "Refresh pending requests" : {
       "localizations" : {
         "pl" : {
@@ -9797,22 +9848,12 @@
         }
       }
     },
-    "Refresh provider access" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odśwież dostęp"
-          }
-        }
-      }
-    },
     "Refresh status" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sprawdź ponownie"
+            "value" : "Odśwież stan"
           }
         }
       }
@@ -9887,12 +9928,12 @@
         }
       }
     },
-    "Remove license" : {
+    "Remove key" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Usuń licencję"
+            "value" : "Usuń klucz"
           }
         }
       }
@@ -10449,16 +10490,6 @@
         }
       }
     },
-    "Retry license access" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdź ponownie licencję"
-          }
-        }
-      }
-    },
     "Reveal in Finder" : {
       "localizations" : {
         "pl" : {
@@ -10637,8 +10668,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zapisz ostatnią transkrypcję"
+            "state" : "needs_review",
+            "value" : "Zapisz ostatni transkrypt"
           }
         }
       }
@@ -11133,16 +11164,6 @@
         }
       }
     },
-    "Session-mint endpoint for live Cloud Layer 1. Not the live socket above. Clearing restores unset." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Adres API używany do tworzenia sesji dla transkrypcji na żywo w trybie chmurowym. To nie jest adres połączenia na żywo podany wyżej. Wyczyść pole, aby usunąć to ustawienie."
-          }
-        }
-      }
-    },
     "Set" : {
       "comment" : "Setup API key row status",
       "localizations" : {
@@ -11186,12 +11207,22 @@
         }
       }
     },
+    "Settings keys" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucze ustawień"
+          }
+        }
+      }
+    },
     "Settings…" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "ustawienia"
+            "value" : "Ustawienia…"
           }
         }
       }
@@ -11207,12 +11238,12 @@
         }
       }
     },
-    "Setup Wizard…" : {
+    "Setup Wizard" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Kreator konfiguracji…"
+            "value" : "Kreator"
           }
         }
       }
@@ -11274,27 +11305,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aby skróty działały, włącz uprawnienia „Monitorowanie wprowadzania” i „Dostępność”"
-          }
-        }
-      }
-    },
-    "Show Agent" : {
-      "comment" : "Tray row: opens the agent chat window",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż Agenta"
-          }
-        }
-      }
-    },
-    "Show Dock Icon" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż ikonę w Docku"
           }
         }
       }
@@ -11372,6 +11382,17 @@
         }
       }
     },
+    "Show icon" : {
+      "comment" : "Tray toggle: show the application's Dock icon",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż ikonę"
+          }
+        }
+      }
+    },
     "Show in Finder" : {
       "localizations" : {
         "pl" : {
@@ -11398,6 +11419,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż lub ukryj narzędzia transkrypcji"
+          }
+        }
+      }
+    },
+    "Show overlay" : {
+      "comment" : "Tray toggle: enable the transcription overlay",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż overlay"
           }
         }
       }
@@ -11881,16 +11913,6 @@
         }
       }
     },
-    "Speech-to-text Cloud Service" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Usługa rozpoznawania mowy w chmurze"
-          }
-        }
-      }
-    },
     "Spoken" : {
       "localizations" : {
         "en" : {
@@ -11907,38 +11929,6 @@
         }
       }
     },
-    "Start Assistive" : {
-      "comment" : "Tray row: start an agent recording",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozpocznij nagrywanie dla Agenta"
-          }
-        }
-      }
-    },
-    "Start Dictation" : {
-      "comment" : "Tray row: start a dictation recording",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozpocznij dyktowanie"
-          }
-        }
-      }
-    },
-    "Start a dictation session" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozpocznij dyktowanie"
-          }
-        }
-      }
-    },
     "Start dictation" : {
       "localizations" : {
         "pl" : {
@@ -11949,13 +11939,13 @@
         }
       }
     },
-    "Start in Assistive" : {
-      "comment" : "Tray toggle: new recordings start in the assistive (agent) lane",
+    "Start in Agent mode" : {
+      "comment" : "Tray toggle: new transcriptions started here use Agent mode",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozpoczynaj w trybie Agenta"
+            "state" : "needs_review",
+            "value" : "Rozpoczynaj w trybie agentowym"
           }
         }
       }
@@ -11976,6 +11966,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dźwięk rozpoczęcia"
+          }
+        }
+      }
+    },
+    "Start transcription" : {
+      "comment" : "Tray row: start a new transcription",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozpocznij transkrypcję"
+          }
+        }
+      }
+    },
+    "Start transcription in Agent mode" : {
+      "comment" : "Tray row: start a new transcription in Agent mode",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Rozpocznij transkrypcję w trybie agentowym"
           }
         }
       }
@@ -12063,12 +12075,13 @@
         }
       }
     },
-    "State" : {
+    "Status" : {
+      "comment" : "License panel: current license status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stan"
+            "state" : "needs_review",
+            "value" : "Status"
           }
         }
       }
@@ -12137,28 +12150,6 @@
         }
       }
     },
-    "Stop Assistive" : {
-      "comment" : "Tray row: stop the agent recording",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zatrzymaj nagrywanie dla Agenta"
-          }
-        }
-      }
-    },
-    "Stop Dictation" : {
-      "comment" : "Tray row: stop the dictation recording",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zatrzymaj dyktowanie"
-          }
-        }
-      }
-    },
     "Stop playing the original recording" : {
       "localizations" : {
         "pl" : {
@@ -12195,6 +12186,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zatrzymaj odczytywanie"
+          }
+        }
+      }
+    },
+    "Stop transcription" : {
+      "comment" : "Tray row: stop the current transcription",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zatrzymaj transkrypcję"
+          }
+        }
+      }
+    },
+    "Stop transcription in Agent mode" : {
+      "comment" : "Tray row: stop the current transcription in Agent mode",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zatrzymaj transkrypcję w trybie agentowym"
           }
         }
       }
@@ -12873,6 +12886,17 @@
         }
       }
     },
+    "The key is verified locally and stored in the macOS Keychain." : {
+      "comment" : "License panel footnote: how the key is checked and where it lives",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucz jest weryfikowany lokalnie i przechowywany w Pęku kluczy macOS."
+          }
+        }
+      }
+    },
     "The local FP16 bundle is missing or invalid. Local power is explicitly not ready until validation passes." : {
       "localizations" : {
         "pl" : {
@@ -13011,6 +13035,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Myślenie"
+          }
+        }
+      }
+    },
+    "This address needs http:// or https://." : {
+      "comment" : "File transcription endpoint rejected for its scheme",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten adres wymaga http:// lub https://."
+          }
+        }
+      }
+    },
+    "This address needs ws:// or wss://." : {
+      "comment" : "Live transcription endpoint rejected for its scheme",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten adres wymaga ws:// lub wss://."
           }
         }
       }
@@ -13386,16 +13432,6 @@
         }
       }
     },
-    "Transcription Overlay" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Overlay transkrypcji"
-          }
-        }
-      }
-    },
     "Transcription failed" : {
       "localizations" : {
         "pl" : {
@@ -13432,6 +13468,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Transkrypcja przerwana"
+          }
+        }
+      }
+    },
+    "Transcription unavailable" : {
+      "comment" : "Settings health footer, sentence case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcja niedostępna"
           }
         }
       }
@@ -13591,16 +13638,6 @@
         }
       }
     },
-    "Unlicensed · Basic" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bez licencji · Podstawowy"
-          }
-        }
-      }
-    },
     "Unmute agent replies" : {
       "localizations" : {
         "pl" : {
@@ -13713,26 +13750,6 @@
         }
       }
     },
-    "Updates expired · installed app remains active" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aktualizacje wygasły · zainstalowana aplikacja nadal działa"
-          }
-        }
-      }
-    },
-    "Updates through" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aktualizacje do"
-          }
-        }
-      }
-    },
     "Updating provider access…" : {
       "localizations" : {
         "pl" : {
@@ -13817,16 +13834,6 @@
         }
       }
     },
-    "Vendors" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dostawcy"
-          }
-        }
-      }
-    },
     "Version" : {
       "localizations" : {
         "pl" : {
@@ -13886,10 +13893,6 @@
       }
     },
     "Voice Lab" : {
-      "shouldTranslate" : false
-    },
-    "Voice Lab…" : {
-      "comment" : "Tray row: opens the Voice Lab console",
       "shouldTranslate" : false
     },
     "Voice chat" : {
@@ -14529,16 +14532,6 @@
         }
       }
     },
-    "Your license period ended. Renew to keep using Agentic — Basic dictation remains free." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Twoja licencja wygasła. Odnów ją, aby nadal korzystać z trybu agentowego. Dyktowanie w trybie podstawowym pozostaje bezpłatne."
-          }
-        }
-      }
-    },
     "Your recordings leave your machine." : {
       "localizations" : {
         "pl" : {
@@ -14656,28 +14649,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "argumenty oddzielone spacjami (np. mcp)"
-          }
-        }
-      }
-    },
-    "assistive lane: credential missing" : {
-      "comment" : "Settings health footer, lower case: no supported account or API key",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent: brak danych dostępowych"
-          }
-        }
-      }
-    },
-    "assistive lane: not ready" : {
-      "comment" : "Settings health footer, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent: niegotowy"
           }
         }
       }
@@ -14979,6 +14950,24 @@
         }
       }
     },
+    "creator.agentBridge.clientInstalled" : {
+      "comment" : "Status on an agent client row: the Codescribe skill is installed",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Installed"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zainstalowano"
+          }
+        }
+      }
+    },
     "custom" : {
       "comment" : "Menu suffix: a provider the user added by hand",
       "localizations" : {
@@ -15103,16 +15092,6 @@
         }
       }
     },
-    "endpoint" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "adres API"
-          }
-        }
-      }
-    },
     "endpoint %@" : {
       "localizations" : {
         "pl" : {
@@ -15140,16 +15119,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "błąd"
-          }
-        }
-      }
-    },
-    "factory endpoint" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "wbudowany adres API"
           }
         }
       }
@@ -15212,17 +15181,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "sformatowano"
-          }
-        }
-      }
-    },
-    "formatting lane: unavailable" : {
-      "comment" : "Settings health footer",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "formatowanie: niedostępne"
           }
         }
       }
@@ -15599,6 +15557,60 @@
         }
       }
     },
+    "license.mode.agent" : {
+      "comment" : "License panel, Mode row value: agent operating mode",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Agent"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agentowy"
+          }
+        }
+      }
+    },
+    "license.mode.basic" : {
+      "comment" : "License panel, Mode row value: basic operating mode",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Basic"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podstawowy"
+          }
+        }
+      }
+    },
+    "license.offer.agentLifetime" : {
+      "comment" : "License panel, License row value: name of the purchased offer",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Agent · one-time purchase"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent · zakup jednorazowy"
+          }
+        }
+      }
+    },
     "listening" : {
       "localizations" : {
         "pl" : {
@@ -15817,16 +15829,6 @@
         }
       }
     },
-    "not set" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "nie ustawiono"
-          }
-        }
-      }
-    },
     "not tested" : {
       "localizations" : {
         "pl" : {
@@ -15916,16 +15918,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "otwórz Ustawienia systemowe"
-          }
-        }
-      }
-    },
-    "optional" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "opcjonalnie"
           }
         }
       }
@@ -16087,28 +16079,6 @@
         }
       }
     },
-    "recording setup: action needed" : {
-      "comment" : "Settings health footer, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "konfiguracja nagrywania: do dokończenia"
-          }
-        }
-      }
-    },
-    "recording setup: checking" : {
-      "comment" : "Settings health footer, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "konfiguracja nagrywania: sprawdzanie"
-          }
-        }
-      }
-    },
     "recover failed — kept" : {
       "localizations" : {
         "pl" : {
@@ -16264,33 +16234,12 @@
         }
       }
     },
-    "secrets live only in the Keychain — presence shown, value hidden" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "dane uwierzytelniające są przechowywane tylko w pęku kluczy. Widać, czy są zapisane, ale ich wartości są ukryte"
-          }
-        }
-      }
-    },
     "sent · waiting for receipt" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "wysłano · oczekiwanie na potwierdzenie odbioru"
-          }
-        }
-      }
-    },
-    "set" : {
-      "comment" : "Status chip: a value is stored",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ustawiono"
           }
         }
       }
@@ -16745,39 +16694,6 @@
         }
       }
     },
-    "speech and assistive setup ready · cloud formatting not required" : {
-      "comment" : "Settings health footer",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "mowa i Agent gotowe · formatowanie w chmurze niewymagane"
-          }
-        }
-      }
-    },
-    "speech engine: unavailable" : {
-      "comment" : "Settings health footer, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "silnik rozpoznawania mowy: niedostępny"
-          }
-        }
-      }
-    },
-    "speech, assistive and formatting setup ready" : {
-      "comment" : "Settings health footer",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "mowa, Agent i formatowanie gotowe"
-          }
-        }
-      }
-    },
     "status" : {
       "comment" : "Tool inspect field",
       "localizations" : {
@@ -16828,17 +16744,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zakończono pomyślnie"
-          }
-        }
-      }
-    },
-    "system health: unknown" : {
-      "comment" : "Settings health footer, lower case",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "stan systemu: nieznany"
           }
         }
       }
@@ -17046,7 +16951,7 @@
       }
     },
     "unset" : {
-      "comment" : "Model row: no model preference stored, lower case\nStatus chip: no value stored",
+      "comment" : "Model row: no model preference stored, lower case",
       "localizations" : {
         "pl" : {
           "stringUnit" : {

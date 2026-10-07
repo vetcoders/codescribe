@@ -182,6 +182,7 @@ data  CsProviderOption.wire
 data  CsProviderOption.endpoint
 data  CsProviderOption.apiKeyAccount
 prose CsProviderOption.accountStatusMessage
+data  CsProviderOption.accountIdentity
 data  CsProviderOption.oauthClientId
 prose CsQualityCommitResult.acknowledgement
 data  CsQualityRecord.id

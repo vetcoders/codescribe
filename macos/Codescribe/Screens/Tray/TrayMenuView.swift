@@ -2,7 +2,7 @@ import SwiftUI
 
 // TrayPanel supplies the native glass and anchors this content to NSStatusItem.
 // 300pt wide, glass panel, status header bound to runtime, terracotta marking
-// ONLY the primary action ("Show Agent"), Notes / Diagnostics as nested
+// ONLY the primary action ("Agent"), Notes / Diagnostics as nested
 // disclosure groups. Dictation toggle + quick config toggles are wired through
 // the composite TrayEngine.
 struct TrayMenuView: View {
@@ -32,37 +32,28 @@ struct TrayMenuView: View {
       diagnosticsGroup
 
       TrayDivider()
-      TrayRow(
-        icon: .settings,
-        title: String(localized: "Settings…"),
-        shortcut: "⌘,"
-      ) {
-        openWindow.presentSettings()
-      }
       if DeveloperSurface.isEnabled() {
         TrayRow(
           icon: .diagnostics,
-          title: String(localized: "Voice Lab…", comment: "Tray row: opens the Voice Lab console")
+          title: String(localized: "Voice Lab")
         ) {
           Task { await VoiceLabRuntime.shared.openConsole() }
         }
       }
-      TrayRow(icon: .setupWizard, title: String(localized: "Setup Wizard…")) {
+      TrayRow(icon: .setupWizard, title: String(localized: "Setup Wizard")) {
         viewModel.onOpenSetupWizard()
       }
-      TrayRow(icon: .refresh, title: String(localized: "Check for Updates…")) {
+      TrayRow(icon: .refresh, title: String(localized: "Check for Updates")) {
         viewModel.onCheckForUpdates()
       }
       TrayRow(icon: .help, title: String(localized: "Help")) { viewModel.onHelp() }
-      TrayRow(icon: .info, title: String(localized: "About")) { viewModel.onAbout() }
+      TrayRow(icon: .info, title: String(localized: "About codescribe")) { viewModel.onAbout() }
 
       TrayDivider()
       TrayRow(
         icon: .power,
         iconColor: CSColor.terracottaDeep,
-        title: String(
-          localized: "Quit codescribe",
-          comment: "Tray row; codescribe is the product name, kept lowercase"),
+        title: String(localized: "Quit"),
         shortcut: "⌘Q"
       ) { viewModel.onQuit() }
     }
@@ -121,7 +112,7 @@ struct TrayMenuView: View {
     VStack(spacing: 0) {
       TrayRow(
         icon: .agent,
-        title: String(localized: "Show Agent", comment: "Tray row: opens the agent chat window"),
+        title: String(localized: "Agent"),
         titleColor: viewModel.agentAvailable ? CSColor.textBody : CSColor.textFaint,
         titleWeight: .semibold,
         shortcut: "⌥⌥",
@@ -156,7 +147,7 @@ struct TrayMenuView: View {
     VStack(spacing: 0) {
       TrayRow(
         icon: .history,
-        title: String(localized: "Open history"),
+        title: String(localized: "Transcription history"),
         disclosureExpanded: viewModel.historyExpanded,
         style: viewModel.historyExpanded ? .raised : .plain
       ) {
@@ -190,7 +181,7 @@ struct TrayMenuView: View {
     VStack(spacing: 0) {
       TrayRow(
         icon: .settings,
-        title: String(localized: "Quick settings"),
+        title: String(localized: "Settings"),
         disclosureExpanded: viewModel.quickSettingsExpanded,
         style: viewModel.quickSettingsExpanded ? .raised : .plain
       ) {
@@ -211,12 +202,12 @@ struct TrayMenuView: View {
     VStack(spacing: 0) {
       toggleRow(
         icon: .dock,
-        title: String(localized: "Show Dock Icon"),
+        title: String(localized: "Show icon", comment: "Tray toggle: show the application's Dock icon"),
         isOn: viewModel.showDockIcon
       ) { viewModel.setShowDockIcon($0) }
       toggleRow(
         icon: .overlay,
-        title: String(localized: "Transcription Overlay"),
+        title: String(localized: "Show overlay", comment: "Tray toggle: enable the transcription overlay"),
         isOn: viewModel.overlayEnabled
       ) { viewModel.setOverlayEnabled($0) }
       autoPasteToggle
@@ -230,11 +221,19 @@ struct TrayMenuView: View {
       toggleRow(
         icon: .agent,
         title: String(
-          localized: "Start in Assistive",
-          comment: "Tray toggle: new recordings start in the assistive (agent) lane"),
+          localized: "Start in Agent mode",
+          comment: "Tray toggle: new transcriptions started here use Agent mode"),
         isOn: viewModel.startInAssistive,
         onColor: CSColor.assistive
       ) { viewModel.setStartInAssistive($0) }
+
+      TrayRow(
+        icon: .settings,
+        title: String(localized: "Open Settings"),
+        shortcut: "⌘,"
+      ) {
+        openWindow.presentSettings()
+      }
     }
   }
 
@@ -313,12 +312,16 @@ struct TrayMenuView: View {
     }
     if viewModel.isRecording {
       return trayStatus.status.assistive
-        ? String(localized: "Stop Assistive", comment: "Tray row: stop the agent recording")
-        : String(localized: "Stop Dictation", comment: "Tray row: stop the dictation recording")
+        ? String(
+          localized: "Stop transcription in Agent mode",
+          comment: "Tray row: stop the current transcription in Agent mode")
+        : String(localized: "Stop transcription", comment: "Tray row: stop the current transcription")
     }
     return viewModel.startInAssistive
-      ? String(localized: "Start Assistive", comment: "Tray row: start an agent recording")
-      : String(localized: "Start Dictation", comment: "Tray row: start a dictation recording")
+      ? String(
+        localized: "Start transcription in Agent mode",
+        comment: "Tray row: start a new transcription in Agent mode")
+      : String(localized: "Start transcription", comment: "Tray row: start a new transcription")
   }
 
   private var recordingActionColor: Color {

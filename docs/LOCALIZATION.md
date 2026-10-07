@@ -119,6 +119,9 @@ compiles `#if DEBUG` code), so every string that ships has a row.
 
 `l10n-sync` refuses to run when any Swift source is newer than its last compile,
 because the extraction data describes the last build, not the working tree.
+The compile time of a source is the newest of its `.stringsdata`, `.o`,
+`.swiftdeps`, `.d` and `.dia` intermediates: a comment-only edit rewrites only
+the last two, and the extraction it leaves in place is still current.
 It matches the compiler's absolute source paths to current files by filesystem
 identity (device/inode, as in `samefile`), so case differences on APFS and
 worktree symlink aliases do not invalidate a build. Another worktree's files
@@ -191,8 +194,46 @@ requiring an older check with the same name is not proof of localization coverag
 The single invariant: **a string that reaches the screen, VoiceOver or a tooltip
 is born localized at the place where it is written as a literal.**
 
-Use **Agent** for the Codescribe mode, window and conversation partner in both
-English and Polish. Generic AI agents and external coding agents keep lowercase
+### Product glossary — English / Polish
+
+Founder decision 2026-10-06. These are the preferred terms throughout the UI,
+including buttons, settings, history, messages, help and accessibility copy.
+
+| Meaning                                                 | English                   | Polish                    |
+| ------------------------------------------------------- | ------------------------- | ------------------------- |
+| Basic operating mode                                    | Basic mode                | Tryb podstawowy           |
+| Agent operating mode                                    | Agent mode                | Tryb agentowy             |
+| Mode-row value: basic mode (License panel)              | Basic                     | Podstawowy                |
+| Mode-row value: agent mode (License panel)              | Agent                     | Agentowy                  |
+| License-row value: lifetime agent offer (License panel) | Agent · one-time purchase | Agent · zakup jednorazowy |
+| Converting audio to text                                | transcription             | transkrypcja              |
+| The resulting text                                      | transcript                | transkrypt                |
+| Command to convert audio to text                        | Transcribe                | Transkrybuj               |
+
+Mode names and license status describe different things. Do not call Basic
+mode "Unlicensed" / "Bez licencji", or Agent mode "Agent" / "Agentic".
+The one exception is the License panel's Mode row: its label already says
+"Mode" / "Tryb", so the value is the short form — Basic / Agent in English,
+Podstawowy / Agentowy in Polish. In Polish the mode is never "Agent": that
+word is the name of the offer ("Agent · zakup jednorazowy").
+These display names do not rename persisted identifiers or bridge enums (R6).
+
+Do not use "recording", "dictation" or "speech" ("nagranie", "dyktowanie",
+"dyktando", "mowa") as umbrella names for transcription. Exceptions must
+describe the actual object or operation: an audio recording is "nagranie",
+audio capture is "nagrywanie", and actual speech is "mowa", for example in
+speech detection. Do not call an audio file a transcript.
+
+English source copy and every shipped translation change together in the same
+cut; the glossary is not a Polish-only substitution list.
+
+### Keep only useful copy
+
+Keep only copy that helps a user act, understand a state or make a decision.
+Remove repeated explanations, implementation details and future-service plans;
+show exceptional instructions and diagnostics when needed. Keep meaningful
+limits, action consequences, actionable errors and accessibility copy.
+Generic AI agents and external coding agents keep lowercase
 (`agent AI`, `agent`, `agentów`). An account used by Codescribe's Agent is an
 **Agent account** / **Konto Agenta**; API-key presence is a separate status.
 Onboarding copy changes ship together in English, Polish and the corresponding

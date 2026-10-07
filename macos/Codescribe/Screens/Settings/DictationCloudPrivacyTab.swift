@@ -22,7 +22,7 @@ struct DictationCloudPrivacyTab: View {
       )
       .font(CSFont.ui(11.5, .medium))
       .foregroundStyle(model.cloudConsentGranted ? CSColor.oliveLight : CSColor.amber)
-      Text("Endpoints and keys live on Providers › Speech-to-text Cloud Service.")
+      Text("Endpoints and keys live on Providers › Cloud transcription.")
         .font(CSFont.ui(11.5))
         .foregroundStyle(Color.secondary)
     }

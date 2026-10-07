@@ -181,7 +181,7 @@ final class ProvidersPanelTests: XCTestCase {
 
   /// stt-lanes-v1 §F.7: Providers renders File then Live, each lane one atomic
   /// endpoint + key row, and a lane save writes ONLY that lane's wire key.
-  func testSpeechToTextSectionRendersFileThenLiveAsAtomicRows() async {
+  func testSpeechToTextSectionRendersFileThenLiveAsAtomicRows() async throws {
     var writes: [(key: String, value: String)] = []
     let model = await makeModel { writes.append((key: $0.0, value: $0.1)) }
     _ = SpeechToTextSection(model: model)
@@ -196,16 +196,55 @@ final class ProvidersPanelTests: XCTestCase {
       model.serviceKeyAccounts.contains { $0.hasPrefix("STT_") },
       "STT keys ride on the lanes, never on Service keys")
 
-    model.setSttLaneEndpoint("file", " https://asr.example/v1/audio/transcriptions ")
+    try model.setSttLaneEndpoint("file", " https://asr.example/v1/audio/transcriptions ")
     XCTAssertEqual(writes.last?.key, "STT_FILE_ENDPOINT")
     XCTAssertEqual(writes.last?.value, "https://asr.example/v1/audio/transcriptions")
-    model.setSttLaneEndpoint("live", "wss://asr.example/v1/audio/transcribe")
+    try model.setSttLaneEndpoint("live", "wss://asr.example/v1/audio/transcribe")
     XCTAssertEqual(writes.last?.key, "STT_LIVE_ENDPOINT")
     XCTAssertEqual(writes.map(\.key), ["STT_FILE_ENDPOINT", "STT_LIVE_ENDPOINT"])
 
-    model.setSttLaneEndpoint("ndjson", "https://x")
+    try model.setSttLaneEndpoint("ndjson", "https://x")
     XCTAssertEqual(writes.count, 2, "an unknown lane id writes nothing (two lanes, not three)")
     XCTAssertNil(model.lastError)
+  }
+
+  /// The bridge titles lanes in English for the CLI; the panel names them by id
+  /// so the Polish catalog can carry them, and a rejected endpoint reads as one
+  /// sentence under the field instead of the bridge's reason.
+  func testSttLaneCardsAreTitledByIdAndExplainARejectedScheme() async {
+    let model = await makeModel()
+    XCTAssertEqual(
+      model.sttLanes.map(SttLaneCard.title(for:)), ["File transcription", "Live transcription"])
+    let unknown = CsSttLane(
+      id: "ndjson", title: "NDJSON stream", accepts: "", placeholder: "", endpoint: nil,
+      endpointWireKey: "STT_NDJSON_ENDPOINT", keyAccount: "STT_NDJSON_API_KEY", apiKeySet: false)
+    XCTAssertEqual(
+      SttLaneCard.title(for: unknown), "NDJSON stream", "an unknown lane keeps its own title")
+
+    XCTAssertEqual(
+      SttLaneCard.saveMessage(for: CsError.Config(msg: "endpoint requires http(s)")),
+      "This address needs http:// or https://.")
+    XCTAssertEqual(
+      SttLaneCard.saveMessage(for: CsError.Config(msg: "endpoint requires ws(s)")),
+      "This address needs ws:// or wss://.")
+    XCTAssertEqual(
+      SttLaneCard.saveMessage(
+        for: CsError.Config(msg: "plaintext endpoints are allowed only on loopback")),
+      "plaintext endpoints are allowed only on loopback",
+      "other reasons are shown as the bridge states them")
+  }
+
+  /// The account row shows one action: `Sign out` while connected, `Sign in`
+  /// otherwise — and names the connected account when the id token does.
+  func testAccountRowStatusNamesTheConnectedAccount() {
+    var provider = CsProviderOption.sampleProviders[1]
+    XCTAssertEqual(provider.id, "openai-responses")
+    XCTAssertEqual(AccountLoginRow.status(for: provider), "Not connected")
+    provider.accountSignedIn = true
+    XCTAssertEqual(AccountLoginRow.status(for: provider), "Connected")
+    provider.accountIdentity = "user@example.com"
+    XCTAssertEqual(AccountLoginRow.status(for: provider), "Connected as user@example.com")
+    XCTAssertEqual(AccountLoginRow.brand(for: provider), "ChatGPT")
   }
 
   /// LLMLaneEditor.body reads `llmLane` per menu item; the FFI loader must not.
