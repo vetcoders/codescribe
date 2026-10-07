@@ -17262,9 +17262,10 @@ mod rc_w2_test_rehab {
             "arming is injected by session owner"
         );
         emit(&mut state, &tx, vec![segment("uruchom doker", 0.5, 2.0)]);
-        assert!(!state.flush_layer1_coalesce(&tx));
+        state.pump_capture_windows(&tx);
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
-        assert_eq!(state.tail_patch_backpressure_drops, 0);
+        assert_eq!(state.windows_admitted, 0);
+        assert!(state.refinement_pending.is_empty());
         assert_eq!(state.sealed_count, 1);
         assert_eq!(raw_finals(&drain(&mut rx)), vec!["uruchom doker"]);
     }
@@ -17285,56 +17286,74 @@ mod rc_w2_test_rehab {
                 vec![segment(&format!("segment {i}"), start, end)],
             );
         }
-        state.flush_layer1_coalesce(&tx);
+        // 10 s covers one 9 s window. The next step needs a 12 s head, so the
+        // channel of 1 can retain that exact second offer.
+        state.audio.push(&vec![0.25; 32_000]);
+        state.pump_capture_windows(&tx);
+        assert_eq!(state.windows_admitted, 1);
         assert_eq!(state.tail_patch_awaiting_completion(), 1);
-        // Ten physical occurrences remain conserved: one in transport, eight
-        // retained exact jobs, and one explicit capacity failure. The old
-        // nine-drop policy is replaced, not excused with a weaker assertion.
-        assert_eq!(state.refinement_pending.len(), 8);
-        assert_eq!(state.tail_patch_backpressure_drops, 1);
+        assert_eq!(state.refinement_pending.len(), 1);
+        let held = state
+            .refinement_pending
+            .front()
+            .unwrap()
+            .provider_request
+            .identity
+            .clone();
+        assert_eq!(
+            (held.range.sample_start, held.range.sample_end),
+            (48_000, 192_000)
+        );
         assert_eq!(
             state.sealed_count, 0,
-            "capacity failure returns the job, not a successful speech recovery"
+            "a full queue retains the offer and does not recover speech"
         );
-        let mut submitted = BTreeSet::new();
-        for _ in 0..9 {
-            let request = tail_rx.try_recv().expect("retained exact request");
-            assert!(submitted.insert(request.utterance_id), "never submit twice");
-            assert!(tail_rx.try_recv().is_err());
-            request
+        state.audio.push(&[0.25; 512]);
+        state.pump_capture_windows(&tx);
+        assert_eq!(state.windows_admitted, 1);
+        assert_eq!(
+            state
+                .refinement_pending
+                .front()
+                .unwrap()
                 .provider_request
-                .validate_pcm(&request.audio)
-                .unwrap();
-            state.complete_whisper_window(
-                &tx,
-                TailPatchCompletion {
-                    submission_sequence: request.submission_sequence,
-                    utterance_id: request.utterance_id,
-                    request_identity: Some(request.provider_request.identity),
-                    member_occurrences: request.member_occurrences,
-                    payload: None,
-                },
-                10.0,
-            );
-            state.retry_refinements(&tx);
-        }
-        assert_eq!(submitted.len(), 9);
+                .identity,
+            held
+        );
+        let first = tail_rx.try_recv().expect("the accepted window");
+        let mut submitted = BTreeSet::new();
+        assert!(submitted.insert(first.submission_sequence));
+        first
+            .provider_request
+            .validate_pcm(&first.audio)
+            .unwrap();
+        state.complete_whisper_window(
+            &tx,
+            TailPatchCompletion {
+                submission_sequence: first.submission_sequence,
+                utterance_id: first.utterance_id,
+                request_identity: Some(first.provider_request.identity),
+                member_occurrences: first.member_occurrences,
+                payload: None,
+            },
+            12.0,
+        );
+        state.pump_capture_windows(&tx);
+        let second = tail_rx.try_recv().expect("the retained offer");
+        assert!(submitted.insert(second.submission_sequence));
+        assert_eq!(second.provider_request.identity, held);
+        assert!(tail_rx.try_recv().is_err());
+        assert_eq!(submitted.len(), 2);
         assert!(state.refinement_pending.is_empty());
-        assert_eq!(state.tail_patch_awaiting_completion(), 0);
-        // The queued Whisper jobs have drained; close this capture epoch.
-        state.close_admission_horizon(&tx, sample(10.0));
-        assert_eq!(state.sealed_count, 1);
-        assert_eq!(raw_finals(&drain(&mut rx)).len(), 1);
         {
             let ledger = state.acoustic_ledger.lock().unwrap();
-            assert_eq!(ledger.pending_text_recoveries("full-tail", 7).len(), 9);
             for (i, &(start, end)) in ranges.iter().enumerate() {
                 let occurrence =
                     OccurrenceIdentity::new("full-tail", 7, sample(start), sample(end));
                 assert_eq!(
                     ledger.text_of(&occurrence),
                     Some(format!("segment {i}").as_str()),
-                    "all physical labels remain visible even when recovery failed"
+                    "all physical labels remain visible while the queue is saturated"
                 );
             }
         }
@@ -18643,6 +18662,12 @@ mod live_refinement_admission_tests {
         ledger
     }
 
+    /// Stop freezes the head. A head shorter than one 9 s window is that one partial.
+    fn pump_stopped(state: &mut AppleSealState, events: &mpsc::UnboundedSender<EngineEvent>) {
+        state.capture_stopping = true;
+        state.pump_capture_windows(events);
+    }
+
     fn finish(request: &TailPatchRequest) -> TailPatchCompletion {
         TailPatchCompletion {
             submission_sequence: request.submission_sequence,
@@ -18905,14 +18930,11 @@ mod live_refinement_admission_tests {
 
     #[test]
     fn forensic_live_transport_foreign_envelope_waits_for_exact_word_completion() {
-        for context in [
-            FusionContextMode::UtteranceOnly,
-            FusionContextMode::SymmetricPad,
-        ] {
+        for context in ["utterance-only", "symmetric-pad"] {
             let (mut state, events, mut receiver, mut requests) = fixture(1);
-            state.fusion_context = context;
             forensic_live_transport_capture(&mut state);
             reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+            pump_stopped(&mut state, &events);
             let request = requests.try_recv().expect("real submitted job");
             request
                 .provider_request
@@ -19034,10 +19056,7 @@ mod live_refinement_admission_tests {
 
     #[test]
     fn forensic_live_transport_phrase_and_invalid_payload_cannot_seal_recovery() {
-        for context in [
-            FusionContextMode::UtteranceOnly,
-            FusionContextMode::SymmetricPad,
-        ] {
+        for context in ["utterance-only", "symmetric-pad"] {
             for defect in [
                 "phrase",
                 "segmentless",
@@ -19050,9 +19069,9 @@ mod live_refinement_admission_tests {
                 "no_payload",
             ] {
                 let (mut state, events, mut receiver, mut requests) = fixture(1);
-                state.fusion_context = context;
                 forensic_live_transport_capture(&mut state);
                 reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+                pump_stopped(&mut state, &events);
                 let request = requests.try_recv().unwrap();
                 let owner = &request.member_occurrences[0].1;
                 let mut completion = labelled_completion(&request);
@@ -19074,7 +19093,7 @@ mod live_refinement_admission_tests {
                 state.close_admission_horizon(&events, owner.sample_end);
                 assert_eq!(state.tail_patch_awaiting_completion(), 0);
                 assert!(state.refinement_submitted.is_empty());
-                let expected = matches!(defect, "phrase" | "segmentless").then_some("hello");
+                let expected = None;
                 let mut ledger = state.acoustic_ledger.lock().unwrap();
                 assert_eq!(ledger.text_of(owner), expected, "{context:?}/{defect}");
                 assert!(ledger.text_recovery_pending(owner), "{context:?}/{defect}");
@@ -19084,7 +19103,8 @@ mod live_refinement_admission_tests {
                         .frontier_of(owner)
                         .unwrap()
                         .open_producers()
-                        .is_empty()
+                        .contains(&LedgerObservationProducer::Whisper),
+                    "{context:?}/{defect}: a refused payload does not return Whisper"
                 );
                 assert_eq!(ledger.seal(owner), Err(SealRefusal::TextRecoveryPending));
                 assert_eq!(
@@ -19474,7 +19494,7 @@ mod live_refinement_admission_tests {
         }
         assert!(state.refinement_submitted.is_empty());
         assert!(state.refinement_pending.is_empty());
-        assert!(state.layer1_coalesce.is_empty());
+        assert_eq!(state.windows_admitted, 0);
         state.close_admission_horizon(&events, occurrence.sample_end);
         let mut ledger = state.acoustic_ledger.lock().unwrap();
         assert_eq!(
@@ -19587,7 +19607,7 @@ mod live_refinement_admission_tests {
             // Positive control: waiting cannot be implemented by disabling the
             // formatter or freezing Apple. The real submitted completion must
             // release precisely one request with corrected, enriched input.
-            state.flush_layer1_coalesce(&events);
+            pump_stopped(&mut state, &events);
             let request = requests.try_recv().expect("Whisper remains enabled");
             let completion =
                 forensic_live_transport_words_completion(&request, "czy plan zweryfikowałeś");
@@ -19682,7 +19702,7 @@ mod live_refinement_admission_tests {
                     EngineEvent::UtteranceFinal { .. } | EngineEvent::LedgerSeal { .. }
                 ))
             );
-            state.flush_layer1_coalesce(&events);
+            pump_stopped(&mut state, &events);
             let request = requests.try_recv().unwrap();
             let completion = forensic_live_transport_words_completion(&request, whisper);
             complete_confirmed_test_window(&mut state, &events, completion, 20.0);
@@ -19721,7 +19741,8 @@ mod live_refinement_admission_tests {
                 end_ts: 0.4,
             }],
         );
-        state.flush_layer1_coalesce(&events);
+        forensic_live_transport_capture(&mut state);
+        pump_stopped(&mut state, &events);
         let request = requests.try_recv().unwrap();
         let deadline = state.refinement_clock + TAIL_PATCH_CLOSURE_TIMEOUT;
         assert!(!state.stop_refinements_tick(&events, deadline, deadline));
@@ -19805,6 +19826,10 @@ mod live_refinement_admission_tests {
                     end_ts: 0.2,
                 }],
             );
+            state.audio = LiveAudioBuffer::new(RATE, 20.0);
+            state.audio.push(&vec![0.25; 2_600]);
+            state.capture_stopping = true;
+            state.pump_capture_windows(&events);
             let request = requests.try_recv().expect("debt submits at speech close");
             let occurrence = OccurrenceIdentity::new("live-admission", 7, 0, 2_600);
             assert_eq!(request.member_occurrences, vec![(1, occurrence.clone())]);
@@ -19817,7 +19842,8 @@ mod live_refinement_admission_tests {
                 .provider_request
                 .validate_pcm(&request.audio)
                 .unwrap();
-            assert!(state.layer1_coalesce.is_empty());
+            assert!(state.refinement_pending.is_empty());
+            assert_eq!(state.windows_admitted, 1);
             {
                 let ledger = state.acoustic_ledger.lock().unwrap();
                 assert_eq!(ledger.text_of(&occurrence), Some("partial words"));
@@ -19886,18 +19912,16 @@ mod live_refinement_admission_tests {
 
     #[test]
     fn whisper_segmentless_text_requires_exact_window_and_rejected_pins_never_fallback() {
-        for context in [
-            FusionContextMode::UtteranceOnly,
-            FusionContextMode::SymmetricPad,
-        ] {
+        for context in ["utterance-only", "symmetric-pad"] {
             for defect in [
                 "none", "word", "session", "epoch", "outside", "empty", "reversed",
             ] {
                 let (mut state, events, mut receiver, mut requests) = fixture(1);
-                state.fusion_context = context;
                 forensic_live_transport_capture(&mut state);
                 reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-                assert!(state.layer1_coalesce.is_empty());
+                assert_eq!(state.windows_admitted, 0);
+                assert!(state.refinement_pending.is_empty());
+                pump_stopped(&mut state, &events);
                 let request = requests.try_recv().unwrap();
                 request
                     .provider_request
@@ -19915,6 +19939,8 @@ mod live_refinement_admission_tests {
                         payload.segments[0].range.sample_end = 350;
                         payload.evidence.segment_grain =
                             crate::stt::tail_provider::TailSegmentGrain::Word;
+                        payload.evidence.timing_quality =
+                            crate::stt::tail_provider::TailTimingQuality::ExactSampleRange;
                     }
                     "session" => payload.segments[0].range.session = "foreign".into(),
                     "epoch" => payload.segments[0].range.capture_epoch += 1,
@@ -19926,7 +19952,7 @@ mod live_refinement_admission_tests {
                 while receiver.try_recv().is_ok() {}
                 state.complete_whisper_window(&events, completion, 20.0);
                 state.close_admission_horizon(&events, occurrence.sample_end);
-                let accepted = matches!(defect, "none" | "word");
+                let accepted = defect == "word";
                 let decoded_words = defect == "word";
                 assert_eq!(
                     OccurrenceIdentity::from(&request.provider_request.identity.range),
@@ -19941,12 +19967,14 @@ mod live_refinement_admission_tests {
                 assert_eq!(ledger.is_sealed(occurrence), decoded_words);
                 assert_eq!(ledger.text_recovery_pending(occurrence), !decoded_words);
                 assert_eq!(ledger.conservation().residue(), 0);
-                assert!(
+                assert_eq!(
                     ledger
                         .frontier_of(occurrence)
                         .unwrap()
                         .open_producers()
-                        .is_empty()
+                        .contains(&LedgerObservationProducer::Whisper),
+                    !decoded_words,
+                    "{context:?}/{defect}"
                 );
                 drop(ledger);
                 assert_eq!(state.tail_patch_awaiting_completion(), 0);
@@ -19959,7 +19987,7 @@ mod live_refinement_admission_tests {
                             EngineEvent::LedgerMutation { receipt, .. } if receipt.grants_mutation()
                         ))
                         .count(),
-                    usize::from(accepted)
+                    usize::from(decoded_words)
                 );
                 assert_eq!(
                     emitted
@@ -19984,7 +20012,9 @@ mod live_refinement_admission_tests {
         let (mut state, events, mut receiver, mut requests) = fixture(1);
         forensic_live_transport_capture(&mut state);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-        assert!(state.layer1_coalesce.is_empty());
+        assert_eq!(state.windows_admitted, 0);
+        pump_stopped(&mut state, &events);
+        assert!(state.refinement_pending.is_empty());
         let request = requests.try_recv().unwrap();
         let occurrence = &request.member_occurrences[0].1;
         while receiver.try_recv().is_ok() {}
@@ -20085,12 +20115,14 @@ mod live_refinement_admission_tests {
     #[test]
     fn whisper_unsolicited_completion_cannot_consume_a_held_occurrence() {
         let (mut source, source_events, _source_receiver, mut source_requests) = fixture(1);
+        forensic_live_transport_capture(&mut source);
         reconcile_silero_ledger(&mut source, &source_events, &closed(1), &[]);
-        assert!(source.layer1_coalesce.is_empty());
+        pump_stopped(&mut source, &source_events);
+        assert_eq!(source.windows_admitted, 1);
+        assert!(source.refinement_pending.is_empty());
         let unsolicited = source_requests.try_recv().unwrap();
         let (mut state, events, mut receiver, mut requests) = fixture(1);
-        // A labelled, debt-free occurrence still exercises held coalescer
-        // ownership; a blank occurrence is now submitted immediately.
+        forensic_live_transport_capture(&mut state);
         reconcile_silero_ledger(
             &mut state,
             &events,
@@ -20102,41 +20134,48 @@ mod live_refinement_admission_tests {
                 end_ts: 0.4,
             }],
         );
-        let occurrence = &unsolicited.member_occurrences[0].1;
+        let occurrence = OccurrenceIdentity::new("live-admission", 7, 0, 400);
         while receiver.try_recv().is_ok() {}
         state.complete_whisper_window(&events, labelled_completion(&unsolicited), 20.0);
         assert!(receiver.try_recv().is_err());
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(state.refinement_submitted.is_empty());
-        assert!(!state.layer1_coalesce.is_empty());
+        assert_eq!(state.windows_admitted, 0);
+        assert!(state.refinement_pending.is_empty());
         let ledger = state.acoustic_ledger.lock().unwrap();
-        assert_eq!(ledger.text_of(occurrence), Some("hello"));
-        assert!(!ledger.is_sealed(occurrence));
+        assert_eq!(ledger.text_of(&occurrence), Some("hello"));
+        assert!(!ledger.is_sealed(&occurrence));
         assert!(
             ledger
-                .frontier_of(occurrence)
+                .frontier_of(&occurrence)
                 .unwrap()
                 .open_producers()
                 .contains(&LedgerObservationProducer::Whisper)
         );
         drop(ledger);
-        assert!(state.flush_layer1_coalesce(&events));
+        pump_stopped(&mut state, &events);
         let request = requests.try_recv().unwrap();
-        state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        state.complete_whisper_window(
+            &events,
+            forensic_live_transport_word_completion(&request),
+            20.0,
+        );
         state.close_admission_horizon(&events, occurrence.sample_end);
         assert_eq!(
-            state.acoustic_ledger.lock().unwrap().text_of(occurrence),
+            state.acoustic_ledger.lock().unwrap().text_of(&occurrence),
             Some("hello")
         );
-        assert!(state.acoustic_ledger.lock().unwrap().is_sealed(occurrence));
+        assert!(state.acoustic_ledger.lock().unwrap().is_sealed(&occurrence));
     }
 
     #[test]
     fn whisper_foreign_payload_returns_only_the_owned_frontier_without_text() {
         for defect in ["request", "session", "epoch", "start", "end"] {
             let (mut state, events, mut receiver, mut requests) = fixture(1);
+            forensic_live_transport_capture(&mut state);
             reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-            assert!(state.layer1_coalesce.is_empty());
+            pump_stopped(&mut state, &events);
+            assert!(state.refinement_pending.is_empty());
             let request = requests.try_recv().unwrap();
             let occurrence = &request.member_occurrences[0].1;
             let mut completion = labelled_completion(&request);
@@ -20160,7 +20199,8 @@ mod live_refinement_admission_tests {
                     .frontier_of(occurrence)
                     .unwrap()
                     .open_producers()
-                    .is_empty()
+                    .contains(&LedgerObservationProducer::Whisper),
+                "{defect}"
             );
             drop(ledger);
             assert_eq!(state.tail_patch_awaiting_completion(), 0);
@@ -20190,7 +20230,9 @@ mod live_refinement_admission_tests {
             let (mut state, events, _receiver, mut requests) = fixture(1);
             let _epoch = EpochGate::for_session(RATE, silence, true);
             let now = state.refinement_clock;
+            forensic_live_transport_capture(&mut state);
             reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+            pump_stopped(&mut state, &events);
             let request = requests
                 .try_recv()
                 .expect("speech debt submits at close, without another Apple piece or tick");
@@ -20254,7 +20296,7 @@ mod live_refinement_admission_tests {
             }],
         );
         assert!(state.reconciled_silero.contains(&1));
-        state.flush_layer1_coalesce(&events);
+        pump_stopped(&mut state, &events);
         let request = requests.try_recv().expect("one physical job");
         request
             .provider_request
@@ -20329,8 +20371,9 @@ mod live_refinement_admission_tests {
     #[test]
     fn whisper_first_completion_admits_owned_label_without_apple_words() {
         let (mut state, events, mut receiver, mut requests) = fixture(1);
+        forensic_live_transport_capture(&mut state);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-        state.flush_layer1_coalesce(&events);
+        pump_stopped(&mut state, &events);
         let request = requests.try_recv().unwrap();
         let occurrence = request.member_occurrences[0].1.clone();
         assert_eq!(occurrence.sample_end, 400);
@@ -20339,15 +20382,16 @@ mod live_refinement_admission_tests {
             .provider_request
             .validate_pcm(&request.audio)
             .unwrap();
-        let completion = labelled_completion(&request);
+        let completion = forensic_live_transport_word_completion(&request);
         state.complete_whisper_window(&events, completion, 20.0);
         state.close_admission_horizon(&events, 400);
         let ledger = state.acoustic_ledger.lock().unwrap();
         assert_eq!(ledger.text_of(&occurrence), Some("hello"));
-        // A synthetic phrase label does not establish returned word PCM.
-        // It stays visible, but cannot certify whole-occurrence recovery.
-        assert!(!ledger.is_sealed(&occurrence));
-        assert!(ledger.text_recovery_pending(&occurrence));
+        assert!(ledger.is_sealed(&occurrence));
+        let slots = ledger.slots_of(&occurrence).unwrap();
+        assert_eq!(slots.len(), 1);
+        assert_eq!((slots[0].sample_start, slots[0].sample_end), (50, 350));
+        assert!(!ledger.text_recovery_pending(&occurrence));
         assert_eq!(state.tail_patch_jobs_applied, 1);
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
         drop(ledger);
@@ -20365,12 +20409,14 @@ mod live_refinement_admission_tests {
                     EngineEvent::UtteranceFinal { text, .. } if text == "hello"
                 ))
                 .count(),
-            0
+            1
         );
-        assert!(
-            !emitted
+        assert_eq!(
+            emitted
                 .iter()
-                .any(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+                .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+                .count(),
+            1
         );
 
         // Independently executed real-reconcile controls retain the original
@@ -20392,9 +20438,10 @@ mod live_refinement_admission_tests {
             start_ts: 0.0,
             end_ts: 0.4,
         }];
+        forensic_live_transport_capture(&mut state);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &words);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &words);
-        state.flush_layer1_coalesce(&events);
+        pump_stopped(&mut state, &events);
         let request = requests.try_recv().unwrap();
         state.complete_whisper_window(&events, finish(&request), 20.0);
         state.complete_whisper_window(&events, finish(&request), 20.0);
@@ -20413,9 +20460,17 @@ mod live_refinement_admission_tests {
                 .iter()
                 .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
                 .count(),
-            1
+            0
         );
-        assert_eq!(state.sealed_count, 1);
+        assert_eq!(state.sealed_count, 0);
+        assert_eq!(state.tail_patch_jobs_skipped, 1);
+        assert!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .text_recovery_pending(&request.member_occurrences[0].1)
+        );
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(requests.try_recv().is_err());
     }
@@ -20426,8 +20481,9 @@ mod live_refinement_admission_tests {
     fn late_nonblank_apple_after_no_label_completion_remains_recoverable() {
         let (mut state, events, mut receiver, mut requests) = fixture(1);
         let physical = closed(1);
+        forensic_live_transport_capture(&mut state);
         reconcile_silero_ledger(&mut state, &events, &physical, &[]);
-        state.flush_layer1_coalesce(&events);
+        pump_stopped(&mut state, &events);
         let request = requests.try_recv().unwrap();
         let occurrence = request.member_occurrences[0].1.clone();
         let serial = state
@@ -20446,8 +20502,14 @@ mod live_refinement_admission_tests {
                 ledger.seal(&occurrence),
                 Err(SealRefusal::TextRecoveryPending)
             );
-            assert!(ledger.frontier_of(&occurrence).unwrap().is_closed());
-            assert_eq!(ledger.layer_trail_for(&occurrence).count(), 1);
+            assert!(
+                ledger
+                    .frontier_of(&occurrence)
+                    .unwrap()
+                    .open_producers()
+                    .contains(&LedgerObservationProducer::Whisper)
+            );
+            assert_eq!(ledger.layer_trail_for(&occurrence).count(), 0);
         }
         assert_eq!(state.sealed_count, 0);
         reconcile_silero_ledger(
@@ -20475,8 +20537,14 @@ mod live_refinement_admission_tests {
             );
             assert!(ledger.seal_of(&occurrence).is_none());
             assert!(ledger.text_recovery_pending(&occurrence));
-            assert_eq!(ledger.layer_trail_for(&occurrence).count(), 3);
-            assert!(ledger.frontier_of(&occurrence).unwrap().is_closed());
+            assert_eq!(ledger.layer_trail_for(&occurrence).count(), 2);
+            assert!(
+                ledger
+                    .frontier_of(&occurrence)
+                    .unwrap()
+                    .open_producers()
+                    .contains(&LedgerObservationProducer::Whisper)
+            );
         }
         let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
         assert_eq!(emitted.iter().filter(|event| matches!(event,
@@ -20523,8 +20591,9 @@ mod live_refinement_admission_tests {
     fn late_apple_with_foreign_capture_cannot_qualify_or_replace_current_occurrence() {
         for (session, epoch) in [("other", 7), ("live-admission", 6)] {
             let (mut state, events, _receiver, mut requests) = fixture(1);
+            forensic_live_transport_capture(&mut state);
             reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-            state.flush_layer1_coalesce(&events);
+            pump_stopped(&mut state, &events);
             let request = requests.try_recv().unwrap();
             state.complete_whisper_window(&events, finish(&request), 20.0);
             let mut stale = UtteranceLedger::new();
@@ -20582,19 +20651,28 @@ mod live_refinement_admission_tests {
         ledger.open_or_extend("live-admission", 7, 0, 40_000);
         ledger.close_open(40_000);
         reconcile_silero_ledger(&mut state, &events, &ledger, &[]);
-        assert!(state.layer1_coalesce.is_empty());
+        assert_eq!(state.windows_admitted, 0);
+        assert!(state.refinement_pending.is_empty());
+        state.pump_capture_windows(&events);
+        assert_eq!(state.windows_admitted, 1);
+        assert_eq!(state.refinement_pending.len(), 1);
+        let request = requests.try_recv().expect("one window fits the channel");
+        assert_eq!(request.audio.len(), 9_000);
+        state.pump_capture_windows(&events);
         assert!(
             state.windows_admitted >= 2,
-            "40 s at 1 kHz is split into step-1 windows, admitted {}",
+            "40 s at 1 kHz is split into 9 s windows, admitted {}",
             state.windows_admitted
         );
-        assert!(state.refinement_pending.len() <= LIVE_REFINEMENT_PENDING_CAP);
-        let request = requests.try_recv().expect("one window fits the channel");
-        assert!(request.audio.len() <= 4 * RATE as usize);
-        let backlog = warnings(&mut receiver, RefinementFailure::BacklogExhausted.code());
         assert!(
-            !(state.windows_admitted == 0 && backlog == 1),
-            "the fragment is not one whole-fragment backlog refusal"
+            state.refinement_pending.len() <= 1,
+            "a full channel retains one exact offer"
+        );
+        let backlog = warnings(&mut receiver, RefinementFailure::PcmUnavailable.code());
+        assert_eq!(backlog, 0);
+        assert!(
+            state.windows_admitted >= 2,
+            "the fragment is not one whole-fragment refusal"
         );
         assert_eq!(state.audio.session_sample_end(), 40_000);
     }
@@ -20603,20 +20681,28 @@ mod live_refinement_admission_tests {
     fn saturation_then_drain_preserves_exact_requests_and_once_only_submission() {
         let (mut state, events, _receiver, mut requests) = fixture(1);
         reconcile_silero_ledger(&mut state, &events, &closed(3), &[]);
-        state.flush_layer1_coalesce(&events);
-        assert_eq!(state.refinement_pending.len(), 2);
-        assert_eq!(state.tail_patch_backpressure_drops, 0);
-        let mut ids = BTreeSet::new();
-        for _ in 0..3 {
-            let request = requests.try_recv().expect("next exact request");
-            assert!(ids.insert(request.utterance_id));
+        state.pump_capture_windows(&events);
+        assert_eq!(state.refinement_pending.len(), 1);
+        assert_eq!(state.windows_admitted, 1);
+        let mut starts = BTreeSet::new();
+        let mut sequences = BTreeSet::new();
+        for _ in 0..4 {
+            let request = match requests.try_recv() {
+                Ok(request) => request,
+                Err(_) => {
+                    state.pump_capture_windows(&events);
+                    requests.try_recv().expect("next exact request")
+                }
+            };
+            assert!(sequences.insert(request.submission_sequence));
+            assert!(starts.insert(request.provider_request.identity.range.sample_start));
             request
                 .provider_request
                 .validate_pcm(&request.audio)
                 .unwrap();
             let completion = finish(&request);
             state.complete_whisper_window(&events, completion, 20.0);
-            state.retry_refinements(&events);
+            state.pump_capture_windows(&events);
         }
         for id in 0..3 {
             reconcile_silero_ledger(
@@ -20639,7 +20725,8 @@ mod live_refinement_admission_tests {
             assert_eq!(ledger.layer_trail_for(&occurrence).count(), 3);
         }
         assert!(requests.try_recv().is_err());
-        assert_eq!(ids, BTreeSet::from([1, 2, 3]));
+        assert_eq!(starts, BTreeSet::from([0, 3_000, 6_000, 9_000]));
+        assert_eq!(sequences.len(), 4);
         assert!(state.refinement_pending.is_empty());
         assert!(state.refinement_submitted.is_empty());
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
@@ -20650,7 +20737,7 @@ mod live_refinement_admission_tests {
         let (mut state, events, mut receiver, requests) = fixture(1);
         drop(requests);
         reconcile_silero_ledger(&mut state, &events, &closed(3), &[]);
-        state.flush_layer1_coalesce(&events);
+        state.pump_capture_windows(&events);
         assert_eq!(
             warnings(&mut receiver, RefinementFailure::LaneGone.code()),
             3
@@ -20717,23 +20804,30 @@ mod live_refinement_admission_tests {
     fn backlog_exhaustion_conserves_submitted_pending_and_failed_members() {
         let (mut state, events, mut receiver, _requests) = fixture(1);
         reconcile_silero_ledger(&mut state, &events, &closed(12), &[]);
-        state.flush_layer1_coalesce(&events);
+        state.pump_capture_windows(&events);
         assert_eq!(state.refinement_submitted.len(), 1);
-        assert!(state.refinement_pending.len() <= LIVE_REFINEMENT_PENDING_CAP);
-        assert!(state.tail_patch_backpressure_drops > 0);
+        assert_eq!(state.refinement_pending.len(), 1);
+        assert_eq!(state.windows_admitted, 1);
+        assert_eq!(state.audio.session_sample_end(), 20_000);
+        let held = state.refinement_pending.front().unwrap();
         assert_eq!(
-            warnings(&mut receiver, RefinementFailure::BacklogExhausted.code()),
-            state.tail_patch_backpressure_drops as usize
+            (
+                held.provider_request.identity.range.sample_start,
+                held.provider_request.identity.range.sample_end
+            ),
+            (3_000, 12_000)
         );
         assert_eq!(
-            state.refinement_submitted.len()
-                + state.refinement_pending.len()
-                + state.tail_patch_backpressure_drops as usize,
+            warnings(&mut receiver, RefinementFailure::PcmUnavailable.code()),
+            0
+        );
+        assert_eq!(
+            state.unsealed_word_owners().len(),
             12
         );
     }
 
-    // The take's 48 kHz geometry deliberately reuses request 10 and its window.
+    // One physical owner, qualified on the 48 kHz capture clock.
     fn tc3_stage_member(state: &mut AppleSealState, occurrence: &OccurrenceIdentity) {
         let calibration = state.energy_calibration.clone().unwrap();
         let mut ledger = state.acoustic_ledger.lock().unwrap();
@@ -20769,36 +20863,8 @@ mod live_refinement_admission_tests {
         );
     }
 
-    fn tc3_submit_window(
-        state: &mut AppleSealState,
-        events: &mpsc::UnboundedSender<EngineEvent>,
-        requests: &mut mpsc::Receiver<TailPatchRequest>,
-        occurrence: &OccurrenceIdentity,
-        start: u64,
-        end: u64,
-    ) -> TailPatchRequest {
-        assert!(state.queue_layer1_flush(
-            events,
-            CoalesceFlush {
-                audio: vec![0.25; (end - start) as usize],
-                committed_text: String::new(),
-                member_ids: vec![(10, occurrence.sample_end as f32 / 48_000.0)],
-                member_occurrences: vec![(10, occurrence.clone())],
-                neighbour_context: String::new(),
-                sample_start: start,
-                sample_end: end,
-                admit_sample_start: occurrence.sample_start,
-                admit_sample_end: occurrence.sample_end,
-                primary_utterance_id: 10,
-            }
-        ));
-        let request = requests.try_recv().expect("accepted submission");
-        assert_eq!(request.provider_request.identity.request_id, 10);
-        assert_eq!(request.provider_request.identity.range.sample_start, start);
-        assert_eq!(request.provider_request.identity.range.sample_end, end);
-        request
-    }
-
+    /// Three distinct 9 s windows on a stopped 15 s head. Request ids are the
+    /// capture-grid index, and the grid never re-offers a spent range.
     fn tc3_duplicate_geometry(
         order: [usize; 3],
     ) -> (
@@ -20820,58 +20886,43 @@ mod live_refinement_admission_tests {
                 min_valley_samples: 1,
             }),
         );
-        state.whisper_context_window_sec = 0.0;
-        let old = OccurrenceIdentity::new("ef1fa240", 7, 2_132_992, 2_325_504);
-        tc3_stage_member(&mut state, &old);
-        let first = tc3_submit_window(
-            &mut state,
-            &events,
-            &mut requests,
-            &old,
-            1_941_504,
-            2_325_504,
-        );
-        // Re-close the physical member while the first decode is outstanding.
-        state.return_whisper_without_label(&events, 10, &old);
-        let current = OccurrenceIdentity::new("ef1fa240", 7, 2_132_992, 2_317_824);
-        tc3_stage_member(&mut state, &current);
-        let second = tc3_submit_window(
-            &mut state,
-            &events,
-            &mut requests,
-            &current,
-            1_885_824,
-            2_317_824,
-        );
-        let third = tc3_submit_window(
-            &mut state,
-            &events,
-            &mut requests,
-            &current,
-            1_941_504,
-            2_325_504,
-        );
+        let head = 720_000_usize;
+        state.audio.push(&vec![0.25; head]);
+        state.capture_stopping = true;
+        let owner = OccurrenceIdentity::new("ef1fa240", 7, 0, head as u64);
+        tc3_stage_member(&mut state, &owner);
+        state.pump_capture_windows(&events);
+        let mut submitted = Vec::new();
+        for _ in 0..3 {
+            submitted.push(requests.try_recv().expect("accepted window"));
+        }
+        assert!(requests.try_recv().is_err());
+        assert!(state.window_plan.is_finished());
         assert_eq!(
-            first.provider_request.identity,
-            third.provider_request.identity
+            submitted
+                .iter()
+                .map(|request| request.provider_request.identity.request_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
         );
-        assert!(first.submission_sequence < second.submission_sequence);
-        assert!(second.submission_sequence < third.submission_sequence);
+        assert_ne!(
+            submitted[0].provider_request.identity,
+            submitted[2].provider_request.identity
+        );
+        assert!(submitted[0].submission_sequence < submitted[1].submission_sequence);
+        assert!(submitted[1].submission_sequence < submitted[2].submission_sequence);
         assert_eq!(state.refinement_submitted.len(), 3);
         assert_eq!(state.tail_patch_awaiting_completion(), 3);
-        let submitted = [first, second, third];
         for (finished, index) in order.into_iter().enumerate() {
+            let completion = if index == 0 {
+                forensic_live_transport_word_completion(&submitted[index])
+            } else {
+                finish(&submitted[index])
+            };
             let logged = refinement_log(|| {
-                state.complete_whisper_window(
-                    &events,
-                    labelled_completion(&submitted[index]),
-                    50.0,
-                );
+                state.complete_whisper_window(&events, completion, 50.0);
             });
             assert!(!logged.contains("unmatched_completion"), "{logged}");
-            if index == 0 {
-                assert!(logged.contains("stale_completion"), "{logged}");
-            }
             assert_eq!(
                 state.tail_patch_awaiting_completion(),
                 (2 - finished) as u64
@@ -20886,7 +20937,7 @@ mod live_refinement_admission_tests {
         assert!(state.refinement_submitted.is_empty());
         assert!(state.refinement_pending.is_empty());
         assert_eq!(
-            state.acoustic_ledger.lock().unwrap().text_of(&current),
+            state.acoustic_ledger.lock().unwrap().text_of(&owner),
             Some("hello")
         );
         let receipt = tail_patch_receipt_after_stop(
@@ -20936,8 +20987,9 @@ mod live_refinement_admission_tests {
     #[test]
     fn local_power_stop_deadline_preserves_clock_residue_and_disposition() {
         let (mut state, events, mut receiver, mut requests) = fixture(1);
+        forensic_live_transport_capture(&mut state);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-        state.flush_layer1_coalesce(&events);
+        pump_stopped(&mut state, &events);
         let request = requests.try_recv().unwrap();
         let occurrence = request.member_occurrences[0].1.clone();
         assert!(state.cloud_commit_tx.is_none());
@@ -20996,14 +21048,15 @@ mod live_refinement_admission_tests {
     #[test]
     fn tc3_stop_admits_real_inflight_job_before_deadline() {
         let (mut state, events, mut receiver, mut requests) = fixture(1);
+        forensic_live_transport_capture(&mut state);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-        state.flush_layer1_coalesce(&events);
+        pump_stopped(&mut state, &events);
         let request = requests.try_recv().unwrap();
         let occurrence = request.member_occurrences[0].1.clone();
         let now = Instant::now();
         let deadline = now + Duration::from_secs(5);
         assert!(state.stop_refinements_tick(&events, now, deadline));
-        state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        state.complete_whisper_window(&events, forensic_live_transport_word_completion(&request), 20.0);
         let outstanding = state.tail_patch_awaiting_completion();
         let mut residue = 0;
         let waiting = state.stop_refinements_tick(&events, now + LIVE_WORKER_QUANTUM, deadline);
@@ -21039,8 +21092,9 @@ mod live_refinement_admission_tests {
     #[test]
     fn tc3_unmatched_completion_reports_without_consuming_work() {
         let (mut state, events, _receiver, mut requests) = fixture(1);
+        forensic_live_transport_capture(&mut state);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-        state.flush_layer1_coalesce(&events);
+        pump_stopped(&mut state, &events);
         let request = requests.try_recv().unwrap();
         for defect in ["submission", "request", "missing_identity"] {
             let mut completion = labelled_completion(&request);
@@ -21071,7 +21125,7 @@ mod live_refinement_admission_tests {
                 0
             );
         }
-        state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        state.complete_whisper_window(&events, forensic_live_transport_word_completion(&request), 20.0);
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(state.tail_patch_jobs_applied, 1);
     }
@@ -21080,8 +21134,9 @@ mod live_refinement_admission_tests {
     fn tc3_async_completion_echoes_submission() {
         for succeeds in [false, true] {
             let (mut state, events, _receiver, mut requests) = fixture(1);
+            forensic_live_transport_capture(&mut state);
             reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-            state.flush_layer1_coalesce(&events);
+            pump_stopped(&mut state, &events);
             let request = requests.try_recv().unwrap();
             let inflight = TailPatchInFlight {
                 submission_sequence: request.submission_sequence,
@@ -21095,7 +21150,7 @@ mod live_refinement_admission_tests {
                 Ok(TailPatchJobResult {
                     utterance_id: request.utterance_id,
                     outcome: TailPatchOutcome::NoChange,
-                    payload: labelled_completion(&request).payload.unwrap(),
+                    payload: forensic_live_transport_word_completion(&request).payload.unwrap(),
                 })
             } else {
                 Err(anyhow::anyhow!("synthetic provider failure"))
@@ -21126,8 +21181,9 @@ mod live_refinement_admission_tests {
     #[test]
     fn stale_completion_cannot_return_the_current_observer() {
         let (mut state, events, _receiver, mut requests) = fixture(1);
+        forensic_live_transport_capture(&mut state);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-        state.flush_layer1_coalesce(&events);
+        pump_stopped(&mut state, &events);
         let request = requests.try_recv().unwrap();
         let mut stale = finish(&request);
         stale.request_identity.as_mut().unwrap().range.capture_epoch += 1;
@@ -21146,8 +21202,9 @@ mod live_refinement_admission_tests {
     #[test]
     fn completion_after_closed_members_is_one_skipped_job() {
         let (mut state, events, mut receiver, mut requests) = fixture(1);
+        forensic_live_transport_capture(&mut state);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-        state.flush_layer1_coalesce(&events);
+        pump_stopped(&mut state, &events);
         let request = requests.try_recv().expect("one submitted window");
         assert_eq!(state.tail_patch_awaiting_completion(), 1);
         let (member_id, occurrence) = request.member_occurrences[0].clone();
@@ -21182,8 +21239,8 @@ mod live_refinement_admission_tests {
             "a completion whose members closed meanwhile must be skipped, not dropped"
         );
         assert!(
-            logged.contains("stale_completion"),
-            "expected refinement_receipt stale_completion, log was: {logged}"
+            !logged.contains("unmatched_completion"),
+            "a matched refusal is skipped, log was: {logged}"
         );
         {
             let ledger = state.acoustic_ledger.lock().expect("ledger");
@@ -21246,7 +21303,7 @@ mod live_refinement_admission_tests {
         for completion_first in [false, true] {
             let (mut state, events, mut receiver, mut requests) = fixture(1);
             reconcile_silero_ledger(&mut state, &events, &closed(3), &[]);
-            state.flush_layer1_coalesce(&events);
+            state.pump_capture_windows(&events);
             let request = requests.try_recv().unwrap();
             if completion_first {
                 state.complete_whisper_window(&events, finish(&request), 20.0);
@@ -21255,7 +21312,10 @@ mod live_refinement_admission_tests {
             assert!(!state.stop_refinements_tick(&events, deadline, deadline));
             let failures = warnings(&mut receiver, RefinementFailure::StopDeadline.code());
             // Every unsent reservation needs its own terminal receipt too.
-            assert_eq!(failures, if completion_first { 2 } else { 3 });
+            assert_eq!(
+                failures, 3,
+                "a payload-none completion does not return the Whisper frontier"
+            );
             state.complete_whisper_window(&events, finish(&request), 20.0);
             assert!(!state.stop_refinements_tick(&events, deadline, deadline));
             assert_eq!(
@@ -21672,19 +21732,13 @@ mod relay_l1_overlap_admission_tests {
         );
     }
 
-    fn piece(utterance_id: u64, occurrence: &OccurrenceIdentity, text: &str) -> CoalescedPiece {
-        let start_ts = occurrence.sample_start as f32 / RATE as f32;
-        let end_ts = occurrence.sample_end as f32 / RATE as f32;
-        CoalescedPiece {
-            utterance_id,
-            occurrence: occurrence.clone(),
-            committed_text: text.to_string(),
+    struct RelayPiecePcm {
+        audio: Vec<f32>,
+    }
+
+    fn piece(_utterance_id: u64, occurrence: &OccurrenceIdentity, _text: &str) -> RelayPiecePcm {
+        RelayPiecePcm {
             audio: vec![0.2; occurrence.sample_len() as usize],
-            sample_start: occurrence.sample_start,
-            sample_end: occurrence.sample_end,
-            start_ts,
-            covered_through_secs: end_ts,
-            segment_count: 1,
         }
     }
 
@@ -22889,7 +22943,7 @@ mod relay_l1_overlap_admission_tests {
         let pcm = input.audio.clone();
         lane.state.audio.push(&pcm);
         assert_eq!(lane.state.audio.session_sample_end(), pcm.len() as u64);
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        lane.state.pump_capture_windows(&lane.tx);
         let requests = take_requests(&mut lane.tail_rx);
         assert_eq!(requests.len(), clock_requests.len());
         assert!(
@@ -23338,18 +23392,14 @@ mod relay_l1_overlap_admission_tests {
         record_silero(&mut lane, end, Some((0, 20_000)));
         let occurrence = OccurrenceIdentity::new(session, 1, 0, end);
         stage(&mut lane, 1, occurrence.clone(), "mowa");
-        assert!(
-            lane.state
-                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "mowa"))
-        );
-        assert!(
-            lane.state.flush_layer1_coalesce(&lane.tx),
-            "3 s is under the 4 s ceiling, so the held window has to be flushed"
-        );
+        let pcm = piece(1, &occurrence, "mowa");
+        lane.state.audio.push(&pcm.audio);
+        lane.state.capture_stopping = true;
+        lane.state.pump_capture_windows(&lane.tx);
         close_lexicon(&mut lane, 1, &occurrence, "mowa");
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
-        assert_eq!(requests.len(), 1, "3 s fits one step-1 window");
+        assert_eq!(requests.len(), 1, "a stopped 3 s head is one capture-grid partial");
         let pin_start = 26_000;
         let pin_end = 46_000;
         assert!(pin_start >= silence_at && pin_end <= end);
@@ -23403,11 +23453,10 @@ mod relay_l1_overlap_admission_tests {
         );
         let occurrence = OccurrenceIdentity::new(session, 1, 0, end);
         stage(&mut lane, 1, occurrence.clone(), "mowa");
-        assert!(
-            lane.state
-                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "mowa"))
-        );
-        assert!(lane.state.flush_layer1_coalesce(&lane.tx));
+        let pcm = piece(1, &occurrence, "mowa");
+        lane.state.audio.push(&pcm.audio);
+        lane.state.capture_stopping = true;
+        lane.state.pump_capture_windows(&lane.tx);
         close_lexicon(&mut lane, 1, &occurrence, "mowa");
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
@@ -23445,16 +23494,13 @@ mod relay_l1_overlap_admission_tests {
     fn fragment_longer_than_32s_reaches_l1_as_step1_windows() {
         let mut lane = open("relay-over-32");
         let samples = 33 * u64::from(RATE);
-        assert!(samples > u64::from(RATE) * LIVE_REFINEMENT_PCM_SECS as u64);
+        assert!(samples > u64::from(RATE) * 32);
         let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, samples);
         stage(&mut lane, 1, occurrence.clone(), "dlugo");
-        let accepted = lane
-            .state
-            .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "dlugo"));
-        assert!(
-            accepted,
-            "a fragment above 32 s is split into step-1 windows before any length refusal"
-        );
+        let pcm = piece(1, &occurrence, "dlugo");
+        lane.state.audio.push(&pcm.audio);
+        lane.state.pump_capture_windows(&lane.tx);
+        assert_eq!(lane.state.audio.session_sample_end(), samples);
         let sent = take_requests(&mut lane.tail_rx);
         let pending = lane.state.refinement_pending.len();
         let windows = sent.len() + pending;
@@ -23483,9 +23529,10 @@ mod relay_l1_overlap_admission_tests {
         for request in sent.iter().chain(lane.state.refinement_pending.iter()) {
             let span = request.provider_request.identity.range.sample_end
                 - request.provider_request.identity.range.sample_start;
-            assert!(
-                span <= 4 * u64::from(RATE),
-                "step 1 window is at most 4 s, got {span} samples"
+            assert_eq!(
+                span,
+                9 * u64::from(RATE),
+                "a full capture window is 9 s, got {span} samples"
             );
             assert_eq!(request.audio.len() as u64, span);
         }
@@ -23498,14 +23545,15 @@ mod relay_l1_overlap_admission_tests {
         let samples = 96_000_u64;
         let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, samples);
         stage(lane, 1, occurrence.clone(), text);
-        assert!(
-            lane.state
-                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, text))
-        );
+        let pcm = piece(1, &occurrence, text);
+        let mut head = pcm.audio;
+        head.resize(192_000, 0.0);
+        lane.state.audio.push(&head);
+        lane.state.pump_capture_windows(&lane.tx);
         close_lexicon(lane, 1, &occurrence, text);
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
-        assert_eq!(requests.len(), 2, "6 s becomes two step-1 windows");
+        assert_eq!(requests.len(), 2, "a 12 s head yields two 9 s capture windows");
         (occurrence, requests)
     }
 
@@ -23673,11 +23721,9 @@ mod relay_l1_overlap_admission_tests {
         } else {
             qualify_unlabelled(lane, &occurrence);
         }
-        assert!(
-            lane.state
-                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, apple_text.unwrap_or("")),),
-            "whisper must be scheduled while the frontier is still open"
-        );
+        let pcm = piece(1, &occurrence, apple_text.unwrap_or(""));
+        lane.state.audio.push(&pcm.audio);
+        lane.state.pump_capture_windows(&lane.tx);
         if let Some(text) = apple_text {
             close_lexicon(lane, 1, &occurrence, text);
         }
@@ -23685,8 +23731,8 @@ mod relay_l1_overlap_admission_tests {
         let requests = take_requests(&mut lane.tail_rx);
         assert_eq!(
             requests.len(),
-            3,
-            "9.5 s becomes three step-1 windows: {:?}",
+            1,
+            "9.5 s yields one 9 s capture window: {:?}",
             requests
                 .iter()
                 .map(|request| (
@@ -23726,17 +23772,15 @@ mod relay_l1_overlap_admission_tests {
         forensic_lane_in(BufferMode::Windows, session, held)
     }
 
-    /// The worker's own selection: `apple_stream_worker` swaps in
-    /// `Layer1Coalesce::adaptive()` on the fresh state before any piece arrives.
+    /// Both buffer-mode names share `CaptureWindowPlan`. The mode only
+    /// changes the session label so the two tests stay distinct.
     fn forensic_lane_in(
         mode: BufferMode,
         session: &str,
         held: &[(&str, u64, u64)],
     ) -> (Lane, OccurrenceIdentity, Vec<TailPatchRequest>) {
+        let _ = mode;
         let mut lane = open(session);
-        if mode == BufferMode::Adaptive {
-            lane.state.layer1_coalesce = Layer1Coalesce::adaptive();
-        }
         let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
         qualify_unlabelled(&mut lane, &owner);
         {
@@ -23756,10 +23800,9 @@ mod relay_l1_overlap_admission_tests {
                 );
             }
         }
-        assert!(
-            lane.state
-                .enqueue_layer1_piece(&lane.tx, piece(1, &owner, ""))
-        );
+        let pcm = piece(1, &owner, "");
+        lane.state.audio.push(&pcm.audio);
+        lane.state.pump_capture_windows(&lane.tx);
         let requests = take_requests(&mut lane.tail_rx);
         (lane, owner, requests)
     }
@@ -23854,9 +23897,6 @@ mod relay_l1_overlap_admission_tests {
         let (_, _, clock_requests) = forensic_lane_in(mode, "forensic-one-word-clock", &[]);
         let end = clock_requests[0].provider_request.identity.range.sample_end;
         let mut lane = open(session);
-        if mode == BufferMode::Adaptive {
-            lane.state.layer1_coalesce = Layer1Coalesce::adaptive();
-        }
         let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
         let mut input = piece(1, &owner, "");
         input.audio.fill(0.0);
@@ -23872,7 +23912,8 @@ mod relay_l1_overlap_admission_tests {
         record_silero(&mut lane, 200_000, Some((end - 3_500, end + 1_500)));
         qualify_unlabelled(&mut lane, &owner);
         let pcm = input.audio.clone();
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        lane.state.audio.push(&pcm);
+        lane.state.pump_capture_windows(&lane.tx);
         let requests = take_requests(&mut lane.tail_rx);
         assert!(requests.len() >= 2);
         for request in &requests {
