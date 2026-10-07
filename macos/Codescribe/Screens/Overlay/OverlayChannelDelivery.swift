@@ -240,7 +240,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       for id in messageOrder {
         guard let message = messages[id] else { continue }
         for recipient in message.recipients {
-          if let delivery = recipient.deliveryID, !recipient.accepted || !recipient.acknowledged,
+          // Conversation receipt settles observation even when provider queue
+          // acceptance was absent (for example, monitor-only delivery).
+          if let delivery = recipient.deliveryID, !recipient.acknowledged,
             seen.insert(recipient.owner.id + "\0" + delivery).inserted
           {
             result.append((recipient.owner, delivery))

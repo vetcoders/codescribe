@@ -36,6 +36,8 @@ actor OverlayChannelDeliveryReader {
   private(set) var consumedBytes: UInt64 = 0
   /// Metadata bytes actually read, independent of the incremental bus cursor.
   private(set) var consumedMetadataBytes: UInt64 = 0
+  /// Opened metadata descriptors, including reads satisfied by the parse cache.
+  private(set) var metadataFileOpens: UInt64 = 0
   private static let metadataCacheBudget = 8 << 20
   private static let metadataCacheEntries = 256
   private var metadataObjects: [URL: MetadataObject] = [:]
@@ -370,19 +372,24 @@ actor OverlayChannelDeliveryReader {
 
   private func object(at url: URL) throws -> [String: Any] {
     do {
-      let handle = try FileHandle(forReadingFrom: url)
-      defer { try? handle.close() }
       var metadata = stat()
-      guard fstat(handle.fileDescriptor, &metadata) == 0 else {
+      guard fstatat(AT_FDCWD, url.path, &metadata, 0) == 0 else {
         throw CocoaError(.fileReadUnknown)
       }
-      let stamp = MetadataObjectStamp(metadata)
+      let pathStamp = MetadataObjectStamp(metadata)
       metadataAccess &+= 1
-      if var cached = metadataObjects[url], cached.stamp == stamp {
+      if var cached = metadataObjects[url], cached.stamp == pathStamp {
         cached.access = metadataAccess
         metadataObjects[url] = cached
         return cached.value
       }
+      metadataFileOpens &+= 1
+      let handle = try FileHandle(forReadingFrom: url)
+      defer { try? handle.close() }
+      guard fstat(handle.fileDescriptor, &metadata) == 0 else {
+        throw CocoaError(.fileReadUnknown)
+      }
+      let stamp = MetadataObjectStamp(metadata)
       if let old = metadataObjects.removeValue(forKey: url) { metadataCacheBytes -= old.bytes }
       let data = try handle.read(upToCount: (16 << 20) + 1) ?? Data()
       consumedMetadataBytes &+= UInt64(data.count)
@@ -672,11 +679,12 @@ actor OverlayChannelDeliveryReader {
 
     init(_ root: URL) throws {
       func metadata(_ url: URL) throws -> (UInt64, UInt64, UInt64) {
-        let a = try FileManager.default.attributesOfItem(atPath: url.path)
-        guard let ino = a[.systemFileNumber] as? NSNumber, let dev = a[.systemNumber] as? NSNumber,
-          let length = a[.size] as? NSNumber, a[.type] as? FileAttributeType == .typeRegular
-        else { throw CocoaError(.fileReadCorruptFile) }
-        return (ino.uint64Value, dev.uint64Value, length.uint64Value)
+        var value = stat()
+        guard fstatat(AT_FDCWD, url.path, &value, 0) == 0 else { throw CocoaError(.fileReadUnknown) }
+        guard value.st_mode & S_IFMT == S_IFREG, value.st_size >= 0 else {
+          throw CocoaError(.fileReadCorruptFile)
+        }
+        return (UInt64(value.st_ino), UInt64(value.st_dev), UInt64(value.st_size))
       }
       let current = try metadata(root)
       let receipt = URL(fileURLWithPath: root.path + ".generations.json")

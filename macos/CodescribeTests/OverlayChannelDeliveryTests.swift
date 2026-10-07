@@ -19,12 +19,15 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let reader = OverlayChannelDeliveryReader(root: fixture.root)
     let initial = try await reader.readSnapshot()
     let coldBytes = await reader.consumedMetadataBytes
+    let coldOpens = await reader.metadataFileOpens
     XCTAssertGreaterThan(coldBytes, 1 << 20)
     for _ in 0..<20 {
       let snapshot = try await reader.readSnapshot()
       XCTAssertEqual(snapshot, initial)
     }
     let steadyBytes = await reader.consumedMetadataBytes
+    let steadyOpens = await reader.metadataFileOpens
+    XCTAssertEqual(steadyOpens, coldOpens, "Unchanged and absent metadata needs no new descriptor")
     XCTAssertEqual(steadyBytes, coldBytes, "Idle polls must not repeatedly parse the same lease")
     try fixture.lease(pending: [fixture.envelope(Fixture.firstID)])
     let changed = try await reader.readSnapshot()
@@ -32,6 +35,53 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(
       changed.conversations.first?.messages.map(\.text),
       initial.conversations.first?.messages.map(\.text))
+  }
+
+  func testAcknowledgedDeliveryStopsPollingWithoutAProviderAcceptanceReceipt() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var projection = OverlayChannelDelivery.Bus()
+    projection.consume(fixture.seal(1))
+    let coordinate = try XCTUnwrap(projection.receiptCoordinates().first)
+    let owner = coordinate.0
+    let delivery = coordinate.1
+    var envelope = fixture.recipient()
+    envelope.merge([
+      "kind": "seal", "delivery_id": delivery, "session_id": "take-a",
+      "utterance_id": "u1", "sequence": 1,
+    ]) { _, new in new }
+    var receipt: [String: Any] = [
+      "lease_id": owner.leaseID, "delivery_id": delivery,
+      "bus": fixture.bus.path, "envelope": envelope,
+    ]
+    receipt["bus"] = fixture.root.appendingPathComponent("foreign.jsonl").path
+    projection.observeAcknowledgment(
+      receipt, owner: owner, delivery: delivery, busPath: fixture.bus.path)
+    XCTAssertEqual(projection.receiptCoordinates().count, 1, "Foreign receipt cannot settle polling")
+    projection.observeAcceptance([
+      "schema": "codescribe.native-queue.receipt.v1", "disposition": "provider_accepted",
+      "delivery_id": delivery, "lease_id": owner.leaseID,
+      "provider": owner.provider, "provider_session_id": owner.providerSessionID,
+      "channel": owner.channel, "name": owner.name,
+    ])
+    XCTAssertEqual(projection.receiptCoordinates().count, 1, "Acceptance alone is not reading")
+    // Recreate monitor-only delivery: there is no provider-acceptance file.
+    projection = OverlayChannelDelivery.Bus()
+    projection.consume(fixture.seal(1))
+    receipt["bus"] = fixture.bus.path
+    projection.observeAcknowledgment(
+      receipt, owner: owner, delivery: delivery, busPath: fixture.bus.path)
+    let question = try XCTUnwrap(
+      projection.conversations(busPath: fixture.bus.path).flatMap(\.messages).first {
+        $0.recipients.contains { $0.owner.id == owner.id && $0.deliveryID == delivery }
+      })
+    XCTAssertEqual(question.recipients.first?.acknowledged, true)
+    XCTAssertEqual(question.recipients.first?.accepted, false)
+    XCTAssertTrue(projection.receiptCoordinates().isEmpty)
+    let restored = try JSONDecoder().decode(
+      OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(projection))
+    var resumed = restored
+    XCTAssertTrue(resumed.receiptCoordinates().isEmpty, "Restart must retain settled receipt")
   }
 
   func testMetadataReplacementWithSameSizeAndTimestampChangesTheDisplayedOwner() async throws {
