@@ -428,6 +428,11 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(section.contains("Text(\"Save changes\")"))
     XCTAssertTrue(section.contains(".help(\"Remove folder\")"))
     XCTAssertTrue(section.contains(".accessibilityLabel(\"Remove folder\")"))
+    XCTAssertTrue(
+      section.contains("Label(\"Undo remove\", systemImage: \"arrow.uturn.backward\")"),
+      "an accidental remove is undoable before Save")
+    XCTAssertTrue(section.contains("rows.insert(last.path, at: min(last.index, rows.count))"))
+    XCTAssertTrue(section.contains("Text(\"Discard changes\")"))
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
@@ -440,6 +445,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Add folder…": "Dodaj folder…",
       "Save changes": "Zapisz zmiany",
       "Remove folder": "Usuń folder",
+      "Undo remove": "Cofnij usunięcie",
+      "Discard changes": "Odrzuć zmiany",
       "Choose a folder the Agent may read and write":
         "Wybierz folder, w którym Agent może odczytywać i zapisywać dane",
     ]

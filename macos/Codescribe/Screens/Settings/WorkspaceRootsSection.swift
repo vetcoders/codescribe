@@ -15,6 +15,9 @@ struct WorkspaceRootsSection: View {
   private static let rootPlaceholder = "/path/to/checkouts"
 
   @State private var rows: [String] = []
+  /// Rows removed since the last save, newest last, with where they sat.
+  /// Undo puts the newest back; Save or Discard empties the stack.
+  @State private var removed: [RemovedRoot] = []
   @State private var loaded = false
   @FocusState private var focusedRoot: Int?
 
@@ -50,7 +53,28 @@ struct WorkspaceRootsSection: View {
         .foregroundStyle(Color.primary)
         .help("Choose a folder to add to the list")
 
+        if let last = removed.last {
+          Button(action: undoRemove) {
+            Label("Undo remove", systemImage: "arrow.uturn.backward")
+              .font(CSFont.ui(12, .semibold))
+          }
+          .csFocusRing()
+          .foregroundStyle(Color.primary)
+          .help("Put \(last.path) back")
+          .accessibilityIdentifier("settings-workspace-undo-remove")
+        }
+
         Spacer()
+
+        if isDirty {
+          Button(action: syncFromModel) {
+            Text("Discard changes")
+              .font(CSFont.ui(12, .semibold))
+              .foregroundStyle(Color.secondary)
+          }
+          .csFocusRing()
+          .help("Go back to the saved list")
+        }
 
         Button {
           model.setAgentWorkspaceRoots(rows)
@@ -89,7 +113,10 @@ struct WorkspaceRootsSection: View {
       .frame(maxWidth: .infinity, alignment: .leading)
 
       Button {
-        rows.remove(at: index)
+        let path = rows.remove(at: index)
+        if !path.trimmingCharacters(in: .whitespaces).isEmpty {
+          removed.append(RemovedRoot(index: index, path: path))
+        }
       } label: {
         CSIconView(icon: .remove, size: 13, weight: .semibold, color: Color.secondary)
       }
@@ -140,7 +167,16 @@ struct WorkspaceRootsSection: View {
     }
   }
 
+  /// Reinserts the newest removed row at its old position (clamped: the list
+  /// may have shrunk since). Only unsaved removals are undoable; a saved list
+  /// is restored by adding the folder again.
+  private func undoRemove() {
+    guard let last = removed.popLast() else { return }
+    rows.insert(last.path, at: min(last.index, rows.count))
+  }
+
   private func syncFromModel() {
+    removed = []
     rows = model.agentWorkspaceRoots
     // Mirror of the runtime default (DEFAULT_AGENT_WORKSPACE_ROOT): with no
     // configured roots the tool really scans the app's own data dir.
@@ -151,6 +187,11 @@ struct WorkspaceRootsSection: View {
     input
       .map { $0.trimmingCharacters(in: .whitespaces) }
       .filter { !$0.isEmpty }
+  }
+
+  struct RemovedRoot: Equatable {
+    let index: Int
+    let path: String
   }
 
   private static func directoryExists(_ path: String) -> Bool {

@@ -146,8 +146,9 @@ and build directories skipped), so entries such as `~/.codescribe` or `/tmp`
 sit next to checkouts like `~/Git` — it is one access list, not a list of
 projects. A green dot marks an existing directory, amber one that does not
 resolve. **Add folder…** opens a folder picker and adds the choice as an
-editable row; the minus button (**Remove folder**) drops a row. Nothing is
-written until **Save changes**.
+editable row; the minus button (**Remove folder**) drops a row, and **Undo
+remove** puts the last removed row back where it was. Nothing is written until
+**Save changes**; **Discard changes** returns to the saved list.
 
 ### Credential access while refreshing
 

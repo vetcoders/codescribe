@@ -5167,6 +5167,16 @@
         }
       }
     },
+    "Discard changes" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odrzuć zmiany"
+          }
+        }
+      }
+    },
     "Discard previous take" : {
       "localizations" : {
         "pl" : {
@@ -6127,6 +6137,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Skrót globalny wkleja transkrypcję oczekującą na wklejenie w miejscu kursora tekstowego. Aplikacje używające tego samego skrótu również na niego zareagują."
+          }
+        }
+      }
+    },
+    "Go back to the saved list" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wróć do zapisanej listy"
           }
         }
       }
@@ -9330,6 +9350,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fioletowy — głos trafia do Agenta"
+          }
+        }
+      }
+    },
+    "Put %@ back" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć %@ na listę"
           }
         }
       }
@@ -13814,6 +13844,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Cofnięcie wymaga silnika nagrywania"
+          }
+        }
+      }
+    },
+    "Undo remove" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cofnij usunięcie"
           }
         }
       }
