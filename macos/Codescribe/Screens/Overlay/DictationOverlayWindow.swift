@@ -19,6 +19,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserResize: (() -> Void)?
   var onUserResizeEnded: (() -> Void)?
   var onFrameTransitionCompleted: (() -> Void)?
+  /// Grow-only expanded height for a candidate width. Nil keeps the remembered
+  /// or default expanded size: manual sizing, an open editor, or a dirty draft.
+  /// The panel remains the only writer of the transition frame.
+  var qualifiedExpandedHeight: ((CGFloat) -> CGFloat?)?
   var onWidgetInteractionChanged: ((OverlayWidgetInteraction, Bool) -> Void)?
   fileprivate var presence: OverlayPresence?
   private var dragStart: (mouse: NSPoint, frame: NSRect, miniFrame: NSRect?)?
@@ -84,19 +88,28 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       if previous == .expanded && expandedSize == nil { expandedSize = frame.size }
       size = mode == .mini ? DictationOverlayWindow.collapsedSize : DictationOverlayWindow.midiSize
     } else {
-      let expanded = expandedSize ?? DictationOverlayWindow.defaultSize
-      size = NSSize(
-        width: expanded.width,
-        height: max(expanded.height, DictationOverlayWindow.minSize.height))
+      size = expandedPresentationSize()
     }
     // Intermediate frames may be smaller than the expanded window's floor.
     minSize = DictationOverlayWindow.collapsedSize
     contentMinSize = minSize
     styleMask.remove(.resizable)
+    let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame
     let proposed = NSRect(
       x: right - size.width, y: top - size.height, width: size.width, height: size.height)
-    let restored = DictationOverlayWindow.visibleExpansionFrame(
-      proposed, in: screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
+    // One rect is the animation target. A screen clamp that narrows the width
+    // is remeasured here, still before the animator, so completion does not
+    // write a second endpoint.
+    var restored = DictationOverlayWindow.visibleExpansionFrame(proposed, in: visible)
+    if mode == .expanded, abs(restored.width - size.width) > 0.5,
+      let qualified = qualifiedExpandedHeight?(restored.width)
+    {
+      let height = max(restored.height, qualified)
+      let regrown = NSRect(
+        x: restored.maxX - restored.width, y: restored.maxY - height, width: restored.width,
+        height: height)
+      restored = DictationOverlayWindow.visibleExpansionFrame(regrown, in: visible)
+    }
     frameTransitionGeneration &+= 1
     let generation = frameTransitionGeneration
     frameTransitionTarget = restored
@@ -111,6 +124,15 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       }
     }
     if !animated { completeFrameTransition(generation: generation) }
+  }
+
+  /// Remembered or default expanded size, raised to the qualified content
+  /// height when the controller still owns automatic sizing.
+  private func expandedPresentationSize() -> NSSize {
+    let expanded = expandedSize ?? DictationOverlayWindow.defaultSize
+    let restingHeight = max(expanded.height, DictationOverlayWindow.minSize.height)
+    let qualified = qualifiedExpandedHeight?(expanded.width) ?? restingHeight
+    return NSSize(width: expanded.width, height: max(restingHeight, qualified))
   }
 
   private func completeFrameTransition(generation: UInt64) {
