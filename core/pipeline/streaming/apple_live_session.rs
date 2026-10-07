@@ -3009,13 +3009,49 @@ impl AppleSealState {
                 occurrence.sample_end,
             ),
         });
-        if matches!(
-            reason,
-            RefinementFailure::StopDeadline | RefinementFailure::NotScheduled
-        ) {
+        if matches!(reason, RefinementFailure::StopDeadline) {
             self.return_whisper_without_label(ev_tx, id, occurrence);
             self.emit_pending_seal(ev_tx, id);
-        } else {
+            return;
+        }
+        if matches!(reason, RefinementFailure::NotScheduled) {
+            // One code covers "never sent" and "matched, then refused".
+            // A blank owner still owes a witness, so the frontier stays open.
+            let blank = !self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .text_of(occurrence)
+                .is_some_and(|label| !label.trim().is_empty());
+            if !blank {
+                self.return_whisper_without_label(ev_tx, id, occurrence);
+                self.emit_pending_seal(ev_tx, id);
+            }
+            return;
+        }
+        let overlaps_queue = self.refinement_pending.iter().any(|job| {
+            occurrence.sample_start < job.admit_sample_end
+                && job.admit_sample_start < occurrence.sample_end
+        }) || self.refinement_submitted.values().any(|job| {
+            occurrence.sample_start < job.admit_sample_end
+                && job.admit_sample_start < occurrence.sample_end
+        });
+        // A dead lane cannot deliver a later frame. The capture horizon is
+        // remaining work only while a sender can still accept it.
+        let has_work = overlaps_queue
+            || (!matches!(reason, RefinementFailure::LaneGone)
+                && self.window_plan.admission_horizon() < occurrence.sample_end);
+        // An empty Whisper admit is the blank-owner receipt. It must not run
+        // before the return when this owner already holds a label.
+        let preserve_committed_label = matches!(reason, RefinementFailure::LaneGone)
+            && !overlaps_queue
+            && self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .text_of(occurrence)
+                .is_some_and(|label| !label.trim().is_empty());
+        if !preserve_committed_label {
             let observation = self
                 .acoustic_ledger
                 .lock()
@@ -3030,23 +3066,10 @@ impl AppleSealState {
                     energy: EnergyAdmission::RequireExistingQualification,
                 },
             );
-            // A neighbouring word-grain window can still supply this owner,
-            // even when it is not listed as that window's primary member.
-            let has_work = self.window_plan.admission_horizon() < occurrence.sample_end
-                || self.refinement_pending.iter().any(|job| {
-                    occurrence.sample_start < job.admit_sample_end
-                        && job.admit_sample_start < occurrence.sample_end
-                })
-                || self.refinement_submitted.values().any(|job| {
-                    occurrence.sample_start < job.admit_sample_end
-                        && job.admit_sample_start < occurrence.sample_end
-                });
-            // Capacity refusal applies to one step window. Other windows may
-            // still arrive for its occurrence, so its horizon remains authoritative.
-            if !has_work {
-                self.return_whisper_without_label(ev_tx, id, occurrence);
-                self.emit_pending_seal(ev_tx, id);
-            }
+        }
+        if !has_work {
+            self.return_whisper_without_label(ev_tx, id, occurrence);
+            self.emit_pending_seal(ev_tx, id);
         }
     }
 
