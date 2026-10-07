@@ -781,15 +781,6 @@ mod tests {
         }
     }
 
-    fn range(start: u64, end: u64) -> TailSampleRange {
-        TailSampleRange {
-            session: "s".into(),
-            capture_epoch: 0,
-            sample_start: start,
-            sample_end: end,
-        }
-    }
-
     /// A pause close is not a retroactive split: the chunker's padded end sits
     /// ~64 ms past the last voiced frame, while the close is only observed after
     /// the closing silence. The utterance keeps that trailing extent, so an
