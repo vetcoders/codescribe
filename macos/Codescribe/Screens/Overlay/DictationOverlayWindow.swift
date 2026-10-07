@@ -201,6 +201,16 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Native transcript and SwiftUI controls keep ordinary AppKit dispatch.
   /// The existing resize band is tracked here without a nested event loop.
   override func sendEvent(_ event: NSEvent) {
+    // Text tracking areas can overlap the resize strip even when hitTest
+    // returns the container. Dispatching these motions to AppKit first sets
+    // an iBeam, then the panel sets a resize cursor on every event.
+    // The strip owns motion as well as dragging; interior tracking stays native.
+    if event.type == .mouseMoved, styleMask.contains(.resizable), let contentView,
+      OverlayResizeHit.edge(at: event.locationInWindow, in: contentView.bounds) != nil
+    {
+      refreshCursor(at: event.locationInWindow)
+      return
+    }
     if event.type == .leftMouseDown {
       if isUserResizing { endUserResize() }
       if dragStart != nil { onWidgetInteractionChanged?(.dragging, false) }

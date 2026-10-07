@@ -47,7 +47,59 @@ private final class PositionedOverlayWheelEvent: NSEvent {
   override var momentumPhase: NSEvent.Phase { [] }
 }
 
+@MainActor
+private final class CursorTrackingTextView: NSTextView {
+  var motions = 0
+  override func mouseMoved(with event: NSEvent) {
+    motions += 1
+    NSCursor.iBeam.set()
+    super.mouseMoved(with: event)
+  }
+}
+
 final class OverlayResizeHitTests: XCTestCase {
+  @MainActor
+  func testResizeMotionDoesNotDispatchOverlappingNativeTextTracking() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 100, y: 100, width: 400, height: 300),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable],
+      backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    let text = CursorTrackingTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+    text.string = "Selectable native transcript"
+    panel.contentView = OverlayContentContainer(hosting: text)
+    panel.acceptsMouseMovedEvents = true
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    text.addTrackingArea(
+      NSTrackingArea(
+        rect: text.bounds, options: [.mouseMoved, .activeAlways], owner: text, userInfo: nil))
+    let saved = NSCursor.current
+    defer { saved.set() }
+    let selection = NSRange(location: 2, length: 5)
+    text.setSelectedRange(selection)
+    for point in [NSPoint(x: 2, y: 150), NSPoint(x: 398, y: 150)] {
+      for index in 0..<10 {
+        let event = try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: .mouseMoved, location: point, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+            context: nil, eventNumber: index, clickCount: 0, pressure: 0))
+        panel.sendEvent(event)
+      }
+      XCTAssertEqual(NSCursor.current, panel.cursor(at: point))
+    }
+    XCTAssertEqual(text.motions, 0, "Resize motion must not first select the text cursor")
+    XCTAssertEqual(text.selectedRange(), selection)
+    let center = try XCTUnwrap(
+      NSEvent.mouseEvent(
+        with: .mouseMoved, location: NSPoint(x: 200, y: 150), modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+        context: nil, eventNumber: 30, clickCount: 0, pressure: 0))
+    panel.sendEvent(center)
+    XCTAssertGreaterThan(text.motions, 0, "Interior text tracking must still receive motion")
+  }
+
   @MainActor
   func testResizeBandWheelReachesMountedScrollViewWithoutChangingSelection() throws {
     let panel = FloatingOverlayPanel(
