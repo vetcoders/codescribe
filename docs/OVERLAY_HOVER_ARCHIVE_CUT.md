@@ -172,7 +172,34 @@ Logs: `/tmp/codescribe-e19c-ui-followup-swift-final-oct7.log`,
 `/tmp/codescribe-e19c-ui-followup-swift-final-gate-oct7.log`,
 `/tmp/codescribe-e19c-ui-followup-l10n-gates-oct7.log`,
 `/tmp/codescribe-e19c-ui-followup-format-oct7.log`.
-Source is still isolated in PR148 until Lena admits the exact baton. App
-installation must first reconcile her concurrent exclusive bus cut, because
-`make install-app` also installs the packaged bridge helper. Source/gates do not
-claim that the retained Founder process has loaded these new UI changes.
+Source is still isolated in PR148 until Lena admits the exact baton. Source/gates
+do not claim that the retained Founder process has loaded these new UI changes.
+
+### Canonical bus read receipts admitted before packaging
+
+The integration merge retains exact Lena source
+`e44766d543744e75f94b4857a82eb65be10d431e` (parent
+`80352ed3b8754523418835043aacbdf524ec01cd`) alongside UI source
+`c1ec3f0afb9d88969fbd86e4b855d55aa71ef7d0`. Its sole source conflict was
+the CLI mutual-exclusion guard: archive rejects read options and read rejects
+archive. Both commands and their ownership/history contracts remain canonical.
+An integration fixture checks all three mixed archive/read requests refuse
+without changing any fixture file. Standalone bridge installer compilation PASS.
+
+The first complete Python run had 149 passes and one missing-prerequisite failure:
+the canonical debug publisher was absent after shared target cleanup. A fresh
+`cargo build --bin codescribe` under this worktree's isolated Cargo artifact
+directory completed, without substituting an installed publisher. The complete
+bus gate with that exact directory passed: **151 tests, zero failures,
+36.935 seconds**. Log: `/tmp/codescribe-e19c-ui-bus-integrated-python-final-oct7.log`.
+
+The second Founder-supplied sample (16:50:11, same build2096/PID91889) shows
+13 of 57 main-thread samples at the same unconditional cursor setter; footprint
+3.8GB and peak5.9GB. This reinforces the cursor path finding but does not
+establish allocation ownership or a memory leak.
+
+Lena's installed helper e447 was independently checked against all14 manifest
+hashes. Same-session adoption retained lease4b999, cursor4382773 and ara/xai/1.25;
+follower91023 became16318, with the original watch/bell retained. Its publisher
+hash remained d3037f8b. The eventual app payload must include both this bus cut
+and the archive UI/helper cut, so background packaging cannot regress the helper.

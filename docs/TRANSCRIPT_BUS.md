@@ -1,5 +1,21 @@
 # Clean Transcript Bus
 
+## Conversational read receipt
+
+Native Codex queue entries are mailbox bells with delivery identity and time,
+not copies of task text. The agent reads `cs-bus --read-pending` for its exact
+provider/session, receives complete bounded envelopes and `read_delivery_ids`,
+then immediately calls `--ack` for those IDs before task execution or a reply.
+Reading alone never writes ACK. An empty current mailbox makes a late bell
+obsolete. Re-read after draining to retain arrivals during the read/ACK gap.
+
+ACK records an immutable `read_at`, retains causal coordinates without text,
+and withdraws each exact owned pending Codex submission. This is **read**, not
+executed or spoken. The projection's existing acknowledged state consumes the
+same marker; neither bell nor provider acceptance is a read receipt. Bus history
+and independent command/PCM identities are retained. A submission already
+consumed into model context cannot be recalled by queue deletion.
+
 Codescribe publishes one private, append-only NDJSON stream. The Bus observes
 session lifecycle plus occurrence-authenticated `TranscriptRevision` entries;
 it does not own a transcript document and accepts no arbitrary product text.

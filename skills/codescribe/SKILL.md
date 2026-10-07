@@ -78,8 +78,10 @@ manual attach saga and drive the engine:
    Every attachment must also start `--watch` under the provider's
    output-notifying monitor, including Codex. The default is a short bell.
    Keep and renew notification windows throughout active tasks. Read a bell's
-   full `--read-delivery <id>` envelope before ACK; a later native queued copy
-   must not repeat the task or its spoken answer.
+   current `--read-pending` batch (or full `--read-delivery <id>` envelope),
+   then ACK the complete returned IDs immediately, before task execution or
+   reply. A native queue message is a mailbox bell, not task text; an empty
+   mailbox makes a delayed bell obsolete and needs no new spoken answer.
    Other providers use the same mandatory output-notifying `--watch`
    ([Monitor](references/monitor.md)). An explicit `--on-seal` hook selects
    its own wakeup path instead of running a second native wakeup.
@@ -199,7 +201,8 @@ include successful delivery, unavailable wakeup, and seal refusal.
    monitor handle.
 5. Verify a fresh named take reaches this conversation without a typed nudge.
    Preserve transcription diagnostics and normal conversation permissions.
-   After accepting each complete envelope, acknowledge its delivery ID as
+   Immediately after reading each complete envelope, acknowledge its delivery ID
+   before task execution or replying, as
    described in [Monitor](references/monitor.md#acknowledge-conversation-receipt).
 6. On recovery, restore both follower continuity and notification delivery.
    On an explicit stop, close owned handles and report listening stopped.
