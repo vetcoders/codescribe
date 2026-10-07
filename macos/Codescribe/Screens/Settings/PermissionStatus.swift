@@ -49,13 +49,8 @@ enum PermissionState: Equatable {
   }
 }
 
-/// The privacy scopes codescribe touches. The first five gate live dictation /
-/// hotkeys and appear in the Settings engine matrix (which enumerates them by an
-/// explicit list, NOT `allCases`); `fullDiskAccess` is the optional scope used
-/// only by the first-run onboarding wizard, so adding it here does not change
-/// any Settings surface. `speechRecognition` is the TCC scope behind Apple live
-/// dictation (`SFSpeechRecognizer`) — the bridge child process inherits the
-/// app's grant, so the main app must own request + display.
+/// Native privacy scopes. Screen Recording and Full Disk Access are optional
+/// feature grants; dictation and hotkey scopes retain their specific purposes.
 enum PermissionKind: String, CaseIterable, Identifiable {
   case microphone = "Microphone"
   case accessibility = "Accessibility"
@@ -65,6 +60,10 @@ enum PermissionKind: String, CaseIterable, Identifiable {
   case fullDiskAccess = "Full Disk Access"
 
   var id: String { rawValue }
+
+  var isOptionalForSetup: Bool {
+    self == .screenRecording || self == .fullDiskAccess
+  }
 
   /// Display name for the privacy scope. The identity (`rawValue`) is the
   /// System Settings pane name and must never reach the screen directly.

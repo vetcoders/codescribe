@@ -187,6 +187,7 @@ final class OnboardingViewModel: ObservableObject {
   private let agentStatus: AgentStatusEngine
   private let agentBridge: AgentBridgeInstalling
   private let probe: PermissionProbing
+  let whisperDownloadStore: WhisperDownloadStore
 
   /// Invoked when the wizard is finished (Done confirmed) so the host can close
   /// and release the window.
@@ -201,6 +202,7 @@ final class OnboardingViewModel: ObservableObject {
     agentStatus: AgentStatusEngine = RealAgentStatusEngine(),
     agentBridge: AgentBridgeInstalling = RealAgentBridgeInstaller(),
     probe: PermissionProbing = NativePermissionProbe(),
+    whisperDownloadStore: WhisperDownloadStore = .shared,
     languagePreferences: UserDefaults = .standard,
     preferredLanguages: [String] = Locale.preferredLanguages,
     processInterfaceLanguage: InterfaceLanguage = .preferred(
@@ -212,6 +214,7 @@ final class OnboardingViewModel: ObservableObject {
     self.agentStatus = agentStatus
     self.agentBridge = agentBridge
     self.probe = probe
+    self.whisperDownloadStore = whisperDownloadStore
     self.languagePreferences = languagePreferences
     self.processInterfaceLanguage = processInterfaceLanguage
     self.interfaceLanguage = InterfaceLanguage.preferred(
@@ -219,9 +222,13 @@ final class OnboardingViewModel: ObservableObject {
     )
     // Resume from the persisted step; `onboardingProgress` is already clamped
     // to a valid index by the Rust side.
-    self.stepIndex = Int(engine.onboardingProgress())
+    self.stepIndex = min(Int(engine.onboardingProgress()), OnboardingStep.count - 1)
     self.permissions = probe.snapshot()
-    self.keyStatus = engine.keyStatus()
+    self.keyStatus = CsKeyStatus(
+      llmLibraxisApiKeySet: false, llmOpenaiApiKeySet: false,
+      llmXaiApiKeySet: false, llmAnthropicApiKeySet: false,
+      sttFileApiKeySet: false, sttLiveApiKeySet: false, githubTokenSet: false
+    )
     self.onboardingMode = OnboardingModeChoice.from(engine.onboardingMode())
     self.selectedLanguage = engine.currentLanguage()
     self.hotkeyMode = HotkeyModeChoice.derive(from: hotkeys.modeBindings())
@@ -326,13 +333,13 @@ final class OnboardingViewModel: ObservableObject {
   /// after each transition so permission rows and key presence stay current
   /// without a manual poll.
   func refreshForCurrentStep() {
-    if step != .agenticReadiness { refreshProviders() }
     switch step {
-    case .permission:
+    case .permissions, .done:
       reprobePermissions()
-    case .apiKey, .done:
-      keyStatus = engine.keyStatus()
-      reprobePermissions()
+    case .localModel:
+      whisperDownloadStore.refresh()
+    case .apiKey:
+      refreshProviderAccess()
     case .agenticReadiness:
       refreshReadiness()
     default:
@@ -353,8 +360,7 @@ final class OnboardingViewModel: ObservableObject {
   /// Re-probe the agentic-lane readiness verdict + MCP server status. Called on
   /// the readiness step's appear and by its "Refresh" button. Read-only.
   func refreshReadiness() {
-    refreshProviders()
-    keyStatus = engine.keyStatus()
+    refreshProviderAccess()
     refreshReadinessState()
   }
 
@@ -416,7 +422,10 @@ final class OnboardingViewModel: ObservableObject {
     SettingsDeepLink.shared.present(.keys)
   }
 
+  /// Automatic reads require the provider explanation to be on screen. The
+  /// asynchronous snapshot is the only credential probe, including retries.
   private func refreshProviders() {
+    guard step == .apiKey || step == .agenticReadiness else { return }
     if providerMutationPending {
       providerRefreshRequested = true
       return
@@ -796,7 +805,6 @@ final class OnboardingViewModel: ObservableObject {
 
   func refreshProviderAccess() {
     refreshProviders()
-    keyStatus = engine.keyStatus()
   }
 
   func saveApiKey(advanceOnSuccess: Bool = false) {

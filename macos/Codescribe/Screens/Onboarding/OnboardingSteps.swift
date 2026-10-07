@@ -405,96 +405,116 @@ struct AgenticReadinessStepView: View {
   }
 }
 
-// MARK: - Permission (mic → … → speech → full-disk)
+// MARK: - Permissions
 
-struct PermissionStepView: View {
-  let kind: PermissionKind
+struct PermissionsStepView: View {
   @ObservedObject var model: OnboardingViewModel
 
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text(String(localized: LocalizedStringResource(
+        "Choose which features to allow", locale: model.interfaceLocale,
+        comment: "Heading above the unified onboarding permission checklist")))
+        .font(.title2.weight(.semibold))
+      Text(String(localized: LocalizedStringResource(
+        "You can continue with missing permissions. The features listed below stay unavailable until you grant access in System Settings.",
+        locale: model.interfaceLocale,
+        comment: "Permissions do not block Continue; each row explains its feature consequence")))
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      ForEach(PermissionKind.allCases) { kind in
+        OnboardingPermissionRow(kind: kind, model: model)
+        Divider()
+      }
+      Button(String(localized: LocalizedStringResource(
+        "Refresh status", locale: model.interfaceLocale,
+        comment: "Refresh all onboarding permission statuses without prompting"))) {
+        model.refreshPermissions()
+      }
+      .csAction()
+    }
+  }
+}
+
+private struct OnboardingPermissionRow: View {
+  let kind: PermissionKind
+  @ObservedObject var model: OnboardingViewModel
   private var state: PermissionState { model.permissions.state(kind) }
 
-  /// Primary CTA mirrors Settings matrix: in-app request while undetermined
-  /// (when the scope supports it), System Settings deep-link once determined.
-  private var primaryTitle: String {
+  private var actionTitle: String {
     if state == .notDetermined, kind.supportsInAppPermissionRequest {
-      return String(
-        localized: LocalizedStringResource(
-          "Allow \(kind.displayName(locale: model.interfaceLocale))", locale: model.interfaceLocale,
-          comment: "Button on a permission step; %@ is a privacy scope such as Microphone"))
+      return String(localized: LocalizedStringResource(
+        "Allow \(kind.displayName(locale: model.interfaceLocale))", locale: model.interfaceLocale,
+        comment: "Permission row action; the placeholder is a macOS privacy scope"))
     }
-    return String(
-      localized: LocalizedStringResource(
-        "Open System Settings", locale: model.interfaceLocale,
-        comment: "Button that deep-links into the macOS System Settings privacy pane"))
+    return String(localized: LocalizedStringResource(
+      "Open System Settings", locale: model.interfaceLocale,
+      comment: "Open this permission's native macOS privacy pane"))
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(
-        text: String(
-          localized: LocalizedStringResource(
-            "Permission · \(kind.displayName(locale: model.interfaceLocale))",
-            locale: model.interfaceLocale,
-            comment: "Eyebrow on a permission step; %@ is a privacy scope such as Microphone")))
-      Text(kind.onboardingTitle(locale: model.interfaceLocale))
-        .font(.title2.weight(.semibold))
-        .foregroundStyle(.primary)
-        .fixedSize(horizontal: false, vertical: true)
-      Text(kind.onboardingReason(locale: model.interfaceLocale))
-        .font(.body)
-        .lineSpacing(3)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-
-      HStack(spacing: 16) {
-        statusRow
-        Button("Refresh status") { model.refreshPermissions() }
-          .csAction()
-      }
-      .padding(.top, 4)
-
-      if !state.isGranted {
-        Button(primaryTitle) { model.grantPermission(for: kind) }
-          .csAction(prominent: true)
-      }
-
-      if !state.isGranted {
-        if kind == .fullDiskAccess {
-          Text("Optional — skip it to limit file-aware features only.")
-            .font(.callout)
-            .foregroundStyle(CSColor.textFaint)
-        } else if kind == .speechRecognition {
-          Text(
-            "Required for Apple live dictation. Without it Codescribe cannot run on-device Speech."
-          )
+    HStack(alignment: .top, spacing: 12) {
+      VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: 8) {
+          Text(kind.displayName(locale: model.interfaceLocale)).font(.body.weight(.semibold))
+          if kind.isOptionalForSetup {
+            Text(String(localized: LocalizedStringResource(
+              "Optional", locale: model.interfaceLocale,
+              comment: "Screen Recording and Full Disk Access never block setup completion")))
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+        }
+        Text(kind.onboardingReason(locale: model.interfaceLocale))
           .font(.callout)
-          .foregroundStyle(CSColor.textFaint)
-        } else {
-          Text(
-            "You can continue without granting this, but the matching feature stays off until you do."
-          )
-          .font(.callout)
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      VStack(alignment: .trailing, spacing: 6) {
+        Text(state.label(locale: model.interfaceLocale))
+          .font(.caption.weight(.medium))
+          .foregroundStyle(state.isGranted ? CSColor.oliveLight : Color.secondary)
+        if !state.isGranted {
+          Button(actionTitle) { model.grantPermission(for: kind) }
+            .csAction()
+            .controlSize(.small)
         }
       }
     }
+    .padding(.vertical, 4)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("onboarding-permission-\(kind.id)")
   }
+}
 
-  private var statusRow: some View {
-    HStack(spacing: 10) {
-      Circle().fill(statusColor.opacity(0.9)).frame(width: 8, height: 8)
-      Text(state.label(locale: model.interfaceLocale))
-        .font(CSFont.mono(12, .semibold))
-        .foregroundStyle(statusColor)
-    }
+// MARK: - Optional local model
 
-  }
+struct LocalModelStepView: View {
+  @ObservedObject var model: OnboardingViewModel
 
-  private var statusColor: Color {
-    switch state {
-    case .granted: return CSColor.oliveLight
-    case .denied: return CSColor.terracottaLight
-    case .notDetermined: return CSColor.textMutedAlt
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      Text(String(localized: LocalizedStringResource(
+        "Optional local Whisper model", locale: model.interfaceLocale,
+        comment: "Heading for an opt-in local dictation model download")))
+        .font(.title2.weight(.semibold))
+      Text(String(localized: LocalizedStringResource(
+        "Download Whisper from Hugging Face for local dictation. Without it, the Whisper engine and Local power refinement are unavailable; Apple dictation remains available with Speech Recognition permission.",
+        locale: model.interfaceLocale,
+        comment: "Explain what the optional model enables and the alternative without downloading")))
+        .font(.body)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      WhisperDownloadView(store: model.whisperDownloadStore)
+      Text(String(localized: LocalizedStringResource(
+        "Continue whenever you’re ready. The download keeps running if you leave this step or close setup, and you can check it later in Settings.",
+        locale: model.interfaceLocale,
+        comment: "Whisper download never blocks navigation, closing the wizard or completing setup")))
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
     }
   }
 }
@@ -799,11 +819,6 @@ struct ApiKeyStepView: View {
 struct DoneStepView: View {
   @ObservedObject var model: OnboardingViewModel
 
-  private let summaryOrder: [PermissionKind] = [
-    .microphone, .accessibility, .inputMonitoring, .screenRecording,
-    .speechRecognition, .fullDiskAccess,
-  ]
-
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       EyebrowLabel(
@@ -825,11 +840,15 @@ struct DoneStepView: View {
       .fixedSize(horizontal: false, vertical: true)
 
       VStack(alignment: .leading, spacing: 8) {
-        ForEach(summaryOrder) { kind in
+        ForEach(PermissionKind.allCases) { kind in
           summaryRow(
             kind.displayName(locale: model.interfaceLocale),
             done: model.permissions.state(kind).isGranted,
-            doneLabel: model.permissions.state(kind).label(locale: model.interfaceLocale))
+            doneLabel: model.permissions.state(kind).label(locale: model.interfaceLocale),
+            missingLabel: kind.isOptionalForSetup
+              ? String(localized: LocalizedStringResource(
+                "Optional", locale: model.interfaceLocale, comment: "Optional scope skipped in setup"))
+              : model.permissions.state(kind).label(locale: model.interfaceLocale))
         }
         if model.selectedProviderRequiresApiKey {
           summaryRow(
@@ -897,69 +916,39 @@ struct DoneStepView: View {
 // MARK: - Permission onboarding copy (ported from app/ui/onboarding/steps.rs)
 
 extension PermissionKind {
-  /// Wizard heading, mirroring the excised AppKit `PermissionKind::title`.
-  func onboardingTitle(locale: Locale) -> String {
-    switch self {
-    case .microphone:
-      return String(
-        localized: LocalizedStringResource(
-          "Microphone Access", locale: locale, comment: "Permission step heading"))
-    case .accessibility:
-      return String(
-        localized: LocalizedStringResource(
-          "Accessibility Access", locale: locale, comment: "Permission step heading"))
-    case .inputMonitoring:
-      return String(
-        localized: LocalizedStringResource(
-          "Input Monitoring Access", locale: locale, comment: "Permission step heading"))
-    case .screenRecording:
-      return String(
-        localized: LocalizedStringResource(
-          "Screen Recording Access", locale: locale, comment: "Permission step heading"))
-    case .speechRecognition:
-      return String(
-        localized: LocalizedStringResource(
-          "Speech Recognition Access", locale: locale, comment: "Permission step heading"))
-    case .fullDiskAccess:
-      return String(
-        localized: LocalizedStringResource(
-          "Full Disk Access", locale: locale, comment: "Permission step heading"))
-    }
-  }
-
   /// Why codescribe needs the scope, mirroring `PermissionKind::reason`.
   func onboardingReason(locale: Locale) -> String {
     switch self {
     case .microphone:
       return String(
         localized: LocalizedStringResource(
-          "Audio is processed locally on your computer.", locale: locale,
+          "Records your voice for dictation. Without it, voice recording is unavailable.", locale: locale,
           comment: "Why the app asks for the Microphone scope"))
     case .accessibility:
       return String(
         localized: LocalizedStringResource(
-          "Lets Codescribe type text directly into other apps.", locale: locale,
+          "Types dictated text into other apps. Without it, automatic text insertion is unavailable.", locale: locale,
           comment: "Why the app asks for the Accessibility scope"))
     case .inputMonitoring:
       return String(
         localized: LocalizedStringResource(
-          "Detect keyboard shortcuts to start and stop voice recording.", locale: locale,
+          "Detects keyboard shortcuts to start and stop recording. Without it, global recording shortcuts are unavailable.", locale: locale,
           comment: "Why the app asks for the Input Monitoring scope"))
     case .screenRecording:
       return String(
         localized: LocalizedStringResource(
-          "Lets the Agent use your screen as context.", locale: locale,
+          "Optional — lets the Agent use your screen as context. Without it, screen context is unavailable; dictation still works.", locale: locale,
           comment: "Why the app asks for the Screen Recording scope"))
     case .speechRecognition:
       return String(
         localized: LocalizedStringResource(
-          "Powers Apple live dictation on your computer. The recording never leaves your device.",
+          "Powers Apple live dictation on your computer. Without it, Apple dictation is unavailable; downloaded Whisper can still transcribe locally.",
           locale: locale,
           comment: "Why the app asks for the Speech Recognition scope"))
     case .fullDiskAccess:
       return String(
         localized: LocalizedStringResource(
-          "Lets the Agent read files and use them as context.", locale: locale,
+          "Optional — lets the Agent read protected files you choose as context. Without it, those files stay inaccessible; dictation still works.", locale: locale,
           comment: "Why the app asks for the Full Disk Access scope"))
     }
   }
