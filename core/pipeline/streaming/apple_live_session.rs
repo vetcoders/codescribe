@@ -4048,7 +4048,11 @@ impl AppleSealState {
                 || occurrence.sample_start < admit_sample_start
                 || occurrence.sample_end > admit_sample_end
             {
-                self.whisper_span_refused.insert(occurrence.clone());
+                // A frame that only intersects this owner cannot permanently
+                // veto a later issued frame that contains the entire owner.
+                if route.blocked {
+                    self.whisper_span_refused.insert(occurrence.clone());
+                }
                 self.keep_routed_visible(ev_tx, request_id, &route.exclusive);
                 self.emit_span_refusal(
                     ev_tx,
@@ -9803,7 +9807,7 @@ mod c13a_lifecycle_tests {
         while event_rx.try_recv().is_ok() {}
 
         // One segment crosses the join (8 000..24 000); one is pinned wholly
-        // inside the second member: the positive control owns 16 000..32 000.
+        // inside the second member: the positive control owns 24 000..32 000.
         let identity = request.provider_request.identity.clone();
         let straddling = TimedTailSegment {
             confidence: None,
@@ -9823,7 +9827,7 @@ mod c13a_lifecycle_tests {
             range: TailSampleRange {
                 session: "straddle".to_string(),
                 capture_epoch: 1,
-                sample_start: 16_000,
+                sample_start: 24_000,
                 sample_end: 32_000,
             },
         };
@@ -9844,6 +9848,7 @@ mod c13a_lifecycle_tests {
                 avg_logprob: Some(-0.2),
             },
         };
+        assert!(payload.validate().is_ok());
         state.complete_whisper_window(
             &tx,
             TailPatchCompletion {
@@ -11372,6 +11377,12 @@ mod rc_w2_acoustic_tests {
                     settle_claimed_windows(&mut state, &tx, &owners, None, |request, fresh| {
                         defect_payload(request, fresh, defect)
                     });
+                if defect == "phrase" {
+                    assert!(
+                        !state.whisper_span_refused.contains(&owners[4]),
+                        "an earlier partial intersection must not veto the containing tail frame"
+                    );
+                }
                 let receipt = reconcile_terminal_coverage(&mut state, &tx);
                 assert_eq!(
                     receipt.status,
@@ -16695,13 +16706,13 @@ mod rc_w2_test_rehab {
         );
     }
 
-    /// Out-of-capture text cannot seal without a nonempty qualified occurrence.
+    /// A refused future callback is not a planned PCM window failure.
     #[test]
-    fn seal_window_beyond_captured_audio_is_counted_unresolved() {
+    fn future_callback_refusal_does_not_count_as_unresolved_planned_window() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = state("future-window", 2.0);
         emit(&mut state, &tx, vec![segment("future phrase", 8.0, 9.0)]);
-        assert_eq!(state.unresolved_windows, 1);
+        assert_eq!(state.unresolved_windows, 0);
         assert_eq!(state.last_apple_segment_end, 0.0);
         assert_eq!(state.sealed_count, 0);
         assert!(raw_finals(&drain(&mut rx)).is_empty());
@@ -17118,7 +17129,7 @@ mod rc_w2_test_rehab {
     fn seal_window_clamps_start_after_retention_eviction() {
         let state = state("evicted-head", 200.0);
         let retained_start = state.audio.retained_start_secs();
-        assert!(retained_start > 0.0);
+        assert_eq!(retained_start, 80.0);
         let retained_samples = (f64::from(retained_start) * f64::from(RATE)) as u64;
         let window = state
             .window_by_samples(retained_samples, sample(150.0))
@@ -17132,9 +17143,15 @@ mod rc_w2_test_rehab {
         assert_eq!(next.sample_end, sample(180.0));
         assert!(
             state
-                .window_by_samples(sample(100.0), sample(110.0))
+                .window_by_samples(sample(70.0), sample(75.0))
                 .is_none(),
             "a slice wholly before retention is not a window"
+        );
+        assert!(
+            state
+                .window_by_samples(sample(79.0), sample(85.0))
+                .is_none(),
+            "an evicted prefix refuses the entire requested slice"
         );
         assert_eq!(
             state.unresolved_windows, 0,
@@ -17181,9 +17198,33 @@ mod rc_w2_test_rehab {
                 2.0,
             );
         }
-        assert_eq!(state.unresolved_windows, 1);
+        assert_eq!(state.unresolved_windows, 0);
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(state.sealed_count, 0, "unqualified text cannot seal");
+        assert!(document(&state).is_empty());
+        assert!(raw_finals(&drain(&mut rx)).is_empty());
+    }
+
+    #[test]
+    fn retention_miss_counts_planned_window_once_without_queueing() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tail_tx, mut tail_rx) = mpsc::channel(TAIL_PATCH_QUEUE_CAP);
+        let mut state = state("retention-miss", 0.0);
+        state.audio = LiveAudioBuffer::new(RATE, 1.0);
+        state.audio.push(&vec![0.25; sample(9.0) as usize]);
+        assert_eq!(state.audio.session_sample_end(), sample(9.0));
+        assert_eq!(state.audio.retained_start_sample(), sample(8.0));
+        assert!(state.window_by_samples(0, sample(9.0)).is_none());
+        state.tail_patch = Some(tail_tx);
+        state.capture_stopping = true;
+        state.pump_capture_windows(&tx);
+        assert_eq!(state.unresolved_windows, 1);
+        assert_eq!(state.window_plan.admission_horizon(), u64::MAX);
+        assert!(tail_rx.try_recv().is_err());
+        state.pump_capture_windows(&tx);
+        assert_eq!(state.unresolved_windows, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
+        assert_eq!(state.sealed_count, 0);
         assert!(document(&state).is_empty());
         assert!(raw_finals(&drain(&mut rx)).is_empty());
     }
@@ -20653,12 +20694,18 @@ mod live_refinement_admission_tests {
         forensic_live_transport_capture(&mut state);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &words);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &words);
+        let mut emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        assert!(
+            !emitted
+                .iter()
+                .any(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+        );
         pump_stopped(&mut state, &events);
         let request = requests.try_recv().unwrap();
         state.complete_whisper_window(&events, finish(&request), 20.0);
         state.complete_whisper_window(&events, finish(&request), 20.0);
         state.close_admission_horizon(&events, 400);
-        let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        emitted.extend(std::iter::from_fn(|| receiver.try_recv().ok()));
         assert_eq!(emitted.iter().filter(|event| matches!(event,
             EngineEvent::LedgerMutation { observation, label, receipt: MutationReceipt::Insert { .. } }
                 if observation.producer == LedgerObservationProducer::Apple && label == "hello"
@@ -20672,12 +20719,12 @@ mod live_refinement_admission_tests {
                 .iter()
                 .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
                 .count(),
-            0
+            1
         );
-        assert_eq!(state.sealed_count, 0);
+        assert_eq!(state.sealed_count, 1);
         assert_eq!(state.tail_patch_jobs_skipped, 1);
         assert!(
-            state
+            !state
                 .acoustic_ledger
                 .lock()
                 .unwrap()
@@ -22280,7 +22327,7 @@ mod relay_l1_overlap_admission_tests {
         lane.state.complete_whisper_window(
             &lane.tx,
             completion(
-                &requests[1],
+                &requests[0],
                 vec![segment(
                     "relay-long-phrase",
                     phrase,
@@ -22835,7 +22882,7 @@ mod relay_l1_overlap_admission_tests {
         let windows = [
             vec![segment(session, "raz", 8_000, 40_000)],
             vec![
-                segment(session, "krawedz", 40_000, 52_000),
+                segment(session, "krawedz", 48_000, 52_000),
                 segment(session, "dwa", 52_000, 90_000),
             ],
             vec![segment(session, "trzy", 100_000, 150_000)],
@@ -22902,7 +22949,7 @@ mod relay_l1_overlap_admission_tests {
                 &requests[1],
                 vec![
                     segment("relay-member-straddle", "krawedz", 92_000, 104_000),
-                    segment("relay-member-straddle", "ogon", 96_000, 112_000),
+                    segment("relay-member-straddle", "ogon", 104_000, 112_000),
                 ],
             ),
             10.0,
@@ -25694,12 +25741,12 @@ mod relay_l1_overlap_admission_tests {
     fn long_word_windows(session: &str) -> [Vec<TimedTailSegment>; 2] {
         [
             vec![
-                word_pin(session, "raz", 50_000, 61_000),
+                word_pin(session, "raz", 50_000, 60_000),
                 word_pin(session, "krawedz", 60_000, 66_000),
                 word_pin(session, "echo", 66_000, 78_000),
             ],
             vec![
-                word_pin(session, "raz", 50_000, 61_000),
+                word_pin(session, "raz", 50_000, 60_000),
                 word_pin(session, "krawedz", 60_000, 66_000),
                 word_pin(session, "dwa", 66_000, 78_000),
                 word_pin(session, "trzy", 80_000, 98_000),
@@ -26006,8 +26053,16 @@ mod relay_l1_overlap_admission_tests {
             if missing_speech {
                 voiced.push((160_000, 168_000));
             }
-            let (mut lane, owner, requests, _) =
-                forensic_boundary_capture(&session, 0, LONG_SAMPLES, &voiced);
+            let (mut lane, owner, requests, _) = forensic_boundary_capture(
+                &session,
+                0,
+                if missing_speech {
+                    200_000
+                } else {
+                    LONG_SAMPLES
+                },
+                &voiced,
+            );
             assert!(requests.len() >= 2);
             let speech = coverage_speech_evidence(&lane.state);
             assert!(requests[0].provider_request.identity.range.sample_end < 160_000);
@@ -26017,6 +26072,14 @@ mod relay_l1_overlap_admission_tests {
                     .iter()
                     .any(|range| range.sample_start < 51_000 && range.sample_end > 44_000)
             );
+            if missing_speech {
+                assert!(
+                    speech
+                        .ranges()
+                        .iter()
+                        .any(|range| range.sample_start < 168_000 && range.sample_end > 160_000)
+                );
+            }
             if !missing_speech {
                 assert!(speech.ranges().iter().all(|range| range.sample_end
                     < requests[0].provider_request.identity.range.sample_end));
@@ -26244,8 +26307,16 @@ mod relay_l1_overlap_admission_tests {
             if missing_speech {
                 voiced.push((160_000, 168_000));
             }
-            let (mut lane, owner, requests, _) =
-                forensic_boundary_capture(&session, 0, LONG_SAMPLES, &voiced);
+            let (mut lane, owner, requests, _) = forensic_boundary_capture(
+                &session,
+                0,
+                if missing_speech {
+                    200_000
+                } else {
+                    LONG_SAMPLES
+                },
+                &voiced,
+            );
             assert!(requests.len() >= 2);
             let speech = coverage_speech_evidence(&lane.state);
             assert!(requests[0].provider_request.identity.range.sample_end < 160_000);
@@ -26255,6 +26326,14 @@ mod relay_l1_overlap_admission_tests {
                     .iter()
                     .any(|range| range.sample_start < 51_000 && range.sample_end > 44_000)
             );
+            if missing_speech {
+                assert!(
+                    speech
+                        .ranges()
+                        .iter()
+                        .any(|range| range.sample_start < 168_000 && range.sample_end > 160_000)
+                );
+            }
             if !missing_speech {
                 assert!(speech.ranges().iter().all(|range| range.sample_end
                     < requests[0].provider_request.identity.range.sample_end));
@@ -26843,7 +26922,7 @@ mod relay_l1_overlap_admission_tests {
         let windows = [
             vec![word_pin(session, "tak", 96_000, 126_720)],
             vec![
-                word_pin(session, "tak", 98_624, 135_104),
+                word_pin(session, "tak", 98_624, 126_720),
                 word_pin(session, "poza", 132_000, 152_000),
                 word_pin(session, "tym", 160_000, 174_000),
                 word_pin(session, "to", 174_000, 188_000),
