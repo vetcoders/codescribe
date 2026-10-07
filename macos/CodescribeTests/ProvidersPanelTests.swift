@@ -38,9 +38,13 @@ final class ProvidersPanelTests: XCTestCase {
   /// spinner being inserted above the button).
   func testProviderAccessStatusSlotKeepsItsSizeAcrossStates() {
     var sizes: [CGSize] = []
-    for (accessPending, mutationPending) in [(false, false), (true, false), (false, true), (true, true)] {
+    let states: [(Bool, Bool, Date?)] = [
+      (false, false, nil), (true, false, nil), (false, true, nil), (true, true, nil),
+      (false, false, Date()), (true, false, Date()), (false, true, Date()),
+    ]
+    for (accessPending, mutationPending, checkedAt) in states {
       let slot = ProviderAccessStatusSlot(
-        accessPending: accessPending, mutationPending: mutationPending)
+        accessPending: accessPending, mutationPending: mutationPending, checkedAt: checkedAt)
       let host = NSHostingView(rootView: slot.fixedSize())
       host.layoutSubtreeIfNeeded()
       sizes.append(host.fittingSize)
@@ -48,6 +52,23 @@ final class ProvidersPanelTests: XCTestCase {
     }
     let heights = Set(sizes.map { ($0.height * 2).rounded() })
     XCTAssertEqual(heights.count, 1, "height must not depend on pending state: \(sizes)")
+  }
+
+  /// The receipt reads the clock time only; the spinner's copy wins while busy
+  /// and the slot is silent before the first snapshot ever lands.
+  func testProviderAccessStatusSlotShowsAReceiptOnlyWhenIdleAfterASnapshot() {
+    XCTAssertFalse(
+      ProviderAccessStatusSlot(accessPending: false, mutationPending: false, checkedAt: nil)
+        .showsReceipt)
+    XCTAssertFalse(
+      ProviderAccessStatusSlot(accessPending: true, mutationPending: false, checkedAt: Date())
+        .showsReceipt)
+    XCTAssertFalse(
+      ProviderAccessStatusSlot(accessPending: false, mutationPending: true, checkedAt: Date())
+        .showsReceipt)
+    XCTAssertTrue(
+      ProviderAccessStatusSlot(accessPending: false, mutationPending: false, checkedAt: Date())
+        .showsReceipt)
   }
 
   func testAddCustomProviderAppearsInLanePicker() async throws {
