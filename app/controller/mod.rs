@@ -71,7 +71,7 @@ use codescribe_core::llm::ai_formatting::format_text_with_status_for_policy;
 use codescribe_core::pipeline::acoustic_ledger::DocumentRevisionProvenance;
 use codescribe_core::pipeline::contracts::EngineEvent;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
@@ -4385,8 +4385,17 @@ impl RecordingController {
             // capture instead of opening a second browser microphone. One
             // failed POST disarms the feed for this broadcast session — a
             // machine without a running Lab pays a single refused connection.
-            let lab_armed = Arc::new(AtomicBool::new(true));
+            // The slot is reserved atomically (armed → in-flight) before a
+            // POST is spawned, so a stalled relay sees exactly one attempt:
+            // batches that mature while a request is in flight are dropped,
+            // never queued. `.no_proxy()` keeps the loopback payload off any
+            // system HTTP proxy — this client talks to 127.0.0.1 or nobody.
+            const LAB_FEED_DISARMED: u8 = 0;
+            const LAB_FEED_ARMED: u8 = 1;
+            const LAB_FEED_IN_FLIGHT: u8 = 2;
+            let lab_state = Arc::new(AtomicU8::new(LAB_FEED_ARMED));
             let lab_client = reqwest::Client::builder()
+                .no_proxy()
                 .timeout(std::time::Duration::from_millis(400))
                 .build()
                 .ok();
@@ -4404,12 +4413,19 @@ impl RecordingController {
                     payload: IpcEventPayload::AudioLevel { rms },
                 });
                 if let Some(client) = &lab_client
-                    && lab_armed.load(Ordering::Relaxed)
                     && let Some(batch) = lab_batcher.offer(rms, std::time::Instant::now())
+                    && lab_state
+                        .compare_exchange(
+                            LAB_FEED_ARMED,
+                            LAB_FEED_IN_FLIGHT,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
                 {
                     let payload = lab_feed::frames_payload(&batch);
                     let client = client.clone();
-                    let armed = Arc::clone(&lab_armed);
+                    let state = Arc::clone(&lab_state);
                     tokio::spawn(async move {
                         let delivered = client
                             .post(lab_feed::LAB_FRAMES_URL)
@@ -4418,9 +4434,14 @@ impl RecordingController {
                             .await
                             .map(|resp| resp.status().is_success())
                             .unwrap_or(false);
-                        if !delivered {
-                            armed.store(false, Ordering::Relaxed);
-                        }
+                        state.store(
+                            if delivered {
+                                LAB_FEED_ARMED
+                            } else {
+                                LAB_FEED_DISARMED
+                            },
+                            Ordering::Release,
+                        );
                     });
                 }
             }
