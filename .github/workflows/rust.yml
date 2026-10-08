@@ -36,7 +36,7 @@ env:
 jobs:
   msrv:
     name: Rust 1.94 MSRV
-    runs-on: [self-hosted, dragon-macos-public]
+    runs-on: [self-hosted, macos-public]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -50,7 +50,7 @@ jobs:
 
   format:
     name: Format Check
-    runs-on: [self-hosted, dragon-macos-public]
+    runs-on: [self-hosted, macos-public]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -68,7 +68,7 @@ jobs:
 
   quality:
     name: Clippy + Tests
-    runs-on: [self-hosted, dragon-macos-public]
+    runs-on: [self-hosted, macos-public]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
