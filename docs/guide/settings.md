@@ -75,6 +75,57 @@ This tab owns the transcript pipeline itself:
 - `USE_LOCAL_STT=0` changes the **committed transcript path after capture**; it does not move live preview to the cloud.
 - In the current build, **cloud STT is still post-capture**, not live cloud preview. The Settings UI states this explicitly.
 
+## Dictation tabs
+
+The Dictation pane is one tab per concern:
+
+1. **Engine** — _Recognition mode_ first (Apple only, Local power, Cloud), with a
+   one-line description of the selected mode under the picker. Below it, _Last
+   transcription_: the engine that served the last take (runtime truth from the
+   serving verdict, “No transcription in this app session” before the first take,
+   no readiness dot), the local Whisper model row only in Local power (the saved
+   selection; Cloud shows no model row), and the spoken language as “Polish (pl)”.
+   The language applies to Apple live recognition, local Whisper and the cloud
+   tail alike.
+2. **Whisper** — _Selected model_ (picker, install state with **Check model**, a
+   resident-vs-next-load row that never calls the next load “in use”), _Other
+   detected models_ (models on disk the loader refuses, with a plain reason),
+   _Data footprint_ (installed directories with state, size and **Remove**; the
+   selected model explains why it cannot be removed). Full paths, sources and raw
+   validation errors live under the collapsed **Model details**.
+3. **Preview** — the transcript display pace; the presets, sliders and what they
+   really drive are described under [Transcription](#transcription) above.
+4. **Privacy** — see [Cloud & privacy](#cloud--privacy) below.
+5. **Permissions** — the live macOS permission matrix.
+
+The raw recognition timings are not a Dictation tab. **Pause recognition after
+silence** (`TOGGLE_SILENCE_SEC`), **Whisper context length**
+(`WHISPER_CONTEXT_WINDOW_SEC`) and **Sentence pause**
+(`LIGHT_PLUS_SENTENCE_PAUSE_SEC`) live in one **Speech recognition parameters**
+group on the **Lab** desk, which only appears in builds with the developer
+surface baked in (`CSDeveloperSurface`). They are parameters, not product
+choices; their ranges, defaults and promoted keys are unchanged by the move.
+Sentence pause belongs to Light+ text shaping, not to hands-free dictation.
+
+### Cloud & privacy
+
+**Settings → Dictation → Privacy** has three sections:
+
+- **Cloud status** — the selected mode and the stored consent record as two
+  separate rows. A granted record is not evidence that audio is leaving now:
+  audio is sent only while Cloud mode is selected, or during a cloud
+  re-transcription you start yourself.
+- **What can leave this Mac** — audio during cloud recognition in Cloud mode and
+  during an explicit cloud re-transcription of a recording; text during AI
+  requests to the providers you configured.
+- **Privacy details** — the content-free cloud session diagnostics, Keychain
+  storage for the keys you configure, what a missing consent resolves to (Apple
+  on-device plus your dictionary, with no local model loaded in its place), and
+  the fact that choosing `Local power` does not download anything.
+
+Selecting **Cloud** on the Engine tab is itself the audio-egress grant: it
+writes `CODESCRIBE_CLOUD_CONSENT=granted` together with the mode.
+
 ## Modes & Shortcuts
 
 Open **Settings → Modes & Shortcuts**.
@@ -386,25 +437,6 @@ or altered instructions also expose repair. An empty selection can forget a
 folder already absent; it never deletes an existing unowned or unreadable path.
 
 Prompt files live in `~/.codescribe/prompts/`.
-
-## Dictation
-
-Open **Settings → Dictation**. The first two tabs are:
-
-- **Engine** — _Recognition mode_ first (Apple only, Local power, Cloud), with a
-  one-line description of the selected mode under the picker. Below it, _Last
-  transcription_: the engine that served the last take (runtime truth from the
-  serving verdict, “No transcription in this app session” before the first take,
-  no readiness dot), the local Whisper model row only in Local power (the saved
-  selection; Cloud shows no model row), and the spoken language as “Polish (pl)”.
-  The language applies to Apple live recognition, local Whisper and the cloud
-  tail alike.
-- **Whisper model** — _Selected model_ (picker, install state with **Check
-  model**, a resident-vs-next-load row that never calls the next load “in use”),
-  _Other detected models_ (models on disk the loader refuses, with a plain
-  reason), _Data footprint_ (installed directories with state, size and
-  **Remove**; the selected model explains why it cannot be removed). Full paths,
-  sources and raw validation errors live under the collapsed **Model details**.
 
 ## Audio & Input
 
