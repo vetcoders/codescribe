@@ -66,6 +66,17 @@
         }
       }
     },
+    "%@ Hz" : {
+      "comment" : "The placeholder is an audio sample rate in hertz",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ Hz"
+          }
+        }
+      }
+    },
     "%@ OAuth client id" : {
       "comment" : "Popover title; the placeholder is a vendor brand, e.g. ChatGPT",
       "localizations" : {
@@ -2864,6 +2875,56 @@
         }
       }
     },
+    "Audio from a completed recording is deleted 24 hours after it finishes. Text history stays available." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dźwięk zakończonego nagrania zostanie usunięty 24 godziny po jego zakończeniu. Historia tekstu pozostanie dostępna."
+          }
+        }
+      }
+    },
+    "Audio from a completed recording is deleted 30 days after it finishes. Text history stays available." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dźwięk zakończonego nagrania zostanie usunięty 30 dni po jego zakończeniu. Historia tekstu pozostanie dostępna."
+          }
+        }
+      }
+    },
+    "Audio from a completed recording is deleted 7 days after it finishes. Text history stays available." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dźwięk zakończonego nagrania zostanie usunięty 7 dni po jego zakończeniu. Historia tekstu pozostanie dostępna."
+          }
+        }
+      }
+    },
+    "Audio from a new recording is discarded as soon as processing finishes. Recordings already saved are kept, and text history stays available." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dźwięk nowego nagrania zostanie usunięty zaraz po zakończeniu przetwarzania. Już zapisane nagrania pozostaną, a historia tekstu będzie dostępna."
+          }
+        }
+      }
+    },
+    "Audio from completed recordings stays on this Mac until you delete it. Nothing expires automatically." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dźwięk zakończonych nagrań pozostaje na tym Macu, dopóki go nie usuniesz. Nic nie wygasa automatycznie."
+          }
+        }
+      }
+    },
     "Audio input device" : {
       "localizations" : {
         "pl" : {
@@ -3316,6 +3377,36 @@
         }
       }
     },
+    "Calibration details" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szczegóły kalibracji"
+          }
+        }
+      }
+    },
+    "Calibration file" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plik kalibracji"
+          }
+        }
+      }
+    },
+    "Calibration profile" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Profil kalibracji"
+          }
+        }
+      }
+    },
     "Calibration refused: %@" : {
       "comment" : "The placeholder is a technical failure description",
       "localizations" : {
@@ -3343,6 +3434,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wynik kalibracji"
+          }
+        }
+      }
+    },
+    "Calibration state" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stan kalibracji"
           }
         }
       }
@@ -3626,16 +3727,6 @@
         }
       }
     },
-    "Checking seal lane…" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdzanie zatwierdzania wypowiedzi…"
-          }
-        }
-      }
-    },
     "Checking the connection…" : {
       "localizations" : {
         "pl" : {
@@ -3683,6 +3774,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wybierz folder, który chcesz dodać do listy"
+          }
+        }
+      }
+    },
+    "Choose a microphone, check that recording is ready and adjust the sound settings." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz mikrofon, sprawdź gotowość do nagrywania i dostosuj ustawienia dźwięku."
           }
         }
       }
@@ -3794,6 +3895,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Usuń własne ustawienie modelu"
+          }
+        }
+      }
+    },
+    "Clears the saved microphone and follows the macOS input device" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usuwa zapisany mikrofon i korzysta z urządzenia wejściowego wybranego w macOS"
+          }
+        }
+      }
+    },
+    "Click Start recording. You can also set a Dictation shortcut under Settings › Hotkeys." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kliknij „Rozpocznij nagrywanie”. Skrót do dyktowania możesz ustawić w Ustawieniach › Skróty."
           }
         }
       }
@@ -3998,6 +4119,16 @@
         }
       }
     },
+    "Codescribe has measured how loudly you speak into this microphone." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poziom Twojej mowy na tym mikrofonie został już zmierzony."
+          }
+        }
+      }
+    },
     "Codescribe license key" : {
       "localizations" : {
         "pl" : {
@@ -4015,6 +4146,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Menu Codescribe"
+          }
+        }
+      }
+    },
+    "Codescribe must be able to commit finished fragments before a recording can start." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe musi móc zatwierdzać zakończone fragmenty, aby rozpocząć nagrywanie."
+          }
+        }
+      }
+    },
+    "Codescribe records on this microphone. If it is unplugged, recording continues on the system microphone." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe nagrywa z tego mikrofonu. Jeśli go odłączysz, nagrywanie będzie kontynuowane na mikrofonie systemowym."
+          }
+        }
+      }
+    },
+    "Codescribe records on whichever microphone macOS currently uses." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe nagrywa z mikrofonu aktualnie używanego przez macOS."
           }
         }
       }
@@ -4203,6 +4364,16 @@
         }
       }
     },
+    "Committing transcript fragments" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zatwierdzanie fragmentów transkrypcji"
+          }
+        }
+      }
+    },
     "Compact" : {
       "comment" : "Sidebar state",
       "localizations" : {
@@ -4214,22 +4385,22 @@
         }
       }
     },
+    "Complete step 1 before checking this." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Najpierw wykonaj krok 1."
+          }
+        }
+      }
+    },
     "Complete step 1 before measuring this input." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wykonaj krok 1 przed pomiarem tego wejścia."
-          }
-        }
-      }
-    },
-    "Complete step 1 before validating the acoustic lane." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Najpierw ukończ krok 1, aby sprawdzić konfigurację audio."
           }
         }
       }
@@ -4472,37 +4643,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kontynuuj tę samą konsultację w kolejnych nagraniach albo rozpocznij nową bez usuwania wcześniejszej historii."
-          }
-        }
-      }
-    },
-    "Controlled by %@ override." : {
-      "comment" : "The placeholder is an environment variable name",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ustawieniem steruje %@"
-          }
-        }
-      }
-    },
-    "Controlled by the product setting below." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Steruje tym poniższe ustawienie."
-          }
-        }
-      }
-    },
-    "Controls whether committed utterances can be sealed." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Określa, czy zakończone wypowiedzi są zatwierdzane."
           }
         }
       }
@@ -5550,16 +5690,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Wykrywa skróty klawiszowe rozpoczynające i kończące nagrywanie. Bez tego uprawnienia globalne skróty nagrywania są niedostępne."
-          }
-        }
-      }
-    },
-    "Device choice and sound feedback use the live recorder config." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybór urządzenia i sygnał rozpoczęcia nagrywania korzystają z aktualnej konfiguracji nagrywania."
           }
         }
       }
@@ -6736,16 +6866,6 @@
         }
       }
     },
-    "Hear the real input." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdź, co naprawdę odbiera mikrofon."
-          }
-        }
-      }
-    },
     "Heard %@. Current correction %@. Revision %llu." : {
       "localizations" : {
         "en" : {
@@ -7917,6 +8037,16 @@
         }
       }
     },
+    "Measured microphone" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmierzony mikrofon"
+          }
+        }
+      }
+    },
     "Measures about ten seconds of normal speech; audio is not kept" : {
       "localizations" : {
         "pl" : {
@@ -8055,6 +8185,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Mikrofon aktywny"
+          }
+        }
+      }
+    },
+    "Microphone and recording" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mikrofon i nagrywanie"
           }
         }
       }
@@ -9296,12 +9436,23 @@
         }
       }
     },
-    "Off discards the audio of new takes once processing finishes. Text history stays available. A take already in progress keeps the choice it started with." : {
+    "Off, set by the %@ override. Recording stays blocked until the override is removed." : {
+      "comment" : "The placeholder is an environment variable name",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wyłączenie zadziała od następnego nagrania. Historia tekstu pozostanie dostępna."
+            "value" : "Wyłączone przez ustawienie %@. Nagrywanie pozostanie zablokowane, dopóki nie usuniesz tego ustawienia."
+          }
+        }
+      }
+    },
+    "Off. Recording cannot start until you turn this on." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wyłączone. Nagrywanie nie rozpocznie się, dopóki tego nie włączysz."
           }
         }
       }
@@ -9324,6 +9475,27 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Włączone"
+          }
+        }
+      }
+    },
+    "On, set by the %@ override; the switch is read-only." : {
+      "comment" : "The placeholder is an environment variable name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Włączone przez ustawienie %@. Przełącznik jest tylko do odczytu."
+          }
+        }
+      }
+    },
+    "On. Change it with the switch in this row." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Włączone. Możesz to zmienić przełącznikiem w tym wierszu."
           }
         }
       }
@@ -10057,6 +10229,17 @@
         }
       }
     },
+    "Press %@ or click Start recording." : {
+      "comment" : "The placeholder is the configured dictation gesture",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naciśnij %@ albo kliknij „Rozpocznij nagrywanie”."
+          }
+        }
+      }
+    },
     "Preview" : {
       "comment" : "Settings tab: live transcript preview timing",
       "localizations" : {
@@ -10528,12 +10711,12 @@
         }
       }
     },
-    "Reading the effective product setting and override." : {
+    "Reading the current setting…" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sprawdzanie ustawienia Codescribe i ewentualnego wymuszenia z konfiguracji zaawansowanej…"
+            "value" : "Sprawdzanie aktualnego ustawienia…"
           }
         }
       }
@@ -10780,6 +10963,16 @@
         }
       }
     },
+    "Recording start signal" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sygnał rozpoczęcia nagrywania"
+          }
+        }
+      }
+    },
     "Recording start sound" : {
       "localizations" : {
         "pl" : {
@@ -10929,6 +11122,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odśwież listę urządzeń wejściowych audio"
+          }
+        }
+      }
+    },
+    "Refresh microphones" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odśwież mikrofony"
           }
         }
       }
@@ -11372,16 +11575,6 @@
         }
       }
     },
-    "Reset audio input to system default" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przywróć domyślne ustawienia audio"
-          }
-        }
-      }
-    },
     "Reset model" : {
       "comment" : "Clears the lane's model override",
       "localizations" : {
@@ -11547,16 +11740,6 @@
         }
       }
     },
-    "Restores the system default microphone." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Przywraca domyślny mikrofon systemu."
-          }
-        }
-      }
-    },
     "Restores the transcript this retranscribe replaced, as a new revision" : {
       "localizations" : {
         "pl" : {
@@ -11691,6 +11874,16 @@
         }
       }
     },
+    "Sample rate" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Częstotliwość próbkowania"
+          }
+        }
+      }
+    },
     "Save" : {
       "localizations" : {
         "pl" : {
@@ -11821,16 +12014,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Zapisane rozmowy"
-          }
-        }
-      }
-    },
-    "Saved in settings.json; runtime falls back safely if it disappears" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zapisywane w settings.json. Jeśli urządzenie przestanie być dostępne, aplikacja bezpiecznie przełączy się na domyślne urządzenie systemowe."
           }
         }
       }
@@ -12049,36 +12232,6 @@
         }
       }
     },
-    "Seal check waits for microphone access" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Do sprawdzenia zatwierdzania wypowiedzi potrzebny jest dostęp do mikrofonu."
-          }
-        }
-      }
-    },
-    "Seal lane" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zatwierdzanie zakończonych wypowiedzi"
-          }
-        }
-      }
-    },
-    "Seal lane armed" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zatwierdzanie zakończonych wypowiedzi włączone"
-          }
-        }
-      }
-    },
     "Seal lane is disarmed by %@ override" : {
       "comment" : "The placeholder is an environment variable name",
       "localizations" : {
@@ -12096,16 +12249,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zatwierdzanie zakończonych wypowiedzi jest wyłączone w Ustawieniach › Dźwięk."
-          }
-        }
-      }
-    },
-    "Seal lane must be enabled" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zatwierdzanie zakończonych wypowiedzi musi być włączone"
           }
         }
       }
@@ -13209,16 +13352,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozpocznij nagrywanie"
-          }
-        }
-      }
-    },
-    "Start sound" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dźwięk rozpoczęcia"
           }
         }
       }
@@ -14399,16 +14532,6 @@
         }
       }
     },
-    "The recorder resolves this device from Core Audio at runtime." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Urządzenie do nagrywania jest ustalane podczas działania aplikacji za pomocą Core Audio."
-          }
-        }
-      }
-    },
     "The retranscribed take is no longer current" : {
       "localizations" : {
         "pl" : {
@@ -15359,17 +15482,6 @@
         }
       }
     },
-    "Use %@ or choose Start recording." : {
-      "comment" : "The placeholder is the configured dictation gesture",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Użyj %@ albo wybierz „Rozpocznij nagrywanie”."
-          }
-        }
-      }
-    },
     "Use both methods." : {
       "comment" : "Hotkey preset detail: hold and toggle methods are both enabled",
       "localizations" : {
@@ -15391,12 +15503,12 @@
         }
       }
     },
-    "Use system default" : {
+    "Use the system microphone" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Użyj ustawień domyślnych"
+            "value" : "Użyj mikrofonu systemowego"
           }
         }
       }
@@ -18568,16 +18680,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "wczoraj"
-          }
-        }
-      }
-    },
-    "your Dictation shortcut" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "swojego skrótu do dyktowania"
           }
         }
       }
