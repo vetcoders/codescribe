@@ -134,6 +134,13 @@ pub(super) fn label_equal(a: &str, b: &str) -> bool {
     normalize_word_token(a) == normalize_word_token(b)
 }
 
+/// `context_quality` saturation: the pin sits in the middle third of its
+/// decode window. That region is the publication band — with 9 s windows at
+/// 3 s strides every instant has exactly one window whose band owns it, and
+/// an EOF-shortened window shrinks its band proportionally instead of losing
+/// the recording tail.
+pub const FULL_CONTEXT_QUALITY: u32 = 1_000_000;
+
 /// Fixed point context ranking. Overflow cannot turn a long window into a vote.
 pub fn context_quality(start: u64, end: u64, decode: (u64, u64)) -> u32 {
     let (left, right) = decode;
@@ -141,7 +148,8 @@ pub fn context_quality(start: u64, end: u64, decode: (u64, u64)) -> u32 {
         return 0;
     }
     let margin = (start - left).min(right - end);
-    ((u128::from(margin) * 3 * 1_000_000 / u128::from(right - left)).min(1_000_000)) as u32
+    ((u128::from(margin) * 3 * u128::from(FULL_CONTEXT_QUALITY) / u128::from(right - left))
+        .min(u128::from(FULL_CONTEXT_QUALITY))) as u32
 }
 
 impl WordHypothesis {
@@ -849,13 +857,37 @@ impl AcousticLedger {
             .is_some_and(|(a, b)| !label_equal(a, b));
         let geometry_preserves_complete_source = candidate.acoustic_boundaries_complete
             || !sources.iter().any(|source| self.complete_word_slot(source));
+        // Publication band: a Whisper recognition from the edge of its decode
+        // window may inform a dispute, never overwrite a disagreeing
+        // incumbent through plain stream agreement. The decoder completes
+        // clipped phonemes into plausible non-words there ("56" take-over;
+        // "obiecujący" → "odwzujący"), so label-changing agreement requires
+        // the candidate's pin in the middle third of its window — or a banded
+        // prior hypothesis that already proposed the same label. Two paths
+        // stay ungated on purpose: first placement (at recording start there
+        // is no earlier window to own those seconds), and a confirmed trial —
+        // the trial is already the controlled escalation (two prior
+        // witnesses, fresh PCM, a receipt) and is at times the only repair
+        // when the banded window itself misread.
+        let band_rights = candidate.family() != ObservationProducer::Whisper
+            || !raw_disagrees
+            || component.incumbent.original_text.is_none()
+            || candidate.q >= FULL_CONTEXT_QUALITY
+            || prior_support.iter().any(|h| {
+                h.q >= FULL_CONTEXT_QUALITY
+                    && h.original_text
+                        .as_deref()
+                        .zip(raw)
+                        .is_some_and(|(a, b)| label_equal(a, b))
+            });
         let lexical_resolved = provisional_apple
             || confirmed_trial
             || (trial.is_none()
                 && complete
                 && candidate.acoustic_boundaries_complete
                 && agreement
-                && fresh);
+                && fresh
+                && band_rights);
         let (accepted, reason) = if provisional_apple {
             // A still-provisional Apple word may evolve on the same exact
             // pins. Once Whisper supplies evidence, normal adjudication owns it.
@@ -870,6 +902,8 @@ impl AcousticLedger {
             } else {
                 (false, "trial_unresolved")
             }
+        } else if !band_rights {
+            (false, "outside_publication_band")
         } else if repeated_label {
             // Corroborated timing can extend the same physical word. Keeping
             // its first, shorter pin would turn a later suffix into a new word.
