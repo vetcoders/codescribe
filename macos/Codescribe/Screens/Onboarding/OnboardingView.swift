@@ -85,8 +85,8 @@ struct OnboardingView: View {
       return (
         String(
           localized: LocalizedStringResource(
-            "Local dictation, when you want it", locale: model.interfaceLocale,
-            comment: "Setup chapter heading for the optional Whisper download")),
+            "Transcription on your Mac", locale: model.interfaceLocale,
+            comment: "Setup chapter heading for fully local transcription")),
         "arrow.down.circle",
         nil
       )

@@ -504,7 +504,7 @@ private struct OnboardingPermissionRow: View {
   }
 }
 
-// MARK: - Optional local model
+// MARK: - Local transcription model
 
 struct LocalModelStepView: View {
   @ObservedObject var model: OnboardingViewModel
@@ -514,17 +514,17 @@ struct LocalModelStepView: View {
       Text(
         String(
           localized: LocalizedStringResource(
-            "Optional local Whisper model", locale: model.interfaceLocale,
-            comment: "Heading for an opt-in local dictation model download"))
+            "Whisper model for local dictation", locale: model.interfaceLocale,
+            comment: "Heading for the model that enables fully local transcription"))
       )
       .font(.title2.weight(.semibold))
       Text(
         String(
           localized: LocalizedStringResource(
-            "Download Whisper from Hugging Face for local dictation. Without it, the Whisper engine and Local power refinement are unavailable; Apple dictation remains available with Speech Recognition permission.",
+            "Download the dedicated Whisper model to transcribe speech entirely on your Mac, without configuring cloud providers.",
             locale: model.interfaceLocale,
             comment:
-              "Explain what the optional model enables and the alternative without downloading"))
+              "Explain the benefit of the local transcription model"))
       )
       .font(.body)
       .foregroundStyle(.secondary)
@@ -533,7 +533,7 @@ struct LocalModelStepView: View {
       Text(
         String(
           localized: LocalizedStringResource(
-            "Continue whenever you’re ready. The download keeps running if you leave this step or close setup, and you can check it later in Settings.",
+            "The download continues in the background when you leave this step or close setup. Check its progress in Settings.",
             locale: model.interfaceLocale,
             comment:
               "Whisper download never blocks navigation, closing the wizard or completing setup"))

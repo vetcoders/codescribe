@@ -4343,13 +4343,13 @@
         }
       }
     },
-    "Continue whenever you’re ready. The download keeps running if you leave this step or close setup, and you can check it later in Settings." : {
+    "The download continues in the background when you leave this step or close setup. Check its progress in Settings." : {
       "comment" : "Whisper download never blocks navigation, closing the wizard or completing setup",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Kontynuuj, kiedy chcesz. Pobieranie trwa dalej po przejściu do kolejnego kroku lub zamknięciu konfiguracji. Jego postęp możesz później sprawdzić w Ustawieniach."
+            "value" : "Pobieranie trwa w tle także po przejściu do kolejnego kroku lub zamknięciu konfiguracji. Postęp znajdziesz w Ustawieniach."
           }
         }
       }
@@ -5620,13 +5620,13 @@
         }
       }
     },
-    "Download Whisper from Hugging Face for local dictation. Without it, the Whisper engine and Local power refinement are unavailable; Apple dictation remains available with Speech Recognition permission." : {
-      "comment" : "Explain what the optional model enables and the alternative without downloading",
+    "Download the dedicated Whisper model to transcribe speech entirely on your Mac, without configuring cloud providers." : {
+      "comment" : "Explain the benefit of the local transcription model",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Pobierz Whisper z Hugging Face, aby dyktować lokalnie. Bez modelu silnik Whisper i poprawki Local power są niedostępne; dyktowanie Apple pozostaje dostępne po przyznaniu uprawnienia Rozpoznawanie mowy."
+            "value" : "Pobierz dedykowany model Whisper, aby transkrybować mowę w całości na swoim Macu, bez konfigurowania dostawców chmurowych."
           }
         }
       }
@@ -7543,13 +7543,13 @@
         }
       }
     },
-    "Local dictation, when you want it" : {
-      "comment" : "Setup chapter heading for the optional Whisper download",
+    "Transcription on your Mac" : {
+      "comment" : "Setup chapter heading for fully local transcription",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Lokalne dyktowanie, kiedy chcesz"
+            "value" : "Transkrypcja na Twoim Macu"
           }
         }
       }
@@ -9300,13 +9300,13 @@
         }
       }
     },
-    "Optional local Whisper model" : {
-      "comment" : "Heading for an opt-in local dictation model download",
+    "Whisper model for local dictation" : {
+      "comment" : "Heading for the model that enables fully local transcription",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Opcjonalny lokalny model Whisper"
+            "value" : "Model Whisper do lokalnego dyktowania"
           }
         }
       }
