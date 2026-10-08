@@ -545,7 +545,7 @@ final class OverlayState {
     guard widgetHoverInteractions.isEmpty, !isEditingTranscript else { return }
     if isPointerHovering && isMini && !widgetHoverSuppressedUntilExit {
       widgetHoverTarget = .midi
-      widgetHoverDeadline = .now.advanced(by: .milliseconds(160))
+      widgetHoverDeadline = .now.advanced(by: .milliseconds(500))
     } else if !isPointerHovering && presentationMode == .midi && widgetMidiIsAutomatic {
       widgetHoverTarget = .mini
       widgetHoverDeadline = .now.advanced(by: .milliseconds(420))
