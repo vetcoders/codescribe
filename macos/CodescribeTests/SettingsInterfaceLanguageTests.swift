@@ -7,7 +7,9 @@ import XCTest
 /// wizard, on the same per-app preference and through the same host restart.
 @MainActor
 final class SettingsInterfaceLanguageTests: XCTestCase {
-  private func withPreferences(_ body: (UserDefaults, String) async throws -> Void) async throws {
+  private func withPreferences(
+    _ body: @MainActor (UserDefaults, String) async throws -> Void
+  ) async throws {
     let suite = "codescribe-settings-interface-language-\(UUID().uuidString)"
     let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
     // XCTest forces English through launch arguments. Only this isolated suite
