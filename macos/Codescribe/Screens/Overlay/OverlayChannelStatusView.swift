@@ -156,7 +156,7 @@ struct OverlayMicrophoneGlyph: View {
 }
 
 /// The system owns button material, contrast and pointer feedback alongside the composer.
-private struct OverlayAgentControlStyle: ViewModifier {
+struct OverlayAgentControlStyle: ViewModifier {
   @ViewBuilder
   func body(content: Content) -> some View {
     if #available(macOS 26.0, *) {

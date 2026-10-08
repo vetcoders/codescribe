@@ -73,10 +73,19 @@ struct OverlayConversationView: View {
           .overlay(alignment: .bottom) {
             ZStack {
               if !followsLatest {
-                JumpToCurrentButton { scrollToLatest(proxy) }
-                  .accessibilityIdentifier("overlay-conversation-jump-to-current")
-                  .padding(.bottom, composerHeight + 10)
-                  .transition(.opacity.combined(with: .move(edge: .bottom)))
+                Button { scrollToLatest(proxy) } label: {
+                  Image(systemName: "chevron.down")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(palette.primaryText.color)
+                    .frame(width: 16, height: 16)
+                }
+                .modifier(OverlayAgentControlStyle())
+                .csFocusOutline()
+                .accessibilityLabel("Jump to current")
+                .help("Jump to the current reply")
+                .accessibilityIdentifier("overlay-conversation-jump-to-current")
+                .padding(.bottom, composerHeight + 10)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
               }
             }
             .animation(.easeOut(duration: 0.18), value: followsLatest)
