@@ -440,28 +440,63 @@ Prompt files live in `~/.codescribe/prompts/`.
 
 ## Audio & Input
 
-Open **Settings → Audio & Input**.
+Open **Settings → Audio** — headlined **Microphone and recording**. The pane owns
+the microphone, recording readiness, how long recorded audio is kept, and the
+start signal. Nothing else: the transcription overlay is set under
+[Dictation → Preview](#dictation-tabs), and the Dock icon from the menu bar
+menu — neither lives in this pane.
 
-This tab owns capture defaults and app-shell behavior:
+**Input device** — the microphone recording uses. Picking **System default** means
+Codescribe records on whichever microphone macOS currently uses; a named device is
+remembered, and if it is unplugged recording continues on the system microphone.
+**Use the system microphone** clears the saved choice. **Refresh microphones**
+re-reads the device list; it does not re-run the readiness checks below. A saved
+device that the running recorder is not actually using is reported as such, with
+the saved name — a restart applies it, and an explicit `AUDIO_INPUT_DEVICE` launch
+override keeps winning until it is removed.
 
-- `Whisper language`
-- `Beep on recording start`
-- `Enter to send`
-- `Transcription overlay`
-- `Show Dock icon`
-- `Sound volume`
+**Recording readiness** — four numbered steps, in the order the controller
+requires them:
 
-This is where you decide whether the floating transcription overlay exists at all.
+1. **Microphone access** — the macOS permission, with the live device the recorder
+   resolved.
+2. **Calibration** — about 10 seconds of normal speech measured through the real
+   recorder path. **Calibrate** is unavailable while a take is active, starting or
+   finishing. The measured profile is not kept secret, it is just not a readiness
+   question: the stored profile identifier, the measured device, the sample rate,
+   the loader verdict and the calibration file sit under the collapsed
+   **Calibration details**.
+3. **Committing transcript fragments** — the same row in every state, with the
+   switch state written out. Off blocks recording. When
+   `CODESCRIBE_SILERO_FUSION` is set, the sentence names it and the switch is
+   read-only: remove the override to edit the setting again.
+4. **Ready to record** — names the configured Dictation gesture when Hotkeys binds
+   one, and only the **Start recording** button when it does not. Stopping through
+   the tray or a shortcut updates this row too, and a final formatting pass still
+   counts as finishing before the overlay changes its visible phase. After a failed
+   start, **Start recording** uses the same fresh-capture admission as the tray, so
+   it can retry without a stale capture fence; it waits for the tray's previous
+   start to settle and cannot turn that retry into a Stop.
 
-Stopping through the tray or a shortcut updates this panel too. A final formatting
-pass still counts as finishing even before the overlay changes its visible phase.
-After a failed start, **Start recording** uses the same fresh-capture admission as
-the tray, so it can retry without a stale capture fence. It waits for the tray's
-previous start to settle and cannot turn that retry into a Stop.
+These controls borrow the existing `RecordingController`; opening Audio never
+creates a second recorder.
 
-Calibration is disabled while a take is active or finishing. These controls use
-the existing RecordingController path; opening Audio does not create another
-recorder.
+**Audio retention** — `Keep completed recordings`, and one sentence that describes
+the choice currently selected:
+
+- `Forever` (default) — nothing expires automatically. An unknown value stored in
+  `settings.json` resolves here, exactly as the config loader resolves it.
+- `30 days`, `7 days`, `24h` — a completed recording's audio is deleted that long
+  after it finishes, including recordings that are already past the age.
+- `Off` — a new recording's audio is discarded as soon as processing finishes.
+  Recordings already saved are kept.
+
+Text history is never touched by this setting, and a take keeps the choice it
+started with: switching to `Off` mid-take does not shorten that take, and a take
+captured under `Off` is still discarded if the choice is changed afterwards.
+
+**Sound feedback** — **Recording start signal** plays the recorder's live start
+confirmation, with a volume slider that follows the toggle.
 
 ## Diagnostics
 
