@@ -1070,6 +1070,22 @@ selection. Routine roster polling does not override manual review. Simultaneous
 new recipients open the existing aggregate conversation, rather than choosing an
 arbitrary agent. Header and conversation navigation never request speech.
 
+The delivery observer's restart cache is
+`runtime/overlay-delivery-cursor.v1.json`. Live snapshots consume bus evidence
+and verified receipt metadata immediately; persistence is a separate checkpoint.
+The first changed snapshot saves once, and later changes across all buses share
+one atomic save after 30 seconds since the last successful checkpoint, or when
+one bus has advanced by at least 8 MiB. The byte threshold triggers a checkpoint
+after a read; it does not lower the existing 64 MiB per-read budget. Continuous
+activity cannot postpone the time deadline. Unchanged polls do not write.
+
+Each checkpoint pairs its projection with a cursor before any unfinished row
+or storage transaction. Restart replays the suffix after that cursor. A failed
+save preserves the previous file and retries the dirty state on the next poll.
+The existing 128 MiB cache budget evicts whole projection/cursor units; an
+evicted unit returns to the bounded cold-tail path. This cache never advances
+the agent mailbox cursor, acknowledges delivery, or establishes transcript truth.
+
 ## C11 evidence boundary
 
 `484095ce` was the last executable-code cut before documentation successor

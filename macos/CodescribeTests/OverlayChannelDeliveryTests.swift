@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import SwiftUI
 import XCTest
 
@@ -6,6 +7,227 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testActiveSnapshotsUpdateTheViewWithoutRewritingTheWholeCache() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let start = ContinuousClock.now
+    let first = try await reader.readSnapshot(checkpointTime: start)
+    var previousID = first.deliveries.first?.deliveryID
+    let cache = OverlayDeliveryCursorStore.url(root: fixture.root)
+    let initial = try Data(contentsOf: cache)
+    for sequence in 2...21 {
+      try fixture.append(fixture.seal(sequence))
+      let snapshot = try await reader.readSnapshot(checkpointTime: start)
+      XCTAssertNotEqual(snapshot.deliveries.first?.deliveryID, previousID)
+      previousID = snapshot.deliveries.first?.deliveryID
+    }
+    XCTAssertEqual(
+      try Data(contentsOf: cache), initial,
+      "Active polls paint new evidence without rewriting every cached projection")
+    let current = try await reader.readSnapshot(checkpointTime: start)
+    let resumed = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    XCTAssertEqual(resumed, current, "Restart replays the suffix since the last checkpoint")
+  }
+
+  func testCheckpointBatchesAllChangedBusesIntoOneAtomicWrite() async throws {
+    let fixture = try Fixture()
+    let other = try Fixture()
+    defer {
+      fixture.remove()
+      other.remove()
+    }
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    try other.append(other.seal(2))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: other.bus)
+    let snapshot = try await reader.readSnapshot()
+    let writes = await reader.checkpointWrites
+    XCTAssertEqual(writes, 1, "All buses and derived receipts share one checkpoint")
+    XCTAssertEqual(
+      try fixture.cursorOffsets(),
+      [
+        fixture.bus.path: try fixture.busSize(), other.bus.path: try other.busSize(),
+      ])
+    let restarted = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: other.bus)
+    let restored = try await restarted.readSnapshot()
+    XCTAssertEqual(restored, snapshot)
+    let replayed = await restarted.consumedBytes
+    XCTAssertEqual(replayed, 0)
+  }
+
+  func testContinuousChangesCannotPostponeTheCheckpointDeadline() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let start = ContinuousClock.now
+    _ = try await reader.readSnapshot(checkpointTime: start)
+    for second in 1...29 {
+      try fixture.append(fixture.seal(second + 1))
+      _ = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(second)))
+    }
+    let before = await reader.checkpointWrites
+    XCTAssertEqual(before, 1)
+    try fixture.append(fixture.seal(31))
+    let latest = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(30)))
+    let after = await reader.checkpointWrites
+    XCTAssertEqual(after, 2, "The deadline measures from successful save, not newest change")
+    let restored = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    XCTAssertEqual(restored, latest)
+  }
+
+  func testReceiptOnlyChangeCheckpointsOnAnIdlePollAndThenStopsWriting() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let start = ContinuousClock.now
+    let initial = try await reader.readSnapshot(checkpointTime: start)
+    XCTAssertEqual(initial.deliveries.first?.stage, .sent)
+    let delivery = try XCTUnwrap(initial.deliveries.first?.deliveryID)
+    let acknowledgments = fixture.root.appendingPathComponent("acknowledgments/\(Fixture.leaseID)")
+    try FileManager.default.createDirectory(at: acknowledgments, withIntermediateDirectories: true)
+    var envelope = fixture.recipient()
+    envelope.merge([
+      "kind": "seal", "delivery_id": delivery, "session_id": "take-a",
+      "utterance_id": "u1", "sequence": 1,
+    ]) { _, new in new }
+    try fixture.write(
+      [
+        "lease_id": Fixture.leaseID, "delivery_id": delivery, "bus": fixture.bus.path,
+        "envelope": envelope,
+      ],
+      to: acknowledgments.appendingPathComponent("\(delivery).json"))
+    let acknowledged = try await reader.readSnapshot(
+      checkpointTime: start.advanced(by: .seconds(1)))
+    XCTAssertEqual(acknowledged.deliveries.first?.stage, .received)
+    let earlyWrites = await reader.checkpointWrites
+    XCTAssertEqual(earlyWrites, 1)
+    _ = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(30)))
+    let checkpointWrites = await reader.checkpointWrites
+    XCTAssertEqual(checkpointWrites, 2, "No new bus bytes are needed to flush derived receipts")
+    for second in [60, 90, 120] {
+      let snapshot = try await reader.readSnapshot(
+        checkpointTime: start.advanced(by: .seconds(second)))
+      XCTAssertEqual(snapshot, acknowledged)
+    }
+    let idleWrites = await reader.checkpointWrites
+    XCTAssertEqual(idleWrites, 2)
+    let restored = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    XCTAssertEqual(restored, acknowledged)
+  }
+
+  func testLargeByteLagCheckpointsBeforeTheTimeDeadline() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let start = ContinuousClock.now
+    _ = try await reader.readSnapshot(checkpointTime: start)
+    try fixture.fillBusWithEvidence(bytes: (8 << 20) + 10000)
+    try fixture.append(fixture.seal(2))
+    let latest = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(1)))
+    let writes = await reader.checkpointWrites
+    XCTAssertEqual(writes, 2, "Heavy input checkpoints without waiting thirty seconds")
+    XCTAssertEqual(try fixture.cursorOffsets()[fixture.bus.path], try fixture.busSize())
+    let restarted = OverlayChannelDeliveryReader(root: fixture.root)
+    let restored = try await restarted.readSnapshot()
+    XCTAssertEqual(restored, latest)
+    let replayed = await restarted.consumedBytes
+    XCTAssertEqual(replayed, 0)
+  }
+
+  func testCheckpointFailureRetainsThePreviousFileAndRetriesDirtyState() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.seal(1))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let start = ContinuousClock.now
+    _ = try await reader.readSnapshot(checkpointTime: start)
+    let cache = OverlayDeliveryCursorStore.url(root: fixture.root)
+    let saved = try Data(contentsOf: cache)
+    let directory = cache.deletingLastPathComponent()
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+    defer {
+      try? FileManager.default.setAttributes(
+        [.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    }
+    try fixture.append(fixture.seal(2))
+    do {
+      _ = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(30)))
+      XCTFail("Read-only cache directory must refuse checkpoint creation")
+    } catch {}
+    XCTAssertEqual(try Data(contentsOf: cache), saved)
+    let failedWrites = await reader.checkpointWrites
+    XCTAssertEqual(failedWrites, 1)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    let retried = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(31)))
+    let writes = await reader.checkpointWrites
+    XCTAssertEqual(writes, 2)
+    let restored = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    XCTAssertEqual(restored, retried)
+  }
+
+  func testPartialRowNeverAdvancesTheCheckpointPastItsSafeBoundary() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.seal(1))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let start = ContinuousClock.now
+    _ = try await reader.readSnapshot(checkpointTime: start)
+    let safeOffset = try fixture.busSize()
+    try fixture.appendBytes(try JSONSerialization.data(withJSONObject: fixture.seal(2)))
+    _ = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(30)))
+    XCTAssertEqual(try fixture.cursorOffsets()[fixture.bus.path], safeOffset)
+    try fixture.appendBytes(Data([10]))
+    let complete = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(31)))
+    XCTAssertEqual(try fixture.cursorOffsets()[fixture.bus.path], try fixture.busSize())
+    let restored = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    XCTAssertEqual(restored, complete)
+  }
+
+  func testIncompleteStorageTransactionRestartsBeforeItsFirstChunk() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.seal(1))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let start = ContinuousClock.now
+    let initial = try await reader.readSnapshot(checkpointTime: start)
+    let safeOffset = try fixture.busSize()
+    var document = fixture.seal(2)
+    document["diagnostic_padding"] = String(repeating: "x", count: 40_000)
+    let bytes = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+    let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    func chunk(_ part: Int) -> [String: Any] {
+      let begin = part * 32768
+      return [
+        "schema": "codescribe.bus-chunk.v1", "part": part, "parts": 2,
+        "length": bytes.count, "id": digest, "event": ["session_id": "take-a"],
+        "payload": bytes.subdata(in: begin..<min(begin + 32768, bytes.count)).base64EncodedString(),
+      ]
+    }
+    try fixture.append(chunk(0))
+    let incomplete = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(30)))
+    XCTAssertEqual(incomplete, initial, "Incomplete storage cannot publish its document")
+    XCTAssertEqual(try fixture.cursorOffsets()[fixture.bus.path], safeOffset)
+    let restarted = OverlayChannelDeliveryReader(root: fixture.root)
+    let restoredIncomplete = try await restarted.readSnapshot()
+    XCTAssertEqual(restoredIncomplete, initial)
+    XCTAssertEqual(try fixture.cursorOffsets()[fixture.bus.path], safeOffset)
+    try fixture.append(chunk(1))
+    let completed = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(31)))
+    let restoredCompleted = try await restarted.readSnapshot()
+    XCTAssertEqual(restoredCompleted, completed)
+    XCTAssertNotEqual(completed.deliveries.first?.deliveryID, initial.deliveries.first?.deliveryID)
+    XCTAssertEqual(try fixture.cursorOffsets()[fixture.bus.path], try fixture.busSize())
+  }
+
   func testIdleSnapshotsDoNotRereadMegabyteLeaseMetadata() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
@@ -57,7 +279,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     receipt["bus"] = fixture.root.appendingPathComponent("foreign.jsonl").path
     projection.observeAcknowledgment(
       receipt, owner: owner, delivery: delivery, busPath: fixture.bus.path)
-    XCTAssertEqual(projection.receiptCoordinates().count, 1, "Foreign receipt cannot settle polling")
+    XCTAssertEqual(
+      projection.receiptCoordinates().count, 1, "Foreign receipt cannot settle polling")
     projection.observeAcceptance([
       "schema": "codescribe.native-queue.receipt.v1", "disposition": "provider_accepted",
       "delivery_id": delivery, "lease_id": owner.leaseID,

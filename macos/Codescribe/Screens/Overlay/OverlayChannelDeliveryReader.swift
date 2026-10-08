@@ -21,6 +21,12 @@ actor OverlayChannelDeliveryReader {
   private var persisted: [String: OverlayDeliveryCursorMark]?
   private var savedRevisions: [URL: UInt64] = [:]
   private var persistenceAttempts: [URL: PersistenceAttempt] = [:]
+  // This is a restart cache, not transcript or delivery authority. Checkpoint
+  // complete snapshots, rather than fsyncing the entire roster for each bus.
+  private static let checkpointInterval: Duration = .seconds(30)
+  private static let checkpointByteLag: UInt64 = 8 << 20
+  private var lastCheckpoint: ContinuousClock.Instant?
+  private(set) var checkpointWrites: UInt64 = 0
   private struct PersistenceAttempt: Equatable {
     let offset: UInt64
     let inode: UInt64
@@ -104,7 +110,10 @@ actor OverlayChannelDeliveryReader {
 
   func read() throws -> [OverlayChannelDelivery] { try readSnapshot().deliveries }
 
-  func readSnapshot(selectedOwner: OverlayConversationOwner? = nil) throws
+  func readSnapshot(
+    selectedOwner: OverlayConversationOwner? = nil,
+    checkpointTime: ContinuousClock.Instant = .now
+  ) throws
     -> OverlayChannelDeliverySnapshot
   {
     if persisted == nil { persisted = OverlayDeliveryCursorStore.load(root: root) }
@@ -256,7 +265,6 @@ actor OverlayChannelDeliveryReader {
         }
       }
       buses[bus] = cursor
-      try persist(bus, cursor: cursor, size: max(cursor.offset, persisted?[bus.path]?.length ?? 0))
     }
     for index in deliveries.indices {
       let channel = deliveries[index].channel
@@ -315,6 +323,7 @@ actor OverlayChannelDeliveryReader {
         id: owner.id, channel: owner.channel, name: owner.name, owner: owner, messages: [],
         historyLoaded: buses[URL(fileURLWithPath: archive.bus).standardizedFileURL] != nil)
     }
+    try checkpoint(at: checkpointTime)
     return OverlayChannelDeliverySnapshot(
       deliveries: deliveries,
       conversations: [broadcast]
@@ -513,7 +522,6 @@ actor OverlayChannelDeliveryReader {
       }
     }
     buses[url] = cursor
-    try persist(url, cursor: cursor, size: size)
   }
 
   private func persistedCursor(for url: URL) -> Cursor? {
@@ -531,45 +539,70 @@ actor OverlayChannelDeliveryReader {
     return cursor
   }
 
-  private func persist(_ url: URL, cursor: Cursor, size: UInt64) throws {
-    var marks = persisted ?? [:]
-    let offset = cursor.storageStart ?? (cursor.offset - UInt64(cursor.partial.count))
-    let attempt = PersistenceAttempt(
-      offset: offset, inode: cursor.inode,
-      headHash: cursor.headHash, streamID: cursor.streamID, revision: cursor.projection.revision,
-      headLength: cursor.headLength, discardsLeadingParts: cursor.storage.discardsLeadingParts,
-      dropsCutRow: cursor.dropsCutRow)
-    if persistenceAttempts[url] == attempt { return }
-    if let previous = marks[url.path], savedRevisions[url] == cursor.projection.revision,
-      previous.offset == offset, previous.inode == cursor.inode,
-      previous.headHash == cursor.headHash, previous.streamID == cursor.streamID
+  private func checkpoint(at time: ContinuousClock.Instant) throws {
+    var changed: [(URL, Cursor, PersistenceAttempt)] = []
+    var largeLag = false
+    for url in buses.keys.sorted(by: { $0.path < $1.path }) {
+      guard let cursor = buses[url] else { continue }
+      let offset = cursor.storageStart ?? (cursor.offset - UInt64(cursor.partial.count))
+      let attempt = PersistenceAttempt(
+        offset: offset, inode: cursor.inode,
+        headHash: cursor.headHash, streamID: cursor.streamID, revision: cursor.projection.revision,
+        headLength: cursor.headLength, discardsLeadingParts: cursor.storage.discardsLeadingParts,
+        dropsCutRow: cursor.dropsCutRow)
+      if persistenceAttempts[url] == attempt { continue }
+      let previous = persisted?[url.path]
+      if let previous, savedRevisions[url] == cursor.projection.revision,
+        previous.offset == offset, previous.inode == cursor.inode,
+        previous.headHash == cursor.headHash, previous.streamID == cursor.streamID,
+        previous.headLength == cursor.headLength,
+        previous.discardsLeadingParts == cursor.storage.discardsLeadingParts,
+        previous.dropsCutRow == cursor.dropsCutRow
+      {
+        continue
+      }
+      let savedOffset = persistenceAttempts[url]?.offset ?? previous?.offset ?? 0
+      if offset >= savedOffset, offset - savedOffset >= Self.checkpointByteLag {
+        largeLag = true
+      }
+      changed.append((url, cursor, attempt))
+    }
+    guard !changed.isEmpty else { return }
+    if let lastCheckpoint, !largeLag,
+      lastCheckpoint.duration(to: time) < Self.checkpointInterval
     {
       return
     }
-    // The durable offset points past the last consumed newline; an unfinished
-    // trailing row is re-read by the next generation once it completes.
+
+    var marks = persisted ?? [:]
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
-    let mark = OverlayDeliveryCursorMark(
-      offset: offset,
-      inode: cursor.inode, length: size, headHash: cursor.headHash,
-      projection: try encoder.encode(cursor.projection), headLength: cursor.headLength,
-      streamID: cursor.streamID, discardsLeadingParts: cursor.storage.discardsLeadingParts,
-      dropsCutRow: cursor.dropsCutRow)
-    guard marks[url.path] != mark else { return }
-    marks[url.path] = mark
+    for (url, cursor, attempt) in changed {
+      // Offset and projection are one atomic unit. Never checkpoint past an
+      // unfinished row or storage transaction, even though its bytes were read.
+      marks[url.path] = OverlayDeliveryCursorMark(
+        offset: attempt.offset,
+        inode: cursor.inode, length: cursor.offset, headHash: cursor.headHash,
+        projection: try encoder.encode(cursor.projection), headLength: cursor.headLength,
+        streamID: cursor.streamID, discardsLeadingParts: cursor.storage.discardsLeadingParts,
+        dropsCutRow: cursor.dropsCutRow)
+    }
     if marks.count > 16 {
       for path in marks.keys.sorted()
-      where path != url.path && buses[URL(fileURLWithPath: path)] == nil {
+      where buses[URL(fileURLWithPath: path)] == nil {
         marks.removeValue(forKey: path)
         if marks.count <= 16 { break }
       }
     }
     persisted = try OverlayDeliveryCursorStore.save(root: root, marks: marks)
-    // A successfully attempted unit may be evicted by the cache budget. Keep
-    // only this in-memory fingerprint to avoid re-encoding it on idle polls.
-    persistenceAttempts[url] = attempt
-    if persisted?[url.path] != nil { savedRevisions[url] = cursor.projection.revision }
+    lastCheckpoint = time
+    checkpointWrites &+= 1
+    // Save failure leaves all fingerprints dirty for retry. Successful eviction
+    // still records an attempt, so an oversized unit cannot spin on idle polls.
+    for (url, cursor, attempt) in changed {
+      persistenceAttempts[url] = attempt
+      if persisted?[url.path] != nil { savedRevisions[url] = cursor.projection.revision }
+    }
   }
 
   /// Expand every persisted occurrence before the existing UI projection acts.
@@ -680,7 +713,9 @@ actor OverlayChannelDeliveryReader {
     init(_ root: URL) throws {
       func metadata(_ url: URL) throws -> (UInt64, UInt64, UInt64) {
         var value = stat()
-        guard fstatat(AT_FDCWD, url.path, &value, 0) == 0 else { throw CocoaError(.fileReadUnknown) }
+        guard fstatat(AT_FDCWD, url.path, &value, 0) == 0 else {
+          throw CocoaError(.fileReadUnknown)
+        }
         guard value.st_mode & S_IFMT == S_IFREG, value.st_size >= 0 else {
           throw CocoaError(.fileReadCorruptFile)
         }
