@@ -14,7 +14,7 @@ Connect this chat now using: $ARGUMENTS
    supplied. The engine owns slot protection and creates or reuses one follower.
    On an occupied slot report its owner; never overwrite it or silently choose
    another slot. Use `--takeover` only for the same name's ended-session handoff.
-4. Reuse or start one output-notifying `cs-bus --watch` monitor and retain its
+4. Reuse or start one output-notifying `cs-bus --watch --bell` monitor and retain its
    notification window. Native Codex queue is armed by attachment too. A bare
    background reader is insufficient. If only active polling is available,
    report that boundary and keep the listening turn open.
@@ -22,7 +22,7 @@ Connect this chat now using: $ARGUMENTS
    `attached_unverified`. Upgrade to `listening_verified` only after a fresh
    named utterance reaches this chat and receives a reply without a typed nudge.
 6. On every bell/queued copy, follow **Read → ACK → act** from the skill:
-   current `--read-pending`, immediate exact returned-ID ACK, drain, extra read,
+   current `--read-pending --read-limit 2`, immediate exact returned-ID ACK, drain, extra read,
    then execute/reply. Empty or already-read queued copies get no repeated action.
 
 Keep the connection for requested ongoing listening. Detach on explicit stop

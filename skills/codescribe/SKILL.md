@@ -64,7 +64,7 @@ handover and inherited-message rules.
 Start or reuse one output-notifying monitor over:
 
 ```bash
-cs-bus --watch --provider PROVIDER --session SESSION
+cs-bus --watch --bell --provider PROVIDER --session SESSION
 ```
 
 The default watch prints a short bell. Keep its notification window active and
@@ -84,7 +84,7 @@ fresh take; attachment itself opens no microphone.
 On either notification, use the current mailbox:
 
 ```bash
-cs-bus --read-pending --provider PROVIDER --session SESSION
+cs-bus --read-pending --read-limit 2 --provider PROVIDER --session SESSION
 ```
 
 1. Read the complete returned messages and their provenance. Retain the exact
