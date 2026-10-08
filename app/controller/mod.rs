@@ -4449,16 +4449,6 @@ impl RecordingController {
     /// - **Toggle + force_ai=true**: force AI formatting (normal hands-off)
     /// - **Toggle + assistive=true**: force Assistive hands-off
     pub async fn handle_hotkey_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
-        let next_start = matches!(
-            (event.key_type, event.action),
-            (HotkeyType::Hold, HotkeyAction::Down) | (HotkeyType::Toggle, HotkeyAction::Press)
-        );
-        if next_start && preempt_stop_paste_for_next_take() {
-            // The old owner copies and retires before this gesture may open a
-            // microphone or capture a new target. Its slow drain is detached.
-            let settled = self.serial_lock.lock().await;
-            drop(settled);
-        }
         // Stop gestures enter before mode updates: a RAW toggle during hold
         // must not rewrite the take's destination while asking to end it.
         let stop_gesture = {
@@ -4483,6 +4473,16 @@ impl RecordingController {
         };
         if stop_gesture {
             return self.stop_recording_from_external_surface().await;
+        }
+        let next_start = matches!(
+            (event.key_type, event.action),
+            (HotkeyType::Hold, HotkeyAction::Down) | (HotkeyType::Toggle, HotkeyAction::Press)
+        );
+        if next_start && preempt_stop_paste_for_next_take() {
+            // The old owner copies and retires before this gesture may open a
+            // microphone or capture a new target. Its slow drain is detached.
+            let settled = self.serial_lock.lock().await;
+            drop(settled);
         }
         let mut current_state = self.current_state().await;
 
