@@ -225,17 +225,7 @@
       }
     },
     "%@ s" : {
-      "comment" : "Preview timing value: an interval in seconds. The placeholder is a formatted number",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ s"
-          }
-        }
-      }
-    },
-    "%@ seconds" : {
+      "comment" : "Preview timing value: an interval in seconds. The placeholder is a formatted number\nSlider value in seconds. The placeholder is the number; keep the unit abbreviated",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -1786,12 +1776,12 @@
         }
       }
     },
-    "A longer gap in speech opens a new sentence in pasted dictation." : {
+    "A longer gap in speech may be treated as a sentence boundary during automatic text formatting." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dłuższa przerwa w mowie zaczyna nowe zdanie we wklejanym tekście."
+            "value" : "Dłuższa przerwa w mowie może zostać potraktowana jako granica zdania podczas automatycznego formatowania tekstu."
           }
         }
       }
@@ -1822,6 +1812,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Reguła ustawiona dla narzędzia ma pierwszeństwo przed regułą serwera, a obie przed ustawieniami kategorii. Narzędzia destrukcyjne są zawsze blokowane, a odczyt ścieżki mogącej zawierać sekrety zawsze wymaga zgody."
+          }
+        }
+      }
+    },
+    "A saved consent does not mean audio is being sent now. Audio is sent only while Cloud mode is selected, or during a cloud re-transcription you start yourself." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisana zgoda nie oznacza, że dźwięk jest teraz wysyłany. Dźwięk jest wysyłany tylko wtedy, gdy wybrany jest tryb Chmura, albo podczas ponownej transkrypcji w chmurze, którą uruchamiasz samodzielnie."
           }
         }
       }
@@ -1895,6 +1895,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucze API zostaną również usunięte z pęku kluczy. Nie będzie można ich odzyskać z Kosza."
+          }
+        }
+      }
+    },
+    "API keys you configure are stored in the macOS Keychain. The live cloud lane needs no vendor key of yours: the Libraxis gateway mints a short-lived session bearer outside this Mac and keeps the provider behind it." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skonfigurowane przez Ciebie klucze API są przechowywane w pęku kluczy macOS. Rozpoznawanie w chmurze na żywo nie wymaga Twojego klucza dostawcy: brama Libraxis wydaje krótkotrwały token sesji poza tym Makiem i utrzymuje dostawcę za bramą."
           }
         }
       }
@@ -2187,12 +2197,12 @@
         }
       }
     },
-    "After this much silence Apple recognition pauses. It resumes when you speak again, and Whisper can refine the finished passage." : {
+    "After this much silence the Apple engine goes idle. Recognition resumes when you start speaking again." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Po tej przerwie rozpoznawanie mowy Apple zostaje wstrzymane. Wznawia się, gdy znów zaczniesz mówić, a Whisper może dopracować zakończony fragment."
+            "state" : "translated",
+            "value" : "Po tak długiej ciszy silnik Apple przechodzi w stan spoczynku. Rozpoznawanie wznawia się, gdy znowu zaczniesz mówić."
           }
         }
       }
@@ -2694,16 +2704,6 @@
         }
       }
     },
-    "Apple only — on-device Apple Speech plus your dictionary. The default, and the mode every failure falls back to." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tylko Apple — rozpoznawanie mowy Apple na tym Macu i Twój słownik. Tryb domyślny, do którego aplikacja wraca po każdym błędzie."
-          }
-        }
-      }
-    },
     "Apple paints immediately; the validated local FP16 model repairs the same audio spans during the take." : {
       "localizations" : {
         "pl" : {
@@ -2880,6 +2880,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przechowywanie nagrań"
+          }
+        }
+      }
+    },
+    "Audio — during cloud speech recognition in Cloud mode, and during an explicit cloud re-transcription of a recording. The re-transcription is a separate action you start, available whenever a cloud transcription lane is configured." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dźwięk — podczas rozpoznawania mowy w trybie Chmura oraz podczas jawnej ponownej transkrypcji nagrania w chmurze. Ponowna transkrypcja to osobne działanie, które uruchamiasz samodzielnie; jest dostępna zawsze, gdy skonfigurowano transkrypcję w chmurze."
           }
         }
       }
@@ -3758,6 +3768,16 @@
         }
       }
     },
+    "Choosing Local power does not download anything. Installing the on-device model is a separate action on the Whisper tab." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybór trybu lokalnego niczego nie pobiera. Instalacja modelu na urządzeniu to osobne działanie na karcie Whisper."
+          }
+        }
+      }
+    },
     "Clear %@" : {
       "localizations" : {
         "pl" : {
@@ -3879,36 +3899,6 @@
         }
       }
     },
-    "Cloud consent is granted. Audio may leave this Mac only in Cloud mode." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wyrażono zgodę na korzystanie z chmury. Dźwięk może trafić poza ten Mac tylko w trybie chmurowym."
-          }
-        }
-      }
-    },
-    "Cloud consent is not granted. The picker stays on Apple only." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie wyrażono zgody na korzystanie z chmury, więc wybrany pozostaje tryb Tylko Apple."
-          }
-        }
-      }
-    },
-    "Cloud diagnostics are counters only — latency, bytes, error and model identifiers. Never audio, never transcript text." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diagnostyka chmury to wyłącznie liczniki: opóźnienia, liczba bajtów, błędy i identyfikatory modeli. Nigdy dźwięk ani tekst transkrypcji."
-          }
-        }
-      }
-    },
     "Cloud live" : {
       "comment" : "Cloud streaming transcriber",
       "localizations" : {
@@ -3943,6 +3933,27 @@
     "Cloud provider" : {
       "shouldTranslate" : false
     },
+    "Cloud session diagnostics stay content-free: session and utterance identifiers, counts of audio frames and events, seconds of audio, and typed error codes. Never audio, never transcript text." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diagnostyka sesji chmurowej nie zawiera treści: identyfikatory sesji i wypowiedzi, liczniki ramek dźwięku i zdarzeń, sekundy dźwięku oraz typowane kody błędów. Nigdy dźwięk, nigdy tekst transkrypcji."
+          }
+        }
+      }
+    },
+    "Cloud status" : {
+      "comment" : "Privacy section: current cloud lane and stored consent",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stan chmury"
+          }
+        }
+      }
+    },
     "Cloud transcription" : {
       "comment" : "Providers section: cloud STT lanes",
       "localizations" : {
@@ -3950,16 +3961,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Transkrypcje w chmurze"
-          }
-        }
-      }
-    },
-    "Cloud — live refinement through the Libraxis gateway. Requires your explicit consent to send audio off this Mac; the app stores no vendor keys." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Chmura — korekta na żywo przez serwer Libraxis. Wymaga Twojej wyraźnej zgody na wysyłanie dźwięku poza ten Mac; aplikacja nie przechowuje kluczy dostawców."
           }
         }
       }
@@ -4014,16 +4015,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Menu Codescribe"
-          }
-        }
-      }
-    },
-    "Codescribe transcribes on this Mac. Audio leaves this Mac only in Cloud mode, and only after you explicitly allow it." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe rozpoznaje mowę na tym Macu. Dźwięk trafia poza ten Mac tylko w trybie chmurowym i dopiero po Twojej wyraźnej zgodzie."
           }
         }
       }
@@ -5163,6 +5154,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Bieżąca"
+          }
+        }
+      }
+    },
+    "Current mode" : {
+      "comment" : "Privacy row: the selected recognition mode",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktualny tryb"
           }
         }
       }
@@ -6683,7 +6685,7 @@
       }
     },
     "Granted" : {
-      "comment" : "Permission row status",
+      "comment" : "Permission row status\nStored audio-egress consent state",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -6719,47 +6721,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Połączenie HTTP"
-          }
-        }
-      }
-    },
-    "Hands-free" : {
-      "comment" : "Settings tab: hands-free dictation",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tryb bezdotykowy"
-          }
-        }
-      }
-    },
-    "Hands-free silence" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cisza w trybie bez przytrzymywania"
-          }
-        }
-      }
-    },
-    "Hands-free silence duration" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Czas ciszy w trybie bez przytrzymywania"
-          }
-        }
-      }
-    },
-    "Hands-free silence." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cisza w trybie bezdotykowym"
           }
         }
       }
@@ -6897,22 +6858,12 @@
         }
       }
     },
-    "How long the Apple engine waits in silence before it rests." : {
+    "How much of the recording the local Whisper model sees when it refines the transcript. Refinement runs in Local power and Cloud, never in Apple only." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Określa, po jak długiej ciszy silnik Apple wstrzymuje rozpoznawanie mowy."
-          }
-        }
-      }
-    },
-    "How many seconds of audio Whisper hears with each fragment. A shorter window is faster, but a short ending can be lost." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Długość nagrania analizowana przy każdym fragmencie. Krótsze fragmenty przyspieszają przetwarzanie, ale mogą pominąć końcówkę wypowiedzi."
+            "value" : "Jak długi fragment nagrania widzi lokalny model Whisper podczas doprecyzowywania transkrypcji. Doprecyzowywanie działa w trybie lokalnym i w Chmurze, nigdy w trybie Tylko Apple."
           }
         }
       }
@@ -7804,16 +7755,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tryb lokalny"
-          }
-        }
-      }
-    },
-    "Local power — optional on-device model weights in a separate helper process, downloaded only when you choose them." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tryb lokalny — opcjonalny model działający na tym Macu w osobnym procesie pomocniczym. Jego pliki są pobierane dopiero po wybraniu tej opcji."
           }
         }
       }
@@ -9113,6 +9054,17 @@
         }
       }
     },
+    "Not granted" : {
+      "comment" : "Stored audio-egress consent state",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie przyznano"
+          }
+        }
+      }
+    },
     "Not installed" : {
       "comment" : "Whisper weights are not yet available locally",
       "localizations" : {
@@ -9835,6 +9787,16 @@
         }
       }
     },
+    "Pause recognition after silence" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wstrzymanie rozpoznawania po ciszy"
+          }
+        }
+      }
+    },
     "Per-tool permissions · %lld" : {
       "localizations" : {
         "pl" : {
@@ -10174,6 +10136,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "polityka prywatności"
+          }
+        }
+      }
+    },
+    "Privacy details" : {
+      "comment" : "Privacy section: diagnostics, keys, refusals",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szczegóły prywatności"
           }
         }
       }
@@ -11830,6 +11803,17 @@
         }
       }
     },
+    "Saved consent" : {
+      "comment" : "Privacy row: the stored audio-egress consent record",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisana zgoda"
+          }
+        }
+      }
+    },
     "Saved conversations" : {
       "comment" : "Previous or unbound agent conversations; their immutable owner is retained",
       "localizations" : {
@@ -12156,6 +12140,16 @@
         }
       }
     },
+    "See when Codescribe processes audio on this Mac and when it may use cloud services." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdź, kiedy Codescribe przetwarza dźwięk lokalnie, a kiedy może korzystać z usług chmurowych."
+          }
+        }
+      }
+    },
     "Select Codex, Claude Code, or both before installing." : {
       "comment" : "Codex and Claude Code are product names — do not translate",
       "localizations" : {
@@ -12263,8 +12257,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Przerwa uznawana za koniec zdania"
+            "state" : "translated",
+            "value" : "Pauza między zdaniami"
           }
         }
       }
@@ -13094,6 +13088,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozpoznawanie mowy"
+          }
+        }
+      }
+    },
+    "Speech recognition parameters" : {
+      "comment" : "Lab group: raw recognition timings",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Parametry rozpoznawania mowy"
           }
         }
       }
@@ -14043,6 +14048,16 @@
         }
       }
     },
+    "Text — during AI requests to the providers you configured." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tekst — podczas zapytań AI do skonfigurowanych przez Ciebie dostawców."
+          }
+        }
+      }
+    },
     "The %@ pass returned no text" : {
       "comment" : "The placeholder is the name of the engine that ran the pass",
       "localizations" : {
@@ -14556,6 +14571,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ten adres wymaga ws:// lub wss://."
+          }
+        }
+      }
+    },
+    "This build decodes Whisper refinement on a fixed capture-clock window, so the context length is stored but not read." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta wersja dekoduje doprecyzowanie Whispera w stałym oknie zegara przechwytywania, więc długość kontekstu jest zapisywana, ale nieodczytywana."
           }
         }
       }
@@ -15776,6 +15801,17 @@
         }
       }
     },
+    "What can leave this Mac" : {
+      "comment" : "Privacy section: outbound data",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Co może opuścić tego Maca"
+          }
+        }
+      }
+    },
     "What language should Codescribe use?" : {
       "comment" : "First setup step heading",
       "localizations" : {
@@ -15789,16 +15825,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "W jakim języku chcesz korzystać z Codescribe?"
-          }
-        }
-      }
-    },
-    "Where audio lives, and the one condition under which it leaves this Mac." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Miejsce przechowywania nagrań i jedyny warunek ich wysyłania poza ten Mac."
           }
         }
       }
@@ -15827,22 +15853,12 @@
     "Whisper buffering" : {
       "shouldTranslate" : false
     },
-    "Whisper context" : {
+    "Whisper context length" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Kontekst modelu Whisper"
-          }
-        }
-      }
-    },
-    "Whisper context window" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Okno kontekstu modelu Whisper"
+            "value" : "Długość kontekstu Whispera"
           }
         }
       }
@@ -15900,12 +15916,12 @@
         }
       }
     },
-    "Without your consent, Cloud never arms: dictation continues with Apple plus your dictionary, and no local model is loaded in its place." : {
+    "Without your consent Cloud never arms. Codescribe refuses the unauthorized cloud use and keeps dictating with Apple on-device plus your dictionary; no local model is loaded in its place." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Bez Twojej zgody tryb chmurowy się nie włącza: dyktowanie działa dalej z Apple i Twoim słownikiem, a w zastępstwie nie jest ładowany żaden model lokalny."
+            "value" : "Bez Twojej zgody tryb Chmura nigdy się nie uruchamia. Codescribe odmawia nieuprawnionego użycia chmury i dyktuje dalej lokalnie przez Apple wraz z Twoim słownikiem; żaden model lokalny nie jest w zamian wczytywany."
           }
         }
       }
@@ -18065,24 +18081,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "engine, runtime, silnik, działanie, uruchomienie"
-          }
-        }
-      }
-    },
-    "settings.search.tab.dictationHandsFree" : {
-      "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "hands-free, silence, toggle, epoch"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "hands-free, silence, toggle, epoch, bez użycia rąk, cisza, przełączanie, sesja"
           }
         }
       }
