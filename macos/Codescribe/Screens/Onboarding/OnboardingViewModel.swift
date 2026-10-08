@@ -145,7 +145,7 @@ final class OnboardingViewModel: ObservableObject {
 
   @Published private(set) var interfaceLanguage: InterfaceLanguage
   var interfaceLocale: Locale { interfaceLanguage.locale }
-  private let languagePreferences: UserDefaults
+  private let languagePreference: InterfaceLanguagePreference
 
   // Mode step state.
   @Published private(set) var onboardingMode: OnboardingModeChoice
@@ -194,7 +194,6 @@ final class OnboardingViewModel: ObservableObject {
   var onFinished: (() -> Void)?
   var onApplyInterfaceLanguage: ((@escaping @MainActor () -> Void) async throws -> Void)?
   @Published private(set) var applyingInterfaceLanguage = false
-  private let processInterfaceLanguage: InterfaceLanguage
 
   init(
     engine: OnboardingEngine,
@@ -215,11 +214,10 @@ final class OnboardingViewModel: ObservableObject {
     self.agentBridge = agentBridge
     self.probe = probe
     self.whisperDownloadStore = whisperDownloadStore
-    self.languagePreferences = languagePreferences
-    self.processInterfaceLanguage = processInterfaceLanguage
-    self.interfaceLanguage = InterfaceLanguage.preferred(
-      from: languagePreferences.stringArray(forKey: "AppleLanguages") ?? preferredLanguages
-    )
+    self.languagePreference = InterfaceLanguagePreference(
+      defaults: languagePreferences, preferredLanguages: preferredLanguages,
+      processLanguage: processInterfaceLanguage)
+    self.interfaceLanguage = languagePreference.current
     // Resume from the persisted step; `onboardingProgress` is already clamped
     // to a valid index by the Rust side.
     self.stepIndex = min(Int(engine.onboardingProgress()), OnboardingStep.count - 1)
@@ -246,11 +244,13 @@ final class OnboardingViewModel: ObservableObject {
   func selectInterfaceLanguage(_ language: InterfaceLanguage) {
     guard !applyingInterfaceLanguage else { return }
     interfaceLanguage = language
-    languagePreferences.set([language.rawValue], forKey: "AppleLanguages")
+    languagePreference.select(language)
     lastError = nil
   }
 
-  var interfaceLanguageNeedsRestart: Bool { interfaceLanguage != processInterfaceLanguage }
+  var interfaceLanguageNeedsRestart: Bool {
+    languagePreference.needsRestart(for: interfaceLanguage)
+  }
 
   var step: OnboardingStep { OnboardingStep.step(at: stepIndex) }
   var windowTitle: String {
@@ -490,10 +490,7 @@ final class OnboardingViewModel: ObservableObject {
         guard let self else { return }
         defer { applyingInterfaceLanguage = false }
         do {
-          // Flush the per-app preference before the new process resolves its bundle.
-          guard languagePreferences.synchronize() else {
-            throw InterfaceLanguageRestartError.unavailable
-          }
+          try languagePreference.flush()
           try await onApplyInterfaceLanguage { [self] in advanceAfterCommit() }
         } catch {
           lastError = (error as? InterfaceLanguageRestartError ?? .unavailable)

@@ -14,10 +14,14 @@
   code. Adding a language adds translations to the catalogs and nothing else.
 - **The interface language defaults to macOS** (system language, or the per-app
   language in System Settings › General › Language & Region). The first setup
-  screen offers Polski and English. Its choice writes `AppleLanguages` only to
-  Codescribe's application preference domain, the same per-app language
-  preference used by macOS. It never changes global language preferences or
-  reads a UI language from `settings.json`.
+  screen and Settings › Creator › Interface language both offer Polski and
+  English. The choice writes `AppleLanguages` only to Codescribe's application
+  preference domain, the same per-app language preference used by macOS. It
+  never changes global language preferences or reads a UI language from
+  `settings.json`. One value type, `InterfaceLanguagePreference`
+  (`macos/Codescribe/Core/InterfaceLanguage.swift`), owns the key, the domain
+  and the resolution for both surfaces; neither view model touches
+  `UserDefaults` directly.
 - The wizard applies the selected locale immediately to SwiftUI and resolves
   its Foundation copy through `LocalizedStringResource` with that locale.
   `String(localized:locale:)` alone would only change interpolation formatting,
@@ -28,6 +32,12 @@
   reopens the same bundle only after the old PID exits; setup resumes even when
   the wizard was opened manually. A busy or unreadable runtime retains the picker
   and shows a retry message. Selecting the running language needs no restart.
+  Settings uses the same host restart (`AppDelegate.restartForInterfaceLanguage`)
+  with a plain relaunch intent: the choice is saved the moment it is picked, the
+  row shows “Restart now” while the saved choice differs from the running
+  language, and the relaunched app comes back with the tray in the new language
+  without reopening Settings or the wizard. The same busy and unavailable
+  messages apply; the row never relaunches on its own.
   The initial step occupies resume slot zero. Setup has nine semantic chapters;
   Rust writes v3 resume markers and maps v2 and bare markers into the matching
   chapter. All permissions share chapter two; the optional local-model chapter
