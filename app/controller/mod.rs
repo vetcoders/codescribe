@@ -35,6 +35,8 @@ mod delivery_route;
 mod helpers;
 /// Hold/toggle timing, agent-send vetoes, stop adjudication policy.
 mod hotkey_policy;
+/// Best-effort RMS frame feed for the loopback Voice Lab relay.
+mod lab_feed;
 /// Production-owned, content-private PCM replay of the overlay engine cone.
 pub mod production_replay;
 /// Public serving-status surface for tray/UI consumers.
@@ -69,7 +71,7 @@ use codescribe_core::llm::ai_formatting::format_text_with_status_for_policy;
 use codescribe_core::pipeline::acoustic_ledger::DocumentRevisionProvenance;
 use codescribe_core::pipeline::contracts::EngineEvent;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
@@ -4379,6 +4381,25 @@ impl RecordingController {
         })));
 
         tokio::spawn(async move {
+            // Voice Lab feed: the Lab's bound lane watches Codescribe's own
+            // capture instead of opening a second browser microphone. One
+            // failed POST disarms the feed for this broadcast session — a
+            // machine without a running Lab pays a single refused connection.
+            // The slot is reserved atomically (armed → in-flight) before a
+            // POST is spawned, so a stalled relay sees exactly one attempt:
+            // batches that mature while a request is in flight are dropped,
+            // never queued. `.no_proxy()` keeps the loopback payload off any
+            // system HTTP proxy — this client talks to 127.0.0.1 or nobody.
+            const LAB_FEED_DISARMED: u8 = 0;
+            const LAB_FEED_ARMED: u8 = 1;
+            const LAB_FEED_IN_FLIGHT: u8 = 2;
+            let lab_state = Arc::new(AtomicU8::new(LAB_FEED_ARMED));
+            let lab_client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_millis(400))
+                .build()
+                .ok();
+            let mut lab_batcher = lab_feed::LabFeedBatcher::new(std::time::Instant::now());
             while let Some(rms) = level_rx.recv().await {
                 // Cleanup drops the callback sender. Do not drain a buffered
                 // sample after that boundary: it belongs to the closed session
@@ -4391,6 +4412,38 @@ impl RecordingController {
                         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                     payload: IpcEventPayload::AudioLevel { rms },
                 });
+                if let Some(client) = &lab_client
+                    && let Some(batch) = lab_batcher.offer(rms, std::time::Instant::now())
+                    && lab_state
+                        .compare_exchange(
+                            LAB_FEED_ARMED,
+                            LAB_FEED_IN_FLIGHT,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                {
+                    let payload = lab_feed::frames_payload(&batch);
+                    let client = client.clone();
+                    let state = Arc::clone(&lab_state);
+                    tokio::spawn(async move {
+                        let delivered = client
+                            .post(lab_feed::LAB_FRAMES_URL)
+                            .json(&payload)
+                            .send()
+                            .await
+                            .map(|resp| resp.status().is_success())
+                            .unwrap_or(false);
+                        state.store(
+                            if delivered {
+                                LAB_FEED_ARMED
+                            } else {
+                                LAB_FEED_DISARMED
+                            },
+                            Ordering::Release,
+                        );
+                    });
+                }
             }
         });
     }
