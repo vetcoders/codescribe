@@ -3669,4 +3669,56 @@ mod tests {
         assert_eq!(result.from_corrections, 0);
         assert_eq!(result.total_rules, 0);
     }
+
+    #[test]
+    #[serial]
+    fn dictionary_learning_approval_keeps_the_fourth_of_fifty_cards_in_place() {
+        let _fixture = QualityFixture::new("fifty Dictionary correction cards");
+        for index in 0..50 {
+            save_quality_record(&QualityRecord {
+                correction_id: format!("dictionary-page-{index}"),
+                revision: 0,
+                timestamp_ms: index,
+                session_id: None,
+                mode: "overlay".into(),
+                model: None,
+                formatting_level: None,
+                raw_text: "uni agentka".into(),
+                delivered_text: "uni agentka".into(),
+                edited_text: "Junie".into(),
+                avg_logprob: None,
+                speech_pct: None,
+                confidence_flags: vec![],
+                meta: serde_json::json!({"source": "overlay-final", "action": "copy"}),
+            })
+            .expect("persist one original correction");
+        }
+        let before = recent_quality_records(50).expect("original fifty-page listing");
+        assert_eq!(before.len(), 50);
+        let mut approved = before[3].clone();
+        approved.revision += 1;
+        approved.meta = serde_json::json!({
+            "source": "voice-lab",
+            "action": "approve-dictionary",
+            "approved_revision": before[3].revision,
+            "approved_pairs": 1
+        });
+        save_quality_record(&approved).expect("persist approval-only revision");
+        let after = recent_quality_records(50).expect("refresh paginated correction history");
+        assert_eq!(
+            after
+                .iter()
+                .map(QualityRecord::logical_id)
+                .collect::<Vec<_>>(),
+            before
+                .iter()
+                .map(QualityRecord::logical_id)
+                .collect::<Vec<_>>(),
+            "approval must preserve the selected page and its Next neighbour"
+        );
+        assert_eq!(after[3], approved);
+        for index in (0..50).filter(|index| *index != 3) {
+            assert_eq!(after[index], before[index], "other page {index} changed");
+        }
+    }
 }
