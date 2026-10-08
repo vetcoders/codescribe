@@ -152,8 +152,8 @@ binding present in `settings.json` is still not proof that the gesture fires —
 see **Settings picker vs routed combinations** in `docs/HOTKEYS_CONTRACT.md`.
 
 **Conflicts** and notes are separate. A conflict blocks the save and sits in a
-coloured card above the Save button; a note does not block and reads as a plain
-secondary footnote under it. The macOS Fn configuration message is a note: it
+coloured card above the Save button; a note does not block and sits under it as
+a quiet grey field with a globe symbol and secondary text. The macOS Fn configuration message is a note: it
 says Codescribe may intercept the short press while dictation runs, and
 explicitly that it does not block saving. The technical identifier that came
 across the bridge is not shown; the save receipt and the bridge log keep it.
