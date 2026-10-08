@@ -1157,6 +1157,10 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var mcpTestResults: [String: CsMcpTestResult] = [:]
   @Published private(set) var mcpTestPending: Set<String> = []
   @Published private(set) var toolCapabilities: [CsToolCapability] = []
+  /// True while the tool catalog is being discovered. Discovery spawns every
+  /// configured MCP server and waits for its `tools/list`, so the Tools tab
+  /// shows a progress row instead of an empty catalog in the meantime.
+  @Published private(set) var toolCatalogLoading = false
   @Published private(set) var permissionPolicy: CsPermissionPolicy = CsPermissionPolicy(
     defaultLevel: "ask",
     readOnlyDefault: "allow",
@@ -1693,11 +1697,13 @@ final class SettingsViewModel: ObservableObject {
   /// back on the main actor; a stale list for a moment beats a frozen app.
   func reloadToolPermissions() {
     guard let mcpAdmin else { return }
+    toolCatalogLoading = true
     Task { @MainActor [weak self] in
       let (policy, capabilities) = await mcpAdmin.loadPermissionSurface()
       guard let self else { return }
       self.permissionPolicy = policy
       self.toolCapabilities = capabilities
+      self.toolCatalogLoading = false
     }
   }
 

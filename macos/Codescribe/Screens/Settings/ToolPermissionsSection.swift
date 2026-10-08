@@ -41,8 +41,15 @@ struct ToolPermissionsSection: View {
       .padding(.top, CSSpace.control)
 
       if model.toolCapabilities.isEmpty {
-        emptyCapabilities
-          .padding(.top, 12)
+        // Discovery spawns every configured MCP server, so the first pass
+        // takes seconds: say so instead of showing an empty catalog.
+        if model.toolCatalogLoading {
+          loadingCapabilities
+            .padding(.top, 12)
+        } else {
+          emptyCapabilities
+            .padding(.top, 12)
+        }
       } else {
         // The count is the whole catalog, not the number of individual rules.
         SettingsSectionLabel(
@@ -98,6 +105,18 @@ struct ToolPermissionsSection: View {
       .pickerStyle(.segmented)
       .fixedSize()
     }
+  }
+
+  private var loadingCapabilities: some View {
+    HStack(spacing: 8) {
+      ProgressView()
+        .controlSize(.small)
+      Text("Discovering tools from the MCP servers…")
+        .font(CSFont.mono(11, .medium))
+        .foregroundStyle(Color.secondary)
+    }
+    .padding(.vertical, 10)
+    .accessibilityIdentifier("settings-tool-catalog-loading")
   }
 
   private var emptyCapabilities: some View {
@@ -297,7 +316,9 @@ struct ToolCapabilityRow: View {
         )
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(Color.secondary)
-        HStack(spacing: 8) {
+        // Stacked, not side by side: the column next to a `fixedSize` picker is
+        // narrow at the minimum window width and a row would split a word.
+        VStack(alignment: .leading, spacing: 2) {
           Text(ToolPermissionLabels.ruleCaption(item.ruleSource))
             .font(CSFont.ui(10.5))
             .foregroundStyle(Color.secondary)

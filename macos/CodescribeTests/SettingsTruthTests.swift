@@ -413,7 +413,9 @@ final class SettingsTruthTests: XCTestCase {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
     model.reloadToolPermissions()
+    XCTAssertTrue(model.toolCatalogLoading, "discovery is in flight until the surface lands")
     for _ in 0..<100 where model.toolCapabilities.isEmpty { await Task.yield() }
+    XCTAssertFalse(model.toolCatalogLoading)
 
     XCTAssertEqual(model[toolLevel: "loctree-mcp:search"], "allow")
     XCTAssertEqual(model[toolLevel: "ghost:tool"], "", "an unknown identity selects nothing")
