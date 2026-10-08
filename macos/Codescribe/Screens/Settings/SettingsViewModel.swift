@@ -1246,6 +1246,9 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var draftBindings: [CsModeBinding] = []
   /// Conflicts for the CURRENT draft (recomputed on every edit).
   @Published private(set) var bindingConflicts: [CsHotkeyConflict] = []
+  /// What the last explicit save actually persisted, read back from disk and
+  /// cleared by the next edit or reset (`HotkeySaveReceipt.swift`).
+  @Published private(set) var bindingSaveReceipt: HotkeyBindingSaveReceipt?
 
   /// Build provenance comes from the running app bundle. The build pipeline
   /// writes all four fields in project.yml / scripts/build-app.sh.
@@ -1579,6 +1582,7 @@ final class SettingsViewModel: ObservableObject {
   /// conflicts surface inline before the user commits.
   func editDraftBinding(mode: CsWorkMode, binding: CsShortcutBinding) {
     guard let index = draftBindings.firstIndex(where: { $0.mode == mode }) else { return }
+    bindingSaveReceipt = nil
     let label =
       bindingOptions.first { $0.binding == binding }?.label
       ?? draftBindings[index].bindingLabel
@@ -1602,26 +1606,52 @@ final class SettingsViewModel: ObservableObject {
   }
 
   /// Persist every changed mode through the core `set_mode_binding` contract
-  /// (each write live-reloads the detector), then re-read disk truth. Guarded by
-  /// `canSaveBindings`, so a conflicted or unchanged draft never writes.
+  /// (each write live-reloads the detector), then report what actually landed.
+  /// Guarded by `canSaveBindings`, so a conflicted or unchanged draft never
+  /// writes.
+  ///
+  /// Every requested mode is attempted even after one is refused: the bridge
+  /// rejects some mode/gesture pairs individually, and stopping at the first
+  /// rejection used to leave earlier writes persisted with the screen still
+  /// showing the pre-save state. The receipt is then built from a re-read, not
+  /// from the draft and not from the absence of a thrown error — the core's
+  /// `save_if_changed` only warns on a failed write.
   func saveBindings() {
     guard let hotkeys, canSaveBindings else { return }
-    do {
-      for draft in draftBindings {
-        let current = modeBindings.first { $0.mode == draft.mode }
-        if current?.binding != draft.binding {
-          try hotkeys.setModeBinding(mode: draft.mode, binding: draft.binding)
-        }
-      }
-      loadHotkeys()
-    } catch {
-      lastError = String(describing: error)
+    let requested = draftBindings.filter { draft in
+      modeBindings.first { $0.mode == draft.mode }?.binding != draft.binding
     }
+    var failureDetail: String?
+    for draft in requested {
+      do {
+        try hotkeys.setModeBinding(mode: draft.mode, binding: draft.binding)
+      } catch {
+        if failureDetail == nil { failureDetail = String(describing: error) }
+      }
+    }
+
+    // Persisted truth wins over the draft, so a refused gesture snaps back to
+    // the one that is actually in effect instead of lingering in the picker.
+    let persisted = hotkeys.modeBindings()
+    modeBindings = persisted
+    bindingOptions = hotkeys.availableBindings()
+    draftBindings = persisted
+    revalidateBindings()
+
+    func landed(_ entry: CsModeBinding) -> Bool {
+      persisted.first { $0.mode == entry.mode }?.binding == entry.binding
+    }
+    bindingSaveReceipt = HotkeyBindingSaveReceipt(
+      saved: requested.filter(landed).map(\.mode),
+      rejected: requested.filter { !landed($0) }.map(\.mode),
+      failureDetail: failureDetail
+    )
   }
 
   /// Reset all bindings to the built-in defaults and re-read.
   func resetBindingsToDefaults() {
     guard let hotkeys else { return }
+    bindingSaveReceipt = nil
     do {
       try hotkeys.resetToDefaults()
       loadHotkeys()
