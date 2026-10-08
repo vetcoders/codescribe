@@ -138,13 +138,19 @@ final class SettingsChromeContractTests: XCTestCase {
   /// window wider than the screen whenever Agent › Tools opened (Founder,
   /// 2026-10-07). Tool-permission pickers sit at their own width, one default
   /// per row; every picker that keeps a fixed frame is measured against its
-  /// Polish labels here.
+  /// Polish labels here. A SwiftUI segmented picker gives every segment the
+  /// width of its widest label, so the measurement distributes segments
+  /// equally: proportional sizing passed `Off · Correction · Smart · Max` at
+  /// 330 pt while the real control spilled `Max` past the card in both
+  /// languages (Founder, 2026-10-08).
   @MainActor
   func testSegmentedPickersFitTheirFramesInEnglishAndPolish() throws {
     let sources = try settingsSources()
     let polish = try polishCatalog()
     func width(_ titles: [String]) -> CGFloat {
-      SettingsTabSegments.control(titles: titles).fittingSize.width
+      let control = SettingsTabSegments.control(titles: titles)
+      control.segmentDistribution = .fillEqually
+      return control.fittingSize.width
     }
 
     let tools = try XCTUnwrap(sources["ToolPermissionsSection.swift"])
@@ -168,15 +174,17 @@ final class SettingsChromeContractTests: XCTestCase {
       XCTAssertLessThanOrEqual(picker + 8 + 96, column, "\(titles)")
     }
 
+    // The formatting level picker sizes to its labels; no frame to outgrow.
+    let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
+    let formatting = try XCTUnwrap(
+      creator.range(of: "Picker(\"\", selection: formattingLevelBinding)"))
+    let formattingTail = String(creator[formatting.upperBound...].prefix(400))
+    XCTAssertTrue(formattingTail.contains(".fixedSize()"))
+    XCTAssertNil(fixedFrameWidth(in: formattingTail))
+
     // Pickers that keep a fixed frame hold their Polish labels.
     let fixed: [(file: String, picker: String, titles: [String?])] = [
-      (
-        "CreatorPanel.swift", "Picker(\"\", selection: formattingLevelBinding)",
-        [
-          polish["settings.formatting.level.off"], polish["Correction"], polish["Smart"],
-          polish["Max"],
-        ]
-      ),
+      ("CreatorPanel.swift", "Picker(\"\", selection: selection)", ["Polski", "English"]),
       ("ShortcutsPanel.swift", "Picker(\"Arm modifier\"", ["Shift", "Command"]),
       (
         "ShortcutsPanel.swift", "Picker(\"Pointer indicator\"",
