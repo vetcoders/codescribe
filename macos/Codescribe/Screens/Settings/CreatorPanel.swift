@@ -56,7 +56,7 @@ struct CreatorPanel: View {
           }
           .pickerStyle(.segmented)
           .labelsHidden()
-          .frame(width: 330)
+          .fixedSize()
           .disabled(!model.settings.aiFormattingEnabled)
         }
         if model.maxConsultationEnabled {
