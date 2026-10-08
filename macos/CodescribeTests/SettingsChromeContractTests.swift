@@ -586,6 +586,13 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(section.contains("ToolPermissionLabels.risk(item.risk)"))
     XCTAssertTrue(section.contains("ToolPermissionLabels.ruleCaption(item.ruleSource)"))
     XCTAssertTrue(section.contains("if item.hasIndividualRule, let restoreInheritance {"))
+    XCTAssertTrue(
+      section.contains("if model.toolCatalogLoading {"),
+      "MCP discovery takes seconds: the tab says so instead of showing an empty catalog")
+    XCTAssertFalse(
+      section.contains("HStack(spacing: 8) {\n          Text(ToolPermissionLabels.ruleCaption"),
+      "the rule caption and the restore link stack vertically so the narrow column never splits a word"
+    )
     XCTAssertFalse(section.contains("Text(item.name)"), "the raw name is not the headline")
 
     let serverTab = try XCTUnwrap(sources["ToolServerTab.swift"])
@@ -612,6 +619,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "Individual rule": "Własna reguła",
       "Inherited from the category default": "Dziedziczone z ustawienia kategorii",
       "Restore inheritance": "Przywróć dziedziczenie",
+      "Discovering tools from the MCP servers…": "Wykrywanie narzędzi z serwerów MCP…",
     ]
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)

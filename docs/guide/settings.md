@@ -373,7 +373,10 @@ asking (Allow), when it needs approval (Ask), and when it must refuse (Deny).
   always refused, and an Allow never silently covers a path that may hold
   secrets (`.env`, key material): that call asks first.
 - **Per-tool permissions · N** — N is the whole tool catalog, not the number
-  of individual rules. Tool sources down the left (Native plus every MCP
+  of individual rules. Opening the tab discovers the catalog by starting every
+  configured MCP server and asking it for its tools, so the list appears a few
+  seconds after the defaults; a "Discovering tools from the MCP servers…" row
+  stands in until then. Tool sources down the left (Native plus every MCP
   server, names verbatim), the selected source's tools on the right. Each row
   shows a readable name above the raw identity, the source and localized risk
   class, and whether the level is an individual rule or inherited (from the
