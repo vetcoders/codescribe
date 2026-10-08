@@ -203,7 +203,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       state.toggleCollapsed()
       settle(root)
       panel.setFrameOrigin(NSPoint(x: visible.minX + 20, y: visible.minY + 12))
-      state.toggleCollapsed()
+      state.setPresentationMode(.expanded)
       settle(root)
       XCTAssertTrue(visible.contains(panel.frame))
       XCTAssertEqual(panel.frame.minY, visible.minY, accuracy: 0.5)
@@ -241,11 +241,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         state.setPresentationMode(initialMode)
 
         state.requestHeaderRecording(.startRecording)
-        XCTAssertEqual(state.presentationMode, expanded ? .expanded : .mini)
+        XCTAssertEqual(state.presentationMode, expanded ? .expanded : .midi)
         state.handleRecordingPreparing()
-        XCTAssertEqual(state.presentationMode, expanded ? .expanded : .mini)
+        XCTAssertEqual(state.presentationMode, expanded ? .expanded : .midi)
         state.handleRecordingStarted()
-        XCTAssertEqual(state.presentationMode, expanded ? .expanded : .mini)
+        XCTAssertEqual(state.presentationMode, expanded ? .expanded : .midi)
         XCTAssertEqual(state.expandedByDefault, expanded)
         XCTAssertTrue(engine.expansionWrites.isEmpty)
         state.finishControllerRecording()
@@ -261,10 +261,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.attach()
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
-    XCTAssertEqual(state.presentationMode, .mini)
+    XCTAssertEqual(state.presentationMode, .midi)
 
     state.requestHeaderRecording(.finish)
-    XCTAssertEqual(state.presentationMode, .mini)
+    XCTAssertEqual(state.presentationMode, .midi)
     state.finishControllerRecording()
     engine.expanded = true
     state.handleRecordingPreparing()
@@ -311,8 +311,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.toggleCollapsed()
     XCTAssertTrue(state.isCollapsed)
     state.toggleCollapsed()
+    XCTAssertEqual(state.presentationMode, .midi)
+    state.toggleCollapsed()
     XCTAssertFalse(state.isCollapsed)
-    XCTAssertEqual(collapses, [true, false])
+    XCTAssertEqual(collapses, [true, true, false])
     XCTAssertTrue(state.expandedByDefault)
     XCTAssertTrue(engine.expanded)
     XCTAssertTrue(engine.expansionWrites.isEmpty)
@@ -326,7 +328,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.engine = engine
     state.attach()
     XCTAssertTrue(state.isCollapsed)
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     XCTAssertFalse(state.isCollapsed)
     state.handleRecordingPreparing()
     XCTAssertTrue(state.isCollapsed)
@@ -380,7 +382,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.setExpandedByDefault(false)
     XCTAssertTrue(state.isCollapsed)
     XCTAssertFalse(state.expandedByDefault)
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     XCTAssertFalse(state.isCollapsed)
     XCTAssertFalse(state.expandedByDefault)
     XCTAssertEqual(engine.expansionWrites, [false])
@@ -433,7 +435,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       panel.invalidatePresence()
     }
     XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
-    XCTAssertFalse(panel.styleMask.contains(.resizable))
+    XCTAssertTrue(panel.styleMask.contains(.resizable))
   }
 
   func testRouterRestoresCanvasAndDrawerFromMidiWithoutChangingCapture() throws {
@@ -443,13 +445,16 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     try withPanel(state: state, width: 700) { panel, root in
       let canvas = try XCTUnwrap(findTranscript(in: root))
       let fullSize = panel.frame.size
+      let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
       state.setPresentationMode(.mini)
       settle(root)
-      for mode in [OverlayPresentationMode.expanded, .mini, .expanded, .mini] {
+      for mode in [OverlayPresentationMode.midi, .expanded, .mini, .midi, .expanded, .mini] {
         state.toggleCollapsed()
         settle(root)
         XCTAssertEqual(state.presentationMode, mode)
         XCTAssertEqual(panel.frame.height, mode == .expanded ? fullSize.height : 46, accuracy: 0.5)
+        XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
+        XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
         XCTAssertEqual(panel.sizeForPersistence, fullSize)
         XCTAssertTrue(findTranscript(in: root) === canvas)
         XCTAssertEqual(state.activeText, text)
@@ -578,7 +583,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         NSCursor.current, .arrow, "the inactive app below cannot leave its text cursor here")
       state.setPresentationMode(.mini)
       settle(root)
-      XCTAssertEqual(panel.cursor(at: NSPoint(x: 1, y: 23)), .arrow, "mini has no resize cursor")
+      XCTAssertEqual(
+        panel.cursor(at: NSPoint(x: 1, y: 23)), OverlayResizeHit.cursor(for: .left),
+        "MINI retains the same resize edge as the other forms")
     }
   }
 
@@ -631,14 +638,14 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       state.engine = engine
       state.attach()
       state.requestHeaderRecording(.startRecording)
-      XCTAssertEqual(state.presentationMode, expanded ? .expanded : .mini)
+      XCTAssertEqual(state.presentationMode, expanded ? .expanded : .midi)
       state.handleRecordingPreparing()
       state.handleRecordingStarted()
-      XCTAssertEqual(state.presentationMode, expanded ? .expanded : .mini)
+      XCTAssertEqual(state.presentationMode, expanded ? .expanded : .midi)
       XCTAssertTrue(engine.expansionWrites.isEmpty)
       state.finishControllerRecording()
       state.handleRecordingPreparing()
-      XCTAssertEqual(state.presentationMode, expanded ? .expanded : .mini)
+      XCTAssertEqual(state.presentationMode, expanded ? .expanded : .midi)
       state.finishControllerRecording()
     }
   }
@@ -660,7 +667,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       XCTAssertTrue(findTranscript(in: root) === native, "Folding must not recreate the editor")
       panel.setFrameOrigin(NSPoint(x: 200, y: panel.frame.minY + 40))
       let movedTop = panel.frame.maxY
-      state.toggleCollapsed()
+      state.setPresentationMode(.expanded)
       settle(root)
       XCTAssertEqual(panel.frame.size, expanded.size)
       XCTAssertEqual(panel.frame.maxY, movedTop, accuracy: 0.5)
@@ -889,7 +896,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(actions.phase, .idle)
     XCTAssertFalse(actions.pointerInside)
     XCTAssertNil(actions.hideDeadline)
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     XCTAssertFalse(state.isCollapsed)
     XCTAssertEqual(actions.phase, .idle)
   }
@@ -1181,9 +1188,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.setPresentationMode(.mini)
     let text = state.activeText
     for (mode, symbol, label) in [
-      (OverlayPresentationMode.mini, "arrow.down.left", "Expand widget"),
-      (.midi, "chevron.down", "Expand widget"),
-      (.expanded, "arrow.up.right", "Collapse widget"),
+      (OverlayPresentationMode.mini, "arrow.right", "Expand to compact widget"),
+      (.midi, "chevron.down", "Expand transcript"),
+      (.expanded, "arrow.left", "Collapse widget"),
     ] {
       state.setPresentationMode(mode)
       let controls = OverlayRecordingControls(
@@ -1192,7 +1199,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       XCTAssertEqual(controls.previewSymbol, symbol)
       XCTAssertEqual(controls.previewAccessibilityLabel, label)
       controls.togglePreview()
-      XCTAssertEqual(state.presentationMode, mode == .expanded ? .mini : .expanded)
+      XCTAssertEqual(
+        state.presentationMode, mode == .mini ? .midi : mode == .midi ? .expanded : .mini)
       XCTAssertEqual(state.activeText, text)
     }
     XCTAssertEqual(state.presentationMode, .mini)
@@ -1269,6 +1277,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       panel.invalidatePresence()
     }
     panel.setContentSize(NSSize(width: width, height: 280))
+    if let visible = NSScreen.main?.visibleFrame {
+      panel.setFrameOrigin(NSPoint(x: visible.maxX - width - 40, y: visible.maxY - 320))
+    }
     panel.orderFrontRegardless()
     let root = try XCTUnwrap(panel.contentView)
     settle(root)

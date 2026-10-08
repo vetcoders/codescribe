@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-No changes recorded yet.
+- The widget button cycles through MINI, MIDI and regular transcript views.
+  All three forms support edge resizing around the same upper-right pin.
+- Recording opens MIDI when the default transcript option is off, and regular
+  when it is on; MINI remains the idle entry form.
+- Resize cursors are reused and no longer compete with a whole-window arrow
+  cursor rectangle or native text tracking at the window edges.
 
 ## [0.16.1] - 2026-10-08
 

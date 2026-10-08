@@ -2,8 +2,16 @@
 
 ## Overlay conversation viewing and speech
 
-Overlay size is selected explicitly. The preview button toggles mini/full; its
-context menu selects mini, compact (midi), or transcription (full). Pointer entry
+Overlay size is selected explicitly. Each ordinary preview-button click advances
+mini → compact (midi) → regular (full transcript) → mini. The upper-right corner
+is the shared pin: the strip grows leftward and the transcript grows downward,
+with display containment applied when the full target cannot fit. The context
+menu also selects any of the three modes directly. All forms support edge
+resizing around that same pin. On release, a height of at least 153 pt selects
+regular; below that, width below 305 pt selects mini and larger width selects
+midi. Compact forms settle to their readable strip sizes; regular retains
+the manually chosen size with its 320 × 260 pt readability floor. Moving the
+window relocates the pin. Pointer entry
 and departure preserve that selection. Hover still provides button feedback and
 pauses terminal auto-hide; it does not change the capture route or window size.
 
@@ -644,3 +652,7 @@ tail retries publication with backoff and classifies/archives/ends only that tak
 after acknowledgement. It cannot paste, paint, or reset a successor. Permanent
 publisher refusal remains unfinished and visible to shutdown admission; timeout
 never grants permission to discard unpublished terminal evidence.
+
+Recording start opens regular when the default transcript preference is enabled,
+and MIDI when disabled. MINI is the idle entry form; merely changing form does
+not start or stop recording.

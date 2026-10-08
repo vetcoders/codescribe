@@ -840,7 +840,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
         let revision = state.conversationFocusRevision
         if initiallyMini {
-          state.toggleCollapsed()
+          state.setPresentationMode(.expanded)
           XCTAssertEqual(state.conversationFocusRevision, revision)
         }
         // Permit the existing presentation animation and native layout to
