@@ -4303,16 +4303,6 @@
         }
       }
     },
-    "Command is not offered because it collides with tab switching." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Command nie jest dostępny, bo koliduje z przełączaniem kart."
-          }
-        }
-      }
-    },
     "Commit" : {
       "localizations" : {
         "pl" : {
@@ -6528,16 +6518,6 @@
     },
     "Fixed windows" : {
       "shouldTranslate" : false
-    },
-    "Fn+Shift from idle is dictation, not the Agent. Further pulses during the same hold attach the next selections; the take, the overlay and the destination do not change." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Fn+Shift z bezczynności uruchamia dyktowanie, nie Agenta. Kolejne impulsy w tym samym przytrzymaniu dołączają następne zaznaczenia; nagranie, nakładka i miejsce wstawienia pozostają bez zmian."
-          }
-        }
-      }
     },
     "Fold this message back to its head" : {
       "localizations" : {
@@ -12510,16 +12490,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ustawiony ręcznie"
-          }
-        }
-      }
-    },
-    "Set the macOS Fn key action to Do Nothing. Otherwise macOS can claim a double press for its own dictation." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ustaw działanie klawisza Fn w macOS na „Nic nie rób”. Inaczej macOS może przejąć podwójne naciśnięcie na własne dyktowanie."
           }
         }
       }
