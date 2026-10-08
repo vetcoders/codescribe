@@ -977,6 +977,83 @@ final class SettingsTruthTests: XCTestCase {
     )
   }
 
+  /// Custom owns no values: with the preview off it writes exactly one key to
+  /// turn the preview back on and leaves the four stored values alone; the
+  /// picker then reads Custom even though the values still match Smooth.
+  func testCustomPresetTurnsPreviewBackOnWithoutTouchingValues() {
+    var persisted = CsSettings.sample
+    persisted.transcriptionOverlayEnabled = false
+    persisted.bufferDelayMs = 1038
+    persisted.typingCps = 10.6
+    persisted.emitWordsMax = 5
+    persisted.bufferedInterimSec = 8.0
+    var batches: [[CsConfigEntry]] = []
+    let engine = MockSettingsEngine(
+      settingsLoader: { persisted },
+      updateConfigManyObserver: { entries in
+        batches.append(entries)
+        for entry in entries where entry.key == "TRANSCRIPTION_OVERLAY_ENABLED" {
+          persisted.transcriptionOverlayEnabled = entry.value == "1"
+        }
+      })
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    var overlayPreferenceNotices = 0
+    model.onOverlayPreferenceChanged = { overlayPreferenceNotices += 1 }
+    XCTAssertEqual(model.previewTimingPreset, .off)
+
+    model.applyPreviewTimingPreset(.custom)
+
+    XCTAssertEqual(batches.count, 1)
+    XCTAssertEqual(batches[0].map(\.key), ["TRANSCRIPTION_OVERLAY_ENABLED"])
+    XCTAssertEqual(batches[0][0].value, "1")
+    XCTAssertEqual(overlayPreferenceNotices, 1)
+    XCTAssertEqual(model.previewTimingPreset, .custom, "Custom is a choice, not a value match")
+    XCTAssertEqual(model.previewTimingConfiguration.values, .smooth, "stored values untouched")
+
+    model.applyPreviewTimingPreset(.smooth)
+    XCTAssertEqual(model.previewTimingPreset, .smooth, "a named preset ends custom editing")
+  }
+
+  /// A slider move inside Smooth's tolerance still makes the configuration
+  /// Custom; No preview clears that and reports itself.
+  func testManualSliderMoveReadsBackAsCustomInsideTolerance() {
+    var persisted = CsSettings.sample
+    persisted.bufferDelayMs = 1038
+    persisted.typingCps = 10.6
+    persisted.emitWordsMax = 5
+    persisted.bufferedInterimSec = 8.0
+    let engine = MockSettingsEngine(
+      settingsLoader: { persisted },
+      updateConfigManyObserver: { entries in
+        for entry in entries where entry.key == "TRANSCRIPTION_OVERLAY_ENABLED" {
+          persisted.transcriptionOverlayEnabled = entry.value == "1"
+        }
+      },
+      updateConfigObserver: { key, value in
+        if key == "CODESCRIBE_BUFFER_DELAY_MS" { persisted.bufferDelayMs = UInt64(value) }
+      })
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    XCTAssertEqual(model.previewTimingPreset, .smooth)
+
+    model.setPreviewBufferDelayMs(1040)
+    XCTAssertEqual(model.previewTimingPreset, .custom)
+    XCTAssertEqual(
+      detectPreset(model.previewTimingConfiguration), .smooth,
+      "the values alone would still read as Smooth — the editing mode is what makes it Custom")
+
+    model.applyPreviewTimingPreset(.off)
+    XCTAssertEqual(model.previewTimingPreset, .off)
+    XCTAssertEqual(model.previewTimingConfiguration.values.bufferDelayMs, 1040, "values survive")
+  }
+
+  func testPresetSummariesAndNoPreviewNameAreSentences() {
+    XCTAssertEqual(PreviewTimingPreset.off.displayName, "No preview")
+    for preset in PreviewTimingPreset.allCases {
+      XCTAssertFalse(preset.summary.isEmpty)
+      XCTAssertFalse(preset.summary.contains("ms"), "no raw numbers in the summary")
+    }
+  }
+
   func testSmoothPresetUsesOneAtomicSettingsBatch() {
     var batches: [[CsConfigEntry]] = []
     let engine = MockSettingsEngine(updateConfigManyObserver: { entries in
