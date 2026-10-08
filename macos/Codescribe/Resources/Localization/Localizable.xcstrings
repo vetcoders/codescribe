@@ -88,6 +88,17 @@
         }
       }
     },
+    "%@ cps" : {
+      "comment" : "Preview timing value: characters per second. The placeholder is a formatted number",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ zn./s"
+          }
+        }
+      }
+    },
     "%@ custom provider" : {
       "localizations" : {
         "pl" : {
@@ -209,6 +220,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ — w toku…"
+          }
+        }
+      }
+    },
+    "%@ s" : {
+      "comment" : "Preview timing value: an interval in seconds. The placeholder is a formatted number",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ s"
           }
         }
       }
@@ -1084,6 +1106,17 @@
         }
       }
     },
+    "%lld ms" : {
+      "comment" : "Preview timing value: a delay in milliseconds",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld ms"
+          }
+        }
+      }
+    },
     "%lld native tools" : {
       "comment" : "Plural: count of native tools",
       "localizations" : {
@@ -1561,6 +1594,59 @@
         }
       }
     },
+    "%lld words" : {
+      "comment" : "Preview timing value: a number of words. Needs plural variations",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld word"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld words"
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld słowa"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld słów"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld słowo"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld słowa"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%llu occurrences" : {
       "localizations" : {
         "en" : {
@@ -1686,6 +1772,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "7 dni"
+          }
+        }
+      }
+    },
+    "A calmer pace, with longer pauses between updates." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spokojniejsze tempo, z dłuższymi przerwami między aktualizacjami."
           }
         }
       }
@@ -2067,6 +2163,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Wskazany odbiorca"
+          }
+        }
+      }
+    },
+    "Adjust how quickly text appears in the preview window while recording." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dostosuj tempo pojawiania się tekstu w oknie podglądu podczas nagrywania."
           }
         }
       }
@@ -2486,6 +2592,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zawsze zezwalaj"
+          }
+        }
+      }
+    },
+    "An even pace, close to comfortable reading speed." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Równe tempo, blisko wygodnej prędkości czytania."
           }
         }
       }
@@ -3059,16 +3175,6 @@
         }
       }
     },
-    "Buffer delay" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Opóźnienie bufora"
-          }
-        }
-      }
-    },
     "Built" : {
       "localizations" : {
         "pl" : {
@@ -3370,6 +3476,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się przełączyć kanału: %@"
+          }
+        }
+      }
+    },
+    "Character pace" : {
+      "comment" : "Preview timing: how fast characters appear, in characters per second",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tempo pojawiania się znaków"
           }
         }
       }
@@ -5394,6 +5511,16 @@
         }
       }
     },
+    "Detailed settings" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ustawienia szczegółowe"
+          }
+        }
+      }
+    },
     "Details" : {
       "localizations" : {
         "pl" : {
@@ -6790,16 +6917,6 @@
         }
       }
     },
-    "How the overlay paces live text. Committed transcripts are unchanged." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Określa, jak szybko tekst pojawia się w overlayu podczas mówienia. Nie wpływa na treść zapisanych transkrypcji."
-          }
-        }
-      }
-    },
     "Hugging Face cache" : {
       "comment" : "Model source",
       "localizations" : {
@@ -7100,12 +7217,13 @@
         }
       }
     },
-    "Interim interval" : {
+    "Interim result interval" : {
+      "comment" : "Preview timing: how often speech recognition produces a provisional result",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Odstęp między aktualizacjami podglądu"
+            "value" : "Odstęp między wynikami roboczymi"
           }
         }
       }
@@ -7833,6 +7951,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Prompt Max"
+          }
+        }
+      }
+    },
+    "Max words per update" : {
+      "comment" : "Preview timing: most words the preview adds in one update",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Maks. słów na aktualizację"
           }
         }
       }
@@ -8815,6 +8944,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dla tego nagrania nie powstała nowa transkrypcja."
+          }
+        }
+      }
+    },
+    "No preview window appears while recording." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podczas nagrywania nie pojawia się okno podglądu."
           }
         }
       }
@@ -9983,36 +10122,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Podgląd załącznika (oryginalnego pliku może brakować)"
-          }
-        }
-      }
-    },
-    "Preview off · committed transcripts are unchanged" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Podgląd wyłączony · zatwierdzone transkrypcje pozostają bez zmian"
-          }
-        }
-      }
-    },
-    "Preview timing preset" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tempo podglądu"
-          }
-        }
-      }
-    },
-    "Preview timing." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tempo podglądu"
           }
         }
       }
@@ -13901,6 +14010,16 @@
         }
       }
     },
+    "Text appears almost as soon as it is recognized." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tekst pojawia się niemal od razu po rozpoznaniu."
+          }
+        }
+      }
+    },
     "Text formatting" : {
       "shouldTranslate" : false
     },
@@ -14398,6 +14517,16 @@
         }
       }
     },
+    "These values take effect again once the preview is back on." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Te wartości zaczną znowu działać po włączeniu podglądu."
+          }
+        }
+      }
+    },
     "Thinking" : {
       "comment" : "Turn status",
       "localizations" : {
@@ -14702,6 +14831,17 @@
         }
       }
     },
+    "Transcript display pace" : {
+      "comment" : "Settings tab headline: Dictation › Preview",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tempo wyświetlania transkrypcji"
+          }
+        }
+      }
+    },
     "Transcript formatter authority is unavailable" : {
       "localizations" : {
         "pl" : {
@@ -14937,16 +15077,6 @@
         }
       }
     },
-    "Typing speed" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Szybkość pisania"
-          }
-        }
-      }
-    },
     "Unavailable" : {
       "comment" : "Whisper model row: no detail",
       "localizations" : {
@@ -15169,6 +15299,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Transkrypcja bez tytułu"
+          }
+        }
+      }
+    },
+    "Update delay" : {
+      "comment" : "Preview timing: how long the preview waits before showing new text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opóźnienie aktualizacji"
           }
         }
       }
@@ -15790,16 +15931,6 @@
         }
       }
     },
-    "Words per tick" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Słów na aktualizację"
-          }
-        }
-      }
-    },
     "Workspace" : {
       "comment" : "Settings tab: agent workspace roots",
       "localizations" : {
@@ -15955,6 +16086,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Twój język. Twoje skróty. Twój sposób pracy."
+          }
+        }
+      }
+    },
+    "Your own values — edit them under Detailed settings." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Twoje własne wartości — edytuj je w Ustawieniach szczegółowych."
           }
         }
       }
@@ -17623,19 +17764,19 @@
       }
     },
     "settings.previewTiming.preset.off" : {
-      "comment" : "Preview timing preset: pacing is turned off",
+      "comment" : "Preview timing preset: no preview window appears while recording",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Off"
+            "value" : "No preview"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wyłączone"
+            "value" : "Bez podglądu"
           }
         }
       }
@@ -17971,13 +18112,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "preview, timing, typing, cadence, overlay"
+            "value" : "preview, timing, pace, typing, cadence, overlay"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "preview, timing, typing, cadence, overlay, podgląd, opóźnienie, pisanie, tempo, odświeżanie"
+            "value" : "preview, timing, pace, typing, cadence, overlay, podgląd, opóźnienie, pisanie, tempo, odświeżanie"
           }
         }
       }
