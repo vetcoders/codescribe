@@ -701,7 +701,7 @@ struct DictationOverlayView: View {
     Button {
       state.relayIntent(.close)
     } label: {
-      ModeDot(color: state.usesAgentAccent ? CSColor.modeAgent : CSColor.terracotta, size: 9)
+      ModeDot(color: CSColor.terracotta, size: 9)
         .overlay {
           if closeDotHovered {
             OverlayCloseCross()
