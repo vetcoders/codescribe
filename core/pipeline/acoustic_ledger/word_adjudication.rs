@@ -141,6 +141,20 @@ pub(super) fn label_equal(a: &str, b: &str) -> bool {
 /// the recording tail.
 pub const FULL_CONTEXT_QUALITY: u32 = 1_000_000;
 
+/// Label-changing rights floor: margin of at least one SIXTH of the decode
+/// window (half saturation; 1.5 s a side at 9 s windows).
+///
+/// Requiring full saturation was measurably too strict: the
+/// `two_complete_windows_can_correct_an_earlier_wrong_number` product
+/// contract corrects through windows at q = 0.94 and 0.75, and the grid
+/// guarantees a later window with a deeper margin only one stride away —
+/// stalling a two-witness correction that long trades a real fix for
+/// ceremony. The incidents this floor must stop sit far below it: the
+/// "odwzujący" take-over decoded at q ≈ 0.06 and the "56" edge pins at
+/// q ≈ 0.08–0.17. Everything between is decided by the existing agreement
+/// machinery, not by geometry alone.
+pub const BAND_RIGHTS_FLOOR: u32 = FULL_CONTEXT_QUALITY / 2;
+
 /// Fixed point context ranking. Overflow cannot turn a long window into a vote.
 pub fn context_quality(start: u64, end: u64, decode: (u64, u64)) -> u32 {
     let (left, right) = decode;
@@ -872,9 +886,9 @@ impl AcousticLedger {
         let band_rights = candidate.family() != ObservationProducer::Whisper
             || !raw_disagrees
             || component.incumbent.original_text.is_none()
-            || candidate.q >= FULL_CONTEXT_QUALITY
+            || candidate.q >= BAND_RIGHTS_FLOOR
             || prior_support.iter().any(|h| {
-                h.q >= FULL_CONTEXT_QUALITY
+                h.q >= BAND_RIGHTS_FLOOR
                     && h.original_text
                         .as_deref()
                         .zip(raw)
