@@ -29,7 +29,8 @@ Settings → **Creator** → **Interface language** switches the app between
 Polski and English. The choice is saved at once as Codescribe's per-app macOS
 language preference (the same one System Settings › General › Language & Region
 › Applications shows); it never touches `settings.json` or the dictation
-language. The running app keeps its language until you press **Restart now**:
+language. The running app keeps its language until you press **Restart now**
+(the restart note and button already appear in the language you just chose):
 Codescribe waits for an idle moment (no recording, no agent turn) and relaunches
 in the chosen language. If a take or an agent turn is in progress, the row keeps
 your choice and asks you to try again. The setup wizard's first screen offers
