@@ -3,14 +3,17 @@
 #
 # Runs on self-hosted macOS runners (Swift 6.0 / CoreML / Metal available).
 # format: cargo fmt --check
-# quality: cargo clippy -D warnings + `make verify`.
+# quality: fresh compiler localization extraction + strict catalog/bridge gates,
+# sync controls, helper installer compilation, cargo clippy -D warnings + `make verify`.
+# Localization runs inside the existing required `Clippy + Tests` status.
+# Keep its job name and unconditional steps: no partial coverage or ignored failures.
 #
 # The test step invokes `make verify` by name rather than repeating its cargo
 # line here. That is deliberate: it is the repo's one hermetic gate, so CI and a
 # local run are the same command with one definition site instead of two recipes
 # that resemble each other until they quietly stop.
 #
-# What CI does NOT run: every `class=operator` row in the Makefile GATE LEDGER —
+# What CI does NOT run: the `class=operator ci=no` rows in the Makefile GATE LEDGER —
 # the parity bars (private fixture corpus), the 318 Swift front-end tests
 # (Xcode + a built ffi dylib), `smoke-macos27` (this host), and the #[ignore]
 # real-API / model / audio-device tests. Those are bench instruments, host-local
@@ -71,6 +74,34 @@ jobs:
     runs-on: [self-hosted, macos-public]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify catalog localization contracts
+        run: make verify-l10n-catalog
+
+      - name: Verify every bridge String is classified
+        run: make verify-l10n-bridge
+
+      - name: Prepare compiler localization extraction
+        run: |
+          command -v xcodegen >/dev/null || brew install xcodegen
+          # Fresh per run, even on a reused runner; never read cached extraction.
+          echo "L10N_DERIVED=$(mktemp -d "$RUNNER_TEMP/codescribe-l10n.XXXXXX")" >> "$GITHUB_ENV"
+          echo "L10N_CONFIG=Debug" >> "$GITHUB_ENV"
+
+      - name: Build Debug Swift localization data (no Rust build or executable link)
+        run: |
+          make l10n-build
+          # A future Xcode sync-on-build must not let CI check a repaired catalog.
+          git diff --exit-code -- macos/Codescribe/Resources/Localization
+
+      - name: Verify Swift strings match the committed catalog
+        run: make verify-l10n-sync
+
+      - name: Test localization gate positive and negative controls
+        run: make test-l10n-sync
+
+      - name: Verify the helper installer compiles without the app target
+        run: make verify-install-bus
 
       # Same PATH contract as the format job — Homebrew rustup, proxy-less CARGO_HOME.
       - name: Ensure stable toolchain on PATH

@@ -115,11 +115,9 @@ Keep its DerivedData separate from the normal app build. A cold runner still
 resolves/builds the existing Swift packages.
 
 The current app requires Xcode 27 / the macOS 27 SDK (`LanguageModelError` in
-Foundation Models). The required CI job uses GitHub's
-[`xcode-27` image](https://github.com/actions/runner-images/issues/14404);
-`macos-latest` currently selects Xcode 26.6 and cannot compile that API. Rust-only
-jobs retain `macos-latest`. `.github/actionlint.yaml` adds this documented hosted
-preview label to the linter's label allow-list.
+Foundation Models). The required CI job runs on `[self-hosted, macos-public]`
+with that toolchain. Rust-only jobs use the same runner pool. An older Xcode
+that cannot compile the app fails the gate; it never skips localization checks.
 
 The archive lane and ordinary Debug compilation were compared on 2026-10-05
 at `27a130fb6`: all 128 app Swift sources produced identical `.stringsdata`.
@@ -173,13 +171,17 @@ fails on stale rows so a translation is never orphaned silently.
 ### Required PR gate
 
 `.github/workflows/rust.yml` runs `make l10n-build`, **`make verify-l10n-sync`**
-and **`make verify-l10n-catalog`** unconditionally inside **`Clippy + Tests`**
-on every PR to `main`, `develop` or `feat/onboarding-language-picker`. It uses a fresh per-run DerivedData directory,
+and **`make verify-l10n-catalog`**, **`make verify-l10n-bridge`** and
+**`make test-l10n-sync`** unconditionally inside **`Clippy + Tests`**
+on every PR to `main` or `develop`. It uses a fresh per-run Debug DerivedData directory,
 never cached `.stringsdata`, and never invokes the catalog-writing sync command.
 It also refuses catalog changes left by the compiler lane, so a toolchain that
 starts syncing on build cannot silently check an automatically repaired file.
 Missing tools, compilation failures, missing/outdated extraction, catalog drift
-and catalog lint errors all fail the job. `--check` compares the entire catalog
+and catalog lint errors all fail the job. Catalog lint requires full coverage
+of every bundled language; CI never passes `--allow-partial`. The sync controls
+use the real Swift compiler and prove both acceptance and fail-closed refusal.
+`--check` compares the entire catalog
 as JSON, so formatting or an EOF newline alone does not count as drift.
 
 GitHub ruleset **`main porotection`** (ID **20429200**) already requires
