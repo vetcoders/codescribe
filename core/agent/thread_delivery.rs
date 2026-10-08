@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 
 use super::{ContentBlock, Message, Role, Thread, ThreadMessage, ThreadStore};
@@ -16,6 +16,10 @@ use super::{ContentBlock, Message, Role, Thread, ThreadMessage, ThreadStore};
 /// Doubles as the "still heuristic" marker: a thread carrying this title has
 /// neither a custom nor a generated one, so it stays title-eligible.
 const DEFAULT_THREAD_TITLE: &str = "Codescribe Agent Chat";
+
+/// Stored `Thread::mode` of a Max consultation; every lane that writes one
+/// must use exactly this label.
+pub const MAX_CONSULTATION_MODE: &str = "max";
 
 /// Completed-turn origin. It is intentionally a core delivery concept rather
 /// than UI state: callers use it for lifecycle evidence without logging content.
@@ -161,7 +165,7 @@ impl ThreadDeliveryGateway {
         }
         let thread = self.store.load_thread(id)?;
         anyhow::ensure!(
-            thread.id == id && thread.mode == "max",
+            thread.id == id && thread.mode == MAX_CONSULTATION_MODE,
             "Consultation history identity or mode mismatch"
         );
         let messages = thread
@@ -233,6 +237,18 @@ impl ThreadDeliveryGateway {
             } else {
                 None
             };
+        // A Max consultation keeps its identity for life. The voice owner and
+        // the composer both write here; a non-Max lane rewriting the mode would
+        // make the next `restore_consultation` refuse the whole history.
+        if let Some(existing) = existing.as_ref()
+            && existing.mode == MAX_CONSULTATION_MODE
+            && mode != MAX_CONSULTATION_MODE
+        {
+            bail!(
+                "Max consultation {backend_id} cannot be rewritten as {mode} by {}",
+                source.as_str()
+            );
+        }
         let created = existing.is_none();
         let previous_had_exchange = existing
             .as_ref()
@@ -643,8 +659,13 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[1].role, Role::Assistant);
         delivery.mode = "assistive".into();
-        gateway.deliver(delivery)?;
-        assert!(gateway.restore_consultation("max-a", true).is_err());
+        assert!(
+            gateway.deliver(delivery).is_err(),
+            "a non-Max lane must not rewrite consultation history"
+        );
+        assert_eq!(gateway.restore_consultation("max-a", true)?.len(), 2);
+        let stored = gateway.store.load_thread("max-a")?;
+        assert_eq!(stored.mode, "max");
         Ok(())
     }
 

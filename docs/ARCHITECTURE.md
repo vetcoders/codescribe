@@ -342,6 +342,49 @@ share three contracts:
   carries the result; `RealThreadsEngine` still collapses the bridge error
   into `nil`, so the failure alert cannot quote the underlying reason.
 
+### Max consultation continuity
+
+A Max consultation is an ordinary `Thread` in the shared `ThreadStore`,
+distinguished by `mode == "max"` (`MAX_CONSULTATION_MODE`) and the
+`max-consultation` tag. One consultation is _selected_
+(`threads/consultations/selection/current.json`); only the explicit
+"New consultation" action (`begin_new_max_consultation`) changes that file.
+Viewing or selecting an older consultation in the Agent window never changes
+the selection.
+
+Continuity is logical, not a provider chain: the consultation owner
+(`ConsultationRuntime`, held by `RecordingController`) restores the thread's
+messages under its lease and replays them with every request; the provider's
+response chain is reset per turn. The same owner serves both entry points:
+
+- **Voice.** A Max dictation take enters the owner through
+  `FormattingConsultation` (`format_text_with_status_for_policy`).
+- **Agent window.** A typed turn on a thread whose stored mode is `max` is
+  routed by the bridge (`CodescribeAgent::run_max_consultation_turn`) into
+  `RecordingController::enqueue_max_consultation_text_turn`: same FIFO,
+  Formatting lane, Max prompt and Max approval broker as speech. The turn runs
+  under Max regardless of the dictation formatting level selected at the
+  moment, because the consultation is Max by identity. The window renders the
+  owner's events for that turn (`subscribe_max_consultation_events`); the
+  owner persists history once, in `max` mode, so the Assistive lane and its
+  `assistive` delivery never touch a consultation.
+
+Guards:
+
+- `ThreadDeliveryGateway::deliver` refuses to rewrite a `max` thread with any
+  other mode, so no lane can silently convert a consultation and break the
+  next `restore_consultation`.
+- Only the selected consultation accepts new typed turns; typing into an older
+  one fails with a readable error. Older consultations stay readable.
+- Max tool approvals suspend in the controller's broker. The Agent window
+  shows the card for the turn it is rendering and answers it through the same
+  exact (session, thread, call) match (`CodescribeAgent::resolve_tool_approval`
+  falls through to that broker). The Settings › Creator panel keeps showing
+  the same pending cards.
+- Stop cannot abort an admitted Max instruction: the owner never replays or
+  rolls back tool effects. The window settles its bubble; the answer still
+  lands in history and appears on the next refresh.
+
 ### Restored tool inspector metadata
 
 `RealThreadsEngine` projects persisted messages from `CodescribeThreads` into
