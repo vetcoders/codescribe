@@ -2210,6 +2210,28 @@ final class SettingsViewModel: ObservableObject {
     languagePreference.needsRestart(for: interfaceLanguage)
   }
 
+  /// Copy about the pending restart speaks the chosen language, not the running
+  /// one, so the row already reads the way the app will after the relaunch.
+  var interfaceLanguageRestartExplanation: String {
+    String(
+      localized: LocalizedStringResource(
+        "Codescribe will restart in this language. Your recording must finish first.",
+        locale: interfaceLanguage.locale,
+        comment: "Interface language restart explanation in Settings"))
+  }
+
+  var interfaceLanguageRestartTitle: String {
+    applyingInterfaceLanguage
+      ? String(
+        localized: LocalizedStringResource(
+          "Restarting…", locale: interfaceLanguage.locale,
+          comment: "Interface language restart in flight"))
+      : String(
+        localized: LocalizedStringResource(
+          "Restart now", locale: interfaceLanguage.locale,
+          comment: "Apply the interface language"))
+  }
+
   /// Saves the choice at once; nothing else in the app changes until restart.
   /// Picking the running language again clears a pending restart.
   func selectInterfaceLanguage(_ language: InterfaceLanguage) {
@@ -2226,7 +2248,7 @@ final class SettingsViewModel: ObservableObject {
     guard interfaceLanguageNeedsRestart, !applyingInterfaceLanguage else { return }
     guard let onApplyInterfaceLanguage else {
       interfaceLanguageNotice = InterfaceLanguageRestartError.unavailable.message(
-        locale: Locale.current)
+        locale: interfaceLanguage.locale)
       return
     }
     applyingInterfaceLanguage = true
@@ -2239,7 +2261,7 @@ final class SettingsViewModel: ObservableObject {
         try await onApplyInterfaceLanguage {}
       } catch {
         interfaceLanguageNotice = (error as? InterfaceLanguageRestartError ?? .unavailable)
-          .message(locale: Locale.current)
+          .message(locale: interfaceLanguage.locale)
       }
     }
   }

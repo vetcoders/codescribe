@@ -416,21 +416,14 @@ private struct InterfaceLanguageRow: View {
       }
       if model.interfaceLanguageNeedsRestart {
         HStack(spacing: 12) {
-          Text(
-            "Codescribe will restart in this language. Your recording must finish first.",
-            comment: "Interface language restart explanation in Settings"
-          )
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          Button(
-            model.applyingInterfaceLanguage
-              ? String(localized: "Restarting…", comment: "Interface language restart in flight")
-              : String(localized: "Restart now", comment: "Apply the interface language")
-          ) { model.applyInterfaceLanguage() }
-          .disabled(model.applyingInterfaceLanguage)
-          .accessibilityIdentifier("settings-interface-language-restart")
+          Text(model.interfaceLanguageRestartExplanation)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+          Button(model.interfaceLanguageRestartTitle) { model.applyInterfaceLanguage() }
+            .disabled(model.applyingInterfaceLanguage)
+            .accessibilityIdentifier("settings-interface-language-restart")
         }
       }
       if let notice = model.interfaceLanguageNotice {
