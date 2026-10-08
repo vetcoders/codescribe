@@ -63,7 +63,7 @@ extension CsShortcutBinding {
         comment: "Gesture option: the mode has no shortcut")
     case .holdFn:
       return String(
-        localized: "hotkeys.binding.holdFn", defaultValue: "Hold Fn (🌐)",
+        localized: "hotkeys.binding.holdFn", defaultValue: "Hold Fn",
         comment: "Gesture option")
     case .holdCtrl:
       return String(

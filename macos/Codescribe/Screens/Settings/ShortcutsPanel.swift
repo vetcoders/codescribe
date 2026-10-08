@@ -378,8 +378,8 @@ struct ShortcutsPanel: View {
       VStack(alignment: .leading, spacing: 0) {
         inputSurfaceRow(
           title: "Agent channel",
-          detail:
-            "Ctrl + digit switches an Agent channel. Choose Fn to use Fn + digit instead. Command is not offered — it collides with tab switching."
+          detail: "Ctrl + digit switches an Agent channel. Choose Fn to use Fn + digit instead.",
+          help: "Command is not offered because it collides with tab switching."
         ) {
           Picker("Agent channel modifier", selection: channelModifierBinding) {
             Text(verbatim: "Ctrl").tag("ctrl")
@@ -393,7 +393,9 @@ struct ShortcutsPanel: View {
         inputSurfaceRow(
           title: "Tap Fn to dictate",
           detail:
-            "One tap starts dictation and the next tap stops it. Holding past the hold delay records only while you hold. Set the macOS Fn key action to Do Nothing, because macOS can otherwise claim a double press for its own dictation."
+            "One tap starts dictation and the next tap stops it. Holding records only while you hold.",
+          help:
+            "Set the macOS Fn key action to Do Nothing. Otherwise macOS can claim a double press for its own dictation."
         ) {
           Toggle("Tap Fn to dictate", isOn: fnTapBinding)
             .labelsHidden()
@@ -418,11 +420,13 @@ struct ShortcutsPanel: View {
     }
   }
 
+  /// Two sentences on screen; anything longer, such as macOS caveats, goes to
+  /// `help` and shows as the row's tooltip (Founder, 2026-10-08).
   private func inputSurfaceRow<Control: View>(
-    title: LocalizedStringKey, detail: LocalizedStringKey,
+    title: LocalizedStringKey, detail: LocalizedStringKey, help: LocalizedStringKey? = nil,
     @ViewBuilder control: () -> Control
   ) -> some View {
-    HStack(alignment: .center, spacing: 12) {
+    let row = HStack(alignment: .center, spacing: 12) {
       VStack(alignment: .leading, spacing: 3) {
         Text(title)
           .font(CSFont.ui(13.5, .semibold))
@@ -438,6 +442,13 @@ struct ShortcutsPanel: View {
     .padding(.horizontal, 16)
     .padding(.vertical, 14)
     .background(Color.primary.opacity(0.04))
+    return Group {
+      if let help {
+        row.help(help)
+      } else {
+        row
+      }
+    }
   }
 
   private var channelModifierBinding: Binding<String> {
@@ -603,16 +614,31 @@ struct ShortcutsPanel: View {
     }
   }
 
+  /// Informational notes read as a footnote under the save row: secondary
+  /// text, no card and no colour, so amber stays for conflicts that need a
+  /// decision (Founder, 2026-10-08).
   private var noticeList: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      SettingsSectionLabel(
-        String(
-          localized: "settings.shortcuts.notices", defaultValue: "Notes",
-          comment: "Shortcuts screen: heading above informational, non-blocking notes"))
+    VStack(alignment: .leading, spacing: 4) {
       ForEach(Array(informationalNotices.enumerated()), id: \.offset) { _, notice in
-        validationRow(notice, accent: CSColor.amber, marker: "i")
+        noticeRow(notice)
       }
     }
+  }
+
+  private func noticeRow(_ entry: HotkeyConflictPresentation) -> some View {
+    HStack(alignment: .top, spacing: 9) {
+      Text(verbatim: "i")
+        .font(CSFont.ui(11, .bold))
+        .foregroundStyle(Color.secondary)
+        .frame(width: 14)
+      Text(entry.message)
+        .font(CSFont.ui(11.5, .medium))
+        .foregroundStyle(Color.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(.horizontal, 14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .help(entry.technical ?? entry.message)
   }
 
   private func validationRow(
@@ -631,13 +657,6 @@ struct ShortcutsPanel: View {
           .font(CSFont.ui(12, .medium))
           .foregroundStyle(Color.primary)
           .fixedSize(horizontal: false, vertical: true)
-        // Wire identifiers stay on screen whenever the sentence above is ours.
-        if let technical = entry.technical {
-          Text(verbatim: technical)
-            .font(CSFont.mono(10, .medium))
-            .foregroundStyle(Color.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
       }
     }
     .padding(.horizontal, 14)
@@ -650,6 +669,8 @@ struct ShortcutsPanel: View {
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(accent.opacity(0.2), lineWidth: 1)
     )
+    // Wire identifiers stay reachable in the tooltip whenever the sentence is ours.
+    .help(entry.technical ?? entry.message)
   }
 
   // MARK: Permission degradation
