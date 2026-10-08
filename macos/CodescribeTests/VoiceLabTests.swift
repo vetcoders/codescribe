@@ -525,7 +525,7 @@ final class VoiceLabTests: XCTestCase {
       lexiconEntries: [],
       ruleCandidates: [candidate]
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
 
     model.refreshVoiceLab()
 
@@ -544,7 +544,7 @@ final class VoiceLabTests: XCTestCase {
     XCTAssertTrue(ruleCandidatesSectionVisible([candidate]))
 
     let engine = MockSettingsEngine(qualityRecords: [], lexiconEntries: [])
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     model.refreshVoiceLab()
     XCTAssertTrue(model.ruleCandidates.isEmpty)
     XCTAssertFalse(ruleCandidatesSectionVisible(model.ruleCandidates))
@@ -572,7 +572,7 @@ final class VoiceLabTests: XCTestCase {
         )
       }
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     model.refreshVoiceLab()
 
     model.teachRuleCandidate(target: candidate.target, variant: candidate.variants[0])

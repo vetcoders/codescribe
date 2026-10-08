@@ -6,6 +6,372 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testIdleSnapshotsDoNotRereadMegabyteLeaseMetadata() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let leaseURL = fixture.root.appendingPathComponent("leases/\(Fixture.leaseID).json")
+    var lease = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(contentsOf: leaseURL)) as? [String: Any])
+    lease["diagnostic_padding"] = String(repeating: "x", count: 1 << 20)
+    try fixture.write(lease, to: leaseURL)
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let initial = try await reader.readSnapshot()
+    let coldBytes = await reader.consumedMetadataBytes
+    let coldOpens = await reader.metadataFileOpens
+    XCTAssertGreaterThan(coldBytes, 1 << 20)
+    for _ in 0..<20 {
+      let snapshot = try await reader.readSnapshot()
+      XCTAssertEqual(snapshot, initial)
+    }
+    let steadyBytes = await reader.consumedMetadataBytes
+    let steadyOpens = await reader.metadataFileOpens
+    XCTAssertEqual(steadyOpens, coldOpens, "Unchanged and absent metadata needs no new descriptor")
+    XCTAssertEqual(steadyBytes, coldBytes, "Idle polls must not repeatedly parse the same lease")
+    try fixture.lease(pending: [fixture.envelope(Fixture.firstID)])
+    let changed = try await reader.readSnapshot()
+    XCTAssertEqual(changed.deliveries.first?.stage, .queued)
+    XCTAssertEqual(
+      changed.conversations.first?.messages.map(\.text),
+      initial.conversations.first?.messages.map(\.text))
+  }
+
+  func testAcknowledgedDeliveryStopsPollingWithoutAProviderAcceptanceReceipt() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var projection = OverlayChannelDelivery.Bus()
+    projection.consume(fixture.seal(1))
+    let coordinate = try XCTUnwrap(projection.receiptCoordinates().first)
+    let owner = coordinate.0
+    let delivery = coordinate.1
+    var envelope = fixture.recipient()
+    envelope.merge([
+      "kind": "seal", "delivery_id": delivery, "session_id": "take-a",
+      "utterance_id": "u1", "sequence": 1,
+    ]) { _, new in new }
+    var receipt: [String: Any] = [
+      "lease_id": owner.leaseID, "delivery_id": delivery,
+      "bus": fixture.bus.path, "envelope": envelope,
+    ]
+    receipt["bus"] = fixture.root.appendingPathComponent("foreign.jsonl").path
+    projection.observeAcknowledgment(
+      receipt, owner: owner, delivery: delivery, busPath: fixture.bus.path)
+    XCTAssertEqual(projection.receiptCoordinates().count, 1, "Foreign receipt cannot settle polling")
+    projection.observeAcceptance([
+      "schema": "codescribe.native-queue.receipt.v1", "disposition": "provider_accepted",
+      "delivery_id": delivery, "lease_id": owner.leaseID,
+      "provider": owner.provider, "provider_session_id": owner.providerSessionID,
+      "channel": owner.channel, "name": owner.name,
+    ])
+    XCTAssertEqual(projection.receiptCoordinates().count, 1, "Acceptance alone is not reading")
+    // Recreate monitor-only delivery: there is no provider-acceptance file.
+    projection = OverlayChannelDelivery.Bus()
+    projection.consume(fixture.seal(1))
+    receipt["bus"] = fixture.bus.path
+    projection.observeAcknowledgment(
+      receipt, owner: owner, delivery: delivery, busPath: fixture.bus.path)
+    let question = try XCTUnwrap(
+      projection.conversations(busPath: fixture.bus.path).flatMap(\.messages).first {
+        $0.recipients.contains { $0.owner.id == owner.id && $0.deliveryID == delivery }
+      })
+    XCTAssertEqual(question.recipients.first?.acknowledged, true)
+    XCTAssertEqual(question.recipients.first?.accepted, false)
+    XCTAssertTrue(projection.receiptCoordinates().isEmpty)
+    let restored = try JSONDecoder().decode(
+      OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(projection))
+    var resumed = restored
+    XCTAssertTrue(resumed.receiptCoordinates().isEmpty, "Restart must retain settled receipt")
+  }
+
+  func testMetadataReplacementWithSameSizeAndTimestampChangesTheDisplayedOwner() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let binding = fixture.root.appendingPathComponent("vc.agent-audience-binding.v1.json")
+    let initialBytes = try Data(contentsOf: binding)
+    let originalDate = try XCTUnwrap(
+      FileManager.default.attributesOfItem(atPath: binding.path)[.modificationDate] as? Date)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    try fixture.append(fixture.seal(1))
+    let initial = try await reader.read()
+    XCTAssertEqual(initial.first?.agent, "james")
+    let changedBytes = Data(
+      try XCTUnwrap(String(data: initialBytes, encoding: .utf8))
+        .replacingOccurrences(of: "james", with: "jamie").utf8)
+    XCTAssertEqual(changedBytes.count, initialBytes.count)
+    try changedBytes.write(to: binding, options: .atomic)
+    try FileManager.default.setAttributes(
+      [.modificationDate: originalDate], ofItemAtPath: binding.path)
+    let changed = try await reader.read()
+    XCTAssertEqual(changed.first?.agent, "jamie")
+  }
+
+  func testInPlaceMetadataWriteWithRestoredTimestampDoesNotReuseOldOwner() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let binding = fixture.root.appendingPathComponent("vc.agent-audience-binding.v1.json")
+    let bytes = try Data(contentsOf: binding)
+    let attributes = try FileManager.default.attributesOfItem(atPath: binding.path)
+    let originalDate = try XCTUnwrap(attributes[.modificationDate] as? Date)
+    let inode = try XCTUnwrap(attributes[.systemFileNumber] as? NSNumber)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    _ = try await reader.read()
+    let changed = Data(
+      try XCTUnwrap(String(data: bytes, encoding: .utf8))
+        .replacingOccurrences(of: "james", with: "jamie").utf8)
+    let handle = try FileHandle(forWritingTo: binding)
+    try handle.write(contentsOf: changed)
+    try handle.close()
+    try FileManager.default.setAttributes(
+      [.modificationDate: originalDate], ofItemAtPath: binding.path)
+    XCTAssertEqual(
+      try FileManager.default.attributesOfItem(atPath: binding.path)[.systemFileNumber]
+        as? NSNumber,
+      inode)
+    let snapshot = try await reader.read()
+    XCTAssertEqual(snapshot.first?.agent, "jamie")
+  }
+
+  func testBrokenAndDeletedMetadataCannotKeepACachedBindingAlive() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let binding = fixture.root.appendingPathComponent("vc.agent-audience-binding.v1.json")
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    _ = try await reader.read()
+    try Data("{".utf8).write(to: binding, options: .atomic)
+    do {
+      _ = try await reader.read()
+      XCTFail("Malformed metadata must not serve its previously valid parse")
+    } catch {}
+    try FileManager.default.removeItem(at: binding)
+    let removed = try await reader.read()
+    XCTAssertTrue(removed.isEmpty)
+    try fixture.bind(session: "another-session")
+    let rebound = try await reader.read()
+    XCTAssertTrue(rebound.isEmpty, "A cached previous owner cannot satisfy a new binding")
+  }
+
+  func testMetadataLargerThanCacheBudgetRemainsReadableWithoutBeingRetained() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let leaseURL = fixture.root.appendingPathComponent("leases/\(Fixture.leaseID).json")
+    var lease = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(contentsOf: leaseURL)) as? [String: Any])
+    lease["diagnostic_padding"] = String(repeating: "x", count: 9 << 20)
+    try fixture.write(lease, to: leaseURL)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let initial = try await reader.readSnapshot()
+    let before = await reader.consumedMetadataBytes
+    let repeated = try await reader.readSnapshot()
+    let after = await reader.consumedMetadataBytes
+    XCTAssertEqual(repeated, initial)
+    XCTAssertGreaterThan(
+      after - before, 9 << 20, "Large metadata is not retained in the bounded cache")
+  }
+
+  func testMultipleLargeLeasesCannotGrowTheMetadataCacheWithoutBound() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    for digit in 1...4 {
+      let identity = String(repeating: String(digit), count: 32)
+      try fixture.write(
+        [
+          "schema": "codescribe.agent-bridge.lease.v1", "lease_id": identity,
+          "provider": "codex", "provider_session_id": "other-\(digit)",
+          "bus": fixture.bus.path, "pending": [],
+          "diagnostic_padding": String(repeating: "x", count: 3 << 20),
+        ], to: fixture.root.appendingPathComponent("leases/\(identity).json"))
+    }
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let initial = try await reader.readSnapshot()
+    let before = await reader.consumedMetadataBytes
+    let repeated = try await reader.readSnapshot()
+    let after = await reader.consumedMetadataBytes
+    XCTAssertEqual(repeated, initial)
+    XCTAssertGreaterThan(
+      after - before, 3 << 20, "Twelve MiB of metadata must not fit in the eight MiB cache")
+  }
+
+  func testReplySpeechCapabilitySurvivesMirrorsAndRebuildsOlderCachedProjection() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let shared = fixture.root.appendingPathComponent("a-shared.jsonl")
+    var speech = fixture.recipient()
+    speech.merge([
+      "schema": "codescribe.agent-reply.v1", "kind": "agent_reply",
+      "reply_id": String(repeating: "a", count: 24), "text": "Taki sam tekst",
+      "emitted_at": "2026-10-07T14:00:00Z", "spoken": false,
+      "tts_vendor": "xai", "voice": "ara", "speed": 1.25,
+    ]) { _, new in new }
+    try fixture.append(speech)
+    var mirror = speech
+    mirror.removeValue(forKey: "tts_vendor")
+    mirror.removeValue(forKey: "voice")
+    var sharedBytes = try JSONSerialization.data(withJSONObject: mirror)
+    sharedBytes.append(10)
+    try sharedBytes.write(to: shared)
+    var text = mirror
+    text["reply_id"] = String(repeating: "b", count: 24)
+    try fixture.append(text)
+    let sourceBytes = try Data(contentsOf: fixture.bus)
+    func messages(_ snapshot: OverlayChannelDeliverySnapshot) throws -> [OverlayConversationMessage]
+    {
+      try XCTUnwrap(snapshot.conversations.first { $0.owner?.leaseID == Fixture.leaseID }).messages
+    }
+    let initial = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+      .readSnapshot()
+    let replies = try messages(initial)
+    XCTAssertEqual(replies.map(\.text), ["Taki sam tekst", "Taki sam tekst"])
+    XCTAssertEqual(replies.map(\.supportsSpeechPlayback), [true, false])
+    let restarted = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+    let restored = try await restarted.readSnapshot()
+    XCTAssertEqual(try messages(restored), replies)
+    let consumed = await restarted.consumedBytes
+    XCTAssertEqual(consumed, 0)
+
+    let cacheURL = OverlayDeliveryCursorStore.url(root: fixture.root)
+    var cache = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(contentsOf: cacheURL))
+        as? [String: Any])
+    var buses = try XCTUnwrap(cache["buses"] as? [String: [String: Any]])
+    for path in Array(buses.keys) {
+      var entry = try XCTUnwrap(buses[path])
+      let encoded = try XCTUnwrap(entry["projection"] as? String)
+      var projection = try XCTUnwrap(
+        JSONSerialization.jsonObject(
+          with: XCTUnwrap(Data(base64Encoded: encoded))) as? [String: Any])
+      var cachedMessages = try XCTUnwrap(projection["messages"] as? [String: [String: Any]])
+      for id in Array(cachedMessages.keys) {
+        cachedMessages[id]?.removeValue(forKey: "supportsSpeechPlayback")
+      }
+      projection["messages"] = cachedMessages
+      entry["projection"] = try JSONSerialization.data(withJSONObject: projection)
+        .base64EncodedString()
+      buses[path] = entry
+    }
+    cache["buses"] = buses
+    try fixture.write(cache, to: cacheURL)
+    let upgraded = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+    let rebuilt = try await upgraded.readSnapshot()
+    XCTAssertEqual(try messages(rebuilt), replies)
+    let rebuiltBytes = await upgraded.consumedBytes
+    XCTAssertGreaterThan(rebuiltBytes, 0)
+    XCTAssertLessThanOrEqual(rebuiltBytes, 2 * OverlayChannelDeliveryReader.tailWindow)
+    XCTAssertEqual(try Data(contentsOf: fixture.bus), sourceBytes)
+  }
+
+  func testBroadcastStreamingKeepsNewestReducerRevisionAcrossDelayedBusCopies() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let shared = fixture.root.appendingPathComponent("a-shared.jsonl")
+    func row(_ revision: Int, _ text: String) -> [String: Any] {
+      [
+        "schema": "codescribe.transcript-evidence.v1",
+        "session_id": "agent-channel-0-streaming-fixture", "audience": "*",
+        "sequence": revision, "reducer_revision": revision,
+        "reducer_action": "commit_delta", "rendered_text": text,
+        "occurrence_session_id": "agent-channel-0-streaming-fixture",
+        "capture_epoch": 1, "sample_start": 3200, "sample_end": 9600,
+        "document_index": 0, "recipients": [fixture.recipient()],
+        "emitted_at": "2026-10-07T10:00:0\(revision)Z",
+      ]
+    }
+    func appendShared(_ value: [String: Any]) throws {
+      var bytes = try JSONSerialization.data(withJSONObject: value)
+      bytes.append(10)
+      if !FileManager.default.fileExists(atPath: shared.path) {
+        try bytes.write(to: shared)
+      } else {
+        let handle = try FileHandle(forWritingTo: shared)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: bytes)
+      }
+    }
+    try fixture.append(row(1, "Pierwsze słowo"))
+    try appendShared(row(1, "Pierwsze słowo"))
+    try appendShared(row(4, "Pierwsze słowo i cała dalsza wypowiedź"))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+    var snapshot = try await reader.readSnapshot()
+    var message = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" }?.messages.first)
+    XCTAssertEqual(message.text, "Pierwsze słowo i cała dalsza wypowiedź")
+    XCTAssertEqual(snapshot.conversations.first { $0.id == "0" }?.messages.count, 1)
+    let identity = message.id
+
+    // A delayed mirror must not rewind the visible document. A later source
+    // correction may shorten it: neither string length nor opening time wins.
+    try fixture.append(row(2, "Pierwsze słowo i"))
+    try appendShared(row(5, "Poprawiona wypowiedź"))
+    snapshot = try await reader.readSnapshot()
+    message = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" }?.messages.first)
+    XCTAssertEqual(message.text, "Poprawiona wypowiedź")
+    XCTAssertEqual(message.id, identity)
+    XCTAssertEqual(snapshot.conversations.first { $0.id == "0" }?.messages.count, 1)
+
+    let restarted = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+      .readSnapshot()
+    XCTAssertEqual(
+      restarted.conversations.first { $0.id == "0" }?.messages.first?.text,
+      "Poprawiona wypowiedź")
+  }
+
+  func testBroadcastMirrorMergeRetainsFivePCMEntriesAndSeparateCaptures() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let shared = fixture.root.appendingPathComponent("a-shared.jsonl")
+    var sharedBytes = Data()
+    for capture in ["one", "two"] {
+      for index in 0..<5 {
+        let row: [String: Any] = [
+          "schema": "codescribe.transcript-evidence.v1",
+          "session_id": "agent-channel-0-\(capture)", "audience": "*",
+          "sequence": index + 1, "reducer_revision": index == 4 ? 3 : 4,
+          "reducer_action": "commit_delta", "rendered_text": "Iwo Iwo Iwo Iwo Iwo",
+          "occurrence_session_id": "agent-channel-0-\(capture)", "capture_epoch": 1,
+          "sample_start": 3200 + index * 1280, "sample_end": 4480 + index * 1280,
+          "document_index": 0, "recipients": [fixture.recipient()],
+          "emitted_at": "2026-10-07T10:00:00Z",
+        ]
+        if index == 4 {
+          try fixture.append(row)
+        } else {
+          sharedBytes.append(try JSONSerialization.data(withJSONObject: row))
+          sharedBytes.append(10)
+        }
+      }
+    }
+    try sharedBytes.write(to: shared)
+    let snapshot = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+      .readSnapshot()
+    let messages = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" }).messages
+    XCTAssertEqual(messages.count, 2, "equal words in separate captures keep separate identity")
+    XCTAssertEqual(Set(messages.map(\.id)).count, 2)
+    for message in messages {
+      XCTAssertEqual(message.text, "Iwo Iwo Iwo Iwo Iwo")
+      XCTAssertEqual(Set(message.occurrenceIDs ?? []).count, 5)
+    }
+  }
+
+  func testRestartRestoresVisibleReceiptWithoutNeedingAnotherBusEvent() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    try fixture.append(fixture.ack(Fixture.firstID))
+    let first = OverlayChannelDeliveryReader(root: fixture.root)
+    let beforeRestart = try await first.read()
+    XCTAssertEqual(beforeRestart.first?.stage, .received)
+    XCTAssertEqual(beforeRestart.first?.isOpen, true)
+
+    // Restart without appending another seal, heartbeat or receipt. A saved
+    // cursor cannot replace the presentation state it has already consumed.
+    let restarted = OverlayChannelDeliveryReader(root: fixture.root)
+    let afterRestart = try await restarted.read()
+    XCTAssertEqual(afterRestart, beforeRestart)
+    let newBytes = await restarted.consumedBytes
+    XCTAssertEqual(newBytes, 0, "restored state does not need a history rescan")
+  }
+
   func testFixtureTriadRequiresNewestSealPendingEnvelopeAndMatchingBusAck() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
@@ -70,7 +436,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         "schema": "codescribe.transcript-evidence.v1", "session_id": "take-a",
         "audience": "james", "sequence": index + 10, "document_index": index,
         "reducer_revision": 7, "reducer_action": "record_ledger_terminal_seal",
-        "rendered_text": "Iwo Iwo Iwo Iwo Iwo",
+        "rendered_text": "Iwo Iwo Iwo Iwo Iwo", "recipients": [fixture.recipient()],
       ])
     }
     try fixture.lease(pending: [fixture.envelope(id)])
@@ -86,7 +452,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "schema": "codescribe.transcript-evidence.v1", "session_id": "take-a",
       "audience": "james", "sequence": 15, "document_index": 5,
       "reducer_revision": 7, "reducer_action": "record_ledger_terminal_seal",
-      "rendered_text": "Iwo Iwo Iwo Iwo Iwo",
+      "rendered_text": "Iwo Iwo Iwo Iwo Iwo", "recipients": [fixture.recipient()],
     ])
     statuses = try await OverlayChannelDeliveryReader(root: fixture.root).read()
     XCTAssertEqual(statuses.first?.deliveryID, id)
@@ -324,29 +690,31 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertTrue(view[controls.lowerBound...].contains("OverlayChannelStatusView("))
     XCTAssertFalse(header.contains("!state.isCollapsed"))
     let drag = try XCTUnwrap(header.range(of: "OverlayWindowDragRegion"))
-    let glass = try XCTUnwrap(header.range(of: ".modifier(OverlayHeaderChrome())"))
+    let glass = try XCTUnwrap(
+      header.range(of: ".modifier(OverlayControlGlass())")
+    )
     XCTAssertLessThan(drag.lowerBound, glass.lowerBound)
     let status = try String(
       contentsOf: root.appendingPathComponent(
         "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift"), encoding: .utf8)
-    XCTAssertTrue(status.contains("overlay-channel-open-"))
     XCTAssertTrue(status.contains("Microphone active"))
-    XCTAssertTrue(status.contains(".popover(isPresented: $showsDetails"))
+    XCTAssertFalse(status.contains(".popover("))
+    XCTAssertTrue(view.contains("channelStatusView.monitorBody"))
     XCTAssertTrue(status.contains("overlay-channel-delivery-"))
-    XCTAssertFalse(status.contains("Divider("))
+    XCTAssertTrue(status.contains("Divider("), "saved histories retain their own section")
     XCTAssertFalse(status.contains("glassEffect("))
     // The header shows one glyph, never the microphone: mic = recording only.
     XCTAssertFalse(status.contains("antenna.radiowaves"))
     XCTAssertFalse(status.contains("hasOpenChannel ? \"mic.fill\""))
-    // A click opens details and nothing else: it cannot light ␆.
-    XCTAssertTrue(status.contains("showsDetails.toggle()"))
-    XCTAssertEqual(status.components(separatedBy: "showsDetails.toggle()").count - 1, 1)
+    // Passive navigation and capture ownership are exercised by
+    // testNotificationNavigationRetainsOwnerAndUnreadCountWithoutOpeningMicrophone.
   }
 
   func testRosterToggleAcceptsOnlyChannelDigitsAndForwardsEachClickOnce() {
     XCTAssertEqual(OverlayChannelStatusView.toggleDigit(for: "1"), 1)
     XCTAssertEqual(OverlayChannelStatusView.toggleDigit(for: "9"), 9)
-    for invalid in ["0", "10", "agent-1", ""] {
+    XCTAssertEqual(OverlayChannelStatusView.toggleDigit(for: "0"), 0)
+    for invalid in ["10", "agent-1", ""] {
       XCTAssertNil(OverlayChannelStatusView.toggleDigit(for: invalid))
     }
 
@@ -364,6 +732,38 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(calls, [1, 3], "both directions use the same per-digit toggle intent")
   }
 
+  func testMonitorSeparatesCurrentOwnerFromSameNamedSavedConversation() throws {
+    func conversation(session: String, lease: String) throws -> OverlayConversation {
+      let owner = try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": session, "lease_id": lease,
+          "channel": "3", "name": "astra",
+        ]))
+      return OverlayConversation(
+        id: owner.id, channel: "3", name: "astra", owner: owner, messages: [])
+    }
+    let old = try conversation(session: "previous", lease: String(repeating: "a", count: 32))
+    let current = try conversation(session: "current", lease: String(repeating: "b", count: 32))
+    let hud = OverlayChannelHudProjection(
+      open: false, loud: false,
+      autosealDeadline: nil, followerAlive: true, provider: "codex", providerSessionID: "current")
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false,
+      palette: .dark, animates: false,
+      hudStates: ["3": hud], conversations: [old, current])
+    XCTAssertEqual(view.currentConversations.map(\.id), [current.id])
+    XCTAssertEqual(view.savedConversations.map(\.id), [old.id])
+    XCTAssertEqual(view.conversations.count, 2, "Rendering does not merge histories by name")
+    let sameSession = try conversation(session: "current", lease: String(repeating: "c", count: 32))
+    let ambiguous = OverlayChannelStatusView(
+      channels: [], unavailable: false,
+      palette: .dark, animates: false,
+      hudStates: ["3": hud], conversations: [current, sameSession])
+    XCTAssertTrue(
+      ambiguous.currentConversations.isEmpty, "The roster has no lease authority to choose")
+    XCTAssertEqual(ambiguous.savedConversations.count, 2)
+  }
+
   func testRosterClickWithoutBridgeActionDoesNotStartAnyAgent() {
     let channel = OverlayChannelDelivery(
       channel: "2", agent: "miron", deliveryID: nil, stage: nil, isOpen: false)
@@ -372,6 +772,160 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertNil(view.onToggleChannel)
     view.toggle(channel)
     XCTAssertFalse(view.isOpen(channel), "a click cannot optimistically open the channel")
+  }
+
+  func testUnifiedAgentRowKeepsViewingAndRecordingSeparate() throws {
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "current",
+        "lease_id": String(repeating: "b", count: 32),
+        "channel": "2", "name": "lena",
+      ]))
+    let current = OverlayConversation(
+      id: owner.id, channel: "2", name: "lena", owner: owner, messages: [])
+    let channel = OverlayChannelDelivery(
+      channel: "2", agent: "lena", deliveryID: nil, stage: nil, isOpen: false)
+    var selections: [String?] = []
+    var toggles: [UInt8] = []
+    let view = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "2": .init(
+          open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+          provider: "codex", providerSessionID: "current")
+      ],
+      onToggleChannel: { toggles.append($0) }, conversations: [current],
+      onSelectConversation: { selections.append($0) })
+    view.viewConversation(channel)
+    XCTAssertEqual(selections, [current.id])
+    XCTAssertTrue(toggles.isEmpty, "passive viewing never opens the microphone")
+    view.toggle(channel)
+    XCTAssertEqual(toggles, [2])
+    XCTAssertEqual(selections, [current.id], "capture uses its own controller intent")
+    XCTAssertFalse(view.isOpen(channel), "the controller, not a click, owns open state")
+  }
+
+  func testNotificationNavigationRetainsOwnerAndUnreadCountWithoutOpeningMicrophone() throws {
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "current",
+        "lease_id": String(repeating: "b", count: 32), "channel": "2", "name": "lena",
+      ]))
+    let conversation = OverlayConversation(
+      id: owner.id, channel: "2", name: "lena", owner: owner, messages: [])
+    let channel = OverlayChannelDelivery(
+      channel: "2", agent: "lena", deliveryID: "confirmed", stage: .received, isOpen: false)
+    var selections: [String?] = []
+    var toggles: [UInt8] = []
+    var monitors = 0
+    let view = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "2": .init(
+          open: false, loud: false, autosealDeadline: nil,
+          followerAlive: true, provider: "codex", providerSessionID: "current")
+      ],
+      onToggleChannel: { toggles.append($0) }, conversations: [conversation],
+      unreadCounts: [owner.id: 3], onSelectConversation: { selections.append($0) },
+      onShowMonitor: { monitors += 1 })
+    XCTAssertEqual(view.notificationTitle(for: channel), "2 · lena (3)")
+    XCTAssertEqual(view.glyph, .acknowledged, "unread replies are separate from receipt state")
+    view.viewConversation(channel)
+    view.showMonitor()
+    XCTAssertEqual(selections, [owner.id])
+    XCTAssertEqual(monitors, 1)
+    XCTAssertTrue(toggles.isEmpty, "notification navigation never opens a microphone")
+    XCTAssertFalse(view.isOpen(channel))
+  }
+
+  func testHeaderAndChannelMicrophoneGlyphKeepOneCompactCircleInBothAppearances() {
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      for symbol in ["mic", "mic.fill", "stop.fill"] {
+        let host = NSHostingView(
+          rootView:
+            OverlayMicrophoneGlyph(symbol: symbol, tint: palette.listeningStatus.color))
+        let size = host.fittingSize
+        XCTAssertEqual(size.width, OverlayRecordingControls.controlDiameter, accuracy: 0.5)
+        XCTAssertEqual(size.height, OverlayRecordingControls.controlDiameter, accuracy: 0.5)
+      }
+    }
+  }
+
+  func testUnifiedAgentRowDoesNotChooseAnAmbiguousLease() throws {
+    let owners = try ["b", "c"].map { lease in
+      try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": "current",
+          "lease_id": String(repeating: lease, count: 32),
+          "channel": "2", "name": "lena",
+        ]))
+    }
+    let channel = OverlayChannelDelivery(
+      channel: "2", agent: "lena", deliveryID: nil, stage: nil, isOpen: false)
+    var selections: [String?] = []
+    let view = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "2": .init(
+          open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+          provider: "codex", providerSessionID: "current")
+      ],
+      conversations: owners.map {
+        .init(id: $0.id, channel: "2", name: "lena", owner: $0, messages: [])
+      },
+      onSelectConversation: { selections.append($0) })
+    view.viewConversation(channel)
+    XCTAssertTrue(selections.isEmpty)
+    XCTAssertEqual(view.savedConversations.map(\.id), owners.map(\.id))
+  }
+
+  func testRenderedUnifiedMonitorFitsCurrentAndSavedRowsWithoutDuplicatingCaptureList() throws {
+    func conversation(session: String, lease: String) throws -> OverlayConversation {
+      let owner = try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": session,
+          "lease_id": String(repeating: lease, count: 32),
+          "channel": "2", "name": "lena",
+        ]))
+      return .init(id: owner.id, channel: "2", name: "lena", owner: owner, messages: [])
+    }
+    let current = try conversation(session: "current", lease: "b")
+    let saved = try conversation(session: "previous", lease: "a")
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      var selections: [String?] = []
+      var toggles: [UInt8] = []
+      let view = OverlayChannelStatusView(
+        channels: [
+          .init(channel: "2", agent: "lena", deliveryID: "receipt", stage: .received, isOpen: true)
+        ],
+        unavailable: false, palette: palette, animates: false,
+        hudStates: [
+          "2": .init(
+            open: true, loud: false, autosealDeadline: nil, followerAlive: true,
+            provider: "codex", providerSessionID: "current")
+        ],
+        onToggleChannel: { toggles.append($0) }, conversations: [saved, current],
+        unreadCounts: [current.id: 3], onSelectConversation: { selections.append($0) })
+      let host = NSHostingView(rootView: view.monitorBody.frame(width: 440))
+      let window = NSWindow(
+        contentRect: .init(x: 0, y: 0, width: 440, height: 320),
+        styleMask: [.titled], backing: .buffered, defer: false)
+      window.contentView = host
+      window.orderFrontRegardless()
+      defer { window.orderOut(nil) }
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      host.layoutSubtreeIfNeeded()
+
+      XCTAssertEqual(view.currentConversations.map(\.id), [current.id])
+      XCTAssertEqual(view.savedConversations.map(\.id), [saved.id])
+      XCTAssertEqual(host.fittingSize.width, 440, accuracy: 1)
+      XCTAssertGreaterThan(host.fittingSize.height, 120, "saved history is still visible")
+      XCTAssertTrue(selections.isEmpty, "rendering does not navigate")
+      XCTAssertTrue(toggles.isEmpty, "rendering does not start recording")
+      XCTAssertLessThan(host.fittingSize.height, 220, "one compact row plus saved history")
+    }
   }
 
   func testDeadFollowerIsVisibleWithoutRewritingDeliveryOrOpenState() {
@@ -383,8 +937,30 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     )
     XCTAssertFalse(view.isOpen(channel), "controller HUD state wins over older mailbox state")
     XCTAssertTrue(view.hasDeadFollower(channel))
+    XCTAssertEqual(view.statusSymbol(for: channel), "xmark.circle")
+    XCTAssertTrue(view.statusHelp(for: channel).contains(String(localized: "Disconnected")))
     XCTAssertEqual(view.detail(for: channel), "queued · waiting for receipt · nobody listening")
     XCTAssertEqual(channel.stage, .queued, "liveness does not reinterpret delivery evidence")
+  }
+
+  func testCompactRosterUsesOnlySuppliedRuntimeDescriptorAndKeepsUnknownModelsAbsent() {
+    let channel = OverlayChannelDelivery(
+      channel: "3", agent: "astra", deliveryID: nil, stage: nil, isOpen: false)
+    let hud = OverlayChannelHudProjection(
+      open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+      provider: "codex", providerSessionID: "astra-session")
+    let named = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .light, animates: false,
+      hudStates: ["3": hud], agentDescriptors: ["3": "Codex · gpt-6.1-sol"])
+    XCTAssertEqual(named.agentDescriptor(for: channel), "Codex · gpt-6.1-sol")
+    let providerOnly = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .light, animates: false,
+      hudStates: ["3": hud])
+    XCTAssertEqual(providerOnly.agentDescriptor(for: channel), "codex")
+    let unknown = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .light, animates: false)
+    XCTAssertNil(unknown.agentDescriptor(for: channel))
+    XCTAssertEqual(providerOnly.statusSymbol(for: channel), "circle")
   }
 
   func testLiveAndUnknownFollowerKeepTheExistingDeliveryCopy() {
@@ -401,6 +977,134 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(live.detail(for: channel), "receipt confirmed by the agent")
     XCTAssertFalse(unknown.hasDeadFollower(channel), "missing HUD evidence must not claim death")
     XCTAssertEqual(unknown.detail(for: channel), "receipt confirmed by the agent")
+  }
+
+  func testHeaderNativeMenuKeepsFullAgentGlyphForEveryStateAndAppearance() throws {
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      var attachedMenuPixels: Data?
+      for glyph in OverlayAgentGlyph.allCases {
+        let channel = OverlayChannelDelivery(
+          channel: "2", agent: "lena",
+          deliveryID: glyph == .attached || glyph == .open ? nil : "d1",
+          stage: glyph == .awaitingReceipt ? .queued : glyph == .acknowledged ? .received : nil,
+          isOpen: glyph == .open)
+        let mark = OverlayAgentStatusMark(
+          reduceMotion: true, glyph: glyph, palette: palette, animates: false, fontSize: 13)
+        let standalone = try glyphInk(mark, palette: palette, name: "standalone-\(glyph)")
+        let oldButton = try glyphInk(
+          Button {
+          } label: {
+            mark
+          }.buttonStyle(.plain),
+          palette: palette, name: "old-button-\(glyph)")
+        let header = OverlayChannelStatusView(
+          channels: [channel], unavailable: glyph == .unavailable,
+          palette: palette, animates: true)
+        XCTAssertEqual(header.glyph, glyph, "visual art must not replace projected receipt truth")
+        let menu = try glyphInk(header, palette: palette, name: "native-menu-\(glyph)")
+        if glyph == .attached { attachedMenuPixels = menu.pixels }
+        XCTAssertEqual(
+          menu.pixels, try XCTUnwrap(attachedMenuPixels),
+          "header must retain the full muted agent glyph rather than a spinner arc: \(glyph)")
+        print(
+          "GLYPH_INK \(palette.appearance) \(glyph) standalone=\(standalone.ink) oldButton=\(oldButton.ink) menu=\(menu.ink)"
+        )
+        XCTAssertGreaterThan(standalone.ink, 5, "standalone positive rendering control")
+        XCTAssertGreaterThan(oldButton.ink, 5, "original plain button positive rendering control")
+        XCTAssertGreaterThan(
+          menu.ink, 5,
+          "native Menu must paint the glyph, not merely reserve its slot: \(glyph), \(palette.appearance)"
+        )
+      }
+    }
+  }
+
+  private func glyphInk<V: View>(
+    _ view: V, palette: OverlayAppearancePalette, name: String
+  ) throws -> (ink: Int, pixels: Data) {
+    let host = NSHostingView(
+      rootView: ZStack {
+        palette.desktopBackground.color
+        view
+      }
+      .frame(width: 64, height: 64)
+      .environment(\.colorScheme, palette.appearance == .dark ? .dark : .light))
+    host.frame = NSRect(x: 0, y: 0, width: 64, height: 64)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.appearance = NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)
+    window.contentView = host
+    defer {
+      window.contentView = nil
+      window.close()
+    }
+    host.layoutSubtreeIfNeeded()
+    host.displayIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
+    host.layoutSubtreeIfNeeded()
+    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    let background = try XCTUnwrap(bitmap.colorAt(x: 2, y: 2)?.usingColorSpace(.deviceRGB))
+    XCTAssertGreaterThan(background.alphaComponent, 0.95, "opaque test surface must render")
+    var ink = 0
+    var strongestContrast: CGFloat = 0
+    var strongestColor = background
+    let sx = CGFloat(bitmap.pixelsWide) / 64
+    let sy = CGFloat(bitmap.pixelsHigh) / 64
+    for y in Int(21 * sy)..<Int(43 * sy) {
+      for x in Int(23 * sx)..<Int(41 * sx) {
+        let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
+        let contrast = max(
+          abs(color.redComponent - background.redComponent),
+          abs(color.greenComponent - background.greenComponent),
+          abs(color.blueComponent - background.blueComponent))
+        if contrast > 0.08 { ink += 1 }
+        if contrast > strongestContrast {
+          strongestContrast = contrast
+          strongestColor = color
+        }
+      }
+    }
+    if name.hasPrefix("native-menu-") {
+      let expected = try XCTUnwrap(palette.mutedText.nsColor.usingColorSpace(.deviceRGB))
+      XCTAssertLessThan(
+        max(
+          abs(strongestColor.redComponent - expected.redComponent),
+          abs(strongestColor.greenComponent - expected.greenComponent),
+          abs(strongestColor.blueComponent - expected.blueComponent)),
+        0.08, "header glyph must retain its muted palette for every projected state")
+    }
+    let attachment = XCTAttachment(
+      data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])),
+      uniformTypeIdentifier: "public.png")
+    attachment.name = "\(palette.appearance)-\(name)"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+    func nativeLabels(_ node: NSView) -> [String] {
+      let own: [String]
+      if let button = node as? NSButton {
+        own = [
+          "\(type(of: button)): title=\(button.title.debugDescription) image=\(button.image != nil) frame=\(button.frame)"
+        ]
+      } else {
+        own = []
+      }
+      return own + node.subviews.flatMap(nativeLabels)
+    }
+    print("GLYPH_NATIVE \(palette.appearance) \(name) \(nativeLabels(host))")
+    if name == "native-menu-awaitingReceipt" {
+      func buttons(_ node: NSView) -> [NSButton] {
+        ((node as? NSButton).map { [$0] } ?? []) + node.subviews.flatMap(buttons)
+      }
+      let before = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      XCTAssertEqual(
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])), before,
+        "the header receipt icon stays stationary even while overlay animation is enabled")
+    }
+    return (ink, try XCTUnwrap(bitmap.representation(using: .png, properties: [:])))
   }
 
   // MARK: Agent glyph (Annex A3/A4 — the state table is the Codex root's proposal)
@@ -557,17 +1261,17 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       }
     }
     for size in sizes {
-      XCTAssertEqual(size.width, OverlayAgentGlyph.slotSize.width, accuracy: 0.5)
+      XCTAssertEqual(size.width, OverlayRecordingControls.controlDiameter, accuracy: 0.5)
       XCTAssertEqual(size.height, OverlayAgentGlyph.slotSize.height, accuracy: 0.5)
     }
   }
 
-  func testRosterPopoverUsesOverlayAppearanceAndReadableTokens() {
+  func testEmbeddedRosterUsesOverlayAppearanceAndReadableTokens() {
     for palette in [OverlayAppearancePalette.light, .dark] {
-      let popover = ChannelRosterPopoverContent(palette: palette) {
+      let monitor = ChannelRosterContent(palette: palette) {
         Text("Channel receipt")
       }
-      let style = popover.style
+      let style = monitor.style
       XCTAssertEqual(style.surface, palette.desktopBackground)
       XCTAssertEqual(style.border, palette.border)
       XCTAssertEqual(style.colorScheme, palette.appearance == .dark ? .dark : .light)
@@ -837,11 +1541,17 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       return Data((row + "\n").utf8)
     }
     func envelope(_ id: String) -> [String: Any] { ["kind": "seal", "delivery_id": id] }
+    func recipient() -> [String: Any] {
+      [
+        "provider": "codex", "provider_session_id": "agent-session",
+        "lease_id": Self.leaseID, "bus": bus.path, "channel": "1", "name": "james",
+      ]
+    }
     func seal(_ sequence: Int) -> [String: Any] {
       [
         "schema": "codescribe.transcript.v1", "session_id": "take-a", "sequence": sequence,
         "utterance_id": "u\(sequence)", "audience": "james", "status": "transcript_sealed",
-        "text": "Iwo",
+        "text": "Iwo", "recipients": [recipient()],
       ]
     }
     func ack(_ id: String, channel: String = "1") -> [String: Any] {

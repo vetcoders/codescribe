@@ -1,78 +1,23 @@
 ---
-// Twelve product-true differentiators — grounded in runtime, not brochure fluff.
-// Each item maps to a shipped surface (engine, overlay, agent, or onboarding).
+// Describe user controls without turning implementation invariants into promises.
 const features = [
-  {
-    n: '01',
-    title: 'Multi-selection context buckets',
-    body: 'Combo hotkeys during dictation capture multiple selections into context for agentic chat and daily transcript flows — not one clip, not one paste.',
-  },
-  {
-    n: '02',
-    title: 'Apple live freezed + append',
-    body: 'Multi-utterance live assembly: previous finals freeze, current interim appends. Long Polish thoughts stay coherent instead of collapsing to a tail.',
-  },
-  {
-    n: '03',
-    title: 'Live × Whisper merge fill',
-    body: 'Apple is the floor of truth; Whisper fills gaps. Full-replace is forbidden — correct tokens are never deleted by a second pass.',
-  },
-  {
-    n: '04',
-    title: 'On-device Polish as foundation',
-    body: 'SFSpeechRecognizer on-device for pl-PL is a product path, not a legacy fallback. Speech never has to leave the Mac for live dictation.',
-  },
-  {
-    n: '05',
-    title: 'Overlay over any focused app',
-    body: 'Global hotkeys summon a dictation surface on top of whatever owns focus — editor, mail, browser, terminal — without a mode switch.',
-  },
-  {
-    n: '06',
-    title: 'Hold · toggle · hybrid triggers',
-    body: 'Pick how recording starts: press-and-hold, toggle, or hybrid. Hands-free silence windows when you need them; snappy hold when you don’t.',
-  },
-  {
-    n: '07',
-    title: 'Selection-aware rewrite in place',
-    body: 'Highlight text anywhere, speak the intent (“make it formal”), and the result lands back in the same field — no copy-paste theatre.',
-  },
-  {
-    n: '08',
-    title: 'Agentic chat + MCP tools',
-    body: 'Basic dictation or full agentic lane: persistent chat, tool substrate, and voice that can dispatch work instead of only typing it.',
-  },
-  {
-    n: '09',
-    title: 'Teacher dictionary that learns',
-    body: 'Corrections become live lexicon rules. Teach mines the store into variant→canonical pairs the post-processor actually applies.',
-  },
-  {
-    n: '10',
-    title: 'Honest runtime truth',
-    body: 'Permission matrix, Active STT status, and Speech Recognition TCC are live probes — not static “looks fine” badges that lie.',
-  },
-  {
-    n: '11',
-    title: 'Local Whisper when you want it',
-    body: 'Slim daily build ships Apple live without a gigabyte model. Whisper downloads from Settings when you want file-final fill or offline paths.',
-  },
-  {
-    n: '12',
-    title: 'First-run that actually unlocks speech',
-    body: 'Setup wizard includes Speech Recognition with the same grant path as Mic and Accessibility — so Apple live works after install, not after a support ticket.',
-  },
+  { n: '01', title: 'Review as you speak', body: 'A live transcript in the overlay lets you follow the capture and review the final text before using it.' },
+  { n: '02', title: 'Choose how text is delivered', body: 'Safe, comfort, and off paste modes let you decide when text is inserted and when it stays available to copy.' },
+  { n: '03', title: 'Use your vocabulary', body: 'Add names and technical terms to the custom lexicon. Registered variants help normalize recognition results.' },
+  { n: '04', title: 'Bring the relevant context', body: 'Attach selected text or files to a conversation so your question arrives with the material you want the agent to use.' },
+  { n: '05', title: 'Choose local or remote services', body: 'Local speech recognition runs on your Mac. AI formatting, agent calls, and cloud transcription use the services you explicitly configure.' },
+  { n: '06', title: 'Talk to named agent sessions', body: 'Connect supported agent runtimes to numbered channels. Read replies in the overlay and enable spoken replies with a configured speech provider.' },
 ];
 ---
 
 <section class="section features" id="features" data-screen-label="Features" aria-labelledby="features-title">
   <div class="container">
     <div class="head">
-      <p class="eyebrow">TWELVE THAT MATTER</p>
-      <h2 id="features-title">Not voice typing. A voice control layer.</h2>
+      <p class="eyebrow">WORKFLOW CONTROLS</p>
+      <h2 id="features-title">Fit the workflow to the task.</h2>
       <p class="sub">
-        Twelve surfaces that separate codescribe from a generic STT box — each one
-        is in the product today, not a roadmap poster.
+        Configure speech, delivery, vocabulary, and context from the same app.
+        Connected agents require the agent bridge and a supported runtime.
       </p>
     </div>
 

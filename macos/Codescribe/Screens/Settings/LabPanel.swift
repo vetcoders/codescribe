@@ -58,8 +58,114 @@ struct LabPanel: View {
       }
       .font(CSFont.mono(11, .semibold))
       .foregroundStyle(CSColor.chromeAccent)
+
+      recognitionParameters
     }
     .padding(CSSpace.xl)
     .frame(maxWidth: .infinity, alignment: .leading)
   }
+
+  /// Raw recognition timings. They used to be a Dictation tab; they are
+  /// parameters, not product choices, so Lab is their only surface. The
+  /// bindings and the promoted keys behind them are unchanged.
+  private var recognitionParameters: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      SettingsSectionLabel(
+        String(
+          localized: "Speech recognition parameters",
+          comment: "Lab group: raw recognition timings"))
+
+      VStack(alignment: .leading, spacing: 14) {
+        LabSecondsSlider(
+          title: String(localized: "Pause recognition after silence"),
+          detail: String(
+            localized:
+              "After this much silence the Apple engine goes idle. Recognition resumes when you start speaking again."
+          ),
+          seconds: model.settings.toggleSilenceSec,
+          value: $model.toggleSilenceSlider,
+          range: 0.5...30,
+          step: 0.5
+        )
+
+        LabSecondsSlider(
+          title: String(localized: "Whisper context length"),
+          detail: String(
+            localized:
+              "How much of the recording the local Whisper model sees when it refines the transcript. Refinement runs in Local power and Cloud, never in Apple only."
+          ),
+          seconds: model.settings.whisperContextWindowSec,
+          value: $model.whisperContextWindowSlider,
+          range: 0.5...10,
+          step: 0.5
+        )
+
+        LabSecondsSlider(
+          title: String(localized: "Sentence pause"),
+          detail: String(
+            localized:
+              "A longer gap in speech may be treated as a sentence boundary during automatic text formatting."
+          ),
+          seconds: model.settings.lightPlusSentencePauseSec,
+          value: $model.lightPlusSentencePauseSlider,
+          range: 0.3...2.0,
+          step: 0.1
+        )
+
+        Text(
+          "This build decodes Whisper refinement on a fixed capture-clock window, so the context length is stored but not read."
+        )
+        .font(CSFont.ui(11))
+        .foregroundStyle(Color.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      }
+      .settingsGroupedInset()
+    }
+  }
+}
+
+/// One labelled seconds slider: title, the one line that says what it changes,
+/// and the live value. Shared shape for the Lab recognition parameters.
+private struct LabSecondsSlider: View {
+  let title: String
+  let detail: String
+  /// The persisted value, so the label shows what the core accepted.
+  let seconds: Float
+  @Binding var value: Double
+  let range: ClosedRange<Double>
+  let step: Double
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(alignment: .firstTextBaseline, spacing: 12) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(CSFont.ui(13, .semibold))
+            .foregroundStyle(Color.primary)
+          Text(detail)
+            .font(CSFont.ui(11.5))
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        Text(valueLabel)
+          .font(CSFont.mono(11, .semibold))
+          .foregroundStyle(Color.primary)
+      }
+      Slider(value: $value, in: range, step: step)
+        .tint(CSColor.chromeAccent)
+        .accessibilityLabel(title)
+        .accessibilityValue(valueLabel)
+    }
+  }
+
+  /// Seconds without a trailing zero: `5 s`, `1.5 s` — never `5.0 s`.
+  private var valueLabel: String {
+    String(
+      localized: "\(seconds, format: Self.seconds) s",
+      comment: "Slider value in seconds. The placeholder is the number; keep the unit abbreviated")
+  }
+
+  private static let seconds = FloatingPointFormatStyle<Float>.number
+    .precision(.fractionLength(0...1))
 }

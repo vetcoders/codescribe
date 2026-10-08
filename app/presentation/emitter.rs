@@ -152,6 +152,8 @@ pub enum ReducerAction {
         entry: TranscriptDocumentEntry,
     },
     RecordLedgerSeal {
+        word_finality:
+            Vec<codescribe_core::pipeline::acoustic_ledger::word_adjudication::WordFinality>,
         occurrence: OccurrenceIdentity,
         seal_receipt: String,
         terminal: bool,
@@ -338,7 +340,7 @@ impl TranscriptRevision {
                     || receipt.left_context != left_context
                     || receipt.left_context_sha256
                         != hex::encode(Sha256::digest(left_context.as_bytes()))
-                    || !ledger.incremental_shapings().contains(receipt)
+                    || !ledger.authenticates_incremental_shaping(receipt)
                     || receipt.source_seal_receipt.as_ref().is_some_and(|id| {
                         ledger
                             .seal_of(&entry.occurrence)
@@ -367,8 +369,10 @@ impl TranscriptRevision {
                 occurrence,
                 seal_receipt,
                 terminal,
+                word_finality,
             } => ledger.seal_receipt(seal_receipt).is_some_and(|seal| {
-                seal.is_occurrence_seal() != *terminal
+                seal.word_finality == *word_finality
+                    && seal.is_occurrence_seal() != *terminal
                     && seal.sealed_occurrences.first() == Some(occurrence)
                     && seal
                         .sealed_occurrences
@@ -1634,6 +1638,7 @@ impl TranscriptReducer {
             self.terminal_sealed = true;
         }
         Some(self.revision_for_action(ReducerAction::RecordLedgerSeal {
+            word_finality: receipt.word_finality.clone(),
             occurrence,
             seal_receipt: receipt.receipt_id.clone(),
             terminal: !receipt.is_occurrence_seal(),
@@ -11096,15 +11101,18 @@ mod tests {
     #[tokio::test]
     async fn forensic_merge_five_decoded_iwo_survive_through_delivery() {
         let mut lost = Vec::new();
-        for (adaptive, contracted) in [(false, false), (true, false), (false, true), (true, true)] {
-            let session = match (adaptive, contracted) {
+        for (fragmented_ingress, contracted) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let session = match (fragmented_ingress, contracted) {
                 (false, false) => "B45-coarse-windows",
-                (true, false) => "B45-coarse-adaptive",
+                (true, false) => "B45-coarse-fragmented",
                 (false, true) => "B45-pinned-windows",
-                (true, true) => "B45-pinned-adaptive",
+                (true, true) => "B45-pinned-fragmented",
             };
             let trace = codescribe_core::pipeline::streaming::forensic_word_conservation_trace(
-                adaptive, contracted,
+                fragmented_ingress,
+                contracted,
             );
             assert_eq!(trace.len(), 4);
             let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
@@ -11165,12 +11173,10 @@ mod tests {
                     ledger.is_sealed(&owner),
                 )
             };
-            if !contracted {
-                assert_eq!(
-                    sealed, adaptive,
-                    "accepted replay: both Adaptive jobs returned; two Windows jobs cancelled"
-                );
-            }
+            assert!(
+                !sealed,
+                "{session}: the cancelled EOF residual cannot supply seal evidence"
+            );
 
             let delivered = fixture.delivery.lock().await.clone();
 
@@ -11181,7 +11187,7 @@ mod tests {
 
             let count = raw.split_whitespace().filter(|word| *word == "Iwo").count();
             if count != 5 {
-                lost.push((adaptive, contracted, count));
+                lost.push((fragmented_ingress, contracted, count));
             }
             assert_eq!(
                 last.text, "Iwo Iwo Iwo Iwo Iwo",
@@ -12702,6 +12708,7 @@ mod tests {
                         offered_slots: None,
                         slot_revision: false,
                         capture_rate_hz: None,
+                        non_mutating: None,
                     }),
                     result_slots: ledger.slots_of(&occurrence).unwrap().to_vec(),
                     revision_before: None,

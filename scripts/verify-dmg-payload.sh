@@ -399,6 +399,9 @@ if actual != listed:
     raise SystemExit(f"manifest coverage mismatch: {sorted(actual ^ listed)}")
 required = {
     "bin/bus-demux.py",
+    "bin/codescribe",
+    "bin/cs-bus",
+    "bin/cs-say",
     "skills/codescribe/SKILL.md",
     "skills/codescribe/README.md",
     "skills/codescribe/FLOW.md",
@@ -417,6 +420,21 @@ PY
     ok "agent bridge $AGENT_BRIDGE_VERIFY"
   else
     fail "agent bridge payload incomplete: $AGENT_BRIDGE_VERIFY"
+  fi
+
+  PUBLISHER="$APP_PATH/Contents/Resources/agent-bridge/bin/codescribe"
+  if codesign --verify --strict "$PUBLISHER" >/dev/null 2>&1; then
+    PUBLISHER_SIGNATURE="$(codesign -dv --verbose=4 "$PUBLISHER" 2>&1)"
+    if printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^TeamIdentifier=MW223P3NPX$' \
+      && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^Authority=Developer ID Application:' \
+      && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q 'flags=.*runtime' \
+      && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^Timestamp='; then
+      ok "canonical publisher has its own timestamped hardened Developer ID signature"
+    else
+      fail "canonical publisher signature lacks the release identity, runtime or timestamp"
+    fi
+  else
+    fail "canonical publisher strict signature verification failed"
   fi
 
   # Model resource payload — asserted in whichever direction the build intended.

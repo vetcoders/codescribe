@@ -27,7 +27,7 @@ use crate::stt::tail_provider::{
 use crate::stt::tail_provider::{TailProviderPayload, TailProviderRequest};
 
 /// Actual execution handles outlive result receivers and ledger accounting.
-/// Both live requests and terminal gaps use this session-owned spawn seam.
+/// Live and Stop requests from the same PCM plan share this spawn seam.
 /// No closure captures the owner itself: the last owner may safely join in Drop.
 #[derive(Default)]
 pub(crate) struct LocalExecutionOwner {
@@ -36,22 +36,9 @@ pub(crate) struct LocalExecutionOwner {
 }
 
 impl LocalExecutionOwner {
-    pub(super) fn check(&self) -> Result<()> {
-        self.control.check()
-    }
-
     pub(super) fn begin_drain(&self, budget: std::time::Duration) -> std::time::Instant {
         let deadline = std::time::Instant::now() + budget;
         self.control.limit_until(deadline)
-    }
-
-    /// Stop-path text recovery budget. Unlike [`Self::begin_drain`], this
-    /// replaces the deadline: recovery runs after the live tail-patch drain
-    /// and must not inherit a clock that drain already spent. Cancellation
-    /// stays in force.
-    pub(super) fn begin_text_recovery(&self, budget: std::time::Duration) -> std::time::Instant {
-        self.control
-            .replace_deadline(std::time::Instant::now() + budget)
     }
 
     pub(crate) fn spawn<T, F>(&self, work: F) -> Result<tokio::sync::oneshot::Receiver<Result<T>>>
@@ -688,15 +675,29 @@ pub async fn collect_buffered_engine_events_with_config(
     samples: &[f32],
     config: SessionConfig,
 ) -> Result<Vec<EngineEvent>> {
+    let collector = Arc::new(SessionEventCollector::new());
+    replay_buffered_engine_session(samples, config, collector.clone()).await?;
+    Ok(collector.events())
+}
+
+/// Replay paced PCM through the live dispatcher with its presentation owner.
+///
+/// Formatter obligations must be returned synchronously by the live emitter;
+/// collecting events for later projection cannot exercise that protocol.
+/// Audio ingress is the only replaced boundary. This opens no capture device.
+pub async fn replay_buffered_engine_session(
+    samples: &[f32],
+    config: SessionConfig,
+    event_sink: Arc<dyn EventSink>,
+) -> Result<()> {
     if samples.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let chunk_size = ((config.sample_rate as f32) * 0.1).round().max(1.0) as usize;
     let (tx, rx) = mpsc::channel::<Vec<f32>>(8);
-    let collector = Arc::new(SessionEventCollector::new());
-    let event_sink: Arc<dyn EventSink> = collector.clone();
     let session = tokio::spawn(transcription_session(rx, event_sink, config));
+    let replay_started = std::time::Instant::now();
 
     for chunk in samples.chunks(chunk_size) {
         if tx.send(chunk.to_vec()).await.is_err() {
@@ -712,12 +713,18 @@ pub async fn collect_buffered_engine_events_with_config(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     drop(tx);
+    let capture_finished = std::time::Instant::now();
 
     session
         .await
         .map_err(|e| anyhow!("Transcription session join error: {}", e))?;
+    tracing::info!(
+        feed_ms = capture_finished.duration_since(replay_started).as_millis(),
+        closure_ms = capture_finished.elapsed().as_millis(),
+        "buffered live replay timing"
+    );
 
-    Ok(collector.events())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1183,21 +1190,13 @@ mod local_execution_tests {
     }
 
     #[test]
-    fn text_recovery_budget_replaces_an_expired_live_drain() {
+    fn expired_capture_drain_cannot_be_reopened_by_another_phase() {
         let owner = LocalExecutionOwner::default();
-        let expired = owner.begin_drain(Duration::ZERO);
+        let deadline = owner.begin_drain(Duration::ZERO);
         assert!(owner.spawn(|_| Ok(())).is_err());
-        let recovery = owner.begin_text_recovery(Duration::from_secs(20));
-        assert!(recovery > expired);
-        let receiver = owner
-            .spawn(|_| Ok(7u8))
-            .expect("a fresh recovery budget admits work the live drain already refused");
-        assert_eq!(receiver.blocking_recv().unwrap().unwrap(), 7);
-        assert_eq!(
-            owner.begin_drain(Duration::from_secs(60)),
-            recovery,
-            "begin_drain still cannot move the recovery deadline later"
-        );
+        assert_eq!(owner.begin_drain(Duration::from_secs(20)), deadline);
+        assert!(owner.spawn(|_| Ok(7u8)).is_err());
+        assert_eq!(owner.begin_drain(Duration::from_secs(60)), deadline);
     }
 
     #[test]

@@ -7,9 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-- Add the localization foundation for the macOS app: String Catalogs with English as the source language, catalog sync and lint tooling, and interface copy prepared for further languages (`docs/LOCALIZATION.md`). No translation ships yet. Tray status wording is now authored in the app; the Rust tray payload carries state only.
+- Interface language in Settings. Settings → Creator → Interface language switches the app between Polski and English on the same per-app macOS preference the setup wizard writes, with the same idle-guarded restart (no relaunch while a recording or an agent turn is running). Before, the language could only be chosen on the wizard's first screen or in System Settings (`docs/LOCALIZATION.md` §1, `docs/guide/settings.md`).
+- Settings › Audio is headlined “Microphone and recording” and says what it does instead of how it stores it: `settings.json` and Core Audio leave the basic descriptions, the microphone row states which microphone records and what happens when it is unplugged, “Refresh” becomes “Refresh microphones” because it refreshes devices and not the readiness checks, and “Use the system microphone” no longer repeats itself in a sentence beside the button. Recording readiness keeps all four states and their conditions: the committing row carries one name in every state with the switch state written out (an override still reads as read-only), while the stored calibration profile, measured device, sample rate, loader verdict and calibration file move into a collapsed “Calibration details”. The ready row names the configured Dictation gesture only when Hotkeys binds one. The retention sentence now follows the selected choice — “Forever” no longer carries the discard warning that belongs to “Off”, and an unknown stored value reads as Forever, exactly as the config loader resolves it. The sound section is “Recording start signal”, with its toggle and volume slider unchanged.
+- Dictation › Privacy is rewritten as three sections instead of one block of paragraphs. **Cloud status** shows the selected mode and the stored consent record as two separate rows, so a saved grant is no longer read as "audio is leaving now". **What can leave this Mac** names both audio egresses — cloud recognition in Cloud mode, and an explicit cloud re-transcription of a recording — next to the text sent with AI requests. **Privacy details** bounds the cloud diagnostics to the identifiers and counters the session actually records, says that the keys you configure live in the macOS Keychain, limits the no-vendor-key promise to the gateway lane, and states that choosing `Local power` downloads nothing.
+- The hands-free dictation tab is gone. Its three timings — pause recognition after silence, Whisper context length and sentence pause — now sit in one **Speech recognition parameters** group on the **Lab** desk, which only appears in builds with the developer surface baked in. Ranges, defaults and the promoted config keys are unchanged.
+- Settings › Dictation › Preview: the pace picker says in one line what each choice means; “Off” is now “No preview” and writes only the overlay switch; “Custom” opens the four sliders (collapsed under “Detailed settings” otherwise), turns the preview back on without touching the stored values, and any manual slider move reads back as Custom. Slider labels name what they control, values use the locale’s number format, and the tab no longer claims that these settings leave the committed transcript untouched.
+- Settings › Dictation › Engine and Whisper model: the mode picker comes first with a one-line description of the selected mode; the read-only rows are named for what they are (last transcription engine, local Whisper model only in Local power, spoken language as “Polish (pl)”) and no longer show a readiness dot before any transcription. The Whisper tab is grouped into selected model, other detected models and disk space; paths, sources and raw validation errors move into a collapsed “Model details” section, refusal reasons and storage states read as plain sentences, “Check model” re-reads install state, catalog and disk together, and the selected model says why it cannot be removed.
+- The channel roster no longer reports a listening agent as absent once its session file grows past a few kilobytes, and the previews of a message now leave the agent's mailbox once that message is acknowledged, instead of piling up for the rest of the session.
+- Add the localization foundation for the macOS app: String Catalogs with English as the source language, catalog sync and lint tooling, and interface copy prepared for further languages (`docs/LOCALIZATION.md`). Tray status wording is now authored in the app; the Rust tray payload carries state only.
+- Polish interface. The app follows the macOS language; every interface string and permission prompt has a Polish translation. Text that Rust produces (status rows, error causes, notifications, thread export) stays English in this cut (`docs/LOCALIZATION_LEDGER.md` §4).
+- Translator worksheet (`scripts/l10n-sheet.py`, `make l10n-sheet`): exports a CSV per catalog and language and folds it back, refusing rows that drop an argument or misspell the product. The catalog lint now requires every language the bundle carries to be complete.
 - Turning the transcription overlay off closes an overlay already on screen (a take being corrected stays until its draft is committed or discarded), and a status card shown with the overlay off no longer stays up when "Keep visible between takes" is pinned.
 - A second click on the menu bar icon closes the menu; it no longer closes and reopens it within the same click.
+- `make install-bus` builds again. The installer source compiles on its own, so helpers and already selected skills install from source without rebuilding the app. `make verify-install-bus` compiles that source by itself and runs in CI, so an app-only type in the installer file fails the build instead of the next helper install.
+- Agent voice channel handover (`cs-bus`). `--detach` releases the channels of the calling session; `--attach --takeover` claims a digit held by a previous session of the same agent name, also across providers, and never one bound to a different name. Retirement requires a verified reader and a drained source cursor; unread work or uncertain identity leaves ownership intact. The new binding is published only after reader readiness. Failure receipts distinguish unchanged routing from an uncertain binding write and report the measured reader state. Previous unacknowledged takes are listed and read on demand with `--read-delivery <id> --lease <previous-lease-id>`; nothing is replayed or acknowledged for them (`skills/codescribe/references/attach.md`).
 
 ## Release reality
 
@@ -20,10 +31,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | `0.14.1` | 2026-08-18 onward    | Earlier source/release-candidate milestone.                                      |
 | `0.15.1` | 2026-09-13           | Earlier source/daily-build milestone.                                            |
 | `0.15.2` | 2026-10-04           | **Latest published GitHub Release** (`v0.15.2`), signed, notarized, and stapled. |
+| `0.16.0` | 2026-10-07           | Source/daily-build candidate; no public `0.16.0` artifact is published.          |
 
 The sections below distinguish code milestones from public releases. A version
 number in `Cargo.toml` is not evidence that a DMG, tag, appcast, or GitHub
 Release exists.
+
+## [0.16.0] - 2026-10-07
+
+Source/daily-build candidate. The pre-bump verified installation is
+**0.15.3 / build 2115**; it is not a `0.16.0` installation or public release.
+Installation, native acceptance and distribution of `0.16.0` require their own
+receipts. The published download remains `v0.15.2`.
+
+- Keep mini, MIDI and expanded presentations in the existing floating panel.
+  Mini retains the brand, microphone and fold control; MIDI reveals the wider
+  header, and the transcription preference controls automatic expansion.
+- Present the agent drawer above the retained transcript or conversation,
+  with an explicit route to transcription and native audio controls. Per-agent
+  mute, durable reply text, explicit replay and archived conversations remain
+  separate from microphone routing.
+- Bound roster and delivery metadata reads, reuse unchanged source projections,
+  and publish provider/model labels only from metadata validated against the
+  exact provider session. Keep the recording clock's updates outside the
+  conversation projection.
+- Preserve the parked mini origin when MIDI borrows width or is screen-clamped;
+  a real MIDI drag moves the parked mini by the same displacement. Closing and
+  reopening restores that mini position.
+- Keep archived conversations available to cold readers and serialize archive
+  commands through the existing bridge command owner.
+- Deliver complete task text and sender provenance to agent conversations;
+  keep acoustic diagnostics in the original JSON history. Reading and
+  acknowledging a message preserves every PCM occurrence and its receipt.
+
+## [0.15.3] - 2026-10-05
+
+Release candidate. Public DMG, notarization and installation receipts are recorded
+separately; these source notes alone do not certify publication.
+
+- View My dictation, 0 · All and named agent conversations in the existing
+  overlay. Viewing retains the editor and does not change microphone routing.
+- Keep agent replies as durable text before attempting speech. Queue admission,
+  acknowledgment and playback outcomes remain separate; failed speech retains
+  the reply. Explicit Play/Stop controls one reply and its playback ticket.
+- Preserve original question and recipient ownership across channel rebinding,
+  renaming and mailbox pruning. Broadcast recipients freeze at capture start;
+  late attachments do not inherit an earlier question.
+- Restore conversation and delivery projections on a quiet restart, and retain
+  logical cursors across managed bus rotation. Delayed playback receipts cannot
+  rearm a superseded ticket.
+- Bundle the canonical bus publisher with the app and verify its manifest after
+  signing, so installed helpers work outside a development checkout.
+- Avoid discovering unused optional model caches during slim builds. Silero
+  remains embedded; Whisper remains available through runtime download/cache.
+- Point search discovery at the canonical website and include Fleet, licensing
+  and Voice Lab routes in its sitemap.
 
 ## [0.15.2] - 2026-10-04
 

@@ -267,3 +267,44 @@ fn dir_subcommand_falls_back_to_the_repo_drop_dir_on_a_clean_checkout() {
         "a clean public checkout must still yield a usable directory"
     );
 }
+
+#[test]
+fn early_fixture_selection_waits_for_candidate_output() {
+    let explicit = repo_root().join("tests");
+    for (args, expected) in [
+        (vec!["data_assets_dir"], explicit.clone()),
+        (
+            vec!["resolve_data_asset", "data_assets_resolution.rs"],
+            explicit.join("data_assets_resolution.rs"),
+        ),
+    ] {
+        let out = Command::new("bash")
+            .args([
+                "-c",
+                r#"
+set -euo pipefail
+# An ignored SIGPIPE makes a late builtin write report EPIPE rather than die silently.
+trap '' PIPE
+source "$1"
+# Delay the real last-tier lookup until the first-tier reader can return.
+dirname() { sleep 0.05; command dirname "$@"; }
+shift
+"$@"
+"#,
+                "data-assets-pipe-test",
+            ])
+            .arg(resolver())
+            .args(&args)
+            .current_dir(repo_root())
+            .env("CODESCRIBE_DATA_ASSETS", &explicit)
+            .output()
+            .expect("run delayed fixture resolution");
+        assert!(out.status.success(), "{args:?}: {}", stderr_of(&out));
+        assert_eq!(stdout_of(&out), expected.to_string_lossy());
+        assert!(
+            out.stderr.is_empty(),
+            "{args:?} must not leave a candidate writer on a closed pipe: {}",
+            stderr_of(&out)
+        );
+    }
+}

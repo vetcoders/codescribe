@@ -36,7 +36,9 @@ struct ToolOverridesBrowser: View {
           ScrollView {
             LazyVStack(alignment: .leading, spacing: CSSpace.sm) {
               ForEach(current.items) { item in
-                ToolCapabilityRow(item: item, level: $model[toolLevel: item.identity])
+                ToolCapabilityRow(
+                  item: item, level: $model[toolLevel: item.identity],
+                  restoreInheritance: { model.clearToolPermission(identity: item.identity) })
               }
             }
           }

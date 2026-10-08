@@ -37,6 +37,7 @@ use crate::safe_path;
 
 use super::embedded::EmbeddedModel;
 use super::params::DecodingParams;
+use crate::stt::tail_provider::TailExecutionObservation;
 
 fn candle_config(architecture: crate::whisper_weights::WhisperArchitecture) -> Config {
     Config {
@@ -391,6 +392,112 @@ struct EngineRequest<'a> {
     previous_prompt: Option<String>,
 }
 
+struct WhisperEncoderExecutionReceipt<'a> {
+    observation: &'a TailExecutionObservation,
+    encoder_stage: &'static str,
+    encoder_input_samples_16k: usize,
+    started: std::time::Instant,
+    finished: bool,
+}
+
+impl<'a> WhisperEncoderExecutionReceipt<'a> {
+    fn start(
+        observation: &'a TailExecutionObservation,
+        encoder_stage: &'static str,
+        encoder_input_samples_16k: usize,
+    ) -> Self {
+        let receipt = Self {
+            observation,
+            encoder_stage,
+            encoder_input_samples_16k,
+            started: std::time::Instant::now(),
+            finished: false,
+        };
+        receipt.log_started();
+        receipt
+    }
+
+    fn log_started(&self) {
+        let observation = self.observation;
+        let identity = &observation.identity;
+        tracing::info!(
+            event = "whisper_encoder_invocation_started",
+            execution_id = %observation.execution_id,
+            encoder_stage = self.encoder_stage,
+            session_id = %identity.range.session,
+            capture_epoch = identity.range.capture_epoch,
+            request_id = identity.request_id,
+            sample_start = identity.range.sample_start,
+            sample_end = identity.range.sample_end,
+            source_input_samples = observation.source_input_samples,
+            source_sample_rate_hz = observation.sample_rate,
+            source_input_duration_ms = sample_duration_ms(
+                observation.source_input_samples,
+                observation.sample_rate,
+            ),
+            vad_compacted_input_samples = observation.vad_compacted_input_samples,
+            vad_compacted_sample_rate_hz = observation.sample_rate,
+            vad_compacted_input_duration_ms = sample_duration_ms(
+                observation.vad_compacted_input_samples,
+                observation.sample_rate,
+            ),
+            encoder_input_samples = self.encoder_input_samples_16k,
+            encoder_input_sample_rate_hz = whisper::SAMPLE_RATE,
+            encoder_input_duration_ms = sample_duration_ms(
+                self.encoder_input_samples_16k,
+                whisper::SAMPLE_RATE as u32,
+            ),
+            "Whisper encoder invocation started"
+        );
+    }
+
+    fn finish(mut self, outcome: &'static str) {
+        self.log_finished(outcome);
+        self.finished = true;
+    }
+
+    fn log_finished(&self, outcome: &'static str) {
+        let observation = self.observation;
+        let identity = &observation.identity;
+        tracing::info!(
+            event = "whisper_encoder_invocation_finished",
+            execution_id = %observation.execution_id,
+            encoder_stage = self.encoder_stage,
+            session_id = %identity.range.session,
+            capture_epoch = identity.range.capture_epoch,
+            request_id = identity.request_id,
+            sample_start = identity.range.sample_start,
+            sample_end = identity.range.sample_end,
+            encoder_input_samples = self.encoder_input_samples_16k,
+            encoder_input_sample_rate_hz = whisper::SAMPLE_RATE,
+            encoder_input_duration_ms = sample_duration_ms(
+                self.encoder_input_samples_16k,
+                whisper::SAMPLE_RATE as u32,
+            ),
+            elapsed_ms = self.started.elapsed().as_millis() as u64,
+            outcome,
+            "Whisper encoder invocation finished"
+        );
+    }
+}
+
+impl Drop for WhisperEncoderExecutionReceipt<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.log_finished("aborted");
+            self.finished = true;
+        }
+    }
+}
+
+fn sample_duration_ms(samples: usize, sample_rate: u32) -> f64 {
+    if sample_rate == 0 {
+        0.0
+    } else {
+        samples as f64 * 1_000.0 / sample_rate as f64
+    }
+}
+
 impl Drop for EngineRequest<'_> {
     fn drop(&mut self) {
         self.engine.decoding_params.initial_prompt = self.previous_prompt.take();
@@ -399,6 +506,26 @@ impl Drop for EngineRequest<'_> {
 }
 
 impl LocalWhisperEngine {
+    fn encoder_forward_observed(
+        &mut self,
+        mel: &Tensor,
+        encoder_input_samples_16k: usize,
+        encoder_stage: &'static str,
+        control: &crate::stt::LocalExecutionControl,
+    ) -> Result<Tensor> {
+        let Some(observation) = control.tail_execution_observation() else {
+            return Ok(self.model.encoder.forward(mel, true)?);
+        };
+        let receipt = WhisperEncoderExecutionReceipt::start(
+            observation,
+            encoder_stage,
+            encoder_input_samples_16k,
+        );
+        let output = self.model.encoder.forward(mel, true);
+        receipt.finish(if output.is_ok() { "success" } else { "failure" });
+        Ok(output?)
+    }
+
     /// One cleanup corridor for public file calls and controlled local repair.
     /// Restores prompt and cache on success, cancellation, error, and unwind.
     pub(crate) fn with_request<R>(
@@ -1215,6 +1342,21 @@ impl LocalWhisperEngine {
         self.detect_language_16k(&samples)
     }
 
+    fn mel_tensor_16k(&self, samples_16k: &[f32]) -> Result<Tensor> {
+        let mel = whisper::audio::pcm_to_mel(&self.config, samples_16k, &self.mel_filters);
+        let mel_len = mel.len();
+        Ok(Tensor::from_vec(
+            mel,
+            (
+                1,
+                self.config.num_mel_bins,
+                mel_len / self.config.num_mel_bins,
+            ),
+            &self.device,
+        )?
+        .to_dtype(self.model.decoder.dtype())?)
+    }
+
     /// Language detection on already-16 kHz samples.
     ///
     /// Runs a single decoder step over the mel window and picks the highest
@@ -1239,21 +1381,21 @@ impl LocalWhisperEngine {
 
         self.model.reset_kv_cache();
 
-        let mel = whisper::audio::pcm_to_mel(&self.config, samples, &self.mel_filters);
-        let mel_len = mel.len();
-        let mel = Tensor::from_vec(
-            mel,
-            (
-                1,
-                self.config.num_mel_bins,
-                mel_len / self.config.num_mel_bins,
-            ),
-            &self.device,
-        )?
-        .to_dtype(self.model.decoder.dtype())?;
+        let mel = self.mel_tensor_16k(samples)?;
 
         control.check()?;
-        let encoder_output = self.model.encoder.forward(&mel, true)?;
+        let encoder_output =
+            self.encoder_forward_observed(&mel, samples.len(), "language_detection", control)?;
+        control.check()?;
+
+        self.detect_language_from_encoder_output(&encoder_output, control)
+    }
+
+    fn detect_language_from_encoder_output(
+        &mut self,
+        encoder_output: &Tensor,
+        control: &crate::stt::LocalExecutionControl,
+    ) -> Result<String> {
         control.check()?;
 
         let start_token = self
@@ -1265,7 +1407,7 @@ impl LocalWhisperEngine {
         let last_logits = self
             .model
             .decoder
-            .next_token_logits(&token_tensor, &encoder_output, true)?
+            .next_token_logits(&token_tensor, encoder_output, true)?
             .squeeze(0)?;
         let logits_vec = last_logits.to_vec1::<f32>()?;
         control.check()?;
@@ -1311,6 +1453,23 @@ impl LocalWhisperEngine {
         debug_tokens: bool,
         control: &crate::stt::LocalExecutionControl,
     ) -> Result<RawTranscript> {
+        self.transcribe_samples_16k_raw_with_encoder(
+            samples_16k,
+            language,
+            debug_tokens,
+            control,
+            None,
+        )
+    }
+
+    fn transcribe_samples_16k_raw_with_encoder(
+        &mut self,
+        samples_16k: &[f32],
+        language: Option<&str>,
+        debug_tokens: bool,
+        control: &crate::stt::LocalExecutionControl,
+        precomputed_encoder_output: Option<Tensor>,
+    ) -> Result<RawTranscript> {
         control.check()?;
         ensure!(!samples_16k.is_empty(), "audio is empty");
 
@@ -1323,19 +1482,11 @@ impl LocalWhisperEngine {
 
         self.model.reset_kv_cache();
 
-        // Convert to mel
-        let mel = whisper::audio::pcm_to_mel(&self.config, samples_16k, &self.mel_filters);
-        let mel_len = mel.len();
-        let mel = Tensor::from_vec(
-            mel,
-            (
-                1,
-                self.config.num_mel_bins,
-                mel_len / self.config.num_mel_bins,
-            ),
-            &self.device,
-        )?
-        .to_dtype(self.model.decoder.dtype())?;
+        let mel = if precomputed_encoder_output.is_none() {
+            Some(self.mel_tensor_16k(samples_16k)?)
+        } else {
+            None
+        };
 
         // Decode
         let start_token = self
@@ -1413,9 +1564,17 @@ impl LocalWhisperEngine {
         let mut all_tokens = Vec::new();
         let mut token_logprobs: Vec<f32> = Vec::new();
 
-        // Run encoder once
+        // Reuse a tail-prepared output or encode this input once here.
         control.check()?;
-        let encoder_output = self.model.encoder.forward(&mel, true)?;
+        let encoder_output = match precomputed_encoder_output {
+            Some(encoder_output) => encoder_output,
+            None => {
+                let mel = mel
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("Whisper mel missing for encoder forward"))?;
+                self.encoder_forward_observed(mel, samples_16k.len(), "transcription", control)?
+            }
+        };
         control.check()?;
 
         // Decoder loop – allow up to the configured maximum target positions minus initial tokens
@@ -1639,17 +1798,46 @@ impl LocalWhisperEngine {
         if samples.is_empty() {
             return Ok((RawTranscript::default(), None));
         }
-        let detected_lang;
-        let language = match language {
-            Some(lang) => Some(lang),
-            None => {
-                detected_lang = self.detect_language_16k_controlled(&samples, control)?;
-                Some(detected_lang.as_str())
-            }
-        };
-        self.capture_word_alignment = true;
+        // Keep this encoder-inclusive boundary: the metric covers tail
+        // inference after resampling through raw decode, including language
+        // selection when needed.
+        // Word alignment is measured separately below; the execution receipt
+        // remains the full provider-job duration.
         let decode_started = std::time::Instant::now();
-        let transcript = self.transcribe_samples_16k_raw(&samples, language, false, control);
+        let (detected_lang, encoder_output) = match language {
+            Some(_) => (None, None),
+            None if samples.len() <= 16_000usize * 30 => {
+                self.model.reset_kv_cache();
+                let mel = self.mel_tensor_16k(&samples)?;
+                control.check()?;
+                let encoder_output = self.encoder_forward_observed(
+                    &mel,
+                    samples.len(),
+                    "tail_language_and_transcription",
+                    control,
+                )?;
+                control.check()?;
+                let detected =
+                    self.detect_language_from_encoder_output(&encoder_output, control)?;
+                (Some(detected), Some(encoder_output))
+            }
+            None => (
+                Some(self.detect_language_16k_controlled(&samples, control)?),
+                None,
+            ),
+        };
+        let language = language.or(detected_lang.as_deref());
+        self.capture_word_alignment = true;
+        let transcript = match encoder_output {
+            Some(encoder_output) => self.transcribe_samples_16k_raw_with_encoder(
+                &samples,
+                language,
+                false,
+                control,
+                Some(encoder_output),
+            ),
+            None => self.transcribe_samples_16k_raw(&samples, language, false, control),
+        };
         let decode_ms = decode_started.elapsed().as_millis() as u64;
         self.capture_word_alignment = false;
         let transcript = transcript?;
@@ -1657,6 +1845,7 @@ impl LocalWhisperEngine {
         let words = self.align_captured_words(language)?;
         tracing::info!(
             decode_ms,
+            decode_scope = "tail_inference_after_resampling_before_alignment",
             align_ms = align_started.elapsed().as_millis() as u64,
             word_pins = words.as_ref().map_or(0, Vec::len),
             "tail_window_latency"

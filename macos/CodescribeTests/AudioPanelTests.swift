@@ -10,6 +10,71 @@ final class AudioPanelTests: XCTestCase {
     XCTAssertTrue(DictationWhisperModelTab.canRemoveModel(status: "broken"))
   }
 
+  func testStorageStatusCodesMapToReadableLabelsAndUnknownStaysVerbatim() {
+    XCTAssertEqual(DictationWhisperModelTab.statusLabel("active"), "Selected")
+    XCTAssertEqual(DictationWhisperModelTab.statusLabel("usable"), "Ready")
+    XCTAssertEqual(DictationWhisperModelTab.statusLabel("refused"), "Refused")
+    XCTAssertEqual(DictationWhisperModelTab.statusLabel("broken"), "Broken")
+    XCTAssertEqual(DictationWhisperModelTab.statusLabel("weird"), "weird")
+  }
+
+  /// Bridge refusal prose is English; the row shows one plain sentence and
+  /// keeps the raw text for the details disclosure.
+  func testRefusalReasonsCollapseToPlainSentences() {
+    XCTAssertEqual(
+      DictationWhisperModelTab.reasonSummary(
+        "Quantized weights are not supported by the local engine"),
+      "The local engine does not support quantized (Q8) models.")
+    XCTAssertEqual(
+      DictationWhisperModelTab.reasonSummary("invalid Whisper tokenizer at /x/tokenizer.json"),
+      "The model's tokenizer is invalid. See Model details.")
+    XCTAssertEqual(
+      DictationWhisperModelTab.reasonSummary("Whisper tokenizer is missing required token"),
+      "The model's tokenizer is invalid. See Model details.")
+    XCTAssertEqual(
+      DictationWhisperModelTab.reasonSummary("model weights file missing"),
+      "The model files are incomplete. See Model details.")
+    XCTAssertEqual(
+      DictationWhisperModelTab.reasonSummary("something else"),
+      "The model failed validation. See Model details.")
+    XCTAssertEqual(DictationWhisperModelTab.reasonSummary(nil), "Unavailable")
+  }
+
+  /// `loaded` (resident weights) and `resolvedPath` (next load) are distinct
+  /// facts; the row never calls the next load "in use".
+  func testResidencyLabelDistinguishesLoadedFromNextLoad() {
+    let sample = CsWhisperModelCatalog.sample
+    XCTAssertEqual(DictationWhisperModelTab.residencyLabel(sample), "Loaded in memory")
+
+    var pending = sample
+    pending.loaded = nil
+    XCTAssertEqual(
+      DictationWhisperModelTab.residencyLabel(pending),
+      "Not loaded yet · loads on the next recording")
+
+    var switched = sample
+    switched.loaded = sample.options[1].path
+    XCTAssertEqual(
+      DictationWhisperModelTab.residencyLabel(switched),
+      "Loaded in memory: Large v3 · FP16 · next recording loads Large v3 Turbo · FP16")
+
+    var unresolved = sample
+    unresolved.resolvedPath = nil
+    XCTAssertEqual(
+      DictationWhisperModelTab.residencyLabel(unresolved),
+      "The selected model cannot be resolved; the next recording has no model to load.")
+
+    XCTAssertEqual(DictationWhisperModelTab.residencyLabel(nil), "Checking the model catalog…")
+  }
+
+  func testSelectedOptionLabelFallsBackToRawReference() {
+    let sample = CsWhisperModelCatalog.sample
+    XCTAssertEqual(DictationWhisperModelTab.selectedOptionLabel(sample), "Large v3 Turbo · FP16")
+    var orphan = sample
+    orphan.configured = "ghost-model"
+    XCTAssertEqual(DictationWhisperModelTab.selectedOptionLabel(orphan), "ghost-model")
+  }
+
   func testSelectedInputWritesPromotedKeyAndSurvivesSettingsRoundTrip() {
     var writes: [(String, String)] = []
     let liveSnapshot = CsAudioInputSnapshot(
@@ -193,6 +258,83 @@ final class AudioPanelTests: XCTestCase {
     XCTAssertEqual(vadSteps[2].title, "Silero VAD did not load")
   }
 
+  /// The sentence under "Keep completed recordings" describes the SELECTED
+  /// choice. "Forever" used to carry the discard warning that belongs to "Off".
+  func testRetentionSentenceIsAFunctionOfTheSelectedChoice() {
+    let forever = audioRetentionDetail("forever")
+    let off = audioRetentionDetail("off")
+    XCTAssertNotEqual(forever, off)
+    XCTAssertTrue(forever.contains("stays on this Mac"))
+    XCTAssertFalse(forever.contains("discarded"), "indefinite retention is not a discard notice")
+    XCTAssertTrue(off.contains("discarded"))
+
+    XCTAssertTrue(audioRetentionDetail("24h").contains("24 hours"))
+    XCTAssertTrue(audioRetentionDetail("7_days").contains("7 days"))
+    XCTAssertTrue(audioRetentionDetail("30_days").contains("30 days"))
+    XCTAssertEqual(
+      Set([
+        forever, off, audioRetentionDetail("24h"), audioRetentionDetail("7_days"),
+        audioRetentionDetail("30_days"),
+      ]).count,
+      5,
+      "each of the five choices states its own rule")
+
+    // The config loader resolves an unknown value to `forever`; so must the copy.
+    XCTAssertEqual(audioRetentionDetail("whenever"), forever)
+    XCTAssertEqual(audioRetentionDetail(""), forever)
+  }
+
+  /// The stored profile identifier is a diagnostic, not a readiness row. It
+  /// stays reachable under the details disclosure and nowhere else.
+  func testCalibrationProfileIdentifierLivesOnlyInTheDetailsDisclosure() {
+    let profile = "cal1-macbook-pro-microphone-1@48000hz"
+    let rows = audioReadinessSteps(
+      input: .sample,
+      microphonePermission: .granted,
+      admission: .sampleGranted,
+      dictationShortcut: "Hold Fn/Globe"
+    )
+    for row in rows {
+      XCTAssertFalse(row.title.contains(profile), "\(row.id) leaks the profile id")
+      XCTAssertFalse(row.detail.contains(profile), "\(row.id) leaks the profile id")
+    }
+    XCTAssertEqual(rows[1].tone, .healthy)
+    XCTAssertEqual(rows[1].title, "Microphone calibrated")
+
+    let details = audioCalibrationDetails(.sampleGranted)
+    XCTAssertEqual(
+      details.map(\.id), ["device", "sampleRate", "profile", "status", "path"])
+    XCTAssertTrue(details.contains { $0.value == profile })
+    XCTAssertTrue(details.contains { $0.value.contains("48") && $0.value.contains("Hz") })
+
+    // Nothing is invented for a verdict that carries no measurement.
+    XCTAssertTrue(audioCalibrationDetails(nil).isEmpty)
+    let unmeasured = audioCalibrationDetails(.sampleMissing)
+    XCTAssertEqual(unmeasured.map(\.id), ["status", "path"])
+    XCTAssertFalse(unmeasured.contains { $0.id == "profile" })
+  }
+
+  /// Without a bound Dictation gesture the row must not send the user after a
+  /// shortcut they do not have; with one, it keeps the configured name.
+  func testRecordingStartHintNamesTheConfiguredShortcutOrTheButton() {
+    XCTAssertEqual(
+      recordingStartHint("Hold Fn/Globe"), "Press Hold Fn/Globe or click Start recording.")
+    let unbound = recordingStartHint(nil)
+    XCTAssertEqual(unbound, recordingStartHint(""))
+    XCTAssertTrue(unbound.contains("Start recording"))
+    XCTAssertTrue(unbound.contains("Hotkeys"))
+    XCTAssertFalse(unbound.contains("Press"), "no gesture is named when none is bound")
+
+    let rows = audioReadinessSteps(
+      input: .sample,
+      microphonePermission: .granted,
+      admission: .sampleGranted,
+      dictationShortcut: nil
+    )
+    XCTAssertEqual(rows.last?.title, "Ready to record")
+    XCTAssertEqual(rows.last?.detail, unbound)
+  }
+
   func testResetUsesDedicatedUnsetContractNotEmptyStringWrite() {
     var resetCalls = 0
     var writes: [(String, String)] = []
@@ -214,7 +356,7 @@ final class AudioPanelTests: XCTestCase {
     XCTAssertTrue(writes.isEmpty, "reset must not route an empty device string")
   }
 
-  // Hands-free silence (TOGGLE_SILENCE_SEC) is Engine-owned epoch lifecycle;
+  // The silence window (TOGGLE_SILENCE_SEC) is Engine-owned epoch lifecycle;
   // its write contract is asserted in SettingsTruthTests. Audio owns only
   // hardware selection and sound feedback.
   func testAudioKnobsWriteOnlyLiveRuntimeConfigKeys() {
@@ -311,6 +453,61 @@ final class AcousticAdmissionPanelTests: XCTestCase {
     XCTAssertFalse(overrideState.isEnabled, "env override makes Settings read-only")
     XCTAssertTrue(overrideState.detail.contains("CODESCRIBE_SILERO_FUSION"))
     XCTAssertTrue(admissionDisplayState(overrideOff).title.contains("override"))
+  }
+
+  /// One name for the committing row in every state, a readable switch state in
+  /// its sentence, and all four readiness rows still present. The hard VAD
+  /// failure keeps its own title because it is a different fact.
+  func testCommittingRowKeepsOneNameAndSpellsOutTheSwitchState() {
+    let name = "Committing transcript fragments"
+    let settingsOn = readiness(armed: true, settingArmed: true, source: "settings")
+    let settingsOff = readiness(armed: false, settingArmed: false, source: "settings")
+    let overrideOn = readiness(armed: true, settingArmed: false, source: "env_override")
+    let overrideOff = readiness(armed: false, settingArmed: true, source: "env_override")
+
+    let cases: [(String, CsAdmissionReadiness?)] = [
+      ("settings on", settingsOn), ("settings off", settingsOff),
+      ("override on", overrideOn), ("override off", overrideOff),
+      ("checking", nil),
+    ]
+    for (label, admission) in cases {
+      let rows = audioReadinessSteps(
+        input: .sample, microphonePermission: .granted, admission: admission,
+        dictationShortcut: "Hold Fn/Globe")
+      XCTAssertEqual(rows.map(\.id), [.microphone, .calibration, .sealLane, .recording], label)
+      XCTAssertEqual(rows[2].title, name, label)
+      XCTAssertFalse(rows[2].detail.isEmpty, label)
+      XCTAssertFalse(rows[2].title.lowercased().contains("seal"), label)
+    }
+
+    // The same row keeps the name while the microphone step is still open.
+    let denied = audioReadinessSteps(
+      input: .sample, microphonePermission: .denied, admission: settingsOn,
+      dictationShortcut: "Hold Fn/Globe")
+    XCTAssertEqual(denied[2].title, name)
+    XCTAssertEqual(denied[2].tone, .fallback)
+
+    func committingDetail(_ admission: CsAdmissionReadiness) -> String {
+      audioReadinessSteps(
+        input: .sample, microphonePermission: .granted, admission: admission,
+        dictationShortcut: "Hold Fn/Globe")[2].detail
+    }
+    XCTAssertTrue(committingDetail(settingsOn).hasPrefix("On"))
+    XCTAssertTrue(committingDetail(settingsOff).hasPrefix("Off"))
+    XCTAssertTrue(committingDetail(settingsOff).contains("cannot start"))
+    XCTAssertTrue(committingDetail(overrideOn).hasPrefix("On"))
+    XCTAssertTrue(committingDetail(overrideOn).contains("CODESCRIBE_SILERO_FUSION"))
+    XCTAssertTrue(committingDetail(overrideOff).hasPrefix("Off"))
+    XCTAssertTrue(committingDetail(overrideOff).contains("CODESCRIBE_SILERO_FUSION"))
+
+    var broken = readiness(armed: true, settingArmed: true, source: "settings")
+    broken.code = "admission_seal_vad_unavailable"
+    broken.message = "Silero VAD failed to load"
+    let brokenRows = audioReadinessSteps(
+      input: .sample, microphonePermission: .granted, admission: broken,
+      dictationShortcut: "Hold Fn/Globe")
+    XCTAssertEqual(brokenRows[2].title, "Silero VAD did not load")
+    XCTAssertEqual(brokenRows[2].detail, "Silero VAD failed to load")
   }
 
   func testSealLaneActionUsesTheCanonicalConfigWriter() {

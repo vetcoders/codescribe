@@ -241,6 +241,20 @@ impl QualityRecord {
     pub fn is_correction(&self) -> bool {
         self.has_text_change() || self.has_confidence_telemetry()
     }
+
+    /// A revision that changes only its number and metadata, such as a
+    /// dictionary approval, is not a new correction event for ordering. Both
+    /// rows already share one logical identity, so a row written before
+    /// `correction_id` existed that gains its derived ID on revision does not
+    /// count as new content either.
+    fn only_metadata_differs_from(&self, previous: &QualityRecord) -> bool {
+        QualityRecord {
+            correction_id: previous.correction_id.clone(),
+            revision: previous.revision,
+            meta: previous.meta.clone(),
+            ..self.clone()
+        } == *previous
+    }
 }
 
 /// Whitespace runs collapse to single spaces so reflowed text compares equal.
@@ -333,7 +347,10 @@ pub fn recent_quality_records(limit: usize) -> Result<Vec<QualityRecord>> {
     Ok(recent_quality_listing(limit)?.corrections)
 }
 
-/// Newest revision per correction, newest first, unfiltered and unbounded.
+/// Newest revision per correction, unfiltered and unbounded, ordered newest
+/// first by each card's last content revision. A revision that changes only
+/// its number and metadata, such as a dictionary approval, keeps the card in
+/// place; a human edit with new text or timestamp moves it to the front.
 fn read_collapsed_quality_records() -> Result<Vec<(usize, QualityRecord)>> {
     let path = quality_dir().join("corrections.jsonl");
     let file = match File::open(&path) {
@@ -344,7 +361,8 @@ fn read_collapsed_quality_records() -> Result<Vec<(usize, QualityRecord)>> {
         }
     };
 
-    let mut resolved: HashMap<String, (usize, QualityRecord)> = HashMap::new();
+    // Line of the resolved revision, line that orders the card, revision.
+    let mut resolved: HashMap<String, (usize, usize, QualityRecord)> = HashMap::new();
     for (index, line) in BufReader::new(file).lines().enumerate() {
         let line = line.with_context(|| format!("read quality log line {}", index + 1))?;
         if line.trim().is_empty() {
@@ -353,15 +371,18 @@ fn read_collapsed_quality_records() -> Result<Vec<(usize, QualityRecord)>> {
         match serde_json::from_str::<QualityRecord>(&line) {
             Ok(record) => {
                 let logical_id = record.logical_id();
-                let replace = resolved
-                    .get(&logical_id)
-                    .map(|(previous_index, previous)| {
+                let previous = resolved.get(&logical_id);
+                let replace = previous
+                    .map(|(previous_index, _, previous)| {
                         record.revision > previous.revision
                             || (record.revision == previous.revision && index > *previous_index)
                     })
                     .unwrap_or(true);
                 if replace {
-                    resolved.insert(logical_id, (index, record));
+                    let order = previous
+                        .filter(|(_, _, previous)| record.only_metadata_differs_from(previous))
+                        .map_or(index, |(_, order, _)| *order);
+                    resolved.insert(logical_id, (index, order, record));
                 }
             }
             Err(error) => tracing::warn!(
@@ -373,7 +394,10 @@ fn read_collapsed_quality_records() -> Result<Vec<(usize, QualityRecord)>> {
         }
     }
 
-    let mut recent: Vec<_> = resolved.into_values().collect();
+    let mut recent: Vec<_> = resolved
+        .into_values()
+        .map(|(_, order, record)| (order, record))
+        .collect();
     recent.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     Ok(recent)
 }
@@ -3668,5 +3692,57 @@ mod tests {
         assert_eq!(result.from_proposed, 0);
         assert_eq!(result.from_corrections, 0);
         assert_eq!(result.total_rules, 0);
+    }
+
+    #[test]
+    #[serial]
+    fn dictionary_learning_approval_keeps_the_fourth_of_fifty_cards_in_place() {
+        let _fixture = QualityFixture::new("fifty Dictionary correction cards");
+        for index in 0..50 {
+            save_quality_record(&QualityRecord {
+                correction_id: format!("dictionary-page-{index}"),
+                revision: 0,
+                timestamp_ms: index,
+                session_id: None,
+                mode: "overlay".into(),
+                model: None,
+                formatting_level: None,
+                raw_text: "uni agentka".into(),
+                delivered_text: "uni agentka".into(),
+                edited_text: "Junie".into(),
+                avg_logprob: None,
+                speech_pct: None,
+                confidence_flags: vec![],
+                meta: serde_json::json!({"source": "overlay-final", "action": "copy"}),
+            })
+            .expect("persist one original correction");
+        }
+        let before = recent_quality_records(50).expect("original fifty-page listing");
+        assert_eq!(before.len(), 50);
+        let mut approved = before[3].clone();
+        approved.revision += 1;
+        approved.meta = serde_json::json!({
+            "source": "voice-lab",
+            "action": "approve-dictionary",
+            "approved_revision": before[3].revision,
+            "approved_pairs": 1
+        });
+        save_quality_record(&approved).expect("persist approval-only revision");
+        let after = recent_quality_records(50).expect("refresh paginated correction history");
+        assert_eq!(
+            after
+                .iter()
+                .map(QualityRecord::logical_id)
+                .collect::<Vec<_>>(),
+            before
+                .iter()
+                .map(QualityRecord::logical_id)
+                .collect::<Vec<_>>(),
+            "approval must preserve the selected page and its Next neighbour"
+        );
+        assert_eq!(after[3], approved);
+        for index in (0..50).filter(|index| *index != 3) {
+            assert_eq!(after[index], before[index], "other page {index} changed");
+        }
     }
 }

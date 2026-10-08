@@ -397,6 +397,9 @@ pub struct AccountAuthStatus {
     pub client_id_configured: bool,
     /// Operator-facing one-liner for the current state.
     pub message: String,
+    /// Who the stored id token says is signed in (email, else subject), when
+    /// the token carries one. `None` while signed out or without a claim.
+    pub identity: Option<String>,
 }
 
 /// Current sign-in state for one provider, safe to call for any provider.
@@ -419,6 +422,7 @@ pub fn cached_account_status(provider: ProviderKind) -> AccountAuthStatus {
             client_id_configured: client_id_for_provider(provider).is_ok(),
             message: "Account access unavailable. Remove the stored account and sign in again."
                 .into(),
+            identity: None,
         },
     }
 }
@@ -441,10 +445,11 @@ fn project_account_status(
 ) -> AccountAuthStatus {
     let client_id_configured = client_id_for_provider(provider).is_ok();
     let signed_in = tokens.is_some();
+    let identity = tokens.as_ref().and_then(id_token_identity);
     let message = if !client_id_configured {
         NO_CLIENT_ID_MESSAGE.to_string()
-    } else if let Some(tokens) = tokens {
-        match id_token_identity(&tokens) {
+    } else if signed_in {
+        match &identity {
             Some(identity) => format!("signed in as {identity}"),
             None => "signed in".to_string(),
         }
@@ -456,6 +461,7 @@ fn project_account_status(
         signed_in,
         client_id_configured,
         message,
+        identity,
     }
 }
 
@@ -1031,6 +1037,7 @@ mod tests {
         assert!(status.client_id_configured);
         assert!(!status.signed_in);
         assert_eq!(status.message, "not signed in");
+        assert_eq!(status.identity, None);
 
         // 2. Operator override still applies mid-process (settings win).
         UserSettings {
@@ -1064,6 +1071,7 @@ mod tests {
         assert!(status.client_id_configured);
         assert!(status.signed_in);
         assert_eq!(status.message, "signed in as user@example.com");
+        assert_eq!(status.identity.as_deref(), Some("user@example.com"));
     }
 
     /// Identity for the Keys panel comes from the id_token email claim when present.

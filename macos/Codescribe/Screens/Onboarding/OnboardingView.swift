@@ -10,6 +10,7 @@ struct OnboardingView: View {
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.colorScheme) private var colorScheme
 
   @State private var hostWindow: NSWindow?
 
@@ -17,25 +18,24 @@ struct OnboardingView: View {
     content
       .frame(minWidth: 680, minHeight: 560)
       .background {
-        Group {
-          if reduceTransparency {
-            Color(nsColor: .windowBackgroundColor)
-          } else if #available(macOS 26, *) {
-            Color.clear.glassEffect(.regular, in: .rect(cornerRadius: 0))
-          } else {
-            Rectangle().fill(.regularMaterial)
-          }
-        }
+        OverlayCanvasBackdrop(
+          palette: OverlayAppearancePalette.resolve(colorScheme),
+          reduceTransparency: reduceTransparency
+        )
         .ignoresSafeArea()
       }
       .csFocusPolicy()
       .controlSize(.regular)
+      .environment(\.locale, model.interfaceLocale)
       .background(OnboardingWindowReader { hostWindow = $0 })
       .onAppear { model.refreshForCurrentStep() }
+      .onChange(of: model.interfaceLanguage) { _, _ in
+        hostWindow?.title = model.windowTitle
+      }
       .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) {
         notification in
         guard let window = notification.object as? NSWindow, window === hostWindow else { return }
-        model.refreshProviderAccess()
+        model.refreshForCurrentStep()
       }
   }
 
@@ -53,45 +53,73 @@ struct OnboardingView: View {
     }
   }
 
-  private var chapter: (title: String, symbol: String, purpose: String) {
+  private var chapter: (title: String, symbol: String, purpose: String?) {
     switch model.step {
-    case .welcome, .mode:
+    case .interfaceLanguage:
       return (
-        String(localized: "Your voice, a new possibility", comment: "Setup chapter heading"),
-        "waveform",
-        String(localized: "First, choose what you want to do.", comment: "Setup chapter subtitle")
-      )
-    case .permission:
-      return (
-        String(localized: "Make the connection", comment: "Setup chapter heading"),
-        "hand.raised",
         String(
-          localized: "You decide what Codescribe can access.",
-          comment: "Setup chapter subtitle; Codescribe is the product name")
+          localized: LocalizedStringResource(
+            "Choose your language", locale: model.interfaceLocale,
+            comment: "First setup chapter heading")),
+        "globe",
+        nil
+      )
+    case .mode:
+      return (
+        String(
+          localized: LocalizedStringResource(
+            "Choose how you want to use Codescribe.", locale: model.interfaceLocale,
+            comment: "Setup chapter heading")),
+        "waveform",
+        nil
+      )
+    case .permissions:
+      return (
+        String(
+          localized: LocalizedStringResource(
+            "Make the connection", locale: model.interfaceLocale, comment: "Setup chapter heading")),
+        "hand.raised",
+        nil
+      )
+    case .localModel:
+      return (
+        String(
+          localized: LocalizedStringResource(
+            "Transcription on your Mac", locale: model.interfaceLocale,
+            comment: "Setup chapter heading for fully local transcription")),
+        "arrow.down.circle",
+        nil
       )
     case .language, .apiKey, .hotkeyMode:
       return (
-        String(localized: "Make it yours", comment: "Setup chapter heading"),
-        "slider.horizontal.3",
         String(
-          localized: "Your language. Your shortcuts. Your way of working.",
-          comment: "Setup chapter subtitle")
+          localized: LocalizedStringResource(
+            "Your language. Your shortcuts. Your way of working.",
+            locale: model.interfaceLocale, comment: "Setup chapter heading")),
+        "slider.horizontal.3",
+        nil
       )
     case .agenticReadiness:
       return (
-        String(localized: "Give your voice tools", comment: "Setup chapter heading"),
+        String(
+          localized: LocalizedStringResource(
+            "Connect Codescribe to an agent", locale: model.interfaceLocale,
+            comment: "Setup chapter heading"
+          )),
         "sparkles",
         String(
-          localized: "Connect the assistants you want to work with.",
-          comment: "Setup chapter subtitle")
+          localized: LocalizedStringResource(
+            "Choose the agents you want to work with by voice.", locale: model.interfaceLocale,
+            comment: "Setup chapter subtitle"))
       )
     case .done:
       return (
-        String(localized: "Your next thought starts here", comment: "Setup chapter heading"),
-        "checkmark",
         String(
-          localized: "Setup is complete. Your voice takes it from here.",
-          comment: "Setup chapter subtitle")
+          localized: LocalizedStringResource(
+            "Setup is complete.", locale: model.interfaceLocale,
+            comment: "Setup chapter heading")),
+        "checkmark",
+        nil
       )
     }
   }
@@ -110,7 +138,9 @@ struct OnboardingView: View {
           .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 5) {
           Text(chapter.title).font(.headline)
-          Text(chapter.purpose).font(.subheadline).foregroundStyle(.secondary)
+          if let purpose = chapter.purpose {
+            Text(purpose).font(.subheadline).foregroundStyle(.secondary)
+          }
         }
         Spacer(minLength: 0)
       }
@@ -128,14 +158,16 @@ struct OnboardingView: View {
 
   @ViewBuilder private var stepBody: some View {
     switch model.step {
-    case .welcome:
-      WelcomeStepView()
+    case .interfaceLanguage:
+      InterfaceLanguageStepView(model: model)
     case .mode:
       ModeStepView(model: model)
-    case .permission(let kind):
-      PermissionStepView(kind: kind, model: model)
+    case .permissions:
+      PermissionsStepView(model: model)
     case .language:
       LanguageStepView(model: model)
+    case .localModel:
+      LocalModelStepView(model: model)
     case .apiKey:
       ApiKeyStepView(model: model)
     case .hotkeyMode:
@@ -163,14 +195,14 @@ struct OnboardingView: View {
         model.primaryAction()
       }.csAction(prominent: true)
     }
-    .disabled(model.providerMutationPending)
+    .disabled(model.providerMutationPending || model.applyingInterfaceLanguage)
     .padding(.horizontal, CSSpace.page)
     .padding(.vertical, 18)
   }
 }
 
 #if DEBUG
-  #Preview("Onboarding — Welcome") {
+  #Preview("Onboarding — Interface language") {
     OnboardingView(
       model: OnboardingViewModel(
         engine: MockOnboardingEngine(progress: 0),
@@ -213,7 +245,7 @@ struct OnboardingView: View {
   #Preview("Onboarding — Language") {
     OnboardingView(
       model: OnboardingViewModel(
-        engine: MockOnboardingEngine(progress: 8),
+        engine: MockOnboardingEngine(progress: 3),
         hotkeys: MockHotkeysEngine(),
         agentStatus: MockAgentStatusEngine(),
         probe: MockPermissionProbe(.allGranted))
@@ -225,7 +257,7 @@ struct OnboardingView: View {
   #Preview("Onboarding — API key") {
     OnboardingView(
       model: OnboardingViewModel(
-        engine: MockOnboardingEngine(progress: 9),
+        engine: MockOnboardingEngine(progress: 5),
         hotkeys: MockHotkeysEngine(),
         agentStatus: MockAgentStatusEngine(),
         probe: MockPermissionProbe(.allGranted))
@@ -237,7 +269,7 @@ struct OnboardingView: View {
   #Preview("Onboarding — Hotkeys") {
     OnboardingView(
       model: OnboardingViewModel(
-        engine: MockOnboardingEngine(progress: 10),
+        engine: MockOnboardingEngine(progress: 6),
         hotkeys: MockHotkeysEngine(),
         agentStatus: MockAgentStatusEngine(),
         probe: MockPermissionProbe(.allGranted))
@@ -247,7 +279,7 @@ struct OnboardingView: View {
   }
 
   #Preview("Onboarding — Agentic readiness") {
-    let engine = MockOnboardingEngine(progress: 11)
+    let engine = MockOnboardingEngine(progress: 7)
     engine.mode = "agentic"
     return OnboardingView(
       model: OnboardingViewModel(

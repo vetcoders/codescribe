@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// One product mode selector with observed local refinement readiness.
+/// One product mode selector with observed local refinement readiness. The row
+/// describes the selected mode only; the other two are one click away.
 struct DictationEngineControls: View {
   @ObservedObject var model: SettingsViewModel
 
@@ -14,10 +15,7 @@ struct DictationEngineControls: View {
     VStack(spacing: 8) {
       SettingsControlRow(
         title: String(localized: "ASR mode"),
-        subtitle: String(
-          localized:
-            "Apple only = live Apple without Layer 1. Local power = Apple-first with mandatory on-device Whisper refinement. Cloud uses its consent-gated provider, not local Whisper."
-        )
+        subtitle: asrModeSubtitle
       ) {
         SettingsOptionMenu(
           options: Self.asrModeOptions,
@@ -41,6 +39,27 @@ struct DictationEngineControls: View {
           }
         }
       }
+    }
+  }
+
+  /// One sentence for the selected mode. Cloud is described without a
+  /// "no local Whisper" promise: the tail provider falls back once to the
+  /// in-process engine when the remote one fails, and the Engine row then
+  /// shows "Whisper (fallback)".
+  private var asrModeSubtitle: String {
+    switch model.asrModeId {
+    case "local_power":
+      String(
+        localized: "Live Apple recognition, refined by the local Whisper model.",
+        comment: "ASR mode description: Local power")
+    case "cloud":
+      String(
+        localized: "The cloud provider you agreed to.",
+        comment: "ASR mode description: Cloud; choosing it is the consent")
+    default:
+      String(
+        localized: "Live recognition by Apple.",
+        comment: "ASR mode description: Apple only")
     }
   }
 

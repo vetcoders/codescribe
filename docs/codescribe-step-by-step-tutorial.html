@@ -1,0 +1,1717 @@
+<!DOCTYPE html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Codescribe: instrukcja krok po kroku. Instalacja, kreator, uprawnienia, przygotowanie mikrofonu, modele, dyktowanie i rozmowy z agentami. Sam przewodnik działa offline."
+    />
+    <meta
+      name="codescribe-guide-source"
+      content="87d65da526becd60685f32df35316a60ec80e14f"
+    />
+    <title>Codescribe — dyktowanie i rozmowy z agentami</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0f0e0b;
+        --card: #1a1813;
+        --fg: #ece7db;
+        --muted: #aaa497;
+        --line: #39352d;
+        --accent: #d97757;
+        --warn: #e0a05a;
+        --rec: #d97757;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        padding: 0 20px 52px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 17px/1.65 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 1000px;
+        margin: auto;
+      }
+      h1,
+      h2,
+      h3 {
+        line-height: 1.15;
+        text-wrap: balance;
+      }
+      h1 {
+        font-size: clamp(2.5rem, 7vw, 4.4rem);
+        letter-spacing: -0.055em;
+        margin: 20px 0;
+      }
+      h2 {
+        font-size: 1.8rem;
+        margin: 0 0 20px;
+        letter-spacing: -0.025em;
+      }
+      h3 {
+        font-size: 1.15rem;
+        margin: 0 0 10px;
+      }
+      p {
+        margin: 10px 0;
+      }
+      .hero {
+        padding: 64px 0 40px;
+        border-bottom: 1px solid var(--line);
+      }
+      .eyebrow {
+        color: var(--accent);
+        font: 12px ui-monospace, monospace;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+      }
+      .lede {
+        max-width: 65ch;
+        font-size: 1.2rem;
+        color: var(--muted);
+      }
+      .chips,
+      nav {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 24px;
+      }
+      .chip {
+        padding: 5px 12px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+      a {
+        color: var(--accent);
+        text-underline-offset: 4px;
+      }
+      nav a {
+        padding: 8px 14px;
+        border-radius: 7px;
+        background: var(--card);
+        text-decoration: none;
+      }
+      section {
+        padding: 44px 0;
+        border-bottom: 1px solid var(--line);
+        scroll-margin-top: 20px;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 22px;
+      }
+      .step {
+        font: 13px ui-monospace, monospace;
+        color: var(--accent);
+        margin-bottom: 12px;
+      }
+      .quote {
+        border-left: 3px solid var(--accent);
+        padding: 12px 20px;
+        margin: 20px 0;
+        background: var(--card);
+        border-radius: 0 8px 8px 0;
+      }
+      .note,
+      figcaption {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      .callout {
+        padding: 16px 20px;
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--warn);
+        border-radius: 8px;
+        margin: 22px 0;
+      }
+      .callout strong {
+        color: var(--warn);
+      }
+      figure {
+        margin: 26px 0;
+      }
+      img {
+        display: block;
+        width: 100%;
+        height: auto;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+      figcaption {
+        margin: 10px 0;
+        max-width: 85ch;
+      }
+      .roster {
+        max-width: 720px;
+        margin-inline: auto;
+      }
+      .zoom {
+        overflow: auto;
+      }
+      .zoom img {
+        min-width: 900px;
+      }
+      details {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 16px 20px;
+        margin: 20px 0;
+      }
+      summary {
+        cursor: pointer;
+        font-weight: 600;
+      }
+      details[open] summary {
+        margin-bottom: 18px;
+      }
+      kbd,
+      code {
+        font: 0.87em ui-monospace, SFMono-Regular, monospace;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 3px 7px;
+      }
+      pre {
+        overflow: auto;
+        padding: 16px;
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+      pre code {
+        padding: 0;
+        border: 0;
+      }
+      li {
+        margin: 9px 0;
+      }
+      .tablewrap {
+        overflow: auto;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        padding: 14px 12px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .flow {
+        display: flex;
+        align-items: stretch;
+        gap: 10px;
+        margin: 24px 0;
+        flex-wrap: wrap;
+      }
+      .node {
+        flex: 1;
+        min-width: 135px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--card);
+        padding: 15px;
+      }
+      .node small {
+        display: block;
+        color: var(--muted);
+        margin-top: 6px;
+      }
+      .arrow {
+        color: var(--accent);
+        align-self: center;
+        font-size: 24px;
+      }
+      .demo {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--card);
+        padding: 24px;
+      }
+      .demooutput {
+        min-height: 100px;
+        border-left: 3px solid var(--accent);
+        padding-left: 18px;
+        margin: 20px 0;
+      }
+      button {
+        font: inherit;
+        color: var(--bg);
+        background: var(--accent);
+        border: 0;
+        border-radius: 8px;
+        padding: 10px 18px;
+        cursor: pointer;
+      }
+      button.secondary {
+        color: var(--fg);
+        background: transparent;
+        border: 1px solid var(--line);
+        margin-left: 8px;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      a:focus-visible,
+      button:focus-visible,
+      summary:focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 5px;
+      }
+      .status {
+        color: var(--accent);
+        font: 13px ui-monospace, monospace;
+      }
+      .wave {
+        display: flex;
+        gap: 4px;
+        align-items: center;
+        height: 72px;
+        margin: 26px 0 0;
+        overflow: hidden;
+      }
+      .wave i {
+        width: 4px;
+        flex: 1;
+        background: var(--accent);
+        opacity: 0.55;
+        border-radius: 3px;
+      }
+      footer {
+        padding-top: 28px;
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+      @media (max-width: 760px) {
+        .cards {
+          grid-template-columns: 1fr;
+        }
+        .hero {
+          padding-top: 38px;
+        }
+        .node {
+          flex-basis: 40%;
+        }
+        .arrow {
+          display: none;
+        }
+        body {
+          padding-inline: 16px;
+          font-size: 16px;
+        }
+        .zoom img {
+          min-width: 760px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+      }
+      @media print {
+        body {
+          background: white;
+          color: black;
+          padding: 0;
+          font-size: 11pt;
+        }
+        nav,
+        .demo button,
+        .wave {
+          display: none;
+        }
+        section {
+          break-inside: avoid;
+        }
+        img {
+          max-height: 600px;
+          object-fit: contain;
+        }
+        .card,
+        details,
+        .node,
+        .quote,
+        .demo {
+          background: white;
+          color: black;
+          border-color: #bbb;
+        }
+        a,
+        .eyebrow,
+        .status {
+          color: #a94e2c;
+        }
+        .note,
+        figcaption,
+        footer {
+          color: #444;
+        }
+      }
+
+      .skip {
+        position: absolute;
+        top: -100px;
+        left: 16px;
+        z-index: 20;
+        padding: 8px 16px;
+        background: var(--card);
+      }
+      .skip:focus {
+        top: 12px;
+      }
+      .section-heading .step {
+        display: block;
+        margin-bottom: 14px;
+      }
+      .card-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 42px;
+        height: 42px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        color: var(--accent);
+        font-size: 22px;
+        margin-bottom: 20px;
+      }
+      .card a {
+        font-size: 0.88rem;
+      }
+      .two-columns {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+      .simple-steps {
+        padding-left: 24px;
+        margin-block: 26px;
+      }
+      .tablewrap {
+        max-width: 100%;
+      }
+      caption {
+        text-align: left;
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin-bottom: 12px;
+      }
+      td:first-child {
+        min-width: 160px;
+      }
+      pre,
+      code {
+        overflow-wrap: anywhere;
+      }
+      .demo-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .demo-actions button.secondary {
+        margin-left: 0;
+      }
+      .widget-figure {
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        padding: 24px;
+        background: radial-gradient(
+            ellipse at center,
+            #30262060,
+            transparent 75%
+          ),
+          var(--card);
+      }
+      .segmented {
+        display: flex;
+        gap: 4px;
+        width: fit-content;
+        padding: 4px;
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        margin: 0 auto 20px;
+      }
+      .mode {
+        padding: 8px 20px;
+        color: var(--muted);
+        background: transparent;
+        font-size: 0.85rem;
+      }
+      .mode.active {
+        background: var(--accent);
+        color: var(--bg);
+      }
+      .widget-stage {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 390px;
+        padding: 20px 0;
+      }
+      .mock-widget {
+        width: 220px;
+        background: #21201ee8;
+        border: 1px solid #6b665c;
+        border-radius: 20px;
+        box-shadow: 0 24px 54px #0004;
+        overflow: hidden;
+        max-width: 100%;
+        font-size: 13px;
+      }
+      .mock-widget.midi {
+        width: 410px;
+      }
+      .mock-widget.full {
+        width: 600px;
+      }
+      .mock-header {
+        height: 46px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 15px;
+        white-space: nowrap;
+      }
+      .mock-header strong {
+        font-size: 15px;
+        letter-spacing: -0.4px;
+      }
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--accent);
+        flex-shrink: 0;
+      }
+      .mock-wave {
+        color: var(--muted);
+        flex: 1;
+        text-align: center;
+        letter-spacing: 3px;
+      }
+      .mock-symbol {
+        font-size: 18px;
+        color: var(--muted);
+      }
+      .mini .mock-wave,
+      .mini .agent-mark {
+        display: none;
+      }
+      .mini .mock-header {
+        gap: 8px;
+      }
+      .mock-content {
+        display: none;
+      }
+      .full .mock-content {
+        display: block;
+      }
+      .mock-tabs {
+        display: flex;
+        gap: 16px;
+        color: var(--muted);
+        font-size: 11px;
+        border-bottom: 1px solid var(--line);
+        padding: 12px 16px;
+      }
+      .mock-tabs .selected {
+        color: var(--accent);
+      }
+      .mock-thread {
+        padding: 14px;
+      }
+      .thread-name {
+        margin: 0 0 18px;
+        font-weight: 600;
+      }
+      .thread-status {
+        font-size: 10px;
+        color: var(--muted);
+        float: right;
+        font-weight: 400;
+      }
+      .bubble {
+        padding: 12px 14px;
+        border-radius: 14px;
+        margin-bottom: 12px;
+        width: 86%;
+        font-size: 12px;
+        line-height: 1.45;
+        background: #34312b;
+      }
+      .bubble p {
+        margin: 4px 0 8px;
+      }
+      .bubble small {
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .bubble.user {
+        margin-left: auto;
+        border: 1px solid #b67354;
+        background: #35271f;
+      }
+      .receipt {
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .mock-play {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .mock-compose {
+        display: flex;
+        justify-content: space-between;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px 14px;
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 18px;
+      }
+      .widget-caption {
+        text-align: center;
+        max-width: 65ch;
+        margin: 0 auto 16px;
+        color: var(--fg);
+        font-size: 0.95rem;
+      }
+      figcaption {
+        font-size: 0.8rem;
+      }
+      button {
+        touch-action: manipulation;
+      }
+      section:last-of-type {
+        border-bottom: 0;
+      }
+      footer {
+        border-top: 1px solid var(--line);
+      }
+      @media (max-width: 760px) {
+        .two-columns {
+          grid-template-columns: 1fr;
+        }
+        .widget-stage {
+          min-height: 350px;
+        }
+        .widget-figure {
+          padding: 16px 12px;
+        }
+        .mock-header {
+          gap: 7px;
+          padding: 0 10px;
+        }
+        .mock-wave {
+          letter-spacing: 1px;
+          overflow: hidden;
+        }
+        .mock-widget.midi {
+          width: 100%;
+        }
+        .mock-widget.full {
+          width: 100%;
+        }
+        .mock-tabs {
+          gap: 12px;
+        }
+        .bubble {
+          width: 93%;
+        }
+        .mode {
+          padding: 8px 16px;
+        }
+        td:first-child {
+          min-width: 130px;
+        }
+        .thread-status {
+          float: none;
+          display: block;
+        }
+        .flow .node {
+          min-width: 110px;
+        }
+        .hero .lede {
+          font-size: 1.08rem;
+        }
+      }
+      @media print {
+        .skip,
+        .segmented {
+          display: none;
+        }
+        .widget-stage {
+          min-height: 0;
+        }
+        .mock-widget {
+          box-shadow: none;
+          background: white;
+          color: black;
+          border-color: #888;
+        }
+        .mock-widget .mock-content {
+          display: block;
+        }
+        .mock-widget {
+          width: 100%;
+        }
+        .bubble {
+          background: white;
+          color: black;
+          border: 1px solid #aaa;
+        }
+        .thread-status,
+        .receipt,
+        .mock-compose,
+        .mock-tabs,
+        .mock-play,
+        .bubble small,
+        .mock-symbol {
+          color: #444;
+        }
+        section {
+          break-inside: auto;
+        }
+        .card,
+        .two-columns,
+        figure,
+        details {
+          break-inside: avoid;
+        }
+        .hero {
+          padding-top: 12px;
+        }
+        .chips {
+          margin-top: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip" href="#setup">Przejdź do instrukcji</a>
+    <main>
+      <header class="hero">
+        <p class="eyebrow">Codescribe · przewodnik · 7 października 2026</p>
+        <h1>Mów. Pisz.<br />Pracuj z agentami.</h1>
+        <p class="lede">
+          Zainstaluj aplikację, przygotuj mikrofon i podyktuj pierwsze zdanie.
+          Potem, jeśli chcesz, podłącz agenta. Jeden widget daje Ci
+          transkrypcję, rozmowy i kontrolę nad nagrywaniem.
+        </p>
+        <div class="chips">
+          <span class="chip">macOS 14 lub nowszy</span
+          ><span class="chip">Krok po kroku</span
+          ><span class="chip">Głos i tekst</span
+          ><span class="chip">Przewodnik działa offline</span>
+        </div>
+        <nav aria-label="Spis treści">
+          <a href="#setup">Instalacja i kreator</a
+          ><a href="#permissions">Uprawnienia</a
+          ><a href="#first-take">Pierwsze dyktowanie</a
+          ><a href="#start">Sposoby pracy</a><a href="#widget">Widget</a
+          ><a href="#connect">Podłącz agenta</a><a href="#talk">Mów i pisz</a
+          ><a href="#receipts">Statusy</a><a href="#privacy">Prywatność</a
+          ><a href="#demo">Demo</a>
+        </nav>
+      </header>
+      <section id="setup">
+        <div class="section-heading">
+          <span class="step">01 · INSTALACJA I PIERWSZY START</span>
+          <h2>Zacznij od zwykłego dyktowania</h2>
+        </div>
+        <ol class="simple-steps">
+          <li>
+            Pobierz dostępny instalator DMG ze strony
+            <a href="https://github.com/vetcoders/codescribe/releases"
+              >wydań Codescribe</a
+            >. Otwórz go i przeciągnij <strong>Codescribe.app</strong> do
+            <strong>Aplikacje</strong>. Wybierz instalator z udostępnionego
+            wydania. Do instalacji z DMG nie potrzebujesz Rusta.
+          </li>
+          <li>
+            Uruchom Codescribe z folderu Aplikacje. Szukaj jego ikony w pasku
+            menu macOS. Kreator pierwszych kroków otwiera się przy pierwszym
+            uruchomieniu; możesz też wrócić do niego przez
+            <strong>Kreator</strong>
+            w menu Codescribe.
+          </li>
+          <li>
+            Wybierz język interfejsu, a następnie
+            <strong>Podstawowy — praca z tekstem</strong>, jeśli chcesz
+            dyktować. <strong>Agent — głos + AI</strong> dodaje konfigurację
+            pracy z Agentem. Język aplikacji i język rozpoznawania Twojej mowy
+            wybiera się osobno.
+          </li>
+          <li>
+            Przejdź przez zgody macOS opisane niżej. Wybierz język dyktowania
+            oraz skróty. Konto dostawcy lub klucz API są potrzebne do wybranych
+            funkcji AI; samo lokalne dyktowanie nie wymaga klucza API. Możesz
+            uzupełnić dostawcę później w <strong>Ustawienia → Dostawcy</strong>.
+          </li>
+          <li>
+            W trybie Agent wybierz klientów, z którymi chcesz połączyć
+            Codescribe, i dokończ ich konfigurację. Zamknij kreator przyciskiem
+            <strong>Gotowe</strong>, a potem przygotuj mikrofon i sprawdź silnik
+            według następnej części instrukcji.
+          </li>
+        </ol>
+        <div class="callout">
+          <strong
+            >„Gotowe” w kreatorze nie oznacza jeszcze gotowego
+            nagrywania.</strong
+          >
+          Kreator ma dziewięć rozdziałów: język interfejsu, tryb, zgody macOS,
+          język dyktowania, opcjonalny model lokalny, dostawca AI, skróty,
+          klienci Agenta i podsumowanie. W trybie Podstawowym pomija
+          konfigurację klientów Agenta. Model Whisper pobiera się tylko po
+          kliknięciu przycisku; pobieranie trwa dalej po przejściu do kolejnego
+          kroku lub zamknięciu kreatora. Kreator nie kalibruje mikrofonu i
+          pozwala przejść dalej po pominięciu zgody. Jeżeli nadal widzisz
+          komunikat o wymaganej konfiguracji, sprawdź konkretny brak w
+          <strong>Dźwięk → Gotowość do nagrywania</strong>, uprawnieniach i
+          ustawieniach silnika.
+        </div>
+        <p class="note">
+          Aby otworzyć pełne ustawienia, rozwiń <strong>Ustawienia</strong> w
+          menu Codescribe i wybierz <strong>Otwórz ustawienia</strong>. W
+          dalszych krokach używamy polskich nazw; w angielskim interfejsie
+          odpowiadają im Settings, Creator, Hotkeys, Dictation, Audio i
+          Providers.
+        </p>
+        <p class="note">
+          Pierwszy ekran kreatora pojawia się przed odczytem zapisanych danych
+          dostawcy i licencji. Dostęp do pęku kluczy może być potrzebny na
+          wyjaśnionym kroku dostawcy lub po świadomym ukończeniu konfiguracji.
+          Zgody na mikrofon i rozpoznawanie mowy przyznajesz osobnymi
+          przyciskami; samo „Dalej” nie uruchamia prośby. Sprawdź, której
+          aplikacji dotyczy systemowy monit. Sama zgoda na pęk kluczy nie
+          oznacza połączenia konta Agenta.
+        </p>
+      </section>
+      <section id="permissions">
+        <div class="section-heading">
+          <span class="step">02 · ZGODY MACOS</span>
+          <h2>Każda zgoda ma swoje zastosowanie</h2>
+        </div>
+        <p>
+          W kreatorze wybierz <strong>Przyznaj dostęp</strong> lub
+          <strong>Otwórz Ustawienia systemowe</strong>. W macOS przejdź do
+          <strong>Prywatność i ochrona</strong> i włącz Codescribe w
+          odpowiedniej kategorii. System może poprosić o uwierzytelnienie. Po
+          powrocie do kreatora użyj <strong>Odśwież stan</strong>, jeśli status
+          się nie zmienił. Później znajdziesz te zgody także w
+          <strong>Ustawienia → Dyktowanie → Uprawnienia</strong>.
+        </p>
+        <div class="tablewrap">
+          <table>
+            <caption>
+              Co tracisz, jeśli nie udzielisz danej zgody
+            </caption>
+            <thead>
+              <tr>
+                <th>Zgoda</th>
+                <th>Do czego służy</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Mikrofon</td>
+                <td>
+                  Wymagany do nagrywania głosu. Bez niego możesz przeglądać
+                  ustawienia i pisać wiadomości.
+                </td>
+              </tr>
+              <tr>
+                <td>Rozpoznanie mowy</td>
+                <td>
+                  Wymagane do podglądu i dyktowania przez Apple Speech.
+                  Systemowy komunikat Apple jest zgodą na jego usługę; nie
+                  oznacza włączenia trybu Chmura w Codescribe.
+                </td>
+              </tr>
+              <tr>
+                <td>Monitorowanie wprowadzania</td>
+                <td>
+                  Obsługa globalnych skrótów rozpoczynania i kończenia
+                  nagrywania.
+                </td>
+              </tr>
+              <tr>
+                <td>Dostępność</td>
+                <td>
+                  Wstawianie tekstu do innych aplikacji. Ręczne kopiowanie
+                  transkryptu z menu pozostaje osobną możliwością.
+                </td>
+              </tr>
+              <tr>
+                <td>Nagrywanie ekranu i dźwięku systemowego</td>
+                <td>
+                  Kontekst ekranu dla Agenta. Samo dyktowanie z mikrofonu nie
+                  wymaga obrazu ekranu.
+                </td>
+              </tr>
+              <tr>
+                <td>Pełny dostęp do dysku</td>
+                <td>
+                  Opcjonalny dostęp do chronionych plików, z których ma
+                  korzystać Agent. Nie jest wymagany do zwykłego dyktowania i
+                  nie zastępuje wyboru folderów dostępnych Agentowi.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">
+          Obecna aplikacja może ponownie otworzyć kreator, gdy brakuje jednej z
+          pierwszych pięciu zgód — również zgody na ekran, nawet w trybie
+          Podstawowym. To ograniczenie obecnego sprawdzania konfiguracji. Pełny
+          dostęp do dysku pozostaje opcjonalny. Nie nadawaj dostępu do ekranu
+          lub plików tylko dlatego, że chcesz dyktować tekst.
+        </p>
+      </section>
+      <section id="first-take">
+        <div class="section-heading">
+          <span class="step">03 · OD MIKROFONU DO TEKSTU</span>
+          <h2>Przygotuj mikrofon i podyktuj pierwsze zdanie</h2>
+        </div>
+        <ol class="simple-steps">
+          <li>
+            Otwórz <strong>Ustawienia → Dźwięk</strong> i wybierz
+            <strong>Urządzenie wejściowe</strong>. Jeśli aplikacja pokazuje, że
+            zmiana wymaga ponownego uruchomienia, zakończ trwające nagranie
+            przed jej zastosowaniem.
+          </li>
+          <li>
+            W <strong>Gotowość do nagrywania</strong> sprawdź dostęp do
+            mikrofonu. Kliknij <strong>Kalibruj</strong> i mów normalnym głosem
+            przez około 10 sekund. Nagranie kalibracyjne nie jest zachowywane.
+            Włącz <strong>Zatwierdzanie zakończonych wypowiedzi</strong>, jeśli
+            jest wyłączone. Sprawdź komunikat
+            <strong>Gotowe do nagrywania</strong>.
+          </li>
+          <li>
+            Otwórz
+            <strong>Dyktowanie → Silnik → Tryb rozpoznawania mowy</strong>.
+            <strong>Tylko Apple</strong> nie wymaga pobierania Whispera, ale
+            wymaga dostępnego rozpoznawania na urządzeniu dla wybranego języka.
+            <strong>Tryb lokalny</strong> dodaje lokalne poprawianie
+            transkrypcji przez Whisper. <strong>Chmura</strong> wymaga osobnej
+            konfiguracji i wyraźnej zgody na wysyłanie dźwięku.
+          </li>
+          <li>
+            Jeśli wybierasz <strong>Tryb lokalny</strong>, przejdź do
+            <strong>Dyktowanie → Whisper → Pobierz Whisper</strong> i kliknij
+            <strong>Pobierz</strong>. Potrzebujesz połączenia z internetem i
+            miejsca na model, domyślnie około <strong>1,6 GB</strong>. Poczekaj
+            na zakończenie pobierania i sprawdź stan instalacji. Jeśli aplikacja
+            już ma prawidłowy model, nie musisz pobierać go ponownie.
+          </li>
+          <li>
+            Wróć do <strong>Dyktowanie → Silnik</strong> i sprawdź gotowość
+            lokalnego Whispera; w razie potrzeby kliknij
+            <strong>Sprawdź ponownie</strong>. Stan
+            <strong>Niegotowy</strong> oraz komunikat o brakującym lub
+            nieprawidłowym modelu FP16 oznaczają, że Tryb lokalny nie jest
+            gotowy. Zakończ pobieranie lub wybierz <strong>Tylko Apple</strong>,
+            jeżeli rozpoznawanie Apple jest dostępne. Zamknięcie kreatora nie
+            usuwa tego braku.
+          </li>
+          <li>
+            W <strong>Ustawienia → Skróty</strong> sprawdź gest dyktowania i
+            <strong>Automatyczne wklejanie</strong>. Na początek wybierz
+            <strong>Ostrożne</strong>, jeśli chcesz wklejać do rozpoznanego pola
+            tekstowego, lub <strong>Wyłączone</strong>, jeśli wolisz kopiować
+            tekst ręcznie. Do pierwszej próby bez AI wyłącz
+            <strong>Formatowanie przez AI</strong> w
+            <strong>Ustawienia → Kreator</strong> i opcję
+            <strong>Rozpoczynaj w trybie agentowym</strong> w menu Codescribe.
+          </li>
+          <li>
+            Kliknij pole tekstowe, do którego chcesz dyktować. Przytrzymaj
+            <kbd>Fn/Globe</kbd> (domyślny skrót), poczekaj na rozpoczęcie
+            nagrywania i powiedz np. „Jutro o dziesiątej zadzwonię do Anny”.
+            Puść klawisz i poczekaj na zakończenie przetwarzania. Możesz też
+            użyć <strong>Rozpocznij nagrywanie</strong> i
+            <strong>Zatrzymaj nagrywanie</strong> z menu Codescribe.
+          </li>
+          <li>
+            Przeczytaj wynik w widgetcie lub w docelowym polu i popraw błędy.
+            Jeśli tekst nie został wklejony, wybierz
+            <strong>Kopiuj ostatni transkrypt</strong> w menu Codescribe i wklej
+            go samodzielnie przez <kbd>⌘</kbd> + <kbd>V</kbd>. Odbiór wiadomości
+            przez Agenta nie potwierdza poprawności rozpoznania.
+          </li>
+        </ol>
+        <p class="note">
+          Tryb <strong>Wygodne</strong> pozwala na szersze automatyczne
+          wklejanie. Pola haseł i tekst wyglądający jak wykonywalne polecenie w
+          terminalu nadal wstrzymują automatyczne wklejenie. Tryb
+          <strong>Wyłączone</strong>
+          nie kopiuje samoczynnie do schowka. Wybrany odbiorca lub aplikacja
+          docelowa mają znaczenie — przełączenie okna podczas nagrywania nie
+          jest sposobem na wybranie nowego miejsca dostawy.
+        </p>
+      </section>
+      <section id="start">
+        <div class="section-heading">
+          <span class="step">04 · WYBIERZ ZASTOSOWANIE</span>
+          <h2>Trzy sposoby pracy</h2>
+        </div>
+        <div class="cards">
+          <article class="card">
+            <span class="card-icon" aria-hidden="true">Aa</span>
+            <h3>Dyktowanie</h3>
+            <p>
+              Mów zamiast pisać. Tekst pojawia się w widoku
+              <strong>Moje dyktowanie</strong>; jego wklejenie zależy od
+              wybranej konfiguracji.
+            </p>
+            <a href="#talk">Gesty dyktowania →</a>
+          </article>
+          <article class="card">
+            <span class="card-icon" aria-hidden="true">◈</span>
+            <h3>Kanały agentów</h3>
+            <p>
+              Zwracaj się do zewnętrznej sesji agenta przez jej numer. W tej
+              samej rozmowie możesz wysyłać tekst i czytać odpowiedzi.
+            </p>
+            <a href="#connect">Podłączenie sesji →</a>
+          </article>
+          <article class="card">
+            <span class="card-icon" aria-hidden="true">✦</span>
+            <h3>Wbudowany Agent</h3>
+            <p>
+              Rozmawiaj z Agentem w Codescribe. Wybierz dostawcę i model oraz
+              skonfiguruj konto lub klucz, jeśli wybrana usługa ich wymaga. Ten
+              Agent jest niezależny od zewnętrznych sesji na kanałach.
+            </p>
+            <a href="#talk">Rozróżnienie gestów →</a>
+          </article>
+        </div>
+        <p class="note">
+          Dostawców skonfigurujesz w <strong>Ustawienia → Dostawcy</strong>, a
+          modele dla formatowania i Agenta w
+          <strong>Agent → Ścieżki modeli AI</strong>. Do zwykłego dyktowania
+          możesz wyłączyć <strong>Formatowanie przez AI</strong> w
+          <strong>Kreator</strong>. Skróty znajdziesz w <strong>Skróty</strong>.
+        </p>
+      </section>
+      <section id="widget">
+        <div class="section-heading">
+          <span class="step">05 · JEDEN WIDGET</span>
+          <h2>Mały, kiedy nie jest potrzebny.<br />Pełny, kiedy pracujesz.</h2>
+        </div>
+        <p>
+          Otwórz widget z menu Codescribe w pasku systemowym przez
+          <strong>Open widget / Otwórz widget</strong>. Samo otwarcie widoku nie
+          rozpoczyna nagrywania.
+        </p>
+        <figure class="widget-figure">
+          <div
+            class="segmented"
+            role="group"
+            aria-label="Rozmiar schematu widgetu"
+          >
+            <button
+              type="button"
+              class="mode active"
+              data-mode="mini"
+              aria-pressed="true"
+            >
+              Mini</button
+            ><button
+              type="button"
+              class="mode"
+              data-mode="midi"
+              aria-pressed="false"
+            >
+              Midi</button
+            ><button
+              type="button"
+              class="mode"
+              data-mode="full"
+              aria-pressed="false"
+            >
+              Pełny
+            </button>
+          </div>
+          <div class="widget-stage">
+            <div class="mock-widget mini" id="widget-schematic">
+              <div class="mock-header">
+                <span class="dot" aria-hidden="true"></span
+                ><strong>codescribe</strong
+                ><span class="mock-wave" aria-hidden="true">▂▅▃▆▂▅▃</span
+                ><span class="mock-symbol agent-mark" aria-hidden="true">◈</span
+                ><svg
+                  aria-hidden="true"
+                  class="mic-symbol"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.7"
+                >
+                  <rect x="9" y="3" width="6" height="11" rx="3" />
+                  <path d="M6 10v2a6 6 0 0 0 12 0v-2M12 18v4M8 22h8" /></svg
+                ><span class="mock-symbol" aria-hidden="true">⌃</span>
+              </div>
+              <div class="mock-content">
+                <div class="mock-tabs">
+                  <span>Moje dyktowanie</span
+                  ><span class="selected">Rozmowa</span>
+                </div>
+                <div class="mock-thread">
+                  <p class="thread-name">
+                    2 · Twój agent <span class="thread-status">Podłączony</span>
+                  </p>
+                  <div class="bubble user">
+                    <small>Ty</small>
+                    <p>Podsumuj zmiany i wskaż następny krok.</p>
+                    <span class="receipt">Przeczytano</span>
+                  </div>
+                  <div class="bubble reply">
+                    <small>Agent</small>
+                    <p>
+                      Zmiany są podsumowane. Następny krok to sprawdzenie
+                      wyniku.
+                    </p>
+                    <div class="mock-play">
+                      <span aria-hidden="true">▶</span><span>Odtworzono</span>
+                    </div>
+                  </div>
+                  <div class="mock-compose">
+                    <span>Napisz do agenta</span
+                    ><span aria-hidden="true">↑</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p id="widget-explanation" class="widget-caption" aria-live="polite">
+            Mini zostawia podstawowe przyciski i nie zajmuje miejsca na treść.
+          </p>
+          <figcaption>
+            Schemat edukacyjny — przyciski powyżej zmieniają wyłącznie tę
+            ilustrację. To nie jest zrzut ani działająca aplikacja Codescribe.
+          </figcaption>
+        </figure>
+        <div class="cards">
+          <article class="card">
+            <h3>Mini → midi</h3>
+            <p>
+              Najedź wskaźnikiem na mini. Pojawi się szerszy pasek; po odejściu
+              wskaźnika wróci do mini, jeśli otworzył się automatycznie.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Pełny widok</h3>
+            <p>
+              Rozwiń widget przyciskiem. Otrzymasz zachowany tekst lub rozmowę.
+              Zwinięcie i zmiana widoku nie kasują transkrypcji.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Szuflada agentów</h3>
+            <p>
+              W nagłówku otworzysz listę agentów i zapisanych rozmów. Wybór
+              rozmowy służy przeglądaniu; mikrofon ma osobny przycisk.
+            </p>
+          </article>
+        </div>
+        <p class="note">
+          Rozmiar pełnego widoku możesz dostosować do ekranu. Wygląd materiału i
+          przycisków zależy od wersji macOS. Ustawienie domyślnego pokazywania
+          transkrypcji decyduje o prezentacji przy rozpoczęciu dyktowania.
+        </p>
+      </section>
+      <section id="connect">
+        <div class="section-heading">
+          <span class="step">06 · TWOJA SESJA, TWÓJ KANAŁ</span>
+          <h2>Podłącz agenta w jego rozmowie</h2>
+        </div>
+        <p>
+          Wybierz klienta w kreatorze lub w
+          <strong>Ustawienia → Kreator</strong> i skonfiguruj integrację
+          Codescribe. Następnie wywołaj zainstalowany skill
+          <strong>codescribe</strong> w rozmowie, którą chcesz podłączyć. Podaj
+          wolny numer kanału i imię. Głos jest opcjonalny.
+        </p>
+        <div class="quote">
+          „Użyj skilla codescribe. Wybierz wolny kanał, podłącz tę sesję i podaj
+          mi jej numer. Na razie odpowiadaj tekstowo.”
+        </div>
+        <p>
+          W Codex wywołaj <code>$codescribe</code> i dopisz preferencje. W
+          kliencie obsługującym polecenia slash możesz użyć
+          <code>/codescribe Imię 2</code>; opcjonalny głos dodasz jako ostatni
+          argument. Przykładowe imię i numer zastąp własnymi.
+        </p>
+        <ol class="simple-steps">
+          <li>
+            Agent podaje <strong>imię i numer</strong>, potwierdza podłączenie
+            bieżącej sesji.
+          </li>
+          <li>
+            W widgetcie sprawdzasz, czy na liście jest
+            <strong>działający odbiornik</strong>.
+          </li>
+          <li>
+            Wysyłasz krótką wiadomość, np. „Odpowiedz jednym zdaniem”, i
+            sprawdzasz nowy status <strong>Przeczytano</strong> oraz odpowiedź.
+          </li>
+        </ol>
+        <div class="cards">
+          <article class="card">
+            <div class="step">1–9</div>
+            <h3>Konkretny agent</h3>
+            <p>
+              Kanał jest związany z konkretną sesją. Wolny numer pozwala
+              zachować pozostałe rozmowy.
+            </p>
+          </article>
+          <article class="card">
+            <div class="step">0 · ALL</div>
+            <h3>Do wszystkich</h3>
+            <p>
+              Rozgłoszenie do podłączonych odbiorników lokalnej szyny. To nie
+              jest prywatna rozmowa ani automatyczne połączenie komputerów.
+            </p>
+          </article>
+          <article class="card">
+            <div class="step">GŁOS OPCJONALNY</div>
+            <h3>Tekst jest podstawą</h3>
+            <p>
+              Odpowiedź głosowa wymaga obsługiwanego dostawcy, profilu głosu i
+              jego uwierzytelnienia. Brak głosu nie usuwa tekstu odpowiedzi.
+            </p>
+          </article>
+        </div>
+        <p class="note">
+          Codex, Claude i inni klienci korzystający z zainstalowanej integracji
+          mogą mieć różny mechanizm wybudzania. Sam komunikat o podłączeniu nie
+          zastępuje świeżej próby odbioru.
+        </p>
+      </section>
+      <section id="talk">
+        <div class="section-heading">
+          <span class="step">07 · GŁOS LUB TEKST</span>
+          <h2>Rozmowa nie wymaga ciągłego nagrywania</h2>
+        </div>
+        <div class="two-columns">
+          <article class="card">
+            <h3>Wiadomość głosowa</h3>
+            <ol>
+              <li>
+                Otwórz kanał przyciskiem <strong>Mów do agenta</strong> albo
+                skrótem kanału.
+              </li>
+              <li>
+                Powiedz, czego potrzebujesz. Podgląd może zmieniać się podczas
+                rozpoznawania.
+              </li>
+              <li>
+                Zakończ wypowiedź przyciskiem mikrofonu lub tym samym skrótem.
+                Sprawdź dostawę i odpowiedź.
+              </li>
+            </ol>
+            <p class="note">
+              Domyślnie skrót kanału to <kbd>Ctrl</kbd> + cyfra; w ustawieniach
+              można wybrać <kbd>Fn</kbd>. Kilka kanałów może być otwartych
+              jednocześnie — sprawdzaj, które kanały odbierają Twój głos.
+              Wszystkie korzystają z jednego nagrania, nie z osobnych
+              mikrofonów.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Wiadomość tekstowa</h3>
+            <ol>
+              <li>Wybierz rozmowę podłączonego agenta.</li>
+              <li>Wpisz wiadomość w polu na dole.</li>
+              <li>
+                Wyślij przez <kbd>Enter</kbd> lub przycisk wysyłki.
+                <kbd>Shift</kbd> + <kbd>Enter</kbd> dodaje nowy wiersz.
+              </li>
+            </ol>
+            <p class="note">
+              Nie musisz otwierać mikrofonu. Jeśli odbiornik jest niedostępny
+              lub zmienił właściciela, wysłanie może zostać odrzucone; zachowaj
+              szkic i sprawdź podłączenie.
+            </p>
+          </article>
+        </div>
+        <div class="callout">
+          <strong>Przeglądanie ≠ nagrywanie.</strong> Kliknięcie nazwy rozmowy,
+          historii lub 0 · All zmienia widok. Do nagrywania służy jawny gest
+          kanału albo mikrofon. Rozpoczęcie zwykłego dyktowania zamyka aktywne
+          kanały przez ich normalne domknięcie i wraca do Moje dyktowanie.
+        </div>
+        <div class="tablewrap">
+          <table>
+            <caption>
+              Najważniejsze gesty — sprawdź wybrane powiązania w swoich
+              ustawieniach
+            </caption>
+            <thead>
+              <tr>
+                <th>Zastosowanie</th>
+                <th>Gest i skutek</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Zwykłe dyktowanie</td>
+                <td>
+                  Skonfigurowane przytrzymanie, domyślnie Fn/Globe: mów, puść
+                  klawisz. Dostarczenie tekstu zależy od ustawienia wklejania.
+                </td>
+              </tr>
+              <tr>
+                <td>Dyktowanie z formatowaniem</td>
+                <td>
+                  Domyślnie dwukrotne naciśnięcie lewego Option włącza tryb bez
+                  przytrzymywania; kolejne dwukrotne naciśnięcie go kończy.
+                  Formatowanie przez AI zależy od ustawień i dostępu do wybranej
+                  usługi.
+                </td>
+              </tr>
+              <tr>
+                <td>Assistive</td>
+                <td>
+                  Gest przypisany do Assistive; domyślnie dwuklik prawego
+                  Option, ponowny dwuklik kończy nagrywanie. Kieruje pracę do
+                  wbudowanego Agenta; nie wybiera zewnętrznego kanału.
+                </td>
+              </tr>
+              <tr>
+                <td>Pokaż wbudowanego Agenta</td>
+                <td>
+                  <kbd>⌘</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> otwiera
+                  jego okno i pole wiadomości, bez rozpoczęcia nagrywania.
+                </td>
+              </tr>
+              <tr>
+                <td>Otwórz / zamknij kanał</td>
+                <td>
+                  Wybrany modyfikator kanału + <kbd>1</kbd>–<kbd>9</kbd>;
+                  <kbd>0</kbd> adresuje wszystkich podłączonych odbiorników.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>Odsłuchiwanie odpowiedzi</h3>
+        <p>
+          Przy odpowiedzi z zadeklarowanym głosem zobaczysz <strong>▶</strong> i
+          jeden sąsiadujący status, np. <strong>Odtworzono</strong>. Podczas
+          oczekiwania lub odtwarzania dostępny jest <strong>Stop</strong>.
+          Czysto tekstowa wiadomość nie ma przycisku Play.
+        </p>
+        <p>
+          Przełączanie rozmów nie odtwarza starych odpowiedzi. Wyciszenie
+          automatycznego odtwarzania, brak uwierzytelnienia lub odmowa
+          odtwarzania pozostawiają tekst dostępny do przeczytania.
+        </p>
+      </section>
+      <section id="receipts">
+        <div class="section-heading">
+          <span class="step">08 · WIESZ, CO SIĘ STAŁO</span>
+          <h2>„Przeczytano” to konkretny odbiór</h2>
+        </div>
+        <div class="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Etap</th>
+                <th>Znaczenie</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Podgląd wypowiedzi</td>
+                <td>
+                  Tekst w trakcie rozpoznawania. Rewizje aktualizują tę samą
+                  wiadomość; nie są kolejnymi poleceniami.
+                </td>
+              </tr>
+              <tr>
+                <td>Zaadresowano / W kolejce</td>
+                <td>
+                  Wybrano odbiorcę lub zgłoszono dostawę. Agent nie musi jeszcze
+                  znać pełnej treści.
+                </td>
+              </tr>
+              <tr>
+                <td>Kolejka przyjęła wiadomość</td>
+                <td>
+                  Klient przyjął powiadomienie. To nadal osobny etap od
+                  przeczytania przez agenta.
+                </td>
+              </tr>
+              <tr>
+                <td><strong>Przeczytano</strong></td>
+                <td>
+                  Po pełnym odczycie agent potwierdził dokładną dostawę. To nie
+                  jest potwierdzenie wykonania zadania ani poprawności
+                  transkrypcji.
+                </td>
+              </tr>
+              <tr>
+                <td>Odpowiedź / Odtworzono</td>
+                <td>
+                  Agent opublikował tekst; osobno raportowane jest odtworzenie
+                  jego głosu. Możesz otrzymać tekst mimo błędu audio.
+                </td>
+              </tr>
+              <tr>
+                <td>Brak odbiornika</td>
+                <td>
+                  Historyczna rozmowa pozostaje, lecz działający nasłuch nie
+                  jest potwierdzony. Podłącz bieżącą sesję i wyślij świeżą
+                  próbę.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Powiadomienie wybudza podłączoną sesję. Dopiero odczyt wiadomości i
+          potwierdzenie przez agenta dają status <strong>Przeczytano</strong>.
+          Historia rozmowy pozostaje dostępna po odbiorze.
+        </p>
+        <details>
+          <summary>Co zrobić, gdy odpowiedź nie nadchodzi?</summary>
+          <ol>
+            <li>
+              Sprawdź, czy zamknęła się wiadomość głosowa i czy kanał ma żywego
+              odbiornika.
+            </li>
+            <li>
+              Rozróżnij status wysłania, przyjęcia kolejki i
+              <strong>Przeczytano</strong>. Zapisz etap, na którym wiadomość się
+              zatrzymała.
+            </li>
+            <li>
+              Poproś w tej samej sesji agenta o sprawdzenie podłączenia i pełny
+              odczyt skrzynki. Nie twórz kilku nasłuchów tej samej sesji.
+            </li>
+            <li>
+              Jeśli tekst odpowiedzi jest widoczny, ale nie ma głosu, sprawdź
+              wyciszenie, status odtwarzania i uwierzytelnienie dostawcy.
+              Ponowne wysyłanie zadania nie naprawia audio.
+            </li>
+          </ol>
+        </details>
+        <details>
+          <summary>Odłączony agent i historia</summary>
+          <p>
+            Jeśli przy odłączonym, zamkniętym kanale dostępny jest przycisk X,
+            usuwa wpis z bieżącej listy i przenosi go do archiwum. Nie kasuje
+            zachowanych wiadomości ani potwierdzeń. Przy aktywnym lub
+            niepotwierdzonym odbiorniku ta akcja nie jest dostępna.
+          </p>
+        </details>
+      </section>
+      <section id="privacy">
+        <div class="section-heading">
+          <span class="step">09 · TEKST, NAGRANIA I PRYWATNOŚĆ</span>
+          <h2>Wiesz, gdzie trafia Twoja wypowiedź</h2>
+        </div>
+        <div class="cards">
+          <article class="card">
+            <h3>Rozpoznawanie mowy</h3>
+            <p>
+              Tylko Apple korzysta z rozpoznawania na urządzeniu. Tryb lokalny
+              dodaje model Whisper na tym Macu. Pierwsze pobranie modelu wymaga
+              internetu. Tryb Chmura może wysyłać dźwięk do skonfigurowanej
+              usługi po Twojej wyraźnej zgodzie; bez niej nie jest uruchamiany.
+            </p>
+          </article>
+          <article class="card">
+            <h3>AI i zewnętrzne sesje</h3>
+            <p>
+              Lokalne rozpoznanie mowy nie oznacza lokalnego przetwarzania przez
+              AI. Formatowanie i Agent przekazują tekst oraz wybrany kontekst do
+              skonfigurowanego dostawcy. Sprawdź dostawcę, model i dostępne
+              narzędzia przed wysłaniem poufnych informacji.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Historia i dźwięk</h3>
+            <p>
+              W menu znajdziesz <strong>Historia transkrypcji</strong> oraz
+              <strong>Otwórz folder z historią transkrypcji</strong>. W
+              <strong>Dźwięk → Przechowywanie nagrań</strong> wybierzesz:
+              bezterminowo, 30 dni, 7 dni, 24 godziny albo wyłączenie zapisu
+              dźwięku po przetworzeniu. Historia tekstu pozostaje osobno.
+            </p>
+          </article>
+        </div>
+        <p>
+          Bez zmiany ustawienia przechowywania nagrania są zachowywane
+          bezterminowo. <strong>Wyłączone</strong> usuwa dźwięk nowych,
+          pomyślnie przetworzonych nagrań po zakończeniu korzystania z nich;
+          trwające nagranie zachowuje wybór z chwili startu. Nie traktuj tej
+          zmiany jako usunięcia wcześniejszej historii. Dźwięk potrzebny do
+          odzyskania nieudanego nagrania może pozostać zachowany. Ręczne
+          kopiowanie umieszcza tekst w schowku macOS.
+        </p>
+        <div class="callout">
+          <strong
+            >Kanał 0 · All wysyła do wszystkich podłączonych
+            odbiorników.</strong
+          >
+          Zanim zaczniesz mówić, sprawdź aktywne kanały. Do rozmowy z jedną
+          sesją wybierz jej numer. Podłączenie agenta udostępnia mu wiadomości
+          przez lokalny zapis transkrypcji; klient tej sesji może dalej
+          przetwarzać je u swojego dostawcy AI. Potwierdzenie
+          <strong>Przeczytano</strong> ani przeniesienie wpisu do archiwum nie
+          usuwa historii i nagrań.
+        </div>
+        <p class="note">
+          Dźwięk, historia tekstu i lokalny dziennik transkrypcji to różne
+          zapisy. Wyłączenie przechowywania nagrań nie wyłącza dziennika, z
+          którego korzystają integracje agentów. Nie udostępniaj folderu danych
+          ani pełnej diagnostyki bez sprawdzenia ich treści. Klucze API wpisuj w
+          ustawieniach dostawcy, nigdy w wiadomości do agenta.
+        </p>
+      </section>
+      <section id="demo">
+        <div class="section-heading">
+          <span class="step">10 · ZOBACZ PRZEPŁYW</span>
+          <h2>Jedna wiadomość, osobne etapy</h2>
+        </div>
+        <p>
+          Przejdź przez przykład wiadomości tekstowej. Demo działa lokalnie: nie
+          podłącza agenta, nie uruchamia mikrofonu i nie wysyła żadnych danych.
+        </p>
+        <div class="flow" aria-label="Etapy wiadomości">
+          <div class="node">
+            <strong>Wysyłasz</strong><small>Głos lub tekst</small>
+          </div>
+          <span class="arrow" aria-hidden="true">→</span>
+          <div class="node">
+            <strong>Dzwonek</strong><small>Powiadomienie agenta</small>
+          </div>
+          <span class="arrow" aria-hidden="true">→</span>
+          <div class="node">
+            <strong>Przeczytano</strong><small>Odczyt i potwierdzenie</small>
+          </div>
+          <span class="arrow" aria-hidden="true">→</span>
+          <div class="node">
+            <strong>Odpowiedź</strong><small>Tekst, opcjonalnie głos</small>
+          </div>
+        </div>
+        <div class="demo">
+          <p id="demo-count" class="status">Krok 1 z 5</p>
+          <div
+            id="demo-output"
+            class="demooutput"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            <h3>Wysyłasz wiadomość</h3>
+            <p>
+              „Podsumuj zmiany i wskaż następny krok”. Mikrofon pozostaje
+              wyłączony.
+            </p>
+          </div>
+          <div class="demo-actions">
+            <button type="button" id="demo-next">Następny krok</button
+            ><button type="button" id="demo-reset" class="secondary">
+              Od początku
+            </button>
+          </div>
+        </div>
+        <noscript
+          ><p class="note">
+            Interaktywny przykład wymaga JavaScript. Instrukcja i opis
+            wszystkich etapów powyżej pozostają dostępne bez niego.
+          </p></noscript
+        >
+      </section>
+      <section id="version">
+        <div class="section-heading">
+          <span class="step">11 · WERSJA TEGO PRZEWODNIKA</span>
+          <h2>Aktualna instrukcja, jawny punkt odniesienia</h2>
+        </div>
+        <p>
+          Przewodnik opisuje Codescribe na podstawie źródeł aplikacji i jej
+          polskich nazw odczytanych
+          <strong>7 października 2026</strong>. Jest przeznaczony dla dowolnej
+          osoby i komputera z odpowiednią konfiguracją; nie wymaga sesji, imion
+          ani ustawień autora.
+        </p>
+        <details>
+          <summary>Wersja i granice aktualności</summary>
+          <div class="tablewrap">
+            <table>
+              <tbody>
+                <tr>
+                  <th>Data instrukcji</th>
+                  <td>7 października 2026</td>
+                </tr>
+                <tr>
+                  <th>Punkt odniesienia instrukcji</th>
+                  <td><code>87d65da526</code> · 7 października 2026</td>
+                </tr>
+                <tr>
+                  <th>Minimalny system</th>
+                  <td>macOS 14.0</td>
+                </tr>
+                <tr>
+                  <th>Ilustracje</th>
+                  <td>
+                    Schematy HTML; bez nowych zrzutów uruchomionej aplikacji.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            Instrukcja opiera się na odczycie źródeł, a nie na odbiorze
+            uruchomionej aplikacji. Nie potwierdza gotowości wydania ani
+            dostępności instalatora tej wersji. Starszy zainstalowany build może
+            mieć inne nazwy, układ i zachowanie.
+          </p>
+          <p>
+            Po podłączeniu sesji sprawdź świeżą wiadomość i odpowiedź. Przy
+            rozgłoszeniu do wielu agentów sprawdź odbiór każdego adresata
+            osobno. Widoczna nazwa agenta nie gwarantuje działającego
+            połączenia.
+          </p>
+        </details>
+        <details>
+          <summary>Pomoc przy podłączeniu agenta</summary>
+          <p>
+            Jeśli klient nie zna skilla codescribe, wróć do konfiguracji
+            integracji w <strong>Ustawienia → Kreator</strong>. Podłącz tę
+            rozmowę, której chcesz używać; imię i numer kanału wybierz dla
+            własnej sesji. Nie przepisuj cudzych identyfikatorów.
+          </p>
+          <p>
+            Szczegóły integracji znajdziesz w
+            <a href="../skills/codescribe/README.md"
+              >dokumentacji skilla codescribe</a
+            >, a opis zapisu i dostaw w
+            <a href="TRANSCRIPT_BUS.md">kontrakcie transkrypcji</a>. Te
+            odnośniki wymagają pozostałych plików repozytorium; sam tutorial
+            możesz czytać offline jako pojedynczy plik.
+          </p>
+        </details>
+      </section>
+      <footer>
+        <strong>Codescribe · Vetcoders</strong>
+        <p>
+          Jeden plik HTML, bez CDN, czcionek z sieci, analityki ani zewnętrznych
+          obrazów. Możesz go przekazać dalej i otworzyć offline. Działająca
+          aplikacja oraz usługi agentów i głosu mają własne wymagania połączenia
+          i uwierzytelnienia.
+        </p>
+      </footer>
+    </main>
+    <script>
+      "use strict";
+      const modes = document.querySelectorAll("[data-mode]");
+      const widget = document.getElementById("widget-schematic");
+      const widgetText = document.getElementById("widget-explanation");
+      const modeDescriptions = {
+        mini: "Mini zostawia podstawowe przyciski i nie zajmuje miejsca na treść.",
+        midi: "Midi pokazuje szerszy pasek. W aplikacji pojawia się przy najechaniu wskaźnikiem na mini.",
+        full: "Pełny widok mieści zachowaną transkrypcję lub rozmowę, z polem wiadomości na dole.",
+      };
+      modes.forEach((button) =>
+        button.addEventListener("click", () => {
+          const mode = button.dataset.mode;
+          widget.className = "mock-widget " + mode;
+          widgetText.textContent = modeDescriptions[mode];
+          modes.forEach((item) => {
+            const selected = item === button;
+            item.setAttribute("aria-pressed", String(selected));
+            item.classList.toggle("active", selected);
+          });
+        })
+      );
+      const steps = [
+        [
+          "Wysyłasz wiadomość",
+          "„Podsumuj zmiany i wskaż następny krok”. Mikrofon pozostaje wyłączony.",
+        ],
+        [
+          "Agent dostaje dzwonek",
+          "Powiadomienie mówi, że w skrzynce jest coś do odczytania. Sam dzwonek nie jest przeczytaniem treści.",
+        ],
+        [
+          "Przeczytano",
+          "Agent odczytał pełną wiadomość i potwierdził dokładną dostawę. Potwierdzona pozycja schodzi z oczekujących; historia pozostaje.",
+        ],
+        [
+          "Pojawia się odpowiedź",
+          "Tekst wraca do rozmowy. Jeśli odpowiedź ma obsługiwany profil głosu, odtworzenie ma własny status.",
+        ],
+        [
+          "Spóźniony dzwonek",
+          "Agent sprawdza skrzynkę. Gdy jest pusta, nie powtarza zadania i nie odpowiada ponownie na starą wiadomość.",
+        ],
+      ];
+      let step = 0;
+      const next = document.getElementById("demo-next");
+      const output = document.getElementById("demo-output");
+      function renderStep() {
+        const title = document.createElement("h3");
+        const body = document.createElement("p");
+        title.textContent = steps[step][0];
+        body.textContent = steps[step][1];
+        output.replaceChildren(title, body);
+        document.getElementById("demo-count").textContent =
+          "Krok " + (step + 1) + " z " + steps.length;
+        next.disabled = step === steps.length - 1;
+      }
+      next.addEventListener("click", () => {
+        if (step < steps.length - 1) {
+          step += 1;
+          renderStep();
+        }
+      });
+      document.getElementById("demo-reset").addEventListener("click", () => {
+        step = 0;
+        renderStep();
+      });
+    </script>
+  </body>
+</html>

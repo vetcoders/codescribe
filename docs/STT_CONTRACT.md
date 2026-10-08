@@ -437,7 +437,7 @@ consequences and `docs/TRANSCRIPT_BUS.md` for the projected wire contract.
 | Load Settings form              | `CodescribeConfig.load_settings()`                  | one `RuntimeSettingsSnapshot` → `CsSettings::from_runtime_snapshot`  |
 | Save knobs                      | `update_config` / `update_config_many`              | `UserSettings::set_*` → write `settings.json`; may seed env          |
 | ASR mode picker                 | `CODESCRIBE_ASR_MODE` + `CODESCRIBE_CLOUD_CONSENT`  | Cloud requires `granted`; local override cannot disarm Cloud         |
-| Active STT row                  | `current_serving_verdict()`                         | last live take (`local_apple` → Apple). No Smart-final-pass suffix   |
+| Last transcription engine row   | `current_serving_verdict()`                         | last live take (`local_apple` → Apple). No Smart-final-pass suffix   |
 | Whisper model status / download | `whisper_model_status` / `download_whisper_model`   | `core/config/models.rs`                                              |
 | Audio device                    | `audio_input_snapshot` + config keys                | `UserSettings.audio_input_device` + cpal                             |
 | Mic permission                  | `mic_permission_granted` / `request_mic_permission` | `app/os/permissions`                                                 |
@@ -642,12 +642,12 @@ Tests distinguish one document revision from its N per-entry projection rows.
 
 ## 4. Labels vs truth
 
-| Surface                    | Source of truth                             | Not truth           |
-| -------------------------- | ------------------------------------------- | ------------------- |
-| Settings **ASR mode**      | resolved mode from the runtime snapshot     | Last serving engine |
-| Settings **Active STT**    | `current_serving_verdict().engine` last run | Preference string   |
-| Overlay footer engine chip | last verdict / controller truth label       | “I wanted Whisper”  |
-| Error text                 | actual failing path                         | —                   |
+| Surface                                | Source of truth                             | Not truth           |
+| -------------------------------------- | ------------------------------------------- | ------------------- |
+| Settings **ASR mode**                  | resolved mode from the runtime snapshot     | Last serving engine |
+| Settings **Last transcription engine** | `current_serving_verdict().engine` last run | Preference string   |
+| Overlay footer engine chip             | last verdict / controller truth label       | “I wanted Whisper”  |
+| Error text                             | actual failing path                         | —                   |
 
 Valid engine labels on verdict: `local_apple`, `local_whisper`, `streaming_whisper`, `cloud_stt`.
 
@@ -657,8 +657,12 @@ Valid engine labels on verdict: `local_apple`, `local_whisper`, `streaming_whisp
 
 Choose Apple only for the Apple canvas without refinement; Local power for
 bounded local Whisper refinement; Cloud for consent-gated live audio egress.
-The last take supplies Active STT and the overlay engine chip. A selection or
-model readiness check is not evidence that a particular engine served a take.
+The last take supplies the **Last transcription engine** row and the overlay
+engine chip; before the first take of a launch the row reads “No transcription
+in this app session” and carries no readiness dot. A selection or model
+readiness check is not evidence that a particular engine served a take. The
+Engine tab shows a model row only in Local power (the saved local selection);
+Cloud shows none, because `WHISPER_MODEL` has no runtime consumer.
 
 Normal stop never performs a whole-session file pass. Dictionary Retranscribe
 and other explicit file actions retain their own routes.

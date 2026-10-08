@@ -147,6 +147,8 @@ struct WaveformView: View {
   /// unmistakably "processing", not "listening", and not a hung freeze either.
   var transcribing: Bool = false
   var indicatorMode: CsIndicatorMode = .hold
+  /// Controller-projected channel capture shares the built-in Agent's hue.
+  var agentRouted: Bool = false
   /// Real capture level, when the engine streams it. nil → neutral flat bars.
   var meter: AudioLevelMeter? = nil
   /// Appearance-aware neutral track supplied by the owning surface.
@@ -158,8 +160,8 @@ struct WaveformView: View {
 
   private var barWidth: CGFloat { compact ? 1.5 : 2 }
   private var gap: CGFloat { compact ? 2 : 3 }
-  private var maxBarHeight: CGFloat { compact ? 9 : 12 }
-  private var trackHeight: CGFloat { compact ? 12 : 16 }
+  private var maxBarHeight: CGFloat { compact ? 18 : 24 }
+  private var trackHeight: CGFloat { compact ? 22 : 28 }
   private let minScale: CGFloat = 0.35
 
   private var contentWidth: CGFloat {
@@ -199,7 +201,7 @@ struct WaveformView: View {
       let count = Self.effectiveBarCount(
         width: geometry.size.width, barWidth: barWidth, gap: gap, minimum: barCount)
       Group {
-        if reduceMotion, active, meter?.gain != nil {
+        if reduceMotion, active {
           // Essential data feedback still updates, but at a calm 5 Hz with no
           // decorative phase sweep. Shape changes only with measured RMS.
           TimelineView(.periodic(from: .now, by: 0.2)) { timeline in
@@ -286,7 +288,7 @@ struct WaveformView: View {
     // dimmer than the live-capture bars.
     if transcribing { return CSColor.modeProcessing.opacity(0.55) }
     guard active, meter?.gain != nil else { return inactiveColor }
-    if indicatorMode == .assistive {
+    if agentRouted || indicatorMode == .assistive {
       return i % 5 == 0 ? CSColor.assistiveLight : CSColor.modeAgent
     }
     return i % 5 == 0 ? CSColor.terracottaTintBars : CSColor.modeRecording

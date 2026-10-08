@@ -26,7 +26,8 @@ assert manifest["bundle_version"] == "9.8.7", manifest
 assert manifest["helper"] == "bin/bus-demux.py", manifest
 assert manifest["skill"] == "skills/codescribe", manifest
 import subprocess
-assert manifest["helper_version"] == "0.9.0", manifest
+assert manifest["helper_version"] == "9.8.7", manifest
+assert manifest["skill_version"] == "0.10.0", manifest
 assert manifest["source_commit"] == subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
 
 source_skill = root / "skills" / "codescribe"
@@ -142,6 +143,7 @@ for name in ('cs-bus', 'cs-say'):
 helper = p/'bin/bus-demux.py'
 helper.write_text('#!/usr/bin/env python3\nprint("old app helper")\n')
 m = json.loads((p/'manifest.json').read_text())
+m['bundle_version'] = '1.2.3'
 m.pop('helper_version', None)
 m.pop('source_commit', None)
 m['files'] = [f for f in m['files'] if f['path'] not in ('bin/cs-bus', 'bin/cs-say')]
@@ -156,8 +158,8 @@ test ! -e "$WORKDIR/home/.codescribe/agent-bridge/runtime/bin/cs-bus"
 test ! -e "$WORKDIR/home/.codescribe/agent-bridge/runtime/bin/cs-say"
 OUTPUT="$(cd "$WORKDIR" && "$LOCAL_BIN/cs-bus" --bus "$BUS" --name james --once)"
 "$LOCAL_BIN/cs-say" --help | grep -q -- '--provider'
-"$LOCAL_BIN/cs-bus" --version | grep -q '^cs-bus 0.9.0+g'
-"$LOCAL_BIN/cs-say" --version | grep -q '^cs-say 0.9.0+g'
+"$LOCAL_BIN/cs-bus" --version | grep -q '^cs-bus 9.8.7+g'
+"$LOCAL_BIN/cs-say" --version | grep -q '^cs-say 9.8.7+g'
 test "$("$LOCAL_BIN/cs-bus" --version)" = "$BEFORE_BUS_VERSION"
 test "$("$LOCAL_BIN/cs-say" --version)" = "$BEFORE_SAY_VERSION"
 "$WORKDIR/install" "$PAYLOAD" "$WORKDIR/home"

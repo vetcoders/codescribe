@@ -53,7 +53,7 @@ enum OverlayRecordingLight: CaseIterable, Equatable, Sendable {
     case .silence: String(localized: "Silence", comment: "Recording light state")
     case .processing: String(localized: "Transcribing", comment: "Recording light state")
     case .agent:
-      String(localized: "Recording for the agent", comment: "Recording light state")
+      String(localized: "Recording for the Agent", comment: "Recording light state")
     }
   }
 
@@ -77,7 +77,7 @@ enum OverlayRecordingLight: CaseIterable, Equatable, Sendable {
         localized: "Capture is live, but nothing has reached speaking level for over a second.")
     case .processing:
       String(localized: "Capture has ended and the engine is transcribing the take.")
-    case .agent: String(localized: "Capture is live and the words go to the agent.")
+    case .agent: String(localized: "Capture is live and the words go to the Agent.")
     }
   }
 

@@ -217,7 +217,24 @@ final class OverlayController: ObservableObject {
       guard let self else { return }
       // A channel's live microphone must remain visible even when ordinary
       // dictation is hidden. This only paints evidence; it never opens capture.
-      if self.state.hasOpenChannel { self.show() } else { self.resizeForProjectedContent() }
+      // A qualified fresh reply asks this same cached panel to show. Every
+      // other conversation callback only resizes, so a dismissed panel stays
+      // dismissed. The overlay preference still decides that reply request.
+      let freshReplyRequestsPanel =
+        self.state.freshReplyPresentationRequested && self.readOverlayPreference()
+      if self.state.hasOpenChannel || freshReplyRequestsPanel {
+        if let panel = self.panel, panel.isVisible {
+          // Fresh channel evidence still cancels a handoff fade. Repainting an
+          // existing surface must not re-anchor its current pointer geometry.
+          panel.alphaValue = 1
+          self.orderPanelFront(panel)
+          self.resizeForProjectedContent()
+        } else {
+          self.show()
+        }
+      } else {
+        self.resizeForProjectedContent()
+      }
     }
     state.onSuccessfulDictation = {
       Task { @MainActor in
@@ -241,6 +258,14 @@ final class OverlayController: ObservableObject {
 
   func prepareForRecordingStart() {
     state.prepareForExternalStart()
+  }
+
+  /// An explicit Tray entry uses the same cached panel and leaves capture,
+  /// transcript selection, drafts and recording preferences with their owners.
+  func showWidget() {
+    readOverlayPreference()
+    if panel?.isVisible != true { state.setPresentationMode(.mini) }
+    show()
   }
 
   /// Show the overlay for a dictation session, honouring the "Transcription
@@ -281,7 +306,7 @@ final class OverlayController: ObservableObject {
   /// Reads the persisted preference once and hands the same value to the
   /// state's pin logic. The read loads the settings snapshot, so it happens
   /// only where the preference decides something: a take start, a status card,
-  /// a preference write.
+  /// a preference write, or a qualified fresh-reply presentation.
   @discardableResult
   private func readOverlayPreference() -> Bool {
     let enabled = overlayEnabledProvider()
@@ -297,7 +322,8 @@ final class OverlayController: ObservableObject {
       floating.onUserMove = { [weak self] in
         guard let self, !Self.isApplyingFrame, let panel = self.panel else { return }
         if self.state.freeMotion {
-          OverlayPlacement.persistOrigin(panel.frame.origin)
+          OverlayPlacement.persistOrigin(
+            (panel as? FloatingOverlayPanel)?.originForPersistence ?? panel.frame.origin)
         }
         self.state.userDraggedOverlay()
       }
@@ -306,6 +332,31 @@ final class OverlayController: ObservableObject {
         self.automaticContentSizingEnabled = false
         self.state.userResizedOverlay()
       }
+      floating.onUserResizeEnded = { [weak self] in
+        guard let self else { return }
+        if self.placementAfterUserResize {
+          self.placementAfterUserResize = false
+          self.applyPlacement()
+        }
+        if self.contentSizeAfterUserResize {
+          self.contentSizeAfterUserResize = false
+          self.resizeForProjectedContent()
+        }
+      }
+      floating.qualifiedExpandedHeight = { [weak self] width in
+        self?.qualifiedExpandedContentHeight(for: width)
+      }
+      floating.onFrameTransitionCompleted = { [weak self] in
+        guard let self else { return }
+        if self.placementAfterTransition {
+          self.placementAfterTransition = false
+          self.applyPlacement()
+        }
+        // The transition already landed on this height. A later projection
+        // can still grow the settled panel; an equal height writes nothing.
+        self.resizeForProjectedContent()
+      }
+      floating.setPresentationMode(state.presentationMode)
     }
     // A pending fade-out must not leave a freshly shown panel invisible.
     panel.alphaValue = 1
@@ -317,6 +368,9 @@ final class OverlayController: ObservableObject {
   /// True while we `setFrame` from prefs. AppKit still fires `windowDidMove`
   /// for those writes; those must not count as a user drag.
   static var isApplyingFrame = false
+  private var placementAfterTransition = false
+  private var placementAfterUserResize = false
+  private var contentSizeAfterUserResize = false
 
   /// Derive and apply the panel's frame from the placement prefs: free motion
   /// restores the last dragged origin, anchored derives from the anchor —
@@ -326,15 +380,32 @@ final class OverlayController: ObservableObject {
   /// all frame writes stay inside the programmatic-move guard.
   private func applyPlacement() {
     guard let panel else { return }
+    if (panel as? FloatingOverlayPanel)?.isUserResizing == true {
+      placementAfterUserResize = true
+      return
+    }
+    guard (panel as? FloatingOverlayPanel)?.isFrameTransitioning != true else {
+      placementAfterTransition = true
+      return
+    }
     Self.isApplyingFrame = true
     defer { Self.isApplyingFrame = false }
+    (panel as? FloatingOverlayPanel)?.resetPresentationPosition()
     let screen = NSScreen.main
     let clamped = DictationOverlayWindow.clamp(panel.frame.size, to: screen)
-    let size = NSSize(
-      width: clamped.width,
-      height: state.isCollapsed
-        ? DictationOverlayWindow.collapsedHeight
-        : max(clamped.height, DictationOverlayWindow.minSize.height))
+    let size: NSSize
+    switch state.presentationMode {
+    case .mini: size = DictationOverlayWindow.collapsedSize
+    case .midi:
+      size = NSSize(
+        width: min(
+          DictationOverlayWindow.midiSize.width,
+          screen?.visibleFrame.width ?? .greatestFiniteMagnitude),
+        height: DictationOverlayWindow.collapsedHeight)
+    case .expanded:
+      size = NSSize(
+        width: clamped.width, height: max(clamped.height, DictationOverlayWindow.minSize.height))
+    }
     let origin: NSPoint?
     if state.freeMotion {
       origin = OverlayPlacement.restoredOrigin(size: size, on: screen) ?? panel.frame.origin
@@ -354,12 +425,10 @@ final class OverlayController: ObservableObject {
   /// native transcript scroll view takes over. Window-frame writes are direct
   /// and unanimated; content keeps its existing reveal transition instead of
   /// morphing the glass panel or exporting hosting constraints.
-  private func resizeForProjectedContent() {
-    guard automaticContentSizingEnabled, !state.isCollapsed,
-      !state.isEditingTranscript, !state.isRevisionDraftDirty, let panel
-    else { return }
-    // Measure the same accepted snapshot the existing canvas paints. Human
-    // review fences automatic sizing; compact text never becomes delivery text.
+  /// Text the expanded panel is showing. An agent conversation scrolls inside
+  /// the frame; its height is not the previous transcript.
+  private func projectedSizingText() -> String {
+    guard state.showsMyDictation, !state.showsAgentMonitor else { return "" }
     let livePaint: CsCompactProjection?
     if !state.terminal, state.mode == .listening || state.mode == .finalizing,
       let paint = state.compactProjection,
@@ -370,15 +439,38 @@ final class OverlayController: ObservableObject {
     } else {
       livePaint = nil
     }
-    let screen = panel.screen ?? NSScreen.main
-    let targetHeight = OverlayContentSizePolicy.preferredHeight(
-      for: livePaint?.text ?? state.canvasText,
-      width: panel.frame.width,
+    return livePaint?.text ?? state.canvasText
+  }
+
+  /// Grow-only expanded height for `width`. Nil keeps the remembered frame
+  /// when the user owns the size or the transcript editor is open.
+  private func qualifiedExpandedContentHeight(for width: CGFloat) -> CGFloat? {
+    guard automaticContentSizingEnabled, !state.isEditingTranscript,
+      !state.isRevisionDraftDirty
+    else { return nil }
+    let screen = panel?.screen ?? NSScreen.main
+    let restingHeight = (panel as? FloatingOverlayPanel)?.sizeForPersistence.height
+      ?? panel?.frame.height
+      ?? DictationOverlayWindow.defaultSize.height
+    return OverlayContentSizePolicy.preferredHeight(
+      for: projectedSizingText(),
+      width: width,
       textScale: textScale.scale,
       screen: screen,
-      currentHeight: panel.frame.height
+      currentHeight: max(restingHeight, DictationOverlayWindow.minSize.height)
     )
+  }
+
+  private func resizeForProjectedContent() {
+    if (panel as? FloatingOverlayPanel)?.isUserResizing == true {
+      contentSizeAfterUserResize = true
+      return
+    }
+    guard !state.isCollapsed, let panel else { return }
+    guard (panel as? FloatingOverlayPanel)?.isFrameTransitioning != true else { return }
+    guard let targetHeight = qualifiedExpandedContentHeight(for: panel.frame.width) else { return }
     guard targetHeight > panel.frame.height + 0.5 else { return }
+    let screen = panel.screen ?? NSScreen.main
 
     Self.isApplyingFrame = true
     defer { Self.isApplyingFrame = false }
@@ -444,6 +536,10 @@ final class OverlayController: ObservableObject {
   }
 
   private func orderOut() {
+    placementAfterTransition = false
+    placementAfterUserResize = false
+    contentSizeAfterUserResize = false
+    state.clearWidgetHover()
     // Persist the user's chosen size for next launch (replaces frame autosave,
     // which used to write back the old feedback loop's runaway sizes) — and,
     // in free motion, the dragged origin.
@@ -451,7 +547,8 @@ final class OverlayController: ObservableObject {
       DictationOverlayWindow.persist(
         size: (panel as? FloatingOverlayPanel)?.sizeForPersistence ?? panel.frame.size)
       if state.freeMotion {
-        OverlayPlacement.persistOrigin(panel.frame.origin)
+        OverlayPlacement.persistOrigin(
+          (panel as? FloatingOverlayPanel)?.originForPersistence ?? panel.frame.origin)
       }
       (panel as? FloatingOverlayPanel)?.invalidatePresence()
     }
@@ -467,7 +564,8 @@ final class OverlayController: ObservableObject {
     DictationOverlayWindow.persist(
       size: (panel as? FloatingOverlayPanel)?.sizeForPersistence ?? panel.frame.size)
     if state.freeMotion {
-      OverlayPlacement.persistOrigin(panel.frame.origin)
+      OverlayPlacement.persistOrigin(
+        (panel as? FloatingOverlayPanel)?.originForPersistence ?? panel.frame.origin)
     }
     // Bind the completion to the exact panel AND the capture it is fading out.
     // The panel object is cached and reused, so the old completion re-read

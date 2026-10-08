@@ -12,6 +12,8 @@ import Foundation
 enum TrayIntent {
   /// Bring up the Agent Chat window and activate the app (tray / menu / summon).
   case openChat
+  /// Show the existing voice widget without opening capture or Agent Chat.
+  case openWidget
   /// Passive voice-delivery reveal: create/order the chat window without
   /// stealing focus. Used at TurnStarted and as end-of-turn fallback only.
   case revealChat

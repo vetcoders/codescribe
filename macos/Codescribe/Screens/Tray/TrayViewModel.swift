@@ -87,6 +87,7 @@ final class TrayViewModel: ObservableObject {
   // MARK: - Navigation intents
 
   func onShowAgent() { onIntent(.openChat) }
+  func onOpenWidget() { onIntent(.openWidget) }
 
   /// A popover is a short-lived surface. Do not carry an expanded wall of
   /// history/settings into the operator's next tray visit.

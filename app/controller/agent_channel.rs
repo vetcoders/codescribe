@@ -9,17 +9,20 @@
 //! is the open-mic fact the overlay paints from.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Result, anyhow};
 use codescribe_core::config::Config;
 use codescribe_core::pipeline::acoustic_ledger::AcousticLedger;
 use codescribe_core::pipeline::contracts::EventSink;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::audio::streaming_recorder::CaptureSubscriberId;
@@ -94,6 +97,19 @@ pub struct BoundAgentSession {
     pub bus: Option<PathBuf>,
 }
 
+/// One frozen archive intent. The canonical helper remains the binding writer;
+/// the controller only guards capture admission until that helper has exited.
+#[derive(Debug, Clone)]
+pub struct AgentArchiveRequest {
+    pub channel: u8,
+    pub provider: String,
+    pub provider_session_id: String,
+    pub lease_id: String,
+    pub bus: PathBuf,
+    pub executable: PathBuf,
+    pub bridge_home: PathBuf,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct BindingFile {
     schema: String,
@@ -119,6 +135,75 @@ impl BindingEntry {
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
     }
+}
+
+/// Freeze only concrete bridge owners admitted before this capture starts.
+/// Reading this snapshot never acknowledges a delivery or starts a follower.
+fn frozen_channel_recipients(
+    digit: u8,
+    binding: &Path,
+    shared_bus: &Path,
+) -> Vec<serde_json::Value> {
+    let Ok(file) = load_binding(binding) else {
+        return Vec::new();
+    };
+    let root = binding.parent().unwrap_or_else(|| Path::new("."));
+    let mut recipients = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (channel, entry) in &file.bindings {
+        if channel.len() != 1
+            || !channel.bytes().all(|byte| (b'1'..=b'9').contains(&byte))
+            || (digit != 0 && channel != &digit.to_string())
+        {
+            continue;
+        }
+        let provider = entry.provider.trim().to_lowercase();
+        let session = entry.provider_session_id.trim();
+        if provider.is_empty() || session.is_empty() {
+            continue;
+        }
+        let identity = format!("{provider}\0{session}");
+        let lease_id = hex::encode(Sha256::digest(identity.as_bytes()))[..32].to_string();
+        let lease_path = root.join("leases").join(format!("{lease_id}.json"));
+        let lease: serde_json::Value = (|| {
+            use std::io::{BufReader, Read};
+            let file = std::fs::File::open(&lease_path).ok()?;
+            if file.metadata().ok()?.len() > 16 << 20 {
+                return None;
+            }
+            serde_json::from_reader(BufReader::new(file.take(16 << 20))).ok()
+        })()
+        .unwrap_or(serde_json::Value::Null);
+        // Clock after this lease's read. A timestamp taken before the scan
+        // treats heartbeats refreshed during a large parse as future.
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|duration| duration.as_secs_f64())
+            .unwrap_or(0.0);
+        let age = now
+            - lease["heartbeat_unix"]
+                .as_f64()
+                .unwrap_or(f64::NEG_INFINITY);
+        let bus = entry.bus().unwrap_or_else(|| shared_bus.to_path_buf());
+        let bus = bus.canonicalize().unwrap_or(bus);
+        if lease["schema"] != "codescribe.agent-bridge.lease.v1"
+            || lease["active"] != true
+            || !age.is_finite()
+            || !(0.0..=active_names::LEASE_TTL_SECONDS).contains(&age)
+            || lease["provider"] != provider
+            || lease["provider_session_id"] != session
+            || lease["lease_id"] != lease_id
+            || lease["bus"].as_str() != bus.to_str()
+            || !seen.insert(lease_id.clone())
+        {
+            continue;
+        }
+        recipients.push(serde_json::json!({
+            "channel": channel, "name": entry.audience.trim(), "audience": entry.audience.trim(),
+            "provider": provider, "provider_session_id": session, "lease_id": lease_id, "bus": bus,
+        }));
+    }
+    recipients
 }
 
 #[derive(Debug, Clone)]
@@ -511,18 +596,153 @@ fn refusal(error: ChannelOpenRefusal) -> anyhow::Error {
     anyhow!("{error}")
 }
 
+fn archive_agent_with_helper(request: AgentArchiveRequest) -> Result<String> {
+    const RECEIPT_LIMIT: usize = 65_536;
+    let bus = request
+        .bus
+        .to_str()
+        .ok_or_else(|| anyhow!("agent archive bus path is not UTF-8"))?;
+    let channel = request.channel.to_string();
+    // The app creates this request from RealAgentBridgeInstaller.commandURL
+    // after verifying its managed command marker; bus text never selects it.
+    // Values below are separate fixed-option argv entries, never shell source.
+    // nosemgrep: rust.actix.command-injection.rust-actix-command-injection.rust-actix-command-injection -- app-owned managed helper path, argv-only spawn; no HTTP, transcript or agent-tool command input.
+    let mut child = Command::new(&request.executable)
+        .args([
+            "--archive-agent",
+            &channel,
+            "--provider",
+            &request.provider,
+            "--session",
+            &request.provider_session_id,
+            "--lease",
+            &request.lease_id,
+            "--bus",
+            bus,
+            "--bridge-home",
+        ])
+        .arg(&request.bridge_home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let killed = child.kill();
+                let waited = child.wait();
+                killed?;
+                waited?;
+                return Err(anyhow!("agent archive helper timed out"));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let waited = child.wait();
+                waited?;
+                return Err(error.into());
+            }
+        }
+    };
+    if !status.success() {
+        return Err(anyhow!("agent archive helper failed: {status}"));
+    }
+    let output = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("agent archive helper returned no receipt"))?;
+    let mut bytes = Vec::new();
+    output
+        .take((RECEIPT_LIMIT + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > RECEIPT_LIMIT {
+        return Err(anyhow!("agent archive receipt exceeds its size limit"));
+    }
+    let receipt: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if receipt["schema"].as_str() != Some("codescribe.agent-archive.v1")
+        || receipt["released"].as_bool() != Some(true)
+        || receipt["provider"].as_str() != Some(request.provider.as_str())
+        || receipt["provider_session_id"].as_str() != Some(request.provider_session_id.as_str())
+        || receipt["lease_id"].as_str() != Some(request.lease_id.as_str())
+        || receipt["channel"].as_str() != Some(channel.as_str())
+        || receipt["bus"].as_str() != Some(bus)
+    {
+        return Err(anyhow!(
+            "agent archive receipt does not match the frozen owner"
+        ));
+    }
+    Ok(String::from_utf8(bytes)?)
+}
+
 impl RecordingController {
+    /// Share the hotkey/autoseal lifecycle lock through canonical binding release.
+    /// The blocking task owns the guard, so cancelling a foreign waiter cannot
+    /// admit capture while its already-started helper still changes the binding.
+    pub async fn archive_agent_channel(&self, request: AgentArchiveRequest) -> Result<String> {
+        if !(1..=9).contains(&request.channel)
+            || request.provider.is_empty()
+            || request.provider_session_id.is_empty()
+            || request.lease_id.is_empty()
+            || !request.bus.is_absolute()
+            || !request.executable.is_absolute()
+            || !request.bridge_home.is_absolute()
+        {
+            return Err(anyhow!("invalid frozen agent archive request"));
+        }
+        let serial = Arc::clone(&self.serial_lock).lock_owned().await;
+        {
+            let channels = self.agent_channels.lock().await;
+            if channels.contains_key(&request.channel) {
+                return Err(anyhow!("cannot archive an open agent channel"));
+            }
+        }
+        tokio::task::spawn_blocking(move || {
+            let _serial = serial;
+            archive_agent_with_helper(request)
+        })
+        .await
+        .map_err(|error| anyhow!("agent archive task failed: {error}"))?
+    }
+
     /// Fn+digit toggle. A second press of the same digit hangs up: the
     /// session seals with `reason: hangup` and does not reopen. Dictation
     /// state is not changed.
     pub async fn toggle_agent_channel(&self, digit: u8) -> Result<()> {
-        self.dispatch_agent_channel(
+        self.toggle_agent_channel_at(
             digit,
             &binding_path(),
             &crate::presentation::transcript_bus::transcript_bus_path(),
             ChannelOpenMode::Live,
         )
         .await
+        .map(|_| ())
+    }
+
+    async fn toggle_agent_channel_at(
+        &self,
+        digit: u8,
+        binding_file: &Path,
+        shared_bus: &Path,
+        mode: ChannelOpenMode,
+    ) -> Result<bool> {
+        let _serial = Arc::clone(&self.serial_lock).lock_owned().await;
+        if self.current_state().await == super::State::Idle {
+            self.cancel_pending_hold_start().await;
+        }
+        let opened = self
+            .dispatch_agent_channel(digit, binding_file, shared_bus, mode)
+            .await?;
+        if opened && matches!(mode, ChannelOpenMode::Live) {
+            let settings = self.runtime_settings_arc().await;
+            if settings.values().beep_on_start {
+                crate::audio::play_sound_with_volume("Pop", settings.values().sound_volume);
+            }
+        }
+        Ok(opened)
     }
 
     /// `shared_bus` carries the rows and receipts of a channel whose binding
@@ -533,7 +753,7 @@ impl RecordingController {
         binding_file: &Path,
         shared_bus: &Path,
         mode: ChannelOpenMode,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut channels = self.agent_channels.lock().await;
         if let Some(open) = channels.remove(&digit) {
             drop(channels);
@@ -545,30 +765,34 @@ impl RecordingController {
                 channel_autoseal_secs(),
             )
             .await?;
-            return Ok(());
+            return Ok(false);
         }
 
         let bound = resolve_digit(digit, binding_file).map_err(refusal)?;
-        // Fn+0 always includes the shared bus. Freeze the binding's distinct
-        // dedicated paths for this take so hang-up closes the same destinations.
+        let mut recipients = frozen_channel_recipients(digit, binding_file, shared_bus);
+        if digit != 0 {
+            recipients.retain(|recipient| {
+                recipient["provider"].as_str() == bound.provider.as_deref()
+                    && recipient["provider_session_id"].as_str()
+                        == bound.provider_session_id.as_deref()
+                    && recipient["audience"].as_str() == Some(bound.audience.as_str())
+            });
+        }
+        // Fn+0 includes the shared bus and the admitted owners' destinations.
         let mut broadcast_buses = Vec::new();
         if digit == 0 {
-            match load_binding(binding_file) {
-                Ok(binding) => {
-                    for bus in binding.bindings.values().filter_map(BindingEntry::bus) {
-                        if bus != shared_bus && !broadcast_buses.contains(&bus) {
-                            broadcast_buses.push(bus);
-                        }
-                    }
-                }
-                Err(ChannelOpenRefusal::BindingMissing { .. }) => {}
-                Err(error) => {
-                    tracing::warn!(%error, "broadcast could not read dedicated destinations; shared bus remains active")
+            for recipient in &recipients {
+                if let Some(bus) = recipient["bus"].as_str().map(PathBuf::from)
+                    && bus != shared_bus
+                    && !broadcast_buses.contains(&bus)
+                {
+                    broadcast_buses.push(bus);
                 }
             }
         }
         let runtime_settings = self.runtime_settings_arc().await;
         let silence_sec = runtime_settings.values().toggle_silence_sec;
+
         let opened_at = SystemTime::now();
         let last_voice_at = Arc::new(StdMutex::new(opened_at));
         let last_text = Arc::new(StdMutex::new(String::new()));
@@ -614,6 +838,12 @@ impl RecordingController {
                         .unwrap_or_else(|| shared_bus.to_path_buf()),
                     broadcast_buses,
                 ));
+                bus.record_channel_receipt(&serde_json::json!({
+                    "schema": "codescribe.channel-recipients.v1", "kind": "channel_recipients",
+                    "session_id": session_label, "channel": digit.to_string(),
+                    "audience": bound.audience, "recipients": recipients,
+                    "emitted_at": chrono::Utc::now().to_rfc3339(),
+                }));
                 transcript_bus = Some(Arc::clone(&bus));
                 // The Pointer Indicator knob rules every badge path: Settings
                 // promises "Base size; Agent mode stays proportionally larger",
@@ -663,6 +893,12 @@ impl RecordingController {
                     .with_refinement_warnings(Arc::clone(&refinement_warnings)),
                 );
                 let sink: Arc<dyn EventSink> = emitter;
+                // The first channel may own the physical microphone without a
+                // dictation take. Install its measured level tap before the
+                // recorder freezes the callback; a later subscriber keeps the
+                // tap already feeding the shared capture.
+                let opens_physical_capture = !recorder.recorder.is_active();
+                Self::configure_level_broadcast(recorder, self.event_broadcast.clone());
                 match recorder
                     .begin_channel_session(
                         session_label,
@@ -676,6 +912,9 @@ impl RecordingController {
                 {
                     Ok(id) => id,
                     Err(error) => {
+                        if opens_physical_capture {
+                            recorder.set_level_callback(None);
+                        }
                         super::finish_audio_capture(session_id.as_deref());
                         if channels.is_empty() {
                             hold_badge::hide_hold_badge();
@@ -731,7 +970,7 @@ impl RecordingController {
                 bus.record_channel_receipt(&line);
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Epoch `begin_channel_session` stamps on every live channel capture.
@@ -785,6 +1024,13 @@ impl RecordingController {
             let mut recorder_guard = self.recorder.lock().await;
             match recorder_guard.as_mut() {
                 Some(recorder) => {
+                    // Retire the stored sender before the last channel closes
+                    // the stream. Its captured Arc drops with CoreAudio, so the
+                    // bounded worker rejects queued blocks before the next
+                    // physical capture. Shared dictation/other channels keep it.
+                    if recorder.capture_subscriber_count() == 1 && !recorder.has_take_subscriber() {
+                        recorder.set_level_callback(None);
+                    }
                     let (_last, audio_path) = recorder.end_channel_session(open.subscriber).await?;
                     audio_path
                 }
@@ -830,18 +1076,13 @@ impl RecordingController {
             .clone();
         if let Some(bus) = open.transcript_bus.as_ref() {
             bus.record_channel_receipt(&seal_receipt_line(reason, &opened, &refinement_warnings));
-        } else if let Err(error) = append_seal_receipt(
-            open.bus.as_deref().unwrap_or(shared_bus),
-            reason,
-            &opened,
-            &refinement_warnings,
-        ) {
-            tracing::warn!(
-                %error,
-                digit,
-                reason = reason.as_str(),
-                "channel seal receipt was not appended"
-            );
+        } else {
+            append_seal_receipt(
+                open.bus.as_deref().unwrap_or(shared_bus),
+                reason,
+                &opened,
+                &refinement_warnings,
+            )?;
         }
         super::finish_audio_capture(open.session_id.as_deref());
         let state = self.current_state().await;
@@ -942,8 +1183,40 @@ impl RecordingController {
     }
 
     pub(crate) async fn poll_channel_autoseal(&self, now: SystemTime, bus: &Path) -> Vec<u8> {
+        let _serial = self.serial_lock.lock().await;
         self.seal_channels_silent_for(now, bus, channel_autoseal_secs(), Some(&binding_path()))
             .await
+    }
+
+    /// Ordinary capture admission holds the controller's serial lock. Join
+    /// each channel and publish its existing close receipt before that admission.
+    pub(crate) async fn close_agent_channels_for_dictation(&self) -> Result<()> {
+        let mut open: Vec<_> = self.agent_channels.lock().await.drain().collect();
+        open.sort_by_key(|(digit, _)| *digit);
+        let bus = crate::presentation::transcript_bus::transcript_bus_path();
+        let mut first_error = None;
+        for (digit, channel) in open {
+            let retained = channel.clone();
+            if let Err(error) = self
+                .close_open_channel(
+                    digit,
+                    channel,
+                    ChannelSealReason::Hangup,
+                    &bus,
+                    channel_autoseal_secs(),
+                )
+                .await
+            {
+                self.agent_channels.lock().await.insert(digit, retained);
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Quiet delivery contract (Founder seal cc6c8248): silence seals and
@@ -1072,7 +1345,25 @@ impl RecordingController {
         for state in &mut states {
             state.follower_alive = alive(&state.provider, &state.provider_session_id);
         }
+        if !states.iter().any(|state| state.channel == "0") {
+            states.push(ChannelHudState {
+                open: false,
+                loud: false,
+                channel: "0".into(),
+                audience: BROADCAST_AUDIENCE.into(),
+                label: String::new(),
+                autoseal_secs: 0,
+                autoseal_deadline: None,
+                tts_ducking: false,
+                opened_at: SystemTime::UNIX_EPOCH,
+                utterance_silence_ms: 0,
+                provider: None,
+                provider_session_id: None,
+                follower_alive: None,
+            });
+        }
         let Ok(file) = load_binding(binding) else {
+            states.sort_by(|a, b| a.channel.cmp(&b.channel));
             return states;
         };
         for (digit, entry) in &file.bindings {
@@ -1370,6 +1661,484 @@ mod tests {
         assert!(message.contains("conversation"), "{message}");
         assert!(controller.agent_channel_snapshot(1).await.is_some());
         assert_eq!(controller.current_state().await, super::super::State::Idle);
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn ordinary_handover_closes_each_channel_once_with_its_owned_receipt() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let first_bus = dir.path().join("channel-1.jsonl");
+        let third_bus = dir.path().join("channel-3.jsonl");
+        let binding = write_binding(dir.path(), &serde_json::json!({
+            "schema": "vc.agent-audience-binding.v1",
+            "bindings": {
+                "1": {"audience": "Lena", "provider": "codex", "provider_session_id": "lena-session", "bus": first_bus},
+                "3": {"audience": "Astra", "provider": "codex", "provider_session_id": "astra-session", "bus": third_bus}
+            }
+        }).to_string());
+        let shared_bus = dir.path().join("shared.jsonl");
+        for digit in [1, 3] {
+            controller
+                .dispatch_agent_channel(digit, &binding, &shared_bus, ChannelOpenMode::AttachedOnly)
+                .await
+                .expect("open fixture channel");
+            controller
+                .agent_channels
+                .lock()
+                .await
+                .get_mut(&digit)
+                .expect("open")
+                .session_id = Some(format!("agent-channel-{digit}-handover"));
+        }
+        let serial = controller.serial_lock.lock().await;
+        controller
+            .close_agent_channels_for_dictation()
+            .await
+            .expect("handover");
+        drop(serial);
+        assert!(controller.agent_channels.lock().await.is_empty());
+        assert_eq!(
+            controller.capture_subscriber_view().await,
+            (0, false, false)
+        );
+        assert_eq!(controller.current_state().await, super::super::State::Idle);
+        for (digit, bus, owner) in [
+            (1, &first_bus, "lena-session"),
+            (3, &third_bus, "astra-session"),
+        ] {
+            let rows = bus_rows(bus);
+            assert_eq!(rows.len(), 1, "exactly one closure per owned channel");
+            assert_eq!(rows[0]["reason"], "hangup");
+            assert_eq!(rows[0]["state"], "sealed");
+            assert_eq!(rows[0]["channel"], digit.to_string());
+            assert_eq!(rows[0]["provider_session_id"], owner);
+            assert_eq!(
+                rows[0]["session_id"],
+                format!("agent-channel-{digit}-handover")
+            );
+        }
+        controller
+            .close_agent_channels_for_dictation()
+            .await
+            .expect("idempotent close");
+        assert_eq!(bus_rows(&first_bus).len(), 1);
+        assert_eq!(bus_rows(&third_bus).len(), 1);
+        assert!(
+            !shared_bus.exists(),
+            "no receipt is sent to an unrelated bus"
+        );
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn ordinary_handover_refuses_failed_terminal_receipt_and_retains_owner() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared.jsonl");
+        open_stamped(
+            &controller,
+            &binding,
+            &shared_bus,
+            "agent-channel-3-receipt-failure",
+        )
+        .await;
+        let original = controller.agent_channel_snapshot(3).await.expect("owner");
+        assert!(
+            !channel_bus.exists(),
+            "AttachedOnly fixture has no published PCM"
+        );
+        std::fs::create_dir_all(&channel_bus)
+            .expect("make receipt destination unwritable as a file");
+        let serial = controller.serial_lock.lock().await;
+        let result = controller.close_agent_channels_for_dictation().await;
+        drop(serial);
+        let retained = controller.agent_channel_snapshot(3).await;
+        assert!(
+            result.is_err(),
+            "ordinary admission must refuse when its canonical hangup receipt cannot be persisted; got {result:?} with retained_owner={}",
+            retained.is_some()
+        );
+        let retained = retained.expect("failed close retains its original owner");
+        assert_eq!(retained.session_id, original.session_id);
+        assert_eq!(retained.provider_session_id, original.provider_session_id);
+        assert_eq!(retained.audience, original.audience);
+        assert_eq!(controller.current_state().await, super::super::State::Idle);
+        assert!(
+            controller.session_id.read().await.is_none(),
+            "no new ordinary take"
+        );
+        assert!(
+            channel_bus.is_dir(),
+            "failure fixture did not fabricate a terminal receipt"
+        );
+        assert!(
+            !shared_bus.exists(),
+            "no unrelated publication replaces the owned receipt"
+        );
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn ordinary_handover_serializes_silence_poll_without_reopening_the_channel() {
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared.jsonl");
+        let opened = open_stamped(
+            &controller,
+            &binding,
+            &shared_bus,
+            "agent-channel-3-handover",
+        )
+        .await;
+        hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
+        let serial = controller.serial_lock.lock().await;
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let polling_controller = Arc::clone(&controller);
+        let poll_bus = shared_bus.clone();
+        let poll = tokio::spawn(async move {
+            started.send(()).expect("poll observed");
+            polling_controller
+                .poll_channel_autoseal(opened + Duration::from_secs(600), &poll_bus)
+                .await
+        });
+        waiting.await.expect("poll started");
+        tokio::task::yield_now().await;
+        assert!(
+            !poll.is_finished(),
+            "silence poll waits for the existing transition owner"
+        );
+        controller
+            .close_agent_channels_for_dictation()
+            .await
+            .expect("handover");
+        drop(serial);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), poll)
+                .await
+                .expect("bounded poll")
+                .expect("poll task")
+                .is_empty()
+        );
+        assert!(controller.agent_channel_snapshot(3).await.is_none());
+        let rows = bus_rows(&channel_bus);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["reason"], "hangup");
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn ordinary_hold_and_toggle_admit_only_after_owned_channel_close() {
+        use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
+
+        for key_type in [HotkeyType::Hold, HotkeyType::Toggle] {
+            let controller = Arc::new(RecordingController::new_without_keychain());
+            let dir = tempfile::tempdir().expect("temp");
+            let (binding, channel_bus) = write_dedicated_binding(dir.path());
+            let shared_bus = dir.path().join("shared.jsonl");
+            open_stamped(
+                &controller,
+                &binding,
+                &shared_bus,
+                "agent-channel-3-before-take",
+            )
+            .await;
+            controller
+                .handle_hotkey_event(HotkeyInput {
+                    key_type,
+                    action: if key_type == HotkeyType::Hold {
+                        HotkeyAction::Down
+                    } else {
+                        HotkeyAction::Press
+                    },
+                    assistive: false,
+                    hold_mode: HoldMode::Raw,
+                    force_raw: false,
+                    force_ai: false,
+                })
+                .await
+                .expect("ordinary start");
+            let expected = if key_type == HotkeyType::Hold {
+                State::RecHold
+            } else {
+                State::RecToggle
+            };
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while controller.current_state().await != expected {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("bounded fake recorder admission");
+            assert!(controller.agent_channel_snapshot(3).await.is_none());
+            let rows = bus_rows(&channel_bus);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0]["reason"], "hangup");
+            assert_eq!(rows[0]["session_id"], "agent-channel-3-before-take");
+            let take = controller
+                .session_id
+                .read()
+                .await
+                .clone()
+                .expect("ordinary take");
+            assert_ne!(take, "agent-channel-3-before-take");
+            // AttachedOnly stamps ownership without physical PCM. This case
+            // proves admission and close ordering, not a final transcript seal.
+            controller.reset().await;
+            assert_eq!(controller.current_state().await, State::Idle);
+        }
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn hold_release_while_scheduling_waits_preserves_channel_and_cancels_take() {
+        use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
+
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared.jsonl");
+        open_stamped(&controller, &binding, &shared_bus, "agent-channel-3-cancel").await;
+        let original = controller
+            .agent_channel_snapshot(3)
+            .await
+            .expect("original owner");
+        let serial = controller.serial_lock.lock().await;
+        let pending_controller = Arc::clone(&controller);
+        let event = |action| HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action,
+            assistive: false,
+            hold_mode: HoldMode::Raw,
+            force_raw: false,
+            force_ai: false,
+        };
+        // Enter the real scheduling boundary directly so unrelated context
+        // archival awaits cannot turn this into an earlier release test.
+        let requested_generation = controller.hold_start_generation.load(Ordering::SeqCst);
+        let pending = tokio::spawn(async move {
+            pending_controller
+                .schedule_hold_start(false, requested_generation)
+                .await
+        });
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !pending.is_finished(),
+            "start waits for handover serialization"
+        );
+        controller
+            .handle_hotkey_event(event(HotkeyAction::Up))
+            .await
+            .expect("release does not wait for drain");
+        drop(serial);
+        tokio::time::timeout(Duration::from_secs(1), pending)
+            .await
+            .expect("bounded handover")
+            .expect("task")
+            .expect("start resolves");
+        assert_eq!(controller.current_state().await, State::Idle);
+        assert!(controller.session_id.read().await.is_none());
+        assert!(controller.hold_start_task.lock().await.is_none());
+        let retained = controller
+            .agent_channel_snapshot(3)
+            .await
+            .expect("retained owner");
+        assert_eq!(retained.session_id, original.session_id);
+        assert_eq!(
+            retained.session_id.as_deref(),
+            Some("agent-channel-3-cancel")
+        );
+        assert_eq!(retained.provider_session_id, original.provider_session_id);
+        assert_eq!(retained.audience, original.audience);
+        assert!(
+            bus_rows(&channel_bus).is_empty(),
+            "cancelled admission cannot hang up the channel"
+        );
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn raw_hold_arm_preserves_channel_until_an_ordinary_take_is_admitted() {
+        use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared.jsonl");
+        open_stamped(
+            &controller,
+            &binding,
+            &shared_bus,
+            "agent-channel-3-before-chord",
+        )
+        .await;
+        let event = |action| HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action,
+            assistive: false,
+            hold_mode: HoldMode::Raw,
+            force_raw: false,
+            force_ai: false,
+        };
+        controller
+            .handle_hotkey_event(event(HotkeyAction::Down))
+            .await
+            .expect("arm hold");
+        let channel_preserved = controller.agent_channel_snapshot(3).await.is_some();
+        controller
+            .handle_hotkey_event(event(HotkeyAction::Up))
+            .await
+            .expect("cancel arm");
+        assert_eq!(controller.current_state().await, State::Idle);
+        assert!(controller.session_id.read().await.is_none());
+        assert!(
+            channel_preserved,
+            "Fn down is also the prefix of a channel chord; it cannot hang up another channel before dictation admission"
+        );
+        assert!(
+            bus_rows(&channel_bus).is_empty(),
+            "no premature hangup receipt"
+        );
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn detector_fn_prefix_then_channel_digit_never_admits_a_phantom_hold() {
+        use super::super::{HotkeyAction, HotkeyInput, HotkeyType, State};
+        use crate::os::hotkeys::{
+            HoldAction, HoldMode, HotkeyDetector, HotkeyDetectorInput, HotkeyEvent,
+            HotkeyModifierSnapshot, HotkeyPhysicalKey,
+        };
+
+        for channel_chord in [true, false] {
+            let controller = Arc::new(RecordingController::new_without_keychain());
+            let dir = tempfile::tempdir().expect("temp");
+            let (binding, channel_bus) = write_dedicated_binding(dir.path());
+            let shared_bus = dir.path().join("shared.jsonl");
+            open_stamped(
+                &controller,
+                &binding,
+                &shared_bus,
+                "agent-channel-3-fn-prefix",
+            )
+            .await;
+            let mut config = crate::os::hotkeys::get_hotkey_runtime_config();
+            config.mode_bindings.dictation = crate::config::ShortcutBinding::HoldFn;
+            config.channel_modifier = crate::config::ChannelModifier::Fn;
+            config.fn_tap_toggles_dictation = false;
+            let mut detector = HotkeyDetector::default();
+            let now = std::time::Instant::now();
+            let modifiers = |fn_key| HotkeyModifierSnapshot {
+                ctrl: false,
+                option: false,
+                shift: false,
+                cmd: false,
+                fn_key,
+            };
+            let input = |action| HotkeyInput {
+                key_type: HotkeyType::Hold,
+                action,
+                assistive: false,
+                hold_mode: HoldMode::Raw,
+                force_raw: false,
+                force_ai: false,
+            };
+            assert_eq!(
+                detector.feed(
+                    HotkeyDetectorInput::FlagsChanged {
+                        now,
+                        key: HotkeyPhysicalKey::Fn,
+                        modifiers: modifiers(true),
+                    },
+                    config
+                ),
+                Some(HotkeyEvent::Hold {
+                    action: HoldAction::Down,
+                    mode: HoldMode::Raw
+                })
+            );
+            controller
+                .handle_hotkey_event(input(HotkeyAction::Down))
+                .await
+                .expect("Fn prefix");
+            assert!(controller.agent_channel_snapshot(3).await.is_some());
+            assert!(
+                bus_rows(&channel_bus).is_empty(),
+                "prefix cannot hang up a channel"
+            );
+            if channel_chord {
+                let digit = HotkeyDetectorInput::KeyDown {
+                    now: now + Duration::from_millis(10),
+                    key: HotkeyPhysicalKey::Digit(3),
+                    modifiers: modifiers(true),
+                };
+                assert_eq!(
+                    detector.feed(digit, config),
+                    Some(HotkeyEvent::AgentChannel { digit: 3 })
+                );
+                // The bridge routes AgentChannel to this public controller entry.
+                controller
+                    .toggle_agent_channel(3)
+                    .await
+                    .expect("explicit channel toggle");
+                assert_eq!(
+                    detector.feed(
+                        HotkeyDetectorInput::KeyDown {
+                            now: now + Duration::from_millis(11),
+                            key: HotkeyPhysicalKey::Digit(3),
+                            modifiers: modifiers(true),
+                        },
+                        config
+                    ),
+                    None,
+                    "key repeat cannot toggle twice"
+                );
+            }
+            assert_eq!(
+                detector.feed(
+                    HotkeyDetectorInput::FlagsChanged {
+                        now: now + Duration::from_millis(20),
+                        key: HotkeyPhysicalKey::Fn,
+                        modifiers: modifiers(false),
+                    },
+                    config
+                ),
+                Some(HotkeyEvent::Hold {
+                    action: HoldAction::Up,
+                    mode: HoldMode::Raw
+                })
+            );
+            controller
+                .handle_hotkey_event(input(HotkeyAction::Up))
+                .await
+                .expect("quick release");
+            let delay = controller
+                .runtime_settings_arc()
+                .await
+                .values()
+                .hold_start_delay_ms;
+            tokio::time::sleep(Duration::from_millis(delay + 50)).await;
+            assert_eq!(controller.current_state().await, State::Idle);
+            assert!(
+                controller.session_id.read().await.is_none(),
+                "no phantom ordinary take"
+            );
+            assert!(controller.hold_start_task.lock().await.is_none());
+            let rows = bus_rows(&channel_bus);
+            if channel_chord {
+                assert!(controller.agent_channel_snapshot(3).await.is_none());
+                assert_eq!(rows.len(), 1, "only the explicit channel toggle closes");
+                assert_eq!(rows[0]["reason"], "hangup");
+                assert_eq!(rows[0]["session_id"], "agent-channel-3-fn-prefix");
+            } else {
+                assert!(controller.agent_channel_snapshot(3).await.is_some());
+                assert!(rows.is_empty(), "quick release preserves its channel");
+            }
+            assert!(!shared_bus.exists(), "no unrelated terminal publication");
+        }
     }
 
     #[test]
@@ -1745,19 +2514,234 @@ mod tests {
         let controller = RecordingController::new_without_keychain();
         let roster = controller.channel_roster_states_at(&binding, &bridge).await;
 
-        assert_eq!(roster.len(), 2, "{roster:?}");
-        assert_eq!(roster[0].channel, "1");
-        assert_eq!(roster[0].audience, "Ada");
-        assert!(!roster[0].open);
-        assert_eq!(roster[0].follower_alive, Some(true));
-        assert_eq!(roster[1].channel, "3");
-        assert_eq!(roster[1].audience, "Leon");
+        assert_eq!(roster.len(), 3, "{roster:?}");
+        assert_eq!(roster[0].channel, "0");
+        assert_eq!(roster[0].audience, "*");
+        assert!(roster[0].provider.is_none());
+        assert!(roster[0].provider_session_id.is_none());
+        assert_eq!(roster[1].channel, "1");
+        assert_eq!(roster[1].audience, "Ada");
         assert!(!roster[1].open);
+        assert_eq!(roster[1].follower_alive, Some(true));
+        assert_eq!(roster[2].channel, "3");
+        assert_eq!(roster[2].audience, "Leon");
+        assert!(!roster[2].open);
         assert_eq!(
-            roster[1].follower_alive,
+            roster[2].follower_alive,
             Some(false),
             "no lease means nobody is listening"
         );
+    }
+
+    #[test]
+    fn frozen_broadcast_admits_heartbeats_refreshed_during_large_lease_read() {
+        use std::io::Write;
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tempfile::tempdir().expect("temp");
+        let bus = dir.path().join("bus.jsonl");
+        std::fs::write(&bus, "").expect("bus");
+        let bus = bus.canonicalize().expect("canonical bus");
+        let leases = dir.path().join("leases");
+        std::fs::create_dir(&leases).expect("leases");
+        let heartbeat = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs_f64()
+            - 1.0;
+        let mut bindings = serde_json::Map::new();
+        let mut records = Vec::new();
+        for digit in 1..=4 {
+            let session = format!("recipient-clock-{digit}");
+            let lease = hex::encode(Sha256::digest(format!("codex\0{session}").as_bytes()))[..32]
+                .to_string();
+            bindings.insert(
+                digit.to_string(),
+                serde_json::json!({
+                    "audience": format!("agent-{digit}"), "provider": "codex",
+                    "provider_session_id": session, "bus": bus
+                }),
+            );
+            records.push((
+                leases.join(format!("{lease}.json")),
+                serde_json::json!({
+                    "schema": "codescribe.agent-bridge.lease.v1", "lease_id": lease,
+                    "provider": "codex", "provider_session_id": session, "active": true,
+                    "heartbeat_unix": heartbeat, "bus": bus
+                }),
+            ));
+        }
+        let binding = write_binding(
+            dir.path(),
+            &serde_json::json!({
+                "schema": BINDING_SCHEMA, "bindings": bindings
+            })
+            .to_string(),
+        );
+        let (first_path, mut first) = records.remove(0);
+        first["diagnostic_padding"] = serde_json::Value::String("x".repeat(2_200_000));
+        let bytes = serde_json::to_vec(&first).expect("large lease");
+        assert!(bytes.len() > 2 << 20);
+        for (path, record) in &records {
+            std::fs::write(path, serde_json::to_vec(record).expect("json")).expect("lease");
+        }
+        // A fixture-only FIFO gates the real File read without clock or parser
+        // substitutions. Its writer opens only once the function has reached
+        // the first lease, then refreshes later owners before supplying bytes.
+        let name = std::ffi::CString::new(first_path.as_os_str().as_bytes()).expect("path");
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let writer = std::thread::spawn(move || {
+            let mut first_file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(first_path)
+                .expect("gated lease");
+            let refreshed = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("clock")
+                .as_secs_f64();
+            for (path, mut record) in records {
+                record["heartbeat_unix"] = serde_json::json!(refreshed);
+                std::fs::write(path, serde_json::to_vec(&record).expect("json")).expect("refresh");
+            }
+            first_file.write_all(&bytes).expect("large lease bytes");
+        });
+        let started = std::time::Instant::now();
+        let recipients = frozen_channel_recipients(0, &binding, &bus);
+        writer.join().expect("writer");
+        eprintln!(
+            "large-lease recipient selection: {:?}, {} owners",
+            started.elapsed(),
+            recipients.len()
+        );
+        assert_eq!(
+            recipients.len(),
+            4,
+            "Refresh during I/O must not look like a future heartbeat"
+        );
+        assert_eq!(
+            recipients
+                .iter()
+                .map(|row| row["channel"].as_str().expect("channel"))
+                .collect::<Vec<_>>(),
+            vec!["1", "2", "3", "4"]
+        );
+    }
+
+    #[test]
+    fn frozen_broadcast_rejects_stale_future_and_foreign_lease_metadata() {
+        let dir = tempfile::tempdir().expect("temp");
+        let bus = dir.path().join("bus.jsonl");
+        std::fs::write(&bus, "").expect("bus");
+        let bus = bus.canonicalize().expect("canonical bus");
+        std::fs::create_dir(dir.path().join("leases")).expect("leases");
+        let session = "recipient-clock-controls";
+        let lease =
+            hex::encode(Sha256::digest(format!("codex\0{session}").as_bytes()))[..32].to_string();
+        let path = dir.path().join("leases").join(format!("{lease}.json"));
+        let heartbeat = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs_f64();
+        let owned = serde_json::json!({
+            "schema": "codescribe.agent-bridge.lease.v1", "lease_id": lease,
+            "provider": "codex", "provider_session_id": session, "active": true,
+            "heartbeat_unix": heartbeat, "bus": bus
+        });
+        let binding = write_binding(
+            dir.path(),
+            &serde_json::json!({
+                "schema": BINDING_SCHEMA, "bindings": {
+                    "1": {"audience": "owner", "provider": "codex", "provider_session_id": session}
+                }
+            })
+            .to_string(),
+        );
+        std::fs::write(&path, serde_json::to_vec(&owned).expect("json")).expect("lease");
+        assert_eq!(frozen_channel_recipients(0, &binding, &bus).len(), 1);
+        assert_eq!(frozen_channel_recipients(1, &binding, &bus).len(), 1);
+        assert!(frozen_channel_recipients(2, &binding, &bus).is_empty());
+        for (field, value) in [
+            (
+                "heartbeat_unix",
+                serde_json::json!(heartbeat - active_names::LEASE_TTL_SECONDS - 10.0),
+            ),
+            ("heartbeat_unix", serde_json::json!(heartbeat + 30.0)),
+            ("heartbeat_unix", serde_json::Value::Null),
+            ("active", serde_json::json!(false)),
+            ("schema", serde_json::json!("wrong-schema")),
+            ("provider", serde_json::json!("claude-code")),
+            ("provider_session_id", serde_json::json!("another-session")),
+            ("lease_id", serde_json::json!("another-lease")),
+            ("bus", serde_json::json!("/tmp/not-owned.jsonl")),
+        ] {
+            let mut rejected = owned.clone();
+            rejected[field] = value.clone();
+            std::fs::write(&path, serde_json::to_vec(&rejected).expect("json")).expect("lease");
+            assert!(
+                frozen_channel_recipients(0, &binding, &bus).is_empty(),
+                "{field}={value}"
+            );
+            assert!(
+                frozen_channel_recipients(1, &binding, &bus).is_empty(),
+                "direct {field}={value}"
+            );
+        }
+        for bytes in [b"{".to_vec(), vec![b' '; (16 << 20) + 1]] {
+            std::fs::write(&path, bytes).expect("invalid lease");
+            assert!(frozen_channel_recipients(0, &binding, &bus).is_empty());
+        }
+    }
+
+    #[test]
+    fn frozen_broadcast_keeps_original_owners_and_refuses_wrong_destinations() {
+        let dir = tempfile::tempdir().expect("temp");
+        let binding = dir.path().join("binding.json");
+        let bus = dir.path().join("bus.jsonl");
+        std::fs::write(&bus, "").expect("bus");
+        let canonical_bus = bus.canonicalize().expect("canonical bus");
+        std::fs::create_dir(dir.path().join("leases")).expect("leases");
+        let bindings = serde_json::json!({"schema": "vc.agent-audience-binding.v1", "bindings": {
+            "1": {"audience": "Lena", "provider": "codex", "provider_session_id": "agent-a"},
+            "2": {"audience": "Adam", "provider": "codex", "provider_session_id": "agent-b"},
+            "3": {"audience": "Astra", "provider": "codex", "provider_session_id": "agent-c"}
+        }});
+        std::fs::write(&binding, serde_json::to_vec(&bindings).expect("json")).expect("binding");
+        let admit = |session: &str, destination: &Path| {
+            let lease = hex::encode(Sha256::digest(format!("codex\0{session}").as_bytes()))[..32]
+                .to_string();
+            let receipt = serde_json::json!({
+                "schema": "codescribe.agent-bridge.lease.v1", "lease_id": lease,
+                "provider": "codex", "provider_session_id": session, "active": true,
+                "heartbeat_unix": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("clock").as_secs_f64(),
+                "bus": destination
+            });
+            std::fs::write(
+                dir.path().join("leases").join(format!("{lease}.json")),
+                serde_json::to_vec(&receipt).expect("json"),
+            )
+            .expect("lease");
+        };
+        admit("agent-a", &canonical_bus);
+        let frozen = frozen_channel_recipients(0, &binding, &bus);
+        assert_eq!(frozen.len(), 1);
+        admit("agent-b", &canonical_bus);
+        admit("agent-c", &dir.path().join("wrong.jsonl"));
+        assert_eq!(
+            frozen.len(),
+            1,
+            "a late attachment cannot inherit this question"
+        );
+        assert_eq!(frozen[0]["provider_session_id"], "agent-a");
+        let next = frozen_channel_recipients(0, &binding, &bus);
+        assert_eq!(
+            next.len(),
+            2,
+            "only concrete live owners of this destination"
+        );
+        let named = frozen_channel_recipients(2, &binding, &bus);
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0]["provider_session_id"], "agent-b");
+        assert!(frozen_channel_recipients(3, &binding, &bus).is_empty());
     }
 
     /// One closing throne: a session sealed by silence is never sealed again
@@ -2260,5 +3244,226 @@ mod capture_observer_channel_ownership_tests {
         assert_eq!(card.ledger, None);
         assert!(card.words.is_empty());
         assert_eq!(card.vad_speech_pct, None);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod archive_channel_serialization_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+
+    struct ArchiveFixture {
+        dir: tempfile::TempDir,
+        binding: PathBuf,
+        bus: PathBuf,
+        lease: String,
+        executable: PathBuf,
+    }
+
+    impl ArchiveFixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("scratch archive");
+            let root = dir.path();
+            let binding = root.join(BINDING_FILENAME);
+            let bus = root.join("channel-3.jsonl");
+            let lease = hex::encode(&Sha256::digest(b"codex\0archive-session")[..16]);
+            std::fs::create_dir(root.join("leases")).unwrap();
+            std::fs::write(&bus, b"").unwrap();
+            std::fs::write(
+                &binding,
+                serde_json::to_vec(&serde_json::json!({
+                    "schema": BINDING_SCHEMA,
+                    "bindings": {"3": {"audience": "archive-agent", "provider": "codex",
+                        "provider_session_id": "archive-session", "bus": bus}}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("leases").join(format!("{lease}.json")),
+                serde_json::to_vec(&serde_json::json!({
+                    "schema": "codescribe.agent-bridge.lease.v1", "lease_id": lease,
+                    "provider": "codex", "provider_session_id": "archive-session",
+                    "name": "archive-agent", "bus": bus, "cursor": 0, "pending": []
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let executable = root.join("held-helper.py");
+            // The scratch wrapper gates the real canonical helper, not a copy
+            // of its binding/lease/archive algorithm or a live bus.
+            std::fs::write(
+                root.join("canonical.txt"),
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("scripts/bus-demux.py")
+                    .to_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                &executable,
+                br#"#!/usr/bin/env python3
+import os, sys, time
+from pathlib import Path
+root = Path(__file__).parent
+(root / 'entered').touch()
+end = time.monotonic() + 10
+while not (root / 'release').exists():
+    if time.monotonic() > end:
+        sys.exit(9)
+    time.sleep(0.01)
+source = (root / 'canonical.txt').read_text()
+os.execv(sys.executable, [sys.executable, source, *sys.argv[1:]])
+"#,
+            )
+            .unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+            Self {
+                dir,
+                binding,
+                bus,
+                lease,
+                executable,
+            }
+        }
+
+        fn request(&self) -> AgentArchiveRequest {
+            AgentArchiveRequest {
+                channel: 3,
+                provider: "codex".into(),
+                provider_session_id: "archive-session".into(),
+                lease_id: self.lease.clone(),
+                bus: self.bus.clone(),
+                executable: self.executable.clone(),
+                bridge_home: self.dir.path().to_owned(),
+            }
+        }
+
+        async fn wait_for_helper(&self) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !self.dir.path().join("entered").exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("canonical helper was spawned");
+        }
+
+        fn release(&self) {
+            std::fs::write(self.dir.path().join("release"), b"go").unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn an_open_controller_channel_refuses_archive_before_helper_spawn() {
+        let fixture = ArchiveFixture::new();
+        let controller = RecordingController::new_without_keychain();
+        controller
+            .toggle_agent_channel_at(
+                3,
+                &fixture.binding,
+                &fixture.bus,
+                ChannelOpenMode::AttachedOnly,
+            )
+            .await
+            .unwrap();
+        let before = std::fs::read(&fixture.binding).unwrap();
+        assert!(
+            controller
+                .archive_agent_channel(fixture.request())
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&fixture.binding).unwrap(), before);
+        assert!(!fixture.dir.path().join("entered").exists());
+        assert!(controller.agent_channel_snapshot(3).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn archive_completion_precedes_a_queued_channel_open() {
+        let fixture = ArchiveFixture::new();
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        let archive = tokio::spawn({
+            let controller = Arc::clone(&controller);
+            let request = fixture.request();
+            async move { controller.archive_agent_channel(request).await }
+        });
+        fixture.wait_for_helper().await;
+        assert!(
+            controller.serial_lock.try_lock().is_err(),
+            "archive owns controller lifecycle"
+        );
+        let reopen = tokio::spawn({
+            let controller = Arc::clone(&controller);
+            let binding = fixture.binding.clone();
+            let bus = fixture.bus.clone();
+            async move {
+                controller
+                    .toggle_agent_channel_at(3, &binding, &bus, ChannelOpenMode::AttachedOnly)
+                    .await
+            }
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !reopen.is_finished(),
+            "Fn open waits for archive completion"
+        );
+        fixture.release();
+        archive.await.unwrap().unwrap();
+        assert!(
+            reopen.await.unwrap().is_err(),
+            "released binding cannot open capture"
+        );
+        assert!(controller.agent_channel_snapshot(3).await.is_none());
+        assert!(load_binding(&fixture.binding).unwrap().bindings.is_empty());
+        assert!(
+            fixture
+                .dir
+                .path()
+                .join("archives")
+                .join(format!("{}-3.json", fixture.lease))
+                .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_archive_keeps_serial_ownership_until_the_helper_exits() {
+        let fixture = ArchiveFixture::new();
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        let archive = tokio::spawn({
+            let controller = Arc::clone(&controller);
+            let request = fixture.request();
+            async move { controller.archive_agent_channel(request).await }
+        });
+        fixture.wait_for_helper().await;
+        archive.abort();
+        assert!(archive.await.unwrap_err().is_cancelled());
+        assert!(
+            controller.serial_lock.try_lock().is_err(),
+            "Swift cancellation cannot release lifecycle while helper is alive"
+        );
+        let reopen = tokio::spawn({
+            let controller = Arc::clone(&controller);
+            let binding = fixture.binding.clone();
+            let bus = fixture.bus.clone();
+            async move {
+                controller
+                    .toggle_agent_channel_at(3, &binding, &bus, ChannelOpenMode::AttachedOnly)
+                    .await
+            }
+        });
+        tokio::task::yield_now().await;
+        assert!(!reopen.is_finished());
+        fixture.release();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), reopen)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        assert!(controller.agent_channel_snapshot(3).await.is_none());
+        assert!(load_binding(&fixture.binding).unwrap().bindings.is_empty());
     }
 }

@@ -5,6 +5,13 @@ import SwiftUI
 // Shared Settings content, hosted by the app’s single resizable Settings window.
 struct SettingsView: View {
   static let windowID = "codescribe-settings"
+  /// Narrowest detail column: an 880 pt window with the 216 pt sidebar open.
+  /// The window minimum is carried by the columns. A minimum width on the
+  /// whole `NavigationSplitView` makes the sidebar slide to half its width and
+  /// then jump whenever the window is narrower than that minimum plus the
+  /// sidebar, because the split view lays the opening sidebar out beside a
+  /// detail that may not shrink yet.
+  static let detailMinWidth: CGFloat = 664
   @StateObject private var model: SettingsViewModel
   // Native selection reconciliation writes only view state. Navigation and
   // its refresh effects are committed by onChange, outside the List setter.
@@ -26,8 +33,9 @@ struct SettingsView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { SettingsHealthFooter(model: model) }
     } detail: {
       detail
+        .frame(minWidth: Self.detailMinWidth)
     }
-    .navigationTitle(Text(verbatim: ""))
+    .navigationTitle(Text("Settings"))
     .toolbar {
       if #available(macOS 26.0, *) {
         brandToolbar.sharedBackgroundVisibility(.hidden)
@@ -37,23 +45,26 @@ struct SettingsView: View {
     }
     .csFocusPolicy()
     .controlSize(.regular)
-    .frame(minWidth: 880, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
+    .frame(maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
     .onAppear {
       sidebarSelection = model.section
       model.refresh()
       consumePendingDeepLink()
+      model.refreshForCurrentSection()
     }
     .task {
       // The health footer must include the controller's real recording
       // admission verdict even when Audio is not the selected section.
       await model.refreshAdmission()
     }
-    .background(HostingWindowReader { hostWindow = $0 })
-    .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
+    .background(HostingWindowReader(onWindow: adoptHostWindow))
+    .onReceive(
+      NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)
+    ) { notification in
       guard let window = notification.object as? NSWindow,
         window === hostWindow, window.isVisible
       else { return }
-      model.refreshProviderAccess()
+      model.refreshForCurrentSection()
     }
     .onReceive(
       NotificationCenter.default.publisher(
@@ -65,6 +76,13 @@ struct SettingsView: View {
       guard hostWindow?.isVisible == true else { return }
       consumePendingDeepLink()
     }
+  }
+
+  /// The wordmark toolbar is the visible title. The window keeps its name for
+  /// Mission Control, App Exposé and the Window menu.
+  private func adoptHostWindow(_ window: NSWindow?) {
+    hostWindow = window
+    window?.titleVisibility = .hidden
   }
 
   private var brandToolbar: some ToolbarContent {
@@ -198,26 +216,29 @@ private struct SettingsHealthFooter: View {
 
   var body: some View {
     let health = model.settingsHealth
-    Group {
-      if let target = health.targetSection {
-        Button {
-          model.select(target)
-        } label: {
-          content(health)
+    // No message means nothing operational to say: the sidebar has no footer.
+    if let message = health.message {
+      Group {
+        if let target = health.targetSection {
+          Button {
+            model.select(target)
+          } label: {
+            content(health, message: message)
+          }
+          .csFocusRing()
+          .help("Open \(target.title) settings")
+        } else {
+          content(health, message: message)
         }
-        .csFocusRing()
-        .help("Open \(target.title) settings")
-      } else {
-        content(health)
       }
+      .accessibilityIdentifier("settings-health-footer")
     }
-    .accessibilityIdentifier("settings-health-footer")
   }
 
-  private func content(_ health: SettingsHealthState) -> some View {
+  private func content(_ health: SettingsHealthState, message: String) -> some View {
     HStack(spacing: 8) {
       Circle().fill(health.level.color).frame(width: 6, height: 6)
-      Text(health.message)
+      Text(message)
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(health.level.color)
         .lineLimit(2)
@@ -328,13 +349,15 @@ struct RuntimeRow: View {
   var tint: Bool = false
   var mono: Bool = false
   var trailing: Trailing = .none
+  /// Key column; a table whose Polish keys run long widens it once for all rows.
+  var keyWidth: CGFloat = 160
 
   var body: some View {
     HStack(spacing: 12) {
       Text(key)
         .font(CSFont.mono(12, .medium))
         .foregroundStyle(Color.secondary)
-        .frame(width: 160, alignment: .leading)
+        .frame(width: keyWidth, alignment: .leading)
       Text(value)
         .font(mono ? CSFont.mono(12.5, .semibold) : .body.weight(.semibold))
         .foregroundStyle(.primary)

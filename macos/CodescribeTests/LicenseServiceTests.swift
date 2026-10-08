@@ -60,6 +60,21 @@ enum LicenseTestFixture {
 
 @MainActor
 final class LicenseServiceTests: XCTestCase {
+  func testGeneralSettingsRefreshDoesNotReadSavedLicenseButExplicitRetryDoes() async {
+    let keychain = MemoryLicenseKeychain()
+    let service = LicenseService(keychain: keychain, autoload: false)
+    let model = SettingsViewModel(
+      permissionProbe: MockPermissionProbe(.allGranted), licenseService: service,
+      servingStatusProvider: { nil })
+    model.refresh()
+    await awaitCondition { !service.isBusy }
+    XCTAssertEqual(keychain.loadCount, 0, "Ordinary configuration refresh is not license consent")
+
+    model.refreshLicense()
+    await awaitCondition { !service.isBusy }
+    XCTAssertEqual(keychain.loadCount, 1, "The explicit license retry must remain functional")
+  }
+
   func testExplicitSignalOrXCTestHostDisablesSwiftLicenseKeychain() {
     XCTAssertFalse(licenseKeychainDisabledByEnvironment([:]))
     XCTAssertFalse(licenseKeychainDisabledByEnvironment(["CI": "1"]))

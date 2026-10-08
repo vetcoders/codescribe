@@ -156,8 +156,9 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
   }
 
   /// Real panel + hosting hierarchy in `.listening`, fed `revisions` growing
-  /// Rust-owned projections with the run loop ticking between them (timeline
-  /// timer, NSTextView updates, waveform) — the shape of the 174 s take.
+  /// Rust-owned projections. Each revision lays out and gets one run-loop turn
+  /// so the timeline, NSTextView, and waveform commit — the shape of the 174 s
+  /// take, without a fixed gap between revisions.
   @MainActor
   private func mountListeningPanel(revisions: Int, label: String) throws -> Harness {
     let state = OverlayState()
@@ -174,14 +175,16 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
     panel.orderFrontRegardless()
     let root = try XCTUnwrap(panel.contentView)
     root.layoutSubtreeIfNeeded()
-    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    // One turn commits the hosting hierarchy. A repeating waveform timer must
+    // not hold the loop open for a fixed slice of the 174 s take.
+    tickCommittedRunLoop()
 
     var text = ""
     for revision in 1...max(revisions, 1) {
       text = String(repeating: sentence, count: revision)
       state.applyTranscriptProjection(listeningProjection(text, sequence: UInt64(revision)))
       root.layoutSubtreeIfNeeded()
-      RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+      tickCommittedRunLoop()
     }
     XCTAssertEqual(state.mode, .listening)
     XCTAssertEqual(state.activeText, text)
@@ -192,10 +195,20 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
   @MainActor
   private func measureLayout(_ root: NSView) -> TimeInterval {
     let started = Date()
+    // The hang witness is this layout call. Build 773 never returned from
+    // NSHostingView.layout. The turn below only commits a preference change
+    // that layout already queued. The 2 s ceilings on the callers are unchanged.
     root.layoutSubtreeIfNeeded()
-    RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+    tickCommittedRunLoop()
     root.layoutSubtreeIfNeeded()
     return Date().timeIntervalSince(started)
+  }
+
+  /// Processes sources already waiting on the main run loop, then returns.
+  /// `run(until:)` would keep a repeating timer alive for the whole interval.
+  @MainActor
+  private func tickCommittedRunLoop() {
+    RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.02))
   }
 
   /// Rust-owned projection admitted through the production boundary, shaped

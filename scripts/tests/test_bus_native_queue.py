@@ -1,4 +1,6 @@
 """Native queue acceptance is separate from conversation acknowledgment."""
+import argparse
+import threading
 import importlib.util
 import json
 import os
@@ -45,6 +47,25 @@ class NativeQueueTests(unittest.TestCase):
             "wav": "/private/audio.wav", "sample_start": 123, "sample_end": 456,
         }
 
+    @patch("shutil.which", return_value="/fake/codex")
+    @patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "queued", ""))
+    def test_typed_message_uses_native_queue_without_audio_seal(self, run, _which):
+        payload = dict(self.pending[0], kind="message", source="typed", state_change_allowed=True)
+        for key in ("coverage", "wav", "sample_start", "sample_end"): payload.pop(key, None)
+        self.pending[0] = payload
+        state = DEMUX.read_json(self.root / "leases" / f"{self.lease_id}.json")
+        state["pending"] = self.pending
+        DEMUX.atomic_json(self.root / "leases" / f"{self.lease_id}.json", state)
+        wake = self.wake()
+        wake.enqueue(payload)
+        wake.close(wait=True)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(self.result(payload["delivery_id"])["disposition"], "provider_accepted")
+        wake = self.wake()
+        wake.enqueue(payload)
+        wake.close(wait=True)
+        self.assertEqual(run.call_count, 1)
+
     def wake(self):
         return DEMUX.NativeQueueWakeup(self.root, self.session, "2")
 
@@ -65,8 +86,10 @@ class NativeQueueTests(unittest.TestCase):
             self.assertEqual(argv[:5], ["/fake/codex", "queue", "--thread", self.session, "--message"])
             message = argv[5]
             self.assertIn(self.pending[0]["text"], message)
+            self.assertIn("--read-pending", message)
+            self.assertIn("--ack", message)
             self.assertIn(identity, message)
-            self.assertIn('"state_change_allowed": false', message)
+            self.assertIn("Coverage is diagnostic", message)
             self.assertNotIn("sample_start", message)
             self.assertNotIn("/private/audio.wav", message)
             self.assertNotIn("shell", call.kwargs)
@@ -154,7 +177,7 @@ class NativeQueueTests(unittest.TestCase):
             deadline = time.monotonic() + 7
             while time.monotonic() < deadline:
                 state = DEMUX.read_json(lease_file) or {}
-                if len(state.get("pending", [])) == 5:
+                if len(state.get("pending", [])) == 5 and state.get("cursor") == bus.stat().st_size:
                     break
                 time.sleep(0.02)
             self.assertEqual(len(state.get("pending", [])), 5)
@@ -203,6 +226,158 @@ class NativeQueueTests(unittest.TestCase):
         ], text=True)
         self.assertEqual(json.loads(received), self.pending[0])
         self.assertFalse(DEMUX.delivery_acknowledged(self.root, self.lease_id, event["delivery_id"]))
+
+    def ack_args(self, identity):
+        return argparse.Namespace(ack=[identity], provider="codex", session=self.session,
+                                  bridge_home=self.root, bus=self.root / "bus.jsonl",
+                                  bus_overridden=False)
+
+    def accepted_receipt(self, identity):
+        submission = "11111111-2222-4333-8444-555555555555"
+        DEMUX.atomic_json(self.root / "wakeups" / self.lease_id / f"{identity}.json", {
+            "schema": "codescribe.native-queue.receipt.v1", "lease_id": self.lease_id,
+            "provider": "codex", "provider_session_id": self.session,
+            "delivery_id": identity, "disposition": "provider_accepted",
+            "provider_receipt": f"Queued message {submission} for thread {self.session}.",
+        })
+        return submission
+
+    def prepare_ack_state(self):
+        path = self.root / "leases" / f"{self.lease_id}.json"
+        state = DEMUX.read_json(path)
+        state["bus"] = str(self.root / "bus.jsonl")
+        DEMUX.atomic_json(path, state)
+
+    def test_ack_withdraws_exact_owned_submission_and_is_idempotent(self):
+        self.prepare_ack_state()
+        identity = self.ids[0]
+        submission = self.accepted_receipt(identity)
+        with patch.object(DEMUX, "delete_native_queue_submission", return_value=True) as delete:
+            DEMUX.acknowledge_delivery(self.ack_args(identity))
+            DEMUX.acknowledge_delivery(self.ack_args(identity))
+        delete.assert_called_once_with(self.root, self.session, submission)
+        self.assertEqual(self.result(identity)["queue_disposition"], "removed")
+        self.assertTrue(DEMUX.delivery_acknowledged(self.root, self.lease_id, identity))
+        marker = DEMUX.read_json(self.root / "acknowledgments" / self.lease_id / f"{identity}.json")
+        self.assertEqual(marker["envelope"]["sample_end"], 456)
+
+    def test_foreign_receipt_and_unread_delivery_never_delete(self):
+        self.prepare_ack_state()
+        identity = self.ids[0]
+        self.accepted_receipt(identity)
+        with patch.object(DEMUX, "delete_native_queue_submission") as delete:
+            self.assertFalse(DEMUX.withdraw_acknowledged_queue(self.root, self.lease_id, identity))
+            receipt = self.result(identity)
+            receipt["provider_session_id"] = "foreign"
+            DEMUX.atomic_json(self.root / "wakeups" / self.lease_id / f"{identity}.json", receipt)
+            DEMUX.acknowledge_delivery(self.ack_args(identity))
+        delete.assert_not_called()
+
+    def test_failed_delete_retains_ack_and_retries_without_resending(self):
+        self.prepare_ack_state()
+        identity = self.ids[0]
+        self.accepted_receipt(identity)
+        with patch.object(DEMUX, "delete_native_queue_submission", side_effect=ValueError("unavailable")):
+            DEMUX.acknowledge_delivery(self.ack_args(identity))
+        self.assertTrue(DEMUX.delivery_acknowledged(self.root, self.lease_id, identity))
+        self.assertEqual(self.result(identity)["queue_disposition"], "pending")
+        with patch.object(DEMUX, "delete_native_queue_submission", return_value=False):
+            self.assertTrue(DEMUX.withdraw_acknowledged_queue(self.root, self.lease_id, identity, retry=True))
+        self.assertEqual(self.result(identity)["queue_disposition"], "not_pending")
+
+    def test_ack_during_provider_submission_withdraws_after_acceptance(self):
+        self.prepare_ack_state()
+        identity = self.ids[0]
+        entered, release = threading.Event(), threading.Event()
+        submission = "11111111-2222-4333-8444-555555555555"
+        def send(*args, **kwargs):
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return subprocess.CompletedProcess([], 0, f"Queued message {submission} for thread {self.session}.", "")
+        with patch("shutil.which", return_value="/fake/codex"), patch("subprocess.run", side_effect=send), \
+                patch.object(DEMUX, "delete_native_queue_submission", return_value=True) as delete:
+            wake = self.wake()
+            wake.enqueue(self.pending[0])
+            try:
+                self.assertTrue(entered.wait(3))
+                DEMUX.acknowledge_delivery(self.ack_args(identity))
+                delete.assert_not_called()
+            finally:
+                release.set()
+                wake.close(wait=True)
+        delete.assert_called_once_with(self.root, self.session, submission)
+        self.assertEqual(self.result(identity)["queue_disposition"], "removed")
+
+    def test_mismatched_provider_receipt_cannot_claim_withdrawal(self):
+        self.prepare_ack_state()
+        identity = self.ids[0]
+        self.accepted_receipt(identity)
+        path = self.root / "wakeups" / self.lease_id / f"{identity}.json"
+        receipt = self.result(identity)
+        receipt["provider_receipt"] = receipt["provider_receipt"].replace(self.session, "foreign")
+        DEMUX.atomic_json(path, receipt)
+        with patch.object(DEMUX, "delete_native_queue_submission") as delete:
+            DEMUX.acknowledge_delivery(self.ack_args(identity))
+        delete.assert_not_called()
+        self.assertEqual(self.result(identity)["queue_disposition"], "unresolved")
+
+    def test_failed_withdrawal_reuses_nonblocking_follower_executor(self):
+        self.prepare_ack_state()
+        identity = self.ids[0]
+        self.accepted_receipt(identity)
+        DEMUX.atomic_json(self.root / "acknowledgments" / self.lease_id / f"{identity}.json",
+                          {"lease_id": self.lease_id, "delivery_id": identity})
+        entered, release = threading.Event(), threading.Event()
+        def delete(*args):
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return True
+        wake = self.wake()
+        with patch.object(DEMUX, "delete_native_queue_submission", side_effect=delete) as call:
+            try:
+                wake.enqueue_withdrawal(identity)
+                self.assertTrue(entered.wait(3))
+                wake.enqueue_withdrawal(identity)
+                self.assertEqual(call.call_count, 1)
+            finally:
+                release.set()
+                wake.close(wait=True)
+        self.assertEqual(self.result(identity)["queue_disposition"], "removed")
+
+    def test_ack_before_sender_starts_suppresses_provider_queue(self):
+        self.prepare_ack_state()
+        DEMUX.acknowledge_delivery(self.ack_args(self.ids[0]))
+        with patch("subprocess.run") as send:
+            wake = self.wake()
+            wake.enqueue(self.pending[0])
+            wake.close(wait=True)
+        send.assert_not_called()
+
+    def test_five_physical_deliveries_with_same_text_withdraw_separately(self):
+        for index, payload in enumerate(self.pending):
+            payload.update(occurrence_session_id="five-iwo-capture", capture_epoch=1,
+                           sample_start=index * 1000, sample_end=(index + 1) * 1000)
+        path = self.root / "leases" / f"{self.lease_id}.json"
+        state = DEMUX.read_json(path)
+        state["pending"] = self.pending
+        DEMUX.atomic_json(path, state)
+        self.prepare_ack_state()
+        submissions = [f"11111111-2222-4333-8444-{index:012x}" for index in range(1, 6)]
+        for identity, submission in zip(self.ids, submissions):
+            self.accepted_receipt(identity)
+            path = self.root / "wakeups" / self.lease_id / f"{identity}.json"
+            receipt = self.result(identity)
+            receipt["provider_receipt"] = f"Queued message {submission} for thread {self.session}."
+            DEMUX.atomic_json(path, receipt)
+        args = self.ack_args(self.ids[0])
+        args.ack = self.ids
+        with patch.object(DEMUX, "delete_native_queue_submission", return_value=True) as delete:
+            DEMUX.acknowledge_delivery(args)
+        self.assertEqual([call.args[2] for call in delete.call_args_list], submissions)
+        self.assertEqual(sum(self.result(identity)["queue_disposition"] == "removed" for identity in self.ids), 5)
+        ranges = [DEMUX.read_json(self.root / "acknowledgments" / self.lease_id / f"{identity}.json")["envelope"] for identity in self.ids]
+        self.assertEqual([(row["sample_start"], row["sample_end"]) for row in ranges],
+                         [(index * 1000, (index + 1) * 1000) for index in range(5)])
 
     def test_public_help_names_installed_command_and_default_bell(self):
         help_text = subprocess.check_output([sys.executable, SPEC.origin, "--help"], text=True)

@@ -1,5 +1,31 @@
 # Clean Transcript Bus
 
+## Conversational read receipt
+
+Native Codex queue entries carry complete untruncated message text with compact
+causal identity, sender, reply association, routing and provenance. Watch bells
+remain notifications. The agent reads `cs-bus --read-pending` for its exact
+provider/session, receives complete bounded conversational projections and
+`read_delivery_ids`, then immediately calls `--ack` for those IDs before task
+execution or a reply. Only exact IDs returned as unread may be acted on; an
+absent ID makes its delayed queue copy obsolete even when other messages remain.
+Give a short answer before longer work. Reading alone never writes ACK. Re-read
+after draining to retain arrivals during the read/ACK gap.
+
+The conversational projection copies full text and provenance without PCM
+occurrence arrays, acoustic receipt trees, WAV paths or capture diagnostics.
+It changes presentation only: original lease envelopes, event history, ownership,
+cursors and ACK receipts retain their existing authority. `--read-delivery <id>`
+remains an explicit read of the complete original pending envelope for diagnosis.
+Text is never truncated to accommodate diagnostic size.
+
+ACK records an immutable `read_at`, retains causal coordinates without text,
+and withdraws each exact owned pending Codex submission. This is **read**, not
+executed or spoken. The projection's existing acknowledged state consumes the
+same marker; neither bell nor provider acceptance is a read receipt. Bus history
+and independent command/PCM identities are retained. A submission already
+consumed into model context cannot be recalled by queue deletion.
+
 Codescribe publishes one private, append-only NDJSON stream. The Bus observes
 session lifecycle plus occurrence-authenticated `TranscriptRevision` entries;
 it does not own a transcript document and accepts no arbitrary product text.
@@ -196,14 +222,36 @@ not repeated in the array. This preserves Word evidence, decisions, seals,
 presentation pins and manual receipts while storing the full document, coverage,
 comparison and consultation payloads once per persisted publication.
 
-`bus-demux.py` expands these observations before its existing normalization and
-delivery path. It admits a complete encoded row before expanding any occurrence,
+`bus-demux.py` admits the complete encoded row before handling any occurrence,
 rejects unknown encoding versions or malformed occurrence members, and advances
-its durable byte cursor only after handling the row's envelopes. Existing pending
-delivery and ACK identities continue to use the original observation coordinates.
-Unencoded evidence rows remain readable. Snapshot readers that select one
+its durable byte cursor only after handling the row's envelopes. Unencoded
+evidence rows remain readable. Snapshot readers that select one
 projection per reducer revision can consume the top-level projection directly;
 receipt inventories must also read `occurrence_rows`.
+
+An addressed channel session is one evolving spoken message. The channel capture
+session selects its identity; its PCM entries select evidence within that message.
+The follower copies the full `rendered_text` once per reducer revision/action and
+keeps every occurrence's original coordinates, label and acoustic receipts in an
+additive `occurrences` inventory. `message_id` hashes `channel-message` plus the
+capture session. Draft delivery phases hash `channel-message-revision`, session,
+revision and action. The closing phase hashes `channel-message-seal` plus session,
+independent of occurrence count or text. Distinct captures with identical words
+remain distinct messages.
+
+Only the channel's close or its own `session_ended` releases the final envelope.
+A ledger terminal observation supplies certification but does not close capture.
+Without that observation, the final envelope retains `coverage: refused`.
+The conversation preview uses this same capture identity and copies the full
+render instead of rendering an entry label as a separate chat message. Receipt
+IDs for all physical entries stay observable; the ledger and reducer are unchanged.
+ACK markers retain occurrence coordinates without labels or acoustic payloads.
+The existing follower lease retains its last observed unclosed channel snapshot
+alongside the committed bus cursor. Acknowledging a preview does not erase that
+capture's final-delivery obligation. Restart restores these snapshots and pending
+envelopes; successful close delivery clears the unclosed snapshot together with
+the cursor commit. This is transport recovery of reducer bytes, not a new document
+authority or another configuration store.
 
 A shared logical revision below 512 KiB is one physical NDJSON row. Larger
 revisions use consecutive `codescribe.bus-chunk.v1` transport rows with 32 KiB
@@ -868,10 +916,14 @@ python3 scripts/bus-demux.py --provider codex --session SESSION_ID --ack DELIVER
 Pass `--bus` and `--bridge-home` as well when the reader used explicit overrides.
 The acknowledgment command does not attach a second follower. It refuses
 unknown delivery IDs and mismatched sessions/buses. Repeating a valid receipt
-is harmless. Receipt files under `acknowledgments/<lease_id>/` contain only
-lease and delivery IDs; they prevent a later projection of an acknowledged
-delivery from reentering the mailbox. The follower clears acknowledged pending
-text on its next loop or reattachment. Lease directories are private and files
+is harmless. Receipt files under `acknowledgments/<lease_id>/` retain lease,
+provider/session, selected bus and the original envelope's causal coordinates
+and frozen recipient identities. They omit transcript text and WAV paths.
+They prevent an acknowledged delivery from reentering the mailbox and let an
+explicit reply validate its original owner after the pending mailbox clears.
+The follower clears acknowledged pending text on its next loop or reattachment.
+Earlier ID-only receipts still prove receipt, but cannot authorize a causal
+reply once their original pending envelope has been cleared. Lease directories are private and files
 are mode 0600; unacknowledged transcript text persists across process exits.
 
 Pending storage is capped at 256 envelopes or 8 MiB of serialized envelope
@@ -931,9 +983,92 @@ the same open fact, including provider and session, for the overlay. The
 overlay paint itself is a separate cut.
 
 While in-process agent speech is playing, channel PCM is not offered to the
-channel feed. A bus `agent_reply` with `spoken: true` is written after the
-external speaker returns, so that row arms only a short tail. It does not
-cancel echo that already entered the microphone.
+channel feed. External speech reports its actual outcome in a distinct
+`agent_reply_playback` event. Reply text itself is published before synthesis;
+its initial `spoken: false` is not evidence of a failed or completed playback.
+The helper admits playback only after the existing capture interlock proves
+idle, and stops its own player when a take starts.
+
+## Durable replies and exact speech controls
+
+`cs-say TEXT --provider P --session S --reply-to DELIVERY_ID` first validates
+that the delivery's pending envelope or acknowledged ownership receipt belongs
+to this exact provider/session/lease and selected bus. It carries that
+utterance's source coordinates and frozen recipients onto one
+`codescribe.agent-reply.v1` / `agent_reply` event. Omitting `--reply-to` writes
+`association: "unsolicited"` and `delivery_id: null`; no newest-question guess
+is made. Explicit unknown or foreign delivery IDs are refused before publication.
+A broadcast has concrete admitted recipients, so a later attachment cannot
+acquire an earlier utterance's receipt obligation. The follower matches every
+channel event's frozen provider/session/lease/bus before name routing. Equal
+text in distinct document occurrences is never collapsed by string equality.
+
+The helper resolves a manifest-owned `runtime/bin/codescribe` first, then the
+existing `codescribe` on PATH and the known `~/.cargo/bin/codescribe` and
+`~/.local/bin/codescribe` install paths. Bundled ownership requires its recorded
+size and SHA-256 digest. It invokes `codescribe bus append-event --bus ABSOLUTE_PATH` with one JSON event on stdin. The Rust generation owner performs the private, chunked
+journal append and durability barrier. No helper opens the bus for writing.
+The publisher returns logical `offset` and `length`, plus `stream_dev`,
+`stream_inode` and `stream_id`. A refused publication or invalid receipt never
+starts speech. Text survives synthesis, credential, playback and capture failures.
+
+Each reply has one 24-lowercase-hex `reply_id`. Speech has separate
+`codescribe.agent-reply-playback.v1` / `agent_reply_playback` receipts naming that
+same ID, the exact provider/session/lease and a 24-lowercase-hex
+`playback_ticket`. States are `waiting`, `playing`, `spoken`, `failed`,
+`refused` or `stopped`; `spoken` is true only for the completed spoken state.
+`tts_error` and `reason` describe failures without credentials. ACK, provider
+queue acceptance, reply text and speech completion remain separate facts.
+
+`cs-say` still attempts speech immediately after text publication. In the app,
+Play is explicit for one reply; viewing a tab never synthesizes or replays.
+The installed helper's control interface is:
+
+```bash
+cs-bus --play-reply REPLY_ID --playback-ticket TICKET --provider P --session S --bus PATH
+cs-bus --stop-reply REPLY_ID --playback-ticket TICKET --provider P --session S --bus PATH
+```
+
+Play reads one complete canonical source event, bounded to 32 MiB of storage
+bytes, through the generation and chunk readers. A private derived receipt at
+`runtime/reply-sources/<reply_id>.json` stores only source coordinates, bus and
+owner; it contains no reply text and is not a transcript archive. Stream
+replacement, missing source, incomplete chunks and foreign ownership refuse
+playback. Existing `voices.json` profiles and the synthesis lane stay authoritative.
+
+A fresh ticket is required for each deliberate Play. Ticket reuse is refused.
+The existing stable `runtime/playback.lock` serializes all speakers, including
+channel 0. The microphone guard always starts from the canonical global
+capture bus and discovers the dedicated channel buses; a reply's publication
+path never substitutes for the global capture journal. The existing lifecycle
+cursor enforces capture interlocks.
+Stop writes an owner-checked request for that exact reply/ticket and requires
+its live ticket lock. The Python owner checks the request during lock/capture
+wait and playback, and terminates only its own `afplay` child. A stop request
+receipt is not completion; the terminal playback event supplies that fact.
+The app's built-in chat player is a separate owner and cannot stop this player.
+
+### Overlay conversation navigation
+
+The header receipt mark opens the agent monitor in the overlay canvas. It is
+a notification entry point, not a channel picker popover. The monitor separates
+viewing a conversation from opening or hanging up a capture channel. My dictation
+returns to the existing transcript canvas; selecting a conversation expands the
+same overlay without changing capture, submitting text, acknowledging delivery,
+or starting playback.
+
+Conversation messages are displayed newest first. Only the view reverses the
+observer's chronological projection; occurrence identities, reply associations
+and the retained history stay unchanged.
+
+When the controller opens a channel, the overlay follows the conversation with
+that channel's provider and provider session. A historical owner on the same
+digit cannot claim the new view. If the observer has not supplied that owner yet,
+the monitor remains visible until the matching snapshot arrives. Closing that
+channel or deliberately choosing a different view cancels this deferred
+selection. Routine roster polling does not override manual review. Simultaneous
+new recipients open the existing aggregate conversation, rather than choosing an
+arbitrary agent. Header and conversation navigation never request speech.
 
 ## C11 evidence boundary
 
@@ -941,3 +1076,58 @@ cancel echo that already entered the microphone.
 `d57196ab`. C11 is the next structural executable cut; its actual commit hash is
 recorded only in the durable C11 report. Compiler, tests, runtime, app, install,
 and release behavior are `NOT_ASSESSED` under the C11 embargo.
+
+## Written messages from agent conversations
+
+`codescribe.agent-user-message.v1` / `agent_user_message` carries a random
+24-hex `message_id`, `source_event_id` equal to that ID, `source: typed`, exact
+UTF-8 text (at most 64 KiB), timestamp, channel and one frozen recipient with
+provider/session/32-hex lease/bus. It contains no PCM coordinates, WAV, seal or
+coverage claim. Five submissions of the same text remain five messages.
+
+`cs-bus --send-text --channel N --provider P --session S --lease L --bus ABS`
+reads the text on stdin. It holds the canonical binding's shared lock through
+publication, refuses a rebound owner or an absent listener, and uses
+`codescribe bus append-event` for the existing private generation journal.
+The follower produces a `kind: message` envelope and uses its ordinary mailbox,
+ACK and native queue path. Agent replies retain the exact delivery association;
+written input never passes through acoustic finality or microphone ownership.
+Publication uncertainty is reported without automatic replay.
+
+## Native provider queue receipt
+
+A conversation ACK retains its immutable owned envelope, and also withdraws the
+matching pending Codex submission through `thread/queue/delete`. The transport
+receipt stores the exact queued submission ID and provider thread; text equality
+never selects messages for removal. An ACK before submission suppresses enqueue;
+an ACK during submission is rechecked under the sender's per-delivery lock after
+provider acceptance. Repeated ACKs do not enqueue or delete a second message.
+
+Withdrawal has its own disposition: `removed` means Codex confirmed deletion;
+`not_pending` means the submission was already consumed or absent. An ACK cannot
+recall text already admitted to an active model turn. A failed withdrawal remains
+`pending` and the existing follower retries in its single transport executor with
+a bounded cooldown, without blocking journal consumption. Missing or mismatched
+provider submission identity stays `unresolved`; no unrelated entry is removed.
+The mailbox, transcript journal, original ACK marker and retained audio remain
+independent of pending provider queue removal.
+
+## Disconnected agent archive
+
+The overlay drawer offers **Remove from list and move to archive** only for a
+closed channel whose controller roster explicitly reports a dead follower.
+Unknown liveness and live readers do not offer that action. The click freezes
+the provider, provider session, lease and channel, rather than selecting by name.
+
+The managed helper's `--archive-agent CHANNEL --provider P --session S --lease L --bus PATH` holds the canonical binding lock and the exact lease's exclusive
+lock through publication. A replaced owner, living PID, busy lease or unreadable
+mailbox refuses the operation. It never signals a follower, acknowledges a
+delivery, advances a cursor or removes transcript/audio/mailbox history.
+
+The helper writes `archives/L-CHANNEL.json` (`codescribe.agent-archive.v1`) and
+then releases only that channel through the binding file's existing writer.
+The receipt includes the frozen owner, bus, name, time and `released: true`.
+The overlay reader ignores archive metadata while that exact owner remains
+bound, including a failed binding write or deliberate reattachment. Otherwise
+the conversation remains in saved conversations; an empty history also retains
+an archive entry. Reusing the channel exposes the new owner independently.

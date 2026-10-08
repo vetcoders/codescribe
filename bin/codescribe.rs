@@ -126,6 +126,21 @@ enum Command {
 
 #[derive(Subcommand)]
 enum BusAction {
+    /// Withdraw one pending native Codex submission after its owned delivery is read
+    #[cfg(unix)]
+    WithdrawQueuedMessage {
+        #[arg(long)]
+        socket: std::path::PathBuf,
+        #[arg(long)]
+        thread: String,
+        #[arg(long)]
+        submission: String,
+    },
+    /// Append an owned written message, agent reply or playback receipt through the private journal
+    AppendEvent {
+        #[arg(long)]
+        bus: std::path::PathBuf,
+    },
     /// Size, composition and span of the bus
     Status,
     /// Plan an explicit historical source; --stage prepares isolated daily files.
@@ -365,6 +380,38 @@ fn run_bus(action: BusAction) -> anyhow::Result<()> {
 
     let path = codescribe::presentation::transcript_bus::transcript_bus_path();
     match action {
+        #[cfg(unix)]
+        BusAction::WithdrawQueuedMessage {
+            socket,
+            thread,
+            submission,
+        } => {
+            let deleted = blocking_runtime()?.block_on(withdraw_queued_message(
+                &socket,
+                &thread,
+                &submission,
+            ))?;
+            println!("{}", serde_json::json!({"deleted": deleted}));
+            Ok(())
+        }
+        BusAction::AppendEvent { bus } => {
+            use std::io::Read;
+            const LIMIT: u64 = 16 << 20;
+            let mut bytes = Vec::new();
+            std::io::stdin()
+                .lock()
+                .take(LIMIT + 1)
+                .read_to_end(&mut bytes)?;
+            anyhow::ensure!(
+                bytes.len() as u64 <= LIMIT,
+                "agent event exceeds input limit"
+            );
+            let event: serde_json::Value = serde_json::from_slice(&bytes)?;
+            let receipt =
+                codescribe::presentation::transcript_bus::append_agent_event(&bus, &event)?;
+            println!("{}", serde_json::to_string(&receipt)?);
+            Ok(())
+        }
         BusAction::PrepareMigration {
             source,
             out,
@@ -435,6 +482,64 @@ fn run_bus(action: BusAction) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+/// Native queue authority stays in Codex; never mutate its database or active turn.
+#[cfg(unix)]
+async fn withdraw_queued_message(
+    socket: &std::path::Path,
+    thread: &str,
+    submission: &str,
+) -> anyhow::Result<bool> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    anyhow::ensure!(socket.is_absolute(), "native socket must be absolute");
+    for identity in [thread, submission] {
+        let parsed = uuid::Uuid::parse_str(identity)?;
+        anyhow::ensure!(
+            parsed.to_string() == identity,
+            "invalid native queue identity"
+        );
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let stream = tokio::net::UnixStream::connect(socket).await?;
+        let (mut connection, _) = tokio_tungstenite::client_async("ws://localhost", stream).await?;
+        let requests = [
+            serde_json::json!({"id": 1, "method": "initialize", "params": {
+                "clientInfo": {"name": "codescribe_queue_receipt", "version": env!("CARGO_PKG_VERSION")},
+                "capabilities": {"experimentalApi": true}
+            }}),
+            serde_json::json!({"id": 2, "method": "thread/queue/delete", "params": {
+                "threadId": thread, "queuedSubmissionId": submission
+            }}),
+        ];
+        let mut deleted = None;
+        for request in requests {
+            let id = request["id"].as_u64();
+            connection.send(Message::Text(request.to_string().into())).await?;
+            loop {
+                let frame = connection.next().await.ok_or_else(|| anyhow::anyhow!("native queue connection closed"))??;
+                let Message::Text(text) = frame else {
+                    anyhow::ensure!(!matches!(frame, Message::Close(_)), "native queue connection closed");
+                    continue;
+                };
+                let value: serde_json::Value = serde_json::from_str(&text)?;
+                if value["id"].as_u64() != id {
+                    continue;
+                }
+                anyhow::ensure!(value.get("error").is_none(), "native queue request refused");
+                if id == Some(1) {
+                    anyhow::ensure!(value["result"].is_object(), "invalid native initialization receipt");
+                    connection.send(Message::Text(serde_json::json!({"method": "initialized"}).to_string().into())).await?;
+                } else {
+                    deleted = value["result"]["deleted"].as_bool();
+                }
+                break;
+            }
+        }
+        deleted.ok_or_else(|| anyhow::anyhow!("invalid native queue deletion receipt"))
+    }).await.map_err(|_| anyhow::anyhow!("native queue withdrawal timed out"))?
 }
 
 /// Byte count an operator can read at a glance.
@@ -1878,5 +1983,96 @@ mod tests {
         .join("\n");
 
         assert_eq!(bus_tail(&bus), None);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod native_queue_receipt_tests {
+    use super::withdraw_queued_message;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    const THREAD: &str = "11111111-2222-4333-8444-555555555555";
+    const SUBMISSION: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+
+    async fn exercise(result: serde_json::Value) -> anyhow::Result<bool> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("queue.sock");
+        let listener = tokio::net::UnixListener::bind(&path)?;
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let init = ws.next().await.unwrap().unwrap();
+            let init: serde_json::Value = serde_json::from_str(init.to_text().unwrap()).unwrap();
+            assert_eq!(init["method"], "initialize");
+            assert_eq!(init["params"]["capabilities"]["experimentalApi"], true);
+            ws.send(Message::Text(
+                serde_json::json!({"method":"notification"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+            ws.send(Message::Text(
+                serde_json::json!({"id":1,"result":{}}).to_string().into(),
+            ))
+            .await
+            .unwrap();
+            let ready = ws.next().await.unwrap().unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(ready.to_text().unwrap()).unwrap()["method"],
+                "initialized"
+            );
+            let request = ws.next().await.unwrap().unwrap();
+            let request: serde_json::Value =
+                serde_json::from_str(request.to_text().unwrap()).unwrap();
+            assert_eq!(request["method"], "thread/queue/delete");
+            assert_eq!(
+                request["params"],
+                serde_json::json!({"threadId":THREAD,"queuedSubmissionId":SUBMISSION})
+            );
+            ws.send(Message::Text(result.to_string().into()))
+                .await
+                .unwrap();
+        });
+        let receipt = withdraw_queued_message(&path, THREAD, SUBMISSION).await;
+        server.await?;
+        receipt
+    }
+
+    #[tokio::test]
+    async fn deletion_reports_pending_and_already_consumed_separately() {
+        for expected in [true, false] {
+            assert_eq!(
+                exercise(serde_json::json!({"id":2,"result":{"deleted":expected}}))
+                    .await
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn refused_or_malformed_receipts_are_not_success() {
+        for response in [
+            serde_json::json!({"id":2,"error":{"code":-1}}),
+            serde_json::json!({"id":2,"result":{"deleted":"yes"}}),
+        ] {
+            assert!(exercise(response).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_identity_refuses_before_contacting_provider() {
+        assert!(
+            withdraw_queued_message(std::path::Path::new("/missing.sock"), "foreign", SUBMISSION)
+                .await
+                .is_err()
+        );
+        assert!(
+            withdraw_queued_message(std::path::Path::new("relative.sock"), THREAD, SUBMISSION)
+                .await
+                .is_err()
+        );
     }
 }

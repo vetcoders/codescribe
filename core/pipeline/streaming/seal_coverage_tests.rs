@@ -341,7 +341,8 @@ fn recovery_closed_occurrence_submits_owned_tail_job() {
             end_ts: 1.8,
         }]
     ));
-    state.flush_layer1_coalesce(&tx);
+    state.capture_stopping = true;
+    state.pump_capture_windows(&tx);
     let job = jobs
         .try_recv()
         .expect("armed local lane must submit real PCM work");
@@ -402,7 +403,12 @@ fn recovery_formatter_created_by_gap_closes_before_coverage_and_terminal_seal() 
     }
     let (ack, done) = std_mpsc::channel();
     ack.send(completion.clone()).unwrap();
-    drain_formatter_observers(&mut state, &tx, &done).unwrap();
+    drain_formatter_observers(
+        &mut state,
+        &tx,
+        &done,
+        Instant::now() + Duration::from_secs(1),
+    );
     assert!(
         !state.complete_formatter(&tx, completion),
         "duplicate completion cannot close twice"
@@ -418,107 +424,6 @@ fn recovery_formatter_created_by_gap_closes_before_coverage_and_terminal_seal() 
         .seal_terminal(&state.session_id, 1)
         .unwrap();
     assert_eq!(state.formatter_awaiting_completion, 0);
-}
-
-/// Local acoustic-recovery bench, not a microphone/history/delivery witness.
-/// Requires an archived take whose logged device calibration can be recovered.
-#[test]
-#[ignore = "private local WAV and measured capture calibration required"]
-fn private_archive_acoustic_recovery_bench() {
-    let path =
-        std::path::PathBuf::from(std::env::var("CODESCRIBE_REPLAY_WAV").expect("local WAV path"));
-    let session = path.file_stem().unwrap().to_str().unwrap().to_owned();
-    let log = std::fs::read_to_string(
-        directories::BaseDirs::new()
-            .unwrap()
-            .home_dir()
-            .join(".codescribe/logs/codescribe.log"),
-    )
-    .unwrap();
-    let line = log
-        .lines()
-        .find(|line| {
-            line.contains("acoustic admission calibration sealed for session")
-                && line.contains(&format!("session={session}"))
-        })
-        .expect("archived session capture receipt");
-    let device = line
-        .split("device=\"")
-        .nth(1)
-        .and_then(|rest| rest.split('"').next())
-        .expect("recorded device identity");
-    let reader = hound::WavReader::open(&path).unwrap();
-    let rate = reader.spec().sample_rate;
-    let count = u64::from(reader.duration());
-    let snapshot = crate::config::Config::load_runtime_snapshot_without_keychain().unwrap();
-    let calibration = snapshot
-        .energy_calibration_for_capture(device, rate)
-        .expect("measured profile for actual archived device");
-    assert!(
-        line.contains(&format!("calibration_version={}", calibration.version)),
-        "calibration generation must match the archived capture"
-    );
-    let owned = super::super::live_audio_buffer::FinalizedPcmArchive {
-        session_id: session.clone(),
-        capture_epoch: 1,
-        sample_rate: rate,
-        sample_count: count,
-        path,
-    }
-    .load(&session, 1, rate, count)
-    .unwrap();
-    let mut state = AppleSealState::new_for_session(rate, session.clone(), 1);
-    state.energy_calibration = Some(calibration);
-    let mut fusion = SileroIngress::new(rate, session, 1);
-    assert!(fusion.vad_available());
-    let mut cursor = 0;
-    for chunk in owned
-        .window(0, count)
-        .unwrap()
-        .samples
-        .chunks((rate / 10) as usize)
-    {
-        cursor += chunk.len() as u64;
-        state.audio.push(chunk);
-        fusion.ingest(chunk, cursor);
-    }
-    fusion.flush(count);
-    state.fusion = Some(fusion);
-    state.terminal_pcm = Some(owned);
-    let (tx, _) = mpsc::unbounded_channel();
-    let before = publish_terminal_coverage(&state, &tx);
-    let execution = LocalExecutionOwner::default();
-    // Repair uses blocking_recv, so only the execution join enters Tokio.
-    repair_terminal_seal_coverage(&mut state, &tx, Some("pl"), &execution);
-    tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .expect("local execution join runtime")
-        .block_on(execution.close_and_join());
-    let after = publish_terminal_coverage(&state, &tx);
-    let mut ledger = state.acoustic_ledger.lock().unwrap();
-    let terminal = if after.status == SealCoverageStatus::Complete {
-        ledger.seal_terminal(&state.session_id, 1).is_ok()
-    } else {
-        false
-    };
-    println!(
-        "LOCAL_ACOUSTIC_BENCH samples={count} rate={rate} before={}/{} max_gap={} after={}/{} max_gap={} threshold={} terminal={} chars={}",
-        before.covered_samples,
-        before.speech_samples,
-        before.max_uncovered_samples,
-        after.covered_samples,
-        after.speech_samples,
-        after.max_uncovered_samples,
-        after.incomplete_threshold_samples,
-        terminal,
-        ledger.rendered_text().chars().count()
-    );
-    assert!(
-        after.speech_samples > 0,
-        "zero-occurrence replay is not evidence"
-    );
-    assert!(terminal, "real PCM did not achieve terminal coverage");
 }
 
 #[tokio::test]

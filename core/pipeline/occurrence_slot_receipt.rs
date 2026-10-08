@@ -138,7 +138,10 @@ pub(super) fn emit(ledger: &AcousticLedger, occurrence: &OccurrenceIdentity) {
     let Some(writer) = file.as_mut() else {
         return;
     };
-    let receipt = build_receipt(occurrence, slots, sink.sample_rate_hz);
+    let mut receipt = build_receipt(occurrence, slots, sink.sample_rate_hz);
+    receipt.word_finality = ledger
+        .seal_of(occurrence)
+        .map_or_else(Vec::new, |seal| seal.word_finality.clone());
     let result = serde_json::to_vec(&receipt)
         .map_err(io::Error::other)
         .and_then(|mut bytes| {
@@ -153,6 +156,8 @@ pub(super) fn emit(ledger: &AcousticLedger, occurrence: &OccurrenceIdentity) {
 
 #[derive(Debug, Serialize)]
 struct OccurrenceSlotReceipt<'a> {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    word_finality: Vec<super::acoustic_ledger::word_adjudication::WordFinality>,
     schema: &'static str,
     session: &'a str,
     capture_epoch: u64,
@@ -349,6 +354,7 @@ fn build_receipt<'a>(
         }
     }
     OccurrenceSlotReceipt {
+        word_finality: Vec::new(),
         schema: "codescribe.occurrence_slots.v1",
         session: &occurrence.session,
         capture_epoch: occurrence.capture_epoch,

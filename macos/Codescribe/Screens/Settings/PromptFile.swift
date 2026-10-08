@@ -28,32 +28,25 @@ enum PromptFile: String, CaseIterable, Identifiable {
     case .correction: String(localized: "Correction prompt")
     case .smart: String(localized: "Smart prompt")
     case .max: String(localized: "Max prompt")
-    case .assistive: String(localized: "Assistive prompt")
+    case .assistive: String(localized: "Agent prompt")
     }
   }
 
-  /// The parenthesised file names are identifiers on disk — keep them verbatim.
+  /// One plain sentence per prompt. File names stay under File details on the
+  /// panel; the Agent sentence names the one lane that reads assistive.txt
+  /// (`compose_agent_system_prompt`), since voice chat carries its own persona.
   var editorSubtitle: String {
     switch self {
     case .correction:
-      String(
-        localized: "Correction only AI formatting (formatting.txt)",
-        comment: "formatting.txt is a file name — do not translate"
-      )
+      String(localized: "Formatting limited to corrections.")
     case .smart:
-      String(
-        localized: "Balanced transcript editing (formatting-smart.txt)",
-        comment: "formatting-smart.txt is a file name — do not translate"
-      )
+      String(localized: "Balanced editing of the transcript.")
     case .max:
-      String(
-        localized: "Maximum supported prose polish (formatting-max.txt)",
-        comment: "formatting-max.txt is a file name — do not translate"
-      )
+      String(localized: "The fullest polish of the text.")
     case .assistive:
       String(
-        localized: "Base system prompt for the voice assistant (assistive.txt)",
-        comment: "assistive.txt is a file name — do not translate"
+        localized:
+          "Base instructions for the Agent acting on a dictated request. Voice chat uses its own instructions."
       )
     }
   }

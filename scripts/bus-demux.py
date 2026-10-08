@@ -18,12 +18,31 @@ Drafts are useful for live replies; only a ``transcript_sealed`` envelope sets
 Exact names take precedence. A unique one-edit opening name can match a
 registered recipient; competing matches produce a non-executable ambiguity
 notice. The original transcript is never rewritten.
+
+Table of contents — grep for the ``§ N.`` banner to jump to a section:
+
+  § 1.  Schemas and constants
+  § 2.  Runtime paths and environment
+  § 3.  Generational bus journal
+  § 4.  Installation interlock and CLI session activity
+  § 5.  Names, audiences and recipient resolution
+  § 6.  Event decoding and evidence normalization
+  § 7.  Follower emission and delivery admission
+  § 8.  Session lease, persistence and the delivery mailbox
+  § 9.  Native queue wakeup
+  § 10. Follower run loop
+  § 11. Speech: credentials, voice profiles, TTS and playback
+  § 12. Reply publication and spoken replies
+  § 13. Messages: Founder typed text and agent peer text
+  § 14. Channel bindings and session handover
+  § 15. Status, watch and the CLI entrypoint
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import datetime
 import fcntl
 import hashlib
@@ -37,6 +56,10 @@ from pathlib import Path
 from stat import S_ISREG
 from typing import Any, Iterator
 from types import SimpleNamespace
+
+# =============================================================================
+# § 1. Schemas and constants
+# =============================================================================
 
 BUS_FILENAME = "transcript-events.jsonl"
 CLEAN_SCHEMA = "codescribe.transcript.v1"
@@ -70,10 +93,22 @@ LEASE_SCHEMA = "codescribe.agent-bridge.lease.v1"
 ATTACH_SCHEMA = "codescribe.agent-bridge.attach.v1"
 EVENT_SCHEMA = "codescribe.agent-bridge.event.v1"
 ACTIVE_NAMES_SCHEMA = "codescribe.agent-bridge.active-names.v1"
+AGENT_USER_MESSAGE_SCHEMA = "codescribe.agent-user-message.v1"
 AGENT_REPLY_SCHEMA = "codescribe.agent-reply.v1"
+AGENT_REPLY_PLAYBACK_SCHEMA = "codescribe.agent-reply-playback.v1"
+REPLY_SOURCE_SCHEMA = "codescribe.agent-reply-source.v1"
+REPLY_CONTROL_SCHEMA = "codescribe.agent-reply-control.v1"
+PLAYBACK_MUTE_SCHEMA = "codescribe.agent-playback-mute.v1"
+REPLY_READ_LIMIT = 32 << 20
 AUDIENCE_BINDING_SCHEMA = "vc.agent-audience-binding.v1"
 AUDIENCE_BINDING_FILENAME = "vc.agent-audience-binding.v1.json"
 ATTACH_RECEIPT_SCHEMA = "codescribe.agent-bridge.attach-receipt.v1"
+DETACH_RECEIPT_SCHEMA = "codescribe.agent-bridge.detach-receipt.v1"
+AGENT_ARCHIVE_SCHEMA = "codescribe.agent-archive.v1"
+TAKEOVER_RECEIPT_SCHEMA = "codescribe.agent-bridge.takeover-receipt.v1"
+#: Follower states a handover reports. Only these two authorize rebinding a
+#: channel; the other two mean the previous reader is still sitting on it.
+HANDOVER_CLEAR_STATES = ("stopped", "not_running")
 STATUS_SCHEMA = "codescribe.agent-bridge.status.v1"
 DEFAULT_LEASE_TTL_SECONDS = 120.0
 PLAYBACK_WAIT_SECONDS = 120.0
@@ -91,6 +126,11 @@ BUS_PATH_ENV_KEYS = (
     "XDG_STATE_HOME",
     "CODESCRIBE_DATA_DIR",
 )
+
+
+# =============================================================================
+# § 2. Runtime paths and environment
+# =============================================================================
 
 
 def _config_dir(env: dict[str, str]) -> Path:
@@ -167,6 +207,11 @@ def agent_turn_lease_path() -> Path:
     # Held shared by the app only while an agent turn streams or runs tools.
     # Same invariant directory as the runtime interlock.
     return install_interlock_path().with_name(AGENT_TURN_LEASE_FILENAME)
+
+
+# =============================================================================
+# § 3. Generational bus journal
+# =============================================================================
 
 
 def generation_sources(path: Path) -> tuple[list[dict[str, Any]], int, int, float | None]:
@@ -298,6 +343,11 @@ class GenerationFile:
                 break
             out.extend(raw)
         return bytes(out)
+
+
+# =============================================================================
+# § 4. Installation interlock and CLI session activity
+# =============================================================================
 
 
 def installation_idle(
@@ -650,6 +700,11 @@ def _cli_session_abandoned(emitted_at: str | None, now: float) -> bool:
     return now - started.timestamp() > CLI_ABANDONED_AFTER_SECONDS
 
 
+# =============================================================================
+# § 5. Names, audiences and recipient resolution
+# =============================================================================
+
+
 def bridge_home() -> Path:
     override = os.environ.get("CODESCRIBE_AGENT_BRIDGE_HOME", "").strip()
     if override:
@@ -748,6 +803,23 @@ def event_kind(status: Any) -> str:
     }.get(str(status), "event")
 
 
+# A preview of a document the reducer is still building.
+DRAFT_KINDS = ("draft", "revised")
+# The envelope that closes a message: an agent acknowledges one of these, never
+# a draft. A channel take and a coverage-refused flush both seal; typed Founder
+# messages arrive as `message`.
+TERMINAL_KINDS = ("seal", "message")
+
+
+def draft_key(payload: dict[str, Any]) -> tuple[Any, Any]:
+    """The message a draft previews, and that its terminal envelope closes.
+
+    Channel takes carry `message_id` (`channel_message_identity`); named
+    utterances are keyed by the reducer's `document_index` instead.
+    """
+    return payload.get("session_id"), payload.get("message_id") or payload.get("document_index")
+
+
 def valid_session_audio_id(session_id: Any) -> str | None:
     """Same alphabet as the controller retain path. Never a filesystem path."""
     if not isinstance(session_id, str):
@@ -773,6 +845,11 @@ def assigned_session_wav(
         if path.name != LAST_SESSION_WAV:
             return str(path)
     return str(_config_dir(env) / "sessions" / f"{sid}.wav")
+
+
+# =============================================================================
+# § 6. Event decoding and evidence normalization
+# =============================================================================
 
 
 def slim(
@@ -802,6 +879,12 @@ def slim(
         "state_change_allowed": status == SEALED
         and event.get("coverage") != COVERAGE_REFUSED,
     }
+    for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id"):
+        if key in event:
+            payload[key] = event[key]
+    for key in ("message_id", "occurrences"):
+        if key in event:
+            payload[key] = event[key]
     coverage = event.get("coverage")
     if isinstance(coverage, str) and coverage:
         payload["coverage"] = coverage
@@ -901,6 +984,10 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         CLEAN_SCHEMA,
         EVIDENCE_SCHEMA,
         CHANNEL_SESSION_SCHEMA,
+        AGENT_USER_MESSAGE_SCHEMA,
+        # Replies enter the follower stream only for the peer text lane;
+        # admission drops every reply that does not name a peer recipient.
+        AGENT_REPLY_SCHEMA,
         "codescribe.bus-chunk.v1",
     ):
         return None
@@ -970,6 +1057,19 @@ def normalized_revision_events(
     rows = evidence_revision_rows(parsed)
     if rows is None:
         raise ValueError("unverified revision encoding")
+    if (parsed.get("schema") == EVIDENCE_SCHEMA
+            and channel_of_session(str(parsed.get("session_id") or "")) is not None):
+        # The storage inventory describes one complete reducer snapshot. It
+        # does not turn its physical entries into separate spoken messages.
+        snapshot = dict(rows[0])
+        snapshot["occurrences"] = [
+            {key: row.get(key) for key in (
+                "sequence", "emitted_at", "occurrence_session_id", "capture_epoch",
+                "sample_start", "sample_end", "document_index", "label", "acoustic_receipts",
+            )}
+            for row in rows
+        ]
+        rows = [snapshot]
     events: list[dict[str, Any]] = []
     for row in rows:
         event = normalizer.normalize(row)
@@ -1031,6 +1131,19 @@ def channel_of_session(session_id: str) -> str | None:
     return match.group(1) if match else None
 
 
+def channel_message_identity(session: str) -> str:
+    """One manual channel take; PCM entries remain evidence inside it."""
+    return _identity(("channel-message", session))
+
+
+def channel_message_phase_identity(event: dict[str, Any]) -> str:
+    session = event.get("session_id")
+    if event.get("status") == SEALED:
+        return _identity(("channel-message-seal", session))
+    return _identity(("channel-message-revision", session,
+                      event.get("reducer_revision"), event.get("reducer_action")))
+
+
 class EvidenceNormalizer:
     """Translate ``transcript-evidence.v1`` rows into the shape the bridge speaks.
 
@@ -1042,13 +1155,14 @@ class EvidenceNormalizer:
 
     Channel safety net: a ledger that refuses terminal finality emits no
     terminal seal, so an addressed utterance would vanish without a trace.
-    The normalizer keeps the latest snapshot per document of each unsealed
+    The normalizer keeps the latest whole snapshot of each unsealed
     channel session and, when the session is over — a ``channel-session``
     receipt shows the channel moved on (any non-open state for the session,
     or a fresh open of the same channel), or the session's own
-    ``session_ended`` lifecycle row marks a hang-up — flushes those documents
-    as ``coverage: "refused"`` seal envelopes via :meth:`pop_flushes`.  The
-    words are delivered once; certification is honestly withheld.
+    ``session_ended`` lifecycle row marks a hang-up — flushes one message via
+    :meth:`pop_flushes`. A ledger terminal receipt carries certification;
+    without it the envelope keeps ``coverage: "refused"``. Physical occurrence
+    coordinates and receipts accompany the full render, never split its text.
     """
 
     #: Unsealed channel sessions retained for the flush net. The quiet
@@ -1063,13 +1177,30 @@ class EvidenceNormalizer:
         # the refused flush already carried their words. A late row for such
         # a session must not re-arm the net and deliver the take twice.
         self._settled_sessions: set[str] = set()
-        self._session_docs: dict[str, dict[Any, dict[str, Any]]] = {}
+        self._session_docs: dict[str, dict[str, Any]] = {}
+        self._channel_open_times: dict[str, tuple[str, float]] = {}
         self._flushes: list[dict[str, Any]] = []
 
     def pop_flushes(self) -> list[dict[str, Any]]:
-        """Coverage-refused envelopes triggered by the last normalized row."""
+        """Final channel envelopes triggered by the last normalized row."""
         flushes, self._flushes = self._flushes, []
         return flushes
+
+    def restore_channel_documents(self, documents: list[dict[str, Any]]) -> None:
+        """Resume observed snapshots, including a queued row before cursor commit."""
+        for document in documents:
+            session = str(document.get("session_id") or "")
+            if (channel_of_session(session) is None
+                    or document.get("message_id") != channel_message_identity(session)):
+                continue
+            if document.get("status") == SEALED:
+                self._settled_sessions.add(session)
+                self._session_docs.pop(session, None)
+            elif session not in self._settled_sessions:
+                self._remember_channel_document(document, dict(document))
+
+    def channel_documents(self) -> dict[str, dict[str, Any]]:
+        return {session: dict(document) for session, document in self._session_docs.items()}
 
     def normalize(self, event: dict[str, Any] | None) -> dict[str, Any] | None:
         if event is None:
@@ -1083,11 +1214,23 @@ class EvidenceNormalizer:
                     str(event.get("session_id") or ""), event.get("emitted_at")
                 )
             return event
+        if event.get("reducer_action") == SESSION_ENDED:
+            self._flush_session(str(event.get("session_id") or ""), event.get("emitted_at"))
+            return None
         document = event.get("rendered_text")
         if not isinstance(document, str):
             return None
+        session = str(event.get("session_id") or "")
+        if event.get("audience") and channel_of_session(session) is not None:
+            if session in self._settled_sessions:
+                return None
+            clean = self._as_clean(event, LIVE_STATUSES[1], document)
+            clean["message_id"] = channel_message_identity(session)
+            if not self._remember_channel_document(event, clean):
+                return None
+            # Even a ledger terminal phase is a preview until capture ends.
+            return clean
         if str(event.get("reducer_action") or "") == TERMINAL_SEAL:
-            session = str(event.get("session_id") or "")
             self._settled_sessions.add(session)
             self._session_docs.pop(session, None)
             seal_id = terminal_seal_identity(event)
@@ -1096,70 +1239,99 @@ class EvidenceNormalizer:
             self._terminal_seals.add(seal_id)
             return self._as_clean(event, SEALED, document)
         clean = self._as_clean(event, LIVE_STATUSES[1], document)
-        self._remember_channel_document(event, clean)
         return clean
 
     def _remember_channel_document(
         self, event: dict[str, Any], clean: dict[str, Any]
-    ) -> None:
+    ) -> bool:
         session = str(event.get("session_id") or "")
         if not clean.get("audience") or channel_of_session(session) is None:
-            return
+            return False
         if session in self._settled_sessions:
-            return
-        docs = self._session_docs.setdefault(session, {})
-        docs[clean.get("document_index")] = clean
+            return False
+        previous = self._session_docs.get(session)
+        incoming_revision = event.get("reducer_revision")
+        older_snapshot = (previous is not None and type(incoming_revision) is int
+                and type(previous.get("reducer_revision")) is int
+                and incoming_revision < previous["reducer_revision"])
+        inventory = {
+            (item.get("occurrence_session_id"), item.get("capture_epoch"),
+             item.get("sample_start"), item.get("sample_end")): item
+            for item in (previous or {}).get("occurrences", [])
+        }
+        for item in event.get("occurrences", [
+            {key: event.get(key) for key in (
+                "sequence", "emitted_at", "occurrence_session_id", "capture_epoch",
+                "sample_start", "sample_end", "document_index", "label", "acoustic_receipts",
+            )}
+        ]):
+            key = (item.get("occurrence_session_id"), item.get("capture_epoch"),
+                   item.get("sample_start"), item.get("sample_end"))
+            if not older_snapshot or key not in inventory:
+                inventory[key] = item
+        clean["occurrences"] = list(inventory.values())
+        if older_snapshot:
+            previous["occurrences"] = clean["occurrences"]
+            return False
+        same_phase = previous is not None and (
+            previous.get("reducer_revision"), previous.get("reducer_action")
+        ) == (incoming_revision, event.get("reducer_action"))
+        if same_phase:
+            previous["occurrences"] = clean["occurrences"]
+        else:
+            self._session_docs[session] = clean
         while len(self._session_docs) > self.MAX_TRACKED_SESSIONS:
             self._session_docs.pop(next(iter(self._session_docs)))
+        return not same_phase
 
     def _consume_channel_row(self, row: dict[str, Any]) -> None:
         channel = str(row.get("channel") or "")
         session = str(row.get("session_id") or "")
-        due: list[str] = []
-        # Only "open" keeps a session alive; a silence seal or any closing
-        # state the app writes for this session ends it.
-        if str(row.get("state") or "") != "open" and session in self._session_docs:
-            due.append(session)
+        if not session or channel_of_session(session) != channel:
+            return
+        # A delayed predecessor close is evidence only for that named capture.
+        # It cannot terminate documents belonging to a newer admitted take.
+        if str(row.get("state") or "") != "open":
+            self._flush_session(session, row.get("emitted_at"))
+            return
+        opened_at = row.get("opened_at")
+        if not isinstance(opened_at, str):
+            return
+        try:
+            opened = datetime.datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+            if opened.tzinfo is None:
+                return
+            timestamp = opened.timestamp()
+        except (ValueError, OverflowError):
+            return
+        identity = (channel, timestamp)
+        previous = self._channel_open_times.get(session)
+        if previous is not None and previous != identity:
+            return
+        self._channel_open_times[session] = identity
         for cached in list(self._session_docs):
-            if (
-                cached != session
-                and cached not in due
-                and channel_of_session(cached) == channel
-            ):
-                due.append(cached)
-        for stale in due:
-            self._flush_session(stale, row.get("emitted_at"))
+            known = self._channel_open_times.get(cached)
+            if (cached != session and known is not None
+                    and known[0] == channel and known[1] < timestamp):
+                self._flush_session(cached, row.get("emitted_at"))
+        while len(self._channel_open_times) > self.MAX_TRACKED_SESSIONS:
+            oldest = min(self._channel_open_times,
+                         key=lambda key: self._channel_open_times[key][1])
+            del self._channel_open_times[oldest]
 
     def _flush_session(self, session: str, emitted_at: Any) -> None:
-        docs = self._session_docs.pop(session, None)
-        if not docs or session in self._settled_sessions:
+        self._channel_open_times.pop(session, None)
+        clean = self._session_docs.pop(session, None)
+        if not clean or session in self._settled_sessions:
             return
         self._settled_sessions.add(session)
-        seen_texts: set[str] = set()
-        for doc_index, clean in sorted(docs.items(), key=lambda item: str(item[0])):
-            text = clean.get("text") or ""
-            if not text.strip():
-                continue
-            # Channel documents often re-project one full-session snapshot
-            # under several document indexes; identical words are one refused
-            # delivery, not N.
-            if text in seen_texts:
-                continue
-            seen_texts.add(text)
-            # A stable per-document identity keys the delivery, so a bus
-            # replay after restart is the same refused phase, not a repeat.
-            identity = _identity(("coverage-refused-seal", session, doc_index))
-            refused = dict(clean)
-            refused.update(
-                {
-                    "status": SEALED,
-                    "coverage": COVERAGE_REFUSED,
-                    "utterance_id": identity,
-                    "source_event_id": identity,
-                    "emitted_at": emitted_at or clean.get("emitted_at"),
-                }
-            )
-            self._flushes.append(refused)
+        if not (clean.get("text") or "").strip():
+            return
+        final = dict(clean)
+        final.update(status=SEALED, emitted_at=emitted_at or clean.get("emitted_at"))
+        if clean.get("reducer_action") != TERMINAL_SEAL:
+            final["coverage"] = COVERAGE_REFUSED
+        self._flushes.append(final)
 
     def _as_clean(
         self, event: dict[str, Any], status: str, text: str
@@ -1187,7 +1359,15 @@ class EvidenceNormalizer:
         audience = event.get("audience")
         if isinstance(audience, str) and audience:
             clean["audience"] = audience
+        for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id"):
+            if key in event:
+                clean[key] = event[key]
         return clean
+
+
+# =============================================================================
+# § 7. Follower emission and delivery admission
+# =============================================================================
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -1262,6 +1442,42 @@ def consider(
     debug: bool,
     recipients: set[str] | None = None,
 ) -> dict[str, Any] | None:
+    if event.get("schema") == AGENT_REPLY_SCHEMA:
+        # Agent-to-agent text lane. Only a reply that explicitly names a peer
+        # recipient is a delivery; ordinary spoken replies carry no `peer_to`
+        # and never re-enter any mailbox, so replying cannot echo-loop.
+        peer_to = event.get("peer_to")
+        sender = event.get("sender")
+        if (event.get("kind") != "agent_reply" or not isinstance(peer_to, str)
+                or not isinstance(event.get("text"), str) or not event["text"].strip()
+                or not isinstance(event.get("reply_id"), str)
+                or not re.fullmatch(r"[0-9a-f]{24}", event["reply_id"])
+                or event.get("message_id") != event["reply_id"]
+                or event.get("source_event_id") != event["reply_id"]
+                or not isinstance(sender, dict)
+                or any(not isinstance(sender.get(key), str) or not sender[key]
+                       for key in ("name", "provider", "provider_session_id", "lease_id"))):
+            return None
+        if not name or peer_to.casefold() != name.casefold():
+            return None
+        # Peer text is coordination between agents, never Founder authority:
+        # it must not inherit the typed lane's state_change_allowed=True.
+        return {**event, "schema": EVENT_SCHEMA, "kind": "message",
+                "producer_schema": AGENT_REPLY_SCHEMA, "state_change_allowed": False,
+                "routing_match": "audience"}
+    if event.get("schema") == AGENT_USER_MESSAGE_SCHEMA:
+        if (event.get("kind") != "agent_user_message" or event.get("source") != "typed"
+                or not isinstance(event.get("text"), str) or not event["text"].strip()
+                or not isinstance(event.get("message_id"), str)
+                or not re.fullmatch(r"[0-9a-f]{24}", event["message_id"])
+                or event.get("source_event_id") != event["message_id"]):
+            return None
+        audience = event.get("audience")
+        if not isinstance(audience, str) or not name or audience.casefold() != name.casefold():
+            return None
+        return {**event, "schema": EVENT_SCHEMA, "kind": "message",
+                "producer_schema": AGENT_USER_MESSAGE_SCHEMA, "state_change_allowed": True,
+                "routing_match": "audience"}
     status = event.get("status")
     if status != SEALED and not (drafts and status in LIVE_STATUSES):
         return None
@@ -1427,20 +1643,29 @@ def replay(path: Path) -> Iterator[str]:
         return
 
 
+# =============================================================================
+# § 8. Session lease, persistence and the delivery mailbox
+# =============================================================================
+
+
 def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    atomic_bytes(path, encoded)
+
+
+def atomic_bytes(path: Path, encoded: bytes) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         path.parent.chmod(0o700)
     except OSError:
         pass
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
-    encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode(
-        "utf-8"
-    )
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, "wb") as handle:
@@ -1489,6 +1714,360 @@ def provider_session_from_env(provider: str) -> str | None:
     return value or None
 
 
+class NativeProviderModelReader:
+    """Observe exact-session native metadata without joining the delivery path.
+
+    A bounded tail finds recent metadata quickly. Older metadata is found by
+    progressive overlapping backscan, once; subsequent reads follow appends.
+    The lease keeps the observation and its native record receipt together.
+    """
+
+    READ_BYTES = 1 << 20
+    RECORD_BYTES = 256 << 10
+    DISCOVERY_ENTRIES = 20_000
+    DISCOVERY_SECONDS = 0.1
+    DISCOVERY_INTERVAL = 30.0
+    SESSION_RE = re.compile(r"[A-Za-z0-9_-]{8,128}")
+    MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
+
+    def __init__(
+        self, provider: str, provider_session_id: str, *,
+        home: Path | None = None, previous: dict[str, Any] | None = None,
+    ) -> None:
+        self.provider = provider.casefold()
+        self.session = provider_session_id
+        self.home = (home if home is not None else Path.home()).resolve(strict=False)
+        self.path: Path | None = None
+        self.projection: dict[str, Any] = {}
+        self._previous = previous
+        self._may_restore = True
+        self._next_discovery = 0.0
+        self._reset_source()
+
+    def _reset_source(self) -> None:
+        self.projection = {}
+        self._file_identity: tuple[int, int] | None = None
+        self._last_size = 0
+        self._last_mtime = 0
+        self._head: tuple[int, int, str] | None = None
+        self._identity_offset = 0
+        self._append_offset: int | None = None
+        self._append_anchor: str | None = None
+        self._safe_offset = 0
+        self._pending = b""
+        self._discard_line = False
+        self._backscan_end = 0
+        self._candidate: dict[str, Any] | None = None
+
+    def _discover(self) -> Path | None:
+        if (self.provider not in ("codex", "claude-code")
+                or not self.SESSION_RE.fullmatch(self.session)):
+            return None
+        deadline = time.monotonic() + self.DISCOVERY_SECONDS
+        visited = 0
+
+        def entries(directory: Path) -> Iterator[os.DirEntry[str]]:
+            nonlocal visited
+            with os.scandir(directory) as scan:
+                for entry in scan:
+                    visited += 1
+                    if visited > self.DISCOVERY_ENTRIES or time.monotonic() > deadline:
+                        raise ValueError("native metadata discovery exceeded its bound")
+                    yield entry
+
+        matches: list[Path] = []
+        if self.provider == "codex":
+            root = self.home / ".codex" / "sessions"
+            for year in entries(root):
+                if not re.fullmatch(r"\d{4}", year.name) or not year.is_dir(follow_symlinks=False):
+                    continue
+                for month in entries(Path(year.path)):
+                    if not re.fullmatch(r"\d{2}", month.name) or not month.is_dir(follow_symlinks=False):
+                        continue
+                    for day in entries(Path(month.path)):
+                        if not re.fullmatch(r"\d{2}", day.name) or not day.is_dir(follow_symlinks=False):
+                            continue
+                        for entry in entries(Path(day.path)):
+                            if (entry.name.startswith("rollout-")
+                                    and entry.name.endswith(f"-{self.session}.jsonl")
+                                    and entry.is_file(follow_symlinks=False)):
+                                matches.append(Path(entry.path))
+                                if len(matches) > 1:
+                                    return None
+        else:
+            root = self.home / ".claude" / "projects"
+            for project in entries(root):
+                if not project.is_dir(follow_symlinks=False):
+                    continue
+                candidate = Path(project.path) / f"{self.session}.jsonl"
+                try:
+                    metadata = candidate.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if S_ISREG(metadata.st_mode):
+                    matches.append(candidate)
+                    if len(matches) > 1:
+                        return None
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _decode(raw: bytes) -> dict[str, Any] | None:
+        try:
+            value = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def _records(
+        self, raw: bytes, start: int, aligned: bool,
+    ) -> Iterator[tuple[dict[str, Any], int, bytes]]:
+        position = start
+        for index, line in enumerate(raw.splitlines(keepends=True)):
+            offset = position
+            position += len(line)
+            if (index == 0 and not aligned) or not line.endswith(b"\n") or len(line) > self.RECORD_BYTES:
+                continue
+            value = self._decode(line)
+            if value is not None:
+                yield value, offset, line
+
+    @staticmethod
+    def _window(handle: Any, start: int, end: int) -> tuple[bytes, bool]:
+        if start:
+            handle.seek(start - 1)
+            aligned = handle.read(1) == b"\n"
+        else:
+            aligned = True
+            handle.seek(0)
+        return handle.read(end - start), aligned
+
+    def _is_identity(self, value: dict[str, Any]) -> bool:
+        if self.provider == "codex":
+            if value.get("type") != "session_meta":
+                return False
+            payload = value.get("payload")
+            identity = payload.get("id") if isinstance(payload, dict) else None
+        else:
+            identity = value.get("sessionId")
+            if identity is None:
+                return False
+        if identity != self.session:
+            raise ValueError("native metadata belongs to another provider session")
+        return True
+
+    def _read_identity(self, handle: Any, size: int) -> tuple[int, int, str] | None:
+        if self._head is not None:
+            offset, length, _ = self._head
+            handle.seek(offset)
+            raw = handle.read(length)
+            value = self._decode(raw)
+            if value is not None and raw.endswith(b"\n") and self._is_identity(value):
+                return offset, length, hashlib.sha256(raw).hexdigest()
+            raise ValueError("native session identity record changed or became incomplete")
+        if self.provider == "codex":
+            handle.seek(0)
+            raw = handle.readline(self.RECORD_BYTES + 1)
+            value = self._decode(raw) if len(raw) <= self.RECORD_BYTES and raw.endswith(b"\n") else None
+            if value is not None and self._is_identity(value):
+                return 0, len(raw), hashlib.sha256(raw).hexdigest()
+            return None
+        # Claude has no session_meta header. Find an exact sessionId row by a
+        # bounded progressive prefix scan, independently of the model tail.
+        start = self._identity_offset
+        end = min(size, start + self.READ_BYTES)
+        raw, aligned = self._window(handle, start, end)
+        for value, offset, line in self._records(raw, start, aligned):
+            if self._is_identity(value):
+                return offset, len(line), hashlib.sha256(line).hexdigest()
+        self._identity_offset = max(0, end - min(self.RECORD_BYTES, self.READ_BYTES // 2))
+        return None
+
+    def _model_record(self, value: dict[str, Any], offset: int, raw: bytes) -> dict[str, Any] | None:
+        if self.provider == "codex":
+            if value.get("type") == "session_meta":
+                self._is_identity(value)
+            payload = value.get("payload")
+            if value.get("type") != "turn_context" or not isinstance(payload, dict):
+                return None
+            model = payload.get("model")
+            record_type = "codex.turn_context"
+        else:
+            # Source identity is checked separately. Other-session payloads
+            # in an already validated source cannot replace its observation.
+            message = value.get("message")
+            if (value.get("type") != "assistant" or value.get("sessionId") != self.session
+                    or value.get("isSidechain") is True or value.get("isSynthetic") is True
+                    or not isinstance(message, dict)):
+                return None
+            model = message.get("model")
+            record_type = "claude.assistant"
+        if (not isinstance(model, str) or not self.MODEL_RE.fullmatch(model)
+                or model.casefold() in ("synthetic", "unknown", "default", "auto")):
+            return None
+        timestamp = value.get("timestamp")
+        return {
+            "model": model, "record_type": record_type,
+            "record_offset": offset, "record_length": len(raw),
+            "record_timestamp": timestamp if isinstance(timestamp, str) and len(timestamp) <= 128 else None,
+        }
+
+    def _observe(self, value: dict[str, Any], offset: int, raw: bytes) -> None:
+        candidate = self._model_record(value, offset, raw)
+        if candidate is not None and (self._candidate is None or offset >= self._candidate["record_offset"]):
+            self._candidate = candidate
+
+    def _restore(self, handle: Any, metadata: Any) -> bool:
+        if not self._may_restore:
+            return False
+        self._may_restore = False
+        previous = self._previous or {}
+        receipt = previous.get("model_provenance")
+        if (not isinstance(receipt, dict) or self._head is None
+                or receipt.get("provider") != self.provider
+                or receipt.get("provider_session_id") != self.session
+                or receipt.get("source") != str(self.path)
+                or receipt.get("source_device") != metadata.st_dev
+                or receipt.get("source_inode") != metadata.st_ino
+                or receipt.get("identity_sha256") != self._head[2]):
+            return False
+        offset, length, cursor = (receipt.get(key) for key in ("record_offset", "record_length", "read_offset"))
+        if (any(type(item) is not int for item in (offset, length, cursor))
+                or offset < 0 or not 0 < length <= self.RECORD_BYTES
+                or not offset + length <= cursor <= metadata.st_size):
+            return False
+        handle.seek(cursor - 1)
+        if (handle.read(1) != b"\n"
+                or self._cursor_anchor(handle, cursor) != receipt.get("read_offset_sha256")):
+            return False
+        handle.seek(offset)
+        raw = handle.read(length)
+        value = self._decode(raw) if raw.endswith(b"\n") else None
+        candidate = self._model_record(value, offset, raw) if value is not None else None
+        if (candidate is None or candidate["model"] != previous.get("model")
+                or candidate["record_type"] != receipt.get("record_type")
+                or candidate["record_timestamp"] != receipt.get("record_timestamp")):
+            return False
+        self._candidate = candidate
+        self._append_offset = self._safe_offset = cursor
+        return True
+
+    @staticmethod
+    def _cursor_anchor(handle: Any, offset: int) -> str:
+        start = max(0, offset - 256)
+        handle.seek(start)
+        return hashlib.sha256(handle.read(offset - start)).hexdigest()
+
+    def _backscan(self, handle: Any, end: int, *, initial: bool = False) -> None:
+        start = max(0, end - self.READ_BYTES)
+        raw, aligned = self._window(handle, start, end)
+        for value, offset, line in self._records(raw, start, aligned):
+            self._observe(value, offset, line)
+        last_newline = raw.rfind(b"\n")
+        if last_newline >= 0:
+            self._safe_offset = max(self._safe_offset, start + last_newline + 1)
+        if initial:
+            self._append_offset = end
+            partial = raw[last_newline + 1:]
+            self._discard_line = (last_newline < 0 and start > 0) or len(partial) > self.RECORD_BYTES
+            self._pending = b"" if self._discard_line else partial
+        self._backscan_end = start + min(self.RECORD_BYTES, self.READ_BYTES // 2) if start else 0
+        if self._candidate is not None:
+            self._backscan_end = 0
+
+    def _read_append(self, handle: Any, size: int) -> None:
+        assert self._append_offset is not None
+        start = self._append_offset
+        handle.seek(start)
+        raw = handle.read(min(self.READ_BYTES, size - start))
+        self._append_offset += len(raw)
+        combined = self._pending + raw
+        position = start - len(self._pending)
+        pieces = combined.split(b"\n")
+        for line in pieces[:-1]:
+            offset = position
+            position += len(line) + 1
+            self._safe_offset = position
+            if self._discard_line:
+                self._discard_line = False
+                continue
+            if len(line) + 1 <= self.RECORD_BYTES:
+                value = self._decode(line)
+                if value is not None:
+                    self._observe(value, offset, line + b"\n")
+        partial = pieces[-1]
+        self._discard_line = self._discard_line or len(partial) > self.RECORD_BYTES
+        self._pending = b"" if self._discard_line else partial
+
+    def refresh(self) -> None:
+        """Fail closed on ambiguous identity, fail soft for the mailbox."""
+        now = time.monotonic()
+        try:
+            if now >= self._next_discovery:
+                self._next_discovery = now + self.DISCOVERY_INTERVAL
+                path = self._discover()
+                if path != self.path:
+                    self._reset_source()
+                    self.path = path
+            if self.path is None:
+                return
+            descriptor = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as handle:
+                metadata = os.fstat(handle.fileno())
+                if not S_ISREG(metadata.st_mode):
+                    raise ValueError("native metadata source is not a regular file")
+                identity = (metadata.st_dev, metadata.st_ino)
+                if (identity != self._file_identity or metadata.st_size < self._last_size
+                        or (metadata.st_size == self._last_size and metadata.st_mtime_ns != self._last_mtime)):
+                    self._reset_source()
+                    self._file_identity = identity
+                head = self._read_identity(handle, metadata.st_size)
+                if head is None:
+                    self._last_size, self._last_mtime = metadata.st_size, metadata.st_mtime_ns
+                    return
+                if self._head is not None and head != self._head:
+                    self._reset_source()
+                    self._file_identity = identity
+                if (self._append_offset is not None and self._append_anchor is not None
+                        and self._cursor_anchor(handle, self._append_offset) != self._append_anchor):
+                    # Truncate + regrow can retain both inode and header while
+                    # replacing bytes already consumed by the append cursor.
+                    self._reset_source()
+                    self._file_identity = identity
+                self._head = head
+                if self._append_offset is None and not self._restore(handle, metadata):
+                    self._backscan(handle, metadata.st_size, initial=True)
+                else:
+                    self._read_append(handle, metadata.st_size)
+                    if self._candidate is None and self._backscan_end:
+                        self._backscan(handle, self._backscan_end)
+                assert self._append_offset is not None
+                self._append_anchor = self._cursor_anchor(handle, self._append_offset)
+                after = os.fstat(handle.fileno())
+                current = self.path.stat(follow_symlinks=False)
+                if (identity != (current.st_dev, current.st_ino) or after.st_size < metadata.st_size
+                        or (after.st_size == metadata.st_size and after.st_mtime_ns != metadata.st_mtime_ns)):
+                    raise ValueError("native metadata source changed during observation")
+                self._last_size, self._last_mtime = after.st_size, after.st_mtime_ns
+                self.projection = {}
+                if self._candidate is not None and self._append_offset == after.st_size:
+                    candidate = self._candidate
+                    self.projection = {
+                        "model": candidate["model"],
+                        "model_provenance": {
+                            "provider": self.provider, "provider_session_id": self.session,
+                            "source": str(self.path), "source_device": metadata.st_dev,
+                            "source_inode": metadata.st_ino, "identity_sha256": head[2],
+                            **{key: value for key, value in candidate.items() if key != "model"},
+                            "read_offset": self._safe_offset,
+                            "read_offset_sha256": self._cursor_anchor(handle, self._safe_offset),
+                        },
+                    }
+        except (OSError, ValueError, TypeError, OverflowError):
+            self._reset_source()
+            self.path = None
+            self._next_discovery = now + self.DISCOVERY_INTERVAL
+
+
 def process_is_alive(pid: Any) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
@@ -1499,6 +2078,24 @@ def process_is_alive(pid: Any) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def process_identity(pid: int) -> dict[str, str] | None:
+    """Observe one process incarnation and its complete invocation, never TTL."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "-ww", "-p", str(pid), "-o", "lstart=", "-o", "state=", "-o", "command="],
+            capture_output=True, text=True, check=False, timeout=2,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    fields = result.stdout.strip().split(None, 6)
+    if result.returncode or len(fields) != 7 or fields[5].startswith(("T", "Z", "X")):
+        return None
+    return {"started": " ".join(fields[:5]), "command": fields[6]}
 
 
 def active_leases(root: Path, ttl_seconds: float) -> list[dict[str, Any]]:
@@ -1542,6 +2139,7 @@ class SessionLease:
         ttl_seconds: float,
         follow_from_end: bool,
         coalesce: bool = False,
+        provider_metadata_home: Path | None = None,
     ) -> None:
         self.root = root
         self.provider = provider.casefold()
@@ -1550,6 +2148,7 @@ class SessionLease:
         self.bus = str(bus.expanduser().resolve(strict=False))
         self.ttl_seconds = ttl_seconds
         self.coalesce = coalesce
+        self.process_identity = process_identity(os.getpid())
         canonical_lease_id = lease_identifier(provider, provider_session_id)
         if requested_id and requested_id != canonical_lease_id:
             raise ValueError(
@@ -1578,6 +2177,7 @@ class SessionLease:
             self.cursor = 0
             self.last_sequence: Any = None
             self.pending: dict[str, dict[str, Any]] = {}
+            self.unclosed_channel_messages: dict[str, dict[str, Any]] = {}
             if previous and self._matches(previous):
                 heartbeat = previous.get("heartbeat_unix")
                 fresh = (
@@ -1602,8 +2202,23 @@ class SessionLease:
                         "preserved on disk, attachment refused"
                     )
                 self.cursor = saved_cursor
+                try:
+                    extent = generation_metadata(Path(self.bus)).st_size
+                except OSError:
+                    extent = None
+                if extent is not None and self.cursor > extent:
+                    # Compare logical positions across all journal generations.
+                    # Rotation keeps the stream; only a genuinely shorter
+                    # journal invalidates the recovered cursor and documents.
+                    self.cursor = 0
+                    previous["unclosed_channel_messages"] = {}
                 self.last_sequence = previous.get("last_sequence")
-                self.name = previous.get("name") or self.name
+                # The follower's requested name outranks the recovered lease
+                # name: a channel rename (detach + attach under a new name)
+                # must take effect on resume, or the lease pins its first
+                # name forever and direct routing to the new name goes deaf
+                # while broadcasts still arrive.
+                self.name = self.name or previous.get("name")
                 pending = previous.get("pending", [])
                 if not isinstance(pending, list) or any(
                     not isinstance(payload, dict)
@@ -1622,12 +2237,37 @@ class SessionLease:
                     raise ValueError(
                         "duplicate pending identities; recovery state preserved"
                     )
+                documents = previous.get("unclosed_channel_messages", {})
+                if (not isinstance(documents, dict) or len(documents) > EvidenceNormalizer.MAX_TRACKED_SESSIONS
+                        or any(not isinstance(document, dict)
+                            or document.get("session_id") != session
+                            or channel_of_session(session) is None
+                            or document.get("message_id") != channel_message_identity(session)
+                            or document.get("status") not in LIVE_STATUSES
+                            or not isinstance(document.get("text"), str)
+                            or not isinstance(document.get("occurrences"), list)
+                            or any(not isinstance(item, dict) for item in document["occurrences"])
+                            or document.get("producer_schema") != EVIDENCE_SCHEMA
+                            or not self.admits_channel_event(document)
+                            for session, document in documents.items())):
+                    raise ValueError("invalid unclosed channel messages; recovery state preserved")
+                self.unclosed_channel_messages = documents
                 self.resumed = True
             elif follow_from_end:
                 try:
                     self.cursor = generation_metadata(bus).st_size
                 except FileNotFoundError:
                     self.cursor = 0
+            self._provider_model_reader: NativeProviderModelReader | None = None
+            try:
+                self._provider_model_reader = NativeProviderModelReader(
+                    self.provider, self.provider_session_id,
+                    home=provider_metadata_home, previous=previous,
+                )
+            except (OSError, RuntimeError):
+                # Native provider metadata is optional, unlike lease recovery.
+                pass
+            self.refresh_provider_model()
             self.persist(active=True)
         except BaseException:
             self._release_lock()
@@ -1686,33 +2326,33 @@ class SessionLease:
                 "cursor": self.cursor,
                 "last_sequence": self.last_sequence,
                 "pending": list(self.pending.values()),
+                "unclosed_channel_messages": self.unclosed_channel_messages,
                 "active": active,
                 "pid": os.getpid(),
+                "process_identity": self.process_identity,
                 "heartbeat_unix": time.time(),
                 "updated_at": utc_now(),
                 **({"wakeup_configuration": self.wakeup_configuration} if self.wakeup_configuration else {}),
+                **(self._provider_model_reader.projection if self._provider_model_reader is not None else {}),
             },
         )
 
+    def refresh_provider_model(self) -> None:
+        if self._provider_model_reader is not None:
+            self._provider_model_reader.refresh()
+
     def queue_delivery(self, payload: dict[str, Any]) -> bool:
         delivery_id = payload["delivery_id"]
-        if delivery_acknowledged(self.root, self.lease_id, delivery_id):
+        if delivery_acknowledged(self.root, self.lease_id, delivery_id, payload):
             return False
         if delivery_id in self.pending:
             return False
-        if self.coalesce and payload.get("kind") in ("draft", "revised"):
+        if self.coalesce and payload.get("kind") in DRAFT_KINDS:
             # A reducer storm re-states one document ~250 times per sentence.
             # Under coalescing the newest revision replaces its predecessors
             # in the mailbox instead of stacking toward the 256 cap; the seal
             # stays a separate envelope so terminal delivery is never merged.
-            key = (payload.get("session_id"), payload.get("document_index"))
-            stale = [
-                queued_id
-                for queued_id, item in self.pending.items()
-                if item.get("kind") in ("draft", "revised")
-                and (item.get("session_id"), item.get("document_index")) == key
-            ]
-            for queued_id in stale:
+            for queued_id in self._drafts_of(draft_key(payload)):
                 del self.pending[queued_id]
         pending_bytes = sum(
             len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
@@ -1732,14 +2372,78 @@ class SessionLease:
         self.persist(active=True)
         return True
 
-    def collect_acknowledgments(self) -> None:
+    def _drafts_of(self, key: tuple[Any, Any]) -> list[str]:
+        return [
+            queued_id
+            for queued_id, item in self.pending.items()
+            if item.get("kind") in DRAFT_KINDS and draft_key(item) == key
+        ]
+
+    def prune_settled_drafts(self) -> None:
+        """Apply the same rule across runs: an acknowledged terminal envelope
+        settles the drafts of its message.
+
+        A lease can hold previews whose terminal envelope was acknowledged and
+        left the mailbox in an earlier process. The acknowledgment marker
+        keeps the terminal envelope's causal coordinates (`receipt_envelope`
+        drops only transcript-bearing fields), so a settled message is provable
+        from the marker store rather than guessed.
+        """
+        if not self.pending:
+            return
+        settled: set[tuple[Any, Any]] = set()
+        try:
+            entries = os.listdir(self.root / "acknowledgments" / self.lease_id)
+        except OSError:
+            return
+        for entry in entries:
+            if not entry.endswith(".json"):
+                continue
+            delivery_id = entry[: -len(".json")]
+            if not re.fullmatch(r"[0-9a-f]{24}", delivery_id):
+                continue
+            if not delivery_acknowledged(self.root, self.lease_id, delivery_id):
+                continue
+            envelope = (read_json(self.root / "acknowledgments" / self.lease_id / entry) or {}).get("envelope")
+            if isinstance(envelope, dict) and envelope.get("kind") in TERMINAL_KINDS:
+                settled.add(draft_key(envelope))
+        orphans = [
+            queued_id
+            for queued_id, item in self.pending.items()
+            if item.get("kind") in DRAFT_KINDS and draft_key(item) in settled
+        ]
+        if orphans:
+            for queued_id in orphans:
+                del self.pending[queued_id]
+            self.persist(active=True)
+
+    def collect_acknowledgments(self, native: Any = None) -> None:
         completed = [
             delivery_id
             for delivery_id in self.pending
-            if delivery_acknowledged(self.root, self.lease_id, delivery_id)
+            if delivery_acknowledged(self.root, self.lease_id, delivery_id, self.pending[delivery_id])
         ]
-        if completed:
-            for delivery_id in completed:
+        settled = []
+        for delivery_id in completed:
+            receipt = read_json(self.root / "wakeups" / self.lease_id / f"{delivery_id}.json")
+            if self.provider != "codex" or receipt is None or receipt.get("queue_disposition") in ("removed", "not_pending"):
+                settled.append(delivery_id)
+            elif native:
+                native.enqueue_withdrawal(delivery_id)
+        if settled:
+            # An acknowledged terminal envelope settles the drafts of its
+            # message: the consumer has seen the whole take, so its previews
+            # can leave with it instead of holding the mailbox for the life of
+            # the lease. Read the key before the envelope is deleted. A
+            # terminal acknowledged but still awaiting a native queue
+            # withdrawal is not in `settled`, so it retires nothing yet.
+            retired = [
+                queued_id
+                for delivery_id in settled
+                if self.pending[delivery_id].get("kind") in TERMINAL_KINDS
+                for queued_id in self._drafts_of(draft_key(self.pending[delivery_id]))
+            ]
+            for delivery_id in dict.fromkeys(settled + retired):
                 del self.pending[delivery_id]
             self.persist(active=True)
 
@@ -1747,10 +2451,22 @@ class SessionLease:
         self.name = name.casefold()
         self.persist(active=True)
 
+    def admits_channel_event(self, event: dict[str, Any]) -> bool:
+        frozen = event.get("recipients")
+        expected = {"provider": self.provider, "provider_session_id": self.provider_session_id,
+                    "lease_id": self.lease_id, "bus": self.bus}
+        if isinstance(frozen, list):
+            return any(isinstance(owner, dict) and all(owner.get(key) == value
+                       for key, value in expected.items()) for owner in frozen)
+        if channel_of_session(str(event.get("session_id") or "")) is not None:
+            return all(event.get(key) == value for key, value in expected.items())
+        return frozen is None
+
     def enrich(self, payload: dict[str, Any]) -> None:
         payload["lease_id"] = self.lease_id
         payload["provider"] = self.provider
         payload["provider_session_id"] = self.provider_session_id
+        payload["bus"] = self.bus
         # A delivery belongs to one lease owner and one source-event phase.
         # This namespaces native bridge output away from a manual rail while
         # the lease lock refuses a simultaneous second native owner.
@@ -1765,7 +2481,10 @@ class SessionLease:
         # source_event_id intact for provenance while keying that delivery by
         # the same reducer phase used by EvidenceNormalizer.
         phase_id = payload.get("source_event_id")
-        if (
+        if (payload.get("message_id") == channel_message_identity(str(payload.get("session_id") or ""))
+                and channel_of_session(str(payload.get("session_id") or "")) is not None):
+            phase_id = channel_message_phase_identity(payload)
+        elif (
             payload.get("producer_schema") == EVIDENCE_SCHEMA
             and payload.get("reducer_action") == TERMINAL_SEAL
             and payload.get("status") == SEALED
@@ -1810,9 +2529,158 @@ class SessionLease:
             self._release_lock()
 
 
-def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str) -> bool:
-    receipt = read_json(root / "acknowledgments" / lease_id / f"{delivery_id}.json")
-    return receipt == {"lease_id": lease_id, "delivery_id": delivery_id}
+def receipt_envelope(payload: dict[str, Any], bus: str) -> dict[str, Any]:
+    """Retain causal coordinates without keeping transcript-bearing evidence."""
+    result = {key: value for key, value in payload.items() if key not in ("text", "wav", "occurrences")}
+    if "occurrences" in payload:
+        result["occurrences"] = [
+            {key: value for key, value in item.items() if key not in ("label", "acoustic_receipts")}
+            for item in payload["occurrences"]
+        ]
+    result["bus"] = bus
+    return result
+
+
+def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
+                          expected_payload: dict[str, Any] | None = None) -> bool:
+    path = root / "acknowledgments" / lease_id / f"{delivery_id}.json"
+    try:
+        metadata = path.lstat()
+        if not S_ISREG(metadata.st_mode) or metadata.st_size > 1 << 20:
+            return False
+        receipt = read_reply_json(path, 1 << 20)
+    except (OSError, ValueError, UnicodeError):
+        return False
+    if receipt.get("lease_id") != lease_id or receipt.get("delivery_id") != delivery_id:
+        return False
+    if set(receipt) == {"lease_id", "delivery_id"}:
+        return True
+    state = read_json(root / "leases" / f"{lease_id}.json")
+    if (not state or state.get("schema") != LEASE_SCHEMA
+            or state.get("lease_id") != lease_id
+            or not all(isinstance(state.get(key), str) and state[key]
+                       for key in ("provider", "provider_session_id", "bus"))
+            or lease_identifier(state["provider"], state["provider_session_id"]) != lease_id):
+        return False
+    owner = {key: state[key] for key in ("lease_id", "provider", "provider_session_id", "bus")}
+    matches = lambda value: isinstance(value, dict) and all(value.get(k) == v for k, v in owner.items())
+    envelope = receipt.get("envelope")
+    if not matches(receipt) or not matches(envelope) or envelope.get("delivery_id") != delivery_id:
+        return False
+    frozen = envelope.get("recipients")
+    if frozen is not None and (not isinstance(frozen, list)
+            or any(not isinstance(item, dict) for item in frozen)
+            or not any(matches(item) for item in frozen)):
+        return False
+    pending = state.get("pending", [])
+    original = expected_payload
+    if original is None and isinstance(pending, list):
+        original = next((item for item in pending if isinstance(item, dict)
+                         and item.get("delivery_id") == delivery_id), None)
+    return original is None or envelope == receipt_envelope(original, state["bus"])
+
+
+def native_submission_id(receipt: dict[str, Any]) -> str | None:
+    """Admit only the exact provider receipt for this thread, never message text."""
+    session = receipt.get("provider_session_id")
+    match = re.fullmatch(
+        r"Queued message ([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}) for thread "
+        + re.escape(str(session)) + r"\.", str(receipt.get("provider_receipt", "")),
+    )
+    identity = match.group(1) if match else None
+    recorded = receipt.get("queued_submission_id")
+    return identity if recorded is None or recorded == identity else None
+
+
+def delete_native_queue_submission(root: Path, session: str, submission: str) -> bool:
+    """Use the installed Rust transport and the running provider's own socket."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("codex")
+    if not executable:
+        raise ValueError("native provider unavailable")
+    version = subprocess.run([executable, "app-server", "daemon", "version"],
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+    if version.returncode != 0 or len(version.stdout) > 65536:
+        raise ValueError("native provider status unavailable")
+    status = json.loads(version.stdout)
+    socket_path = status.get("socketPath")
+    if status.get("status") != "running" or not isinstance(socket_path, str) or not Path(socket_path).is_absolute():
+        raise ValueError("running native provider socket unavailable")
+    result = subprocess.run(
+        [reply_publisher_command(root), "bus", "withdraw-queued-message", "--socket", socket_path,
+         "--thread", session, "--submission", submission],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=12,
+    )
+    if result.returncode != 0 or len(result.stdout) > 65536:
+        raise ValueError("native queue withdrawal unavailable")
+    value = json.loads(result.stdout)
+    if not isinstance(value, dict) or type(value.get("deleted")) is not bool:
+        raise ValueError("invalid native queue withdrawal receipt")
+    return value["deleted"]
+
+
+def withdraw_acknowledged_queue(root: Path, lease_id: str, identity: str, *,
+                               retry: bool = False, locked: bool = False) -> bool:
+    """Cancel this owned pending submission after ACK; preserve immutable history.
+
+    A busy sender owns the same lock and checks ACK after publishing its receipt.
+    The existing follower retries failures without blocking its bus reader.
+    """
+    import subprocess
+
+    if not re.fullmatch(r"[0-9a-f]{32}", lease_id) or not re.fullmatch(r"[0-9a-f]{24}", identity):
+        return False
+    if not delivery_acknowledged(root, lease_id, identity):
+        return False
+    directory = root / "wakeups" / lease_id
+    if not directory.exists():
+        return True
+    if not locked:
+        with (directory / f"{identity}.lock").open("a") as lock:
+            os.chmod(lock.name, 0o600)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            return withdraw_acknowledged_queue(root, lease_id, identity, retry=retry, locked=True)
+    path = directory / f"{identity}.json"
+    receipt = read_json(path)
+    if receipt is None:
+        return not path.exists()
+    state = read_json(root / "leases" / f"{lease_id}.json") or {}
+    expected = {"lease_id": lease_id, "provider": "codex", "provider_session_id": state.get("provider_session_id"),
+                "delivery_id": identity}
+    if (state.get("provider") != "codex" or lease_identifier("codex", str(expected["provider_session_id"])) != lease_id
+            or receipt.get("schema") != "codescribe.native-queue.receipt.v1"
+            or any(receipt.get(k) != v for k, v in expected.items())):
+        return False
+    if receipt.get("queue_disposition") in ("removed", "not_pending"):
+        return True
+    if receipt.get("disposition") in ("rejected", "unavailable"):
+        receipt["queue_disposition"] = "not_pending"
+        atomic_json(path, receipt)
+        return True
+    submission = native_submission_id(receipt)
+    if receipt.get("disposition") != "provider_accepted" or submission is None:
+        receipt["queue_disposition"] = "unresolved"
+        atomic_json(path, receipt)
+        return False
+    last_attempt = receipt.get("withdrawal_attempt_at", 0)
+    if not retry and isinstance(last_attempt, (int, float)) and time.time() - last_attempt < 30:
+        return False
+    receipt.update(queued_submission_id=submission, queue_disposition="pending",
+                   withdrawal_attempt_at=time.time())
+    atomic_json(path, receipt)
+    try:
+        deleted = delete_native_queue_submission(root, expected["provider_session_id"], submission)
+        receipt.update(queue_disposition="removed" if deleted else "not_pending",
+                       withdrawal_completed_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        receipt["withdrawal_reason"] = "provider withdrawal unavailable; retry retained"
+    atomic_json(path, receipt)
+    return receipt["queue_disposition"] in ("removed", "not_pending")
 
 
 def acknowledge_delivery(args: argparse.Namespace) -> int:
@@ -1843,6 +2711,8 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
             "acknowledgment does not belong to this provider session and bus"
         )
     pending = state.get("pending", [])
+    if not isinstance(pending, list) or any(not isinstance(item, dict) for item in pending):
+        raise ValueError("invalid pending mailbox; nothing acknowledged")
     pending_ids = (
         {
             payload.get("delivery_id")
@@ -1858,7 +2728,13 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
         if not delivery_acknowledged(args.bridge_home, lease_id, delivery_id)
     ]
     for delivery_id in unread:
-        if delivery_id not in pending_ids:
+        payload = next((item for item in pending if isinstance(item, dict)
+                        and item.get("delivery_id") == delivery_id), None)
+        if (delivery_id not in pending_ids or not payload
+                or payload.get("lease_id") != lease_id
+                or payload.get("provider") != args.provider.casefold()
+                or payload.get("provider_session_id") != args.session
+                or payload.get("bus", state["bus"]) != state["bus"]):
             raise ValueError(
                 f"delivery {delivery_id} is not pending for this provider session; "
                 "nothing acknowledged"
@@ -1866,11 +2742,92 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
     for delivery_id in unread:
         atomic_json(
             args.bridge_home / "acknowledgments" / lease_id / f"{delivery_id}.json",
-            {"lease_id": lease_id, "delivery_id": delivery_id},
+            {"lease_id": lease_id, "delivery_id": delivery_id,
+             "provider": args.provider.casefold(), "provider_session_id": args.session,
+             "read_at": utc_now(),
+             "bus": state["bus"],
+             "envelope": receipt_envelope(next(payload for payload in pending
+                                if payload.get("delivery_id") == delivery_id), state["bus"])},
         )
     for delivery_id in delivery_ids:
-        emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id})
+        withdrawn = withdraw_acknowledged_queue(args.bridge_home, lease_id, delivery_id, retry=True)
+        emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id,
+              "native_queue_settled": withdrawn})
     return 0
+
+
+def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
+    """Present complete task text and provenance without acoustic diagnostics.
+
+    This is only a view of an already owned delivery. Its original envelope,
+    PCM evidence and causal receipt remain in their existing stores.
+    """
+    fields = (
+        "schema", "kind", "status", "text", "audience", "name", "emitted_at",
+        "source", "producer_schema", "source_event_id", "sequence", "session_id",
+        "utterance_id", "message_id", "mode", "reducer_revision", "reducer_action",
+        "delivery_id", "delivery_owner", "lease_id", "provider", "provider_session_id",
+        "bus", "recipients", "broadcast_id", "channel", "routing_match", "routing_candidates",
+        "state_change_allowed", "coverage", "sender", "peer_to", "association", "spoken",
+        "reply_id", "reply_to", "reply_to_occurrence_id", "instructions",
+    )
+    return {key: payload[key] for key in fields if key in payload}
+
+
+def read_pending_command(args: argparse.Namespace) -> int:
+    """Read complete conversational projections. Only the conversation may ACK."""
+    lease_id = lease_identifier(args.provider, args.session)
+    state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
+    if (state.get("schema") != LEASE_SCHEMA or state.get("lease_id") != lease_id
+            or state.get("provider") != args.provider
+            or state.get("provider_session_id") != args.session
+            or not isinstance(state.get("bus"), str)
+            or args.bus_overridden and state["bus"] != str(args.bus.expanduser().resolve(strict=False))):
+        raise ValueError("mailbox does not belong to this provider session and bus")
+    pending = state.get("pending")
+    if not isinstance(pending, list) or any(not isinstance(row, dict) for row in pending):
+        raise ValueError("invalid pending mailbox; nothing read")
+    rows = []
+    for row in pending:
+        identity = row.get("delivery_id")
+        if row.get("kind") in DRAFT_KINDS:
+            continue
+        if (not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{24}", identity)
+                or row.get("lease_id") != lease_id or row.get("provider") != args.provider
+                or row.get("provider_session_id") != args.session
+                or row.get("bus", state["bus"]) != state["bus"]):
+            raise ValueError("foreign or invalid pending envelope; nothing read")
+        owner = row.get("delivery_owner")
+        if not isinstance(owner, dict) or any(owner.get(key) != row[key] for key in (
+                "lease_id", "provider", "provider_session_id")):
+            raise ValueError("foreign pending delivery owner; nothing read")
+        if not delivery_acknowledged(args.bridge_home, lease_id, identity, row):
+            rows.append(row)
+    if not 1 <= args.read_limit <= 256 or not 1 <= args.read_bytes <= 16 * 1024 * 1024:
+        raise ValueError("invalid --read-limit or --read-bytes")
+    result = {"kind": "pending_read", "lease_id": lease_id, "provider": args.provider,
+              "provider_session_id": args.session, "snapshot_cursor": state.get("cursor"),
+              "deliveries": [], "read_delivery_ids": [], "remaining": len(rows)}
+    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > args.read_bytes:
+        raise ValueError("snapshot metadata exceeds --read-bytes; increase the limit")
+    for row in rows[:args.read_limit]:
+        result["deliveries"].append(conversation_envelope(row))
+        result["read_delivery_ids"].append(row["delivery_id"])
+        result["remaining"] -= 1
+        if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > args.read_bytes:
+            result["deliveries"].pop()
+            result["read_delivery_ids"].pop()
+            result["remaining"] += 1
+            if not result["deliveries"]:
+                raise ValueError("complete envelope exceeds --read-bytes; increase the limit, then read before ACK")
+            break
+    emit(result)
+    return 0
+
+
+# =============================================================================
+# § 9. Native queue wakeup
+# =============================================================================
 
 
 def effective_wakeup(args: argparse.Namespace) -> str:
@@ -1904,9 +2861,28 @@ class NativeQueueWakeup:
         self.channel = channel
         self.lease_id = lease_identifier("codex", session)
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cs-native-queue")
+        import threading
+        self.withdrawals: set[str] = set()
+        self.withdrawal_lock = threading.Lock()
+
+    def enqueue_withdrawal(self, identity: str) -> None:
+        receipt = read_json(self.root / "wakeups" / self.lease_id / f"{identity}.json") or {}
+        last_attempt = receipt.get("withdrawal_attempt_at", 0)
+        if (receipt.get("queue_disposition") == "unresolved"
+                or isinstance(last_attempt, (int, float)) and time.time() - last_attempt < 30):
+            return
+        with self.withdrawal_lock:
+            if identity in self.withdrawals:
+                return
+            self.withdrawals.add(identity)
+        def complete(future: Any) -> None:
+            with self.withdrawal_lock:
+                self.withdrawals.discard(identity)
+            self._report_error(future)
+        self.executor.submit(withdraw_acknowledged_queue, self.root, self.lease_id, identity).add_done_callback(complete)
 
     def enqueue(self, payload: dict[str, Any], *, retry: bool = False) -> None:
-        if payload.get("kind") != "seal":
+        if payload.get("kind") not in TERMINAL_KINDS:
             return
         self.executor.submit(self._deliver, dict(payload), retry).add_done_callback(self._report_error)
 
@@ -1935,7 +2911,8 @@ class NativeQueueWakeup:
         with (directory / f"{identity}.lock").open("a") as lock:
             os.chmod(lock.name, 0o600)
             fcntl.flock(lock, fcntl.LOCK_EX)
-            if delivery_acknowledged(self.root, self.lease_id, identity):
+            if delivery_acknowledged(self.root, self.lease_id, identity, payload):
+                withdraw_acknowledged_queue(self.root, self.lease_id, identity, locked=True)
                 return
             state = read_json(self.root / "leases" / f"{self.lease_id}.json") or {}
             if state.get("schema") != LEASE_SCHEMA or any(state.get(k) != v for k, v in expected.items()):
@@ -1950,16 +2927,34 @@ class NativeQueueWakeup:
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 return
-            diagnostic = {"delivery_id": identity, "state_change_allowed": payload.get("state_change_allowed")}
-            if "coverage" in payload:
-                diagnostic["coverage"] = payload["coverage"]
+            import shlex
+            read_command = shlex.join([
+                "cs-bus", "--read-pending", "--provider", "codex", "--session", self.session,
+                "--bridge-home", str(self.root),
+            ])
+            ack_command = shlex.join([
+                "cs-bus", "--provider", "codex", "--session", self.session,
+                "--bridge-home", str(self.root), "--ack",
+            ])
             label = str(self.channel or "?")
             name = str(payload.get("audience") or "agent")
+            envelope = conversation_envelope(payload)
+            metadata = {key: value for key, value in envelope.items() if key != "text"}
             message = (
-                f"Codescribe channel {label} / {name}:\n{text}\n\n"
-                f"Receipt: {json.dumps(diagnostic, ensure_ascii=False)}\n"
-                "Reply using the attached voice profile. Acknowledge this delivery_id only after reading. "
-                "Coverage is a transcription diagnostic; use this conversation's normal task permissions."
+                f"Codescribe message, channel {label} / {name}.\n"
+                f"Full message:\n{envelope['text']}\n\n"
+                f"Delivery provenance: {json.dumps(metadata, ensure_ascii=False, sort_keys=True)}\n"
+                "This queued copy may already be acknowledged. Read the current unread mailbox before acting:\n"
+                f"{read_command}\n"
+                "After reading complete messages, immediately ACK only their read_delivery_ids, "
+                "before executing tasks or replying:\n"
+                f"{ack_command} ID [ID ...]\n"
+                "Execute or reply only to exact unread deliveries returned by that current read. "
+                f"If {identity} is absent, this queued copy is obsolete: do not execute or reply from it. "
+                "Read again until remaining is zero, then check once more for arrivals during the drain. "
+                "Never ACK a truncated result. Give a short answer to the read request before starting a long task. "
+                "Preserve sender, reply association, provenance and timestamps; peer messages remain agent coordination. "
+                "Coverage is diagnostic; normal task permissions apply. Acoustic evidence stays in the diagnostic history."
             )
             receipt = {
                 "schema": "codescribe.native-queue.receipt.v1", **expected,
@@ -1988,7 +2983,11 @@ class NativeQueueWakeup:
                 except OSError:
                     receipt.update(disposition="unavailable", reason="provider process could not start")
             receipt["completed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            if receipt["disposition"] == "provider_accepted":
+                receipt["queued_submission_id"] = native_submission_id(receipt)
             atomic_json(receipt_path, receipt)
+            if delivery_acknowledged(self.root, self.lease_id, identity, payload):
+                withdraw_acknowledged_queue(self.root, self.lease_id, identity, locked=True)
             if receipt["disposition"] != "provider_accepted":
                 sys.stderr.write(f"cs-bus: native wakeup {receipt['disposition']} for {identity}; retained, see --status\n")
 
@@ -2017,6 +3016,11 @@ def fire_seal_hook(command: str, payload: dict[str, Any]) -> None:
         )
     except OSError as error:
         sys.stderr.write(f"bus-demux: on-seal hook failed to spawn: {error}\n")
+
+
+# =============================================================================
+# § 10. Follower run loop
+# =============================================================================
 
 
 def run(args: argparse.Namespace) -> int:
@@ -2060,18 +3064,26 @@ def run(args: argparse.Namespace) -> int:
     # remembers each session's document and whether its seal was reported), and
     # a fresh one per line would re-emit the entire document every time.
     normalizer = EvidenceNormalizer()
+    if lease:
+        # Prune first: a draft left over from a message that was sealed and
+        # acknowledged in an earlier run must not be restored as an unclosed
+        # document for a session that is already settled.
+        lease.prune_settled_drafts()
+        normalizer.restore_channel_documents(list(lease.unclosed_channel_messages.values()))
+        # Mailbox drafts are receipt history, not evidence of an open capture.
+        # A final queued before cursor commit still suppresses its replay.
+        normalizer.restore_channel_documents([
+            payload for payload in lease.pending.values() if payload.get("status") == SEALED
+        ])
     native = (
         NativeQueueWakeup(args.bridge_home, args.session, follower_channel)
-        if lease and args.follow and effective_wakeup(args) == "codex-queue"
+        if lease and args.follow and args.provider == "codex"
         else None
     )
     event_trigger: BusEventTrigger | None = None
     deferred: tuple[list[dict[str, Any]], int | None] | None = None
     recipients: set[str] | None = None
     human_drafts: dict[tuple[Any, Any], dict[str, Any]] = {}
-
-    def draft_key(payload: dict[str, Any]) -> tuple[Any, Any]:
-        return payload.get("session_id"), payload.get("document_index")
 
     def flush_human_drafts(key: tuple[Any, Any] | None = None) -> None:
         keys = [key] if key is not None else list(human_drafts)
@@ -2084,7 +3096,7 @@ def run(args: argparse.Namespace) -> int:
     def publish(payload: dict[str, Any]) -> None:
         if events_path is not None and lease and lease.coalesce:
             key = draft_key(payload)
-            if payload.get("kind") in ("draft", "revised"):
+            if payload.get("kind") in DRAFT_KINDS:
                 emit_follower(payload, events_path, follower_channel, human_output=False)
                 human_drafts[key] = payload
                 return
@@ -2099,9 +3111,9 @@ def run(args: argparse.Namespace) -> int:
                 payload = remaining[0]
                 if not lease or lease.queue_delivery(payload):
                     publish(payload)
-                    if native:
+                    if native and effective_wakeup(args) == "codex-queue":
                         native.enqueue(payload)
-                    if args.on_seal and payload.get("kind") == "seal":
+                    if args.on_seal and payload.get("kind") in TERMINAL_KINDS:
                         fire_seal_hook(args.on_seal, payload)
                 remaining.pop(0)
         except BufferError:
@@ -2111,6 +3123,10 @@ def run(args: argparse.Namespace) -> int:
             deferred = (remaining, next_cursor)
             raise
         if lease and next_cursor is not None:
+            lease.unclosed_channel_messages = {
+                session: document for session, document in normalizer.channel_documents().items()
+                if lease.admits_channel_event(document)
+            }
             lease.persist(
                 active=True,
                 cursor=next_cursor,
@@ -2127,6 +3143,8 @@ def run(args: argparse.Namespace) -> int:
             return
         payloads: list[dict[str, Any]] = []
         for event in events:
+            if lease and not lease.admits_channel_event(event):
+                continue
             payload = consider(
                 event,
                 name=name,
@@ -2148,6 +3166,10 @@ def run(args: argparse.Namespace) -> int:
             payloads.append(payload)
         if not payloads:
             if lease and next_cursor is not None:
+                lease.unclosed_channel_messages = {
+                    session: document for session, document in normalizer.channel_documents().items()
+                    if lease.admits_channel_event(document)
+                }
                 lease.persist(
                     active=True,
                     cursor=next_cursor,
@@ -2160,10 +3182,12 @@ def run(args: argparse.Namespace) -> int:
 
     try:
         if lease:
-            lease.collect_acknowledgments()
+            lease.collect_acknowledgments(native)
             for payload in lease.pending.values():
+                if delivery_acknowledged(lease.root, lease.lease_id, payload["delivery_id"], payload):
+                    continue
                 publish(payload)
-                if native:
+                if native and effective_wakeup(args) == "codex-queue":
                     native.enqueue(payload)
             flush_human_drafts()
         if args.once:
@@ -2172,6 +3196,8 @@ def run(args: argparse.Namespace) -> int:
             for raw in replay(path):
                 events = normalized_revision_events(raw, normalizer)
                 for event in events:
+                    if lease and not lease.admits_channel_event(event):
+                        continue
                     payload = consider(
                         event,
                         name=name,
@@ -2215,7 +3241,7 @@ def run(args: argparse.Namespace) -> int:
         waiting_for_ack = False
         while True:
             if lease:
-                lease.collect_acknowledgments()
+                lease.collect_acknowledgments(native)
             try:
                 if deferred is not None:
                     deliver(*deferred)
@@ -2247,6 +3273,7 @@ def run(args: argparse.Namespace) -> int:
                     raise ValueError("incomplete storage record")
                 return 0
             if lease and time.monotonic() - last_heartbeat >= 1.0:
+                lease.refresh_provider_model()
                 lease.persist(active=True, cursor=lease.cursor if normalizer.storage.pending else offset)
                 last_heartbeat = time.monotonic()
             assert event_trigger is not None
@@ -2263,6 +3290,11 @@ def run(args: argparse.Namespace) -> int:
             event_trigger.close()
         if lease:
             lease.close()
+
+
+# =============================================================================
+# § 11. Speech: credentials, voice profiles, TTS and playback
+# =============================================================================
 
 
 def _xai_speech_key() -> str | None:
@@ -2521,6 +3553,7 @@ def _speak_xai(
     *,
     playback_root: Path | None = None,
     bus: Path | None = None,
+    control: ReplyPlaybackControl | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
     import urllib.request
@@ -2550,7 +3583,7 @@ def _speak_xai(
         data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
-    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus)
+    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus, control=control)
 
 
 def _speak_pcm(
@@ -2560,16 +3593,19 @@ def _speak_pcm(
     *,
     playback_root: Path | None = None,
     bus: Path | None = None,
+    control: ReplyPlaybackControl | None = None,
 ) -> tuple[bool, str | None, str | None]:
     if pcm is None:
         return False, error, reason
-    return _play_pcm_24k(pcm, playback_root=playback_root, bus=bus)
+    return _play_pcm_24k(pcm, playback_root=playback_root, bus=bus, control=control)
 
 
-def _acquire_playback_lock(descriptor: int) -> bool:
+def _acquire_playback_lock(descriptor: int, control: ReplyPlaybackControl | None = None) -> bool:
     """Bound the wait with a monotonic clock; the kernel owns exclusivity."""
     deadline = time.monotonic() + PLAYBACK_WAIT_SECONDS
     while True:
+        if control is not None and control.stopped():
+            return False
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return True
@@ -2727,13 +3763,16 @@ def installation_idle_with_checkpoint(bus: Path, *, bridge_root: Path) -> bool:
 
 
 def _wait_for_take_end(
-    bus: Path, cursor: dict[str, Any], *, bridge_root: Path | None = None
+    bus: Path, cursor: dict[str, Any], *, bridge_root: Path | None = None,
+    control: ReplyPlaybackControl | None = None,
 ) -> bool:
     deadline = time.monotonic() + TAKE_WAIT_SECONDS
     root = bridge_root if bridge_root is not None else bridge_home()
     if not cursor:
         cursor.update(_load_lifecycle_cursor(bus, root, deadline))
     while time.monotonic() < deadline:
+        if control is not None and control.stopped():
+            return False
         previous = (cursor.get("offset"), {
             source: state.get("offset")
             for source, state in cursor.get("channel_buses", {}).items()
@@ -2776,6 +3815,7 @@ def _play_pcm_24k(
     *,
     playback_root: Path | None = None,
     bus: Path | None = None,
+    control: ReplyPlaybackControl | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Prepare WAV independently, then serialize only playback across agents."""
     import subprocess
@@ -2801,17 +3841,24 @@ def _play_pcm_24k(
         lock_descriptor = os.open(
             runtime / "playback.lock", os.O_RDWR | os.O_CREAT, 0o600
         )
-        if not _acquire_playback_lock(lock_descriptor):
-            return False, "playback wait timed out", "playback_busy"
+        if not _acquire_playback_lock(lock_descriptor, control):
+            return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "playback wait timed out", "playback_busy")
         # A take may have started during synthesis or the lock wait.
         speech_bus = bus if bus is not None else bus_path()
         cursor: dict[str, Any] = {}
-        if not _wait_for_take_end(speech_bus, cursor, bridge_root=root):
-            return False, "live take wait timed out", "take_live"
+        if not _wait_for_take_end(speech_bus, cursor, bridge_root=root, control=control):
+            return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "live take wait timed out", "take_live")
+        if control is not None:
+            if control.stopped():
+                return False, "playback stopped", "stopped"
+            control.publish("playing")
         player = subprocess.Popen(
             ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         while True:
+            if control is not None and control.stopped():
+                _stop_playback(player)
+                return False, "playback stopped", "stopped"
             idle = installation_idle(
                 speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
                 deadline=time.monotonic() + PLAYBACK_POLL_SECONDS,
@@ -2848,6 +3895,7 @@ def _speak_openai(
     *,
     playback_root: Path | None = None,
     bus: Path | None = None,
+    control: ReplyPlaybackControl | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Same TTS lane as the app (api.openai.com/v1/audio/speech, PCM s16le 24 kHz)."""
     import urllib.request
@@ -2877,7 +3925,12 @@ def _speak_openai(
         data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
-    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus)
+    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus, control=control)
+
+
+# =============================================================================
+# § 12. Reply publication and spoken replies
+# =============================================================================
 
 
 def lease_name(root: Path, provider: str, session: str) -> str | None:
@@ -2895,48 +3948,543 @@ def lease_name(root: Path, provider: str, session: str) -> str | None:
     return name if isinstance(name, str) and name else None
 
 
-def say_reply(args: argparse.Namespace) -> int:
-    """Append one agent-reply row to the canonical Bus, then speak it.
+def read_reply_json(path: Path, limit: int = 16 << 20) -> dict[str, Any]:
+    """Bounded private receipt reads; never deserialize the live journal here."""
+    with path.open("rb") as handle:
+        raw = handle.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError("oversized reply receipt")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("invalid reply receipt")
+    return value
 
-    The Bus is the canonical relay for agent replies; xAI is only the speaker,
-    so a failed synthesis still lands the row (spoken=false with the error
-    and a ``reason`` enum the agent can act on).
-    """
-    profile = voice_profile(args.bridge_home, args.name)
+
+def reply_publisher_command(root: Path) -> str:
+    """Find the existing Rust command without depending on a GUI shell's PATH."""
+    import shutil
+
+    runtime = root / "runtime"
+    bundled = runtime / "bin" / "codescribe"
+    manifest_path = runtime / "manifest.json"
+    bundle_present = any(path.exists() or path.is_symlink() for path in (bundled, manifest_path))
+    if bundle_present and (not bundled.is_file() or not manifest_path.is_file() or manifest_path.is_symlink()):
+        raise ValueError("bundled canonical publisher or manifest is missing or invalid")
+    if bundled.is_file() and manifest_path.is_file():
+        manifest = read_reply_json(manifest_path, 4 << 20)
+        entries = manifest.get("files", [])
+        entry = next((item for item in entries if isinstance(item, dict)
+                      and item.get("path") == "bin/codescribe"), None) if isinstance(entries, list) else None
+        if manifest.get("schema") == "codescribe.agent-bridge.bundle.v1" and entry:
+            metadata = bundled.stat()
+            size = entry.get("bytes")
+            if (type(size) is not int or not 0 < size <= 256 << 20
+                    or metadata.st_size != size or bundled.is_symlink()
+                    or not os.access(bundled, os.X_OK)):
+                raise ValueError("bundled canonical publisher ownership is invalid")
+            digest = hashlib.sha256()
+            with bundled.open("rb") as handle:
+                remaining = size
+                while remaining:
+                    block = handle.read(min(1 << 20, remaining))
+                    if not block:
+                        raise ValueError("bundled canonical publisher is incomplete")
+                    digest.update(block)
+                    remaining -= len(block)
+                if handle.read(1):
+                    raise ValueError("bundled canonical publisher changed during verification")
+            if digest.hexdigest() != entry.get("sha256"):
+                raise ValueError("bundled canonical publisher digest does not match its manifest")
+            return str(bundled.resolve(strict=True))
+        raise ValueError("bundled canonical publisher manifest schema or entry is invalid")
+    discovered = shutil.which("codescribe")
+    if discovered:
+        return discovered
+    for candidate in (Path.home() / ".cargo" / "bin" / "codescribe",
+                      Path.home() / ".local" / "bin" / "codescribe"):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    raise OSError("canonical codescribe bus publisher is unavailable")
+
+
+def publish_reply_event(bus: Path, event: dict[str, Any], *, bridge_root: Path | None = None) -> dict[str, Any]:
+    """The Rust generation/chunk/private append owner is the only bus writer."""
+    import subprocess
+
+    executable = reply_publisher_command(bridge_root if bridge_root is not None else bridge_home())
+    try:
+        result = subprocess.run(
+            [executable, "bus", "append-event", "--bus", str(bus.resolve(strict=False))],
+            input=json.dumps(event, ensure_ascii=False), capture_output=True,
+            text=True, timeout=30, check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise OSError("canonical bus publication timed out; speech did not start") from error
+    if result.returncode != 0:
+        raise OSError("canonical bus publication refused; speech did not start")
+    try:
+        receipt = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ValueError("canonical bus publication has no receipt") from error
+    if not isinstance(receipt, dict):
+        raise ValueError("canonical bus publication has invalid receipt")
+    return receipt
+
+
+def reply_delivery_envelope(args: argparse.Namespace) -> tuple[Path, dict[str, Any] | None]:
+    lease_id = lease_identifier(args.provider, args.session)
+    lease_path = args.bridge_home / "leases" / f"{lease_id}.json"
+    state = read_reply_json(lease_path) if lease_path.exists() else {}
+    if state and (state.get("schema") != LEASE_SCHEMA
+                  or state.get("lease_id") != lease_id
+                  or state.get("provider") != args.provider.casefold()
+                  or state.get("provider_session_id") != args.session):
+        raise ValueError("reply lease does not belong to this provider session")
+    if state and (not isinstance(state.get("bus"), str) or not state["bus"].strip()):
+        raise ValueError("reply lease has an invalid bus path")
+    pending = state.get("pending", [])
+    if not isinstance(pending, list) or any(not isinstance(item, dict) for item in pending):
+        raise ValueError("reply lease has an invalid pending mailbox")
+    bus = (args.bus if args.bus_overridden or not state.get("bus")
+           else Path(state["bus"])).expanduser().resolve(strict=False)
+    if state and state.get("bus") != str(bus):
+        raise ValueError("reply bus does not belong to this provider session")
+    identity = args.reply_to
+    if identity is None:
+        return bus, None
+    envelope = next((item for item in pending if item.get("delivery_id") == identity), None)
+    if envelope is None:
+        marker = args.bridge_home / "acknowledgments" / lease_id / f"{identity}.json"
+        receipt = read_reply_json(marker) if marker.exists() else {}
+        if (receipt.get("lease_id") != lease_id or receipt.get("delivery_id") != identity
+                or receipt.get("provider") != args.provider.casefold()
+                or receipt.get("provider_session_id") != args.session
+                or receipt.get("bus") != str(bus)):
+            raise ValueError("reply delivery has no owned envelope")
+        envelope = receipt.get("envelope")
+    if (not isinstance(envelope, dict) or envelope.get("delivery_id") != identity
+            or envelope.get("lease_id") != lease_id
+            or envelope.get("provider") != args.provider.casefold()
+            or envelope.get("provider_session_id") != args.session
+            or envelope.get("bus", state.get("bus")) != str(bus)):
+        raise ValueError("reply delivery does not belong to this provider session and bus")
+    frozen = envelope.get("recipients")
+    if frozen is not None and (not isinstance(frozen, list)
+            or any(not isinstance(owner, dict) for owner in frozen) or not any(
+            owner.get("provider") == args.provider.casefold()
+            and owner.get("provider_session_id") == args.session
+            and owner.get("lease_id") == lease_id and owner.get("bus") == str(bus)
+            for owner in frozen)):
+        raise ValueError("reply owner was not admitted for this channel utterance")
+    return bus, envelope
+
+
+def load_published_reply(args: argparse.Namespace, identity: str) -> tuple[Path, dict[str, Any]]:
+    source = read_reply_json(args.bridge_home / "runtime" / "reply-sources" / f"{identity}.json")
+    bus = Path(source.get("bus", ""))
+    lease_id = lease_identifier(args.provider, args.session)
+    if (source.get("schema") != REPLY_SOURCE_SCHEMA or source.get("reply_id") != identity
+            or source.get("lease_id") != lease_id
+            or source.get("provider") != args.provider.casefold()
+            or source.get("provider_session_id") != args.session or not bus.is_absolute()
+            or (args.bus_overridden and bus != args.bus.expanduser().resolve(strict=False))):
+        raise ValueError("reply source does not belong to this provider session and bus")
+    receipt = source.get("source", {})
+    offset, length = receipt.get("offset"), receipt.get("length")
+    if type(offset) is not int or offset < 0 or type(length) is not int or not 0 < length <= REPLY_READ_LIMIT:
+        raise ValueError("invalid reply source coordinates")
+    with GenerationFile(bus) as handle:
+        manifest = read_reply_json(Path(str(bus) + ".generations.json"), 4 << 20)
+        if (manifest.get("schema") != "codescribe.bus-generations.v1"
+                or manifest.get("root") != str(bus)
+                or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]
+                or manifest.get("stream_id") != receipt["stream_id"]
+                or (handle.dev, handle.ino) != (receipt.get("stream_dev"), receipt.get("stream_inode"))):
+            raise ValueError("reply source stream was replaced")
+        handle.seek(offset)
+        raw = handle.read(length)
+    if len(raw) != length or not raw.endswith(b"\n"):
+        raise ValueError("reply source is incomplete")
+    decoder = ChunkDecoder()
+    events = []
+    for line in raw.splitlines():
+        value = decoder.feed(json.loads(line))
+        if value is not None:
+            events.append(value)
+    if decoder.pending or len(events) != 1:
+        raise ValueError("reply source is not one complete event")
+    reply = events[0]
+    if (reply.get("schema") != AGENT_REPLY_SCHEMA or reply.get("kind") != "agent_reply"
+            or reply.get("reply_id") != identity or reply.get("lease_id") != lease_id
+            or reply.get("provider") != args.provider.casefold()
+            or reply.get("provider_session_id") != args.session):
+        raise ValueError("canonical reply does not match its source owner")
+    return bus, reply
+
+
+def playback_mute_path(root: Path, provider: str, session: str, bus: Path) -> Path:
+    identity = "\0".join((provider.casefold(), session, str(bus.resolve(strict=False))))
+    key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    return root / "runtime" / "playback-mutes" / f"{key}.json"
+
+
+def agent_playback_muted(root: Path, provider: str, session: str, bus: Path) -> bool:
+    path = playback_mute_path(root, provider, session, bus)
+    try:
+        row = read_reply_json(path, 65536)
+        if (row.get("schema") != PLAYBACK_MUTE_SCHEMA
+                or row.get("provider") != provider.casefold()
+                or row.get("provider_session_id") != session
+                or row.get("lease_id") != lease_identifier(provider, session)
+                or row.get("bus") != str(bus.resolve(strict=False))
+                or type(row.get("muted")) is not bool):
+            return True
+        return row["muted"]
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        # An unreadable mute receipt never gives permission to speak.
+        return True
+
+
+def set_agent_muted(args: argparse.Namespace) -> int:
+    bus = args.bus.expanduser().resolve(strict=False)
+    lease_id = lease_identifier(args.provider, args.session)
+    lease = read_reply_json(args.bridge_home / "leases" / f"{lease_id}.json")
+    if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
+            or lease.get("provider") != args.provider.casefold()
+            or lease.get("provider_session_id") != args.session
+            or lease.get("bus") != str(bus)):
+        raise ValueError("playback mute does not belong to this provider session and bus")
+    row = {"schema": PLAYBACK_MUTE_SCHEMA, "provider": args.provider.casefold(),
+           "provider_session_id": args.session, "lease_id": lease_id,
+           "bus": str(bus), "muted": args.mute_agent, "emitted_at": utc_now()}
+    atomic_json(playback_mute_path(args.bridge_home, args.provider, args.session, bus), row)
+    emit(row)
+    return 0
+
+
+class ReplyPlaybackControl:
+    """One request ticket controls only its own child of the serialized player."""
+    def __init__(self, args: argparse.Namespace, bus: Path, reply: dict[str, Any], ticket: str,
+                 *, automatic: bool = False):
+        self.bus, self.reply, self.ticket = bus, reply, ticket
+        self.automatic = automatic
+        self.root = args.bridge_home
+        self.path = self.root / "runtime" / "reply-playback" / f"{reply['reply_id']}.{ticket}.json"
+        self.stop_path = self.path.with_suffix(".stop.json")
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.descriptor = os.open(self.path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(self.descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if self.path.exists():
+                raise ValueError("playback ticket was already admitted; use a new ticket")
+        except BaseException:
+            os.close(self.descriptor)
+            raise
+
+    def owner(self) -> dict[str, Any]:
+        return {key: self.reply[key] for key in
+                ("reply_id", "provider", "provider_session_id", "lease_id")}
+
+    def stopped(self) -> bool:
+        if self.muted():
+            return True
+        if not self.stop_path.exists():
+            return False
+        stop = read_reply_json(self.stop_path, 65536)
+        return (stop.get("schema") == REPLY_CONTROL_SCHEMA
+                and stop.get("playback_ticket") == self.ticket
+                and all(stop.get(key) == value for key, value in self.owner().items()))
+
+    def muted(self) -> bool:
+        return self.automatic and agent_playback_muted(
+            self.root, self.reply["provider"], self.reply["provider_session_id"], self.bus)
+
+    def publish(self, state: str, *, error: str | None = None, reason: str | None = None) -> None:
+        event = {"schema": AGENT_REPLY_PLAYBACK_SCHEMA, "kind": "agent_reply_playback",
+                 "emitted_at": utc_now(), **self.owner(), "playback_ticket": self.ticket,
+                 "state": state, "spoken": state == "spoken"}
+        if error:
+            event["tts_error"] = error
+        if reason:
+            event["reason"] = reason
+        publish_reply_event(self.bus, event, bridge_root=self.root)
+        atomic_json(self.path, {**event, "schema": REPLY_CONTROL_SCHEMA, "bus": str(self.bus)})
+        emit(event)
+
+    def close(self) -> None:
+        os.close(self.descriptor)
+
+
+def speak_published_reply(args: argparse.Namespace, bus: Path, reply: dict[str, Any], ticket: str,
+                          *, automatic: bool = False) -> int:
+    control = ReplyPlaybackControl(args, bus, reply, ticket, automatic=automatic)
+    try:
+        control.publish("waiting")
+        if control.stopped():
+            spoken, error, reason = False, "playback stopped", "stopped"
+        else:
+            speaker = _speak_openai if reply["tts_vendor"] == "openai" else _speak_xai
+            spoken, error, reason = speaker(reply["text"], reply["voice"], reply["speed"],
+                                            playback_root=args.bridge_home, bus=bus_path(), control=control)
+            if control.stopped() and not spoken:
+                error, reason = "playback stopped", "stopped"
+        if not spoken and control.muted():
+            error, reason = None, "muted"
+        state = ("spoken" if spoken else "stopped" if reason == "stopped" else
+                 "refused" if reason in ("take_live", "take_started", "playback_busy", "muted") else "failed")
+        control.publish(state, error=error, reason=reason)
+        return 0 if spoken or reason == "muted" else 5
+    except Exception as error:
+        control.publish("failed", error=f"speech failed ({error.__class__.__name__})",
+                        reason="speech_exception")
+        raise
+    finally:
+        control.close()
+
+
+def play_reply_command(args: argparse.Namespace) -> int:
+    bus, reply = load_published_reply(args, args.play_reply)
+    return speak_published_reply(args, bus, reply, args.playback_ticket)
+
+
+def stop_reply_command(args: argparse.Namespace) -> int:
+    identity, ticket = args.stop_reply, args.playback_ticket
+    path = args.bridge_home / "runtime" / "reply-playback" / f"{identity}.{ticket}.json"
+    control = read_reply_json(path, 65536)
+    owner = {"reply_id": identity, "provider": args.provider.casefold(),
+             "provider_session_id": args.session,
+             "lease_id": lease_identifier(args.provider, args.session)}
+    bus = Path(control.get("bus", ""))
+    if (control.get("schema") != REPLY_CONTROL_SCHEMA or not bus.is_absolute()
+            or (args.bus_overridden and bus != args.bus.expanduser().resolve(strict=False))
+            or control.get("playback_ticket") != ticket
+            or any(control.get(key) != value for key, value in owner.items())):
+        raise ValueError("stop ticket does not belong to this reply playback owner")
+    if control.get("state") not in ("waiting", "playing"):
+        raise ValueError("playback ticket is already terminal")
+    with path.with_suffix(".lock").open("rb") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            raise ValueError("playback ticket has no running owner")
+    atomic_json(path.with_suffix(".stop.json"),
+                {"schema": REPLY_CONTROL_SCHEMA, **owner, "playback_ticket": ticket})
+    emit({"kind": "stop_requested", **owner, "playback_ticket": ticket})
+    return 0
+
+
+def say_reply(args: argparse.Namespace) -> int:
+    """Durably publish reply text before attempting synthesis or playback."""
+    bus, envelope = reply_delivery_envelope(args)
+    lease_id = lease_identifier(args.provider, args.session)
+    owner = next((item for item in envelope.get("recipients", [])
+                  if item.get("provider") == args.provider.casefold()
+                  and item.get("provider_session_id") == args.session
+                  and item.get("lease_id") == lease_id
+                  and item.get("bus") == str(bus)), None) if envelope else None
+    historical_name = ((owner.get("name") or owner.get("audience")) if owner
+                       else envelope.get("audience")) if envelope else None
+    name = historical_name if historical_name and historical_name != "*" else args.name
+    profile = voice_profile(args.bridge_home, name)
     voice = args.voice or str(profile["voice"])
     speed = args.speed if args.speed is not None else float(profile["speed"])
     vendor = args.tts_vendor or str(profile.get("provider") or "xai")
     reply: dict[str, Any] = {
-        "schema": AGENT_REPLY_SCHEMA,
-        "kind": "agent_reply",
-        "emitted_at": utc_now(),
-        "reply_id": os.urandom(12).hex(),
-        "name": args.name,
-        "provider": args.provider,
-        "provider_session_id": args.session,
-        "text": args.say,
-        "voice": voice,
-        "speed": speed,
-        "tts_vendor": vendor,
-        "spoken": False,
+        "schema": AGENT_REPLY_SCHEMA, "kind": "agent_reply", "emitted_at": utc_now(),
+        "reply_id": os.urandom(12).hex(), "name": name,
+        "provider": args.provider.casefold(), "provider_session_id": args.session,
+        "lease_id": lease_identifier(args.provider, args.session), "text": args.say,
+        "voice": voice, "speed": speed, "tts_vendor": vendor, "spoken": False,
+        "association": "addressed" if envelope else "unsolicited",
+        "delivery_id": args.reply_to,
     }
-    speaker = _speak_openai if vendor == "openai" else _speak_xai
-    spoken, error, reason = speaker(
-        args.say, voice, speed, playback_root=args.bridge_home, bus=bus_path()
-    )
-    reply["spoken"] = spoken
-    if error:
-        reply["tts_error"] = error
-    if reason:
-        reply["reason"] = reason
-    line = json.dumps(reply, ensure_ascii=False) + "\n"
-    descriptor = os.open(args.bus, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
-    try:
-        os.write(descriptor, line.encode("utf-8"))
-    finally:
-        os.close(descriptor)
+    if envelope:
+        if owner:
+            reply["channel"] = owner.get("channel")
+        for key in ("source_event_id", "utterance_id", "session_id", "occurrence_session_id",
+                    "capture_epoch", "sample_start", "sample_end", "document_index",
+                    "audience", "broadcast_id", "recipients", "message_id"):
+            if key in envelope:
+                reply[key] = envelope[key]
+    receipt = publish_reply_event(bus, reply, bridge_root=args.bridge_home)
+    if (any(type(receipt.get(key)) is not int or receipt[key] < 0
+            for key in ("stream_dev", "stream_inode", "offset", "length"))
+            or not 0 < receipt["length"] <= REPLY_READ_LIMIT
+            or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
+        raise ValueError("canonical reply publication has invalid source coordinates")
+    atomic_json(args.bridge_home / "runtime" / "reply-sources" / f"{reply['reply_id']}.json",
+                {"schema": REPLY_SOURCE_SCHEMA, "bus": str(bus), "source": receipt,
+                 **{key: reply[key] for key in ("reply_id", "provider", "provider_session_id", "lease_id")}})
     emit(reply)
-    return 0 if spoken else 5
+    return speak_published_reply(args, bus, reply, os.urandom(12).hex(), automatic=True)
+
+
+# =============================================================================
+# § 13. Messages: Founder typed text and agent peer text
+# =============================================================================
+
+
+def send_text_command(args: argparse.Namespace) -> int:
+    """Publish explicit user text to the selected immutable channel owner."""
+    root = args.bridge_home
+    channel = str(args.channel)
+    bus = args.bus.expanduser().resolve(strict=False)
+    lease_id = lease_identifier(args.provider, args.session)
+    if args.lease != lease_id:
+        raise ValueError("selected conversation owner no longer matches")
+    path = root / AUDIENCE_BINDING_FILENAME
+    with path.with_suffix(".lock").open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+        state = read_json(path) or {}
+        binding = state.get("bindings", {}).get(channel)
+        lease = read_json(root / "leases" / f"{lease_id}.json") or {}
+        if (state.get("schema") != AUDIENCE_BINDING_SCHEMA or not isinstance(binding, dict)
+                or binding.get("provider") != args.provider.casefold()
+                or binding.get("provider_session_id") != args.session
+                or Path(binding.get("bus") or "").resolve(strict=False) != bus
+                or lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
+                or lease.get("provider") != args.provider.casefold()
+                or lease.get("provider_session_id") != args.session
+                or lease.get("bus") != str(bus)
+                or not live_follower_pid(root, lease_id)):
+            raise ValueError("channel was rebound or its agent is not listening; draft retained")
+        text = sys.stdin.buffer.read(65537)
+        if len(text) > 65536:
+            raise ValueError("message exceeds 64 KiB; draft retained")
+        text = text.decode("utf-8")
+        if not text.strip():
+            raise ValueError("empty message")
+        audience = binding.get("audience")
+        if not isinstance(audience, str) or not audience:
+            raise ValueError("channel has no audience")
+        identity = os.urandom(12).hex()
+        owner = {"provider": args.provider.casefold(), "provider_session_id": args.session,
+                 "lease_id": lease_id, "channel": channel, "audience": audience,
+                 "name": audience, "bus": str(bus)}
+        event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
+                 **owner, "message_id": identity, "source_event_id": identity,
+                 "source": "typed", "text": text, "emitted_at": utc_now(),
+                 "recipients": [owner]}
+        receipt = publish_reply_event(bus, event, bridge_root=root)
+        if (any(type(receipt.get(key)) is not int or receipt[key] < 0
+                for key in ("stream_dev", "stream_inode", "offset", "length"))
+                or not 0 < receipt["length"] <= REPLY_READ_LIMIT
+                or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
+            raise ValueError("publication has no durable receipt; do not automatically resend")
+    emit({"kind": "message_published", "message_id": identity, "source": receipt})
+    return 0
+
+
+def send_peer_command(args: argparse.Namespace) -> int:
+    """Publish one agent-authored text message to a peer mailbox or channel 0.
+
+    The wire shape is an agent reply — the canonical publisher's only
+    agent-authored text lane — extended with explicit peer routing: `peer_to`
+    names the one recipient of each per-bus copy, `sender` carries the
+    authoring lease, and the top-level `channel` records the origin ("0" for
+    a broadcast, the target's digit for a direct). Followers admit it as a
+    "message" delivery with state_change_allowed=False.
+
+    A broadcast (`--to 0`) writes one copy per bound peer bus, excluding the
+    sender's own lease; each copy shares one message identity, so a reader
+    bound to several channels still dedupes it within its lease.
+    """
+    root = args.bridge_home
+    lease_id = lease_identifier(args.provider, args.session)
+    lease = read_json(root / "leases" / f"{lease_id}.json") or {}
+    if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
+            or lease.get("provider") != args.provider.casefold()
+            or lease.get("provider_session_id") != args.session):
+        raise ValueError("sender has no lease here; attach before sending")
+    sender_name = lease.get("name")
+    if not isinstance(sender_name, str) or not sender_name:
+        raise ValueError("sender lease has no attached name")
+    text = args.send
+    if not text.strip():
+        raise ValueError("empty message")
+    if len(text.encode("utf-8")) > 65536:
+        raise ValueError("message exceeds 64 KiB")
+    target = args.to
+    path = root / AUDIENCE_BINDING_FILENAME
+    with path.with_suffix(".lock").open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+        state = read_json(path) or {}
+        bindings = (state.get("bindings")
+                    if state.get("schema") == AUDIENCE_BINDING_SCHEMA else None)
+        if not isinstance(bindings, dict) or not bindings:
+            raise ValueError("no channel bindings exist")
+        rows: list[tuple[str, dict[str, Any], str]] = []
+        sender_channel = None
+        for channel, binding in sorted(bindings.items()):
+            if not isinstance(binding, dict):
+                continue
+            owner_lease = lease_identifier(str(binding.get("provider") or ""),
+                                           str(binding.get("provider_session_id") or ""))
+            if owner_lease == lease_id:
+                sender_channel = str(channel)
+            rows.append((str(channel), binding, owner_lease))
+        if target == "0":
+            selected = [(channel, binding) for channel, binding, owner_lease in rows
+                        if owner_lease != lease_id]
+            if not selected:
+                raise ValueError("no other agent is bound to any channel")
+            origin = "0"
+        else:
+            selected = [(channel, binding) for channel, binding, _ in rows
+                        if str(binding.get("audience") or "").casefold() == target.casefold()]
+            if not selected:
+                raise ValueError(f"no channel is bound to the name {target!r}")
+            selected = selected[:1]
+            origin = selected[0][0]
+        identity = os.urandom(12).hex()
+        sender = {"name": sender_name, "provider": args.provider.casefold(),
+                  "provider_session_id": args.session, "lease_id": lease_id,
+                  "channel": sender_channel}
+        deliveries: list[dict[str, Any]] = []
+        for channel, binding in selected:
+            owner_lease = lease_identifier(str(binding.get("provider") or ""),
+                                           str(binding.get("provider_session_id") or ""))
+            audience = binding.get("audience")
+            if not isinstance(audience, str) or not audience:
+                raise ValueError(f"channel {channel} has no audience")
+            bus = Path(str(binding.get("bus") or "")).expanduser().resolve(strict=False)
+            owner = {"provider": str(binding.get("provider") or "").casefold(),
+                     "provider_session_id": binding.get("provider_session_id"),
+                     "lease_id": owner_lease, "channel": channel,
+                     "audience": audience, "name": audience, "bus": str(bus)}
+            event = {"schema": AGENT_REPLY_SCHEMA, "kind": "agent_reply",
+                     "emitted_at": utc_now(), "reply_id": identity,
+                     # source_event_id keys the delivery phase (enrich), so two
+                     # peer messages never collapse into one delivery identity.
+                     "message_id": identity, "source_event_id": identity,
+                     "name": sender_name,
+                     "provider": args.provider.casefold(),
+                     "provider_session_id": args.session, "lease_id": lease_id,
+                     "text": text, "spoken": False, "association": "unsolicited",
+                     "delivery_id": None, "peer_to": audience,
+                     "channel": origin, "sender": sender, "recipients": [owner]}
+            receipt = publish_reply_event(bus, event, bridge_root=root)
+            if (any(type(receipt.get(key)) is not int or receipt[key] < 0
+                    for key in ("stream_dev", "stream_inode", "offset", "length"))
+                    or not 0 < receipt["length"] <= REPLY_READ_LIMIT
+                    or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
+                raise ValueError("publication has no durable receipt; do not automatically resend")
+            deliveries.append({"peer": audience, "channel": channel,
+                               "follower_live": bool(live_follower_pid(root, owner_lease)),
+                               "source": receipt})
+    emit({"kind": "peer_message_published", "message_id": identity,
+          "origin_channel": origin, "sender": sender_name,
+          "recipients": deliveries})
+    return 0
+
+
+# =============================================================================
+# § 14. Channel bindings and session handover
+# =============================================================================
 
 
 def follower_pidfile(root: Path, lease_id: str) -> Path:
@@ -2944,28 +4492,158 @@ def follower_pidfile(root: Path, lease_id: str) -> Path:
 
 
 def live_follower_pid(root: Path, lease_id: str) -> int | None:
-    """Live follower pid for a lease: pidfile first, then the lease heartbeat.
+    """Live follower pid for a lease; heartbeat freshness never proves death.
 
     A manually started follower has no pidfile but still owns the lease lock;
     spawning next to it would only produce a child that loses the lock and
-    dies, so the lease's own fresh heartbeat also counts as a live follower.
+    dies. Its recorded live process counts even when its heartbeat is stale.
     """
     value = read_json(follower_pidfile(root, lease_id))
     pid = value.get("pid") if isinstance(value, dict) else None
     if isinstance(pid, int) and process_is_alive(pid):
         return pid
     state = read_json(root / "leases" / f"{lease_id}.json")
-    if isinstance(state, dict) and state.get("active") is True:
-        heartbeat = state.get("heartbeat_unix")
+    if isinstance(state, dict):
         lease_pid = state.get("pid")
         if (
-            isinstance(heartbeat, (int, float))
-            and time.time() - float(heartbeat) <= DEFAULT_LEASE_TTL_SECONDS
-            and isinstance(lease_pid, int)
+            isinstance(lease_pid, int)
             and process_is_alive(lease_pid)
         ):
             return lease_pid
     return None
+
+
+@contextlib.contextmanager
+def channel_bindings(root: Path) -> Iterator[dict[str, Any]]:
+    """The binding file's only writer: one lock, one validation, one write.
+
+    Yields the mutable bindings map under an exclusive lock and writes it back
+    atomically when, and only when, the caller actually changed it. Every
+    operation on the file — claim, handover, release — runs inside this block,
+    so verification and rewrite never straddle a window another session can
+    use.
+    """
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = root / AUDIENCE_BINDING_FILENAME
+    # Lock a stable sibling: atomic_json replaces the data file's inode.
+    with open(path.with_suffix(".lock"), "a+b") as lock:
+        os.fchmod(lock.fileno(), 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        state = read_json(path)
+        original = path.read_bytes() if path.exists() else None
+        if path.exists() and (
+            not isinstance(state, dict)
+            or state.get("schema") != AUDIENCE_BINDING_SCHEMA
+            or not isinstance(state.get("bindings"), dict)
+        ):
+            raise OSError("channel bindings are unreadable or invalid; nothing changed")
+        bindings = state["bindings"] if state else {}
+        before = json.dumps(bindings, sort_keys=True)
+        yield bindings
+        if json.dumps(bindings, sort_keys=True) != before:
+            attempted = {"schema": AUDIENCE_BINDING_SCHEMA, "bindings": bindings}
+            try:
+                atomic_json(path, attempted)
+            except OSError as error:
+                # Replacement can succeed before a durability operation fails.
+                # Restore only our exact attempted document, under the same lock.
+                if read_json(path) == attempted:
+                    try:
+                        if original is None:
+                            path.unlink()
+                        else:
+                            atomic_bytes(path, original)
+                    except OSError:
+                        pass
+                restored = (
+                    not path.exists() if original is None
+                    else path.exists() and path.read_bytes() == original
+                )
+                raise OSError(
+                    "binding write failed; "
+                    + ("original binding restored" if restored else "binding state uncertain")
+                ) from error
+
+
+def archive_agent(args: argparse.Namespace) -> dict[str, Any]:
+    """Release one exact dead owner; retain its mailbox and conversation sources.
+
+    Lock order matches attachment: binding first, lease second. A stale UI
+    click cannot release a replacement session or stop a living reader.
+    """
+    root: Path = args.bridge_home
+    provider = args.provider.casefold()
+    lease_id = lease_identifier(provider, args.session)
+    if args.lease != lease_id:
+        raise ValueError("archive lease does not belong to this provider session")
+    channel = args.archive_agent
+    archive_path = root / "archives" / f"{lease_id}-{channel}.json"
+    bus = str(args.bus.expanduser().resolve(strict=False))
+    with contextlib.ExitStack() as holds, channel_bindings(root) as bindings:
+        current = bindings.get(channel)
+        previous = read_json(archive_path)
+        if current is None:
+            if (previous and previous.get("schema") == AGENT_ARCHIVE_SCHEMA
+                    and previous.get("provider") == provider
+                    and previous.get("provider_session_id") == args.session
+                    and previous.get("lease_id") == lease_id
+                    and previous.get("channel") == channel
+                    and isinstance(previous.get("bus"), str)
+                    and str(Path(previous["bus"]).resolve(strict=False)) == bus):
+                return previous
+            raise ValueError("channel has no matching owner to archive")
+        if (not isinstance(current, dict) or current.get("provider") != provider
+                or current.get("provider_session_id") != args.session):
+            raise ValueError("channel owner changed; nothing archived or released")
+        lock_path = root / "leases" / f"{lease_id}.lock"
+        lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock = holds.enter_context(open(lock_path, "a+b"))
+        os.fchmod(lock.fileno(), 0o600)
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError("agent reader is running; channel retained") from error
+        if live_follower_pid(root, lease_id) is not None:
+            raise ValueError("agent reader is alive; channel retained")
+        lease = read_json(root / "leases" / f"{lease_id}.json")
+        if (not lease or lease.get("schema") != LEASE_SCHEMA
+                or lease.get("lease_id") != lease_id
+                or lease.get("provider") != provider
+                or lease.get("provider_session_id") != args.session
+                or not isinstance(lease.get("bus"), str)
+                or str(Path(lease["bus"]).resolve(strict=False)) != bus):
+            raise ValueError("agent mailbox is unreadable or changed; channel retained")
+        receipt = {
+            "schema": AGENT_ARCHIVE_SCHEMA, "kind": "agent_archive",
+            "provider": provider, "provider_session_id": args.session,
+            "lease_id": lease_id, "channel": channel,
+            "name": current.get("audience") or lease.get("name") or provider,
+            "bus": lease["bus"], "archived_at": utc_now(), "released": True,
+        }
+        # Metadata precedes release. A failed binding write keeps the agent
+        # active: readers ignore archive metadata while this owner is bound.
+        atomic_json(archive_path, receipt)
+        del bindings[channel]
+    return receipt
+
+
+def occupied_refusal(
+    channel: str, current: Any, bindings: dict[str, Any], same_name: bool = False
+) -> str:
+    """The one wording for a channel another session already owns."""
+    owner = (
+        current.get("audience", "unknown") if isinstance(current, dict) else "unknown"
+    )
+    free = ", ".join(str(slot) for slot in range(1, 10) if str(slot) not in bindings)
+    message = (
+        f"channel {channel} is occupied by {owner}; "
+        f"free channels: {free or 'none'}; nothing changed"
+    )
+    if same_name:
+        message += (
+            "; --takeover claims it for the same name once that session has ended"
+        )
+    return message
 
 
 def write_channel_binding(
@@ -2977,20 +4655,8 @@ def write_channel_binding(
     bus: str | None = None,
 ) -> Path:
     """Claim a channel without replacing another session's routing."""
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = root / AUDIENCE_BINDING_FILENAME
-    # Lock a stable sibling: atomic_json replaces the data file's inode.
-    with open(path.with_suffix(".lock"), "a+b") as lock:
-        os.fchmod(lock.fileno(), 0o600)
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        state = read_json(path)
-        if path.exists() and (
-            not isinstance(state, dict)
-            or state.get("schema") != AUDIENCE_BINDING_SCHEMA
-            or not isinstance(state.get("bindings"), dict)
-        ):
-            raise OSError("channel bindings are unreadable or invalid; nothing changed")
-        bindings = state["bindings"] if state else {}
+    with channel_bindings(root) as bindings:
         requested = {
             "audience": name.casefold(),
             "provider": provider.casefold(),
@@ -3006,38 +4672,383 @@ def write_channel_binding(
             if not isinstance(current, dict) or any(
                 current.get(key) != value for key, value in requested.items()
             ):
-                owner = (
-                    current.get("audience", "unknown")
-                    if isinstance(current, dict)
-                    else "unknown"
-                )
-                free = ", ".join(
-                    str(slot) for slot in range(1, 10) if str(slot) not in bindings
-                )
                 raise OSError(
-                    f"channel {channel} is occupied by {owner}; "
-                    f"free channels: {free or 'none'}; nothing changed"
+                    occupied_refusal(
+                        channel,
+                        current,
+                        bindings,
+                        same_name=isinstance(current, dict)
+                        and current.get("audience") == requested["audience"],
+                    )
                 )
             if not bus or current.get("bus") == bus:
                 return path
         bindings[str(channel)] = entry
-        atomic_json(path, {"schema": AUDIENCE_BINDING_SCHEMA, "bindings": bindings})
     return path
 
 
-def attach_command(args: argparse.Namespace) -> int:
-    """One command from zero to a listening channel: binding, follower, receipt.
+def source_closes_retained_documents(bus: Path, documents: dict[str, Any]) -> bool:
+    """Resolve stale observer snapshots through the canonical source normalizer."""
+    remaining = set(documents)
+    normalizer = EvidenceNormalizer()
+    for raw in replay(bus):
+        for event in normalized_revision_events(raw, normalizer):
+            if event.get("status") == SEALED:
+                remaining.discard(event.get("session_id"))
+        if not remaining:
+            return True
+    return not remaining
 
-    Writes the audience binding for the channel, ensures exactly one follower
-    owns this provider session's lease (spawning a coalescing one when none is
-    alive), and prints a receipt with the lease, cursor, voice profile and
-    follower pid. ``--voice`` / ``--speed`` / ``--tts-vendor`` persist into
-    this name's profile in voices.json, so every later ``--say`` speaks with
-    it. The receipt alone never proves listening — only a take that lands in
-    the mailbox does, so callers verify with a fresh seal before claiming
-    they hear anything.
+
+def require_drained_lease(
+    root: Path, lease_id: str, *, lenient_catch_up: bool = False
+) -> None:
+    """A saved cursor must cover the source before its reader can be retired.
+
+    ``lenient_catch_up`` is only for a SAME-SESSION detach, where the lease
+    (cursor, pending, unclosed documents) is inherited by the successor: a
+    live reader gets a moment to catch up to the extent measured at entry,
+    and unclosed documents never veto. A cross-session takeover keeps the
+    strict contract - its new lease inherits nothing, so every row and every
+    open document of the old owner must be settled first.
     """
+    path = root / "leases" / f"{lease_id}.json"
+    state = read_json(path)
+    if (not isinstance(state, dict) or state.get("schema") != LEASE_SCHEMA
+            or state.get("lease_id") != lease_id
+            or not isinstance(state.get("provider"), str)
+            or not isinstance(state.get("provider_session_id"), str)
+            or lease_identifier(state["provider"], state["provider_session_id"]) != lease_id
+            or type(state.get("cursor")) is not int
+            or not isinstance(state.get("bus"), str)
+            or not Path(state["bus"]).is_absolute()
+            or not isinstance(state.get("pending"), list)
+            or any(not isinstance(item, dict) for item in state["pending"])
+            or not isinstance(state.get("unclosed_channel_messages", {}), dict)):
+        raise OSError("unreadable retirement cursor; owner retained")
+    try:
+        end = generation_metadata(Path(state["bus"])).st_size
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        raise OSError("source extent unavailable; owner retained") from error
+    if state["cursor"] > end:
+        # The saved cursor sits past the journal's logical extent: the bus
+        # was replaced underneath its reader. Nothing of the old extent can
+        # be drained any more, so replacement never blocks retirement;
+        # pending envelopes stay in the lease.
+        return
+    if lenient_catch_up and state["cursor"] < end:
+        # A live producer appends while retirement is being decided, so
+        # exact cursor == end never holds on an active channel (observed
+        # live 2026-10-07: the app's evidence stream made detach refuse
+        # forever). Rows are only lost if the READER is behind: give a
+        # live follower a moment to catch up to the extent measured at
+        # entry; rows appended after that snapshot are inherited through
+        # the lease cursor by the same-session successor.
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            time.sleep(0.15)
+            state = read_json(path)
+            if not isinstance(state, dict) or type(state.get("cursor")) is not int:
+                break
+            if state["cursor"] >= end:
+                break
+    if (not isinstance(state, dict) or type(state.get("cursor")) is not int
+            or state["cursor"] < end
+            or (not lenient_catch_up and (
+                state["cursor"] != end))):
+        raise OSError("old source is undrained; resume its reader before retiring it")
+    documents = state.get("unclosed_channel_messages", {})
+    if not lenient_catch_up and documents and not source_closes_retained_documents(Path(state["bus"]), documents):
+        raise OSError("old source has an unfinished capture; owner retained")
+
+
+def verified_follower(root: Path, lease_id: str, session: str, pid: int) -> bool:
+    """Bind a live invocation to the incarnation recorded by the lease owner."""
+    import shlex
+
+    state = read_json(root / "leases" / f"{lease_id}.json") or {}
+    observed = process_identity(pid)
+    caller = process_identity(os.getpid())
+    if (observed is None or caller is None or state.get("process_identity") != observed
+            or state.get("schema") != LEASE_SCHEMA or state.get("lease_id") != lease_id
+            or state.get("pid") != pid or state.get("provider_session_id") != session
+            or not isinstance(state.get("provider"), str)
+            or lease_identifier(state["provider"], session) != lease_id):
+        return False
+    try:
+        words = shlex.split(observed["command"])
+        caller_words = shlex.split(caller["command"])
+        def argument(flag: str) -> str | None:
+            positions = [i for i, word in enumerate(words) if word == flag]
+            if len(positions) != 1 or positions[0] + 1 >= len(words):
+                return None
+            return words[positions[0] + 1]
+        return (
+            # macOS Python can execute a framework binary behind its launcher.
+            # Compare the actual running interpreters, not the launcher path.
+            len(words) >= 2 and bool(caller_words)
+            and Path(words[0]).resolve() == Path(caller_words[0]).resolve()
+            and Path(words[1]).resolve() == Path(__file__).resolve()
+            and "--follow" in words and argument("--session") == session
+            and argument("--provider") == state["provider"]
+            and argument("--bridge-home") is not None
+            and Path(argument("--bridge-home")).resolve() == root.resolve()
+            and argument("--bus") is not None
+            and Path(argument("--bus")).resolve() == Path(state["bus"]).resolve()
+        )
+    except (ValueError, OSError, TypeError, KeyError):
+        return False
+
+
+@contextlib.contextmanager
+def retirement_guard(
+    root: Path, lease_id: str, session: str, *, bound: bool = True,
+    lenient_catch_up: bool = False,
+) -> Iterator[tuple[int | None, str]]:
+    """Keep the existing lease lock through a verified, drained handover."""
     import signal
+
+    path = root / "leases" / f"{lease_id}.lock"
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    held = False
+    pid = live_follower_pid(root, lease_id)
+    stopped = False
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held = True
+        except BlockingIOError:
+            pass
+        if pid is not None:
+            if held or not verified_follower(root, lease_id, session, pid):
+                yield pid, "unverified_retained"
+                return
+            try:
+                require_drained_lease(root, lease_id, lenient_catch_up=lenient_catch_up)
+            except OSError:
+                yield pid, "undrained_retained"
+                return
+            # Observe the recorded incarnation again immediately before signaling.
+            if not verified_follower(root, lease_id, session, pid):
+                yield pid, "unverified_retained"
+                return
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if not process_is_alive(pid):
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        held = True
+                        stopped = True
+                        break
+                    except BlockingIOError:
+                        pass
+                time.sleep(0.1)
+            if not held:
+                yield pid, "did_not_exit"
+                return
+        elif not held:
+            yield None, "unverified_retained"
+            return
+        elif not bound and not (root / "leases" / f"{lease_id}.json").exists():
+            yield None, "not_running"
+            return
+        try:
+            require_drained_lease(root, lease_id, lenient_catch_up=lenient_catch_up)
+        except OSError:
+            yield pid, "undrained_stopped" if stopped else "undrained_retained"
+            return
+        yield pid, "stopped" if stopped else "not_running"
+    finally:
+        if held:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def lease_backlog(
+    root: Path, lease_id: str
+) -> tuple[list[Any], set[str], list[dict[str, Any]]]:
+    """Pending envelopes, acknowledgment markers and the unacknowledged rest.
+
+    The lease file keeps acknowledged envelopes until the follower's next
+    sweep, so its raw pending length overstates the backlog; the marker store
+    is the receipt truth and the backlog is pending minus markers.
+    """
+    state = read_json(root / "leases" / f"{lease_id}.json")
+    pending = state.get("pending") if isinstance(state, dict) else None
+    if not isinstance(pending, list):
+        pending = []
+    try:
+        markers = {
+            entry[: -len(".json")]
+            for entry in os.listdir(root / "acknowledgments" / lease_id)
+            if entry.endswith(".json")
+            and re.fullmatch(r"[0-9a-f]{24}", entry[:-len(".json")])
+            and delivery_acknowledged(root, lease_id, entry[:-len(".json")])
+        }
+    except OSError:
+        markers = set()
+    unacked = [
+        item
+        for item in pending
+        if isinstance(item, dict) and item.get("delivery_id") not in markers
+    ]
+    return pending, markers, unacked
+
+
+def retired_owner_report(root: Path, entry: dict[str, Any]) -> dict[str, Any]:
+    """Identity and backlog of the session a channel entry still points at.
+
+    The backlog named here is the one ``--status`` calls ``unacked_seals``:
+    sealed takes and typed messages nobody acknowledged. A draft revision is
+    not a delivery waiting for a reader, so it is never named to the Founder.
+    """
+    provider = str(entry.get("provider") or "")
+    session = str(entry.get("provider_session_id") or "")
+    lease_id = lease_identifier(provider, session)
+    unacked = [
+        str(item.get("delivery_id"))
+        for item in lease_backlog(root, lease_id)[2]
+        if item.get("kind") in TERMINAL_KINDS
+        and isinstance(item.get("delivery_id"), str)
+    ]
+    return {
+        "provider": provider,
+        "provider_session_id": session,
+        "lease_id": lease_id,
+        "audience": entry.get("audience"),
+        "follower_pid": None,
+        # Keep uncertainty explicit if inspection itself fails; never report
+        # a reader as stopped merely because retirement was requested.
+        "follower_state": "unknown",
+        "unacked_deliveries": len(unacked),
+        "unacked_delivery_ids": unacked,
+    }
+
+
+def detach_command(args: argparse.Namespace) -> int:
+    """Release a drained session under its binding and lease ownership locks."""
+    root: Path = args.bridge_home
+    lease_id = lease_identifier(args.provider, args.session)
+    released: list[str] = []
+    original_entries: dict[str, Any] = {}
+    pid: int | None = None
+    follower_state = "unknown"
+    failure: str | None = None
+    binding_changed: bool | None = False
+    try:
+        with contextlib.ExitStack() as retirements:
+            with channel_bindings(root) as bindings:
+                original_entries = {
+                    slot: entry for slot, entry in bindings.items()
+                    if isinstance(entry, dict)
+                    and entry.get("provider") == args.provider.casefold()
+                    and entry.get("provider_session_id") == args.session
+                }
+                pid, follower_state = retirements.enter_context(
+                    retirement_guard(root, lease_id, args.session, bound=bool(original_entries), lenient_catch_up=True)
+                )
+                if follower_state in HANDOVER_CLEAR_STATES:
+                    if original_entries or (root / "leases" / f"{lease_id}.json").exists():
+                        require_drained_lease(root, lease_id, lenient_catch_up=True)
+                    released = sorted(original_entries)
+                    for slot in released:
+                        del bindings[slot]
+            binding_changed = bool(released)
+    except OSError as error:
+        if follower_state == "unknown":
+            raise
+        failure = str(error)
+        current = read_json(root / AUDIENCE_BINDING_FILENAME)
+        current_bindings = current.get("bindings") if isinstance(current, dict) else None
+        unchanged = (isinstance(current_bindings, dict)
+                     and all(current_bindings.get(slot) == entry
+                             for slot, entry in original_entries.items()))
+        binding_changed = False if unchanged else None
+        released = []
+    unacked = [item for item in lease_backlog(root, lease_id)[2]
+               if item.get("kind") in TERMINAL_KINDS]
+    emit({
+        "schema": DETACH_RECEIPT_SCHEMA, "kind": "detach_receipt",
+        "provider": args.provider.casefold(), "provider_session_id": args.session,
+        "lease_id": lease_id, "released_channels": released,
+        "follower_pid": pid, "follower_state": follower_state,
+        "binding_changed": binding_changed,
+        "binding_state": "uncertain" if binding_changed is None else "changed" if binding_changed else "unchanged",
+        "was_attached": bool(original_entries) or follower_state != "not_running",
+        "unacked_deliveries": len(unacked),
+        "unacked_delivery_ids": [str(item.get("delivery_id")) for item in unacked
+                                 if isinstance(item.get("delivery_id"), str)],
+        "binding_path": str(root / AUDIENCE_BINDING_FILENAME),
+    })
+    if failure is not None or follower_state not in HANDOVER_CLEAR_STATES:
+        reason = failure or f"follower {follower_state}; channel ownership retained"
+        sys.stderr.write(f"bus-demux: detach failed: {reason}\n")
+        return 3
+    return 0
+
+
+def read_inherited_delivery(args: argparse.Namespace) -> int:
+    """Read one envelope from a handed-over lease without touching it.
+
+    Authorization is current ownership: the caller's session holds a channel
+    bound to the same spoken name as the named lease. Nothing is
+    acknowledged, no cursor moves, and the retired lease stays exactly as its
+    own session left it.
+    """
+    root: Path = args.bridge_home
+    state = read_json(root / "leases" / f"{args.lease}.json") or {}
+    name = state.get("name")
+    if (
+        state.get("schema") != LEASE_SCHEMA
+        or state.get("lease_id") != args.lease
+        or not isinstance(name, str)
+        or not name
+    ):
+        raise ValueError("named lease is unreadable or carries no name")
+    bindings = (read_json(root / AUDIENCE_BINDING_FILENAME) or {}).get("bindings")
+    if not isinstance(bindings, dict) or not any(
+        isinstance(entry, dict)
+        and entry.get("provider") == args.provider.casefold()
+        and entry.get("provider_session_id") == args.session
+        and entry.get("audience") == name.casefold()
+        for entry in bindings.values()
+    ):
+        raise ValueError(
+            f"this session owns no channel bound to {name.casefold()}; "
+            "the inherited mailbox stays closed"
+        )
+    payload = next(
+        (
+            item
+            for item in state.get("pending", [])
+            if isinstance(item, dict) and item.get("delivery_id") == args.read_delivery
+        ),
+        None,
+    )
+    if payload is None:
+        raise ValueError("delivery is not pending in the inherited mailbox")
+    emit(
+        {
+            **payload,
+            "inherited_from": {
+                "provider": state.get("provider"),
+                "provider_session_id": state.get("provider_session_id"),
+                "lease_id": args.lease,
+                "name": name,
+                "acknowledgment": "not_available",
+            },
+        }
+    )
+    return 0
+
+
+def attach_command(args: argparse.Namespace) -> int:
+    """Publish a channel owner only after its verified reader is ready."""
     import subprocess
 
     root: Path = args.bridge_home
@@ -3045,178 +5056,172 @@ def attach_command(args: argparse.Namespace) -> int:
     persist_voice = bool(args.voice or args.speed is not None or args.tts_vendor)
     voice_source = voice_profile_with_source(root, name)[1]
     if persist_voice:
-        # Refuse an unreadable profile store before claiming the channel, so a
-        # refusal still means nothing changed.
         _voice_store(root / VOICES_FILENAME)
     if args.voice:
         voice_source = "flag"
     if not getattr(args, "bus_overridden", False):
-        # W5: every channel owns a dedicated bus so one follower never chews
-        # another audience's rows. An explicit --bus keeps the caller's word.
         channel_bus = root / "buses" / f"channel-{args.channel}.jsonl"
         channel_bus.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if not channel_bus.exists():
-            descriptor = os.open(channel_bus, os.O_WRONLY | os.O_CREAT, 0o600)
-            os.close(descriptor)
+        descriptor = os.open(channel_bus, os.O_WRONLY | os.O_CREAT, 0o600)
+        os.close(descriptor)
         args.bus = channel_bus
     resolved_bus = str(Path(args.bus).expanduser().resolve(strict=False))
-    binding_path = write_channel_binding(
-        root, args.channel, name, args.provider, args.session, bus=resolved_bus
-    )
-    if persist_voice:
-        write_voice_profile(
-            root, name, voice=args.voice, speed=args.speed, vendor=args.tts_vendor
-        )
+    binding_path = root / AUDIENCE_BINDING_FILENAME
+    requested = {"audience": name, "provider": args.provider.casefold(),
+                 "provider_session_id": args.session}
+    claimed = {**requested, "bus": resolved_bus}
+    previous: dict[str, Any] | None = None
+    original_entry: Any = None
+    child: Any = None
+    child_state = "not_started"
     lease_id = lease_identifier(args.provider, args.session)
     lease_path = root / "leases" / f"{lease_id}.json"
     resumed = lease_path.exists()
-    pid = live_follower_pid(root, lease_id)
-    lease_state = read_json(lease_path)
     configuration = wakeup_configuration(args)
-    pid_record = read_json(follower_pidfile(root, lease_id)) or {}
-    installed_configuration = pid_record.get("configuration") or (lease_state or {}).get("wakeup_configuration")
-    if pid is not None and installed_configuration != configuration:
-        # Retire only this session's actual follower. Its cursor and unread
-        # deliveries stay in place; no microphone or app process is touched.
-        command_line = subprocess.run(
-            ["/bin/ps", "-p", str(pid), "-o", "command="],
-            capture_output=True, text=True, check=False,
-        ).stdout
-        import shlex
-
-        words = shlex.split(command_line)
-        if (
-            not isinstance(lease_state, dict) or lease_state.get("pid") != pid
-            or lease_state.get("provider_session_id") != args.session
-            or "--follow" not in words
-            or not any(words[i:i + 2] == ["--session", args.session] for i in range(len(words)))
-        ):
-            raise OSError("existing follower identity could not be verified; retained")
-        os.kill(pid, signal.SIGTERM)
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and process_is_alive(pid):
-            time.sleep(0.1)
-        if process_is_alive(pid):
-            raise OSError("owned follower did not exit; retained")
-        pid = None
-    if (
-        isinstance(lease_state, dict)
-        and lease_state.get("schema") == LEASE_SCHEMA
-        and lease_state.get("bus") not in (None, resolved_bus)
-    ):
-        # The session migrates onto this channel's dedicated bus: retire the
-        # follower that sits on the old bus and restart the byte cursor on the
-        # new file. Pending deliveries and acknowledgment markers survive.
-        if pid is not None:
-            os.kill(pid, signal.SIGTERM)
-            deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline and process_is_alive(pid):
-                time.sleep(0.1)
-            if process_is_alive(pid):
-                sys.stderr.write(
-                    "bus-demux: attach failed: the follower on the old bus "
-                    f"(pid={pid}) did not exit; nothing changed\n"
-                )
-                return 3
-            pid = None
-        lease_state["bus"] = resolved_bus
-        lease_state["cursor"] = 0
-        lease_state["active"] = False
-        atomic_json(lease_path, lease_state)
-    spawned = False
     log_path, events_path = follower_paths(root, lease_id)
     errors_path = log_path.with_suffix(".errors.log")
-    if pid is None:
-        command = [
-            sys.executable,
-            os.path.abspath(__file__),
-            "--bus",
-            str(args.bus),
-            "--bridge-home",
-            str(root),
-            "--provider",
-            args.provider,
-            "--session",
-            args.session,
-            "--name",
-            name,
-            "--drafts",
-            "--follow",
-            "--coalesce",
-            "--follower-events",
-            str(events_path),
-            "--follower-channel",
-            str(args.channel),
-            "--wakeup",
-            configuration["wakeup"],
-        ]
-        if args.on_seal:
-            command += ["--on-seal", args.on_seal]
-        log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        log_descriptor = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-        os.fchmod(log_descriptor, 0o600)
-        errors_descriptor = os.open(errors_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-        os.fchmod(errors_descriptor, 0o600)
-        with os.fdopen(log_descriptor, "ab") as log, os.fdopen(errors_descriptor, "ab") as errors:
-            child = subprocess.Popen(
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=errors,
-                start_new_session=True,
-            )
-        atomic_json(
-            follower_pidfile(root, lease_id),
-            {"lease_id": lease_id, "pid": child.pid, "started_at": utc_now(), "configuration": configuration},
-        )
-        pid = child.pid
-        spawned = True
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            state = read_json(lease_path)
-            if (
-                state
-                and state.get("schema") == LEASE_SCHEMA
-                and state.get("pid") == pid
-                and events_path.exists()
-            ):
-                break
-            if not process_is_alive(pid):
-                sys.stderr.write(
-                    "bus-demux: attach failed: follower exited during startup; "
-                    f"see {errors_path}\n"
-                )
-                return 3
-            time.sleep(0.1)
+    try:
+        # Old lease locks outlive the binding commit; the child owns its own
+        # distinct lease. No competing attach can observe a half-started owner.
+        with contextlib.ExitStack() as retirements:
+            with channel_bindings(root) as bindings:
+                original_entry = bindings.get(str(args.channel))
+                if str(args.channel) in bindings and (
+                    not isinstance(original_entry, dict)
+                    or any(original_entry.get(key) != value for key, value in requested.items())
+                ):
+                    same_name = (isinstance(original_entry, dict)
+                                 and original_entry.get("audience") == name)
+                    if not getattr(args, "takeover", False) or not same_name:
+                        raise OSError(occupied_refusal(args.channel, original_entry, bindings, same_name))
+                    previous = retired_owner_report(root, original_entry)
+                    old_pid, disposition = retirements.enter_context(retirement_guard(
+                        root, previous["lease_id"], previous["provider_session_id"]
+                    ))
+                    previous = {**retired_owner_report(root, original_entry),
+                                "follower_pid": old_pid, "follower_state": disposition}
+                    if disposition not in HANDOVER_CLEAR_STATES:
+                        raise OSError(f"previous follower {disposition}; owner retained")
+
+                pid = live_follower_pid(root, lease_id)
+                lease_state = read_json(lease_path)
+                pid_record = read_json(follower_pidfile(root, lease_id)) or {}
+                installed = pid_record.get("configuration") or (lease_state or {}).get("wakeup_configuration")
+                migrating = (isinstance(lease_state, dict)
+                             and lease_state.get("bus") not in (None, resolved_bus))
+                if pid is not None and not verified_follower(root, lease_id, args.session, pid):
+                    raise OSError("existing follower identity could not be verified; retained")
+                if migrating or pid is not None and installed != configuration:
+                    with retirement_guard(root, lease_id, args.session) as (_, disposition):
+                        if disposition not in HANDOVER_CLEAR_STATES:
+                            raise OSError(f"existing follower {disposition}; retained")
+                        if migrating:
+                            lease_state = read_json(lease_path)
+                            if lease_state is None:
+                                raise OSError("lease became unreadable; retained")
+                            lease_state.update(bus=resolved_bus, cursor=0, active=False)
+                            atomic_json(lease_path, lease_state)
+                    pid = None
+                if pid is None:
+                    command = [sys.executable, os.path.abspath(__file__),
+                               "--bus", resolved_bus, "--bridge-home", str(root.resolve()),
+                               "--provider", args.provider, "--session", args.session,
+                               "--name", name, "--drafts", "--follow", "--coalesce",
+                               "--follower-events", str(events_path),
+                               "--follower-channel", str(args.channel),
+                               "--wakeup", configuration["wakeup"]]
+                    if args.on_seal:
+                        command += ["--on-seal", args.on_seal]
+                    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    with contextlib.ExitStack() as outputs:
+                        for path in (log_path, errors_path):
+                            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+                            handle = outputs.enter_context(os.fdopen(descriptor, "ab"))
+                            os.fchmod(handle.fileno(), 0o600)
+                            if path == log_path:
+                                log = handle
+                            else:
+                                errors = handle
+                        child = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                                                 stdout=log, stderr=errors, start_new_session=True)
+                    pid = child.pid
+                    child_state = "starting"
+                    atomic_json(follower_pidfile(root, lease_id), {
+                        "lease_id": lease_id, "pid": pid, "started_at": utc_now(),
+                        "configuration": configuration,
+                    })
+                    deadline = time.monotonic() + 5.0
+                    while time.monotonic() < deadline:
+                        if child.poll() is not None:
+                            child_state = "exited"
+                            raise OSError(f"follower exited during startup; see {errors_path}")
+                        state = read_json(lease_path) or {}
+                        if (state.get("schema") == LEASE_SCHEMA and state.get("pid") == pid
+                                and state.get("lease_id") == lease_id
+                                and state.get("active") is True and state.get("bus") == resolved_bus
+                                and events_path.exists()
+                                and verified_follower(root, lease_id, args.session, pid)
+                                and child.poll() is None):
+                            child_state = "ready"
+                            break
+                        time.sleep(0.1)
+                    else:
+                        raise OSError(f"follower readiness timed out; see {errors_path}")
+                if persist_voice:
+                    write_voice_profile(root, name, voice=args.voice, speed=args.speed, vendor=args.tts_vendor)
+                if previous is not None:
+                    # A producer may have completed another old-owner row while
+                    # its reader was exiting. Never hide that row at cutover.
+                    require_drained_lease(root, previous["lease_id"])
+                bindings[str(args.channel)] = claimed
+            # channel_bindings commits here, while retirement locks still hold.
+    except (OSError, ValueError, RuntimeError) as error:
+        if child is not None:
+            try:
+                if child.poll() is None:
+                    child.terminate()
+                child.wait(timeout=5)
+                child_state = "stopped"
+            except (OSError, subprocess.TimeoutExpired):
+                child_state = "did_not_exit" if child.poll() is None else "exited"
+        actual = read_json(binding_path)
+        actual_entry = (actual.get("bindings", {}).get(str(args.channel))
+                        if isinstance(actual, dict) and isinstance(actual.get("bindings"), dict)
+                        else None)
+        unchanged = ((actual is not None or not binding_path.exists())
+                     and actual_entry == original_entry)
+        if previous is not None:
+            emit({"schema": TAKEOVER_RECEIPT_SCHEMA, "kind": "takeover_receipt",
+                  "channel": str(args.channel), "audience": name, "provider": args.provider.casefold(),
+                  "provider_session_id": args.session,
+                  "binding_changed": False if unchanged else None,
+                  "binding_state": "unchanged" if unchanged else "uncertain",
+                  "previous": previous, "new_follower_state": child_state,
+                  "binding_path": str(binding_path)})
+        suffix = "unchanged" if unchanged else "state uncertain"
+        sys.stderr.write(f"bus-demux: attach failed: {error}; channel {args.channel} {suffix}\n")
+        return 3
     state = read_json(lease_path) or {}
-    emit(
-        {
-            "schema": ATTACH_RECEIPT_SCHEMA,
-            "kind": "attach_receipt",
-            "channel": str(args.channel),
-            "audience": name,
-            "provider": args.provider.casefold(),
-            "provider_session_id": args.session,
-            "lease_id": lease_id,
-            "cursor": state.get("cursor"),
-            "resumed": resumed,
-            "follower_pid": pid,
-            "follower_spawned": spawned,
-            "follower_log": str(log_path),
-            "follower_events": str(events_path),
-            "coalesce_requested": True,
-            "on_seal_hook": bool(args.on_seal),
-            "wakeup": configuration["wakeup"],
-            "wakeup_receipts": str(root / "wakeups" / lease_id),
-            "voice": voice_profile(root, name),
-            "voice_source": voice_source,
-            "voices_file": "present"
-            if (root / VOICES_FILENAME).exists()
-            else "missing",
-            "binding_path": str(binding_path),
-        }
-    )
+    emit({
+        "schema": ATTACH_RECEIPT_SCHEMA, "kind": "attach_receipt",
+        "channel": str(args.channel), "audience": name, "provider": args.provider.casefold(),
+        "provider_session_id": args.session, "lease_id": lease_id,
+        "cursor": state.get("cursor"), "resumed": resumed, "follower_pid": pid,
+        "follower_spawned": child is not None, "follower_log": str(log_path),
+        "follower_events": str(events_path), "coalesce_requested": True,
+        "on_seal_hook": bool(args.on_seal), "wakeup": configuration["wakeup"],
+        "wakeup_receipts": str(root / "wakeups" / lease_id),
+        "voice": voice_profile(root, name), "voice_source": voice_source,
+        "voices_file": "present" if (root / VOICES_FILENAME).exists() else "missing",
+        "binding_path": str(binding_path), "binding_changed": previous is not None,
+        "previous": previous,
+    })
     return 0
+
+
+# =============================================================================
+# § 15. Status, watch and the CLI entrypoint
+# =============================================================================
 
 
 def status_command(args: argparse.Namespace) -> int:
@@ -3230,23 +5235,8 @@ def status_command(args: argparse.Namespace) -> int:
     lease_id = lease_identifier(args.provider, args.session)
     log_path, events_path = follower_paths(root, lease_id)
     state = read_json(root / "leases" / f"{lease_id}.json")
-    pending = state.get("pending") if isinstance(state, dict) else None
-    if not isinstance(pending, list):
-        pending = []
-    try:
-        markers = {
-            entry[: -len(".json")]
-            for entry in os.listdir(root / "acknowledgments" / lease_id)
-            if entry.endswith(".json")
-        }
-    except OSError:
-        markers = set()
-    unacked = [
-        item
-        for item in pending
-        if isinstance(item, dict) and item.get("delivery_id") not in markers
-    ]
-    seals = [item for item in unacked if item.get("kind") == "seal"]
+    pending, markers, unacked = lease_backlog(root, lease_id)
+    seals = [item for item in unacked if item.get("kind") in TERMINAL_KINDS]
     last_seal = max(
         seals, key=lambda item: str(item.get("emitted_at") or ""), default=None
     )
@@ -3289,6 +5279,13 @@ def status_command(args: argparse.Namespace) -> int:
             "name": name,
             "follower_alive": follower_alive,
             "follower_pid": lease_pid if follower_alive else None,
+            "pending_native_withdrawals": [
+                {"delivery_id": item["delivery_id"],
+                 "queue_disposition": (read_json(root / "wakeups" / lease_id / f"{item['delivery_id']}.json") or {}).get("queue_disposition", "pending")}
+                for item in pending if isinstance(item, dict) and item.get("delivery_id") in markers
+                and (read_json(root / "wakeups" / lease_id / f"{item['delivery_id']}.json") or {}).get("disposition") in ("provider_accepted", "requesting", "uncertain")
+                and (read_json(root / "wakeups" / lease_id / f"{item['delivery_id']}.json") or {}).get("queue_disposition") not in ("removed", "not_pending")
+            ],
             "pending_file": len(pending),
             "acknowledged_markers": len(markers),
             "backlog": len(unacked),
@@ -3404,8 +5401,8 @@ def watch_command(args: argparse.Namespace) -> int:
                 continue  # a restarted follower replays its pending mailbox
             seen.add(identity)
             if args.human:
-                key = (payload.get("session_id"), payload.get("document_index"))
-                if payload.get("kind") in ("draft", "revised"):
+                key = draft_key(payload)
+                if payload.get("kind") in DRAFT_KINDS:
                     drafts[key] = payload
                     continue
                 flush(key)
@@ -3450,6 +5447,9 @@ def main() -> int:
         description="Codescribe messages, live notifications and voice replies for your agent.\n\n"
                "Quick start:\n"
                "  cs-bus --attach --channel 2 --name lena --provider codex --session THREAD\n"
+               "  cs-bus --attach --channel 2 --name lena --provider codex --session THREAD --takeover\n"
+               "  cs-bus --detach --provider codex --session THREAD\n"
+               "  cs-bus --read-delivery ID --lease PREVIOUS_LEASE --provider codex --session THREAD\n"
                "  cs-bus --watch --provider codex --session THREAD\n"
                "  cs-bus --read-delivery ID --provider codex --session THREAD\n"
                "  cs-bus --ack ID --provider codex --session THREAD\n"
@@ -3525,6 +5525,9 @@ def main() -> int:
         help="explicitly retry one retained Codex seal after a failed/uncertain queue submission",
     )
     parser.add_argument("--read-delivery", metavar="DELIVERY_ID", help="read one complete pending envelope without acknowledging or resubmitting it")
+    parser.add_argument("--read-pending", action="store_true", help="read complete unread non-draft envelopes as a bounded batch; never ACK automatically")
+    parser.add_argument("--read-limit", type=int, default=None, help="with --read-pending: maximum envelopes, default 8 (1..256)")
+    parser.add_argument("--read-bytes", type=int, default=None, help="with --read-pending: maximum UTF-8 output bytes, default 65536 (up to 16 MiB)")
     parser.add_argument(
         "--attach",
         action="store_true",
@@ -3534,6 +5537,20 @@ def main() -> int:
     parser.add_argument(
         "--channel", default=None, help="agent channel digit (1-9) for --attach"
     )
+    parser.add_argument(
+        "--takeover",
+        action="store_true",
+        help="with --attach: claim the channel from an ended session of the "
+        "same name, stopping its leftover follower first",
+    )
+    parser.add_argument(
+        "--detach",
+        action="store_true",
+        help="release this session's channels, stop its own follower, print a "
+        "detach receipt, and exit; the lease and its backlog stay",
+    )
+    parser.add_argument("--archive-agent", metavar="CHANNEL",
+                        help="archive one disconnected exact --provider/--session/--lease/--bus owner and release its channel")
     parser.add_argument(
         "--status",
         action="store_true",
@@ -3591,6 +5608,17 @@ def main() -> int:
         help="append an agent reply to the canonical Bus and speak it through "
         "vendor TTS; --name defaults to the name on this session's lease",
     )
+    parser.add_argument("--send-text", action="store_true", help="send user text from stdin to an exact channel owner; --channel, --lease and --bus required")
+    parser.add_argument("--send", metavar="TEXT", help="agent-authored text message; requires --to and an attached --provider/--session sender")
+    parser.add_argument("--to", metavar="NAME|0", help="recipient agent name for --send, or 0 to broadcast to every other bound agent")
+    parser.add_argument("--reply-to", metavar="DELIVERY_ID", help="associate --say with this owned delivery envelope")
+    playback = parser.add_mutually_exclusive_group()
+    playback.add_argument("--play-reply", metavar="REPLY_ID", help="explicitly play one durable reply")
+    playback.add_argument("--stop-reply", metavar="REPLY_ID", help="request stop from that reply's real player")
+    mute = parser.add_mutually_exclusive_group()
+    mute.add_argument("--mute-agent", action="store_true", help="mute automatic replies for this provider session and bus")
+    mute.add_argument("--unmute-agent", action="store_true", help="unmute future automatic replies for this provider session and bus")
+    parser.add_argument("--playback-ticket", metavar="TICKET", help="24 lowercase hex identifying one playback request")
     parser.add_argument(
         "--tts-vendor",
         choices=("xai", "openai"),
@@ -3612,6 +5640,58 @@ def main() -> int:
         f"then {DEFAULT_SPEECH_SPEED}; with --attach it is stored in the profile",
     )
     args = parser.parse_args()
+    if args.archive_agent is not None and (
+        args.archive_agent not in tuple(str(n) for n in range(1, 10))
+        or not args.provider or not args.session or not args.lease or args.bus is None
+        or any((args.attach, args.detach, args.takeover, args.channel is not None,
+                args.status, args.watch, args.follow, args.once, args.from_start,
+                args.ack, args.from_file, args.say is not None, args.send_text,
+                args.send is not None, args.to is not None, args.read_delivery,
+                args.read_pending, args.read_limit is not None, args.read_bytes is not None,
+                args.retry_wakeup, args.play_reply, args.stop_reply,
+                args.playback_ticket, args.reply_to, args.all, args.become,
+                args.active_names, args.mute_agent, args.unmute_agent,
+                args.version, args.print_bus_path, args.print_install_interlock_path,
+                args.print_agent_turn_lease_path, args.assert_install_idle,
+                args.name, args.voice, args.speed is not None, args.tts_vendor,
+                args.drafts, args.coalesce, args.on_seal))
+    ):
+        parser.error("--archive-agent requires only exact --provider/--session/--lease/--bus/--bridge-home")
+    if (args.read_limit is not None or args.read_bytes is not None) and not args.read_pending:
+        parser.error("--read-limit and --read-bytes require --read-pending")
+    if args.read_pending and any((
+        args.version, args.print_bus_path, args.print_install_interlock_path,
+        args.print_agent_turn_lease_path, args.assert_install_idle,
+        args.ack, args.attach, args.detach, args.takeover, args.channel is not None,
+        args.archive_agent is not None,
+        args.status, args.watch, args.follow, args.once, args.from_start, args.from_file,
+        args.read_delivery, args.retry_wakeup, args.say is not None, args.send_text,
+        args.send is not None, args.to is not None, args.lease,
+        args.play_reply, args.stop_reply, args.playback_ticket, args.reply_to,
+        args.all, args.become, args.active_names, args.drafts, args.coalesce,
+        args.mute_agent, args.unmute_agent, args.on_seal, args.voice,
+        args.speed is not None, args.tts_vendor,
+    )):
+        parser.error("--read-pending combines with no other command")
+    if (args.mute_agent or args.unmute_agent) and any((
+        args.version, args.print_bus_path, args.print_install_interlock_path,
+        args.print_agent_turn_lease_path, args.assert_install_idle,
+    )):
+        parser.error("agent mute combines with no inspection command")
+    # Refuse contradictory commands before any early publication/playback or
+    # inspection dispatch can return without reaching the detach branch.
+    if args.detach and any((
+        args.attach, args.takeover, args.channel is not None, args.status, args.watch,
+        args.follow, args.once, args.from_start, args.ack, args.lease,
+        args.from_file is not None, args.say is not None, args.send_text,
+        args.send is not None, args.to is not None,
+        args.read_delivery, args.retry_wakeup, args.play_reply, args.stop_reply,
+        args.playback_ticket, args.reply_to, args.all, args.become, args.active_names,
+        args.mute_agent, args.unmute_agent,
+        args.version, args.print_bus_path, args.print_install_interlock_path,
+        args.print_agent_turn_lease_path, args.assert_install_idle,
+    )):
+        parser.error("--detach combines with no other command")
     if args.version:
         manifest = {}
         # Direct installs carry their generation with the executable, independent
@@ -3629,7 +5709,8 @@ def main() -> int:
                 pass
         if not manifest:
             manifest = read_json(Path(__file__).resolve().parent.parent / "manifest.json") or {}
-        version = manifest.get("helper_version") or manifest.get("bundle_version") or "source"
+        # Commands share the product version; skill metadata has its own version.
+        version = manifest.get("bundle_version") or "source"
         commit = manifest.get("source_commit")
         slug = f"+g{commit[:8]}" if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40,64}", commit) else ""
         dirty = ".dirty" if manifest.get("source_dirty") is True else ""
@@ -3660,17 +5741,104 @@ def main() -> int:
         )
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.read_pending:
+        if not args.provider:
+            parser.error("--read-pending requires --provider/--session")
+        args.read_limit = 8 if args.read_limit is None else args.read_limit
+        args.read_bytes = 65536 if args.read_bytes is None else args.read_bytes
+        try:
+            return read_pending_command(args)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: pending read refused: {error}\n")
+            return 3
+    if args.takeover and not args.attach:
+        parser.error("--takeover requires --attach")
+    if args.archive_agent is not None:
+        try:
+            emit(archive_agent(args))
+            return 0
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: agent archive refused: {error}\n")
+            return 3
+    if args.mute_agent or args.unmute_agent:
+        if (not args.provider or not args.bus_overridden
+                or any((args.send_text, args.say is not None, args.ack, args.attach,
+                        args.detach, args.takeover, args.channel is not None, args.lease,
+                        args.status, args.watch, args.follow, args.once, args.from_start,
+                        args.from_file, args.read_delivery, args.retry_wakeup,
+                        args.play_reply, args.stop_reply, args.playback_ticket, args.reply_to,
+                        args.all, args.become, args.active_names, args.voice,
+                        args.speed is not None, args.tts_vendor))):
+            parser.error("agent mute requires only --provider/--session/--bus/--bridge-home")
+        try:
+            return set_agent_muted(args)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: playback mute refused: {error}\n")
+            return 3
+    if args.send_text:
+        if (not args.provider or args.channel not in tuple(str(n) for n in range(1, 10))
+                or not args.lease or not args.bus_overridden
+                or any((args.say is not None, args.send is not None, args.to is not None,
+                        args.ack, args.attach, args.status, args.watch,
+                        args.follow, args.once, args.read_delivery, args.retry_wakeup,
+                        args.play_reply, args.stop_reply, args.reply_to))):
+            parser.error("--send-text requires an exact --provider/--session/--lease/--channel/--bus owner")
+        try:
+            return send_text_command(args)
+        except (OSError, ValueError, RuntimeError) as error:
+            sys.stderr.write(f"cs-bus: message publication refused: {error}\n")
+            return 3
+    if args.send is not None or args.to is not None:
+        if (args.send is None or args.to is None or not args.provider
+                or any((args.say is not None, args.ack, args.attach, args.status, args.watch,
+                        args.follow, args.once, args.read_delivery, args.retry_wakeup,
+                        args.play_reply, args.stop_reply, args.reply_to, args.lease))):
+            parser.error("--send requires --to <name|0> and an attached --provider/--session sender")
+        try:
+            return send_peer_command(args)
+        except (OSError, ValueError, RuntimeError) as error:
+            sys.stderr.write(f"cs-bus: peer message refused: {error}\n")
+            return 3
+    if args.reply_to and (args.say is None or not re.fullmatch(r"[0-9a-f]{24}", args.reply_to)):
+        parser.error("--reply-to requires --say and a delivery id")
+    if args.play_reply or args.stop_reply:
+        identity = args.play_reply or args.stop_reply
+        if (not args.provider or not re.fullmatch(r"[0-9a-f]{24}", identity)
+                or not args.playback_ticket or not re.fullmatch(r"[0-9a-f]{24}", args.playback_ticket)):
+            parser.error("reply control requires --provider/--session, a reply id and a playback ticket")
+        if any((args.say is not None, args.ack, args.attach, args.channel is not None,
+                args.status, args.watch, args.follow, args.once, args.from_start, args.from_file,
+                args.read_delivery, args.retry_wakeup, args.all, args.become, args.active_names,
+                args.lease, args.voice, args.speed is not None, args.tts_vendor)):
+            parser.error("reply control combines with no other command")
+        try:
+            return play_reply_command(args) if args.play_reply else stop_reply_command(args)
+        except (OSError, ValueError, RuntimeError) as error:
+            sys.stderr.write(f"bus-demux: reply control refused: {error}\n")
+            return 3
+    if args.playback_ticket:
+        parser.error("--playback-ticket requires --play-reply or --stop-reply")
     if args.read_delivery:
         if not args.provider or not re.fullmatch(r"[0-9a-f]{24}", args.read_delivery):
             parser.error("--read-delivery requires --provider/--session and a delivery id")
-        if any((args.ack, args.attach, args.status, args.watch, args.follow, args.once, args.retry_wakeup, args.say is not None)):
+        if any((args.ack, args.attach, args.detach, args.status, args.watch, args.follow, args.once, args.retry_wakeup, args.say is not None)):
             parser.error("--read-delivery combines with no other command")
+        if args.lease and args.lease != lease_identifier(args.provider, args.session):
+            # An inherited mailbox is read, never consumed: the retired lease
+            # keeps its envelopes, markers and cursor.
+            if not re.fullmatch(r"[0-9a-f]{32}", args.lease):
+                parser.error("--lease takes a lease id")
+            try:
+                return read_inherited_delivery(args)
+            except (OSError, ValueError) as error:
+                sys.stderr.write(f"bus-demux: inherited read refused: {error}\n")
+                return 3
         lease_id = lease_identifier(args.provider, args.session)
         state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
         if state.get("lease_id") != lease_id or state.get("provider") != args.provider or state.get("provider_session_id") != args.session:
             parser.error("mailbox does not belong to this provider session")
         payload = next((p for p in state.get("pending", []) if p.get("delivery_id") == args.read_delivery), None)
-        if payload is None:
+        if payload is None or delivery_acknowledged(args.bridge_home, lease_id, args.read_delivery, payload):
             parser.error("delivery is not pending in this mailbox")
         emit(payload)
         return 0
@@ -3679,12 +5847,12 @@ def main() -> int:
     if args.retry_wakeup:
         if args.provider != "codex" or not re.fullmatch(r"[0-9a-f]{24}", args.retry_wakeup):
             parser.error("--retry-wakeup requires --provider codex, --session and a delivery id")
-        if any((args.ack, args.attach, args.status, args.watch, args.follow, args.once, args.say is not None)):
+        if any((args.ack, args.attach, args.detach, args.status, args.watch, args.follow, args.once, args.say is not None)):
             parser.error("--retry-wakeup combines with no other command")
         lease_id = lease_identifier(args.provider, args.session)
         state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
         payload = next((p for p in state.get("pending", []) if p.get("delivery_id") == args.retry_wakeup), None)
-        if payload is None or payload.get("kind") != "seal":
+        if payload is None or payload.get("kind") not in TERMINAL_KINDS:
             parser.error("delivery is not a pending seal in this mailbox")
         native = NativeQueueWakeup(args.bridge_home, args.session, None)
         native.enqueue(payload, retry=True)
@@ -3702,6 +5870,14 @@ def main() -> int:
         parser.error("--full requires --watch")
     if args.bell and (not args.watch or args.human):
         parser.error("--bell requires --watch and no --human")
+    if args.detach:
+        if not args.provider:
+            parser.error("--detach requires --provider/--session")
+        try:
+            return detach_command(args)
+        except OSError as error:
+            sys.stderr.write(f"bus-demux: detach refused: {error}\n")
+            return 3
     if args.watch or args.from_file is not None:
         if not args.watch:
             parser.error("--from-file travels with --watch")
@@ -3764,7 +5940,7 @@ def main() -> int:
                 parser.error("--say needs --name, or an attached lease carrying one")
         try:
             return say_reply(args)
-        except OSError as error:
+        except (OSError, ValueError, RuntimeError) as error:
             sys.stderr.write(f"bus-demux: reply refused: {error}\n")
             return 3
     if args.lease_ttl <= 0:

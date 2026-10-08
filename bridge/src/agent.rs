@@ -184,8 +184,9 @@ pub struct CodescribeAgent {
 
 impl Default for CodescribeAgent {
     fn default() -> Self {
-        let runtime_settings = codescribe_core::config::Config::load_runtime_snapshot()
-            .expect("canonical runtime settings must load for CodescribeAgent");
+        let runtime_settings =
+            codescribe_core::config::Config::load_runtime_snapshot_without_keychain()
+                .expect("canonical runtime settings must load for CodescribeAgent");
         Self {
             runtime_settings: Arc::new(runtime_settings),
             turns: Arc::default(),
@@ -195,13 +196,13 @@ impl Default for CodescribeAgent {
 }
 
 impl CodescribeAgent {
-    /// One coherent settings seal for THIS call: a fresh loader pass
-    /// (settings.json → env → Keychain, same precedence as boot), falling
-    /// back to the construction-time seal only when the reload fails. Fresh
-    /// per call, sealed within a call — the same generation contract the
-    /// controller enforces via `ensure_runtime_generation_with`.
+    /// One coherent settings seal for THIS call, using files, env, and the
+    /// credential bundle already acquired by an explained provider/auth action
+    /// or completed setup. Readiness checks are passive even when a window
+    /// opens. Fresh per call, sealed within a call — the same generation
+    /// contract the controller enforces via `ensure_runtime_generation_with`.
     fn current_settings(&self) -> Arc<RuntimeSettingsSnapshot> {
-        match codescribe_core::config::Config::load_runtime_snapshot() {
+        match codescribe_core::config::Config::load_runtime_snapshot_without_keychain() {
             Ok(fresh) => Arc::new(fresh),
             Err(err) => {
                 tracing::warn!(

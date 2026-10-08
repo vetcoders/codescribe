@@ -8,7 +8,9 @@ private final class CredentialOnboardingEngine: OnboardingEngine {
 
   init(provider: CsProviderOption) { self.provider = provider }
   func shouldShowOnboarding() -> Bool { true }
-  func onboardingProgress() -> UInt32 { 0 }
+  func onboardingProgress() -> UInt32 {
+    UInt32(OnboardingStep.flow.firstIndex(of: .apiKey)!)
+  }
   func saveOnboardingProgress(step: UInt32) {}
   func markOnboardingDone() {}
   func onboardingMode() -> String? { nil }
@@ -42,8 +44,10 @@ final class CredentialPresentationTests: XCTestCase {
       let model = OnboardingViewModel(
         engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
         agentBridge: CredentialTestBridgeInstaller(), probe: MockPermissionProbe(.allGranted))
+      XCTAssertEqual(
+        model.step, .apiKey, "Credential presence belongs to the explained provider step")
       model.refreshProviderAccess()
-      await awaitCondition { !model.providerAccessPending }
+      await awaitCondition { model.providerAccessResolved && !model.providerAccessPending }
 
       XCTAssertEqual(model.selectedProviderAccountConnected, account)
       XCTAssertEqual(
@@ -51,8 +55,8 @@ final class CredentialPresentationTests: XCTestCase {
         "global key-status flags cannot impersonate this provider's credential")
       XCTAssertEqual(engine.keyWrites, 0)
       if account && !key {
-        XCTAssertTrue(model.providerAccessDescription.contains("without adding one"))
-        XCTAssertTrue(model.providerAccessDescription.contains("Formatting"))
+        XCTAssertEqual(model.selectedProviderAccountStatus, "Connected")
+        XCTAssertEqual(model.selectedProviderKeyStatus, "Not set")
       }
       engine.provider.accountSignedIn = !account
       engine.provider.apiKeySet = !key
@@ -73,14 +77,15 @@ final class CredentialPresentationTests: XCTestCase {
     let model = OnboardingViewModel(
       engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
       agentBridge: CredentialTestBridgeInstaller(), probe: MockPermissionProbe(.allGranted))
+    XCTAssertEqual(model.step, .apiKey)
     model.refreshProviderAccess()
-    await awaitCondition { !model.providerAccessPending }
+    await awaitCondition { model.providerAccessResolved && !model.providerAccessPending }
     XCTAssertTrue(model.selectedProviderKeySet)
     engine.provider.apiKeySet = false
     model.refreshProviderAccess()
     await awaitCondition { !model.providerAccessPending }
     XCTAssertFalse(model.selectedProviderKeySet)
-    XCTAssertTrue(model.providerAccessDescription.contains("does not require an API key"))
+    XCTAssertFalse(model.selectedProviderRequiresApiKey)
   }
 
   func testAccountAccessDoesNotPretendModelDiscoveryHasAKey() {
@@ -97,13 +102,101 @@ final class CredentialPresentationTests: XCTestCase {
       discovery: CsModelDiscovery(
         providerId: provider.id, status: "no_key", message: nil, models: []))
     XCTAssertFalse(lane.usesDiscoveredPicker)
-    XCTAssertTrue(lane.discoveryDescription.contains("Account sign-in"))
-    XCTAssertTrue(lane.discoveryDescription.contains("Model ID"))
+    XCTAssertTrue(lane.discoveryDescription.contains("connected account"))
+    XCTAssertTrue(lane.discoveryDescription.contains("model ID"))
+    XCTAssertEqual(lane.availabilityDescription, "Connected account")
+    XCTAssertFalse(lane.discoveryFailed, "a missing key is not a failed fetch")
+    XCTAssertNil(lane.discoveryErrorDetails)
     let cached = LLMLaneModel(
       lane: .assistive, runtime: runtime, provider: provider, configuredModel: "current-model",
       discovery: CsModelDiscovery(
         providerId: provider.id, status: "cached", message: nil,
         models: [CsModelOption(id: "current-model", displayName: "Current Model")]))
     XCTAssertTrue(cached.usesDiscoveredPicker, "usable cached catalogs retain model selection")
+  }
+
+  /// A stored key is presence, not validity: the lane says "Stored API key"
+  /// while discovery, independently, may still report the key as rejected.
+  func testStoredKeyLabelDoesNotClaimValidity() {
+    var provider = CsProviderOption.sampleProviders[1]
+    provider.accountSignedIn = false
+    provider.apiKeySet = true
+    let runtime = CsRuntimeLlmLane(
+      lane: .formatting, providerId: provider.id, providerDisplayName: "xAI",
+      wire: provider.wire, endpoint: provider.endpoint, model: "grok-4",
+      keyAccount: provider.apiKeyAccount, keyPresent: true, accountAuth: false,
+      available: true, unavailableReason: nil)
+    let rejected = LLMLaneModel(
+      lane: .formatting, runtime: runtime, provider: provider, configuredModel: "",
+      discovery: CsModelDiscovery(
+        providerId: provider.id, status: "key_rejected",
+        message: "{\"error\":\"Incorrect API key provided\"}", models: []))
+    XCTAssertEqual(rejected.availabilityDescription, "Stored API key")
+    XCTAssertTrue(rejected.discoveryFailed)
+    XCTAssertEqual(
+      rejected.discoveryDescription,
+      "Could not fetch \(provider.displayName) models. The API key was rejected. Check it under Providers."
+    )
+    XCTAssertEqual(rejected.discoveryErrorDetails, "{\"error\":\"Incorrect API key provided\"}")
+    XCTAssertFalse(
+      rejected.discoveryDescription.contains("Incorrect"), "the raw body stays under Error details")
+
+    // Any other failure is a plain fetch error: the key is never blamed on a guess.
+    let outage = LLMLaneModel(
+      lane: .formatting, runtime: runtime, provider: provider, configuredModel: "",
+      discovery: CsModelDiscovery(
+        providerId: provider.id, status: "error", message: "connection refused", models: []))
+    XCTAssertEqual(
+      outage.discoveryDescription,
+      "Could not fetch \(provider.displayName) models. Check the provider under Providers."
+    )
+    XCTAssertEqual(outage.discoveryErrorDetails, "connection refused")
+    let bare = LLMLaneModel(
+      lane: .formatting, runtime: runtime, provider: provider, configuredModel: "",
+      discovery: CsModelDiscovery(
+        providerId: provider.id, status: "error", message: nil, models: []))
+    XCTAssertNil(bare.discoveryErrorDetails, "no details row without a message")
+
+    // Access still being checked wins over a stale failure.
+    var pending = rejected
+    pending.credentialAccessResolved = false
+    XCTAssertFalse(pending.discoveryFailed)
+    XCTAssertNil(pending.discoveryErrorDetails)
+  }
+
+  /// Both lanes on one provider share one discovery record; only Formatting
+  /// defers to the Agent's line, and only while both show the same failure.
+  func testFormattingDefersASharedDiscoveryFailureToTheAgentLane() {
+    let provider = CsProviderOption.sampleProviders[1]
+    func runtime(_ lane: CsLlmLane, providerId: String) -> CsRuntimeLlmLane {
+      CsRuntimeLlmLane(
+        lane: lane, providerId: providerId, providerDisplayName: provider.displayName,
+        wire: provider.wire, endpoint: provider.endpoint, model: "m",
+        keyAccount: provider.apiKeyAccount, keyPresent: true, accountAuth: false,
+        available: true, unavailableReason: nil)
+    }
+    func model(_ lane: LLMLane, providerId: String, status: String) -> LLMLaneModel {
+      LLMLaneModel(
+        lane: lane, runtime: runtime(lane.bridgeLane, providerId: providerId), provider: provider,
+        configuredModel: "",
+        discovery: CsModelDiscovery(
+          providerId: providerId, status: status, message: "x", models: []))
+    }
+    let agentFailed = model(.assistive, providerId: provider.id, status: "key_rejected")
+    let formattingFailed = model(.formatting, providerId: provider.id, status: "key_rejected")
+    XCTAssertTrue(formattingFailed.repeatsDiscoveryFailure(of: agentFailed))
+    XCTAssertFalse(
+      agentFailed.repeatsDiscoveryFailure(of: formattingFailed), "the Agent line always prints")
+    XCTAssertFalse(
+      model(.formatting, providerId: "custom:other", status: "error")
+        .repeatsDiscoveryFailure(of: agentFailed),
+      "a different provider has its own failure")
+    XCTAssertFalse(
+      model(.formatting, providerId: provider.id, status: "fresh").repeatsDiscoveryFailure(
+        of: agentFailed))
+    XCTAssertFalse(
+      formattingFailed.repeatsDiscoveryFailure(
+        of: model(.assistive, providerId: provider.id, status: "no_key")),
+      "a missing key is explained per lane, never folded")
   }
 }

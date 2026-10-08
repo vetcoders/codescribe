@@ -21,6 +21,116 @@ final class AgentBridgeInstallerTests: XCTestCase {
     }
   }
 
+  func testPlaybackIdentityReadsLargeLeasesAndUsesTheirCustomBus() async throws {
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: nil, homeDirectory: scratch, environment: [:])
+    let candidate = AgentPlaybackIdentity(
+      provider: "codex", session: "large-mailbox",
+      bus: scratch.appendingPathComponent("default.jsonl").path)
+    let customBus = scratch.appendingPathComponent("custom.jsonl").path
+    let lease = installer.bridgeRoot.appendingPathComponent("leases/\(candidate.leaseID).json")
+    try FileManager.default.createDirectory(
+      at: lease.deletingLastPathComponent(), withIntermediateDirectories: true)
+    func writeLease(padding: Int, model: String? = nil) throws {
+      var row: [String: Any] = [
+        "schema": "codescribe.agent-bridge.lease.v1", "lease_id": candidate.leaseID,
+        "provider": candidate.provider, "provider_session_id": candidate.session,
+        "bus": customBus, "pending": [["text": String(repeating: "x", count: padding)]],
+      ]
+      row["model"] = model
+      try JSONSerialization.data(withJSONObject: row).write(to: lease)
+    }
+    try writeLease(padding: 5 << 20)
+    let resolved = await RealAgentBridgeInstaller.boundPlaybackAgents(
+      for: ["2": candidate], installer: installer)
+    XCTAssertEqual(
+      resolved["2"]?.identity,
+      AgentPlaybackIdentity(
+        provider: candidate.provider, session: candidate.session, bus: customBus))
+    XCTAssertEqual(resolved["2"]?.descriptor, "Codex", "Unknown model must not be guessed")
+    try writeLease(padding: 0, model: "gpt-6.1-sol")
+    let withModel = await RealAgentBridgeInstaller.boundPlaybackAgents(
+      for: ["2": candidate], installer: installer)
+    XCTAssertEqual(withModel["2"]?.descriptor, "Codex · gpt-6.1-sol")
+    XCTAssertEqual(
+      withModel["2"]?.identity, resolved["2"]?.identity,
+      "Changing display metadata must not change playback identity")
+    try writeLease(padding: 16 << 20)
+    let oversized = await RealAgentBridgeInstaller.boundPlaybackAgents(
+      for: ["2": candidate], installer: installer)
+    XCTAssertTrue(oversized.isEmpty)
+  }
+
+  func testPlaybackMuteSnapshotTreatsAbsentReceiptsAsAudibleAndKeepsAgentsIndependent() async throws
+  {
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: nil, homeDirectory: scratch, environment: [:])
+    let first = AgentPlaybackIdentity(
+      provider: "codex", session: "first", bus: scratch.appendingPathComponent("custom.jsonl").path)
+    let second = AgentPlaybackIdentity(provider: "codex", session: "second", bus: first.bus)
+    let identities: Set<AgentPlaybackIdentity> = [first, second]
+    let absent = await RealAgentBridgeInstaller.playbackMuteSnapshot(
+      for: identities, installer: installer)
+    XCTAssertEqual(absent[first], false, "No receipt is the canonical audible default")
+    XCTAssertEqual(absent[second], false)
+
+    let directory = installer.bridgeRoot.appendingPathComponent("runtime/playback-mutes")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    func publish(_ identity: AgentPlaybackIdentity, muted: Bool) throws {
+      let row: [String: Any] = [
+        "schema": "codescribe.agent-playback-mute.v1", "provider": identity.provider,
+        "provider_session_id": identity.session, "lease_id": identity.leaseID,
+        "bus": identity.bus, "muted": muted,
+      ]
+      try JSONSerialization.data(withJSONObject: row).write(
+        to: directory.appendingPathComponent("\(identity.storageKey).json"), options: .atomic)
+    }
+    try publish(first, muted: true)
+    let freshReader = RealAgentBridgeInstaller(
+      resourceRoot: nil, homeDirectory: scratch, environment: [:])
+    let muted = await RealAgentBridgeInstaller.playbackMuteSnapshot(
+      for: identities, installer: freshReader)
+    XCTAssertEqual(muted[first], true, "A fresh reader sees the durable per-session preference")
+    XCTAssertEqual(muted[second], false, "Muting one agent must leave the other audible")
+    try publish(first, muted: false)
+    let unmuted = await RealAgentBridgeInstaller.playbackMuteSnapshot(
+      for: identities, installer: installer)
+    XCTAssertEqual(unmuted[first], false)
+    XCTAssertEqual(unmuted[second], false)
+  }
+
+  func testPlaybackMuteSnapshotLeavesMalformedForeignAndUnreadableReceiptsUnknown() async throws {
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: nil, homeDirectory: scratch, environment: [:])
+    let identity = AgentPlaybackIdentity(
+      provider: "codex", session: "bound", bus: scratch.appendingPathComponent("custom.jsonl").path)
+    let path = installer.bridgeRoot.appendingPathComponent(
+      "runtime/playback-mutes/\(identity.storageKey).json")
+    try FileManager.default.createDirectory(
+      at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+    var row: [String: Any] = [
+      "schema": "codescribe.agent-playback-mute.v1", "provider": identity.provider,
+      "provider_session_id": "another-session", "lease_id": identity.leaseID,
+      "bus": identity.bus, "muted": false,
+    ]
+    let malformed = [Data("not-json".utf8), try JSONSerialization.data(withJSONObject: row)]
+    row["provider_session_id"] = identity.session
+    row["muted"] = "false"
+    for data in malformed + [
+      try JSONSerialization.data(withJSONObject: row), Data(repeating: 32, count: 65537),
+    ] {
+      try data.write(to: path)
+      let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(
+        for: [identity], installer: installer)
+      XCTAssertNil(snapshot[identity], "Invalid receipt must not enable playback controls")
+    }
+    try FileManager.default.removeItem(at: path)
+    try FileManager.default.createDirectory(at: path, withIntermediateDirectories: false)
+    let unreadable = await RealAgentBridgeInstaller.playbackMuteSnapshot(
+      for: [identity], installer: installer)
+    XCTAssertNil(unreadable[identity], "An existing unreadable object is not a missing receipt")
+  }
+
   func testInstallIsExplicitAtomicIdempotentAndSupportsIndependentClients() throws {
     let payload = try makePayload()
     let home = scratch.appendingPathComponent("home", isDirectory: true)
@@ -74,6 +184,11 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertEqual(claudeOnly.installedClients, [.claudeCode])
     XCTAssertFalse(FileManager.default.fileExists(atPath: codexSkill.path))
     XCTAssertTrue(FileManager.default.fileExists(atPath: claudeSkill.path))
+
+    let none = try installer.install(selectedClients: [])
+    XCTAssertTrue(none.installedClients.isEmpty)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: codexSkill.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: claudeSkill.path))
   }
 
   func testUnownedClientSkillIsVisibleConflictAndNeverMutated() throws {
@@ -169,8 +284,8 @@ final class AgentBridgeInstallerTests: XCTestCase {
     )
   }
 
-  func testOnboardingUsesEnglishCopyWithPolishDictationAndNeverInstallsUntilSelectionAndClick() {
-    let engine = MockOnboardingEngine(progress: 11)
+  func testOnboardingContinueInstallsChangedSelectionAndDoesNotReinstallOnReturn() {
+    let engine = MockOnboardingEngine(progress: 7)
     engine.mode = "agentic"
     engine.language = .polish
     let bridge = RecordingAgentBridgeInstaller()
@@ -184,34 +299,126 @@ final class AgentBridgeInstallerTests: XCTestCase {
 
     XCTAssertEqual(bridge.installCalls, [])
     XCTAssertTrue(model.selectedAgentClients.isEmpty)
-    XCTAssertEqual(model.agentBridgeTitle, "Connect Codescribe to your agent.")
-    XCTAssertEqual(model.agentBridgeButtonTitle, "Install selected")
-    XCTAssertTrue(model.agentBridgeExplanation.contains("live drafts"))
-    XCTAssertTrue(model.agentBridgeExplanation.contains("transcript_sealed"))
-
-    let fallbackEngine = MockOnboardingEngine(progress: 11)
-    fallbackEngine.mode = "agentic"
-    fallbackEngine.language = .auto
-    let fallbackModel = OnboardingViewModel(
-      engine: fallbackEngine,
-      hotkeys: MockHotkeysEngine(),
-      agentStatus: MockAgentStatusEngine(),
-      agentBridge: RecordingAgentBridgeInstaller(),
-      probe: MockPermissionProbe(.allGranted)
-    )
-    XCTAssertEqual(fallbackModel.agentBridgeTitle, model.agentBridgeTitle)
-    XCTAssertTrue(fallbackModel.agentBridgeExplanation.contains("live drafts"))
-    XCTAssertTrue(fallbackModel.agentBridgeExplanation.contains("transcript_sealed"))
-
     model.refreshForCurrentStep()
     XCTAssertEqual(bridge.installCalls, [])
-
     model.toggleAgentClient(.codex)
     XCTAssertEqual(bridge.installCalls, [])
-    model.installAgentBridge()
-    XCTAssertEqual(model.agentBridgeButtonTitle, "Update selected")
+    model.advance()
     XCTAssertEqual(bridge.installCalls, [[.codex]])
     XCTAssertEqual(model.agentBridgeStatus.installedClients, [.codex])
+    XCTAssertEqual(model.step, .done)
+
+    model.back()
+    XCTAssertEqual(model.step, .agenticReadiness)
+    model.advance()
+    XCTAssertEqual(model.step, .done)
+    XCTAssertEqual(bridge.installCalls, [[.codex]], "An unchanged selection does not write again")
+  }
+
+  func testOnboardingBackDoesNotInstallAndEmptyUnchangedSelectionCanContinue() {
+    let engine = MockOnboardingEngine(progress: 7)
+    engine.mode = "agentic"
+    let bridge = RecordingAgentBridgeInstaller()
+    let model = OnboardingViewModel(
+      engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+      agentBridge: bridge, probe: MockPermissionProbe(.allGranted))
+    model.toggleAgentClient(.codex)
+    model.back()
+    XCTAssertEqual(model.step, .hotkeyMode)
+    XCTAssertTrue(bridge.installCalls.isEmpty)
+
+    model.advance()
+    XCTAssertEqual(model.step, .agenticReadiness)
+    XCTAssertTrue(bridge.installCalls.isEmpty)
+    model.toggleAgentClient(.codex)
+    model.advance()
+    XCTAssertEqual(model.step, .done)
+    XCTAssertTrue(
+      bridge.installCalls.isEmpty, "Skipping all clients on a fresh setup does not write")
+  }
+
+  func testOnboardingInstallationFailureRetainsStepAndSelectionForRetry() {
+    let engine = MockOnboardingEngine(progress: 7)
+    engine.mode = "agentic"
+    let bridge = RecordingAgentBridgeInstaller()
+    bridge.failInstallation = true
+    let model = OnboardingViewModel(
+      engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+      agentBridge: bridge, probe: MockPermissionProbe(.allGranted))
+    model.toggleAgentClient(.claudeCode)
+    model.advance()
+    XCTAssertEqual(model.step, .agenticReadiness)
+    XCTAssertEqual(model.selectedAgentClients, [.claudeCode])
+    XCTAssertNotNil(model.agentBridgeError)
+    XCTAssertEqual(bridge.installCalls, [[.claudeCode]])
+
+    bridge.failInstallation = false
+    model.advance()
+    XCTAssertEqual(model.step, .done)
+    XCTAssertNil(model.agentBridgeError)
+    XCTAssertEqual(model.agentBridgeStatus.installedClients, [.claudeCode])
+    XCTAssertEqual(bridge.installCalls, [[.claudeCode], [.claudeCode]])
+  }
+
+  func testOnboardingContinueAppliesDeselectionOfTheLastManagedClient() throws {
+    let engine = MockOnboardingEngine(progress: 7)
+    engine.mode = "agentic"
+    let bridge = RecordingAgentBridgeInstaller()
+    _ = try bridge.install(selectedClients: [.claudeCode])
+    let model = OnboardingViewModel(
+      engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+      agentBridge: bridge, probe: MockPermissionProbe(.allGranted))
+    XCTAssertEqual(model.selectedAgentClients, [.claudeCode])
+    model.toggleAgentClient(.claudeCode)
+    XCTAssertEqual(
+      bridge.installCalls, [[.claudeCode]], "Selection alone does not mutate the installation")
+    bridge.failInstallation = true
+    model.advance()
+    XCTAssertEqual(model.step, .agenticReadiness)
+    XCTAssertTrue(model.agentClientShowsError(.claudeCode))
+    XCTAssertFalse(
+      model.agentClientShowsError(.codex), "Attribute the failure to the installed client")
+    bridge.failInstallation = false
+    model.advance()
+    XCTAssertEqual(model.step, .done)
+    XCTAssertEqual(bridge.installCalls, [[.claudeCode], [], []])
+    XCTAssertTrue(model.agentBridgeStatus.installedClients.isEmpty)
+  }
+
+  func testAddingCodexFailureBelongsToCodexInsteadOfExistingClaude() throws {
+    let bridge = RecordingAgentBridgeInstaller()
+    _ = try bridge.install(selectedClients: [.claudeCode])
+    let engine = MockOnboardingEngine(progress: 7)
+    engine.mode = "agentic"
+    let model = OnboardingViewModel(
+      engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+      agentBridge: bridge, probe: MockPermissionProbe(.allGranted))
+    model.toggleAgentClient(.codex)
+    bridge.failInstallation = true
+    model.advance()
+    XCTAssertEqual(model.step, .agenticReadiness)
+    XCTAssertEqual(model.agentBridgeErrorClient, .codex)
+    XCTAssertTrue(model.agentClientShowsError(.codex))
+    XCTAssertFalse(model.agentClientShowsError(.claudeCode))
+    XCTAssertFalse(model.agentClientNeedsSetup(.claudeCode))
+    XCTAssertTrue(model.agentClientNeedsSetup(.codex))
+  }
+
+  func testMultipleClientFailureIsSelectionWideWithoutGuessingACard() {
+    let bridge = RecordingAgentBridgeInstaller()
+    bridge.failInstallation = true
+    let engine = MockOnboardingEngine(progress: 7)
+    engine.mode = "agentic"
+    let model = OnboardingViewModel(
+      engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+      agentBridge: bridge, probe: MockPermissionProbe(.allGranted))
+    model.toggleAgentClient(.codex)
+    model.toggleAgentClient(.claudeCode)
+    model.advance()
+    XCTAssertNotNil(model.agentBridgeError)
+    XCTAssertNil(model.agentBridgeErrorClient)
+    XCTAssertFalse(model.agentClientShowsError(.codex))
+    XCTAssertFalse(model.agentClientShowsError(.claudeCode))
   }
 
   func testManagedFoldersRecoverFromMissingUnreadableOrForeignReceipt() throws {
@@ -241,6 +448,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
       }
       let status = installer.status()
       XCTAssertEqual(Set(status.installedClients), [.codex, .claudeCode])
+      XCTAssertEqual(status.clientsNeedingRepair, [.codex, .claudeCode])
       XCTAssertEqual(Set(status.installedPaths), Set(skills.map(\.path)))
       XCTAssertTrue(status.detail.contains("Update will re-adopt it."), status.detail)
       XCTAssertTrue(status.detail.contains("Claude Code: managed folder found"))
@@ -248,6 +456,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
 
       let updated = try installer.install(selectedClients: [.codex, .claudeCode])
       XCTAssertEqual(Set(updated.installedClients), [.codex, .claudeCode])
+      XCTAssertTrue(updated.clientsNeedingRepair.isEmpty)
       XCTAssertTrue(updated.detail.contains("receipt and managed folder found"))
       let newID = try XCTUnwrap(try jsonObject(receiptURL)["managed_id"] as? String)
       XCTAssertNotEqual(newID, oldID)
@@ -301,10 +510,320 @@ final class AgentBridgeInstallerTests: XCTestCase {
     let managedID = try jsonObject(receiptURL)["managed_id"] as? String
     try FileManager.default.removeItem(at: home.appendingPathComponent(".codex/skills/codescribe"))
     XCTAssertEqual(installer.status().installedClients, [.codex])
+    XCTAssertEqual(installer.status().clientsNeedingRepair, [.codex])
     XCTAssertTrue(
       installer.status().detail.contains("receipt found, managed folder missing or invalid"))
     _ = try installer.install(selectedClients: [.codex])
+    XCTAssertTrue(installer.status().clientsNeedingRepair.isEmpty)
     XCTAssertEqual(try jsonObject(receiptURL)["managed_id"] as? String, managedID)
+  }
+
+  func testOnboardingContinueRepairsManagedEvidenceAndHealthyRetryDoesNotWrite() throws {
+    let payload = try makePayload()
+    for drift in ["missing-receipt", "unreadable-receipt", "missing-folder"] {
+      let home = scratch.appendingPathComponent("onboarding-repair-" + drift)
+      let installer = RealAgentBridgeInstaller(
+        resourceRoot: payload, homeDirectory: home, environment: [:])
+      _ = try installer.install(selectedClients: [.codex])
+      let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+      let folder = home.appendingPathComponent(".codex/skills/codescribe")
+      switch drift {
+      case "missing-receipt": try FileManager.default.removeItem(at: receiptURL)
+      case "unreadable-receipt": try Data("invalid json".utf8).write(to: receiptURL)
+      default: try FileManager.default.removeItem(at: folder)
+      }
+      let engine = MockOnboardingEngine(progress: 7)
+      engine.mode = "agentic"
+      let model = OnboardingViewModel(
+        engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+        agentBridge: installer, probe: MockPermissionProbe(.allGranted))
+      XCTAssertEqual(model.selectedAgentClients, [.codex])
+      XCTAssertEqual(model.agentBridgeStatus.clientsNeedingRepair, [.codex])
+      model.advance()
+      XCTAssertEqual(model.step, .done)
+      XCTAssertNil(model.agentBridgeError)
+      XCTAssertTrue(model.agentBridgeStatus.clientsNeedingRepair.isEmpty)
+      XCTAssertTrue(
+        FileManager.default.fileExists(atPath: folder.appendingPathComponent("SKILL.md").path))
+      let repairedReceipt = try Data(contentsOf: receiptURL)
+      let repairedInode = try fileNumber(receiptURL)
+      model.back()
+      model.advance()
+      XCTAssertEqual(model.step, .done)
+      XCTAssertEqual(try Data(contentsOf: receiptURL), repairedReceipt)
+      XCTAssertEqual(
+        try fileNumber(receiptURL), repairedInode, "Healthy unchanged selection is read-only")
+    }
+  }
+
+  func testOnboardingRepairRefusesAnUnownedReplacementWithoutWriting() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("onboarding-repair-unowned")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receipt = try Data(contentsOf: receiptURL)
+    let folder = home.appendingPathComponent(".codex/skills/codescribe")
+    try FileManager.default.removeItem(at: folder)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let original = Data("user-maintained instructions".utf8)
+    let skill = folder.appendingPathComponent("SKILL.md")
+    try original.write(to: skill)
+    let engine = MockOnboardingEngine(progress: 7)
+    engine.mode = "agentic"
+    let model = OnboardingViewModel(
+      engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+      agentBridge: installer, probe: MockPermissionProbe(.allGranted))
+    model.advance()
+    XCTAssertEqual(model.step, .agenticReadiness)
+    XCTAssertNotNil(model.agentBridgeError)
+    XCTAssertEqual(try Data(contentsOf: skill), original)
+    XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
+  }
+
+  func testManagedSkillContentDamageRequiresRepairAndContinueRestoresIt() throws {
+    let payload = try makePayload(extraFiles: ["skills/codescribe/scripts/fixture.py": "fixture\n"])
+    for drift in ["missing-skill", "changed-readme", "missing-script", "changed-mode"] {
+      let home = scratch.appendingPathComponent("content-repair-" + drift)
+      let installer = RealAgentBridgeInstaller(
+        resourceRoot: payload, homeDirectory: home, environment: [:])
+      _ = try installer.install(selectedClients: [.codex])
+      XCTAssertTrue(installer.status().clientsNeedingRepair.isEmpty)
+      let folder = home.appendingPathComponent(".codex/skills/codescribe")
+      switch drift {
+      case "missing-skill":
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("SKILL.md"))
+      case "changed-readme":
+        try Data("corrupted instructions\n".utf8).write(
+          to: folder.appendingPathComponent("README.md"))
+      case "missing-script":
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("scripts/fixture.py"))
+      default:
+        try FileManager.default.setAttributes(
+          [.posixPermissions: 0o600], ofItemAtPath: folder.appendingPathComponent("SKILL.md").path)
+      }
+      let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+      let receiptBeforeInspection = try Data(contentsOf: receiptURL)
+      let inodeBeforeInspection = try fileNumber(receiptURL)
+      XCTAssertEqual(installer.status().clientsNeedingRepair, [.codex], drift)
+      XCTAssertEqual(try Data(contentsOf: receiptURL), receiptBeforeInspection)
+      XCTAssertEqual(try fileNumber(receiptURL), inodeBeforeInspection, "Inspection is passive")
+      let engine = MockOnboardingEngine(progress: 7)
+      engine.mode = "agentic"
+      let model = OnboardingViewModel(
+        engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+        agentBridge: installer, probe: MockPermissionProbe(.allGranted))
+      XCTAssertTrue(model.agentClientNeedsSetup(.codex), drift)
+      model.advance()
+      XCTAssertEqual(model.step, .done, drift)
+      XCTAssertNil(model.agentBridgeError, drift)
+      XCTAssertTrue(installer.status().clientsNeedingRepair.isEmpty, drift)
+      for path in ["SKILL.md", "README.md", "scripts/fixture.py"] {
+        XCTAssertEqual(
+          try Data(contentsOf: folder.appendingPathComponent(path)),
+          try Data(contentsOf: payload.appendingPathComponent("skills/codescribe/" + path)),
+          path)
+      }
+      let repairedReceipt = try Data(contentsOf: receiptURL)
+      let repairedInode = try fileNumber(receiptURL)
+      model.back()
+      model.advance()
+      XCTAssertEqual(try Data(contentsOf: receiptURL), repairedReceipt)
+      XCTAssertEqual(try fileNumber(receiptURL), repairedInode)
+    }
+  }
+
+  func testIntactInstalledSkillUsesReceiptTruthWhenSameVersionBundleChanges() throws {
+    let originalPayload = try makePayload()
+    let home = scratch.appendingPathComponent("same-version-skill")
+    let originalInstaller = RealAgentBridgeInstaller(
+      resourceRoot: originalPayload, homeDirectory: home, environment: [:])
+    _ = try originalInstaller.install(selectedClients: [.codex])
+    let nextPayload = try makePayload(
+      skillContent: "---\nname: codescribe\n---\nnew instructions\n")
+    let nextInstaller = RealAgentBridgeInstaller(
+      resourceRoot: nextPayload, homeDirectory: home, environment: [:])
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let originalReceipt = try Data(contentsOf: receiptURL)
+    XCTAssertTrue(nextInstaller.status().clientsNeedingRepair.isEmpty)
+    XCTAssertEqual(try Data(contentsOf: receiptURL), originalReceipt)
+    XCTAssertEqual(
+      try Data(contentsOf: home.appendingPathComponent(".codex/skills/codescribe/SKILL.md")),
+      try Data(contentsOf: originalPayload.appendingPathComponent("skills/codescribe/SKILL.md")))
+  }
+
+  func testEmptySelectionCanForgetAnAlreadyMissingManagedFolderWithoutTouchingRuntimeState() throws
+  {
+    let payload = try makePayload()
+    for shape in ["leaf", "parents", "alias-leaf", "alias-parents"] {
+      let realHome = scratch.appendingPathComponent("missing-last-client-" + shape)
+      var home = realHome
+      if shape.hasPrefix("alias-") {
+        try FileManager.default.createDirectory(at: realHome, withIntermediateDirectories: true)
+        // This witness starts from an existing managed installation; keep the
+        // command-directory setup independent of the missing client path.
+        try FileManager.default.createDirectory(
+          at: realHome.appendingPathComponent(".local/bin", isDirectory: true),
+          withIntermediateDirectories: true)
+        home = scratch.appendingPathComponent("home-link-" + shape)
+        try FileManager.default.createSymbolicLink(at: home, withDestinationURL: realHome)
+      }
+      let installer = RealAgentBridgeInstaller(
+        resourceRoot: payload, homeDirectory: home, environment: [:])
+      _ = try installer.install(selectedClients: [.codex])
+      let folder = home.appendingPathComponent(".codex/skills/codescribe")
+      let removed = shape.hasSuffix("parents") ? home.appendingPathComponent(".codex") : folder
+      try FileManager.default.removeItem(at: removed)
+      let runtime = home.appendingPathComponent(".codescribe/agent-bridge/runtime")
+      let state = runtime.appendingPathComponent("operator-state.txt")
+      let preserved = Data("retained runtime state\n".utf8)
+      try preserved.write(to: state)
+      let runtimeInode = try fileNumber(runtime)
+      let engine = MockOnboardingEngine(progress: 7)
+      engine.mode = "agentic"
+      let model = OnboardingViewModel(
+        engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+        agentBridge: installer, probe: MockPermissionProbe(.allGranted))
+      XCTAssertEqual(model.selectedAgentClients, [.codex], shape)
+      model.toggleAgentClient(.codex)
+      model.advance()
+      XCTAssertEqual(model.step, .done, shape)
+      XCTAssertNil(model.agentBridgeError, shape)
+      XCTAssertTrue(installer.status().installedClients.isEmpty, shape)
+      let receipt = try jsonObject(
+        home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"))
+      XCTAssertEqual(receipt["selected_clients"] as? [String], [], shape)
+      XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path), shape)
+      XCTAssertEqual(try Data(contentsOf: state), preserved, shape)
+      XCTAssertEqual(try fileNumber(runtime), runtimeInode, shape)
+    }
+  }
+
+  func testEmptySelectionStillRefusesAnExistingFolderWithoutItsMarker() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("unmarked-last-client")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let folder = home.appendingPathComponent(".codex/skills/codescribe")
+    try FileManager.default.removeItem(
+      at: folder.appendingPathComponent(".codescribe-managed.json"))
+    let personalFile = folder.appendingPathComponent("operator.txt")
+    let personalBytes = Data("do not remove\n".utf8)
+    try personalBytes.write(to: personalFile)
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receipt = try Data(contentsOf: receiptURL)
+    XCTAssertThrowsError(try installer.install(selectedClients: []))
+    XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
+    XCTAssertEqual(try Data(contentsOf: personalFile), personalBytes)
+  }
+
+  func testEmptySelectionStillRefusesABrokenSymlinkAtTheMissingFolderPath() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("symlink-last-client")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let folder = home.appendingPathComponent(".codex/skills/codescribe")
+    try FileManager.default.removeItem(at: folder)
+    let outside = scratch.appendingPathComponent("nonexistent-outside")
+    try FileManager.default.createSymbolicLink(at: folder, withDestinationURL: outside)
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receipt = try Data(contentsOf: receiptURL)
+    XCTAssertThrowsError(try installer.install(selectedClients: []))
+    XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
+    XCTAssertEqual(
+      try FileManager.default.destinationOfSymbolicLink(atPath: folder.path), outside.path)
+  }
+
+  func testEmptySelectionDoesNotTreatAnUnreadableClientPathAsMissing() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("unreadable-last-client")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let parent = home.appendingPathComponent(".codex/skills")
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receipt = try Data(contentsOf: receiptURL)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: parent.path)
+    defer {
+      try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent.path)
+    }
+    XCTAssertThrowsError(try installer.install(selectedClients: []))
+    XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
+  }
+
+  func testEmptySelectionRefusesAMissingDestinationRedirectedThroughItsParent() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("redirected-missing-client")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let parent = home.appendingPathComponent(".codex/skills")
+    try FileManager.default.removeItem(at: parent)
+    let outside = scratch.appendingPathComponent("outside-client-parent")
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+    let personalFile = outside.appendingPathComponent("operator.txt")
+    let personalBytes = Data("outside content\n".utf8)
+    try personalBytes.write(to: personalFile)
+    try FileManager.default.createSymbolicLink(at: parent, withDestinationURL: outside)
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receipt = try Data(contentsOf: receiptURL)
+    XCTAssertThrowsError(try installer.install(selectedClients: []))
+    XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
+    XCTAssertEqual(try Data(contentsOf: personalFile), personalBytes)
+    XCTAssertEqual(
+      try FileManager.default.destinationOfSymbolicLink(atPath: parent.path), outside.path)
+  }
+
+  func testLaunchSynchronizationStillRefusesAMissingSelectedFolderWithoutWriting() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("missing-startup-client")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let folder = home.appendingPathComponent(".codex/skills/codescribe")
+    try FileManager.default.removeItem(at: folder)
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receipt = try Data(contentsOf: receiptURL)
+    let inode = try fileNumber(receiptURL)
+    let helper = home.appendingPathComponent(".codescribe/agent-bridge/runtime/bin/bus-demux.py")
+    let helperBytes = try Data(contentsOf: helper)
+    XCTAssertTrue(installer.synchronizeManagedPayload().contains("skipped"))
+    XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
+    XCTAssertEqual(try fileNumber(receiptURL), inode)
+    XCTAssertEqual(try Data(contentsOf: helper), helperBytes)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
+  }
+
+  func testLateDeselectionRefusesAForeignManagedIdentityRestoredDuringStaging() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("late-foreign-client")
+    let initialInstaller = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try initialInstaller.install(selectedClients: [.codex])
+    let folder = home.appendingPathComponent(".codex/skills/codescribe")
+    let markerURL = folder.appendingPathComponent(".codescribe-managed.json")
+    var restoredMarker = try jsonObject(markerURL)
+    restoredMarker["managed_id"] = "another-managed-generation"
+    let restoredMarkerBytes = try JSONSerialization.data(withJSONObject: restoredMarker)
+    try FileManager.default.removeItem(at: folder)
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receipt = try Data(contentsOf: receiptURL)
+    let inode = try fileNumber(receiptURL)
+    let fileManager = RestoringForeignFolderFileManager(
+      folder: folder, marker: restoredMarkerBytes)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, fileManager: fileManager, environment: [:])
+    XCTAssertThrowsError(try installer.install(selectedClients: []))
+    XCTAssertTrue(fileManager.didRestore, "The foreign folder appears only after preflight")
+    XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
+    XCTAssertEqual(try fileNumber(receiptURL), inode)
+    XCTAssertEqual(try Data(contentsOf: markerURL), restoredMarkerBytes)
+    XCTAssertEqual(
+      try Data(contentsOf: folder.appendingPathComponent("operator.txt")),
+      Data("restored foreign content\n".utf8))
   }
 
   func testInvalidOwnershipMarkersRefuseUpdateWithoutMutation() throws {
@@ -330,6 +849,43 @@ final class AgentBridgeInstallerTests: XCTestCase {
       XCTAssertEqual(try Data(contentsOf: skillURL), skillData)
       XCTAssertFalse(FileManager.default.fileExists(atPath: receiptURL.path))
     }
+  }
+
+  func testDirectDiagnosticsRefreshesInstalledStateAndLaunchChangesWithoutWriting() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("diagnostics-home")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let initialReceipt = try Data(contentsOf: receiptURL)
+    let model = SettingsViewModel(
+      creatorAgentBridge: installer,
+      permissionProbe: MockPermissionProbe(.allGranted),
+      servingStatusProvider: { nil }
+    )
+    model.select(SettingsTab.agentStatus)
+    model.refresh()
+    XCTAssertEqual(model.currentTab, .agentStatus)
+    XCTAssertEqual(model.creatorAgentBridgeStatus.installedClients, [.codex])
+    XCTAssertFalse(model.creatorAgentBridgeStatus.installedPaths.isEmpty)
+    XCTAssertEqual(try Data(contentsOf: receiptURL), initialReceipt)
+
+    // A direct link must refresh even when Diagnostics is already selected.
+    _ = try installer.install(selectedClients: [.codex, .claudeCode])
+    let revisitedReceipt = try Data(contentsOf: receiptURL)
+    XCTAssertEqual(model.creatorAgentBridgeStatus.installedClients, [.codex])
+    model.select(SettingsTab.agentStatus)
+    XCTAssertEqual(Set(model.creatorAgentBridgeStatus.installedClients), [.codex, .claudeCode])
+    XCTAssertEqual(try Data(contentsOf: receiptURL), revisitedReceipt)
+
+    // Launch synchronization changes disk state without visiting Creator.
+    _ = try installer.install(selectedClients: [.claudeCode])
+    let synchronizedReceipt = try Data(contentsOf: receiptURL)
+    NotificationCenter.default.post(
+      name: SettingsViewModel.agentBridgeLaunchSynchronizationDidFinish, object: nil)
+    XCTAssertEqual(model.creatorAgentBridgeStatus.installedClients, [.claudeCode])
+    XCTAssertEqual(try Data(contentsOf: receiptURL), synchronizedReceipt)
   }
 
   func testCreatorInspectionIsPassiveAndInstallingOneClientPreservesTheOther() throws {
@@ -361,6 +917,31 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertTrue(model.creatorAgentBridgeNotice?.contains("does not attach a listener") == true)
     model.installCreatorAgentBridge(for: .codex)
     XCTAssertEqual(Set(model.creatorAgentBridgeStatus.installedClients), [.codex, .claudeCode])
+  }
+
+  func testLaunchSynchronizationDetailStaysOutOfTheCreatorNotice() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("creator-launch-detail")
+    let detail = "Agent bridge synchronization retained the installed runtime: test detail"
+    defer { SettingsViewModel.recordAgentBridgeLaunchSynchronization(nil) }
+    SettingsViewModel.recordAgentBridgeLaunchSynchronization(detail)
+
+    // A Settings instance opened after launch reads the recorded detail.
+    let model = SettingsViewModel(
+      creatorAgentBridge: RealAgentBridgeInstaller(
+        resourceRoot: payload, homeDirectory: home, environment: [:]),
+      permissionProbe: MockPermissionProbe(.allGranted),
+      servingStatusProvider: { nil }
+    )
+    model.refreshCreatorAgentBridge()
+    XCTAssertEqual(model.creatorAgentBridgeLaunchDetail, detail)
+    XCTAssertNil(model.creatorAgentBridgeNotice)
+    XCTAssertNil(model.creatorAgentBridgeError)
+
+    // A later launch result reaches an already open instance and clears.
+    SettingsViewModel.recordAgentBridgeLaunchSynchronization(nil)
+    XCTAssertNil(model.creatorAgentBridgeLaunchDetail)
+    XCTAssertNil(model.creatorAgentBridgeNotice)
   }
 
   func testCreatorShowsUnownedSkillConflictWithoutReplacingUserContent() throws {
@@ -487,6 +1068,53 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertEqual(flock(descriptor, LOCK_EX | LOCK_NB), 0, "success released ownership")
     XCTAssertTrue(FileManager.default.fileExists(atPath: lockPath))
     XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
+  }
+
+  func testLanguageRestartUsesCanonicalIdleGuardAndHoldsTurnLease() async throws {
+    let home = scratch.appendingPathComponent("language-restart")
+    let leasePath = home.appendingPathComponent("turn.lock")
+    let busyPath = home.appendingPathComponent("busy")
+    let helper = """
+      #!/usr/bin/env python3
+      import pathlib, sys
+      root = pathlib.Path(__file__).resolve().parents[2]
+      if sys.argv[1:] == ['--print-agent-turn-lease-path']:
+          print(root / 'turn.lock')
+      elif sys.argv[1:] == ['--assert-install-idle']:
+          sys.exit(2 if (root / 'busy').exists() else 0)
+      else:
+          sys.exit(9)
+      """
+    let payload = try makePayload(helperContent: helper)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.codex])
+    try Data().write(to: busyPath)
+    do {
+      _ = try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease(installer: installer)
+      XCTFail("A live or unreadable bus must refuse restart")
+    } catch {
+      XCTAssertEqual(error as? InterfaceLanguageRestartError, .busy)
+    }
+    try FileManager.default.removeItem(at: busyPath)
+    let lease = try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease(
+      installer: installer)
+    let probe = Darwin.open(leasePath.path, O_RDWR | O_CLOEXEC)
+    XCTAssertGreaterThanOrEqual(probe, 0)
+    guard probe >= 0 else { return }
+    defer { _ = Darwin.close(probe) }
+    XCTAssertNotEqual(flock(probe, LOCK_SH | LOCK_NB), 0, "Restart prevents a new agent turn")
+    try lease.close()
+    XCTAssertEqual(
+      flock(probe, LOCK_SH | LOCK_NB), 0, "Closing the admitted lease releases ownership")
+    XCTAssertEqual(flock(probe, LOCK_UN), 0)
+    XCTAssertEqual(flock(probe, LOCK_SH | LOCK_NB), 0)
+    do {
+      _ = try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease(installer: installer)
+      XCTFail("An active agent turn must refuse restart")
+    } catch {
+      XCTAssertEqual(error as? InterfaceLanguageRestartError, .busy)
+    }
   }
 
   func testInstallationRefusesSymlinkedLeaseWithoutTouchingItsTarget() throws {
@@ -836,6 +1464,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
   private func makePayload(
     bundleVersion: String = "9.8.7",
     helperContent: String = "#!/usr/bin/env python3\nprint('bridge')\n",
+    skillContent: String = "---\nname: codescribe\n---\n",
     extraFiles: [String: String] = [:]
   ) throws -> URL {
     let payload = scratch.appendingPathComponent("payload-\(UUID().uuidString)", isDirectory: true)
@@ -848,7 +1477,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
     try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
     try Data(helperContent.utf8).write(to: helper)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
-    try Data("---\nname: codescribe\n---\n".utf8).write(
+    try Data(skillContent.utf8).write(
       to: skill.appendingPathComponent("SKILL.md")
     )
     try Data("reference\n".utf8).write(to: skill.appendingPathComponent("README.md"))
@@ -950,11 +1579,35 @@ private final class RefusingRollbackFileManager: FileManager, @unchecked Sendabl
   }
 }
 
+private final class RestoringForeignFolderFileManager: FileManager, @unchecked Sendable {
+  private let folder: URL
+  private let marker: Data
+  private(set) var didRestore = false
+
+  init(folder: URL, marker: Data) {
+    self.folder = folder
+    self.marker = marker
+    super.init()
+  }
+
+  override func copyItem(at source: URL, to destination: URL) throws {
+    if !didRestore {
+      didRestore = true
+      try super.createDirectory(at: folder, withIntermediateDirectories: true)
+      try marker.write(to: folder.appendingPathComponent(".codescribe-managed.json"))
+      try Data("restored foreign content\n".utf8).write(
+        to: folder.appendingPathComponent("operator.txt"))
+    }
+    try super.copyItem(at: source, to: destination)
+  }
+}
+
 private final class RecordingAgentBridgeInstaller: AgentBridgeInstalling {
   func adoptManualSkill(client: AgentBridgeClient) throws -> AgentBridgeAdoptionResult {
     throw AgentBridgeInstallationError.transaction("manual adoption not configured in this fixture")
   }
   private(set) var installCalls: [Set<AgentBridgeClient>] = []
+  var failInstallation = false
   private var current = AgentBridgeInstallationStatus(
     payloadAvailable: true,
     bundleVersion: "9.8.7",
@@ -967,6 +1620,9 @@ private final class RecordingAgentBridgeInstaller: AgentBridgeInstalling {
 
   func install(selectedClients: Set<AgentBridgeClient>) throws -> AgentBridgeInstallationStatus {
     installCalls.append(selectedClients)
+    if failInstallation {
+      throw AgentBridgeInstallationError.transaction("Installation refused by the test fixture")
+    }
     let clients = selectedClients.sorted { $0.rawValue < $1.rawValue }
     current = AgentBridgeInstallationStatus(
       payloadAvailable: true,

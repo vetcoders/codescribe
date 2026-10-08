@@ -12,39 +12,40 @@ struct LicensePanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(
-        String(localized: "Basic stays free."),
+        String(localized: "License"),
         blurb: String(
-          localized:
-            "A signed CSK1 key unlocks the Agentic lane. Validation is local and the key stays in the macOS Keychain."
-        )
+          localized: "Basic mode stays free. A license unlocks Agent mode.",
+          comment: "License panel: what is available without a key and what a license unlocks")
       )
-
-      SettingsSectionLabel(String(localized: "License status"))
-        .padding(.top, CSSpace.section)
       VStack(spacing: 0) {
         RuntimeRow(
-          key: String(localized: "State"), value: stateLabel,
-          tint: model.licenseStatus.agenticEntitled,
+          key: stateRowLabel,
+          value: stateLabel,
+          tint: model.licenseAllowsAgentMode,
           trailing: .none)
-        divider
-        RuntimeRow(
-          key: String(localized: "SKU"), value: model.licenseStatus.sku ?? "Basic", tint: false,
-          mono: true,
-          trailing: .none)
-        divider
-        RuntimeRow(
-          key: String(localized: "Updates through"),
-          value: model.licenseStatus.updatesUntil ?? "—", tint: false,
-          mono: true, trailing: .none)
+        if showsModeRow {
+          divider
+          RuntimeRow(
+            key: String(localized: "Mode", comment: "License panel: operating mode"),
+            value: modeLabel(agentMode: model.licenseAllowsAgentMode), tint: false,
+            trailing: .none)
+        }
+        if showsLicenseOfferRow {
+          divider
+          RuntimeRow(
+            key: String(localized: "License"),
+            value: licenseOfferLabel, tint: false,
+            trailing: .none)
+        }
       }
-      .padding(.top, CSSpace.control)
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
           .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
+      .padding(.top, CSSpace.section)
 
-      SettingsSectionLabel(String(localized: "Enter or restore key"))
+      SettingsSectionLabel(String(localized: "License key"))
         .padding(.top, CSSpace.section)
       SecureField(Self.keyPlaceholder, text: $key)
         .font(CSFont.mono(11.5, .regular))
@@ -63,8 +64,8 @@ struct LicensePanel: View {
         .padding(.top, CSSpace.control)
         .accessibilityLabel("Codescribe license key")
 
-      HStack(spacing: 12) {
-        Button("Activate / Restore") {
+      HStack(spacing: CSSpace.md) {
+        Button("Activate") {
           let submitted = key
           Task { @MainActor in
             if await model.activateLicense(submitted), key == submitted { key = "" }
@@ -78,17 +79,17 @@ struct LicensePanel: View {
         // signed key for an email on the spot (open beta). Without this
         // button the panel demanded a key and never said where one comes
         // from (operator, 2026-08-09).
-        Button("Get license") {
+        Button("Get license key") {
           if let url = URL(string: "https://codescribe.vetcoders.io/license/") {
             NSWorkspace.shared.open(url)
           }
         }
         .buttonStyle(.bordered)
-        .help("Open codescribe.vetcoders.io/license — enter your email, paste the key back here")
+        .help("Open the license-key page")
         .accessibilityIdentifier("settings-license-get")
 
         if model.licenseStatus.state != .unlicensed {
-          Button("Remove license", role: .destructive) {
+          Button("Remove key", role: .destructive) {
             Task { @MainActor in await model.removeLicense() }
           }
           .csFocusRing()
@@ -96,53 +97,110 @@ struct LicensePanel: View {
           .disabled(model.licenseBusy)
         }
       }
-      .padding(.top, 12)
-
-      if model.licenseReadState != .available {
-        Text(model.licenseReadState == .loading
-          ? String(localized: "Checking license…")
-          : String(localized: "License access is unavailable. The last verified license still follows its original expiry."))
-          .font(CSFont.ui(11.5))
-          .padding(.top, 10)
-      }
-      Button("Retry license access") { model.refreshLicense() }
-        .disabled(model.licenseBusy)
-        .padding(.top, 10)
+      .padding(.top, CSSpace.md)
 
       if let error = model.licenseError {
         Text(error)
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.ui(11.5))
           .foregroundStyle(CSColor.danger)
           .padding(.top, 10)
-          .textSelection(.enabled)
+      }
+      if model.licenseReadState == .unavailable {
+        Button("Try again") { model.refreshLicense() }
+          .disabled(model.licenseBusy)
+          .padding(.top, 10)
+      }
+      if let details = model.licenseErrorDetails {
+        DisclosureGroup("Details") {
+          Text(details)
+            .font(CSFont.mono(10.5, .medium))
+            .textSelection(.enabled)
+        }
+        .font(CSFont.ui(11.5))
+        .foregroundStyle(Color.secondary)
+        .padding(.top, 10)
       }
 
       Text(
-        "Codescribe does not phone home while you work. A future fulfillment service may refresh the validation timestamp explicitly; offline grace is 30 days."
+        String(
+          localized: "The key is verified locally and stored in the macOS Keychain.",
+          comment: "License panel footnote: how the key is checked and where it lives")
       )
       .font(CSFont.ui(11.5))
-      .lineSpacing(2)
       .foregroundStyle(Color.secondary)
-      .padding(.top, 18)
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.top, CSSpace.section)
     }
+    .frame(maxWidth: 560, alignment: .leading)
     .padding(.horizontal, CSSpace.xl)
     .padding(.vertical, CSSpace.section)
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// Effective operating mode, derived from whether the current license
+  /// allows Agent mode — never the raw SKU, which never renders on screen.
+  private func modeLabel(agentMode: Bool) -> String {
+    agentMode
+      ? String(
+        localized: "license.mode.agent", defaultValue: "Agent",
+        comment: "License panel, Mode row value: agent operating mode")
+      : String(
+        localized: "license.mode.basic", defaultValue: "Basic",
+        comment: "License panel, Mode row value: basic operating mode")
+  }
+
+  /// Name of the purchased offer; shown only for the lifetime agent SKU, so
+  /// no other identifier ever needs an on-screen name invented for it.
+  private var licenseOfferLabel: String {
+    String(
+      localized: "license.offer.agentLifetime", defaultValue: "Agent · one-time purchase",
+      comment: "License panel, License row value: name of the purchased offer")
+  }
+
+  /// No key yet, but the license state is readable: the Status row is
+  /// replaced by a single combined Mode row (always Basic in that state).
+  private var isCombinedModeRow: Bool {
+    model.licenseReadState == .available && model.licenseStatus.state == .unlicensed
+  }
+
+  /// Separate Mode row, shown once a license state beyond "no key" is known.
+  /// Loading/unavailable show only the Status row; the no-key state shows
+  /// only the combined row above — never both.
+  private var showsModeRow: Bool {
+    model.licenseReadState == .available && !isCombinedModeRow
+  }
+
+  private var showsLicenseOfferRow: Bool {
+    showsModeRow && model.licenseStatus.sku == "agentic-lifetime"
+  }
+
+  private var stateRowLabel: String {
+    if isCombinedModeRow {
+      return String(localized: "Mode", comment: "License panel: operating mode")
+    }
+    return String(localized: "Status", comment: "License panel: current license status")
   }
 
   private var stateLabel: String {
-    if model.licenseStatus.state == .unlicensed, model.licenseReadState != .available {
-      return model.licenseReadState == .loading
-        ? String(localized: "Checking license…")
-        : String(localized: "License access unavailable")
+    if model.licenseReadState == .loading {
+      return String(localized: "Checking license…")
+    }
+    if model.licenseStatus.state == .unlicensed, model.licenseReadState == .unavailable {
+      return String(localized: "Unknown")
     }
     switch model.licenseStatus.state {
-    case .unlicensed: return String(localized: "Unlicensed · Basic")
-    case .active: return String(localized: "Active · Agentic unlocked")
+    case .unlicensed:
+      return modeLabel(agentMode: false)
+    case .active:
+      return String(localized: "Active", comment: "License status: active")
     case .graceOffline:
       let daysLeft = Int(model.licenseStatus.daysLeft ?? 0)
-      return String(localized: "Offline grace · \(daysLeft) days left")
+      return String(
+        localized: "Active · \(daysLeft) days left",
+        comment:
+          "License status; the count is days left in the local activation period, not days without internet")
     case .expiredUpdates:
-      return String(localized: "Updates expired · installed app remains active")
+      return String(localized: "Inactive", comment: "License status: a time limit has elapsed")
     }
   }
 

@@ -5,19 +5,23 @@
 // The build resolves one published GitHub release for every download CTA.
 // Its pinned asset URL, version and size stay together in src/lib/release.ts.
 import { SITE_VERSION, DOWNLOAD_URL, DOWNLOAD_SIZE } from '../lib/release';
+import { page } from '../lib/asset';
 ---
 
 <section class="section install" id="install" data-screen-label="Install" aria-labelledby="install-title">
   <div class="container">
     <p class="eyebrow eyebrow--plain">macOS · APPLE SILICON · v{SITE_VERSION}</p>
-    <h2 id="install-title">Local-first. Cloud opt-in.</h2>
+    <h2 id="install-title">Start with local speech recognition.</h2>
     <p class="dl-row">
       <a class="btn btn--primary" href={DOWNLOAD_URL}>Download Codescribe.dmg</a>
-      <span class="dl-note">signed &amp; notarized · {DOWNLOAD_SIZE} · <a href="https://github.com/vetcoders/codescribe#install-from-source">build from source: see README</a></span>
+      <span class="dl-note">published release · {DOWNLOAD_SIZE} · <a href="https://github.com/vetcoders/codescribe#install-from-source">build from source: see README</a></span>
     </p>
+    <p class="setup-note">Install the app, grant the speech permissions, and choose your shortcuts.
+      Whisper needs a local model download. AI rewriting and agent replies require a configured provider.
+      <a href={page("license")}>Get an open-beta licence</a> · <a href={page("privacy")}>Read the privacy policy</a>.</p>
     <div class="meta-row">
-      <span>· local whisper preview</span>
-      <span>· configurable final pass</span>
+      <span>· Apple live speech</span>
+      <span>· optional Whisper model</span>
       <span>· tray + overlay</span>
       <span>· FSL-1.1-ALv2</span>
     </div>
@@ -34,6 +38,7 @@ import { SITE_VERSION, DOWNLOAD_URL, DOWNLOAD_SIZE } from '../lib/release';
     flex-wrap: wrap;
     margin: 0 0 22px;
   }
+  .setup-note { font: 400 15px / 1.65 var(--font-display); color: var(--muted-2); margin: 20px 0; }
   .dl-note {
     font: 500 12px / 1 var(--font-mono);
     color: var(--ink-dim, #9a958a);

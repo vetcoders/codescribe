@@ -1,13 +1,13 @@
 ---
 import Layout from '../../layouts/Layout.astro';
 import Nav from '../../components/Nav.astro';
-import { page } from '../../lib/asset';
+import { asset, page } from '../../lib/asset';
 import '../../styles/lab-shell.css';
 ---
 
 <Layout
   title="Voice Lab — codescribe"
-  description="Teacher and Seal Atlas, on demand. Live × Whisper × human. Not a daemon."
+  description="Compare supplied transcripts against a human reference and inspect an example audio atlas. A browser workbench, separate from live speech recognition."
   path="voice/lab"
 >
   <div class="lab-app-page">
@@ -31,13 +31,13 @@ import '../../styles/lab-shell.css';
       <div class="lab-frame">
         <aside class="lab-sidebar">
           <section class="lab-block">
-            <p class="lab-kicker">axiom</p>
-            <p class="lab-muted">time × energy → <strong>faithful sentence</strong></p>
+            <p class="lab-kicker">method</p>
+            <p class="lab-muted">Compare transcripts<br /><strong>against a reference</strong></p>
           </section>
           <section class="lab-block">
             <p class="lab-kicker">thesis</p>
             <aside id="thesis" class="thesis" hidden></aside>
-            <p id="thesis-empty" class="lab-muted">Run teacher. Nothing loops.</p>
+            <p id="thesis-empty" class="lab-muted">Run a comparison to see the summary.</p>
           </section>
           <section class="lab-block">
             <p class="lab-kicker">counts</p>
@@ -55,30 +55,31 @@ import '../../styles/lab-shell.css';
         <main id="main" class="lab-workspace">
           <section data-lab-pane="teach">
             <p class="lab-kicker">command</p>
-            <h1>Teacher <span class="accent">on demand.</span></h1>
+            <h1>Transcript <span class="accent">comparison.</span></h1>
             <p class="lede">
-              Same triangle as <code>codescribe-teacher</code>. Apple/live under-generates.
-              Whisper over-fills. Human writes the sentence.
+              Compare transcripts you supply with a human reference. This page does not
+              record audio or run speech recognition. Disagreement is a review prompt,
+              not proof that either engine is correct.
             </p>
             <div class="legs">
               <label>
                 <span>Live / Apple</span>
-                <textarea id="live" rows="8" placeholder="Under-generated assembly"></textarea>
+                <textarea id="live" rows="8" placeholder="Paste the live transcript"></textarea>
               </label>
               <label>
                 <span>Whisper</span>
-                <textarea id="whisper" rows="8" placeholder="Final-pass over-fill"></textarea>
+                <textarea id="whisper" rows="8" placeholder="Paste the Whisper transcript"></textarea>
               </label>
               <label>
                 <span>Human</span>
-                <textarea id="human" rows="8" placeholder="Optional reference"></textarea>
+                <textarea id="human" rows="8" placeholder="Paste a checked human reference"></textarea>
               </label>
             </div>
             <div class="split">
               <div>
                 <h3>Needs attention</h3>
                 <div id="attention" class="table-wrap">
-                  <p class="empty">Nothing yet. Teach is a command, not a loop.</p>
+                  <p class="empty">Run a comparison to inspect differences.</p>
                 </div>
               </div>
             </div>
@@ -100,8 +101,8 @@ import '../../styles/lab-shell.css';
             <p class="lab-kicker">toolbox</p>
             <h2>Teach</h2>
             <div class="lab-tool-stack">
-              <button type="button" id="run-teach" class="primary">Run teacher</button>
-              <button type="button" id="load-proof" class="ghost">Load proof take 01</button>
+              <button type="button" id="run-teach" class="primary">Compare transcripts</button>
+              <button type="button" id="load-proof" class="ghost">Load example transcripts</button>
               <button type="button" id="clear-teach" class="ghost">Clear</button>
             </div>
           </section>
@@ -111,14 +112,14 @@ import '../../styles/lab-shell.css';
             <div class="lab-tool-stack">
               <button type="button" id="open-atlas" class="primary">Open take 01</button>
               <button type="button" id="close-atlas" class="ghost" hidden>Close atlas</button>
-              <a class="ghost linkish" href="/voice/atlas/seal-atlas.take01.html" target="_blank" rel="noopener">open raw ↗</a>
+              <a class="ghost linkish" data-atlas-link href={asset('voice/atlas/seal-atlas.take01.html')} target="_blank" rel="noopener">open raw ↗</a>
             </div>
           </section>
           <section class="lab-block">
             <p class="lab-kicker">module</p>
             <p class="lab-muted">
-              Not a sidecar. Loopback workbench lives at
-              <code>127.0.0.1:8765/lab</code>.
+              For live capture and session reports, use the installed Voice Lab
+              at <a href="http://127.0.0.1:8765/lab">127.0.0.1:8765/lab</a> on your Mac.
             </p>
             <p class="foot-note"><a href={page('')}>← codescribe</a></p>
           </section>
@@ -255,7 +256,7 @@ import '../../styles/lab-shell.css';
     thesisEmpty.hidden = false;
     stats.hidden = true;
     statsEmpty.hidden = false;
-    attention.innerHTML = '<p class="empty">Nothing yet. Teach is a command, not a loop.</p>';
+    attention.innerHTML = '<p class="empty">Run a comparison to inspect differences.</p>';
     lexicon.innerHTML =
       '<li class="empty">No candidates until a human reference disagrees with Whisper.</li>';
     runtimeLabel.textContent = 'idle · on demand';
@@ -265,7 +266,8 @@ import '../../styles/lab-shell.css';
     setSection('atlas');
     const frame = atlasStage.querySelector('iframe');
     if (frame && !frame.getAttribute('src')) {
-      frame.src = '/voice/atlas/seal-atlas.take01.html';
+      const link = document.querySelector<HTMLAnchorElement>('[data-atlas-link]');
+      if (link) frame.src = link.href;
     }
     atlasStage.hidden = false;
     atlasEmpty.hidden = true;

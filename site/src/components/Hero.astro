@@ -6,20 +6,20 @@
 // The hero CTA shares the pinned download target with the Install section — two
 // buttons on one page must never resolve to different builds (review P1-4).
 import { DOWNLOAD_URL } from '../lib/release';
-const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minimal patch.'.split(' ');
+const CLEAN = 'Review this change and explain the trade-offs.'.split(' ');
 ---
 
 <section class="hero" data-screen-label="Hero" aria-labelledby="hero-title">
   <div class="glow" aria-hidden="true"></div>
 
   <div class="inner">
-    <p class="eyebrow eyebrow--hero">macOS · VOICE CONTROL LAYER</p>
+    <p class="eyebrow eyebrow--hero">VOICE WORKSPACE · macOS</p>
     <h1 id="hero-title">
-      Speak <span class="accent">in.</span> Code <span class="accent">out.</span>
+      Speak into<br /><span class="accent">your workflow.</span>
     </h1>
     <p class="sub">
-      Dictate, format, ask, remember, and dispatch work — from one always-available
-      macOS overlay. Not voice typing. A voice interface to your tools and your agents.
+      Dictate into your editor, revise a selection, or talk to an agent.
+      A native macOS overlay keeps your words and conversations close to the work.
     </p>
 
     <!-- live console -->
@@ -30,8 +30,8 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
           <span class="rippledot__ring rippledot__ring--delay"></span>
           <span class="rippledot__core"></span>
         </span>
-        <span class="console__status" data-status>structured intent</span>
-        <span class="console__engine">● local whisper</span>
+        <span class="console__status" data-status>example transcript</span>
+        <span class="console__engine">illustrative workflow</span>
       </div>
       <div class="console__body" data-body data-mode="clean">
         {/* Trailing whitespace text node per word keeps textContent readable for
@@ -41,14 +41,14 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
       </div>
       <div class="console__result" data-result data-reveal>
         <span class="console__resultdot" aria-hidden="true"></span>
-        <span class="console__resulttext">handed to your agent · run started</span>
-        <span class="console__resultmeta">2.4s · local</span>
+        <span class="console__resulttext">choose a connected agent to send this request</span>
+        <span class="console__resultmeta">agent setup required</span>
       </div>
     </div>
 
     <div class="cta">
       <a class="btn btn--primary" href={DOWNLOAD_URL}>Download for macOS</a>
-      <a class="btn btn--ghost" href="#features">12 that matter</a>
+      <a class="btn btn--ghost" href="#features">Explore the workflow</a>
     </div>
   </div>
 
@@ -150,7 +150,7 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
     color: var(--muted-3);
     letter-spacing: 0.08em;
     /* quick opacity dip on phase-label swaps (listening… / shaping intent… /
-       structured intent) so the text change reads as a crossfade, not a jump. */
+       example transcript) so the text change reads as a crossfade, not a jump. */
     transition: opacity 0.16s ease;
   }
   .console__engine {
@@ -281,8 +281,8 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
 </style>
 
 <script>
-  const RAW = 'uh, so scan this repo and fix the double-sent events'.split(' ');
-  const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minimal patch.'.split(' ');
+  const RAW = 'review this change and explain the trade offs'.split(' ');
+  const CLEAN = 'Review this change and explain the trade-offs.'.split(' ');
 
   const body = document.querySelector<HTMLElement>('[data-body]');
   const statusEl = document.querySelector<HTMLElement>('[data-status]');
@@ -339,7 +339,7 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
     }
 
     const statusText = (mode: 'raw' | 'clean', showResult: boolean) =>
-      mode === 'clean' ? (showResult ? 'structured intent' : 'shaping intent…') : 'listening…';
+      mode === 'clean' ? (showResult ? 'example transcript' : 'formatting example…') : 'spoken example';
 
     // Quick opacity dip (CSS transition on .console__status) around the text
     // swap. Awaits only the fade-out so callers can overlap the fade-in with

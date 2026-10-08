@@ -47,14 +47,21 @@ struct LastServingVerdict: Equatable {
   let fallbackUsed: Bool
 }
 
+/// The model preference row of the Engine tab: the model the selected mode
+/// actually loads. Nil when the mode has no model preference to show.
+struct SttModelRow: Equatable {
+  let label: String
+  let value: String
+}
+
 /// Format Active STT from the last serving verdict. Config projection is forbidden.
 /// Live Apple is `local_apple` → `Apple`. Do not append the dead Smart-final-pass token.
 /// `Apple` and `Whisper` are proper names and stay verbatim; every other word is copy.
 func formatActiveSTT(lastServing: LastServingVerdict?) -> String {
   guard let verdict = lastServing else {
     return String(
-      localized: "Not yet served",
-      comment: "Active STT row before the first transcription of this launch"
+      localized: "No transcription in this app session",
+      comment: "Last transcription engine row before the first transcription of this launch"
     )
   }
   switch verdict.engine {
@@ -541,13 +548,16 @@ enum SettingsHealthLevel: Equatable {
 
 struct SettingsHealthState: Equatable {
   let level: SettingsHealthLevel
-  let message: String
+  /// `nil` when nothing operational can be said yet: the footer stays empty.
+  let message: String?
   let targetSection: SettingsSection?
 }
 
 /// Pure aggregate used by the rail footer and its XCTest matrix. Known failures
 /// beat unknown inputs so the footer never hides a concrete problem behind a
-/// muted "unknown" state.
+/// muted "unknown" state. Every message is one sentence-case line that names
+/// the area, never the cause: the owning panel explains. An undetermined state
+/// has no message, except the recording check, which says it is running.
 func healthState(
   stt: Bool?,
   recording: Bool?,
@@ -560,8 +570,8 @@ func healthState(
     return SettingsHealthState(
       level: .offline,
       message: String(
-        localized: "speech engine: unavailable",
-        comment: "Settings health footer, lower case"
+        localized: "Transcription unavailable",
+        comment: "Settings health footer, sentence case"
       ),
       targetSection: .engine
     )
@@ -570,8 +580,8 @@ func healthState(
     return SettingsHealthState(
       level: .offline,
       message: String(
-        localized: "recording setup: action needed",
-        comment: "Settings health footer, lower case"
+        localized: "Recording needs setup",
+        comment: "Settings health footer, sentence case"
       ),
       targetSection: .audio
     )
@@ -579,10 +589,8 @@ func healthState(
   if keys == .missing {
     return SettingsHealthState(
       level: .degraded,
-      message: String(
-        localized: "assistive lane: credential missing",
-        comment: "Settings health footer, lower case: no supported account or API key"
-      ),
+      // Shares the onboarding row: no supported account or API key.
+      message: String(localized: "Agent needs setup"),
       targetSection: .keys
     )
   }
@@ -590,8 +598,8 @@ func healthState(
     return SettingsHealthState(
       level: .offline,
       message: String(
-        localized: "assistive lane: not ready",
-        comment: "Settings health footer, lower case"
+        localized: "Agent unavailable",
+        comment: "Settings health footer, sentence case"
       ),
       targetSection: .agent
     )
@@ -599,7 +607,10 @@ func healthState(
   if formattingRequired && formatting == false {
     return SettingsHealthState(
       level: .degraded,
-      message: String(localized: "formatting lane: unavailable", comment: "Settings health footer"),
+      message: String(
+        localized: "Formatting unavailable",
+        comment: "Settings health footer, sentence case"
+      ),
       targetSection: .agent
     )
   }
@@ -610,25 +621,19 @@ func healthState(
       level: .unknown,
       message: recording == nil
         ? String(
-          localized: "recording setup: checking",
-          comment: "Settings health footer, lower case"
+          localized: "Checking recording…",
+          comment: "Settings health footer, sentence case"
         )
-        : String(
-          localized: "system health: unknown",
-          comment: "Settings health footer, lower case"
-        ),
-      targetSection: recording == nil ? .audio : .engine
+        : nil,
+      targetSection: recording == nil ? .audio : nil
     )
   }
   return SettingsHealthState(
     level: .healthy,
-    message: formattingRequired
-      ? String(
-        localized: "speech, assistive and formatting setup ready", comment: "Settings health footer"
-      )
-      : String(
-        localized: "speech and assistive setup ready · cloud formatting not required",
-        comment: "Settings health footer"),
+    message: String(
+      localized: "Ready to work",
+      comment: "Settings health footer, sentence case: nothing needs attention"
+    ),
     targetSection: nil
   )
 }
@@ -774,7 +779,7 @@ enum LLMLane: String, CaseIterable, Identifiable, Hashable {
 
   var subtitle: String {
     self == .assistive
-      ? String(localized: "Agent and voice-assistant requests")
+      ? String(localized: "The model behind the Agent and the voice assistant")
       : String(localized: "Transcript cleanup and formatting")
   }
 
@@ -824,13 +829,36 @@ struct LLMLaneModel {
       return runtime.unavailableReason
         ?? String(localized: "unavailable", comment: "Lane availability, lower case")
     }
+    // Presence, not validity: a stored key may still be rejected, and a
+    // signed-in account does not open model discovery (`discoveryDescription`).
     if runtime.accountAuth {
-      return String(localized: "account", comment: "Lane auth: signed-in account, lower case")
+      return String(localized: "Connected account", comment: "Lane auth: signed-in account")
     }
     if runtime.keyPresent {
-      return String(localized: "API key", comment: "Lane auth: an API key is stored")
+      return String(localized: "Stored API key", comment: "Lane auth: an API key is stored")
     }
-    return String(localized: "no key required", comment: "Lane auth, lower case")
+    return String(localized: "No key required", comment: "Lane auth: key-optional host")
+  }
+
+  /// A failed fetch (`error`, `key_rejected`); the footer then offers details.
+  var discoveryFailed: Bool {
+    credentialAccessResolved && credentialAccessError == nil
+      && ["error", "key_rejected"].contains(discovery.status)
+  }
+
+  /// The provider's own words about a failed fetch — shown only on request,
+  /// under "Error details", never in the main line.
+  var discoveryErrorDetails: String? {
+    guard discoveryFailed, let message = discovery.message, !message.isEmpty else { return nil }
+    return message
+  }
+
+  /// Both lanes on one provider share one discovery record, so its failure
+  /// would print twice. The Formatting footer defers to the Agent's line then;
+  /// availability stays per lane (an account authorizes Assistive only).
+  func repeatsDiscoveryFailure(of other: LLMLaneModel) -> Bool {
+    lane == .formatting && other.lane == .assistive && providerId == other.providerId
+      && discoveryFailed && other.discoveryFailed
   }
 
   var availabilityTint: Color {
@@ -845,7 +873,7 @@ struct LLMLaneModel {
     case "fresh":
       let count = modelOptions.count
       return count == 0
-        ? String(localized: "No models returned. Enter a Model ID in Settings › Agent › LLM lanes.")
+        ? String(localized: "The provider returned no models. Enter a model ID below.")
         : String(
           localized: "\(count) models discovered from provider",
           comment: "Model discovery status; needs a plural variation"
@@ -862,31 +890,33 @@ struct LLMLaneModel {
       if runtime.accountAuth {
         return String(
           localized:
-            "Account sign-in supports Assistive requests, but model discovery requires a provider API key. Keep the current model or enter a Model ID in Settings › Agent › LLM lanes."
+            "The connected account covers Agent requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below."
         )
       }
       if lane == .formatting, provider?.accountSignedIn == true {
         return String(
           localized:
-            "Formatting requires this provider's API key; an Assistive account does not authorize it. Add the key in Settings › Providers."
+            "Formatting needs this provider's API key; the connected account does not cover it. Add the key under Providers."
         )
       }
       return String(
         localized:
-          "Add this provider's API key in Settings › Providers to discover models, or enter a Model ID in Settings › Agent › LLM lanes."
+          "Add this provider's API key under Providers to list its models, or enter a model ID below."
       )
     case "loading": return String(localized: "discovering models…", comment: "In-progress status")
-    default:
-      if let message = discovery.message, !message.isEmpty {
-        return String(
-          localized:
-            "Model discovery failed: \(message). Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.",
-          comment: "The placeholder is a status message from the core"
-        )
-      }
+    case "key_rejected":
+      // The core classified the refusal (401/403, or a 400 naming the key);
+      // any other failure stays generic so a bad key is never guessed.
       return String(
         localized:
-          "Model discovery failed. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes."
+          "Could not fetch \(providerDisplayName) models. The API key was rejected. Check it under Providers.",
+        comment: "The placeholder is the provider name"
+      )
+    default:
+      return String(
+        localized:
+          "Could not fetch \(providerDisplayName) models. Check the provider under Providers.",
+        comment: "The placeholder is the provider name"
       )
     }
   }
@@ -1010,59 +1040,6 @@ enum AppRelaunch {
   }
 }
 
-extension CsWhisperModelStatus {
-  /// Placeholder for canvas / engine-less previews (no network, no disk probe).
-  static let sampleUnavailable = CsWhisperModelStatus(
-    available: false,
-    embedded: false,
-    path: nil,
-    modelId: "whisper-large-v3-turbo",
-    repo: "mlx-community/whisper-large-v3-turbo",
-    sizeHint: "~1.6 GB"
-  )
-}
-
-private enum WhisperDownloadEvent: Sendable {
-  case progress(detail: String, fraction: Double?)
-  case complete(path: String)
-}
-
-/// Value-only UniFFI callback adapter; the view model owns the one ordered
-/// MainActor consumer.
-final class WhisperDownloadProgressSink: CsWhisperDownloadListener, Sendable {
-  private let continuation: AsyncStream<WhisperDownloadEvent>.Continuation
-
-  fileprivate init(continuation: AsyncStream<WhisperDownloadEvent>.Continuation) {
-    self.continuation = continuation
-  }
-
-  func onProgress(file: String, bytesDone: UInt64, bytesTotal: Int64) {
-    let fraction: Double?
-    if bytesTotal > 0 {
-      fraction = min(1.0, Double(bytesDone) / Double(bytesTotal))
-    } else {
-      fraction = nil
-    }
-    let mbDone = Double(bytesDone) / 1_048_576.0
-    let detail: String
-    if bytesTotal > 0 {
-      let mbTotal = Double(bytesTotal) / 1_048_576.0
-      detail = String(format: "%@ · %.0f / %.0f MB", file, mbDone, mbTotal)
-    } else {
-      detail = String(format: "%@ · %.0f MB", file, mbDone)
-    }
-    continuation.yield(.progress(detail: detail, fraction: fraction))
-  }
-
-  func onComplete(path: String) {
-    continuation.yield(.complete(path: path))
-  }
-
-  func finish() {
-    continuation.finish()
-  }
-}
-
 /// Quick-start actions from the Creator panel's cards. Navigation cases route
 /// the settings rail; `openOverlay` starts a real dictation session through an
 /// injectable seam so the cards are never inert decorations again
@@ -1142,7 +1119,20 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var creatorAgentBridgeStatus = AgentBridgeInstallationStatus.unavailable
   @Published private(set) var creatorAgentBridgeError: String?
   @Published private(set) var creatorAgentBridgeNotice: String?
+  /// Launch-synchronization diagnostics, not a user-facing notice: `App.swift`
+  /// writes this detail to the app log, and Agent Diagnostics → Connection
+  /// details shows it under the installed paths.
+  @Published private(set) var creatorAgentBridgeLaunchDetail: String?
   @Published private(set) var settings: CsSettings
+  // Interface language. The choice is the per-app macOS language preference
+  // owned by `InterfaceLanguagePreference`; the setup wizard writes the same
+  // one. The running process keeps its launch language until the host restarts
+  // it through the same idle guard the wizard uses (`onApplyInterfaceLanguage`).
+  @Published private(set) var interfaceLanguage: InterfaceLanguage
+  @Published private(set) var applyingInterfaceLanguage = false
+  @Published private(set) var interfaceLanguageNotice: String?
+  var onApplyInterfaceLanguage: ((@escaping @MainActor () -> Void) async throws -> Void)?
+  private let languagePreference: InterfaceLanguagePreference
   @Published private(set) var newMaxConsultationPending = false
   @Published private(set) var maxConsultationNotice: String?
   @Published private(set) var maxToolApprovals: [PendingToolApproval] = []
@@ -1203,7 +1193,9 @@ final class SettingsViewModel: ObservableObject {
   var licenseStatus: CsLicenseStatus { licenseService.status }
   var licenseReadState: LicenseService.ReadState { licenseService.readState }
   var licenseBusy: Bool { licenseService.isBusy }
+  var licenseAllowsAgentMode: Bool { licenseService.canUseAgentic }
   private var licenseChangeSink: AnyCancellable?
+  private var agentBridgeSynchronizationSink: AnyCancellable?
   /// Provider ids with a "Sign in with ChatGPT" flow in flight (browser open,
   /// local callback server listening). Guards double-clicks.
   @Published private(set) var accountLoginPending: Set<String> = []
@@ -1215,24 +1207,22 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var providerAccessPending = false
   @Published private(set) var providerMutationPending = false
   @Published private(set) var providerAccessResolved = false
+  /// When the last provider snapshot landed; the receipt the Providers panel
+  /// shows next to `Refresh status` once the spinner is gone.
+  @Published private(set) var providerAccessCheckedAt: Date?
   @Published private(set) var providerAccessError: String?
   @Published private(set) var providerAccountErrors: [String: String] = [:]
   private var providerAccessGeneration: UInt64 = 0
   private var providerRefreshRequested = false
 
-  // MARK: - Local Whisper download (Settings → Dictation)
-
-  /// Live availability of default Whisper weights (embedded or on disk).
-  /// Named `localWhisperStatus` so it does not shadow UniFFI free functions
-  /// `whisperModelStatus()` / `downloadWhisperModel(...)`.
-  @Published private(set) var localWhisperStatus: CsWhisperModelStatus = .sampleUnavailable
-  @Published private(set) var whisperDownloadInFlight = false
-  /// Human status under the download control (file name + progress).
-  @Published private(set) var whisperDownloadDetail: String?
-  /// 0...1 when Content-Length is known; nil for indeterminate.
-  @Published private(set) var whisperDownloadFraction: Double?
-  private var whisperDownloadSink: WhisperDownloadProgressSink?
-  private var whisperDownloadEventTask: Task<Void, Never>?
+  // One retained owner shared with onboarding; these are read-only projections.
+  let whisperDownloadStore: WhisperDownloadStore
+  private var whisperDownloadChangeSink: AnyCancellable?
+  var whisperDownloadEnabled: Bool { engine != nil }
+  var localWhisperStatus: CsWhisperModelStatus { whisperDownloadStore.status }
+  var whisperDownloadInFlight: Bool { whisperDownloadStore.inFlight }
+  var whisperDownloadDetail: String? { whisperDownloadStore.detail }
+  var whisperDownloadFraction: Double? { whisperDownloadStore.fraction }
 
   // MARK: - Local Whisper model picker (Settings → Dictation)
 
@@ -1285,6 +1275,11 @@ final class SettingsViewModel: ObservableObject {
     hotkeys: HotkeysEngine? = nil,
     licenseService: LicenseService? = nil,
     buildInfo: AppBuildInfo = .current(),
+    whisperDownloadStore: WhisperDownloadStore = .shared,
+    languagePreferences: UserDefaults = .standard,
+    preferredLanguages: [String] = Locale.preferredLanguages,
+    processInterfaceLanguage: InterfaceLanguage = .preferred(
+      from: Bundle.main.preferredLocalizations),
     runtimeLlmLaneProvider: @escaping (CsLlmLane) -> CsRuntimeLlmLane = { lane in
       runtimeLlmLane(lane: lane)
     },
@@ -1307,6 +1302,11 @@ final class SettingsViewModel: ObservableObject {
     self.hotkeys = hotkeys
     self.licenseService = licenseService ?? .preview
     self.buildInfo = buildInfo
+    self.whisperDownloadStore = whisperDownloadStore
+    self.languagePreference = InterfaceLanguagePreference(
+      defaults: languagePreferences, preferredLanguages: preferredLanguages,
+      processLanguage: processInterfaceLanguage)
+    self.interfaceLanguage = languagePreference.current
     self.runtimeLlmLaneProvider = runtimeLlmLaneProvider
     self.audioRecordingControlProvider =
       audioRecordingControlProvider ?? Self.liveAudioRecordingControlProvider(for: engine)
@@ -1322,13 +1322,21 @@ final class SettingsViewModel: ObservableObject {
     self.deferredInsertShortcut = DeferredInsertShortcutOption(
       wireId: initialSettings.deferredInsertShortcut
     )
-    self.keyStatus = engine?.keyStatus() ?? .sampleAllSet
+    self.keyStatus =
+      engine == nil
+      ? .sampleAllSet
+      : CsKeyStatus(
+        llmLibraxisApiKeySet: false, llmOpenaiApiKeySet: false,
+        llmXaiApiKeySet: false, llmAnthropicApiKeySet: false,
+        sttFileApiKeySet: false, sttLiveApiKeySet: false, githubTokenSet: false
+      )
     self.providers = engine == nil ? CsProviderOption.sampleProviders : []
     self.providerAccessResolved = engine == nil
     self.sttLanes = engine?.sttLanes() ?? [.sampleFile, .sampleLive]
     self.configDir = ""
     self.needsOnboarding = false
-    self.agentReadiness = engine == nil ? .sample : CsAgenticReadiness(configPathDisplay: "", ready: false, rows: [])
+    self.agentReadiness =
+      engine == nil ? .sample : CsAgenticReadiness(configPathDisplay: "", ready: false, rows: [])
     self.mcpStatus = .sample
     self.capabilityMatrix = CsCapabilityRow.sampleMatrix
     self.voiceLabReadError = nil
@@ -1341,15 +1349,22 @@ final class SettingsViewModel: ObservableObject {
     licenseChangeSink = self.licenseService.objectWillChange.sink { [weak self] _ in
       self?.objectWillChange.send()
     }
+    // Settings owns this projection even when a deep link skips Creator.
+    agentBridgeSynchronizationSink = NotificationCenter.default.publisher(
+      for: Self.agentBridgeLaunchSynchronizationDidFinish
+    ).sink { [weak self] _ in
+      self?.refreshCreatorAgentBridge()
+    }
+    whisperDownloadChangeSink = whisperDownloadStore.objectWillChange.sink { [weak self] _ in
+      self?.objectWillChange.send()
+    }
     lastServingVerdict = servingStatusProvider()
   }
 
   /// Passive inspection of the bundled installer; never attaches an agent.
   func refreshCreatorAgentBridge() {
     creatorAgentBridgeStatus = creatorAgentBridge.status()
-    if creatorAgentBridgeNotice == nil {
-      creatorAgentBridgeNotice = Self.agentBridgeLaunchNotice
-    }
+    creatorAgentBridgeLaunchDetail = Self.agentBridgeLaunchNotice
   }
 
   /// Add/update one client while preserving other managed clients. Creator
@@ -1397,24 +1412,36 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
-  /// Re-read live state (permissions can change while the window is open).
+  /// Re-read passive configuration/permission projections. Only canonical
+  /// completed setup permits automatic provider restoration outside auth UI.
+  /// License reads belong to the explained License surface or its actions.
   func refresh() {
     refreshPermissions()
     refreshServingStatus()
     if let engine {
       applyLoadedSettings(engine.loadSettings())
-      refreshProviderAccess()
       configDir = engine.configDir()
       needsOnboarding = engine.shouldShowOnboarding()
+      if !needsOnboarding { refreshProviderAccess() }
       refreshVoiceLab()
       refreshAudioInput()
     }
     refreshWhisperModelStatus()
     refreshWhisperModelCatalog()
     refreshAgentStatus()
+    refreshCreatorAgentBridge()
     reloadMcpServers()
     loadHotkeys()
-    licenseService.refresh()
+  }
+
+  /// Appear/activation and explicit section navigation refresh only the
+  /// explained auth surfaces while setup is incomplete. The existing setup
+  /// sentinel permits restoration elsewhere; there is no separate consent flag.
+  func refreshForCurrentSection() {
+    if section == .keys || engine?.shouldShowOnboarding() == false {
+      refreshProviderAccess()
+    }
+    if section == .license { refreshLicense() }
   }
 
   func refreshPermissions() {
@@ -1428,6 +1455,7 @@ final class SettingsViewModel: ObservableObject {
   func refreshLicense() { licenseService.refresh() }
 
   var licenseError: String? { licenseService.lastError }
+  var licenseErrorDetails: String? { licenseService.lastErrorDetails }
 
   @discardableResult
   func activateLicense(_ key: String) async -> Bool {
@@ -1441,9 +1469,9 @@ final class SettingsViewModel: ObservableObject {
   /// Re-probe Whisper install state (embedded / on-disk / missing).
   func refreshWhisperModelStatus() {
     // Live UniFFI path; sample mode (engine == nil in pure previews) keeps
-    // the static placeholder so canvas previews stay offline-safe.
+    // shared projection unchanged so canvas previews do no disk/network work.
     guard engine != nil else { return }
-    localWhisperStatus = whisperModelStatus()
+    whisperDownloadStore.refresh()
   }
 
   /// Re-read the canonical local-Whisper catalog (options + saved preference +
@@ -1452,6 +1480,13 @@ final class SettingsViewModel: ObservableObject {
   func refreshWhisperModelCatalog() {
     guard let engine else { return }
     whisperModelCatalog = engine.loadWhisperModelCatalog()
+  }
+
+  /// "Check model": install state, option catalog and resident-engine truth
+  /// in one pass, so the picker, the status rows and the storage rows agree.
+  func recheckWhisperModel() {
+    refreshWhisperModelStatus()
+    refreshWhisperModelCatalog()
   }
 
   /// The saved selection, for the picker's binding. Falls back to the settings
@@ -1479,7 +1514,8 @@ final class SettingsViewModel: ObservableObject {
           outcome.applied
           ? String(
             localized: "Saved · applies from the next take",
-            comment: "Whisper model picker: selection persisted and the engine switches at the next take"
+            comment:
+              "Whisper model picker: selection persisted and the engine switches at the next take"
           )
           : outcome.pending
             ? String(
@@ -1498,67 +1534,10 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
-  /// Called from UniFFI download callbacks (main-queue hopped).
-  fileprivate func applyWhisperDownloadProgress(detail: String, fraction: Double?) {
-    whisperDownloadDetail = detail
-    whisperDownloadFraction = fraction
-  }
-
-  /// Download default Whisper into `~/.codescribe/models/…` (idempotent).
+  /// Same background task and progress owner used by first-run setup.
   func startWhisperDownload() {
     guard engine != nil else { return }
-    guard !whisperDownloadInFlight else { return }
-    whisperDownloadInFlight = true
-    whisperDownloadDetail = String(localized: "Starting download…")
-    whisperDownloadFraction = nil
-    lastError = nil
-    let channel = AsyncStream<WhisperDownloadEvent>.makeStream()
-    let sink = WhisperDownloadProgressSink(continuation: channel.continuation)
-    whisperDownloadSink = sink
-    whisperDownloadEventTask = Task { @MainActor [weak self] in
-      for await event in channel.stream {
-        guard let self else { return }
-        switch event {
-        case .progress(let detail, let fraction):
-          self.applyWhisperDownloadProgress(detail: detail, fraction: fraction)
-        case .complete(let path):
-          self.applyWhisperDownloadProgress(
-            detail: String(
-              localized: "Saved · \(path)",
-              comment: "Download finished; the placeholder is a file path"
-            ),
-            fraction: 1.0
-          )
-        }
-      }
-    }
-    Task { @MainActor [weak self] in
-      guard let self else { return }
-      do {
-        let status = try await downloadWhisperModel(listener: sink)
-        self.localWhisperStatus = status
-        let location = status.path ?? status.modelId
-        self.whisperDownloadDetail =
-          status.available
-          ? String(
-            localized: "Ready · \(location)",
-            comment: "The placeholder is a model path or model id"
-          )
-          : String(localized: "Download finished but model still unavailable")
-        self.whisperDownloadFraction = status.available ? 1.0 : nil
-      } catch {
-        self.lastError = String(describing: error)
-        self.whisperDownloadDetail = String(localized: "Download failed")
-        self.whisperDownloadFraction = nil
-      }
-      sink.finish()
-      if let eventTask = self.whisperDownloadEventTask {
-        await eventTask.value
-      }
-      self.whisperDownloadInFlight = false
-      self.whisperDownloadSink = nil
-      self.whisperDownloadEventTask = nil
-    }
+    whisperDownloadStore.start()
   }
 
   /// Re-probe just the agent substrate (readiness + MCP + capability matrix).
@@ -1724,13 +1703,28 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  /// Remove one tool's individual rule; the next reload shows the inherited
+  /// level and its source.
+  func clearToolPermission(identity: String) {
+    guard let mcpAdmin else { return }
+    do {
+      try mcpAdmin.clearToolPermission(identity: identity)
+      reloadToolPermissions()
+    } catch {
+      lastError = String(describing: error)
+    }
+  }
+
   /// Add a server from the form. `args` is already split into tokens. On success
-  /// the list + readiness re-probe so the panel reflects the new state.
+  /// the list + readiness re-probe so the panel reflects the new state and the
+  /// result is nil; on failure the store's error comes back so the form can
+  /// show it next to the fields it keeps.
+  @discardableResult
   func addMcpServer(
     name: String, command: String, args: [String],
     endpoint: String = "", token: String = ""
-  ) {
-    guard let mcpAdmin else { return }
+  ) -> String? {
+    guard let mcpAdmin else { return nil }
     do {
       try mcpAdmin.addServer(
         CsMcpServerInput(
@@ -1740,12 +1734,16 @@ final class SettingsViewModel: ObservableObject {
       )
       reloadMcpServers()
       refreshAgentStatus()
+      return nil
     } catch {
-      lastError = String(describing: error)
+      let message = String(describing: error)
+      lastError = message
+      return message
     }
   }
 
-  /// Flip a server's `enabled` flag, preserving its command / args / env.
+  /// Flip a server's `enabled` flag, preserving its command / args / env. The
+  /// cached handshake described the previous configuration, so it goes.
   func toggleMcpServer(_ server: CsMcpServer) {
     guard let mcpAdmin else { return }
     do {
@@ -1757,6 +1755,7 @@ final class SettingsViewModel: ObservableObject {
           endpoint: server.endpoint, authRef: server.authRef, token: ""
         )
       )
+      mcpTestResults[server.name] = nil
       reloadMcpServers()
       refreshAgentStatus()
     } catch {
@@ -1775,6 +1774,18 @@ final class SettingsViewModel: ObservableObject {
     } catch {
       lastError = String(describing: error)
     }
+  }
+
+  /// The server-wide permission rule from the live policy (`name=level`), nil
+  /// when the server inherits the category defaults.
+  func mcpServerPermissionLevel(_ name: String) -> String? {
+    for entry in permissionPolicy.servers {
+      guard let separator = entry.firstIndex(of: "=") else { continue }
+      if entry[..<separator] == name {
+        return String(entry[entry.index(after: separator)...])
+      }
+    }
+    return nil
   }
 
   /// Spawn + handshake the named server and record the result inline. Runs off
@@ -1803,12 +1814,13 @@ final class SettingsViewModel: ObservableObject {
   }
 
   private func select(_ target: SettingsSection, tab targetTab: SettingsTab?) {
-    guard target.availability == .available,
-      section != target || tab != targetTab
-    else { return }
+    guard target.availability == .available else { return }
+    if targetTab == .agentStatus { refreshCreatorAgentBridge() }
+    guard section != target || tab != targetTab else { return }
     if section != target { section = target }
     if tab != targetTab { tab = targetTab }
-    if target == .agent {
+    refreshForCurrentSection()
+    if target == .agent, engine?.shouldShowOnboarding() == false {
       refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
     }
     if target == .engine {
@@ -1977,17 +1989,32 @@ final class SettingsViewModel: ObservableObject {
 
   var whisperLanguageCode: String { settings.whisperLanguage.shortCode }
 
-  var sttModelDescription: String {
-    // `localModel` (LOCAL_MODEL) is the local execution path; `whisperModel`
-    // (WHISPER_MODEL) is the cloud HTTP STT model id. Show the value the
-    // active engine actually resolves so the label and the runtime path agree.
-    let localEngineInPlay = settings.useLocalStt || asrModeId == "local_power"
-    let preference = localEngineInPlay
-      ? settings.localModel
-      : (settings.whisperModel ?? settings.localModel)
-    return preference.isEmpty
-      ? String(localized: "unset", comment: "Model row: no model preference stored, lower case")
-      : preference
+  /// Model row for the selected mode. Apple only has no model preference and
+  /// Cloud has no runtime consumer of `WHISPER_MODEL` (the loader stores it,
+  /// nothing reads it), so neither mode shows a row; a local model id would
+  /// be a false promise there. Local power shows the saved local selection —
+  /// the catalog's effective reference when loaded, else `LOCAL_MODEL`.
+  var sttModelRow: SttModelRow? {
+    guard asrModeId == "local_power" else { return nil }
+    let preference = whisperModelCatalog?.configured ?? settings.localModel
+    return SttModelRow(
+      label: String(
+        localized: "Local Whisper model",
+        comment: "Engine tab row: the on-device model Local power loads"),
+      value: preference.isEmpty
+        ? String(localized: "unset", comment: "Model row: no model preference stored, lower case")
+        : preference
+    )
+  }
+
+  /// "Polish (pl)" — the readable name plus the code written to
+  /// `WHISPER_LANGUAGE`; automatic detection has no code worth showing.
+  var whisperLanguageDisplay: String {
+    let language = settings.whisperLanguage
+    guard language != .auto else { return language.displayName }
+    return String(
+      localized: "\(language.displayName) (\(language.shortCode))",
+      comment: "Engine tab language value: readable language name, then its two-letter code")
   }
 
   private var assistiveKeyState: SettingsKeyState {
@@ -2059,7 +2086,8 @@ final class SettingsViewModel: ObservableObject {
         ?? CsModelDiscovery.sample(for: runtime.providerId),
       credentialAccessResolved: providerAccessResolved,
       credentialAccessError: providerAccessError
-        ?? (lane == .assistive && !runtime.keyPresent ? providerAccountErrors[runtime.providerId] : nil)
+        ?? (lane == .assistive && !runtime.keyPresent
+          ? providerAccountErrors[runtime.providerId] : nil)
     )
   }
 
@@ -2141,6 +2169,48 @@ final class SettingsViewModel: ObservableObject {
     maxApprovalBusy = false
     if maxApprovalRefreshRequested {
       await refreshMaxToolApprovals()
+    }
+  }
+
+  // MARK: - Interface language
+
+  /// True while a saved choice waits for a relaunch: the picker shows the saved
+  /// language, the window still speaks the one the process started with.
+  var interfaceLanguageNeedsRestart: Bool {
+    languagePreference.needsRestart(for: interfaceLanguage)
+  }
+
+  /// Saves the choice at once; nothing else in the app changes until restart.
+  /// Picking the running language again clears a pending restart.
+  func selectInterfaceLanguage(_ language: InterfaceLanguage) {
+    guard !applyingInterfaceLanguage else { return }
+    interfaceLanguage = language
+    languagePreference.select(language)
+    interfaceLanguageNotice = nil
+  }
+
+  /// Restart the app in the saved language through the host's idle guard. A
+  /// busy runtime (recording, agent turn) keeps the choice saved and explains
+  /// how to retry; the row never relaunches on its own.
+  func applyInterfaceLanguage() {
+    guard interfaceLanguageNeedsRestart, !applyingInterfaceLanguage else { return }
+    guard let onApplyInterfaceLanguage else {
+      interfaceLanguageNotice = InterfaceLanguageRestartError.unavailable.message(
+        locale: Locale.current)
+      return
+    }
+    applyingInterfaceLanguage = true
+    interfaceLanguageNotice = nil
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer { applyingInterfaceLanguage = false }
+      do {
+        try languagePreference.flush()
+        try await onApplyInterfaceLanguage {}
+      } catch {
+        interfaceLanguageNotice = (error as? InterfaceLanguageRestartError ?? .unavailable)
+          .message(locale: Locale.current)
+      }
     }
   }
 
@@ -2515,8 +2585,16 @@ final class SettingsViewModel: ObservableObject {
     )
   }
 
+  /// Session-scoped editing mode, not persisted truth: "Custom" is a choice the
+  /// user makes, so the picker has to keep showing it while the four values
+  /// still happen to match a named preset. Set by picking Custom and by any
+  /// manual slider move; cleared by picking a named preset or No preview.
+  @Published private(set) var previewCustomEditing = false
+
   var previewTimingPreset: PreviewTimingPreset {
-    detectPreset(previewTimingConfiguration)
+    let configuration = previewTimingConfiguration
+    if previewCustomEditing, configuration.overlayEnabled { return .custom }
+    return detectPreset(configuration)
   }
 
   /// Preset writes go through the existing batch router: one settings.json
@@ -2524,12 +2602,22 @@ final class SettingsViewModel: ObservableObject {
   func applyPreviewTimingPreset(_ preset: PreviewTimingPreset) {
     switch preset {
     case .custom:
-      return
+      // Custom owns no values of its own — the sliders are its editor, and the
+      // four stored values stay exactly as they are, including the ones left
+      // behind by No preview. The one write it owes is undoing No preview, so
+      // the sliders it opens describe a preview that will actually appear.
+      previewCustomEditing = true
+      guard !previewTimingConfiguration.overlayEnabled else { return }
+      persistMany([
+        CsConfigEntry(key: "TRANSCRIPTION_OVERLAY_ENABLED", value: "1")
+      ])
     case .off:
+      previewCustomEditing = false
       persistMany([
         CsConfigEntry(key: "TRANSCRIPTION_OVERLAY_ENABLED", value: "0")
       ])
     case .smooth, .snappy, .relaxed:
+      previewCustomEditing = false
       guard let values = presetValues(preset) else { return }
       persistMany([
         CsConfigEntry(key: "TRANSCRIPTION_OVERLAY_ENABLED", value: "1"),
@@ -2554,22 +2642,28 @@ final class SettingsViewModel: ObservableObject {
     onOverlayPreferenceChanged()
   }
 
+  /// A manual slider move is what makes the configuration Custom, even when the
+  /// new value is still inside a named preset's tolerance.
   func setPreviewBufferDelayMs(_ value: UInt64) {
+    previewCustomEditing = true
     settings.bufferDelayMs = value
     persist("CODESCRIBE_BUFFER_DELAY_MS", String(value))
   }
 
   func setPreviewTypingCps(_ value: Float) {
+    previewCustomEditing = true
     settings.typingCps = value
     persist("CODESCRIBE_TYPING_CPS", String(format: "%.1f", value))
   }
 
   func setPreviewEmitWordsMax(_ value: UInt64) {
+    previewCustomEditing = true
     settings.emitWordsMax = value
     persist("CODESCRIBE_EMIT_WORDS_MAX", String(value))
   }
 
   func setPreviewInterimSeconds(_ value: Float) {
+    previewCustomEditing = true
     settings.bufferedInterimSec = value
     persist("CODESCRIBE_BUFFERED_INTERIM_SEC", String(format: "%.1f", value))
   }
@@ -2625,8 +2719,9 @@ final class SettingsViewModel: ObservableObject {
 
   var asrGatewayUrl: String { settings.asrGatewayUrl ?? "" }
 
-  func setAsrGatewayUrl(_ value: String) {
-    persist("CODESCRIBE_ASR_GATEWAY_URL", value.trimmingCharacters(in: .whitespaces))
+  /// Throws the bridge's rejection so the row can show it under the field.
+  func setAsrGatewayUrl(_ value: String) throws {
+    try persistOrThrow("CODESCRIBE_ASR_GATEWAY_URL", value.trimmingCharacters(in: .whitespaces))
   }
 
   var localWhisperRuntimeState: LocalWhisperRuntimeState {
@@ -2780,11 +2875,13 @@ final class SettingsViewModel: ObservableObject {
 
   /// Persist one lane's endpoint (`STT_FILE_ENDPOINT` / `STT_LIVE_ENDPOINT`). Blank
   /// clears; the bridge validates the scheme per lane and a rejection lands in `lastError`.
-  func setSttLaneEndpoint(_ id: String, _ value: String) {
+  /// Throws the bridge's rejection (wrong scheme for the lane, plaintext off
+  /// loopback, credentials in the URL) so the row can show it under the field.
+  func setSttLaneEndpoint(_ id: String, _ value: String) throws {
     guard let lane = sttLanes.first(where: { $0.id == id }) else { return }
     providerAccessGeneration &+= 1
-    persist(lane.endpointWireKey, value.trimmingCharacters(in: .whitespaces))
-    if let engine { sttLanes = engine.sttLanes() }
+    defer { if let engine { sttLanes = engine.sttLanes() } }
+    try persistOrThrow(lane.endpointWireKey, value.trimmingCharacters(in: .whitespaces))
   }
 
   func setWhisperAdaptiveBuffer(_ enabled: Bool) {
@@ -2798,13 +2895,18 @@ final class SettingsViewModel: ObservableObject {
   }
 
   private func persist(_ key: String, _ value: String) {
-    guard let engine else { return }
     do {
-      try engine.updateConfig(key: key, value: value)
-      applyLoadedSettings(engine.loadSettings())
+      try persistOrThrow(key, value)
     } catch {
       lastError = String(describing: error)
     }
+  }
+
+  /// `persist` for rows that present the rejection inline instead of as `lastError`.
+  private func persistOrThrow(_ key: String, _ value: String) throws {
+    guard let engine else { return }
+    try engine.updateConfig(key: key, value: value)
+    applyLoadedSettings(engine.loadSettings())
   }
 
   private func persistMany(_ entries: [CsConfigEntry]) {
@@ -2880,7 +2982,10 @@ final class SettingsViewModel: ObservableObject {
   /// invalidates its generation and requests one follow-up after completion.
   func refreshProviderAccess() {
     guard let engine else { return }
-    if providerMutationPending { providerRefreshRequested = true; return }
+    if providerMutationPending {
+      providerRefreshRequested = true
+      return
+    }
     guard !providerAccessPending else { return }
     // This read consumes the queued request; later mutations may queue another.
     providerRefreshRequested = false
@@ -2898,13 +3003,17 @@ final class SettingsViewModel: ObservableObject {
         let snapshot = try await engine.providerAccessSnapshot()
         guard generation == providerAccessGeneration,
           snapshot.revision == engine.providerAccessRevision()
-        else { providerRefreshRequested = true; return }
+        else {
+          providerRefreshRequested = true
+          return
+        }
         applyLoadedSettings(engine.loadSettings())
         providers = snapshot.providers
         providerAccountErrors = snapshot.accountErrors
         keyStatus = snapshot.keyStatus
         sttLanes = snapshot.sttLanes
         providerAccessResolved = true
+        providerAccessCheckedAt = Date()
         providerAccessError = nil
         refreshAgentStatus()
         refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
@@ -2986,8 +3095,7 @@ final class SettingsViewModel: ObservableObject {
   /// Settings + presence + registry after any provider/key mutation.
   private func reloadProviders(_ engine: SettingsEngine) {
     applyLoadedSettings(engine.loadSettings())
-    if providerAccessPending { providerRefreshRequested = true }
-    else { refreshProviderAccess() }
+    if providerAccessPending { providerRefreshRequested = true } else { refreshProviderAccess() }
   }
 
   // MARK: - Keys (Keychain-backed; secrets never read back)

@@ -1,10 +1,13 @@
 import Foundation
 import SwiftUI
 
-/// Editable list of workspace roots the agent's `list_projects` tool scans to
-/// resolve project names to absolute paths. Rows are edited locally and committed
-/// through `SettingsViewModel.setAgentWorkspaceRoots` (colon-joined ->
-/// `AGENT_WORKSPACE_ROOTS`). Each row shows a live "directory exists" indicator.
+/// Editable list of the folders the Agent may reach. One setting serves two
+/// consumers: the path policy of every file/terminal tool and the
+/// `list_projects` scan, so the UI shows one neutral list — some entries are
+/// project checkouts, others (data dirs, /tmp) are plain access grants. Rows
+/// are edited locally and committed through
+/// `SettingsViewModel.setAgentWorkspaceRoots`. Each row shows a live
+/// "directory exists" indicator.
 struct WorkspaceRootsSection: View {
   @ObservedObject var model: SettingsViewModel
 
@@ -12,6 +15,9 @@ struct WorkspaceRootsSection: View {
   private static let rootPlaceholder = "/path/to/checkouts"
 
   @State private var rows: [String] = []
+  /// Rows removed since the last save, newest last, with where they sat.
+  /// Undo puts the newest back; Save or Discard empties the stack.
+  @State private var removed: [RemovedRoot] = []
   @State private var loaded = false
   @FocusState private var focusedRoot: Int?
 
@@ -21,10 +27,10 @@ struct WorkspaceRootsSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel(String(localized: "Agent workspace roots"))
+      SettingsSectionLabel(String(localized: "Allowed folders"))
 
       Text(
-        "Directories the assistant scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped."
+        "The Agent looks for projects and Git repositories in these folders. It also searches subfolders, but skips hidden folders and build directories."
       )
       .font(CSFont.ui(11.5))
       .lineSpacing(2)
@@ -39,22 +45,42 @@ struct WorkspaceRootsSection: View {
       .padding(.top, 12)
 
       HStack(spacing: 10) {
-        Button {
-          rows.append("")
-        } label: {
-          Label("Add root", systemImage: "plus")
+        Button(action: pickFolder) {
+          Label("Add folder…", systemImage: "plus")
             .font(CSFont.ui(12, .semibold))
         }
         .csFocusRing()
         .foregroundStyle(Color.primary)
+        .help("Choose a folder to add to the list")
+
+        if let last = removed.last {
+          Button(action: undoRemove) {
+            Label("Undo remove", systemImage: "arrow.uturn.backward")
+              .font(CSFont.ui(12, .semibold))
+          }
+          .csFocusRing()
+          .foregroundStyle(Color.primary)
+          .help("Put \(last.path) back")
+          .accessibilityIdentifier("settings-workspace-undo-remove")
+        }
 
         Spacer()
+
+        if isDirty {
+          Button(action: syncFromModel) {
+            Text("Discard changes")
+              .font(CSFont.ui(12, .semibold))
+              .foregroundStyle(Color.secondary)
+          }
+          .csFocusRing()
+          .help("Go back to the saved list")
+        }
 
         Button {
           model.setAgentWorkspaceRoots(rows)
           syncFromModel()
         } label: {
-          Text("Save roots")
+          Text("Save changes")
             .font(CSFont.ui(12, .semibold))
             .foregroundStyle(isDirty ? Color.primary : Color.secondary)
         }
@@ -87,11 +113,16 @@ struct WorkspaceRootsSection: View {
       .frame(maxWidth: .infinity, alignment: .leading)
 
       Button {
-        rows.remove(at: index)
+        let path = rows.remove(at: index)
+        if !path.trimmingCharacters(in: .whitespaces).isEmpty {
+          removed.append(RemovedRoot(index: index, path: path))
+        }
       } label: {
         CSIconView(icon: .remove, size: 13, weight: .semibold, color: Color.secondary)
       }
       .csFocusRing()
+      .help("Remove folder")
+      .accessibilityLabel("Remove folder")
     }
     .padding(.horizontal, 11)
     .padding(.vertical, 9)
@@ -118,7 +149,34 @@ struct WorkspaceRootsSection: View {
       .frame(width: 7, height: 7)
   }
 
+  /// The ellipsis on the button promises a dialog: a directory picker whose
+  /// choice lands as a new editable row, tilde-abbreviated like the defaults.
+  /// Nothing is saved until Save changes.
+  private func pickFolder() {
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.allowsMultipleSelection = false
+    panel.canCreateDirectories = false
+    panel.prompt = String(localized: "Add folder", comment: "Folder picker confirm button")
+    panel.message = String(localized: "Choose a folder the Agent may read and write")
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    let path = (url.path as NSString).abbreviatingWithTildeInPath
+    if !rows.contains(path) {
+      rows.append(path)
+    }
+  }
+
+  /// Reinserts the newest removed row at its old position (clamped: the list
+  /// may have shrunk since). Only unsaved removals are undoable; a saved list
+  /// is restored by adding the folder again.
+  private func undoRemove() {
+    guard let last = removed.popLast() else { return }
+    rows.insert(last.path, at: min(last.index, rows.count))
+  }
+
   private func syncFromModel() {
+    removed = []
     rows = model.agentWorkspaceRoots
     // Mirror of the runtime default (DEFAULT_AGENT_WORKSPACE_ROOT): with no
     // configured roots the tool really scans the app's own data dir.
@@ -129,6 +187,11 @@ struct WorkspaceRootsSection: View {
     input
       .map { $0.trimmingCharacters(in: .whitespaces) }
       .filter { !$0.isEmpty }
+  }
+
+  struct RemovedRoot: Equatable {
+    let index: Int
+    let path: String
   }
 
   private static func directoryExists(_ path: String) -> Bool {

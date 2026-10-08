@@ -26,7 +26,7 @@
 pub mod admission;
 /// Fn+digit agent channels. Not a take and not a `State` variant.
 mod agent_channel;
-pub use agent_channel::ChannelHudState;
+pub use agent_channel::{AgentArchiveRequest, ChannelHudState};
 /// Per-session assistive context bag (selection, app, images).
 mod context_bucket;
 /// One destination throne: intent → Agent / Orient / paste. Focus is not king.
@@ -35,6 +35,8 @@ mod delivery_route;
 mod helpers;
 /// Hold/toggle timing, agent-send vetoes, stop adjudication policy.
 mod hotkey_policy;
+/// Best-effort RMS frame feed for the loopback Voice Lab relay.
+mod lab_feed;
 /// Production-owned, content-private PCM replay of the overlay engine cone.
 pub mod production_replay;
 /// Public serving-status surface for tray/UI consumers.
@@ -69,7 +71,7 @@ use codescribe_core::llm::ai_formatting::format_text_with_status_for_policy;
 use codescribe_core::pipeline::acoustic_ledger::DocumentRevisionProvenance;
 use codescribe_core::pipeline::contracts::EngineEvent;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
@@ -3845,7 +3847,7 @@ impl RecordingController {
     }
 
     /// Cancel any pending delayed hold-start task
-    async fn cancel_pending_hold_start(&self) {
+    async fn cancel_pending_hold_start(&self) -> u64 {
         let generation = self.hold_start_generation.fetch_add(1, Ordering::SeqCst) + 1;
         let mut task_guard = self.hold_start_task.lock().await;
         let pending_start_invalidated = match task_guard.take() {
@@ -3869,6 +3871,7 @@ impl RecordingController {
         if pending_start_invalidated {
             *self.pre_overlay_frontmost_app.write().await = None;
         }
+        generation
     }
 
     /// Detach every sink and callback from the recorder.
@@ -3885,7 +3888,12 @@ impl RecordingController {
         recorder.set_capture_turn_intent(CaptureTurnIntent::HandsFree);
         recorder.set_event_sink(None);
         recorder.set_live_formatting_agent(None);
-        recorder.set_level_callback(None);
+        // Level metering belongs to the physical capture, not this take. A
+        // channel may still own the stream while dictation starts or stops;
+        // keep its one tap until the last capture subscriber releases it.
+        if !recorder.recorder.is_active() || !recorder.has_capture_subscribers() {
+            recorder.set_level_callback(None);
+        }
     }
 
     /// Bring the recorder to a clean pre-start state: force-stop a stream left
@@ -4218,6 +4226,9 @@ impl RecordingController {
         let Some(recorder) = recorder_guard.as_mut() else {
             return;
         };
+        if recorder.has_non_take_subscriber() {
+            return;
+        }
         if !recorder.recorder.is_active() {
             return;
         }
@@ -4359,12 +4370,36 @@ impl RecordingController {
         recorder: &mut StreamingRecorder,
         event_broadcast: broadcast::Sender<IpcEvent>,
     ) {
+        // The physical callback already captured its tap. Joining that stream
+        // must neither replace the retained sender nor create another worker.
+        if recorder.recorder.is_active() {
+            return;
+        }
         let (level_tx, mut level_rx) = mpsc::channel::<f32>(AUDIO_LEVEL_QUEUE_CAPACITY);
         recorder.set_level_callback(Some(Arc::new(move |rms| {
             let _ = level_tx.try_send(rms);
         })));
 
         tokio::spawn(async move {
+            // Voice Lab feed: the Lab's bound lane watches Codescribe's own
+            // capture instead of opening a second browser microphone. One
+            // failed POST disarms the feed for this broadcast session — a
+            // machine without a running Lab pays a single refused connection.
+            // The slot is reserved atomically (armed → in-flight) before a
+            // POST is spawned, so a stalled relay sees exactly one attempt:
+            // batches that mature while a request is in flight are dropped,
+            // never queued. `.no_proxy()` keeps the loopback payload off any
+            // system HTTP proxy — this client talks to 127.0.0.1 or nobody.
+            const LAB_FEED_DISARMED: u8 = 0;
+            const LAB_FEED_ARMED: u8 = 1;
+            const LAB_FEED_IN_FLIGHT: u8 = 2;
+            let lab_state = Arc::new(AtomicU8::new(LAB_FEED_ARMED));
+            let lab_client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_millis(400))
+                .build()
+                .ok();
+            let mut lab_batcher = lab_feed::LabFeedBatcher::new(std::time::Instant::now());
             while let Some(rms) = level_rx.recv().await {
                 // Cleanup drops the callback sender. Do not drain a buffered
                 // sample after that boundary: it belongs to the closed session
@@ -4377,6 +4412,38 @@ impl RecordingController {
                         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                     payload: IpcEventPayload::AudioLevel { rms },
                 });
+                if let Some(client) = &lab_client
+                    && let Some(batch) = lab_batcher.offer(rms, std::time::Instant::now())
+                    && lab_state
+                        .compare_exchange(
+                            LAB_FEED_ARMED,
+                            LAB_FEED_IN_FLIGHT,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                {
+                    let payload = lab_feed::frames_payload(&batch);
+                    let client = client.clone();
+                    let state = Arc::clone(&lab_state);
+                    tokio::spawn(async move {
+                        let delivered = client
+                            .post(lab_feed::LAB_FRAMES_URL)
+                            .json(&payload)
+                            .send()
+                            .await
+                            .map(|resp| resp.status().is_success())
+                            .unwrap_or(false);
+                        state.store(
+                            if delivered {
+                                LAB_FEED_ARMED
+                            } else {
+                                LAB_FEED_DISARMED
+                            },
+                            Ordering::Release,
+                        );
+                    });
+                }
             }
         });
     }
@@ -4449,6 +4516,9 @@ impl RecordingController {
     /// - **Toggle + force_ai=true**: force AI formatting (normal hands-off)
     /// - **Toggle + assistive=true**: force Assistive hands-off
     pub async fn handle_hotkey_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
+        let hold_generation = (event.key_type == HotkeyType::Hold
+            && event.action == HotkeyAction::Down)
+            .then(|| self.hold_start_generation.load(Ordering::SeqCst));
         // Stop gestures enter before mode updates: a RAW toggle during hold
         // must not rewrite the take's destination while asking to end it.
         let stop_gesture = {
@@ -4485,6 +4555,13 @@ impl RecordingController {
             drop(settled);
         }
         let mut current_state = self.current_state().await;
+
+        if current_state == State::Idle
+            && event.key_type == HotkeyType::Hold
+            && event.action == HotkeyAction::Up
+        {
+            return self.handle_hold_event(event, None).await;
+        }
 
         if current_state == State::Idle {
             self.recover_stale_recorder_if_idle().await;
@@ -4653,20 +4730,33 @@ impl RecordingController {
         }
 
         // Route to appropriate handler
+        if hold_generation.is_some_and(|generation| {
+            self.hold_start_generation.load(Ordering::SeqCst) != generation
+        }) {
+            return Ok(());
+        }
         match event.key_type {
-            HotkeyType::Hold => self.handle_hold_event(event).await,
+            HotkeyType::Hold => self.handle_hold_event(event, hold_generation).await,
             HotkeyType::Toggle => self.handle_toggle_event(event).await,
             HotkeyType::Conversation => self.handle_conversation_event(event).await,
         }
     }
 
     /// Handle hold-type hotkey events
-    async fn handle_hold_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
+    async fn handle_hold_event(
+        self: &Arc<Self>,
+        event: HotkeyInput,
+        hold_generation: Option<u64>,
+    ) -> Result<()> {
         match event.action {
             HotkeyAction::Down => {
                 let current_state = self.current_state().await;
                 if current_state == State::Idle {
-                    self.schedule_hold_start(event.assistive).await?;
+                    let Some(generation) = hold_generation else {
+                        return Ok(());
+                    };
+                    self.schedule_hold_start(event.assistive, generation)
+                        .await?;
                     // Fn down with a live OS selection attaches `{selection_1}`
                     // immediately. Mid-hold arm pulses add `{selection_2..n}`.
                     // Destination stays dictation — do not arm Chat/Agent.
@@ -5150,7 +5240,11 @@ impl RecordingController {
     }
 
     /// Schedule delayed recording start for hold mode
-    async fn schedule_hold_start(&self, assistive: bool) -> Result<()> {
+    async fn schedule_hold_start(
+        self: &Arc<Self>,
+        assistive: bool,
+        requested_generation: u64,
+    ) -> Result<()> {
         // Scheduling selects the take generation. Refresh and every actual
         // start/stop transition cross this same boundary, while the spawned
         // task itself is never awaited under the guard.
@@ -5159,10 +5253,15 @@ impl RecordingController {
         if self.shutdown_requested.load(Ordering::SeqCst) {
             return Err(anyhow::anyhow!("capture admission closed for shutdown"));
         }
+        if self.hold_start_generation.load(Ordering::SeqCst) != requested_generation {
+            return Ok(());
+        }
         // Cancel any existing delayed start before selecting the next Arc.
-        self.cancel_pending_hold_start().await;
+        let task_generation = self.cancel_pending_hold_start().await;
+        if task_generation != requested_generation.wrapping_add(1) {
+            return Ok(());
+        }
         self.refresh_pending_runtime_settings_locked().await?;
-        let task_generation = self.hold_start_generation.load(Ordering::SeqCst);
         let runtime_settings = self.runtime_settings_arc().await;
         let config = runtime_settings.values().clone();
 
@@ -5228,6 +5327,7 @@ impl RecordingController {
         let hold_start_generation = Arc::clone(&self.hold_start_generation);
         let shutdown_requested = Arc::clone(&self.shutdown_requested);
         let start_transition_in_flight = Arc::clone(&self.start_transition_in_flight);
+        let controller = Arc::clone(self);
         // Every exit after the start guard releases exactly these slots.
         let hold_session = HoldStartSession {
             session_id: Arc::clone(&self.session_id),
@@ -5281,6 +5381,17 @@ impl RecordingController {
                     current_state
                 );
                 return;
+            }
+
+            if !assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
+                if let Err(error) = controller.close_agent_channels_for_dictation().await {
+                    error!(%error, "Hold-start refused: agent channel did not close");
+                    return;
+                }
+                if hold_start_generation.load(Ordering::SeqCst) != task_generation {
+                    debug!("Hold-start cancelled while closing the preceding channels");
+                    return;
+                }
             }
 
             let _start_guard = AtomicFlagGuard::new(Arc::clone(&start_transition_in_flight));
@@ -5558,6 +5669,9 @@ impl RecordingController {
                 current_state
             );
             return Ok(CaptureAdmission::NotAdmitted);
+        }
+        if !is_assistive && matches!(capture_turn, CaptureTurnIntent::HandsFree) {
+            self.close_agent_channels_for_dictation().await?;
         }
         // A new take inherits no destination from the previous one.
         *self.delivery_disposition.write().await = TranscriptDelivery::Unattempted;
@@ -6111,8 +6225,9 @@ impl RecordingController {
         conversation.as_ref().is_none_or(|task| task.is_finished())
     }
 
-    /// Stop-current is admitted without queuing behind a start or a terminal
-    /// owner. A delayed gesture must not discover a replacement after waiting.
+    /// Bind Stop to the published capture before waiting for start serialization.
+    /// The retained terminal owner checks that identity under the serial lock;
+    /// a delayed gesture cannot discover or stop a replacement after waiting.
     pub async fn stop_current_capture(self: &Arc<Self>) -> Result<CaptureStopOutcome> {
         let receiver = {
             let Ok(mut slot) = self.capture_settlement.try_lock() else {
@@ -6124,13 +6239,16 @@ impl RecordingController {
             {
                 operation.result.clone()
             } else {
-                let Ok(_serial) = self.serial_lock.try_lock() else {
-                    return Ok(CaptureStopOutcome::AdmissionUnavailable);
-                };
                 let Ok(state) = self.state.try_read() else {
                     return Ok(CaptureStopOutcome::AdmissionUnavailable);
                 };
                 if *state == State::Idle {
+                    // Idle is only conclusive once any unpublished start has
+                    // released admission. A published take below already has
+                    // its own identity and can register Stop without this lock.
+                    let Ok(_serial) = self.serial_lock.try_lock() else {
+                        return Ok(CaptureStopOutcome::AdmissionUnavailable);
+                    };
                     // No active terminal body to cancel. Invalidate a delayed
                     // hold that has not crossed this same admission boundary.
                     self.hold_start_generation.fetch_add(1, Ordering::SeqCst);
@@ -9792,25 +9910,118 @@ mod owned_capture_settlement_tests {
     }
 
     #[tokio::test]
-    async fn stop_current_refuses_queued_admission_and_cannot_target_successor() {
+    async fn stop_during_published_start_is_retained_for_every_stop_gesture() {
+        for route in 0..4 {
+            let (controller, _, dir) = fixture().await;
+            if route == 1 || route == 2 {
+                controller.set_state(State::RecHold).await;
+            }
+            // Actual start publishes RecHold/RecToggle before releasing this lock.
+            // No microphone or model is opened by this empty-recorder fixture.
+            let held = controller.serial_lock.lock().await;
+            let mut call = Box::pin(async {
+                match route {
+                    0 => controller.stop_recording_from_external_surface().await,
+                    _ => {
+                        controller
+                            .handle_hotkey_event(HotkeyInput {
+                                key_type: if route == 1 {
+                                    HotkeyType::Hold
+                                } else {
+                                    HotkeyType::Toggle
+                                },
+                                action: if route == 1 {
+                                    HotkeyAction::Up
+                                } else {
+                                    HotkeyAction::Press
+                                },
+                                assistive: route == 1,
+                                hold_mode: if route == 1 {
+                                    HoldMode::Chat
+                                } else {
+                                    HoldMode::Raw
+                                },
+                                force_raw: route == 2,
+                                force_ai: false,
+                            })
+                            .await
+                    }
+                }
+            });
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(
+                std::future::Future::poll(call.as_mut(), &mut context).is_pending(),
+                "route {route}: Stop must be retained while its published start finishes"
+            );
+            assert_eq!(
+                controller
+                    .capture_settlement
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .capture_id,
+                "owned"
+            );
+            assert_eq!(rows(&dir).len(), 1, "Stop has not settled yet");
+            drop(held);
+            call.await
+                .expect("the original Stop settles after admission releases");
+            assert_eq!(controller.current_state().await, State::Idle);
+            assert!(controller.session_id.read().await.is_none());
+            let events = rows(&dir);
+            assert_eq!(events.len(), 2, "route {route}: no spontaneous successor");
+            assert_eq!(events[0].session_id, events[1].session_id);
+            assert_eq!(events[1].status, "session_ended");
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_current_waits_for_its_snapshot_and_cannot_target_successor() {
         let (controller, _, dir) = fixture().await;
         let held = controller.serial_lock.lock().await;
+        let mut call = Box::pin(controller.stop_current_capture());
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(call.as_mut(), &mut context).is_pending());
         assert_eq!(
-            controller.stop_current_capture().await.unwrap(),
-            CaptureStopOutcome::AdmissionUnavailable
+            controller
+                .capture_settlement
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .capture_id,
+            "owned"
         );
-        assert!(controller.capture_settlement.lock().unwrap().is_none());
         *controller.session_id.write().await = Some("replacement".into());
         drop(held);
-        assert_eq!(
-            controller.stop_capture_if_owned("owned").await.unwrap(),
-            CaptureStopOutcome::ForeignCapture
-        );
+        assert_eq!(call.await.unwrap(), CaptureStopOutcome::ForeignCapture);
         assert_eq!(
             controller.session_id.read().await.as_deref(),
             Some("replacement")
         );
+        assert_eq!(controller.current_state().await, State::RecToggle);
         assert_eq!(rows(&dir).len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_current_timeout_during_start_keeps_the_terminal_owner() {
+        let (controller, mut stages, dir) = fixture().await;
+        let held = controller.serial_lock.lock().await;
+        let caller = tokio::spawn({
+            let controller = Arc::clone(&controller);
+            async move { controller.stop_current_capture().await }
+        });
+        stage(&mut stages, CaptureSettlementStage::Registered).await;
+        assert_eq!(caller.await.unwrap().unwrap(), CaptureStopOutcome::Pending);
+        assert_eq!(rows(&dir).len(), 1);
+        drop(held);
+        assert_eq!(
+            controller.stop_capture_if_owned("owned").await.unwrap(),
+            CaptureStopOutcome::Stopped
+        );
+        assert_eq!(rows(&dir).len(), 2);
+        assert_eq!(controller.current_state().await, State::Idle);
     }
 
     #[tokio::test(start_paused = true)]
@@ -9865,7 +10076,13 @@ mod owned_capture_settlement_tests {
         operation.task.await.unwrap();
         assert!(controller.capture_shutdown_settled());
         assert!(controller.start_composer_turn_recording().await.is_err());
-        assert!(controller.schedule_hold_start(false).await.is_err());
+        let generation = controller.hold_start_generation.load(Ordering::SeqCst);
+        assert!(
+            controller
+                .schedule_hold_start(false, generation)
+                .await
+                .is_err()
+        );
         assert!(controller.start_conversation_mode().await.is_err());
         assert_eq!(rows(&dir).len(), 2);
     }
@@ -10678,7 +10895,10 @@ mod hold_start_terminal_lifecycle_falsifiers {
         *controller.hold_mode.write().await = HoldMode::Chat;
 
         controller
-            .handle_hold_event(hold_input(HotkeyAction::Down))
+            .handle_hold_event(
+                hold_input(HotkeyAction::Down),
+                Some(controller.hold_start_generation.load(Ordering::SeqCst)),
+            )
             .await
             .expect("hold down schedules a delayed start");
         let task = controller
@@ -10709,7 +10929,7 @@ mod hold_start_terminal_lifecycle_falsifiers {
         // The real key-up path: state is still Idle, so this cancels the
         // pending start by bumping the generation — without `serial_lock`.
         controller
-            .handle_hold_event(hold_input(HotkeyAction::Up))
+            .handle_hold_event(hold_input(HotkeyAction::Up), None)
             .await
             .expect("key-up while idle cancels");
         assert_ne!(

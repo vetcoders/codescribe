@@ -1,8 +1,12 @@
 import SwiftUI
 
 /// One labelled preview-timing slider: title and live value above the track.
+///
+/// `title` and `valueLabel` arrive already localized — these four labels each
+/// need a translator comment, which a `LocalizedStringKey` parameter cannot
+/// carry — so both render verbatim here.
 struct PreviewTimingSlider: View {
-  let title: LocalizedStringKey
+  let title: String
   @Binding var value: Double
   let range: ClosedRange<Double>
   let step: Double

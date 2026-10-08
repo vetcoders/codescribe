@@ -15,6 +15,10 @@
         hooks site-dev
 
 SHELL := /bin/bash
+# Founder 2026-10-07: worktree sources share the main checkout's Cargo cache.
+# Git's common directory belongs to the main checkout, including in worktrees.
+export CARGO_TARGET_DIR := $(abspath $(dir $(shell git rev-parse --git-common-dir))/target)
+export CARGO_BUILD_BUILD_DIR := $(CARGO_TARGET_DIR)
 VERSION_FILE := Cargo.toml
 EDITOR ?= $(shell command -v code || command -v nvim || command -v vim || echo nano)
 # Operator tests may source the daily dotenv for real-API credentials, but the
@@ -146,7 +150,7 @@ app-bindings:
 release-qube: dist-preflight
 	@echo "Building qube-* (release, runtime model resolve from HF cache)..."
 	@CODESCRIBE_NO_EMBED=1 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
-	 cargo build --release --target-dir target-noembed --bin qube-daemon --bin qube-report
+	 cargo build --release --bin qube-daemon --bin qube-report
 
 release: release-codescribe release-qube
 
@@ -190,9 +194,14 @@ site-dev:
 install-voice-lab:
 	@./scripts/install-voice-lab.sh
 
-.PHONY: install-bus
+.PHONY: install-bus verify-install-bus
 install-bus:
 	@./scripts/install-bus.sh
+
+# The source installer is built from two files outside the app target. A type
+# that only the app defines breaks it without failing any app build or test.
+verify-install-bus:
+	@./scripts/install-bus.sh --compile-only
 
 install-if-idle:
 	@./scripts/install-if-idle.sh $(if $(INSTALL_APP_SOURCE),--from-app "$(INSTALL_APP_SOURCE)")
@@ -343,11 +352,11 @@ bump-major:
 #                    text — a field that quietly widened its meaning would be the
 #                    same failure this ledger exists to stop.
 #
-# `make verify` is the one hermetic gate, and it is literally what CI runs —
-# not a second recipe that resembles it. Everything below class=operator is a
-# bench instrument: real proof, host-local, never a merge gate.
+# `make verify` is the hermetic test gate, and CI runs it by name.
+# class=operator denotes a platform/tool requirement; ci=yes means the workflow
+# supplies it. The localization gates need Xcode but run in the required job.
 #
-# gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates, l10n-lint; executes ZERO tests
+# gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates, l10n-lint, l10n-bridge-census; executes ZERO tests
 # gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace + verify-swift-format; no tests
 # gate: semgrep class=static ci=no -- semgrep scan --config auto --config .semgrep.yaml (semgrep.yml runs semgrep directly, not this target)
 # gate: verify class=hermetic ci=yes -- structural verifier, Bus-path/install guard, workspace tests and doctests under sandbox HOME with a Codescribe write leak check, separate ship-shaped artifact fence check, model-promotion regression, env registry, String Catalog lint tests and ledger harness; rust.yml runs it. The live throne rows (loct context/occurrences) require the Loctree CLI: where `loct` is not on PATH (GitHub-hosted runners) or CODESCRIBE_SKIP_LIVE_THRONE is set (self-hosted CI runner living on an operator host — its PATH loct is a dev build with non-release semantics) they skip loudly and the pure AST/manifest rows keep their teeth; operator hosts run the full surface.
@@ -355,8 +364,11 @@ bump-major:
 # gate: test-transcript-bus-path class=hermetic ci=no -- shell/Python path-precedence and install-guard fail-closed tests in an isolated HOME; never installs the app
 # gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
 # gate: verify-swift-format class=static ci=no -- swift-format lint --strict over macos/Codescribe + macos/CodescribeTests; skips the generated UniFFI binding; no Swift tests (that is test-swift)
-# gate: verify-l10n-catalog class=static ci=no -- scripts/l10n-lint.py over the String Catalogs: stale keys, argument number and type parity with the English source, plural completeness per language against the CLDR rules in scripts/data/cldr, languages declared without translations, InfoPlist.xcstrings vs project.yml; reads the JSON only and says nothing about whether the catalog matches the Swift sources (that is verify-l10n-sync)
-# gate: verify-l10n-sync class=operator ci=no -- scripts/l10n-sync.sh --check: Localizable.xcstrings vs the strings the Swift compiler extracted in the last Debug build under macos/build; needs Xcode and a build at least as new as every Swift source, and exits 2 rather than judging an older one
+# gate: verify-l10n-catalog class=static ci=yes -- scripts/l10n-lint.py over the String Catalogs: stale keys, argument number and type parity with the English source, plural completeness per language against the CLDR rules in scripts/data/cldr, full coverage of every language either catalog carries (--allow-partial downgrades that to a report while a language is being built up), the product spelling in every string, InfoPlist.xcstrings vs project.yml; reads the JSON only and says nothing about whether the catalog matches the Swift sources (that is verify-l10n-sync); rust.yml invokes this target in required Clippy + Tests
+# gate: verify-l10n-bridge class=static ci=yes -- scripts/l10n-bridge-census.py: every String field crossing the UniFFI bridge (macos/Codescribe/Bridge/codescribe_ffi.swift) is classified data|prose in scripts/data/l10n-bridge-fields.txt; an unclassified or vanished field fails, so English prose composed in Rust cannot grow unnoticed (LOCALIZATION_LEDGER.md §4 burn-down); rust.yml invokes this target in required Clippy + Tests
+# gate: verify-l10n-sync class=operator ci=yes -- scripts/l10n-sync.sh --check: Localizable.xcstrings vs compiler extraction from a current Debug build; missing/outdated data exits 2; rust.yml builds fresh Swift-only extraction and invokes this target in required Clippy + Tests
+# gate: test-l10n-sync class=operator ci=yes -- real Swift compiler and xcstringstool in a temporary source tree: synchronized catalog passes, new/changed Swift copy fails, missing/outdated extraction fails, checks never write the catalog; rust.yml runs this in required Clippy + Tests
+# gate: verify-install-bus class=operator ci=yes -- scripts/install-bus.sh --compile-only: real Swift 6 compiler, warnings as errors, over the two files `make install-bus` builds its installer from; stages and installs nothing; needs the Swift toolchain
 # gate: smoke-canaries class=operator ci=no -- verify-canaries + host rows: dist inputs, appcast feed, live-store purity, Sparkle key parity, keychain domain cleanliness (scripts/canaries.sh --host)
 # gate: test-keychain-session class=hermetic ci=no -- ephemeral signing-keychain contract (scripts/tests/keychain-session-test.sh) against a FAKE security binary and a temp HOME; touches no real keychain
 # gate: verify-dmg class=operator ci=no -- fail-closed payload check against an already-built DMG; release.yml runs the same check via scripts/verify-dmg-payload.sh, not via this target
@@ -438,16 +450,36 @@ format-swift:
 # merges what the Swift compiler extracted in the last Debug build; it mutates
 # the catalog, so it is a tool like format-swift, not a gate. The two verify-*
 # targets are the gates: one reads the catalog JSON alone, the other compares
-# the catalog with a real build.
-.PHONY: l10n-sync verify-l10n-sync verify-l10n-catalog
+# the catalog with a real build. `l10n-sheet` is the translator's round trip
+# (catalog -> CSV -> catalog); it is a tool as well, not a gate.
+.PHONY: l10n-build l10n-sync verify-l10n-sync verify-l10n-catalog verify-l10n-bridge l10n-sheet test-l10n-sync
+l10n-build:
+	@bash scripts/l10n-build.sh
+
 l10n-sync:
 	@./scripts/l10n-sync.sh
+
+# make l10n-sheet L10N_LANG=pl            -> export a worksheet to macos/build/l10n
+# make l10n-sheet L10N_LANG=pl PENDING=1  -> only the keys still owed a translator (drafts + untranslated)
+# make l10n-sheet L10N_LANG=pl CSV='...'  -> fold filled worksheets back in (reviewed)
+# make l10n-sheet L10N_LANG=pl CSV='...' DRAFT=1 -> fold them in as drafts (needs_review)
+# (not LANG: that is the shell locale and would leak in)
+l10n-sheet:
+	@if [ -z "$(L10N_LANG)" ]; then echo "l10n-sheet: set L10N_LANG=<code> (e.g. make l10n-sheet L10N_LANG=pl)" >&2; exit 2; fi
+	@if [ -n "$(CSV)" ]; then python3 scripts/l10n-sheet.py import $(L10N_LANG) $(CSV) $(if $(DRAFT),--draft); \
+	else python3 scripts/l10n-sheet.py export $(L10N_LANG) macos/build/l10n $(if $(PENDING),--pending); fi
 
 verify-l10n-sync:
 	@./scripts/l10n-sync.sh --check
 
 verify-l10n-catalog:
 	@python3 scripts/l10n-lint.py
+
+verify-l10n-bridge:
+	@python3 scripts/l10n-bridge-census.py
+
+test-l10n-sync:
+	@python3 -m unittest scripts/tests/test_l10n_sync.py
 
 TEST_LOG := /tmp/codescribe-tests.log
 SWIFT_TEST_LOG := /tmp/codescribe-swift-tests.log
@@ -1060,8 +1092,10 @@ check:
 	@bash scripts/validate-gates.sh
 	@echo "=== Localization catalogs ==="
 	@python3 scripts/l10n-lint.py
+	@echo "=== Localization bridge census ==="
+	@python3 scripts/l10n-bridge-census.py
 	@echo ""
-	@echo "check: static gate passed — format, lint, security, env registry, gate ledger, localization catalogs."
+	@echo "check: static gate passed — format, lint, security, env registry, gate ledger, localization catalogs, bridge census."
 	@echo "check: NO tests were executed. Run 'make verify' for the test gate."
 
 # The hermetic gate — and the one CI runs, by name (.github/workflows/rust.yml).
@@ -1106,6 +1140,8 @@ verify:
 	bash scripts/tests/test-isolation-not-shipped-test.sh; \
 	echo "=== Verify (Whisper model promotion) ==="; \
 	bash scripts/tests/download-model-test.sh; \
+	echo "=== Verify (optional build model discovery) ==="; \
+	python3 scripts/tests/test_build_optional_model_discovery.py; \
 	echo "=== Verify (bus demux: routing, lease, coalesce, attach) ==="; \
 	bash scripts/tests/bus-demux-test.sh; \
 	echo "=== Verify (bench STT stage fixture hard-links) ==="; \
@@ -1119,10 +1155,25 @@ verify:
 	python3 -m unittest scripts/tests/test_bus_demux_speech.py; \
 	python3 -m unittest scripts/tests/test_install_if_idle.py; \
 	python3 -m unittest scripts/tests/test_bus_native_queue.py; \
+	python3 -m unittest scripts/tests/test_bus_read_ack.py; \
+	python3 -m unittest scripts/tests/test_bus_runtime_model.py; \
+	python3 -m unittest scripts/tests/test_bus_user_text.py; \
+	python3 -m unittest scripts/tests/test_bus_channel_seal_burst.py; \
+	python3 -m unittest scripts/tests/test_bus_draft_retirement.py; \
+	python3 -m unittest scripts/tests/test_install_bus_payload.py; \
+	python3 -m unittest scripts/tests/test_bus_peer_messages.py; \
+	python3 -m unittest scripts/tests/test_agent_reply_admission.py; \
+	python3 -m unittest scripts/tests/test_agent_publisher_manifest.py; \
+	CODESCRIBE_NO_EMBED=1 cargo build --locked --bin codescribe; \
+	python3 -m unittest scripts/tests/test_bus_channel_handover.py; \
+	python3 -m unittest scripts/tests/test_bus_agent_archive.py; \
+	python3 -m unittest scripts/tests/test_agent_reply_publisher.py; \
 	python3 -m unittest scripts/tests/test_cs_say_entry.py; \
 	bash scripts/validate-envs.sh; \
 	echo "=== Verify (String Catalog lint instrument) ==="; \
 	python3 -m unittest scripts/tests/test_l10n_lint.py; \
+	python3 -m unittest scripts/tests/test_l10n_sheet.py; \
+	python3 -m unittest scripts/tests/test_l10n_bridge_census.py; \
 	python3 -m unittest scripts/tests/test_generate_swift_bindings.py; \
 	echo "=== Verify (install-lane single-instance stamp) ==="; \
 	bash scripts/tests/single-instance-stamp-test.sh; \
@@ -1269,23 +1320,28 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bump-minor' 'Bump minor (0.5.1 -> 0.6.0)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bump-major' 'Bump major (0.5.1 -> 1.0.0)'
 	@printf '\n'
-	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'QUALITY — GATES (run anywhere, decide merge)'
+	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'QUALITY — GATES (platform requirements: make gate-ledger)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'check' 'Static gate: fmt + prettier + clippy + semgrep + registries + l10n lint. NO tests'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify' 'Hermetic test gate — exactly what CI runs (rust.yml)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify' 'Hermetic test gate; CI runs it after localization gates (rust.yml)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'lint' 'Run clippy + fmt check'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'format' 'Format Rust code'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'fix' 'Format all code (Rust + Prettier)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'semgrep' 'Run release security scan'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'hooks' 'Install pre-commit + pre-push + commit-msg hooks'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-catalog' 'String Catalog lint (part of check): stale keys, arguments, plurals'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-catalog' 'String Catalog lint (part of check): stale keys, arguments, plurals, coverage'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-bridge' 'Bridge census (part of check): every String crossing UniFFI is classified data|prose'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-sync' 'String Catalog vs current Debug compiler extraction; required in CI'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-install-bus' 'Helper installer source compiles without the app target; required in CI'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-l10n-sync' 'Real-compiler positive/negative controls for the localization gate'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'l10n-build' 'Swift-only Debug archive for extraction (docs/LOCALIZATION.md); no runnable app'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'l10n-sync' 'Fold strings extracted by the last Debug build into the String Catalog'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'l10n-sheet' 'Translator worksheet: L10N_LANG=pl exports CSV (PENDING=1: owed rows only), CSV=... imports it (DRAFT=1: as needs_review)'
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'QUALITY — BENCH INSTRUMENTS (this host only, never a merge gate)'
 	@printf '%s\n' '  Full classification: make -s gate-ledger'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test' 'Workspace tests; heavy cases ignored, no forced opt-ins'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-quick' 'Workspace tests, no real API (sources ~/.codescribe/.env)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-swift' 'SwiftUI suite + phrase-restart lockstep (needs Xcode + ffi dylib)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-sync' 'String Catalog vs the last Debug build (needs Xcode + a current build)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'smoke-macos27' 'Host smoke after an OS/Xcode bump (SMOKE_ARGS=--with-inference)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e' 'Run E2E tests (mock)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e-real' 'Run E2E tests with real API (needs LLM_*_API_KEY)'

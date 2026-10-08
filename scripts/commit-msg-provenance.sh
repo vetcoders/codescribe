@@ -4,6 +4,9 @@
 # Accepted first lines:
 #   [claude/vc-workflow] fix: example
 #   [codex/vc-ownership] release: example
+#   [junie/vc-implement] fix: example
+#   [Maciej/manual] docs: example
+#   [maciej/vc-manual] docs: example
 #   [operator/vc-manual] docs: example
 #   [reviewer/vc-manual] chore: example
 #   [ok-commit] fix: example
@@ -33,10 +36,10 @@ first_line=$(
   ' "$MSG_FILE"
 )
 
-agent_pattern='(claude|codex|copilot|cursor|gemini|grok|kimi|operator|reviewer)'
+agent_pattern='(claude|codex|copilot|cursor|gemini|grok|junie|kimi|operator|reviewer)'
 workflow_pattern='vc-[a-z0-9][a-z0-9-]*'
 agent_commit_pattern="^\\[${agent_pattern}/${workflow_pattern}\\] .+"
-human_commit_pattern='^\[ok-commit\] .+'
+human_commit_pattern='^\[(ok-commit|(maciej|Maciej)/(vc-)?manual)\] .+'
 merge_commit_pattern='^Merge .+'
 squash_commit_pattern='^Squashed commit of the following:.*'
 
@@ -57,14 +60,16 @@ echo "✋ Commit blocked: add provenance tag to the commit message." >&2
 echo "" >&2
 echo "  Agent telemetry:  [claude/vc-marbles] fix: overlay crash" >&2
 echo "  Agent telemetry:  [codex/vc-ownership] release: embed models by default" >&2
-echo "  Human commit:     [reviewer/vc-manual] chore: normalize docs" >&2
+echo "  Agent telemetry:  [junie/vc-implement] fix: fixture candidates" >&2
+echo "  Human commit:     [Maciej/manual] chore: normalize docs" >&2
 echo "  Human quick:      [ok-commit] fix: overlay crash" >&2
 echo "  Merge commit:     Merge branch 'feature' into develop" >&2
 echo "  Squash commit:    Squashed commit of the following:" >&2
 echo "  Revert:           Revert \"[claude/vc-workflow] fix: overlay crash\"" >&2
 echo "" >&2
 echo "  Format: [<agent>/vc-<workflow>] <description>" >&2
-echo "  Authors: claude, codex, copilot, cursor, gemini, grok, kimi, operator, reviewer" >&2
+echo "  Agents: claude, codex, copilot, cursor, gemini, grok, junie, kimi, operator, reviewer" >&2
+echo "  Founder: [maciej/manual] or [Maciej/manual]; vc-manual also accepted" >&2
 echo "  Workflows: any vc-* workflow, e.g. vc-marbles, vc-justdo, vc-workflow, vc-ownership, vc-manual" >&2
 echo "" >&2
 echo "  Current first line: ${first_line:-<empty>}" >&2

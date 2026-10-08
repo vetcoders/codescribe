@@ -19,7 +19,13 @@ class SayEntryTests(unittest.TestCase):
         self.record = self.root / "oauth-argv.json"
         self.grok = self.root / "grok"
         self.grok.write_text(
-            f"#!{sys.executable}\nimport json,sys\n"
+            f"#!{sys.executable}\nimport argparse,json,sys\n"
+            "parser=argparse.ArgumentParser()\n"
+            "parser.add_argument('command', choices=['login'])\n"
+            "modes=parser.add_mutually_exclusive_group(required=True)\n"
+            "modes.add_argument('--oauth', action='store_true')\n"
+            "modes.add_argument('--device-auth', action='store_true')\n"
+            "parser.parse_args()\n"
             f"open({str(self.record)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
         )
         self.grok.chmod(0o755)
@@ -29,7 +35,7 @@ class SayEntryTests(unittest.TestCase):
         ]
         self.environment = dict(os.environ, PATH=str(self.root))
 
-    def test_login_uses_oauth_command_without_starting_the_app_or_agent(self):
+    def test_login_selects_one_grok_auth_mode_without_starting_the_app_or_agent(self):
         subprocess.run(
             self.command + ["auth", "--provider", "xai", "--login-type", "oauth"],
             env=self.environment,
@@ -42,7 +48,7 @@ class SayEntryTests(unittest.TestCase):
             check=True,
         )
         self.assertEqual(
-            json.loads(self.record.read_text()), ["login", "--oauth", "--device-auth"]
+            json.loads(self.record.read_text()), ["login", "--device-auth"]
         )
 
     def test_key_login_prompts_without_a_secret_in_argv_for_every_provider(self):

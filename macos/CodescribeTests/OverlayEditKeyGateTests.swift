@@ -13,6 +13,8 @@ import XCTest
 final class OverlayEditKeyGateTests: XCTestCase {
   func testPanelCanBecomeKeyOnlyWhileTheFormattedCanvasIsFirstResponder() throws {
     let state = OverlayState()
+    // Creation starts in mini; these contracts exercise the explicitly opened canvas.
+    state.setPresentationMode(.expanded)
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
         state: state,
@@ -74,6 +76,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
 
   func testKeyLostFromOutsideClosesTheGateAndResignsTheCanvas() throws {
     let state = OverlayState()
+    state.setPresentationMode(.expanded)
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
         state: state,
@@ -106,6 +109,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
 
   func testClickOpensEditGateForPreselectedCanvas() throws {
     let state = OverlayState()
+    state.setPresentationMode(.expanded)
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
         state: state,
@@ -160,6 +164,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
 
   func testLive1656SelectedReadOnlyWordsCanReceiveNativeCopyCommands() throws {
     let state = OverlayState()
+    state.setPresentationMode(.expanded)
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "Live1656.copySelection"))
@@ -176,14 +181,16 @@ final class OverlayEditKeyGateTests: XCTestCase {
     let canvas = try XCTUnwrap(descendant(of: LiveTranscriptNativeTextView.self, in: root))
     XCTAssertTrue(panel.makeFirstResponder(canvas))
     let point = canvas.convert(NSPoint(x: 25, y: 10), to: nil)
-    let down = try XCTUnwrap(NSEvent.mouseEvent(
-      with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
-      windowNumber: panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1,
-      pressure: 1))
-    let up = try XCTUnwrap(NSEvent.mouseEvent(
-      with: .leftMouseUp, location: point, modifierFlags: [], timestamp: 0.01,
-      windowNumber: panel.windowNumber, context: nil, eventNumber: 2, clickCount: 1,
-      pressure: 0))
+    let down = try XCTUnwrap(
+      NSEvent.mouseEvent(
+        with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
+        windowNumber: panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1,
+        pressure: 1))
+    let up = try XCTUnwrap(
+      NSEvent.mouseEvent(
+        with: .leftMouseUp, location: point, modifierFlags: [], timestamp: 0.01,
+        windowNumber: panel.windowNumber, context: nil, eventNumber: 2, clickCount: 1,
+        pressure: 0))
     NSApp.postEvent(up, atStart: true)
     canvas.mouseDown(with: down)
     canvas.setSelectedRange(NSRange(location: 6, length: 4))
@@ -202,19 +209,25 @@ final class OverlayEditKeyGateTests: XCTestCase {
   func testLive1656EphemeralPaintReachesCanvasWithoutCommittingDelivery() throws {
     let state = OverlayState()
     state.handleRecordingPreparing()
-    state.applyCompactProjection(CsCompactProjection(
-      sessionId: "edit-key-gate-fixture", captureEpoch: 1, sequence: 1,
-      text: "", degraded: false, evidence: []))
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "edit-key-gate-fixture", captureEpoch: 1, sequence: 1,
+        text: "", degraded: false, evidence: []))
     state.handleRecordingStarted()
-    let panel = try XCTUnwrap(DictationOverlayWindow.make(
-      state: state, textScale: TextScaleController(key: "Live1656.ephemeral"))
-      as? FloatingOverlayPanel)
-    defer { panel.orderOut(nil); panel.invalidatePresence() }
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "Live1656.ephemeral"))
+        as? FloatingOverlayPanel)
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
     panel.orderFrontRegardless()
     let root = try XCTUnwrap(panel.contentView)
-    state.applyCompactProjection(CsCompactProjection(
-      sessionId: "edit-key-gate-fixture", captureEpoch: 1, sequence: 2,
-      text: "Ostatnie słowa są widoczne od razu.", degraded: false, evidence: []))
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "edit-key-gate-fixture", captureEpoch: 1, sequence: 2,
+        text: "Ostatnie słowa są widoczne od razu.", degraded: false, evidence: []))
     settle(root)
     let canvas = try XCTUnwrap(descendant(of: LiveTranscriptNativeTextView.self, in: root))
     XCTAssertEqual(canvas.string, "Ostatnie słowa są widoczne od razu.")
@@ -222,9 +235,10 @@ final class OverlayEditKeyGateTests: XCTestCase {
     XCTAssertNil(state.latestTranscriptProjection)
     XCTAssertFalse(state.canInsert)
     XCTAssertFalse(state.canPaste)
-    state.applyCompactProjection(CsCompactProjection(
-      sessionId: "foreign", captureEpoch: 1, sequence: 99,
-      text: "Stale text", degraded: false, evidence: []))
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "foreign", captureEpoch: 1, sequence: 99,
+        text: "Stale text", degraded: false, evidence: []))
     settle(root)
     XCTAssertEqual(canvas.string, "Ostatnie słowa są widoczne od razu.")
   }
