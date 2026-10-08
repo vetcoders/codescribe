@@ -3960,6 +3960,11 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
     func addServer(server: CsMcpServerInput) throws
 
     /**
+     * Remove the durable per-tool rule so the tool inherits again.
+     */
+    func clearToolPermission(identity: String) throws
+
+    /**
      * Snapshot of durable `agent.permissions` (settings.json).
      */
     func getPermissionPolicy()  -> CsPermissionPolicy
@@ -4092,6 +4097,17 @@ open func addServer(server: CsMcpServerInput)throws   {try rustCallWithError(Ffi
     uniffi_codescribe_ffi_fn_method_codescribemcpadmin_add_server(
             self.uniffiCloneHandle(),
         FfiConverterTypeCsMcpServerInput_lower(server),$0
+    )
+}
+}
+
+    /**
+     * Remove the durable per-tool rule so the tool inherits again.
+     */
+open func clearToolPermission(identity: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribemcpadmin_clear_tool_permission(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(identity),$0
     )
 }
 }
@@ -10647,19 +10663,49 @@ public func FfiConverterTypeCsMcpStatusReport_lower(_ value: CsMcpStatusReport) 
 
 
 /**
- * One labelled status line (label + value + tone) for the Settings UI.
+ * One status line for the Settings UI. `label` / `value` are the core's
+ * English rendering; Settings localizes from `facet` + `state` and the
+ * structured parts (`count`, `subject`, `detail`) instead of parsing `value`.
  */
 public struct CsMcpStatusRow: Equatable, Hashable {
     public var label: String
     public var value: String
     public var tone: CsMcpRowTone
+    public var facet: CsMcpStatusFacet
+    public var state: CsMcpStatusState
+    /**
+     * Tool or folder count behind the value, when the state carries one.
+     */
+    public var count: UInt32?
+    /**
+     * Provider label or server name behind the value, else empty.
+     */
+    public var subject: String
+    /**
+     * Error cause, env key, or free-form note behind the value, else empty.
+     */
+    public var detail: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(label: String, value: String, tone: CsMcpRowTone) {
+    public init(label: String, value: String, tone: CsMcpRowTone, facet: CsMcpStatusFacet, state: CsMcpStatusState,
+        /**
+         * Tool or folder count behind the value, when the state carries one.
+         */count: UInt32?,
+        /**
+         * Provider label or server name behind the value, else empty.
+         */subject: String,
+        /**
+         * Error cause, env key, or free-form note behind the value, else empty.
+         */detail: String) {
         self.label = label
         self.value = value
         self.tone = tone
+        self.facet = facet
+        self.state = state
+        self.count = count
+        self.subject = subject
+        self.detail = detail
     }
 
 
@@ -10678,7 +10724,12 @@ public struct FfiConverterTypeCsMcpStatusRow: FfiConverterRustBuffer {
             try CsMcpStatusRow(
                 label: FfiConverterString.read(from: &buf),
                 value: FfiConverterString.read(from: &buf),
-                tone: FfiConverterTypeCsMcpRowTone.read(from: &buf)
+                tone: FfiConverterTypeCsMcpRowTone.read(from: &buf),
+                facet: FfiConverterTypeCsMcpStatusFacet.read(from: &buf),
+                state: FfiConverterTypeCsMcpStatusState.read(from: &buf),
+                count: FfiConverterOptionUInt32.read(from: &buf),
+                subject: FfiConverterString.read(from: &buf),
+                detail: FfiConverterString.read(from: &buf)
         )
     }
 
@@ -10686,6 +10737,11 @@ public struct FfiConverterTypeCsMcpStatusRow: FfiConverterRustBuffer {
         FfiConverterString.write(value.label, into: &buf)
         FfiConverterString.write(value.value, into: &buf)
         FfiConverterTypeCsMcpRowTone.write(value.tone, into: &buf)
+        FfiConverterTypeCsMcpStatusFacet.write(value.facet, into: &buf)
+        FfiConverterTypeCsMcpStatusState.write(value.state, into: &buf)
+        FfiConverterOptionUInt32.write(value.count, into: &buf)
+        FfiConverterString.write(value.subject, into: &buf)
+        FfiConverterString.write(value.detail, into: &buf)
     }
 }
 
@@ -13789,9 +13845,14 @@ public struct CsToolCapability: Equatable, Hashable {
     public var server: String
     public var risk: String
     /**
-     * Effective level: `allow` | `ask` | `deny`.
+     * Effective level the gate applies to the next call: `allow` | `ask` | `deny`.
      */
     public var effective: String
+    /**
+     * Rule behind `effective`: `tool` (individual), `server` or `default`
+     * (inherited), `thread` (session override).
+     */
+    public var ruleSource: String
     public var requiresApprovalFlag: Bool
 
     // Default memberwise initializers are never public by default, so we
@@ -13801,14 +13862,19 @@ public struct CsToolCapability: Equatable, Hashable {
          * Canonical identity (`server:upstream` or `native:name`).
          */identity: String, origin: String, server: String, risk: String,
         /**
-         * Effective level: `allow` | `ask` | `deny`.
-         */effective: String, requiresApprovalFlag: Bool) {
+         * Effective level the gate applies to the next call: `allow` | `ask` | `deny`.
+         */effective: String,
+        /**
+         * Rule behind `effective`: `tool` (individual), `server` or `default`
+         * (inherited), `thread` (session override).
+         */ruleSource: String, requiresApprovalFlag: Bool) {
         self.name = name
         self.identity = identity
         self.origin = origin
         self.server = server
         self.risk = risk
         self.effective = effective
+        self.ruleSource = ruleSource
         self.requiresApprovalFlag = requiresApprovalFlag
     }
 
@@ -13832,6 +13898,7 @@ public struct FfiConverterTypeCsToolCapability: FfiConverterRustBuffer {
                 server: FfiConverterString.read(from: &buf),
                 risk: FfiConverterString.read(from: &buf),
                 effective: FfiConverterString.read(from: &buf),
+                ruleSource: FfiConverterString.read(from: &buf),
                 requiresApprovalFlag: FfiConverterBool.read(from: &buf)
         )
     }
@@ -13843,6 +13910,7 @@ public struct FfiConverterTypeCsToolCapability: FfiConverterRustBuffer {
         FfiConverterString.write(value.server, into: &buf)
         FfiConverterString.write(value.risk, into: &buf)
         FfiConverterString.write(value.effective, into: &buf)
+        FfiConverterString.write(value.ruleSource, into: &buf)
         FfiConverterBool.write(value.requiresApprovalFlag, into: &buf)
     }
 }
@@ -16194,6 +16262,298 @@ public func FfiConverterTypeCsMcpRowTone_lift(_ buf: RustBuffer) throws -> CsMcp
 #endif
 public func FfiConverterTypeCsMcpRowTone_lower(_ value: CsMcpRowTone) -> RustBuffer {
     return FfiConverterTypeCsMcpRowTone.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Which status line a row is, mirrored 1:1 from the core [`McpStatusFacet`]
+ * so Settings renders a localized label per facet.
+ */
+
+public enum CsMcpStatusFacet: Equatable, Hashable {
+
+    case readiness
+    case provider
+    case nativeTools
+    case workspaceRoots
+    case vibecraftedRuntime
+    case aicxMcp
+    case loctreeMcp
+    case prviewIntegration
+    case mcpConfig
+    case mcpServer
+
+
+
+}
+
+#if compiler(>=6)
+extension CsMcpStatusFacet: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsMcpStatusFacet: FfiConverterRustBuffer {
+    typealias SwiftType = CsMcpStatusFacet
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsMcpStatusFacet {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .readiness
+
+        case 2: return .provider
+
+        case 3: return .nativeTools
+
+        case 4: return .workspaceRoots
+
+        case 5: return .vibecraftedRuntime
+
+        case 6: return .aicxMcp
+
+        case 7: return .loctreeMcp
+
+        case 8: return .prviewIntegration
+
+        case 9: return .mcpConfig
+
+        case 10: return .mcpServer
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsMcpStatusFacet, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .readiness:
+            writeInt(&buf, Int32(1))
+
+
+        case .provider:
+            writeInt(&buf, Int32(2))
+
+
+        case .nativeTools:
+            writeInt(&buf, Int32(3))
+
+
+        case .workspaceRoots:
+            writeInt(&buf, Int32(4))
+
+
+        case .vibecraftedRuntime:
+            writeInt(&buf, Int32(5))
+
+
+        case .aicxMcp:
+            writeInt(&buf, Int32(6))
+
+
+        case .loctreeMcp:
+            writeInt(&buf, Int32(7))
+
+
+        case .prviewIntegration:
+            writeInt(&buf, Int32(8))
+
+
+        case .mcpConfig:
+            writeInt(&buf, Int32(9))
+
+
+        case .mcpServer:
+            writeInt(&buf, Int32(10))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMcpStatusFacet_lift(_ buf: RustBuffer) throws -> CsMcpStatusFacet {
+    return try FfiConverterTypeCsMcpStatusFacet.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMcpStatusFacet_lower(_ value: CsMcpStatusFacet) -> RustBuffer {
+    return FfiConverterTypeCsMcpStatusFacet.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Machine state behind a row's value, mirrored 1:1 from the core
+ * [`McpStatusState`]; Settings renders a localized sentence per state.
+ */
+
+public enum CsMcpStatusState: Equatable, Hashable {
+
+    case ready
+    case accessAvailable
+    case accessUnavailable
+    case noNativeTools
+    case available
+    case synchronized
+    case rootsMismatch
+    case notConfigured
+    case live
+    case failed
+    case disabled
+    case configured
+    case error
+    case empty
+    case missing
+    case note
+
+
+
+}
+
+#if compiler(>=6)
+extension CsMcpStatusState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsMcpStatusState: FfiConverterRustBuffer {
+    typealias SwiftType = CsMcpStatusState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsMcpStatusState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .ready
+
+        case 2: return .accessAvailable
+
+        case 3: return .accessUnavailable
+
+        case 4: return .noNativeTools
+
+        case 5: return .available
+
+        case 6: return .synchronized
+
+        case 7: return .rootsMismatch
+
+        case 8: return .notConfigured
+
+        case 9: return .live
+
+        case 10: return .failed
+
+        case 11: return .disabled
+
+        case 12: return .configured
+
+        case 13: return .error
+
+        case 14: return .empty
+
+        case 15: return .missing
+
+        case 16: return .note
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsMcpStatusState, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .ready:
+            writeInt(&buf, Int32(1))
+
+
+        case .accessAvailable:
+            writeInt(&buf, Int32(2))
+
+
+        case .accessUnavailable:
+            writeInt(&buf, Int32(3))
+
+
+        case .noNativeTools:
+            writeInt(&buf, Int32(4))
+
+
+        case .available:
+            writeInt(&buf, Int32(5))
+
+
+        case .synchronized:
+            writeInt(&buf, Int32(6))
+
+
+        case .rootsMismatch:
+            writeInt(&buf, Int32(7))
+
+
+        case .notConfigured:
+            writeInt(&buf, Int32(8))
+
+
+        case .live:
+            writeInt(&buf, Int32(9))
+
+
+        case .failed:
+            writeInt(&buf, Int32(10))
+
+
+        case .disabled:
+            writeInt(&buf, Int32(11))
+
+
+        case .configured:
+            writeInt(&buf, Int32(12))
+
+
+        case .error:
+            writeInt(&buf, Int32(13))
+
+
+        case .empty:
+            writeInt(&buf, Int32(14))
+
+
+        case .missing:
+            writeInt(&buf, Int32(15))
+
+
+        case .note:
+            writeInt(&buf, Int32(16))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMcpStatusState_lift(_ buf: RustBuffer) throws -> CsMcpStatusState {
+    return try FfiConverterTypeCsMcpStatusState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMcpStatusState_lower(_ value: CsMcpStatusState) -> RustBuffer {
+    return FfiConverterTypeCsMcpStatusState.lower(value)
 }
 
 
@@ -19439,6 +19799,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_add_server() != 12098) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_clear_tool_permission() != 37009) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_get_permission_policy() != 8244) {

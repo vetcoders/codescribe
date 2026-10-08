@@ -54,9 +54,16 @@ extension CsMcpStatusReport {
     configPathDisplay: "~/.codescribe/mcp.json",
     configured: true,
     rows: [
-      CsMcpStatusRow(label: "loctree-mcp:", value: "9 tool(s)", tone: .good),
-      CsMcpStatusRow(label: "aicx-mcp:", value: "configured (agent not started)", tone: .warn),
-      CsMcpStatusRow(label: "vibecrafted-mcp:", value: "failed: command not found", tone: .bad),
+      CsMcpStatusRow(
+        label: "loctree-mcp:", value: "9 tool(s)", tone: .good,
+        facet: .mcpServer, state: .live, count: 9, subject: "loctree-mcp", detail: ""),
+      CsMcpStatusRow(
+        label: "aicx-mcp:", value: "configured (agent not started)", tone: .warn,
+        facet: .mcpServer, state: .configured, count: nil, subject: "aicx-mcp", detail: ""),
+      CsMcpStatusRow(
+        label: "vibecrafted-mcp:", value: "failed: command not found", tone: .bad,
+        facet: .mcpServer, state: .failed, count: nil, subject: "vibecrafted-mcp",
+        detail: "command not found"),
     ]
   )
 }
@@ -71,16 +78,33 @@ extension CsAgenticReadiness {
       CsMcpStatusRow(
         label: "Agentic readiness:",
         value: "ready — OpenAI (Responses) configured, access available, 10 native tool(s)",
-        tone: .good
+        tone: .good, facet: .readiness, state: .ready, count: 10,
+        subject: "OpenAI (Responses)", detail: ""
       ),
-      CsMcpStatusRow(label: "Provider:", value: "OpenAI (Responses) — access available", tone: .good),
-      CsMcpStatusRow(label: "Native tools:", value: "10 tool(s) available", tone: .good),
       CsMcpStatusRow(
-        label: "Vibecrafted runtime:", value: "not configured (optional)", tone: .neutral),
-      CsMcpStatusRow(label: "AICX MCP:", value: "configured — agent not started yet", tone: .warn),
-      CsMcpStatusRow(label: "Loctree MCP:", value: "ready — 9 tool(s) live", tone: .good),
+        label: "Provider:", value: "OpenAI (Responses) — access available", tone: .good,
+        facet: .provider, state: .accessAvailable, count: nil, subject: "OpenAI (Responses)",
+        detail: "OPENAI_API_KEY"),
       CsMcpStatusRow(
-        label: "PRView integration:", value: "not configured (optional)", tone: .neutral),
+        label: "Native tools:", value: "10 tool(s) available", tone: .good,
+        facet: .nativeTools, state: .available, count: 10, subject: "", detail: ""),
+      CsMcpStatusRow(
+        label: "Workspace roots:", value: "2 configured — native tools synchronized",
+        tone: .good, facet: .workspaceRoots, state: .synchronized, count: 2, subject: "",
+        detail: ""),
+      CsMcpStatusRow(
+        label: "Vibecrafted runtime:", value: "not configured (optional)", tone: .neutral,
+        facet: .vibecraftedRuntime, state: .notConfigured, count: nil,
+        subject: "vibecrafted-mcp", detail: ""),
+      CsMcpStatusRow(
+        label: "AICX MCP:", value: "configured — agent not started yet", tone: .warn,
+        facet: .aicxMcp, state: .configured, count: nil, subject: "aicx-mcp", detail: ""),
+      CsMcpStatusRow(
+        label: "Loctree MCP:", value: "ready — 9 tool(s) live", tone: .good,
+        facet: .loctreeMcp, state: .live, count: 9, subject: "loctree-mcp", detail: ""),
+      CsMcpStatusRow(
+        label: "PRView integration:", value: "not configured (optional)", tone: .neutral,
+        facet: .prviewIntegration, state: .notConfigured, count: nil, subject: "", detail: ""),
     ]
   )
 }

@@ -408,7 +408,7 @@ final class SettingsTruthTests: XCTestCase {
     let admin = RecordingPermissionAdmin(capabilities: [
       CsToolCapability(
         name: "search", identity: "loctree-mcp:search", origin: "mcp", server: "loctree-mcp",
-        risk: "read_only", effective: "allow", requiresApprovalFlag: false)
+        risk: "read_only", effective: "allow", ruleSource: "tool", requiresApprovalFlag: false)
     ])
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
@@ -424,6 +424,8 @@ final class SettingsTruthTests: XCTestCase {
     model[toolLevel: "loctree-mcp:search"] = "deny"
     XCTAssertEqual(admin.toolWrites.map(\.identity), ["loctree-mcp:search"])
     XCTAssertEqual(admin.toolWrites.map(\.level), ["deny"])
+    model.clearToolPermission(identity: "loctree-mcp:search")
+    XCTAssertEqual(admin.toolClears, ["loctree-mcp:search"])
 
     model.readOnlyDefaultPicker = "deny"
     XCTAssertEqual(admin.defaultWrites.last?.readOnlyDefault, "deny")
@@ -529,6 +531,43 @@ final class SettingsTruthTests: XCTestCase {
       }
     }
     XCTAssertTrue(AgentPanel.ownedCapabilities.contains(.toolPermissions))
+  }
+
+  /// The Tools tab shows a readable name above the raw identifier, localizes
+  /// the risk class and tells an individual rule from an inherited one; the
+  /// identity string itself is never touched.
+  func testToolPermissionLabelsHumanizeNamesAndKeepIdentifiers() {
+    XCTAssertEqual(ToolPermissionLabels.displayName(for: "apply_patch"), "Apply patch")
+    XCTAssertEqual(ToolPermissionLabels.displayName(for: "brave-web-search"), "Brave web search")
+    XCTAssertEqual(ToolPermissionLabels.displayName(for: "mcp__dc__write_file"), "Write file")
+    XCTAssertEqual(ToolPermissionLabels.displayName(for: "ls"), "Ls")
+    XCTAssertEqual(ToolPermissionLabels.displayName(for: ""), "")
+
+    XCTAssertEqual(ToolPermissionLabels.source("native"), "Native")
+    XCTAssertEqual(ToolPermissionLabels.source("Desktop-Commander"), "Desktop-Commander")
+    XCTAssertEqual(ToolPermissionLabels.origin("mcp:brave-search"), "MCP")
+    XCTAssertEqual(ToolPermissionLabels.risk("read_only"), "Read data")
+    XCTAssertEqual(ToolPermissionLabels.risk("process_control"), "Processes")
+    XCTAssertEqual(ToolPermissionLabels.risk("unknown"), "Unclassified")
+    XCTAssertEqual(ToolPermissionLabels.risk("exotic"), "exotic", "unknown classes stay raw")
+
+    let inherited = ToolPermissionItem(
+      capability: CsToolCapability(
+        name: "apply_patch", identity: "native:apply_patch", origin: "native", server: "",
+        risk: "mutating", effective: "ask", ruleSource: "default", requiresApprovalFlag: false))
+    XCTAssertEqual(inherited.displayName, "Apply patch")
+    XCTAssertEqual(inherited.identity, "native:apply_patch")
+    XCTAssertFalse(inherited.hasIndividualRule)
+    XCTAssertEqual(
+      ToolPermissionLabels.ruleCaption(inherited.ruleSource), "Inherited from the category default")
+    let individual = ToolPermissionItem(
+      capability: CsToolCapability(
+        name: "search", identity: "loctree-mcp:search", origin: "mcp:loctree-mcp",
+        server: "loctree-mcp", risk: "read_only", effective: "deny", ruleSource: "tool",
+        requiresApprovalFlag: false))
+    XCTAssertTrue(individual.hasIndividualRule)
+    XCTAssertEqual(ToolPermissionLabels.ruleCaption("tool"), "Individual rule")
+    XCTAssertEqual(ToolPermissionLabels.ruleCaption("server"), "Inherited from the server rule")
   }
 
   /// P0-9 residual: permissions hierarchy groups server→tool, filters by query,
@@ -1395,6 +1434,108 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(restored, ["correction", "smart", "max"])
   }
 
+  /// Diagnostics renders rows from the core's facet + state, never by parsing
+  /// the English value: the structured parts land in the sentence.
+  func testDiagnosticsRowsRenderFromFacetAndStateNotTheEnglishValue() {
+    let ready = CsMcpStatusRow(
+      label: "Agentic readiness:", value: "ready — raw english", tone: .good,
+      facet: .readiness, state: .ready, count: 26, subject: "xAI (Grok)", detail: "")
+    XCTAssertEqual(ready.localizedLabel, "Overall status")
+    XCTAssertEqual(
+      ready.localizedValue, "Ready — xAI (Grok) configured, access available, 26 native tools")
+
+    let provider = CsMcpStatusRow(
+      label: "Provider:", value: "", tone: .bad,
+      facet: .provider, state: .accessUnavailable, count: nil, subject: "OpenAI",
+      detail: "OPENAI_API_KEY")
+    XCTAssertEqual(provider.localizedLabel, "Model provider")
+    XCTAssertEqual(provider.localizedValue, "OpenAI — no access (sign in or set OPENAI_API_KEY)")
+
+    let roots = CsMcpStatusRow(
+      label: "Workspace roots:", value: "", tone: .good,
+      facet: .workspaceRoots, state: .synchronized, count: 1, subject: "", detail: "")
+    XCTAssertEqual(roots.localizedLabel, "Folders available to the Agent")
+    XCTAssertEqual(roots.localizedValue, "1 folder — native tools synchronized")
+
+    let prview = CsMcpStatusRow(
+      label: "PRView integration:", value: "", tone: .warn,
+      facet: .prviewIntegration, state: .configured, count: nil, subject: "prview-mcp", detail: "")
+    XCTAssertEqual(prview.localizedLabel, "PRView integration")
+    XCTAssertEqual(prview.localizedValue, "Configured — agent not started yet (server prview-mcp)")
+
+    let server = CsMcpStatusRow(
+      label: "curl:", value: "", tone: .bad,
+      facet: .mcpServer, state: .failed, count: nil, subject: "curl", detail: "command not found")
+    XCTAssertEqual(server.localizedLabel, "curl")
+    XCTAssertEqual(server.localizedValue, "Failed: command not found")
+
+    XCTAssertEqual(CsMcpRowTone.good.label, "Good")
+    XCTAssertEqual(CsMcpRowTone.warn.label, "Warning")
+    XCTAssertEqual(CsMcpRowTone.bad.label, "Error")
+    XCTAssertEqual(CsMcpRowTone.neutral.label, "Not checked")
+  }
+
+  /// The capability summary counts tiers; the row headline comes from tier +
+  /// provider so the English reason stays a tooltip.
+  func testCapabilitySummaryCountsTiersAndHeadlinesDropTheRawReason() {
+    let summary = CapabilitySummary(rows: CsCapabilityRow.sampleMatrix)
+    XCTAssertEqual(summary.native, 1)
+    XCTAssertEqual(summary.enhanced, 1)
+    XCTAssertEqual(summary.unavailable, 1)
+    XCTAssertEqual(summary.line, "Native: 1 · Enhanced: 1 · Unavailable: 1")
+
+    let rows = CsCapabilityRow.sampleMatrix
+    XCTAssertEqual(rows[0].localizedTier, "Native")
+    XCTAssertEqual(rows[0].localizedHeadline, "Built-in Codescribe tool")
+    XCTAssertEqual(rows[0].localizedDetail, "tool: list_directory · source: native")
+    XCTAssertEqual(
+      rows[1].localizedHeadline, "Built-in tool, enriched by Loctree while it is healthy")
+    XCTAssertEqual(rows[2].localizedTier, "Unavailable")
+    XCTAssertEqual(
+      rows[2].localizedHeadline, "Unavailable — no built-in tool and no healthy MCP server")
+    XCTAssertNil(
+      CsCapabilityRow(op: "x", tier: "unavailable", provider: "", nativeTool: "", reason: "")
+        .localizedDetail)
+  }
+
+  /// One MCP table line per configured server: the probe row joins by name
+  /// and the cached test result becomes its own column.
+  func testMcpServerLinesMergeProbeRowsWithTestResults() {
+    let servers = [
+      CsMcpServer(
+        name: "loctree-mcp", command: "loct", args: [], envKeys: [], enabled: true,
+        transport: "stdio",
+        endpoint: "", authRef: ""),
+      CsMcpServer(
+        name: "aicx-mcp", command: "aicx", args: [], envKeys: [], enabled: true, transport: "stdio",
+        endpoint: "", authRef: ""),
+      CsMcpServer(
+        name: "orphan", command: "x", args: [], envKeys: [], enabled: true, transport: "stdio",
+        endpoint: "", authRef: ""),
+    ]
+    let results = [
+      "loctree-mcp": CsMcpTestResult(
+        ok: true, toolCount: 9, serverName: "loctree-mcp", serverVersion: "1.2",
+        protocolVersion: "", error: ""),
+      "aicx-mcp": CsMcpTestResult(
+        ok: false, toolCount: 0, serverName: "aicx-mcp", serverVersion: "", protocolVersion: "",
+        error: "timeout"),
+    ]
+    let lines = McpServerLine.merge(
+      servers: servers, statusRows: CsMcpStatusReport.sample.rows, results: results,
+      pending: ["orphan"])
+    XCTAssertEqual(lines.map(\.name), ["loctree-mcp", "aicx-mcp", "orphan"])
+    XCTAssertEqual(lines[0].status?.localizedValue, "Live — 9 tools")
+    XCTAssertEqual(lines[0].testText, "OK — 9 tools · v1.2")
+    XCTAssertEqual(lines[0].testTone, .good)
+    XCTAssertEqual(lines[1].status?.state, .configured)
+    XCTAssertEqual(lines[1].testText, "Failed: timeout")
+    XCTAssertEqual(lines[1].testTone, .bad)
+    XCTAssertNil(lines[2].status, "a server without a probe row keeps its test column only")
+    XCTAssertEqual(lines[2].testText, "Testing…")
+    XCTAssertEqual(lines[2].testTone, .warn)
+  }
+
   /// After a restore the refreshed snapshot reads "Built-in prompt": the
   /// custom file is gone, so the source flips and the path stays.
   func testPromptRestoreReturnsTheBuiltInSnapshot() throws {
@@ -1561,6 +1702,58 @@ final class SettingsTruthTests: XCTestCase {
         "CODESCRIBE_RESET_RELAUNCH_REQUIRED: app data moved but prompt restore failed"
       )
     )
+  }
+
+  /// A flipped `enabled` flag invalidates the cached handshake: the card must
+  /// not keep saying "passed" about a configuration that was just edited.
+  func testToggleMcpServerDropsTheStaleTestResult() async {
+    let admin = ScriptedMcpAdmin(servers: [
+      CsMcpServer(
+        name: "loctree-mcp", command: "loct", args: ["mcp"], envKeys: [], enabled: true,
+        transport: "stdio", endpoint: "", authRef: "")
+    ])
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
+    model.reloadMcpServers()
+    model.testMcpServer("loctree-mcp")
+    for _ in 0..<100 where model.mcpTestPending.contains("loctree-mcp") { await Task.yield() }
+    XCTAssertEqual(model.mcpTestResults["loctree-mcp"]?.ok, true)
+
+    model.toggleMcpServer(model.mcpServers[0])
+
+    XCTAssertNil(model.mcpTestResults["loctree-mcp"])
+    XCTAssertEqual(model.mcpServers.first?.enabled, false)
+    XCTAssertEqual(admin.updates, ["loctree-mcp"])
+  }
+
+  /// A rejected add hands the store's message back to the form, which keeps
+  /// the typed fields; a successful add returns nil.
+  func testAddMcpServerReportsTheStoreFailure() {
+    let admin = ScriptedMcpAdmin(servers: [], addFailure: "server name already exists")
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
+
+    XCTAssertEqual(
+      model.addMcpServer(name: "prview", command: "prview", args: ["mcp"]),
+      "server name already exists")
+    XCTAssertEqual(model.lastError, "server name already exists")
+    XCTAssertTrue(model.mcpServers.isEmpty)
+
+    admin.addFailure = nil
+    XCTAssertNil(model.addMcpServer(name: "prview", command: "prview", args: ["mcp"]))
+    XCTAssertEqual(model.mcpServers.map(\.name), ["prview"])
+  }
+
+  /// The card reads the server rule from the live policy instead of a literal.
+  func testMcpServerPermissionLevelReadsTheLivePolicy() async {
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(),
+      mcpAdmin: ScriptedMcpAdmin(servers: [], rules: ["prview=ask", "dc=deny"]))
+    model.reloadToolPermissions()
+    for _ in 0..<100 where model.permissionPolicy.servers.isEmpty { await Task.yield() }
+    XCTAssertEqual(model.mcpServerPermissionLevel("prview"), "ask")
+    XCTAssertEqual(model.mcpServerPermissionLevel("dc"), "deny")
+    XCTAssertNil(model.mcpServerPermissionLevel("loctree-mcp"))
   }
 
   func testClearMcpConfigurationUsesDedicatedEngineContract() {
@@ -1848,6 +2041,7 @@ final class SettingsTruthTests: XCTestCase {
 @MainActor
 private final class RecordingPermissionAdmin: MCPAdminEngine {
   private(set) var toolWrites: [(identity: String, level: String)] = []
+  private(set) var toolClears: [String] = []
   private(set) var defaultWrites: [CsPermissionPolicy] = []
   private var policy = CsPermissionPolicy(
     defaultLevel: "ask", readOnlyDefault: "allow", sideEffectDefault: "ask", tools: [], servers: [])
@@ -1876,5 +2070,60 @@ private final class RecordingPermissionAdmin: MCPAdminEngine {
   func setToolPermission(identity: String, level: String) throws {
     toolWrites.append((identity, level))
   }
+  func clearToolPermission(identity: String) throws { toolClears.append(identity) }
   func listToolCapabilities() -> [CsToolCapability] { capabilities }
+}
+
+/// MCP admin double with a scripted add failure and a recorded update log.
+@MainActor
+private final class ScriptedMcpAdmin: MCPAdminEngine {
+  struct StoreFailure: Error, CustomStringConvertible {
+    let description: String
+  }
+
+  private var servers: [CsMcpServer]
+  private let serverRules: [String]
+  var addFailure: String?
+  private(set) var updates: [String] = []
+
+  init(servers: [CsMcpServer], addFailure: String? = nil, rules serverRules: [String] = []) {
+    self.servers = servers
+    self.addFailure = addFailure
+    self.serverRules = serverRules
+  }
+
+  func listServers() throws -> [CsMcpServer] { servers }
+
+  func addServer(_ input: CsMcpServerInput) throws {
+    if let addFailure { throw StoreFailure(description: addFailure) }
+    servers.append(
+      CsMcpServer(
+        name: input.name, command: input.command, args: input.args, envKeys: [],
+        enabled: input.enabled, transport: input.endpoint.isEmpty ? "stdio" : "remote",
+        endpoint: input.endpoint, authRef: input.authRef))
+  }
+
+  func updateServer(name: String, input: CsMcpServerInput) throws {
+    updates.append(name)
+    guard let index = servers.firstIndex(where: { $0.name == name }) else { return }
+    servers[index] = CsMcpServer(
+      name: input.name, command: input.command, args: input.args,
+      envKeys: servers[index].envKeys, enabled: input.enabled,
+      transport: input.endpoint.isEmpty ? "stdio" : "remote",
+      endpoint: input.endpoint, authRef: input.authRef)
+  }
+
+  func removeServer(name: String) throws { servers.removeAll { $0.name == name } }
+
+  func testServer(_ name: String) async -> CsMcpTestResult {
+    CsMcpTestResult(
+      ok: true, toolCount: 3, serverName: name, serverVersion: "1.0", protocolVersion: "",
+      error: "")
+  }
+
+  func getPermissionPolicy() -> CsPermissionPolicy {
+    CsPermissionPolicy(
+      defaultLevel: "ask", readOnlyDefault: "allow", sideEffectDefault: "ask", tools: [],
+      servers: serverRules)
+  }
 }

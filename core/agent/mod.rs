@@ -56,7 +56,9 @@ pub use capabilities::{
     resolve as resolve_capability,
 };
 pub use event::{AgentEvent, AgentUiEvent};
-pub use permissions::{AgentPermissions, PermissionLevel, ToolCapability, tool_identity};
+pub use permissions::{
+    AgentPermissions, PermissionLevel, PermissionSource, ToolCapability, tool_identity,
+};
 pub use provider::{AgentProvider, StreamOptions};
 pub use registry::{
     ToolApprovalRequest, ToolCallPreview, ToolDecision, ToolDefinition, ToolExecutionPolicy,

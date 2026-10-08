@@ -153,7 +153,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(tools.components(separatedBy: "defaultRow(title: \"").count, 4)
     let levels = ["Allow", "Ask", "Deny"]
     let polishLevels = try levels.map { try XCTUnwrap(polish[$0]) }
-    XCTAssertEqual(polishLevels, ["Zezwalaj", "Pytaj o zgodę", "Odmów"])
+    XCTAssertEqual(polishLevels, ["Zezwalaj", "Pytaj o zgodę", "Blokuj"])
     // The tools column at the minimum window: the detail column minus the pane
     // padding, the 190 pt server column, the gap between them and the row's
     // own padding. A row keeps at least 96 pt for the tool name.
@@ -540,6 +540,235 @@ final class SettingsChromeContractTests: XCTestCase {
       "Correction only AI formatting (formatting.txt)",
       "Base system prompt for the Agent (assistive.txt)",
       "Edits the BASE prompt file. The core still appends its tuning prompt at runtime.",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
+  /// The Tools tab is a permissions screen: Polish headline without a repeated
+  /// section label, category defaults named by what they cover, a whole-catalog
+  /// count, native as a UI label only, readable names above raw identifiers and
+  /// an inheritance caption with a way back from an individual rule.
+  func testToolsTabReadsAsAPermissionScreen() throws {
+    let sources = try settingsSources()
+    let tab = try XCTUnwrap(sources["SettingsTab.swift"])
+    XCTAssertTrue(tab.contains("case .agentTools: String(localized: \"Tool permissions\")"))
+    XCTAssertFalse(tab.contains("\"Tool permissions.\""))
+    XCTAssertFalse(tab.contains("Deny wins over everything"))
+    XCTAssertTrue(
+      tab.contains(
+        "\"Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse.\""
+      ))
+
+    let section = try XCTUnwrap(sources["ToolPermissionsSection.swift"])
+    XCTAssertFalse(
+      section.contains("SettingsSectionLabel(String(localized: \"Tool permissions\"))"),
+      "the tab headline already says it")
+    XCTAssertFalse(section.contains("Defaults: read-only allow, side-effectful ask"))
+    XCTAssertTrue(section.contains("defaultRow(title: \"Read data\""))
+    XCTAssertTrue(section.contains("defaultRow(title: \"Changes, processes and network\""))
+    XCTAssertTrue(section.contains("defaultRow(title: \"Unclassified tools\""))
+    XCTAssertTrue(section.contains("\"Per-tool permissions · \\(model.toolCapabilities.count)\""))
+    XCTAssertFalse(section.contains("Tool overrides"))
+    XCTAssertTrue(section.contains("A rule set for one tool outranks its server's rule"))
+    XCTAssertTrue(section.contains("Text(item.displayName)"))
+    XCTAssertTrue(section.contains("Text(item.identity)"), "the raw identifier stays")
+    XCTAssertTrue(section.contains("ToolPermissionLabels.risk(item.risk)"))
+    XCTAssertTrue(section.contains("ToolPermissionLabels.ruleCaption(item.ruleSource)"))
+    XCTAssertTrue(section.contains("if item.hasIndividualRule, let restoreInheritance {"))
+    XCTAssertFalse(section.contains("Text(item.name)"), "the raw name is not the headline")
+
+    let serverTab = try XCTUnwrap(sources["ToolServerTab.swift"])
+    XCTAssertTrue(serverTab.contains("Text(ToolPermissionLabels.source(server))"))
+    let search = try XCTUnwrap(sources["ToolSearchField.swift"])
+    XCTAssertTrue(search.contains("Text(\"\\(serverCount) tool sources\""))
+    XCTAssertFalse(search.contains("\\(serverCount) servers"))
+    let browser = try XCTUnwrap(sources["ToolOverridesBrowser.swift"])
+    XCTAssertTrue(browser.contains("model.clearToolPermission(identity: item.identity)"))
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "Tool permissions": "Uprawnienia narzędzi",
+      "Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse.":
+        "Ustaw, kiedy Agent może korzystać z narzędzi bez pytania, kiedy potrzebuje Twojej zgody, a kiedy ma odmówić wykonania działania.",
+      "Deny": "Blokuj",
+      "Read data": "Odczyt danych",
+      "Changes, processes and network": "Zmiany, procesy i sieć",
+      "Unclassified tools": "Niesklasyfikowane narzędzia",
+      "Per-tool permissions · %lld": "Uprawnienia poszczególnych narzędzi · %lld",
+      "Native": "Natywne",
+      "Changes": "Zmiany",
+      "Network": "Sieć",
+      "Individual rule": "Własna reguła",
+      "Inherited from the category default": "Dziedziczone z ustawienia kategorii",
+      "Restore inheritance": "Przywróć dziedziczenie",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    for retired in [
+      "Tool permissions.", "Allow, ask, or deny — per tool. Deny wins over everything.",
+      "Tool overrides · %lld", "Read-only", "Side effects", "Global / unknown", "%lld servers",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
+  /// Diagnostics is a status screen: Polish headline and labels, one summary
+  /// line per inventory with the full list collapsed, and status words next
+  /// to every dot.
+  func testDiagnosticsTabReadsAsAStatusScreen() throws {
+    let sources = try settingsSources()
+    let tab = try XCTUnwrap(sources["SettingsTab.swift"])
+    XCTAssertTrue(tab.contains("String(localized: \"Agent environment status\""))
+    XCTAssertFalse(tab.contains("\"Connection details.\""))
+    XCTAssertTrue(
+      tab.contains(
+        "\"Configuration state of the Agent, its available tools and integrations.\""))
+
+    let section = try XCTUnwrap(sources["AgentStatusSection.swift"])
+    XCTAssertTrue(
+      section.contains(
+        "SettingsSectionLabel(String(localized: \"Detected installations and runtime\"))"))
+    XCTAssertTrue(
+      section.contains(
+        "SettingsSectionLabel(String(localized: \"Available tools and integrations\"))"))
+    XCTAssertTrue(section.contains("CapabilitySummary(rows: model.capabilityMatrix).line"))
+    XCTAssertTrue(
+      section.contains("DisclosureGroup(isExpanded: $showingCapabilityRows)"),
+      "the capability matrix is collapsed by default")
+    XCTAssertTrue(
+      section.contains("DisclosureGroup(isExpanded: $showingServerRows)"),
+      "the merged server table is collapsed by default")
+    XCTAssertTrue(section.contains("@State private var showingCapabilityRows = false"))
+    XCTAssertTrue(section.contains("@State private var showingServerRows = false"))
+    XCTAssertFalse(section.contains("Per-server probe"), "the duplicate probe list is gone")
+    XCTAssertTrue(section.contains("Text(\"Configuration source:\")"))
+    XCTAssertTrue(section.contains("McpServerLine.merge("))
+    XCTAssertTrue(section.contains("StatusToneMark(tone: row.tone)"))
+    XCTAssertTrue(section.contains(".help(tone.label)"))
+    XCTAssertTrue(section.contains(".accessibilityLabel(tone.label)"))
+    XCTAssertTrue(section.contains("Text(row.localizedLabel)"))
+    XCTAssertTrue(section.contains("Text(row.localizedValue)"))
+    XCTAssertFalse(section.contains("Text(row.label)"), "English core labels never reach the UI")
+    XCTAssertFalse(section.contains("Text(row.value)"), "English core values never reach the UI")
+    XCTAssertFalse(section.contains("\"tool: \\(row.nativeTool)"), "mono detail is localized")
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "Agent environment status": "Stan środowiska Agenta",
+      "Configuration state of the Agent, its available tools and integrations.":
+        "Stan konfiguracji Agenta, dostępnych narzędzi i integracji.",
+      "Overall status": "Stan ogólny",
+      "Model provider": "Dostawca modelu",
+      "Native tools": "Narzędzia natywne",
+      "VibeCrafted runtime": "Runtime VibeCrafted",
+      "PRView integration": "Integracja PRView",
+      "Ready — %1$@ configured, access available, %2$@":
+        "Gotowy — skonfigurowano %1$@, dostęp dostępny, %2$@",
+      "Configured — agent not started yet": "Skonfigurowano — agent nie został jeszcze uruchomiony",
+      "Not configured (optional)": "Nieskonfigurowane (opcjonalne)",
+      "Detected installations and runtime": "Wykryte instalacje i runtime",
+      "Technical details": "Szczegóły techniczne",
+      "Available tools and integrations": "Dostępne narzędzia i integracje",
+      "Built-in Codescribe tool": "Wbudowane narzędzie Codescribe",
+      "tool: %1$@ · source: %2$@": "narzędzie: %1$@ · źródło: %2$@",
+      "capability.tier.native": "Natywne",
+      "capability.tier.enhanced": "Rozszerzone",
+      "Configuration source:": "Źródło konfiguracji:",
+      "Configured: %1$lld · Tested: %2$lld · Issues: %3$lld":
+        "Skonfigurowane: %1$lld · Przetestowane: %2$lld · Problemy: %3$lld",
+      "status.tone.good": "Gotowe",
+      "status.tone.warn": "Ostrzeżenie",
+      "status.tone.neutral": "Nie sprawdzono",
+      "Not tested": "Nie sprawdzono",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    for retired in [
+      "Connection details", "Connection details.", "Capability matrix", "Per-server probe",
+      "%lld configured", "not tested", "testing…", "fail: %@",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
+  /// The MCP tab reads as a list of servers: Polish headline, the configured
+  /// state as a flag, the last handshake as a test result, technical detail
+  /// collapsed, labelled form fields that survive a failed add.
+  func testMcpTabReadsAsAServerScreen() throws {
+    let sources = try settingsSources()
+    let tab = try XCTUnwrap(sources["SettingsTab.swift"])
+    XCTAssertTrue(tab.contains("case .agentMcp: String(localized: \"MCP servers\")"))
+    XCTAssertFalse(tab.contains("\"MCP servers.\""))
+    XCTAssertTrue(
+      tab.contains("\"Add MCP servers and manage the tools the Agent may use.\""))
+
+    let view = try XCTUnwrap(sources["SettingsView.swift"])
+    XCTAssertTrue(view.contains(".navigationTitle(Text(\"Settings\"))"))
+    XCTAssertFalse(view.contains(".navigationTitle(Text(verbatim: \"\"))"))
+    XCTAssertTrue(view.contains("window?.titleVisibility = .hidden"))
+    XCTAssertTrue(view.contains("private func adoptHostWindow(_ window: NSWindow?)"))
+
+    let section = try XCTUnwrap(sources["MCPServersSection.swift"])
+    XCTAssertFalse(section.contains("Manage MCP servers"), "the tab headline already says it")
+    XCTAssertTrue(section.contains("String(localized: \"Connection not tested\")"))
+    XCTAssertTrue(section.contains("String(localized: \"Checking the connection…\")"))
+    XCTAssertTrue(section.contains("String(localized: \"Last test: failed\")"))
+    XCTAssertTrue(section.contains("Last test: passed · \\(Int(result.toolCount)) tools"))
+    XCTAssertFalse(section.contains("policy: ask"), "no frozen policy literal on the card")
+    XCTAssertTrue(section.contains("ToolPermissionLabels.level(permissionLevel)"))
+    XCTAssertTrue(section.contains("@State private var showingDetails = false"))
+    XCTAssertTrue(section.contains("DisclosureGroup(isExpanded: $showingDetails)"))
+    XCTAssertTrue(section.contains("@State private var showingTechnicalDetails = false"))
+    XCTAssertTrue(section.contains("DisclosureGroup(isExpanded: $showingTechnicalDetails)"))
+    XCTAssertTrue(section.contains("Text(\"Move MCP configuration to Trash…\")"))
+    XCTAssertFalse(section.contains("Clear MCP configuration"))
+    XCTAssertTrue(
+      section.contains("String(localized: \"mcp.server.enabled\", defaultValue: \"Enabled\")"))
+    XCTAssertTrue(view.contains("HostingWindowReader(onWindow: adoptHostWindow)"))
+    for label in ["Server name", "Launch command", "Command arguments", "Server URL"] {
+      XCTAssertTrue(section.contains("\"\(label)\", placeholder: \""), label)
+    }
+    XCTAssertEqual(section.components(separatedBy: "labeledField(").count, 6)
+    XCTAssertTrue(section.contains("fieldLabel(\"Access token (optional)\")"))
+    XCTAssertTrue(
+      section.contains("guard addError == nil else { return }"),
+      "a failed add keeps the typed fields")
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "MCP servers": "Serwery MCP",
+      "Add MCP servers and manage the tools the Agent may use.":
+        "Dodawaj serwery MCP i zarządzaj narzędziami, z których może korzystać Agent.",
+      "Connection not tested": "Nie sprawdzono połączenia",
+      "Checking the connection…": "Sprawdzanie połączenia…",
+      "Last test: failed": "Ostatni test: nieudany",
+      "mcp.server.enabled": "Włączony",
+      "mcp.server.disabled": "Wyłączony",
+      "Local process": "Proces lokalny",
+      "HTTP connection": "Połączenie HTTP",
+      "Server name": "Nazwa serwera",
+      "Launch command": "Polecenie uruchomieniowe",
+      "Command arguments": "Argumenty polecenia",
+      "Server URL": "Adres URL serwera",
+      "Access token (optional)": "Token dostępu (opcjonalnie)",
+      "The token is stored in the macOS Keychain, never in mcp.json.":
+        "Token jest zapisywany w pęku kluczy macOS, nie w pliku mcp.json.",
+      "Move MCP configuration to Trash…": "Przenieś konfigurację MCP do Kosza…",
+      "Move MCP configuration to Trash?": "Przenieść konfigurację MCP do Kosza?",
+      "Test": "Sprawdź",
+      "Settings": "Ustawienia",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    for retired in [
+      "MCP servers.", "Manage MCP servers", "Remote HTTP", "disconnected — not tested",
+      "disconnected — disabled", "connecting…", "degraded — %@",
+      "remote · no authentication · policy: ask", "remote · token in Keychain · policy: ask",
+      "Clear MCP configuration…", "name (e.g. prview)", "endpoint (https://…/mcp)",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }

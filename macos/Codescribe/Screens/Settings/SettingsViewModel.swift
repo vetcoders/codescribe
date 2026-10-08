@@ -907,7 +907,8 @@ struct LLMLaneModel {
       )
     default:
       return String(
-        localized: "Could not fetch \(providerDisplayName) models. Check the provider under Providers.",
+        localized:
+          "Could not fetch \(providerDisplayName) models. Check the provider under Providers.",
         comment: "The placeholder is the provider name"
       )
     }
@@ -1671,13 +1672,28 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  /// Remove one tool's individual rule; the next reload shows the inherited
+  /// level and its source.
+  func clearToolPermission(identity: String) {
+    guard let mcpAdmin else { return }
+    do {
+      try mcpAdmin.clearToolPermission(identity: identity)
+      reloadToolPermissions()
+    } catch {
+      lastError = String(describing: error)
+    }
+  }
+
   /// Add a server from the form. `args` is already split into tokens. On success
-  /// the list + readiness re-probe so the panel reflects the new state.
+  /// the list + readiness re-probe so the panel reflects the new state and the
+  /// result is nil; on failure the store's error comes back so the form can
+  /// show it next to the fields it keeps.
+  @discardableResult
   func addMcpServer(
     name: String, command: String, args: [String],
     endpoint: String = "", token: String = ""
-  ) {
-    guard let mcpAdmin else { return }
+  ) -> String? {
+    guard let mcpAdmin else { return nil }
     do {
       try mcpAdmin.addServer(
         CsMcpServerInput(
@@ -1687,12 +1703,16 @@ final class SettingsViewModel: ObservableObject {
       )
       reloadMcpServers()
       refreshAgentStatus()
+      return nil
     } catch {
-      lastError = String(describing: error)
+      let message = String(describing: error)
+      lastError = message
+      return message
     }
   }
 
-  /// Flip a server's `enabled` flag, preserving its command / args / env.
+  /// Flip a server's `enabled` flag, preserving its command / args / env. The
+  /// cached handshake described the previous configuration, so it goes.
   func toggleMcpServer(_ server: CsMcpServer) {
     guard let mcpAdmin else { return }
     do {
@@ -1704,6 +1724,7 @@ final class SettingsViewModel: ObservableObject {
           endpoint: server.endpoint, authRef: server.authRef, token: ""
         )
       )
+      mcpTestResults[server.name] = nil
       reloadMcpServers()
       refreshAgentStatus()
     } catch {
@@ -1722,6 +1743,18 @@ final class SettingsViewModel: ObservableObject {
     } catch {
       lastError = String(describing: error)
     }
+  }
+
+  /// The server-wide permission rule from the live policy (`name=level`), nil
+  /// when the server inherits the category defaults.
+  func mcpServerPermissionLevel(_ name: String) -> String? {
+    for entry in permissionPolicy.servers {
+      guard let separator = entry.firstIndex(of: "=") else { continue }
+      if entry[..<separator] == name {
+        return String(entry[entry.index(after: separator)...])
+      }
+    }
+    return nil
   }
 
   /// Spawn + handshake the named server and record the result inline. Runs off

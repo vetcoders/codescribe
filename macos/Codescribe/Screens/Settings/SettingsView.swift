@@ -35,7 +35,7 @@ struct SettingsView: View {
       detail
         .frame(minWidth: Self.detailMinWidth)
     }
-    .navigationTitle(Text(verbatim: ""))
+    .navigationTitle(Text("Settings"))
     .toolbar {
       if #available(macOS 26.0, *) {
         brandToolbar.sharedBackgroundVisibility(.hidden)
@@ -57,9 +57,10 @@ struct SettingsView: View {
       // admission verdict even when Audio is not the selected section.
       await model.refreshAdmission()
     }
-    .background(HostingWindowReader { hostWindow = $0 })
-    .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) {
-      notification in
+    .background(HostingWindowReader(onWindow: adoptHostWindow))
+    .onReceive(
+      NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)
+    ) { notification in
       guard let window = notification.object as? NSWindow,
         window === hostWindow, window.isVisible
       else { return }
@@ -75,6 +76,13 @@ struct SettingsView: View {
       guard hostWindow?.isVisible == true else { return }
       consumePendingDeepLink()
     }
+  }
+
+  /// The wordmark toolbar is the visible title. The window keeps its name for
+  /// Mission Control, App Exposé and the Window menu.
+  private func adoptHostWindow(_ window: NSWindow?) {
+    hostWindow = window
+    window?.titleVisibility = .hidden
   }
 
   private var brandToolbar: some ToolbarContent {

@@ -4,6 +4,17 @@
     "" : {
       "shouldTranslate" : false
     },
+    "%1$@ — no access (sign in or set %2$@)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ — brak dostępu (zaloguj się lub ustaw %2$@)"
+          }
+        }
+      },
+      "comment" : "First placeholder is the provider name, second an environment variable name"
+    },
     "%@\nEndpoint: %@" : {
       "comment" : "Tooltip: probe message, then the endpoint that was probed",
       "localizations" : {
@@ -281,6 +292,17 @@
         }
       }
     },
+    "%@ — access available" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ — dostęp dostępny"
+          }
+        }
+      },
+      "comment" : "Placeholder is the provider name"
+    },
     "%@ — unavailable" : {
       "localizations" : {
         "pl" : {
@@ -486,16 +508,6 @@
                 }
               }
             }
-          }
-        }
-      }
-    },
-    "%lld configured" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Skonfigurowano: %lld"
           }
         }
       }
@@ -780,6 +792,59 @@
         }
       }
     },
+    "%lld folders — native tools synchronized" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld folder — native tools synchronized"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld folders — native tools synchronized"
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld folder — narzędzia natywne zsynchronizowane"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld foldery — narzędzia natywne zsynchronizowane"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld folderów — narzędzia natywne zsynchronizowane"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld foldery — narzędzia natywne zsynchronizowane"
+                }
+              }
+            }
+          }
+        }
+      },
+      "comment" : "Plural: number of folders the Agent may use"
+    },
     "%lld live rules (variant→canonical) · %lld with correction provenance · %lld store rows." : {
       "localizations" : {
         "en" : {
@@ -1009,6 +1074,59 @@
         }
       }
     },
+    "%lld native tools" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld native tool"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld native tools"
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld narzędzie natywne"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld narzędzia natywne"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld narzędzi natywnych"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld narzędzia natywne"
+                }
+              }
+            }
+          }
+        }
+      },
+      "comment" : "Plural: count of native tools"
+    },
     "%lld of %lld" : {
       "localizations" : {
         "en" : {
@@ -1222,7 +1340,7 @@
         }
       }
     },
-    "%lld servers" : {
+    "%lld tool sources" : {
       "localizations" : {
         "en" : {
           "variations" : {
@@ -1230,13 +1348,13 @@
               "one" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld server"
+                  "value" : "%lld tool source"
                 }
               },
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld servers"
+                  "value" : "%lld tool sources"
                 }
               }
             }
@@ -1245,34 +1363,88 @@
         "pl" : {
           "variations" : {
             "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld źródło narzędzi"
+                }
+              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld serwery"
+                  "value" : "%lld źródła narzędzi"
                 }
               },
               "many" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld serwerów"
-                }
-              },
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld serwer"
+                  "value" : "%lld źródeł narzędzi"
                 }
               },
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld serwera"
+                  "value" : "%lld źródła narzędzi"
                 }
               }
             }
           }
         }
-      }
+      },
+      "comment" : "Plural: native plus MCP servers"
+    },
+    "%lld tools" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld tool"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld tools"
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld narzędzie"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld narzędzia"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld narzędzi"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld narzędzia"
+                }
+              }
+            }
+          }
+        }
+      },
+      "comment" : "Plural: count of tools"
     },
     "%lld unread replies" : {
       "localizations" : {
@@ -1538,6 +1710,16 @@
         }
       }
     },
+    "A rule set for one tool outranks its server's rule, and both outrank the category defaults. Destructive tools are always blocked, and reading a path that may hold secrets always asks first." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reguła ustawiona dla narzędzia ma pierwszeństwo przed regułą serwera, a obie przed ustawieniami kategorii. Narzędzia destrukcyjne są zawsze blokowane, a odczyt ścieżki mogącej zawierać sekrety zawsze wymaga zgody."
+          }
+        }
+      }
+    },
     "A transcript revision cannot be empty" : {
       "localizations" : {
         "pl" : {
@@ -1568,6 +1750,17 @@
           }
         }
       }
+    },
+    "AICX MCP" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AICX MCP"
+          }
+        }
+      },
+      "comment" : "Diagnostics row label"
     },
     "API key" : {
       "comment" : "Setup provider API key row label",
@@ -1616,6 +1809,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "O codescribe"
+          }
+        }
+      }
+    },
+    "Access token (optional)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token dostępu (opcjonalnie)"
           }
         }
       }
@@ -1776,6 +1979,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dodaj"
+          }
+        }
+      }
+    },
+    "Add MCP servers and manage the tools the Agent may use." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodawaj serwery MCP i zarządzaj narzędziami, z których może korzystać Agent."
           }
         }
       }
@@ -1991,6 +2204,17 @@
         }
       }
     },
+    "Agent environment status" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stan środowiska Agenta"
+          }
+        }
+      },
+      "comment" : "Settings tab: Diagnostics headline"
+    },
     "Agent listening..." : {
       "comment" : "Tray status: the assistive (agent) lane is recording",
       "localizations" : {
@@ -2195,26 +2419,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zezwól raz"
-          }
-        }
-      }
-    },
-    "Allow · Ask · Deny. Defaults: read-only allow, side-effectful ask. \"Always allow\" from the approval card writes the same identity key." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zezwalaj · Pytaj o zgodę · Odmów. Domyślnie operacje tylko do odczytu są dozwolone, a operacje wprowadzające zmiany wymagają potwierdzenia. Opcja „Zawsze zezwalaj” na karcie potwierdzenia zapisuje tutaj zgodę dla tego samego narzędzia."
-          }
-        }
-      }
-    },
-    "Allow, ask, or deny — per tool. Deny wins over everything." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dla każdego narzędzia można zezwolić na działanie, wymagać zgody lub je zablokować. Blokada ma pierwszeństwo przed wszystkimi innymi ustawieniami."
           }
         }
       }
@@ -2584,6 +2788,16 @@
         }
       }
     },
+    "Authentication" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uwierzytelnianie"
+          }
+        }
+      }
+    },
     "Auto" : {
       "comment" : "Dictation language picker: detect the spoken language automatically",
       "localizations" : {
@@ -2693,6 +2907,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Automatyczne wysyłanie do Agenta"
+          }
+        }
+      }
+    },
+    "Available tools and integrations" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dostępne narzędzia i integracje"
           }
         }
       }
@@ -2864,6 +3088,36 @@
         }
       }
     },
+    "Built-in Codescribe tool" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wbudowane narzędzie Codescribe"
+          }
+        }
+      }
+    },
+    "Built-in tool, enriched by IntelliJ for the matched project" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Narzędzie wbudowane, wzbogacane przez IntelliJ dla dopasowanego projektu"
+          }
+        }
+      }
+    },
+    "Built-in tool, enriched by Loctree while it is healthy" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Narzędzie wbudowane, wzbogacane przez Loctree, gdy działa"
+          }
+        }
+      }
+    },
     "Built: %@" : {
       "comment" : "About panel provenance line; %@ is the build timestamp",
       "localizations" : {
@@ -2893,16 +3147,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "CODESCRIBE_MODEL_PATH ma pierwszeństwo przed modelem wybranym w aplikacji."
-          }
-        }
-      }
-    },
-    "Cached initialize + tools/list result per configured server" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zapisany wynik initialize + tools/list dla każdego skonfigurowanego serwera"
           }
         }
       }
@@ -3026,16 +3270,6 @@
         }
       }
     },
-    "Capability matrix" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Obsługiwane możliwości"
-          }
-        }
-      }
-    },
     "Capture has ended and the engine is transcribing the take." : {
       "localizations" : {
         "pl" : {
@@ -3104,6 +3338,27 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zmienione słowa"
+          }
+        }
+      }
+    },
+    "Changes" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmiany"
+          }
+        }
+      },
+      "comment" : "Tool risk class"
+    },
+    "Changes, processes and network" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmiany, procesy i sieć"
           }
         }
       }
@@ -3252,6 +3507,16 @@
         }
       }
     },
+    "Checking the connection…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdzanie połączenia…"
+          }
+        }
+      }
+    },
     "Choose Stop recording or use your recording shortcut to finish this take." : {
       "localizations" : {
         "pl" : {
@@ -3358,26 +3623,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyczyść: %@"
-          }
-        }
-      }
-    },
-    "Clear MCP configuration?" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wyczyścić konfigurację MCP?"
-          }
-        }
-      }
-    },
-    "Clear MCP configuration…" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wyczyść konfigurację MCP…"
           }
         }
       }
@@ -3744,6 +3989,16 @@
         }
       }
     },
+    "Command arguments" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Argumenty polecenia"
+          }
+        }
+      }
+    },
     "Command during Fn hold" : {
       "localizations" : {
         "pl" : {
@@ -3845,6 +4100,79 @@
           }
         }
       }
+    },
+    "Configuration error: %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Błąd konfiguracji: %@"
+          }
+        }
+      },
+      "comment" : "Placeholder is an error message"
+    },
+    "Configuration present, but no servers defined" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konfiguracja istnieje, ale nie zawiera serwerów"
+          }
+        }
+      }
+    },
+    "Configuration source:" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Źródło konfiguracji:"
+          }
+        }
+      }
+    },
+    "Configuration state of the Agent, its available tools and integrations." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stan konfiguracji Agenta, dostępnych narzędzi i integracji."
+          }
+        }
+      }
+    },
+    "Configured — agent not started yet" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skonfigurowano — agent nie został jeszcze uruchomiony"
+          }
+        }
+      }
+    },
+    "Configured — agent not started yet (server %@)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skonfigurowano — agent nie został jeszcze uruchomiony (serwer %@)"
+          }
+        }
+      },
+      "comment" : "Placeholder is a server name"
+    },
+    "Configured: %1$lld · Tested: %2$lld · Issues: %3$lld" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skonfigurowane: %1$lld · Przetestowane: %2$lld · Problemy: %3$lld"
+          }
+        }
+      },
+      "comment" : "MCP summary counts"
     },
     "Conflicts" : {
       "localizations" : {
@@ -3964,22 +4292,12 @@
         }
       }
     },
-    "Connection details" : {
+    "Connection not tested" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Szczegóły połączenia"
-          }
-        }
-      }
-    },
-    "Connection details." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Szczegóły połączenia."
+            "value" : "Nie sprawdzono połączenia"
           }
         }
       }
@@ -5036,10 +5354,21 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Odmów"
+            "value" : "Blokuj"
           }
         }
       }
+    },
+    "Destructive" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Destrukcyjne"
+          }
+        }
+      },
+      "comment" : "Tool risk class"
     },
     "Details" : {
       "localizations" : {
@@ -5058,6 +5387,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Wykrywa skróty klawiszowe rozpoczynające i kończące nagrywanie. Bez tego uprawnienia globalne skróty nagrywania są niedostępne."
+          }
+        }
+      }
+    },
+    "Detected installations and runtime" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wykryte instalacje i runtime"
           }
         }
       }
@@ -5591,6 +5930,16 @@
         }
       }
     },
+    "Environment variables" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmienne środowiskowe"
+          }
+        }
+      }
+    },
     "Error" : {
       "comment" : "Tray status: the backend is unavailable",
       "localizations" : {
@@ -5696,15 +6045,16 @@
         }
       }
     },
-    "External MCP servers the Agent can call, and their transports." : {
+    "Failed: %@" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zewnętrzne serwery MCP dostępne dla Agenta i sposoby łączenia się z nimi."
+            "value" : "Błąd: %@"
           }
         }
-      }
+      },
+      "comment" : "Placeholder is an error message"
     },
     "Favorite" : {
       "localizations" : {
@@ -6128,16 +6478,6 @@
         }
       }
     },
-    "Global / unknown" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Globalne / nieznane"
-          }
-        }
-      }
-    },
     "Global chord pastes the armed transcript at the caret. Apps bound to the same chord will also react." : {
       "localizations" : {
         "pl" : {
@@ -6206,6 +6546,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przyznaje Codescribe dostęp do mikrofonu wybranego powyżej"
+          }
+        }
+      }
+    },
+    "HTTP connection" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połączenie HTTP"
           }
         }
       }
@@ -6497,6 +6847,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Nieaktywna"
+          }
+        }
+      }
+    },
+    "Individual rule" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Własna reguła"
+          }
+        }
+      }
+    },
+    "Inherited from the category default" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dziedziczone z ustawienia kategorii"
+          }
+        }
+      }
+    },
+    "Inherited from the server rule" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dziedziczone z reguły serwera"
           }
         }
       }
@@ -6802,6 +7182,78 @@
         }
       }
     },
+    "Last test: failed" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ostatni test: nieudany"
+          }
+        }
+      }
+    },
+    "Last test: passed · %lld tools" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Last test: passed · %lld tool"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Last test: passed · %lld tools"
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Ostatni test: pomyślny · %lld narzędzie"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Ostatni test: pomyślny · %lld narzędzia"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Ostatni test: pomyślny · %lld narzędzi"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Ostatni test: pomyślny · %lld narzędzi"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Launch command" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Polecenie uruchomieniowe"
+          }
+        }
+      }
+    },
     "Leave empty to keep the stored key" : {
       "localizations" : {
         "pl" : {
@@ -7008,6 +7460,28 @@
         }
       }
     },
+    "Live — %1$@ (server %2$@)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Działa — %1$@ (serwer %2$@)"
+          }
+        }
+      },
+      "comment" : "First placeholder is a tool count phrase, second a server name"
+    },
+    "Live — %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Działa — %@"
+          }
+        }
+      },
+      "comment" : "Placeholder is a tool count phrase"
+    },
     "Load helper text into the correction editor without saving" : {
       "localizations" : {
         "pl" : {
@@ -7100,6 +7574,17 @@
         }
       }
     },
+    "Loctree MCP" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loctree MCP"
+          }
+        }
+      },
+      "comment" : "Diagnostics row label"
+    },
     "Low confidence" : {
       "comment" : "Dictionary badge: the engine was unsure here",
       "localizations" : {
@@ -7110,6 +7595,17 @@
           }
         }
       }
+    },
+    "MCP configuration" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konfiguracja MCP"
+          }
+        }
+      },
+      "comment" : "Diagnostics row label"
     },
     "MCP servers" : {
       "localizations" : {
@@ -7127,16 +7623,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Serwery MCP dają Agentowi dodatkowe narzędzia, np. wyszukiwanie w kodzie, przegląd PR albo wyszukiwanie w sieci. Dodaj pierwszy serwer poniżej albo pomiń ten krok i podłącz go w dowolnej chwili."
-          }
-        }
-      }
-    },
-    "MCP servers." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Serwery MCP."
           }
         }
       }
@@ -7159,16 +7645,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zarządzaj"
-          }
-        }
-      }
-    },
-    "Manage MCP servers" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zarządzaj serwerami MCP"
           }
         }
       }
@@ -7416,6 +7892,17 @@
         }
       }
     },
+    "Mismatch — %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozjazd — %@"
+          }
+        }
+      },
+      "comment" : "Placeholder lists both folder sets"
+    },
     "Missing {text}; delivered transcript will be appended after the template." : {
       "comment" : "{text} is a template token the user types — keep it verbatim",
       "localizations" : {
@@ -7458,6 +7945,17 @@
         }
       }
     },
+    "Model provider" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dostawca modelu"
+          }
+        }
+      },
+      "comment" : "Diagnostics row label"
+    },
     "Models unavailable" : {
       "localizations" : {
         "pl" : {
@@ -7474,6 +7972,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Więcej działań"
+          }
+        }
+      }
+    },
+    "Move MCP configuration to Trash?" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przenieść konfigurację MCP do Kosza?"
+          }
+        }
+      }
+    },
+    "Move MCP configuration to Trash…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przenieś konfigurację MCP do Kosza…"
           }
         }
       }
@@ -7740,18 +8258,52 @@
         }
       }
     },
-    "Native container" : {
-      "shouldTranslate" : false
-    },
-    "Native substrate vs enrichment providers (IntelliJ optional)." : {
+    "Native" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Funkcje natywne i dostawcy dodatkowego kontekstu (IntelliJ opcjonalnie)."
+            "value" : "Natywne"
           }
         }
-      }
+      },
+      "comment" : "Tool source: built-in tools"
+    },
+    "Native container" : {
+      "shouldTranslate" : false
+    },
+    "Native tools" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Narzędzia natywne"
+          }
+        }
+      },
+      "comment" : "Diagnostics row label"
+    },
+    "Native: %1$lld · Enhanced: %2$lld · Unavailable: %3$lld" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Natywne: %1$lld · Rozszerzone: %2$lld · Niedostępne: %3$lld"
+          }
+        }
+      },
+      "comment" : "Capability summary counts"
+    },
+    "Network" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sieć"
+          }
+        }
+      },
+      "comment" : "Tool risk class"
     },
     "Network error" : {
       "localizations" : {
@@ -7881,6 +8433,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Brak zapisanego nagrania dla tego wpisu. Plik last_session.wav nie zostanie użyty w zamian."
+          }
+        }
+      }
+    },
+    "No authentication" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez uwierzytelniania"
+          }
+        }
+      }
+    },
+    "No built-in tool; served by an MCP server" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak narzędzia wbudowanego; obsługuje serwer MCP"
           }
         }
       }
@@ -8038,12 +8610,32 @@
         }
       }
     },
+    "No mcp.json — MCP off (optional)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak pliku mcp.json — MCP wyłączone (opcjonalne)"
+          }
+        }
+      }
+    },
     "No messages yet" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie ma jeszcze wiadomości"
+          }
+        }
+      }
+    },
+    "No native tools available" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak narzędzi natywnych"
           }
         }
       }
@@ -8170,6 +8762,16 @@
         }
       }
     },
+    "Not configured (optional)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nieskonfigurowane (opcjonalne)"
+          }
+        }
+      }
+    },
     "Not connected" : {
       "comment" : "Setup Agent account row status",
       "localizations" : {
@@ -8213,6 +8815,37 @@
         }
       }
     },
+    "Not ready — folders differ between Settings and native tools" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niegotowy — foldery w Ustawieniach różnią się od folderów narzędzi natywnych"
+          }
+        }
+      }
+    },
+    "Not ready — no native tools available" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niegotowy — brak narzędzi natywnych"
+          }
+        }
+      }
+    },
+    "Not ready — no provider access (sign in or set %@)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niegotowy — brak dostępu do dostawcy (zaloguj się lub ustaw %@)"
+          }
+        }
+      },
+      "comment" : "Placeholder is an environment variable name"
+    },
     "Not selected" : {
       "comment" : "VoiceOver value for a language not chosen",
       "localizations" : {
@@ -8244,6 +8877,17 @@
           }
         }
       }
+    },
+    "Not tested" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie sprawdzono"
+          }
+        }
+      },
+      "comment" : "MCP server test state"
     },
     "Not yet served" : {
       "comment" : "Active STT row before the first transcription of this launch",
@@ -8296,6 +8940,59 @@
           }
         }
       }
+    },
+    "OK — %lld tools" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "OK — %lld tool"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "OK — %lld tools"
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "OK — %lld narzędzie"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "OK — %lld narzędzia"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "OK — %lld narzędzi"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "OK — %lld narzędzia"
+                }
+              }
+            }
+          }
+        }
+      },
+      "comment" : "Plural: MCP server test result"
     },
     "Off" : {
       "comment" : "Toggle state",
@@ -8696,12 +9393,33 @@
         }
       }
     },
+    "Overall status" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stan ogólny"
+          }
+        }
+      },
+      "comment" : "Diagnostics row label"
+    },
     "Overlay actions" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Działania nakładki"
+          }
+        }
+      }
+    },
+    "Overridden for the current thread" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nadpisane dla bieżącego wątku"
           }
         }
       }
@@ -8715,6 +9433,17 @@
           }
         }
       }
+    },
+    "PRView integration" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Integracja PRView"
+          }
+        }
+      },
+      "comment" : "Diagnostics row label"
     },
     "Paste after dictation" : {
       "localizations" : {
@@ -8787,12 +9516,12 @@
         }
       }
     },
-    "Per-server probe" : {
+    "Per-tool permissions · %lld" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Test każdego serwera"
+            "value" : "Uprawnienia poszczególnych narzędzi · %lld"
           }
         }
       }
@@ -8823,6 +9552,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wymagane uprawnienie"
+          }
+        }
+      }
+    },
+    "Permission rule" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reguła uprawnień"
           }
         }
       }
@@ -9139,6 +9878,17 @@
         }
       }
     },
+    "Processes" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Procesy"
+          }
+        }
+      },
+      "comment" : "Tool risk class"
+    },
     "Processing..." : {
       "comment" : "Tray status: transcribing",
       "localizations" : {
@@ -9454,6 +10204,17 @@
         }
       }
     },
+    "Read data" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odczyt danych"
+          }
+        }
+      },
+      "comment" : "Tool risk class"
+    },
     "Read error" : {
       "localizations" : {
         "pl" : {
@@ -9464,32 +10225,12 @@
         }
       }
     },
-    "Read-only" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tylko odczyt"
-          }
-        }
-      }
-    },
     "Readiness check unavailable" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się sprawdzić gotowości"
-          }
-        }
-      }
-    },
-    "Readiness, installation paths, MCP status, and what the local agent substrate can currently do." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Gotowość, ścieżki instalacji, stan MCP i aktualne możliwości lokalnego środowiska Agenta."
           }
         }
       }
@@ -9608,6 +10349,17 @@
           }
         }
       }
+    },
+    "Ready — %1$@ configured, access available, %2$@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gotowy — skonfigurowano %1$@, dostęp dostępny, %2$@"
+          }
+        }
+      },
+      "comment" : "Diagnostics verdict; first placeholder is the provider name, second a tool count phrase"
     },
     "Received" : {
       "localizations" : {
@@ -9938,16 +10690,6 @@
         }
       }
     },
-    "Remote HTTP" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zdalny (HTTP)"
-          }
-        }
-      }
-    },
     "Remove" : {
       "localizations" : {
         "pl" : {
@@ -9956,7 +10698,8 @@
             "value" : "Usuń"
           }
         }
-      }
+      },
+      "comment" : "Button label: remove an MCP server"
     },
     "Remove %@?" : {
       "localizations" : {
@@ -10422,6 +11165,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przywróć domyślny…"
+          }
+        }
+      }
+    },
+    "Restore inheritance" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć dziedziczenie"
           }
         }
       }
@@ -11180,6 +11933,46 @@
         }
       }
     },
+    "Server URL" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Adres URL serwera"
+          }
+        }
+      }
+    },
+    "Server identity" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tożsamość serwera"
+          }
+        }
+      }
+    },
+    "Server name" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nazwa serwera"
+          }
+        }
+      }
+    },
+    "Servers are added, tested and removed in the MCP tab." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Serwery dodajesz, testujesz i usuwasz w zakładce MCP."
+          }
+        }
+      }
+    },
     "Service keys" : {
       "localizations" : {
         "pl" : {
@@ -11230,6 +12023,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Skonfiguruj konto Agenta lub klucz API. Możesz zrobić to także później."
+          }
+        }
+      }
+    },
+    "Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ustaw, kiedy Agent może korzystać z narzędzi bez pytania, kiedy potrzebuje Twojej zgody, a kiedy ma odmówić wykonania działania."
           }
         }
       }
@@ -11353,6 +12156,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aby skróty działały, włącz uprawnienia „Monitorowanie wprowadzania” i „Dostępność”"
+          }
+        }
+      }
+    },
+    "Show details" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż szczegóły"
           }
         }
       }
@@ -11482,6 +12295,16 @@
         }
       }
     },
+    "Show servers" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż serwery"
+          }
+        }
+      }
+    },
     "Show transcript by default" : {
       "localizations" : {
         "pl" : {
@@ -11518,16 +12341,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokazuje aktualny zakres zmian i informuje, czy bazowe prompty zostaną zachowane. Przeniesienie danych do kosza wymaga wpisania %@."
-          }
-        }
-      }
-    },
-    "Side effects" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wprowadzanie zmian"
           }
         }
       }
@@ -12746,6 +13559,16 @@
         }
       }
     },
+    "Technical details" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szczegóły techniczne"
+          }
+        }
+      }
+    },
     "Template" : {
       "localizations" : {
         "pl" : {
@@ -12818,6 +13641,17 @@
         }
       }
     },
+    "Testing…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdzanie…"
+          }
+        }
+      },
+      "comment" : "MCP server test state"
+    },
     "Text formatting" : {
       "shouldTranslate" : false
     },
@@ -12858,6 +13692,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Agent może odczytywać i zapisywać dane tylko w tych folderach. Poza nimi nie ma dostępu."
+          }
+        }
+      }
+    },
+    "The Agent has not run yet — server status is checked on its first turn." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent nie został jeszcze uruchomiony — stan serwerów zostanie sprawdzony przy jego pierwszej turze."
           }
         }
       }
@@ -13176,6 +14020,16 @@
         }
       }
     },
+    "The token is stored in the macOS Keychain, never in mcp.json." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token jest zapisywany w pęku kluczy macOS, nie w pliku mcp.json."
+          }
+        }
+      }
+    },
     "The transcriber was unsure of this word" : {
       "localizations" : {
         "pl" : {
@@ -13395,22 +14249,22 @@
         }
       }
     },
+    "Token in Keychain" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token w pęku kluczy"
+          }
+        }
+      }
+    },
     "Tool activity · %@" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aktywność narzędzia · %@"
-          }
-        }
-      }
-    },
-    "Tool overrides · %lld" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wyjątki dla narzędzi · %lld"
           }
         }
       }
@@ -13425,12 +14279,12 @@
         }
       }
     },
-    "Tool permissions." : {
+    "Tool permissions are managed in the Tools tab." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Uprawnienia do używania narzędzi."
+            "value" : "Uprawnieniami narzędzi zarządzasz w zakładce Narzędzia."
           }
         }
       }
@@ -13766,6 +14620,37 @@
         }
       }
     },
+    "Unavailable — no built-in tool and no healthy MCP server" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niedostępne — brak narzędzia wbudowanego i działającego serwera MCP"
+          }
+        }
+      }
+    },
+    "Unclassified" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niesklasyfikowane"
+          }
+        }
+      },
+      "comment" : "Tool risk class"
+    },
+    "Unclassified tools" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niesklasyfikowane narzędzia"
+          }
+        }
+      }
+    },
     "Undo needs the recording engine" : {
       "localizations" : {
         "pl" : {
@@ -14064,6 +14949,17 @@
           }
         }
       }
+    },
+    "VibeCrafted runtime" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Runtime VibeCrafted"
+          }
+        }
+      },
+      "comment" : "Diagnostics row label"
     },
     "View conversation without changing the microphone" : {
       "localizations" : {
@@ -14824,16 +15720,6 @@
         }
       }
     },
-    "args, space-separated (e.g. mcp)" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "argumenty oddzielone spacjami (np. mcp)"
-          }
-        }
-      }
-    },
     "attach file / image" : {
       "comment" : "Composer hint: what can be attached",
       "localizations" : {
@@ -14859,16 +15745,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zezwól"
-          }
-        }
-      }
-    },
-    "bearer token (optional, saved in Keychain)" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "token bearer (opcjonalnie, zapisywany w pęku kluczy)"
           }
         }
       }
@@ -14902,6 +15778,60 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "nie można uzyskać blokady instalacji"
+          }
+        }
+      }
+    },
+    "capability.tier.enhanced" : {
+      "comment" : "Capability tier badge",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Enhanced"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozszerzone"
+          }
+        }
+      }
+    },
+    "capability.tier.native" : {
+      "comment" : "Capability tier badge",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Native"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Natywne"
+          }
+        }
+      }
+    },
+    "capability.tier.unavailable" : {
+      "comment" : "Capability tier badge",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Unavailable"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niedostępne"
           }
         }
       }
@@ -15007,78 +15937,6 @@
         }
       }
     },
-    "command (e.g. prview)" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "polecenie (np. prview)"
-          }
-        }
-      }
-    },
-    "connected — %lld tools" : {
-      "localizations" : {
-        "en" : {
-          "variations" : {
-            "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "connected — %lld tool"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "connected — %lld tools"
-                }
-              }
-            }
-          }
-        },
-        "pl" : {
-          "variations" : {
-            "plural" : {
-              "few" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "połączony — %lld narzędzia"
-                }
-              },
-              "many" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "połączony — %lld narzędzi"
-                }
-              },
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "połączony — %lld narzędzie"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "połączony — %lld narzędzia"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "connecting…" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "łączenie…"
-          }
-        }
-      }
-    },
     "context" : {
       "localizations" : {
         "pl" : {
@@ -15160,17 +16018,6 @@
         }
       }
     },
-    "degraded — %@" : {
-      "comment" : "The placeholder is an error message from the MCP handshake",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "działa z problemami — %@"
-          }
-        }
-      }
-    },
     "dictionary.correction.header" : {
       "comment" : "Dictionary: header of one correction card",
       "extractionState" : "extracted_with_value",
@@ -15189,16 +16036,6 @@
         }
       }
     },
-    "disabled" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "wyłączony"
-          }
-        }
-      }
-    },
     "disabled · AI formatting off" : {
       "comment" : "Formatting status: the AI formatting master switch is off",
       "localizations" : {
@@ -15206,26 +16043,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "wyłączone · formatowanie AI wyłączone"
-          }
-        }
-      }
-    },
-    "disconnected — disabled" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "rozłączony — wyłączony"
-          }
-        }
-      }
-    },
-    "disconnected — not tested" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "rozłączony — nie sprawdzono"
           }
         }
       }
@@ -15252,12 +16069,22 @@
         }
       }
     },
-    "enabled" : {
+    "e.g. mcp" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "włączony"
+            "value" : "np. mcp"
+          }
+        }
+      }
+    },
+    "e.g. prview" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "np. prview"
           }
         }
       }
@@ -15283,16 +16110,6 @@
         }
       }
     },
-    "endpoint (https://…/mcp)" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "adres (https://…/mcp)"
-          }
-        }
-      }
-    },
     "error" : {
       "comment" : "Overlay status pill: the take failed\nTool inspect section",
       "localizations" : {
@@ -15300,17 +16117,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "błąd"
-          }
-        }
-      }
-    },
-    "fail: %@" : {
-      "comment" : "The placeholder is an error message composed by the MCP probe",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "błąd: %@"
           }
         }
       }
@@ -15657,6 +16463,16 @@
         }
       }
     },
+    "https://…/mcp" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "https://…/mcp"
+          }
+        }
+      }
+    },
     "incomplete coverage" : {
       "localizations" : {
         "pl" : {
@@ -15878,6 +16694,53 @@
         }
       }
     },
+    "mcp.json could not be read (optional): %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się odczytać mcp.json (opcjonalne): %@"
+          }
+        }
+      },
+      "comment" : "Placeholder is an error message"
+    },
+    "mcp.server.disabled" : {
+      "comment" : "MCP server state",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Disabled"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wyłączony"
+          }
+        }
+      }
+    },
+    "mcp.server.enabled" : {
+      "comment" : "MCP server state",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Enabled"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Włączony"
+          }
+        }
+      }
+    },
     "measured profile" : {
       "localizations" : {
         "pl" : {
@@ -15904,16 +16767,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "model %@"
-          }
-        }
-      }
-    },
-    "name (e.g. prview)" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "nazwa (np. prview)"
           }
         }
       }
@@ -15999,16 +16852,6 @@
         }
       }
     },
-    "not tested" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "nie sprawdzono"
-          }
-        }
-      }
-    },
     "nothing to undo" : {
       "localizations" : {
         "pl" : {
@@ -16026,58 +16869,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "teraz"
-          }
-        }
-      }
-    },
-    "ok — %lld tools" : {
-      "localizations" : {
-        "en" : {
-          "variations" : {
-            "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "ok — %lld tool"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "ok — %lld tools"
-                }
-              }
-            }
-          }
-        },
-        "pl" : {
-          "variations" : {
-            "plural" : {
-              "few" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "OK — %lld narzędzia"
-                }
-              },
-              "many" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "OK — %lld narzędzi"
-                }
-              },
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "OK — %lld narzędzie"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "OK — %lld narzędzia"
-                }
-              }
-            }
           }
         }
       }
@@ -16255,26 +17046,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "odzyskiwanie nie powiodło się — tekst zachowany"
-          }
-        }
-      }
-    },
-    "remote · no authentication · policy: ask" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "zdalny · bez uwierzytelniania · zasada: pytaj o zgodę"
-          }
-        }
-      }
-    },
-    "remote · token in Keychain · policy: ask" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "zdalny · token w pęku kluczy · zasada: pytaj o zgodę"
           }
         }
       }
@@ -16709,13 +17480,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "diagnostics, connection, installation path, capability, readiness"
+            "value" : "diagnostics, status, environment, connection, installation path, capability, readiness"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "diagnostyka, połączenie, ścieżka instalacji, możliwości, gotowość"
+            "value" : "diagnostyka, stan, środowisko, połączenie, ścieżka instalacji, możliwości, gotowość, narzędzia"
           }
         }
       }
@@ -16733,7 +17504,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "permission, allow, ask, deny, tool, uprawnienia, zezwalaj, zgoda, pytaj, blokuj, odmowa, narzędzie"
+            "value" : "permission, allow, ask, deny, tool, uprawnienia, zezwalaj, zgoda, pytaj, blokuj, narzędzie, narzędzia"
           }
         }
       }
@@ -16864,6 +17635,17 @@
         }
       }
     },
+    "source: %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "źródło: %@"
+          }
+        }
+      },
+      "comment" : "Placeholder is an identifier"
+    },
     "status" : {
       "comment" : "Tool inspect field",
       "localizations" : {
@@ -16881,6 +17663,78 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "status niedostępny"
+          }
+        }
+      }
+    },
+    "status.tone.bad" : {
+      "comment" : "Status dot: broken",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Error"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Błąd"
+          }
+        }
+      }
+    },
+    "status.tone.good" : {
+      "comment" : "Status dot: everything is in order",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Good"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gotowe"
+          }
+        }
+      }
+    },
+    "status.tone.neutral" : {
+      "comment" : "Status dot: no verdict",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Not checked"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie sprawdzono"
+          }
+        }
+      }
+    },
+    "status.tone.warn" : {
+      "comment" : "Status dot: needs attention",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Warning"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ostrzeżenie"
           }
         }
       }
@@ -16938,16 +17792,6 @@
         }
       }
     },
-    "testing…" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "sprawdzanie…"
-          }
-        }
-      }
-    },
     "the Codescribe-managed marker is missing or does not match this client and bridge root" : {
       "localizations" : {
         "pl" : {
@@ -17000,6 +17844,17 @@
           }
         }
       }
+    },
+    "tool: %1$@ · source: %2$@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "narzędzie: %1$@ · źródło: %2$@"
+          }
+        }
+      },
+      "comment" : "Mono detail under a capability row; placeholders are identifiers"
     },
     "tray.keycap.off" : {
       "comment" : "Tray keycap, a few letters wide: this toggle is disabled",

@@ -235,16 +235,105 @@ Palette labels and grant actions follow the macOS interface language through
 the app's String Catalog. Model IDs, provider IDs and tool grant keys remain
 unchanged.
 
-Open **Settings → Agent → Diagnostics** for the complete agent connection
-report: the core readiness rows, managed skill status and installation paths,
-capability matrix, MCP status, and a single Refresh action. Native-tool or
-workspace failures remain visible there even when credentials are valid.
-Long diagnostic values wrap within the pane, keeping labels and controls
-visible when the sidebar is open.
+Open **Settings → Agent → Diagnostics** (headline "Agent environment status")
+for the agent status screen: the readiness verdict with its prerequisite rows,
+the detected skill installations, one summary line each for capabilities and
+MCP servers, and a single Refresh action. Native-tool or workspace failures
+remain visible there even when credentials are valid. Long diagnostic values
+wrap within the pane, keeping labels and controls visible when the sidebar is
+open. See "Agent → Diagnostics" below for what each part shows.
 Managed skill status is read when Settings opens, when Diagnostics is selected
 and after launch synchronization finishes. A direct link refreshes even if
 Diagnostics is already selected. These inspections do not install skills or
 attach listeners.
+
+### Agent → Tools
+
+Tools is the permissions screen: when the Agent may use a tool without
+asking (Allow), when it needs approval (Ask), and when it must refuse (Deny).
+
+- **Defaults** — one row per category: Read data, Changes/processes/network,
+  Unclassified tools. These are the stored category defaults and apply to every
+  tool without a more specific rule.
+- **Resolution order** — a rule set for one tool outranks its server's rule,
+  and both outrank the category defaults. External destructive tools are
+  always refused, and an Allow never silently covers a path that may hold
+  secrets (`.env`, key material): that call asks first.
+- **Per-tool permissions · N** — N is the whole tool catalog, not the number
+  of individual rules. Tool sources down the left (Native plus every MCP
+  server, names verbatim), the selected source's tools on the right. Each row
+  shows a readable name above the raw identity, the source and localized risk
+  class, and whether the level is an individual rule or inherited (from the
+  server rule or the category default). "Restore inheritance" removes an
+  individual rule; the row then shows the inherited level again.
+- The level a row shows is the level the gate applies to the tool's next call:
+  Settings and the runtime read the same resolver, so a category default
+  changed here takes effect without an explicit rule per tool.
+
+### Agent → Diagnostics
+
+Diagnostics is a status screen and the entry point for troubleshooting, not an
+inventory. The core reports every row as a stable facet and state with its
+structured parts (counts, provider or server name, error cause); the app
+renders the interface-language text from those, so the Polish and English
+screens never depend on parsing the English probe text.
+
+- **Agent readiness** — the verdict pill plus one row per prerequisite:
+  Overall status, Model provider, Native tools, Folders available to the Agent,
+  then the optional operator tooling (VibeCrafted runtime, AICX MCP, Loctree MCP,
+  PRView integration). Every row ends with a status mark: a dot and a word
+  (Good, Warning, Error, Not checked) that is also the tooltip and the
+  VoiceOver label.
+- **Detected installations and runtime** — one block per detected client
+  (Claude Code, Codex) with its managed skill path, the installer's evidence
+  line, and the launch synchronization notice folded under "Technical details".
+- **Available tools and integrations** — one line of counts (Native · Enhanced
+  · Unavailable). "Show details" expands the capability matrix with localized
+  tier badges and a readable headline per operation; the core's raw reason is
+  the dot's tooltip. Permissions are managed in the Tools tab.
+- **MCP servers** — the configuration source path, one line of counts
+  (Configured · Tested · Issues), and a note when every server still waits for
+  the agent's first turn. "Show servers" expands one merged table: server name,
+  runtime status from the probe, and the cached test result. Servers are added,
+  tested and removed in the MCP tab. Without any configured server the section
+  shows the single configuration state row instead (no mcp.json, empty config,
+  or the concrete read error).
+
+### Agent → MCP
+
+The MCP tab is the editing surface for `~/.codescribe/mcp.json`; Diagnostics
+only reports it. The headline says what the tab is for (add servers, manage
+the tools the Agent may use) and the list reads as servers, not as a config
+dump.
+
+- **Server card** — the name, the configured state as a flag button (Enabled /
+  Disabled flips `enabled` in `mcp.json`; it never connects or disconnects
+  anything), the last handshake, and the Test / Remove actions. "Details"
+  folds the transport, the launch command or server URL, environment keys,
+  authentication (token in Keychain or none), the server-wide permission rule
+  read from the live policy, the identity the server advertised (name,
+  version, protocol) and the raw error of a failed handshake. Identifiers,
+  paths and URLs stay verbatim.
+- **Last handshake** — Test spawns the server once and lists its tools. The
+  card shows "Connection not tested", "Checking the connection…", "Last test:
+  passed · N tools" or "Last test: failed" (reason under Details). It is a
+  test result, not a live connection indicator: the Agent starts servers per
+  turn. Toggling the flag drops the cached result, so a card never reports a
+  configuration that was just changed.
+- **Add server** — a segmented choice between a local process and an HTTP
+  connection, then labelled fields: server name, launch command and command
+  arguments, or server URL and an optional access token. The token goes to
+  the macOS Keychain, never into `mcp.json`. A rejected add shows the store's
+  message under the fields and keeps everything typed.
+- **Technical details** — the on-disk note (hand edits and unknown fields are
+  preserved), the file path, and "Move MCP configuration to Trash…", which
+  after confirmation moves only `mcp.json` to Trash.
+
+Removing a single server also deletes its Keychain token without a separate
+confirmation; the row's Remove action is the confirmation.
+
+The Settings window carries the title "Settings" for Mission Control, App
+Exposé and the Window menu while the toolbar shows the wordmark instead.
 
 Setup keeps the Agent step to one decision: which clients to connect. It shows
 only a short ready state or an inline setup action and error. The preceding

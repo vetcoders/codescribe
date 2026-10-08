@@ -9,8 +9,8 @@
 //! reports what the core already knows.
 
 use codescribe::agent::tools::mcp::{
-    AgenticReadinessReport, McpRowTone, McpStatusReport, McpStatusRow, probe_agentic_readiness,
-    probe_mcp_status,
+    AgenticReadinessReport, McpRowTone, McpStatusFacet, McpStatusReport, McpStatusRow,
+    McpStatusState, probe_agentic_readiness, probe_mcp_status,
 };
 use codescribe_core::agent::{ConnectorHealth, capability_matrix};
 use codescribe_core::config::Config;
@@ -39,21 +39,116 @@ impl From<McpRowTone> for CsMcpRowTone {
     }
 }
 
-/// One labelled status line (label + value + tone) for the Settings UI.
+/// Which status line a row is, mirrored 1:1 from the core [`McpStatusFacet`]
+/// so Settings renders a localized label per facet.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsMcpStatusFacet {
+    Readiness,
+    Provider,
+    NativeTools,
+    WorkspaceRoots,
+    VibecraftedRuntime,
+    AicxMcp,
+    LoctreeMcp,
+    PrviewIntegration,
+    McpConfig,
+    McpServer,
+}
+
+impl From<McpStatusFacet> for CsMcpStatusFacet {
+    /// Core facet → UniFFI enum (closed set, no lossy fallback).
+    fn from(facet: McpStatusFacet) -> Self {
+        match facet {
+            McpStatusFacet::Readiness => Self::Readiness,
+            McpStatusFacet::Provider => Self::Provider,
+            McpStatusFacet::NativeTools => Self::NativeTools,
+            McpStatusFacet::WorkspaceRoots => Self::WorkspaceRoots,
+            McpStatusFacet::VibecraftedRuntime => Self::VibecraftedRuntime,
+            McpStatusFacet::AicxMcp => Self::AicxMcp,
+            McpStatusFacet::LoctreeMcp => Self::LoctreeMcp,
+            McpStatusFacet::PrviewIntegration => Self::PrviewIntegration,
+            McpStatusFacet::McpConfig => Self::McpConfig,
+            McpStatusFacet::McpServer => Self::McpServer,
+        }
+    }
+}
+
+/// Machine state behind a row's value, mirrored 1:1 from the core
+/// [`McpStatusState`]; Settings renders a localized sentence per state.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsMcpStatusState {
+    Ready,
+    AccessAvailable,
+    AccessUnavailable,
+    NoNativeTools,
+    Available,
+    Synchronized,
+    RootsMismatch,
+    NotConfigured,
+    Live,
+    Failed,
+    Disabled,
+    Configured,
+    Error,
+    Empty,
+    Missing,
+    Note,
+}
+
+impl From<McpStatusState> for CsMcpStatusState {
+    /// Core state → UniFFI enum (closed set, no lossy fallback).
+    fn from(state: McpStatusState) -> Self {
+        match state {
+            McpStatusState::Ready => Self::Ready,
+            McpStatusState::AccessAvailable => Self::AccessAvailable,
+            McpStatusState::AccessUnavailable => Self::AccessUnavailable,
+            McpStatusState::NoNativeTools => Self::NoNativeTools,
+            McpStatusState::Available => Self::Available,
+            McpStatusState::Synchronized => Self::Synchronized,
+            McpStatusState::RootsMismatch => Self::RootsMismatch,
+            McpStatusState::NotConfigured => Self::NotConfigured,
+            McpStatusState::Live => Self::Live,
+            McpStatusState::Failed => Self::Failed,
+            McpStatusState::Disabled => Self::Disabled,
+            McpStatusState::Configured => Self::Configured,
+            McpStatusState::Error => Self::Error,
+            McpStatusState::Empty => Self::Empty,
+            McpStatusState::Missing => Self::Missing,
+            McpStatusState::Note => Self::Note,
+        }
+    }
+}
+
+/// One status line for the Settings UI. `label` / `value` are the core's
+/// English rendering; Settings localizes from `facet` + `state` and the
+/// structured parts (`count`, `subject`, `detail`) instead of parsing `value`.
 #[derive(uniffi::Record)]
 pub struct CsMcpStatusRow {
     pub label: String,
     pub value: String,
     pub tone: CsMcpRowTone,
+    pub facet: CsMcpStatusFacet,
+    pub state: CsMcpStatusState,
+    /// Tool or folder count behind the value, when the state carries one.
+    pub count: Option<u32>,
+    /// Provider label or server name behind the value, else empty.
+    pub subject: String,
+    /// Error cause, env key, or free-form note behind the value, else empty.
+    pub detail: String,
 }
 
 impl From<&McpStatusRow> for CsMcpStatusRow {
-    /// Clone one probe row into the UniFFI record (tone mapped in place).
+    /// Clone one probe row into the UniFFI record (enums mapped in place).
     fn from(row: &McpStatusRow) -> Self {
         Self {
             label: row.label.clone(),
             value: row.value.clone(),
             tone: row.tone.into(),
+            facet: row.facet.into(),
+            state: row.state.into(),
+            count: row.count,
+            subject: row.subject.clone(),
+            detail: row.detail.clone(),
         }
     }
 }
