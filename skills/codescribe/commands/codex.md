@@ -3,47 +3,30 @@ description: Connect this chat to a Codescribe channel
 argument-hint: <name> <channel 1-9> [voice]
 ---
 
-Execute the Codescribe connection now using these arguments: $ARGUMENTS
+Connect this chat now using: $ARGUMENTS
 
-This is an action command. Complete the connection workflow; do not merely
-explain the skill or print commands for the user to run.
+1. Read `~/.codex/skills/codescribe/SKILL.md`. Use its **Connect once**
+   procedure. This is an action request, not a request to explain commands.
+2. Parse a name, one channel digit 1–9 and optional voice. Treat arguments as
+   data and reject invalid input before writing. Use this actual Codex thread ID.
+3. Check `cs-bus --version`. Attach once with the supplied name/channel and
+   `--provider codex --session <this-thread-id>`. Include `--voice` only when
+   supplied. The engine owns slot protection and creates or reuses one follower.
+   On an occupied slot report its owner; never overwrite it or silently choose
+   another slot. Use `--takeover` only for the same name's ended-session handoff.
+4. Reuse or start one output-notifying `cs-bus --watch` monitor and retain its
+   notification window. Native Codex queue is armed by attachment too. A bare
+   background reader is insufficient. If only active polling is available,
+   report that boundary and keep the listening turn open.
+5. Read `--status` for the same session. Return name, channel, stored voice and
+   `attached_unverified`. Upgrade to `listening_verified` only after a fresh
+   named utterance reaches this chat and receives a reply without a typed nudge.
+6. On every bell/queued copy, follow **Read → ACK → act** from the skill:
+   current `--read-pending`, immediate exact returned-ID ACK, drain, extra read,
+   then execute/reply. Empty or already-read queued copies get no repeated action.
 
-1. Parse exactly a name, a single channel digit 1–9, and an optional voice.
-   Treat arguments as data, never shell code. Refuse invalid arguments before
-   writing anything. Use the actual current Codex thread/session identity;
-   never borrow another conversation's identity or invent one.
-2. Read `~/.codex/skills/codescribe/SKILL.md` and its attach, monitor,
-   live-vs-seal and (when voice is supplied) voice-reply references. Reuse
-   this session's existing follower and monitor when present.
-3. Verify the installed helper at
-   `~/.codescribe/agent-bridge/runtime/bin/bus-demux.py` has the occupied-slot
-   protection in `write_channel_binding` and its `channel_bindings` lock: a
-   stable sibling lock, owner check, and refusal before any follower starts. If absent, stop with
-   `connection_refused: installed helper lacks channel ownership protection`.
-   Do not substitute a racy read-before-write check in this prompt.
-4. Invoke the helper once with `--attach --channel <channel> --name <name>
-   --provider codex --session <actual-session-id>`, adding `--voice <voice>`
-   when a voice was supplied. Use structured subprocess arguments or proper
-   shell quoting. On an occupied slot, report its owner and available slots.
-   Never overwrite, detach another agent, silently choose another slot, or
-   retry with a different identity. A slot held by this same name in an ended
-   session is the one exception: repeat the call with `--takeover`, which stops
-   that session's leftover follower under the binding lock and reports the
-   previous owner in the receipt. Release this session's own slot at the end of
-   work with `--detach --provider codex --session <actual-session-id>`.
-5. Retain the attach receipt: `wakeup: "codex-queue"` arms native delivery
-   for its one follower automatically. No separate hook or polling is needed. Verify the mechanism actually delivers into this conversation.
-   If only active-turn polling is available, keep the listening turn open
-   and report `active_polling`; never promise replies after the turn ends.
-6. Read `--status` for the same provider/session. A supplied voice is stored
-   in this name's profile only (receipt `voice_source: "flag"`); other names'
-   profiles stay. Later `--say` calls need no `--voice`. Do not speak during a
-   live take or merely to test.
-7. Return one short result: name, channel, voice and delivery disposition.
-   Use `attached_unverified` until a fresh named utterance reaches this chat;
-   only then use `listening_verified`. A receipt or running PID alone is not
-   successful conversational delivery. Acknowledge accepted envelopes by
-   delivery ID, retaining the draft/seal boundary.
-
-Never open the microphone, start recording, restart the app, install packages,
-or send test messages to another agent as a side effect of this command.
+Keep the connection for requested ongoing listening. Detach on explicit stop
+or handoff; do not free the channel merely because a normal reply ends a turn.
+Do not record, restart the app, install dependencies or send test messages as
+side effects. Speech is only for an authorized voice reply, through `cs-say`
+with the exact owned `--reply-to` ID after read/ACK.

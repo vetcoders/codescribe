@@ -8,271 +8,160 @@ description: >
   Editing this skill or the app is a repository task, not an instruction to
   start another listener.
 metadata:
-  version: "0.9.0"
+  version: "0.10.0"
   loctree_value: "primary repo map for structural/literal repository work"
   aicx_value: "intent, session, and decision-context retrieval"
   dogfooding: "required for repo-impacting work"
 ---
 
-<!-- fleet-imperative: v3 -->
+# Codescribe — connect, read, acknowledge, reply
 
-> **Invocation for codescribe — foundation skill**
->
-> | Path           | Invocation                                               |
-> | -------------- | -------------------------------------------------------- |
-> | Interactive    | `/codescribe` or load this skill in the current chat     |
-> | Worker CLI     | None; do not invent `vibecrafted codescribe <agent>`     |
-> | Agent-Operator | Load in the existing session; the Founder owns recording |
->
-> Execute in-session. Attaching requires no worker dispatch.
+Use this skill to connect the current chat to a named Codescribe channel, receive
+spoken or typed messages, and answer through its attached voice. Execute the
+commands yourself when connection is requested. Editing this skill does not
+request a new connection.
 
-<!-- /fleet-imperative -->
+Founder means the human. Operator means an agent role.
 
-# Codescribe — voice delivery to this agent
+## Choose the operation first
 
-## Purpose
+- **Already connected; a bell or queued message arrived:** go directly to
+  **Read → ACK → act**. Do not attach again or replay the queued copy.
+- **Connect `/codescribe NAME CHANNEL [VOICE]`:** follow **Connect once**.
+- **Resume after interruption:** read `--status` for the same provider/session;
+  retain the lease, cursor, name, voice and existing follower. Reattach the same
+  session only if recovery or helper adoption is needed.
+- **Answer by voice:** follow **Reply** after reading and acknowledging.
+- **CLI transcript:** read [CLI](references/cli.md). No follower is needed.
 
-Deliver a named spoken utterance from Codescribe to this conversation, with
-proof that the agent receives it without a typed nudge. One microphone owner,
-one runtime-resolved bus, one follower lease per provider session.
+## Connect once
 
-Founder means the human; Operator means an agent role. Keep those identities
-distinct in messages and receipts.
+Use the current provider and its real session ID. For Codex this is the current
+thread ID; for Claude Code the helper can read `CLAUDE_CODE_SESSION_ID`.
+Never invent a session or borrow another chat's identity. Reuse an established
+name. Ask for a name/channel only when the request and session do not supply them.
+Validate the channel as one digit 1–9. Quote arguments as data.
 
-## When To Use
+Check `cs-bus --version` and `cs-say --version` when starting or diagnosing a
+connection. If they are absent from PATH, use `~/.local/bin/cs-bus` and
+`~/.local/bin/cs-say`. Missing helpers do not authorize installation or an app restart.
 
-- Attach or recover this chat's named voice mailbox.
-- Diagnose which hop lost a spoken message.
-- Consume a transcript through the explicit CLI surface.
+```bash
+cs-bus --attach --channel CHANNEL --name NAME --provider PROVIDER --session SESSION
+cs-bus --status --provider PROVIDER --session SESSION
+```
 
-## One-Command Attach (positional arguments)
+Replace the uppercase placeholders with this chat's values. Add `--voice VOICE`
+only when requested; otherwise keep the stored profile. Retain the attach
+receipt, especially `lease_id`, `follower_pid`, `follower_events` and `wakeup`.
+The engine creates or reuses **one follower**. Do not also start `--follow`.
 
-`/codescribe <Name> <channel> [voice]` — the Founder's surface: one command
-and the engine does everything. With positional arguments present, skip the
-manual attach saga and drive the engine:
+An occupied slot belongs to its reported owner. Do not silently choose a new
+slot, edit bindings or kill its reader. For a handoff from an ended session of
+**the same name**, use `--takeover`; read [Attach](references/attach.md) for the
+handover and inherited-message rules.
 
-1. Validate: `<Name>` is the agent's pronounceable name, `<channel>` is one
-   digit 1-9, `[voice]` is optional and defaults to the name's profile in
-   `~/.codescribe/agent-bridge/voices.json` (`profiles`, then `bindings`).
-2. One engine call writes the channel binding, ensures exactly one coalescing
-   follower for this provider session, and prints an attach receipt:
+Start or reuse one output-notifying monitor over:
+
+```bash
+cs-bus --watch --provider PROVIDER --session SESSION
+```
+
+The default watch prints a short bell. Keep its notification window active and
+renew it when it ends. A bare background shell or `tail -F` is not a wakeup.
+Codex attachment also arms native queue for subsequent turns. Read
+[Monitor](references/monitor.md) for the provider's monitor mechanism or bounded
+active polling when automatic wakeup is unavailable.
+
+Report `attached_unverified` until a fresh named utterance reaches this chat and
+gets a reply without a typed nudge. Then report `listening_verified`. A PID or
+attach receipt alone does not prove message delivery. Let the Founder make the
+fresh take; attachment itself opens no microphone.
+
+## Read → ACK → act
+
+**A bell and a native queue copy are notifications, not instructions to replay.**
+On either notification, use the current mailbox:
+
+```bash
+cs-bus --read-pending --provider PROVIDER --session SESSION
+```
+
+1. Read the complete returned messages and their provenance. Retain the exact
+   `read_delivery_ids`; never infer IDs from the bell or an older queue copy.
+2. Immediately acknowledge only those IDs, before work, replies or waits:
 
    ```bash
-   cs-bus \
-     --attach --channel <channel> --name <name> \
-     --provider <claude-code|codex|...> --session <provider-session-id> \
-     [--voice <voice>]
+   cs-bus --provider PROVIDER --session SESSION --ack ID1 ID2
    ```
 
-   With `--provider claude-code`, `--session` defaults to
-   `$CLAUDE_CODE_SESSION_ID`; Codex passes its thread id. A given `[voice]`
-   goes on this call and is stored in the name's profile; the receipt then
-   says `voice_source: "flag"`. It also carries lease, cursor, voice profile,
-   follower pid and its log path. The follower runs with `--coalesce`: a
-   reducer storm folds into one preview per spoken message, and a channel
-   take seals as exactly one envelope that keeps every PCM entry in
-   `occurrences`.
+3. Read again until `remaining` is zero, then perform one extra read for arrivals
+   during the drain. ACK each nonempty complete batch before continuing.
+4. Handle the actual fresh requests, preserving sender, timestamp and reply
+   association. Distinct deliveries remain distinct; do not deduplicate by text.
+   Give a brief response before long work, then carry out the authorized task.
 
-3. Codex attachment arms `codex queue` automatically for this exact thread.
-   It continues after a final answer; no private hook or polling is needed.
-   Every attachment must also start `--watch` under the provider's
-   output-notifying monitor, including Codex. The default is a short bell.
-   Keep and renew notification windows throughout active tasks. Native queue
-   messages carry the complete untruncated task text and compact provenance;
-   watch bells remain notifications only. Read the current `--read-pending`
-   batch, then ACK its complete returned IDs immediately, before task execution
-   or reply. Execute or reply only to IDs returned as unread by that current
-   read. An absent ID makes a delayed queue copy obsolete and needs no new
-   spoken answer. Give a short answer before starting longer work. Acoustic
-   receipts stay in diagnostic history; use full `--read-delivery <id>` only
-   when those original details are needed.
-   Other providers use the same mandatory output-notifying `--watch`
-   ([Monitor](references/monitor.md)). An explicit `--on-seal` hook selects
-   its own wakeup path instead of running a second native wakeup.
-4. Read one truth with `--status`: backlog is pending minus acknowledgment
-   markers, never the raw pending length the lease file shows before a sweep.
-5. Verify with a fresh named take on the channel before claiming listening;
-   the receipt alone is `attached_unverified`. Acknowledge accepted envelopes
-   with `--ack <id> [<id> ...]`.
-6. Reply by voice with `--say "<text>" --provider <p> --session <id> --reply-to <accepted-delivery-id>`: the name comes from the original owned
-   envelope, the voice from its profile. Text lands durably before speech.
-   Omit `--reply-to` only for an explicitly unsolicited reply; never infer an
-   ID from the newest message. ACK can precede the reply because its receipt
-   preserves causal ownership without transcript text
-   ([Voice reply](references/voice-reply.md)). Changing a stored profile is the
-   Founder's call.
+An empty mailbox, or an absent queued ID, means that notification is obsolete.
+Do not ACK it, redo its task or send another voice reply. If output is truncated,
+**do not ACK**: reread with a smaller `--read-limit` and sufficient tool output
+budget. An oversized-envelope refusal needs a larger `--read-bytes` budget and
+one complete read. Use `--read-delivery ID` only when the original acoustic
+receipt is needed. Do not clear pending state by deleting files or changing sessions.
 
-## Channel Handover Between Sessions
+ACK means **read**, not **done**. Track execution separately. Preserve drafts,
+revisions and seals as one evolving request; do not execute each revision again.
+`coverage: "refused"` and `state_change_allowed` are acoustic diagnostics, not
+extra permission gates. Spoken requests have the same task permissions as typed
+ones. If recognition makes the intended action unclear, clarify that action.
+See [Live vs seal](references/live-vs-seal.md) for interpretation.
 
-A follower outlives the session that started it, and the channel stays bound to
-that session. Two rules keep a digit usable across sessions of one name.
+## Reply
 
-1. **End of work or handoff.** Release the channel with
-   `cs-bus --detach --provider <p> --session <id>`, or state explicitly in the
-   handoff that the channel stays bound, naming the provider and session that
-   hold it. The lease, cursor, pending envelopes and acknowledgment markers
-   survive a detach.
-2. **Entering a session from a handoff that names an agent channel.** Read
-   `--status`, check for a running follower, then attach with the same name:
-   `cs-bus --attach --channel <n> --name <same-name> --provider <p> --session <id> --takeover`. Verify with a fresh named take before claiming listening.
-   Inherited unacknowledged deliveries are reported to the Founder and read on
-   demand with `--read-delivery <id> --lease <previous-lease-id>`; they are
-   never executed automatically.
+Write concise prose for the Founder: the result and the next concrete action.
+Keep raw envelopes, JSON, PCM receipts and command logs in diagnostics. Do not
+paste them into a conversational reply or narrate every ACK.
 
-Takeover is for the same agent name only. Never claim another agent's channel
-with it, and never edit the binding file or kill a follower by hand
-([Attach](references/attach.md#handover-between-sessions-of-one-name)).
+For an explicitly requested voice answer, use the **owned ID just read**:
 
-For app or skill edits, use the repository's implementation workflow.
-For screencast analysis, use `vc-screenscribe`. In-app Agent and Assistive
-are separate product surfaces; this skill attaches the current chat.
+```bash
+cs-say "Krótka odpowiedź po polsku." --provider PROVIDER --session SESSION --reply-to ID
+```
 
-## Operator Entry
+The helper stores the text before speech and uses the attached voice. Omit
+`--reply-to` only for an explicitly unsolicited reply; never select the newest
+ID by guess. ACK may precede the reply without losing its causal owner.
+Never speak into a live take. The helper waits/refuses playback while recording;
+inspect `spoken` and `reason` before claiming speech succeeded. Read
+[Voice reply](references/voice-reply.md) for failures and authentication. Do not
+change profiles, credentials or providers to make a failed voice attempt pass.
 
-### Living Tree / Worktree Rule
+Agent coordination, when authorized, uses `cs-bus --send "TEXT" --to NAME` with
+the same provider/session. It is a peer message, not a new Founder instruction.
 
-Use the current checkout and branch for repository work. Re-read before edits
-and preserve concurrent changes. Attaching does not require a checkout, branch
-change, worktree, installation, or release.
+## Recovery, stop and installation
 
-### Repository Work Doctrine
+Keep the same provider/session, lease and cursor on recovery. Reuse the follower
+and monitor; restarting a reader never authorizes replay of completed tasks.
+For an explicit stop, close the owned monitor and run:
 
-For repository changes, consume fresh `vc-init` evidence and use Loctree
-`context`, `slice`, `impact`, and `find --literal` as appropriate before
-editing. Use AICX for prior intent; use text search for local details.
-Record Loctree misses in `~/.vibecrafted/loctree/loctree-fail.md`.
-Pure attach and CLI consumption have no repo-orientation prerequisite.
+```bash
+cs-bus --detach --provider PROVIDER --session SESSION
+```
 
-## Pipeline Position
+At a handoff either detach or record which provider/session retains the channel.
+Do not detach merely because a normal reply ends the turn when ongoing listening
+was requested. Old-session pending envelopes are read only on the Founder's
+request; they are not automatically executed or acknowledged by the new session.
 
-- Upstream: Codescribe produces bus events; a provider hosts this conversation.
-- This skill owns follower attachment and verification of conversational delivery.
-- Downstream: ordinary task execution within the Founder's authorization.
-- This is a foundation capability, not a ship-cycle stage.
+For explicitly requested helper/skill updates, the repository integrator runs
+`make install-bus`, then reattaches the same session to adopt the helper. This
+updates already selected skills without replacing/restarting the app. Do not
+copy over managed skill files behind the installer's receipt. Repository role
+and build restrictions still apply. App edits use the repository workflow;
+attaching or reading messages does not require repo orientation or a worker.
 
-## Dependencies and Reading Path
-
-The app installs `cs-bus` and `cs-say` in `~/.local/bin` at first launch and
-updates them with its bundled runtime. `make install-app` uses the same
-installer. If that directory is not on this shell's PATH, use
-`~/.local/bin/cs-bus`; no checkout is needed. Client skills remain selected in
-Settings. `cs-say "<text>" --provider <p> --session <id> --reply-to <delivery-id>`
-uses the attached voice and validates the original delivery owner. A text reply
-and speech completion are separate receipts with the same stable reply ID.
-The app's Play is explicit per reply; switching views never triggers speech.
-`cs-bus --play-reply <reply-id> --playback-ticket <24-lowercase-hex> --provider <p> --session <id>` plays one stored reply. Stop uses `--stop-reply` with the exact
-same ticket and owner. Do not substitute the built-in AgentChat stop control.
-
-When helper installation is requested, `make install-bus` installs only helpers
-and already selected skills without replacing or restarting the app. Reattach
-the same session afterward to adopt updated follower code. Check both
-`cs-bus --version` and `cs-say --version`: they include the installed commit slug.
-
-Voice authentication is independent of the app. If requested or needed for a
-missing credential, use `cs-say auth --help`, then
-`cs-say auth --provider <xai|openai|deepinfra|custom> --login-type <oauth|key|device-code>`.
-xAI OAuth/device-code uses the Grok CLI; all four providers have a hidden
-Keychain key prompt. Speech currently supports xAI/OpenAI; storing another
-provider's key does not create its speech lane. Unsupported combinations fail
-explicitly. See [Voice reply](references/voice-reply.md); never pass or print keys.
-
-Read only the reference needed by the current operation:
-
-| Operation                                     | Required reference                         |
-| --------------------------------------------- | ------------------------------------------ |
-| Attach, naming, resume, duplicate follower    | [Attach](references/attach.md)             |
-| Select or diagnose notification/wakeup        | [Monitor](references/monitor.md)           |
-| Interpret drafts, revisions, refusal and seal | [Live vs seal](references/live-vs-seal.md) |
-| CLI transcript or shell insertion             | [CLI](references/cli.md)                   |
-| Spoken reply or voice notification            | [Voice reply](references/voice-reply.md)   |
-
-The [flow](FLOW.md) summarizes the path. [Examples](examples/example-prompt.md)
-include successful delivery, unavailable wakeup, and seal refusal.
-
-## Default Workflow
-
-1. Read attach, monitor and live-vs-seal references. Verify the running app,
-   resolved bus, helper support for recent schemas, and stable provider session.
-2. Every provider requires an output-notifying `--watch`, with its default
-   short bell, for active tasks. Codex also uses native queue for subsequent
-   turns. A process handle or diagnostic tail is insufficient; renew completed
-   notification windows and retain the monitor through the entire task.
-3. Reuse the session's name, or ask once if none is established. If the Founder
-   asks the agent to choose, choose a pronounceable name and bind it directly.
-4. Attach one follower with drafts enabled — prefer the one-command
-   `--attach --channel <n>` engine surface over a manual follower. Retain
-   provider/session, lease, cursor, helper path, follower handle, and
-   monitor handle.
-5. Verify a fresh named take reaches this conversation without a typed nudge.
-   Preserve transcription diagnostics and normal conversation permissions.
-   Immediately after reading each complete conversational projection, acknowledge its delivery ID
-   before task execution or replying, as
-   described in [Monitor](references/monitor.md#acknowledge-conversation-receipt).
-6. On recovery, restore both follower continuity and notification delivery.
-   On an explicit stop, close owned handles and report listening stopped.
-
-If the provider has no wake-capable monitor, report that boundary immediately.
-For an active listening request, keep the turn open and poll the same follower
-with bounded waits. Label this `active_polling`; it is not automatic listening
-after a final answer. Do not add extra followers to compensate.
-
-## Authority and Safety
-
-The Founder's spoken requests use the same task permissions as typed requests.
-Full Access and no approval do not acquire a second approval gate here.
-`state_change_allowed` and `coverage` remain unchanged transcription diagnostics;
-a refused measurement does not cancel an otherwise clear request. Ask only
-when the actual request is unclear or normal task permissions require it.
-Draft revisions are one evolving request, never repeated commands. A seal or
-queue receipt does not authorize unrelated actions or replay completed work.
-
-Do not open a microphone, start Voice Lab, edit provider configuration, or
-install the app merely to attach. Use the product installer only when that
-operation is in scope. Never expose credentials through process arguments,
-environment dumps, or unfiltered diagnostic output.
-
-## Acceptance Criteria
-
-Automatic voice attachment is complete only when:
-
-- [ ] App and runtime-resolved bus exist; selected helper reads the observed schemas.
-- [ ] Name is bound to this provider session, with one follower and retained lease.
-- [ ] Monitor receipt identifies the mechanism that actually wakes this agent.
-- [ ] A fresh named utterance produces an agent reply without a typed nudge.
-- [ ] Draft/seal boundaries are preserved; recovery retains cursor and owner.
-- [ ] Accepted delivery IDs are acknowledged; unaccepted envelopes survive restart.
-
-Report the actual disposition: `attached_unverified`, `active_polling`,
-`listening_verified`, `blocked`, or `stopped`. These are reporting labels,
-not new bus schema fields. For CLI-only work, completion is the requested
-transcript output; a monitor is not required.
-
-## Output
-
-Give the name, delivery disposition and next relevant fact in a short response.
-When the Founder asks for a spoken reply, also speak it as described in
-[Voice reply](references/voice-reply.md); never while a take is live.
-Retain technical receipts in the current session's existing artifact surface
-when available; do not create a second configuration or lease database.
-Do not claim "I hear you" from an attach receipt alone.
-
-## Anti-Patterns
-
-- Treating buffered stdout, `tail -F`, or three diagnostic readers as agent wakeup.
-- Ending the turn while promising listening that requires active polling.
-- Starting a second follower for the same lease or replaying old commands.
-- Using coverage diagnostics as an extra approval gate, or replaying a command.
-- Inventing a worker launcher or running a repo workflow for a simple attach.
-
-## Verify before the handoff
-
-Exercise the actual named take → follower → notification → agent reply path.
-A synthetic parser check proves parsing only; a running process proves liveness
-only. Recheck recovery before claiming it works. State missing evidence explicitly.
-
-This applies Vibecrafted's Verification Rule locally so the installed skill is
-self-contained; framework-level rules remain owned by Vibecrafted.
-
----
-
-_𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI_
+Use the same `--bus` and `--bridge-home` overrides on every operation when this
+session has them. Never print credentials or unfiltered environment/config dumps.
+Detailed references: [Attach](references/attach.md),
+[Monitor](references/monitor.md), [CLI](references/cli.md),
+[Voice reply](references/voice-reply.md). [FLOW.md](FLOW.md) shows the message path.

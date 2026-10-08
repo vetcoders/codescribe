@@ -29,7 +29,7 @@ restarting or replacing the app. Reattach the current session afterward; an
 existing follower retains its loaded code until reattachment.
 
 `cs-bus --version` and `cs-say --version` report the helper version plus the
-installed source commit slug, for example `0.9.0+g1ae953e1`. `.dirty` marks a
+installed source commit slug, for example `0.16.0+g1ae953e1`. `.dirty` marks a
 payload staged from uncommitted source. The signed manifest retains the full
 commit; it is not inferred from the running app's version.
 
@@ -41,7 +41,9 @@ cs-bus --status --provider codex --session <thread-id>
 
 Every provider requires an output-notifying `cs-bus --watch` monitor; its default
 is a short bell. Keep it active and renew notification windows during tasks.
-Codex also uses native queue wakeup after a final answer. Read a bell's complete
-`--read-delivery` envelope before ACK; do not repeat a handled queued copy.
+Codex also uses native queue wakeup after a final answer. Read the current
+`--read-pending` batch, immediately ACK only its complete returned IDs, drain to
+zero and check once more. Do not act on an obsolete
+queue copy. Use `--read-delivery` only for original acoustic details.
 Use `--watch --full` only for text diagnostics. A queue receipt is distinct from
 an agent ACK.
