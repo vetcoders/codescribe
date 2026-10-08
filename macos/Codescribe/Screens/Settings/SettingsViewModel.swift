@@ -1041,12 +1041,10 @@ enum AppRelaunch {
 }
 
 /// Quick-start actions from the Creator panel's cards. Navigation cases route
-/// the settings rail; `openOverlay` starts a real dictation session through an
-/// injectable seam so the cards are never inert decorations again
-/// (UI_DIVERGENCE_AUDIT pkt 4 — fake UX).
+/// the settings rail; `openWidget` reveals the same widget as the Tray entry.
 enum SettingsQuickStartAction: String, CaseIterable {
   case testMic
-  case openOverlay
+  case openWidget
   case tuneShortcuts
 }
 
@@ -1094,10 +1092,10 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
-  /// Dictation seam for the "Open overlay" quick-start card. Defaulted to the
-  /// live tray toggle but only dereferenced on click, so unit tests can inject
-  /// a spy without ever waking `AppModel.shared`.
-  var onQuickStartDictation: () -> Void = { AppModel.shared.tray.toggleDictation() }
+  /// View-only entry for the "Open widget" card, shared with the Tray route.
+  /// Dereferenced on click so tests can inject the widget owner without waking
+  /// `AppModel.shared` or starting microphone capture.
+  var onQuickStartOpenWidget: () -> Void = { AppModel.shared.overlay.showWidget() }
 
   /// Overlay seam for the preview preset. A preset writes the "Transcription
   /// Overlay" preference; the overlay's owner closes a panel already on screen
@@ -1111,7 +1109,7 @@ final class SettingsViewModel: ObservableObject {
     switch action {
     case .testMic: section = .audio
     case .tuneShortcuts: section = .shortcuts
-    case .openOverlay: onQuickStartDictation()
+    case .openWidget: onQuickStartOpenWidget()
     }
   }
 
