@@ -4,7 +4,7 @@
     "" : {
       "shouldTranslate" : false
     },
-    "%1$@ — no access (sign in or set %2$@)" : {
+    "%@ — no access (sign in or set %@)" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -161,6 +161,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ — ID modelu"
+          }
+        }
+      }
+    },
+    "%@ model source" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ — źródło modelu"
           }
         }
       }
@@ -4163,7 +4173,7 @@
       },
       "comment" : "Placeholder is a server name"
     },
-    "Configured: %1$lld · Tested: %2$lld · Issues: %3$lld" : {
+    "Configured: %lld · Tested: %lld · Issues: %lld" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7460,7 +7470,7 @@
         }
       }
     },
-    "Live — %1$@ (server %2$@)" : {
+    "Live — %@ (server %@)" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8283,7 +8293,7 @@
       },
       "comment" : "Diagnostics row label"
     },
-    "Native: %1$lld · Enhanced: %2$lld · Unavailable: %3$lld" : {
+    "Native: %lld · Enhanced: %lld · Unavailable: %lld" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10350,7 +10360,7 @@
         }
       }
     },
-    "Ready — %1$@ configured, access available, %2$@" : {
+    "Ready — %@ configured, access available, %@" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -17845,7 +17855,7 @@
         }
       }
     },
-    "tool: %1$@ · source: %2$@" : {
+    "tool: %@ · source: %@" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
