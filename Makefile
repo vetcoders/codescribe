@@ -350,7 +350,7 @@ bump-major:
 # gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates, l10n-lint; executes ZERO tests
 # gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace + verify-swift-format; no tests
 # gate: semgrep class=static ci=no -- semgrep scan --config auto --config .semgrep.yaml (semgrep.yml runs semgrep directly, not this target)
-# gate: verify class=hermetic ci=yes -- structural verifier, Bus-path/install guard, workspace tests and doctests under sandbox HOME with a Codescribe write leak check, separate ship-shaped artifact fence check, model-promotion regression, env registry, String Catalog lint tests and ledger harness; rust.yml runs it. The live throne rows (loct context/occurrences) require the Loctree CLI: where `loct` is not on PATH (GitHub-hosted runners) they skip loudly and the pure AST/manifest rows keep their teeth; operator hosts run the full surface.
+# gate: verify class=hermetic ci=yes -- structural verifier, Bus-path/install guard, workspace tests and doctests under sandbox HOME with a Codescribe write leak check, separate ship-shaped artifact fence check, model-promotion regression, env registry, String Catalog lint tests and ledger harness; rust.yml runs it. The live throne rows (loct context/occurrences) require the Loctree CLI: where `loct` is not on PATH (GitHub-hosted runners) or CODESCRIBE_SKIP_LIVE_THRONE is set (self-hosted CI runner living on an operator host — its PATH loct is a dev build with non-release semantics) they skip loudly and the pure AST/manifest rows keep their teeth; operator hosts run the full surface.
 # gate: test-structural-verifier class=hermetic ci=no -- Python unit/mutant suite for the Loctree-only acoustic structural instrument; pure AST/manifest rows read repo files only, live rows shell out to `loct` and skip where the CLI is absent
 # gate: test-transcript-bus-path class=hermetic ci=no -- shell/Python path-precedence and install-guard fail-closed tests in an isolated HOME; never installs the app
 # gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
@@ -1091,7 +1091,9 @@ verify:
 	echo "=== Verify (structural verifier instrument) ==="; \
 	python3 -m unittest scripts/tests/test_verify_acoustic_throne_structure.py; \
 	echo "=== Verify (live Loctree acoustic throne receipt) ==="; \
-	if command -v loct >/dev/null 2>&1; then \
+	if [ -n "$${CODESCRIBE_SKIP_LIVE_THRONE:-}" ]; then \
+		echo "verify: SKIP live throne receipt — CODESCRIBE_SKIP_LIVE_THRONE set (CI runner on an operator host; see GATE LEDGER)"; \
+	elif command -v loct >/dev/null 2>&1; then \
 		python3 scripts/verify-acoustic-throne-structure.py wired; \
 	else \
 		echo "verify: SKIP live throne receipt — loct not on PATH (operator-host instrument; see GATE LEDGER)"; \
