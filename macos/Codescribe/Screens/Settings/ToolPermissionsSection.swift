@@ -231,9 +231,9 @@ enum ToolPermissionLabels {
   static func ruleCaption(_ source: String) -> String {
     switch source {
     case "tool": return String(localized: "Individual rule")
-    case "server": return String(localized: "Inherited from the server rule")
-    case "thread": return String(localized: "Overridden for the current thread")
-    default: return String(localized: "Inherited from the category default")
+    case "server": return String(localized: "Server rule")
+    case "thread": return String(localized: "Overridden for this thread")
+    default: return String(localized: "Category default")
     }
   }
 }
@@ -317,14 +317,15 @@ struct ToolCapabilityRow: View {
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(Color.secondary)
         // Stacked, not side by side: the column next to a `fixedSize` picker is
-        // narrow at the minimum window width and a row would split a word.
+        // narrow at the minimum window width. Short nouns say where the current
+        // value comes from; the action names what it does, not "inheritance".
         VStack(alignment: .leading, spacing: 2) {
           Text(ToolPermissionLabels.ruleCaption(item.ruleSource))
             .font(CSFont.ui(10.5))
             .foregroundStyle(Color.secondary)
           if item.hasIndividualRule, let restoreInheritance {
             Button(action: restoreInheritance) {
-              Text("Restore inheritance")
+              Text("Remove rule")
                 .font(CSFont.ui(10.5, .medium))
             }
             .buttonStyle(.link)
