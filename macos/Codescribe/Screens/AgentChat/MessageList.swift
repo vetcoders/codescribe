@@ -465,7 +465,7 @@ private struct ShowEarlierButton: View {
 
 /// Floating return affordance. It remains available after a stream settles:
 /// finishing generation never takes the operator's chosen reading position.
-private struct JumpToCurrentButton: View {
+struct JumpToCurrentButton: View {
   let action: () -> Void
   @State private var hovering = false
 

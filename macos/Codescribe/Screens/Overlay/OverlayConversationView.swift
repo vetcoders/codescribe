@@ -29,18 +29,23 @@ struct OverlayConversationView: View {
   var onComposerEditorActive: (Bool) -> Void = { _ in }
   var onComposerTypingActivity: () -> Void = {}
 
-  @State private var followsLatest = true
-  @State private var userScrolling = false
+  @State private var scrollFollow = StreamScrollFollowState()
   @State private var composerHeight: CGFloat = 0
   @State private var navigationHeight: CGFloat = 32
 
   var orderedMessages: [OverlayConversationMessage] { conversation.messages }
+  private var followsLatest: Bool { scrollFollow.followingLive }
 
   var body: some View {
     GeometryReader { geometry in
       ScrollViewReader { proxy in
         trackedMessages(maxBubbleWidth: max(0, min(660, (geometry.size.width - 40) * 0.82)))
           .padding(.trailing, OverlayResizeHit.scrollbarInset)
+          .transaction { transaction in
+            // Keep retained message geometry stable during the panel's transition.
+            transaction.animation = nil
+            transaction.disablesAnimations = true
+          }
           .overlay(alignment: .top) {
             VStack(spacing: 0) {
               Color.clear.frame(height: topInset)
@@ -65,11 +70,25 @@ struct OverlayConversationView: View {
                 composerHeight = $0
               }
           }
+          .overlay(alignment: .bottom) {
+            ZStack {
+              if !followsLatest {
+                JumpToCurrentButton { scrollToLatest(proxy) }
+                  .accessibilityIdentifier("overlay-conversation-jump-to-current")
+                  .padding(.bottom, composerHeight + 10)
+                  .transition(.opacity.combined(with: .move(edge: .bottom)))
+              }
+            }
+            .animation(.easeOut(duration: 0.18), value: followsLatest)
+          }
           .onAppear { scrollToLatest(proxy) }
           .onChange(of: conversation.id) { _, _ in scrollToLatest(proxy) }
           .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
           .onChange(of: isPresented) { _, presented in
             if presented, followsLatest { scrollToLatest(proxy) }
+          }
+          .onChange(of: geometry.size) { _, _ in
+            if isPresented, followsLatest { scrollToLatest(proxy) }
           }
           .onChange(of: orderedMessages.last) { previous, latest in
             if previous?.id != latest?.id || followsLatest || followsLiveChannel {
@@ -178,20 +197,6 @@ struct OverlayConversationView: View {
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .defaultScrollAnchor(followsLatest ? .bottom : nil, for: .sizeChanges)
         .defaultScrollAnchor(.top, for: .alignment)
-        .onScrollPhaseChange { _, phase, context in
-          userScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
-          if isPresented, userScrolling {
-            followsLatest =
-              context.geometry.visibleRect.maxY >= context.geometry.contentSize.height - 48
-          }
-        }
-        .onScrollGeometryChange(for: Bool.self) { geometry in
-          geometry.visibleRect.maxY >= geometry.contentSize.height - 48
-        } action: { _, atBottom in
-          // Resizing the retained canvas must not replace the user's reading intent.
-          guard isPresented, userScrolling else { return }
-          followsLatest = atBottom
-        }
     } else {
       messageList(maxBubbleWidth: maxBubbleWidth)
     }
@@ -212,12 +217,19 @@ struct OverlayConversationView: View {
         }
         ForEach(orderedMessages) { message in
           messageRow(message, maxBubbleWidth: maxBubbleWidth)
+            .id(message.id)
         }
         Color.clear.frame(height: 1).id("conversation-bottom")
       }
       .padding(.horizontal, 20)
       .padding(.vertical, 8)
       .frame(maxWidth: .infinity, alignment: .leading)
+      .background {
+        ChatLiveScrollObserver { event in
+          guard isPresented else { return }
+          _ = scrollFollow.handle(event)
+        }
+      }
     }
     .contentMargins(.top, topInset + navigationHeight)
     .contentMargins(.bottom, composerHeight > 0 ? composerHeight : bottomInset + 54)
@@ -237,14 +249,18 @@ struct OverlayConversationView: View {
   }
 
   private func submit() {
-    followsLatest = true
+    _ = scrollFollow.handle(.jumpToCurrent)
     onSend()
   }
 
   private func scrollToLatest(_ proxy: ScrollViewProxy) {
-    followsLatest = true
+    _ = scrollFollow.handle(.jumpToCurrent)
     guard isPresented else { return }
-    proxy.scrollTo("conversation-bottom", anchor: .bottom)
+    var transaction = Transaction(animation: nil)
+    transaction.disablesAnimations = true
+    withTransaction(transaction) {
+      proxy.scrollTo(orderedMessages.last?.id ?? "conversation-bottom", anchor: .bottom)
+    }
   }
 
   private func messageRow(_ message: OverlayConversationMessage, maxBubbleWidth: CGFloat)

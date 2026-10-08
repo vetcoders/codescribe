@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 import SwiftUI
 import XCTest
@@ -462,6 +463,100 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       "an agent reply must also reveal the latest row")
     XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
     XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 5, length: 7))
+  }
+
+  @MainActor
+  func testJumpToCurrentReturnsFromHistoryWithoutReplacingComposer() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    for index in 0..<30 {
+      var row = reply(String(format: "%024x", index + 1))
+      row["text"] = String(repeating: "Retained conversation text.\n\n", count: 4)
+      bus.consume(row)
+    }
+    let conversation = try lenaConversation(bus)
+    let host = NSHostingView(
+      rootView: OverlayConversationView(
+        conversation: conversation, palette: .light, topInset: 50, bottomInset: 20,
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+        draft: .constant("Retained draft"), sending: false, sendError: nil, onSend: {}))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 532, height: 300)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    func settle() {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+      host.layoutSubtreeIfNeeded()
+    }
+    func scrollViews(_ root: NSView) -> [NSScrollView] {
+      (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
+    }
+    func editor(_ root: NSView) -> NSTextView? {
+      if let text = root as? NSTextView, text.isEditable { return text }
+      return root.subviews.lazy.compactMap { editor($0) }.first
+    }
+    let application = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+    func axAttribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
+      var value: CFTypeRef?
+      guard AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success else {
+        return nil
+      }
+      return value
+    }
+    func jumpButtons(_ element: AXUIElement? = nil, depth: Int = 0) -> [AXUIElement] {
+      let element = element ?? application
+      guard depth < 16 else { return [] }
+      if axAttribute(element, kAXIdentifierAttribute) as? String
+        == "overlay-conversation-jump-to-current"
+      {
+        return [element]
+      }
+      let key = depth == 0 ? kAXWindowsAttribute : kAXChildrenAttribute
+      let children = axAttribute(element, key) as? [AXUIElement] ?? []
+      return children.flatMap { jumpButtons($0, depth: depth + 1) }
+    }
+    window.orderFrontRegardless()
+    settle()
+    let scroll = try XCTUnwrap(scrollViews(host).first { $0.bounds.height > 150 })
+    let document = try XCTUnwrap(scroll.documentView)
+    let originalEditor = try XCTUnwrap(editor(host))
+    originalEditor.setSelectedRange(NSRange(location: 2, length: 5))
+    XCTAssertTrue(jumpButtons().isEmpty, "The live edge needs no return affordance")
+    NotificationCenter.default.post(
+      name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+    scroll.contentView.scroll(to: .zero)
+    scroll.reflectScrolledClipView(scroll.contentView)
+    NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+    NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+    settle()
+    XCTAssertLessThan(scroll.documentVisibleRect.maxY, document.bounds.height - 100)
+    XCTAssertEqual(
+      jumpButtons().count, 1, "Manual history reading exposes one centered return pill")
+    let button = try XCTUnwrap(jumpButtons().first)
+    let input = try XCTUnwrap(originalEditor.enclosingScrollView)
+    var buttonPosition = CGPoint.zero
+    var buttonSize = CGSize.zero
+    let position = try XCTUnwrap(axAttribute(button, kAXPositionAttribute))
+    let size = try XCTUnwrap(axAttribute(button, kAXSizeAttribute))
+    XCTAssertEqual(CFGetTypeID(position), AXValueGetTypeID())
+    XCTAssertEqual(CFGetTypeID(size), AXValueGetTypeID())
+    XCTAssertTrue(AXValueGetValue(position as! AXValue, .cgPoint, &buttonPosition))
+    XCTAssertTrue(AXValueGetValue(size as! AXValue, .cgSize, &buttonSize))
+    let buttonFrame = NSRect(origin: buttonPosition, size: buttonSize)
+    XCTAssertGreaterThan(
+      buttonFrame.minY,
+      window.convertToScreen(input.convert(input.bounds, to: nil)).maxY,
+      "The pill sits above the measured composer")
+    XCTAssertEqual(AXUIElementPerformAction(button, kAXPressAction as CFString), .success)
+    settle()
+    XCTAssertGreaterThan(scroll.documentVisibleRect.maxY, document.bounds.height - 50)
+    XCTAssertTrue(jumpButtons().isEmpty)
+    XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
+    XCTAssertEqual(originalEditor.string, "Retained draft")
+    XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 5))
   }
 
   @MainActor
