@@ -6,6 +6,172 @@ import XCTest
 
 @MainActor
 final class OverlayHoverInteractionTests: XCTestCase {
+  func testHoverEntryExitAndReentryDoNotOpenTheTranscriptOrChangeCapture() throws {
+    let state = OverlayState.previewListening()
+    state.setPresentationMode(.mini)
+    let text = state.activeText
+    let generation = state.captureGeneration
+    state.setPointerHovering(true)
+    let entry = try XCTUnwrap(state.widgetHoverDeadline)
+    state.expireWidgetHover(at: entry.advanced(by: .milliseconds(-1)))
+    XCTAssertEqual(state.presentationMode, .mini)
+    state.setPointerHovering(false)
+    state.expireWidgetHover(at: entry)
+    XCTAssertEqual(state.presentationMode, .mini, "a cancelled entry must not open controls")
+    state.setPointerHovering(true)
+    state.expireWidgetHover(at: try XCTUnwrap(state.widgetHoverDeadline))
+    XCTAssertEqual(state.presentationMode, .midi)
+    state.setPointerHovering(false)
+    let exit = try XCTUnwrap(state.widgetHoverDeadline)
+    state.setPointerHovering(true)
+    state.expireWidgetHover(at: exit)
+    XCTAssertEqual(state.presentationMode, .midi, "returning to the strip cancels its exit")
+    state.setPointerHovering(false)
+    state.expireWidgetHover(at: try XCTUnwrap(state.widgetHoverDeadline))
+    XCTAssertEqual(state.presentationMode, .mini)
+    XCTAssertEqual(state.activeText, text)
+    XCTAssertEqual(state.captureGeneration, generation)
+  }
+
+  func testControlsAndDragHoldTheWidgetAndExplicitExpansionCancelsHover() throws {
+    for interaction in [OverlayWidgetInteraction.primaryControls, .closeControl, .dragging] {
+      let state = OverlayState()
+      state.setPointerHovering(true)
+      let entry = try XCTUnwrap(state.widgetHoverDeadline)
+      state.setWidgetInteraction(interaction, held: true)
+      state.expireWidgetHover(at: entry)
+      XCTAssertEqual(state.presentationMode, .mini, "never move a pressed or hovered control")
+      state.setWidgetInteraction(interaction, held: false)
+      state.expireWidgetHover(at: try XCTUnwrap(state.widgetHoverDeadline))
+      XCTAssertEqual(state.presentationMode, .midi)
+      state.setPointerHovering(false)
+      let exit = try XCTUnwrap(state.widgetHoverDeadline)
+      state.toggleCollapsed()
+      state.expireWidgetHover(at: exit)
+      XCTAssertEqual(state.presentationMode, .expanded)
+    }
+  }
+
+  func testExplicitCollapseWaitsForPointerExitAndHidingCancelsTheTimer() throws {
+    let state = OverlayState()
+    state.setPointerHovering(true)
+    state.toggleCollapsed()
+    state.toggleCollapsed()
+    XCTAssertEqual(state.presentationMode, .mini)
+    XCTAssertNil(state.widgetHoverDeadline, "folding under the pointer must stay folded")
+    state.setWidgetInteraction(.primaryControls, held: false)
+    XCTAssertNil(state.widgetHoverDeadline)
+    state.setPointerHovering(false)
+    state.setPointerHovering(true)
+    let entry = try XCTUnwrap(state.widgetHoverDeadline)
+    state.clearWidgetHover()
+    state.expireWidgetHover(at: entry)
+    XCTAssertEqual(state.presentationMode, .mini)
+    state.setPointerHovering(true)
+    XCTAssertNotNil(state.widgetHoverDeadline, "a newly shown widget can hover again")
+  }
+
+  func testHeaderRecordingEndsAutomaticHoverAndUsesTheTakePreference() throws {
+    let state = OverlayState(micAccessProvider: { true })
+    state.engine = OverlayChromePolicyEngine()
+    state.attach()
+    state.setPointerHovering(true)
+    state.expireWidgetHover(at: try XCTUnwrap(state.widgetHoverDeadline))
+    state.requestHeaderRecording(.startRecording)
+    state.setPointerHovering(false)
+    XCTAssertNil(state.widgetHoverDeadline)
+    state.handleRecordingPreparing()
+    XCTAssertEqual(state.presentationMode, state.expandedByDefault ? .expanded : .mini)
+    state.finishControllerRecording()
+    state.handleRecordingPreparing()
+    XCTAssertEqual(state.presentationMode, state.expandedByDefault ? .expanded : .mini)
+    state.finishControllerRecording()
+  }
+
+  func testNativeMenuTrackingHoldsMidiUntilTheLastMenuCloses() async throws {
+    let state = OverlayState()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "Hover.menu")) as? FloatingOverlayPanel)
+    panel.orderFrontRegardless()
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    try await Task.sleep(for: .milliseconds(100))
+    state.setPointerHovering(true)
+    state.expireWidgetHover(at: try XCTUnwrap(state.widgetHoverDeadline))
+    let menus = [NSMenu(title: "Placement"), NSMenu(title: "Position")]
+    for menu in menus {
+      NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menu)
+    }
+    await Task.yield()
+    state.setPointerHovering(false)
+    XCTAssertNil(state.widgetHoverDeadline)
+    NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menus[0])
+    await Task.yield()
+    XCTAssertNil(state.widgetHoverDeadline, "nested tracking still holds the strip")
+    NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menus[1])
+    await Task.yield()
+    state.expireWidgetHover(at: try XCTUnwrap(state.widgetHoverDeadline))
+    XCTAssertEqual(state.presentationMode, .mini)
+    panel.invalidatePresence()
+    NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menus[0])
+    await Task.yield()
+    state.setPointerHovering(true)
+    XCTAssertNotNil(state.widgetHoverDeadline, "a hidden cached panel owns no menu observers")
+  }
+
+  func testMountedNativeWidgetRunsItsActualHoverTimerAndFrameAnimation() async throws {
+    let state = OverlayState.previewFormatted()
+    state.setPresentationMode(.mini)
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "Hover.native")) as? FloatingOverlayPanel)
+    panel.setFrameOrigin(NSPoint(x: 900, y: 500))
+    panel.orderFrontRegardless()
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    panel.contentView?.layoutSubtreeIfNeeded()
+    try await Task.sleep(for: .milliseconds(100))
+    let right = panel.frame.maxX
+    let top = panel.frame.maxY
+    let text = state.activeText
+    let generation = state.captureGeneration
+    XCTAssertFalse(
+      state.isEditingTranscript, "the retained hidden canvas cannot acquire edit focus")
+    state.setPointerHovering(true)
+    try await waitForMode(.midi, state: state, panel: panel)
+    XCTAssertEqual(panel.frame.width, DictationOverlayWindow.midiSize.width, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.maxX, right, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.maxY, top, accuracy: 0.5)
+    state.setPointerHovering(false)
+    try await waitForMode(.mini, state: state, panel: panel)
+    XCTAssertEqual(panel.frame.width, DictationOverlayWindow.collapsedSize.width, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.maxX, right, accuracy: 0.5)
+    XCTAssertEqual(state.activeText, text)
+    XCTAssertEqual(state.captureGeneration, generation)
+  }
+
+  private func waitForMode(
+    _ mode: OverlayPresentationMode, state: OverlayState, panel: FloatingOverlayPanel
+  ) async throws {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while state.presentationMode != mode || panel.isFrameTransitioning,
+      ContinuousClock.now < deadline
+    {
+      panel.contentView?.layoutSubtreeIfNeeded()
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    XCTAssertEqual(
+      state.presentationMode, mode,
+      "deadline \(String(describing: state.widgetHoverDeadline))"
+    )
+    XCTAssertFalse(panel.isFrameTransitioning)
+  }
+
   func testToolPanelKeepsRailOpenUntilItCloses() {
     var actions = OverlayActionsPresentation()
     actions.pointerChanged(true)

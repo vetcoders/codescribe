@@ -173,16 +173,34 @@ struct CodescribeApp: App {
     settingsWindow
   }
 
+  /// One Settings model per window presentation. The interface-language row
+  /// restarts through the same AppDelegate guard as the setup wizard: bus idle,
+  /// no agent turn, no recording.
+  private func settingsModel() -> SettingsViewModel {
+    let model = SettingsViewModel(
+      engine: RealSettingsEngine(),
+      agentStatus: RealAgentStatusEngine(),
+      mcpAdmin: RealMCPAdminEngine(),
+      hotkeys: RealHotkeysEngine(),
+      licenseService: LicenseService.shared
+    )
+    let delegate = appDelegate
+    model.onApplyInterfaceLanguage = { beforeTermination in
+      try await delegate.restartForInterfaceLanguage(
+        relaunch: .plain, beforeTermination: beforeTermination)
+    }
+    return model
+  }
+
   private var settingsWindow: some Scene {
     Window("Settings", id: SettingsView.windowID) {
-      SettingsView(
-        model: SettingsViewModel(
-          engine: RealSettingsEngine(),
-          agentStatus: RealAgentStatusEngine(),
-          mcpAdmin: RealMCPAdminEngine(),
-          hotkeys: RealHotkeysEngine(),
-          licenseService: LicenseService.shared
-        ))
+      if QualityCaptureHost.isRunningTests {
+        // AppDelegate already keeps the XCTest host passive. Its scene must
+        // also avoid opening real model caches before the test runner starts.
+        EmptyView()
+      } else {
+        SettingsView(model: settingsModel())
+      }
     }
     .defaultSize(width: 1000, height: 720)
     .windowResizability(.contentMinSize)
@@ -191,6 +209,42 @@ struct CodescribeApp: App {
         Button("Settings…") { openWindow.presentSettings() }
           .keyboardShortcut(",", modifiers: .command)
       }
+    }
+  }
+}
+
+/// What the relaunched process opens after an interface-language restart. The
+/// wizard resumes setup where it stopped; Settings relaunches plainly, the same
+/// way its "clear defaults" actions do, and the tray returns in the new language.
+enum InterfaceLanguageRelaunch: Equatable {
+  case resumeSetup
+  case plain
+
+  /// Extra process arguments for `open --args`; empty means a plain launch.
+  var launchArguments: [String] {
+    switch self {
+    case .resumeSetup: ["--resume-onboarding"]
+    case .plain: []
+    }
+  }
+}
+
+enum InterfaceLanguageRestartError: Error, Equatable {
+  case busy
+  case unavailable
+
+  func message(locale: Locale) -> String {
+    switch self {
+    case .busy:
+      return String(
+        localized: LocalizedStringResource(
+          "Finish recording or the Agent’s turn, then try again. Your language choice is saved.",
+          locale: locale, comment: "Language restart refused while the app is busy"))
+    case .unavailable:
+      return String(
+        localized: LocalizedStringResource(
+          "Codescribe could not restart. Your language choice is saved; quit and reopen the app to apply it.",
+          locale: locale, comment: "Language restart unavailable; saved preference remains valid"))
     }
   }
 }
@@ -261,10 +315,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var sleepWakeObserver: SystemSleepWakeObserver?
   private lazy var trayPanel = TrayPanel()
   private var shouldExitForDuplicate = false
+  private var credentialServicesStarted = false
   private let terminationCoordinator = AppTerminationCoordinator()
   // First-run onboarding wizard host. Presented at launch when the core gate
   // (`shouldShowOnboarding`) reports setup is due.
-  private lazy var onboarding = OnboardingWindowController(engine: RealOnboardingEngine())
+  private lazy var onboarding = OnboardingWindowController(
+    engine: RealOnboardingEngine(),
+    applyInterfaceLanguage: { [weak self] beforeTermination in
+      guard let self else { throw InterfaceLanguageRestartError.unavailable }
+      try await self.restartForInterfaceLanguage(
+        relaunch: .resumeSetup, beforeTermination: beforeTermination)
+    }
+  )
+  private var languageRestartProcess: Process?
+  private var languageRestartLease: FileHandle?
   // Sparkle update channel. Created in didFinishLaunching (after the
   // duplicate-instance/test-host guard) so the XCTest host never starts a
   // scheduled updater alongside the live app.
@@ -354,6 +418,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       switch intent {
       case .openChat:
         self.showAgent()
+      case .openWidget:
+        self.trayPanel.dismiss()
+        self.model.overlay.showWidget()
       case .revealChat:
         self.revealAgentForDelivery()
       }
@@ -372,15 +439,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     installSystemSleepWakeObserver()
     registerVoiceDelivery()
     prewarmRecordingController()
-    // Speech Recognition TCC must be requested from THIS process
-    // (com.vetcoders.codescribe). The bridge child is co-located under
-    // Contents/MacOS and inherits the app's responsible identity; granting
-    // only via Terminal/CLI leaves the app as speech_auth_not_determined.
-    ensureSpeechRecognitionAtLaunch()
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(onboardingWindowWillClose),
+      name: NSWindow.willCloseNotification,
+      object: nil
+    )
     // Show the first-run wizard on top of the freshly-installed tray when the
     // core reports onboarding is still due (no setup_done marker, or a stale
     // one invalidated because a required permission is missing).
-    onboarding.presentIfNeeded()
+    if CommandLine.arguments.contains("--resume-onboarding") {
+      onboarding.present()
+    } else if config.shouldShowOnboarding() {
+      onboarding.present()
+    } else {
+      restoreCredentialBackedServices()
+      // Completed installs retain their launch permission repair. First-run
+      // permission prompts belong to the wizard's explained chapter.
+      ensureSpeechRecognitionAtLaunch()
+    }
+  }
+
+  @objc private func onboardingWindowWillClose(_ notification: Notification) {
+    guard let window = notification.object as? NSWindow,
+      window.contentViewController is NSHostingController<OnboardingView>
+    else { return }
+    // Finish writes the core completion marker before closing this window.
+    // Closing an unfinished wizard leaves that gate closed to credential I/O.
+    restoreCredentialBackedServices()
+  }
+
+  private func restoreCredentialBackedServices() {
+    guard !Self.isRunningTests, !shouldExitForDuplicate, !credentialServicesStarted,
+      !config.shouldShowOnboarding()
+    else { return }
+    credentialServicesStarted = true
+    LicenseService.shared.refresh()
+    Task { @MainActor in
+      do {
+        // Reuse the provider step's credential I/O and canonical loader. Later
+        // chat/tray snapshots see this bundle without opening Keychain again.
+        _ = try await ProviderCredentialIO.perform {
+          try CodescribeConfig().providerAccessSnapshot()
+        }
+      } catch {
+        // The explained provider/auth surface owns errors and explicit retry.
+        appLogger.error("Saved provider access could not be restored after setup")
+      }
+    }
   }
 
   /// Prompt Speech Recognition while undetermined so Apple live dictation can
@@ -651,6 +757,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     return .terminateLater
   }
 
+  func restartForInterfaceLanguage(
+    relaunch: InterfaceLanguageRelaunch, beforeTermination: @MainActor () -> Void
+  ) async throws {
+    guard languageRestartProcess == nil else { throw InterfaceLanguageRestartError.unavailable }
+    let lease = try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease()
+    guard !(await hotkeys.isRecording()) else { throw InterfaceLanguageRestartError.busy }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    // Values are positional arguments, never interpolated shell source. Wait
+    // for normal AppDelegate cleanup and exit before LaunchServices opens us.
+    process.arguments =
+      [
+        "-c", Self.languageRelaunchScript, "codescribe-language-restart",
+        String(ProcessInfo.processInfo.processIdentifier), Bundle.main.bundleURL.path,
+      ] + relaunch.launchArguments
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    languageRestartProcess = process
+    languageRestartLease = lease
+    beforeTermination()
+    // `terminate:` spins a nested event loop until the deferred Quit reply.
+    // This method runs inside a MainActor job (the wizard's advance task), and
+    // a nested loop started from a main-queue job cannot run other main-queue
+    // jobs, so the cleanup and deadline tasks behind that reply would never
+    // execute and the app would sit in `terminate:` forever (2026-10-05).
+    // Leave the job first: the run loop itself calls `terminate:` next tick.
+    RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
+  }
+
+  /// `$1` old PID, `$2` bundle path, `$3…` process arguments for the relaunch
+  /// (none for a plain launch). `open` gets `--args` only when there are some.
+  static let languageRelaunchScript = """
+    count=0
+    while /bin/kill -0 "$1" 2>/dev/null; do
+      count=$((count + 1))
+      [ "$count" -lt 240 ] || exit 1
+      /bin/sleep 0.25
+    done
+    bundle="$2"
+    shift 2
+    if [ "$#" -gt 0 ]; then
+      exec /usr/bin/open "$bundle" --args "$@"
+    fi
+    exec /usr/bin/open "$bundle"
+    """
+
   private func shutdownForTermination() async {
     // The launch guards in applicationShouldTerminate keep the XCTest host
     // from constructing a bridge here solely to stop it at teardown.
@@ -789,7 +943,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     button.toolTip =
       hasUnreadAgentUpdate
       ? String(
-        localized: "\(tooltip) - agent reply ready",
+        localized: "\(tooltip) - Agent reply ready",
         comment: "Menu bar tooltip while an unread agent reply waits; %@ is the status tooltip")
       : tooltip
   }

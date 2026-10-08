@@ -18,7 +18,13 @@ const BRIDGE_HOME_ENV: &str = "CODESCRIBE_AGENT_BRIDGE_HOME";
 /// Mirrors the helper's `DEFAULT_LEASE_TTL_SECONDS`.
 pub const LEASE_TTL_SECONDS: f64 = 120.0;
 const MAX_LEASE_FILES: usize = 64;
-const MAX_LEASE_BYTES: u64 = 16 * 1024;
+/// A lease is not just a name: the helper also persists the follower's delivery
+/// mailbox and its unclosed channel documents in the same file, so a healthy
+/// lease routinely reaches hundreds of kilobytes. The bound mirrors the
+/// helper's own mailbox bound and the Swift overlay reader
+/// (`OverlayChannelDeliveryReader.object(at:)`); a smaller cap would make a
+/// live follower read as absent instead of rejecting a corrupt file.
+const MAX_LEASE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ACTIVE_NAMES: usize = 16;
 const CACHE_FOR: Duration = Duration::from_secs(1);
 
@@ -284,6 +290,59 @@ mod tests {
             live,
             HashSet::from([("claude-code".to_string(), "sess-1".to_string())])
         );
+    }
+
+    /// A lease shaped like the helper's: identity plus a mailbox of `padding`
+    /// bytes of transcript-bearing envelopes this reader never looks at.
+    fn write_lease_with_mailbox(root: &Path, file: &str, session: &str, padding: usize) -> u64 {
+        let dir = root.join("leases");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(file);
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "name": "igor",
+                "active": true,
+                "heartbeat_unix": 995.0,
+                "provider": "claude-code",
+                "provider_session_id": session,
+                "pending": [{"kind": "revised", "text": "x".repeat(padding)}],
+                "unclosed_channel_messages": {},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::metadata(&path).unwrap().len()
+    }
+
+    #[test]
+    fn a_follower_with_a_full_mailbox_is_still_listening() {
+        let temp = tempfile::tempdir().unwrap();
+        // 891 KB is the largest lease measured on a live session on 2026-10-06.
+        let bytes = write_lease_with_mailbox(temp.path(), "busy.json", "sess-busy", 891 * 1024);
+        assert!(bytes > 891 * 1024);
+
+        assert_eq!(
+            live_follower_sessions_at(temp.path(), 1_000.0, 120.0),
+            HashSet::from([("claude-code".to_string(), "sess-busy".to_string())])
+        );
+        assert_eq!(read_active_names_at(temp.path(), 1_000.0, 120.0), ["Igor"]);
+    }
+
+    #[test]
+    fn a_lease_larger_than_the_helper_can_write_is_not_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes = write_lease_with_mailbox(
+            temp.path(),
+            "runaway.json",
+            "sess-runaway",
+            MAX_LEASE_BYTES as usize,
+        );
+        assert!(bytes > MAX_LEASE_BYTES);
+
+        assert!(live_follower_sessions_at(temp.path(), 1_000.0, 120.0).is_empty());
+        assert!(read_active_names_at(temp.path(), 1_000.0, 120.0).is_empty());
     }
 
     #[test]

@@ -60,11 +60,10 @@ const RETIRED_SELECTOR_ENV: [&str; 4] = [
     "CODESCRIBE_FINAL_PASS_MODE",
     "CODESCRIBE_LAYERED_TRANSCRIPTION",
 ];
-const CONTROLLED_ENV: [&str; 9] = [
+const CONTROLLED_ENV: [&str; 8] = [
     "CODESCRIBE_ASR_MODE",
     "STT_TAIL_PROVIDER",
     "CODESCRIBE_SILERO_FUSION",
-    "CODESCRIBE_SILERO_FUSION_CONTEXT",
     "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
     "CODESCRIBE_LOCAL_STT_FINAL_PASS",
     "CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD",
@@ -276,14 +275,6 @@ impl ReplayProfile {
                 | Self::AppleLayer1FusionStablePrompt
                 | Self::AppleLayer1FusionIdempotent
         )
-    }
-
-    const fn fusion_context(self) -> &'static str {
-        match self {
-            Self::AppleLayer1FusionLeftPad => "left_pad",
-            Self::AppleLayer1FusionStablePrompt => "stable_prompt",
-            _ => "utterance_only",
-        }
     }
 
     const fn stop_lane(self) -> ProductionReplayLane {
@@ -1277,7 +1268,6 @@ fn configure_profile_environment(
             "CODESCRIBE_SILERO_FUSION",
             if profile.fusion() { "on" } else { "off" },
         )
-        .env("CODESCRIBE_SILERO_FUSION_CONTEXT", profile.fusion_context())
         .env("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", "off")
         .env("CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD", "0")
         .env(

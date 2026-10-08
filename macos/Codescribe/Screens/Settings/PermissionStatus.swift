@@ -26,27 +26,31 @@ enum PermissionState: Equatable {
 
   /// Short mono label shown on the right of a permission row.
   var label: String {
+    label(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
+  }
+
+  func label(locale: Locale) -> String {
     switch self {
     case .granted:
-      return String(localized: "granted", comment: "Permission row status, lower case")
+      return String(
+        localized: LocalizedStringResource(
+          "Granted", locale: locale, comment: "Permission row status"))
     case .denied:
-      return String(localized: "denied", comment: "Permission row status, lower case")
+      return String(
+        localized: LocalizedStringResource(
+          "Denied", locale: locale, comment: "Permission row status"))
     case .notDetermined:
       return String(
-        localized: "not determined",
-        comment: "Permission row status, lower case: the user has not decided yet"
-      )
+        localized: LocalizedStringResource(
+          "Not determined", locale: locale,
+          comment: "Permission row status: the user has not decided yet"
+        ))
     }
   }
 }
 
-/// The privacy scopes codescribe touches. The first five gate live dictation /
-/// hotkeys and appear in the Settings engine matrix (which enumerates them by an
-/// explicit list, NOT `allCases`); `fullDiskAccess` is the optional scope used
-/// only by the first-run onboarding wizard, so adding it here does not change
-/// any Settings surface. `speechRecognition` is the TCC scope behind Apple live
-/// dictation (`SFSpeechRecognizer`) — the bridge child process inherits the
-/// app's grant, so the main app must own request + display.
+/// Native privacy scopes. Screen Recording and Full Disk Access are optional
+/// feature grants; dictation and hotkey scopes retain their specific purposes.
 enum PermissionKind: String, CaseIterable, Identifiable {
   case microphone = "Microphone"
   case accessibility = "Accessibility"
@@ -57,16 +61,28 @@ enum PermissionKind: String, CaseIterable, Identifiable {
 
   var id: String { rawValue }
 
+  var isOptionalForSetup: Bool {
+    self == .screenRecording || self == .fullDiskAccess
+  }
+
   /// Display name for the privacy scope. The identity (`rawValue`) is the
   /// System Settings pane name and must never reach the screen directly.
   var displayName: String {
+    displayName(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
+  }
+
+  func displayName(locale: Locale) -> String {
     switch self {
-    case .microphone: String(localized: "Microphone")
-    case .accessibility: String(localized: "Accessibility")
-    case .inputMonitoring: String(localized: "Input Monitoring")
-    case .screenRecording: String(localized: "Screen Recording")
-    case .speechRecognition: String(localized: "Speech Recognition")
-    case .fullDiskAccess: String(localized: "Full Disk Access")
+    case .microphone: String(localized: LocalizedStringResource("Microphone", locale: locale))
+    case .accessibility: String(localized: LocalizedStringResource("Accessibility", locale: locale))
+    case .inputMonitoring:
+      String(localized: LocalizedStringResource("Input Monitoring", locale: locale))
+    case .screenRecording:
+      String(localized: LocalizedStringResource("Screen Recording", locale: locale))
+    case .speechRecognition:
+      String(localized: LocalizedStringResource("Speech Recognition", locale: locale))
+    case .fullDiskAccess:
+      String(localized: LocalizedStringResource("Full Disk Access", locale: locale))
     }
   }
 

@@ -10,16 +10,22 @@ flowchart TD
     C -->|no| E[Report limitation; active polling while turn stays open]
     D --> M[Start mandatory watch bell; Codex also arms native queue]
     M --> F[Fresh named take]
-    F --> G{Agent receives notification and replies without typed nudge?}
+    G{Agent receives notification and replies without typed nudge?}
     G -->|yes| H[listening_verified]
     G -->|no| I[Report failing hop; attached_unverified]
+    F --> R[Read current unread mailbox]
+    R --> K1[ACK complete returned IDs immediately]
+    K1 --> R2[Drain to zero and check once more]
+    R2 --> G
     H --> J{Actual request clear and authorized?}
     J -->|unclear| K[Clarify the request]
     J -->|yes| L[Execute once using normal conversation permissions]
 ```
 
 Recovery preserves the provider session, lease and cursor and rechecks monitor
-delivery. Explicit stop closes owned handles. Neither recovery nor an observer
+delivery. Explicit stop closes owned handles and releases the channel with
+`--detach`; the lease and its backlog stay for the next session of the same
+name, which attaches with `--takeover`. Neither recovery nor an observer
 creates a second microphone.
 
 Procedures: [attach](references/attach.md), [monitor](references/monitor.md),

@@ -1,13 +1,13 @@
 //! Append one `agent_ack` bus row for each acknowledged seal delivery.
 //!
 //! Markers live at `acknowledgments/<lease>/<delivery_id>.json` and contain
-//! only `lease_id` and `delivery_id`. This module does not rewrite bus rows.
+//! the admitted envelope owner. This module does not rewrite bus rows.
 //! A delivery is emitted once: the cursor remembers it, and a scan of existing
 //! `agent_ack` rows refuses a second append after the cursor is gone.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -112,7 +112,7 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
     }
     for lease in &leases {
         for pending in &lease.pending {
-            if pending.kind.as_deref() == Some("seal")
+            if matches!(pending.kind.as_deref(), Some("seal" | "message"))
                 && cursor.known_seals.insert(pending.id.clone())
             {
                 dirty = true;
@@ -151,15 +151,21 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
         let Some(lease) = leases.iter().find(|lease| lease.lease_id == lease_id) else {
             continue;
         };
-        let Some(binding) = channels.get(&lease.provider_session_id) else {
-            continue;
-        };
         let mut markers: Vec<PathBuf> = fs::read_dir(&dir)?
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
             .collect();
         markers.sort();
         for marker_path in markers {
-            let Some(delivery_id) = marker_delivery_id(&marker_path, &lease_id)? else {
+            let Some(marker) = read_marker(&marker_path, lease, fallback_bus)? else {
+                continue;
+            };
+            let delivery_id = marker.delivery_id;
+            let Some(binding) = marker.recipient.as_ref().or_else(|| {
+                (!marker.has_envelope)
+                    .then(|| channels.get(&lease.provider_session_id))
+                    .flatten()
+            }) else {
+                stats.skipped_unproven += 1;
                 continue;
             };
             if cursor.emitted.contains(&delivery_id) {
@@ -173,7 +179,8 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
                 .iter()
                 .find(|pending| pending.id == delivery_id)
                 .and_then(|pending| pending.kind.as_deref());
-            let proven = pending_kind == Some("seal") || cursor.known_seals.contains(&delivery_id);
+            let proven = matches!(pending_kind, Some("seal" | "message"))
+                || cursor.known_seals.contains(&delivery_id);
             if !proven {
                 stats.skipped_unproven += 1;
                 continue;
@@ -184,6 +191,9 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
                 "channel": binding.channel,
                 "delivery_id": delivery_id,
                 "agent": binding.audience,
+                "provider": lease.provider,
+                "provider_session_id": lease.provider_session_id,
+                "lease_id": lease.lease_id,
                 "emitted_at": utc_now(),
             });
             let bus = lease.bus.as_deref().unwrap_or(fallback_bus);
@@ -387,6 +397,7 @@ struct PendingDelivery {
 
 struct LeaseRecord {
     lease_id: String,
+    provider: String,
     provider_session_id: String,
     bus: Option<PathBuf>,
     pending: Vec<PendingDelivery>,
@@ -417,6 +428,13 @@ fn load_leases(bridge_home: &Path) -> Vec<LeaseRecord> {
         if !safe_lease_id(lease_id) {
             continue;
         }
+        let Some(provider) = value
+            .get("provider")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
         let Some(provider_session_id) = value.get("provider_session_id").and_then(Value::as_str)
         else {
             continue;
@@ -451,6 +469,7 @@ fn load_leases(bridge_home: &Path) -> Vec<LeaseRecord> {
             .unwrap_or_default();
         leases.push(LeaseRecord {
             lease_id: lease_id.to_string(),
+            provider: provider.to_string(),
             provider_session_id: provider_session_id.to_string(),
             bus,
             pending,
@@ -526,6 +545,8 @@ struct AckScanRow<'a> {
     kind: Option<Cow<'a, str>>,
     #[serde(default, borrow)]
     status: Option<Cow<'a, str>>,
+    #[serde(default, borrow)]
+    state: Option<Cow<'a, str>>,
     #[serde(default, borrow)]
     delivery_id: Option<Cow<'a, str>>,
     #[serde(default)]
@@ -634,6 +655,7 @@ fn fold_bus_delta_budgeted(
                                 let row = AckScanRow {
                                     kind: text("kind"),
                                     status: text("status"),
+                                    state: text("state"),
                                     delivery_id: text("delivery_id"),
                                     spoken: value.get("spoken").and_then(Value::as_bool),
                                     reply_id: text("reply_id"),
@@ -686,7 +708,17 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
     hasher.finish()
 }
 
-fn marker_delivery_id(path: &Path, lease_id: &str) -> io::Result<Option<String>> {
+struct AckMarker {
+    delivery_id: String,
+    recipient: Option<ChannelBinding>,
+    has_envelope: bool,
+}
+
+fn read_marker(
+    path: &Path,
+    lease: &LeaseRecord,
+    fallback_bus: &Path,
+) -> io::Result<Option<AckMarker>> {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return Ok(None);
     };
@@ -696,26 +728,85 @@ fn marker_delivery_id(path: &Path, lease_id: &str) -> io::Result<Option<String>>
     if !is_delivery_id(stem) {
         return Ok(None);
     }
-    let text = fs::read_to_string(path)?;
-    let value: Value = match serde_json::from_str(&text) {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.len() > 1 << 20 {
+        return Ok(None);
+    }
+    let file = fs::File::open(path)?;
+    // Keep the physical read bound inside the buffer. Serde's reader otherwise
+    // turns the recurring marker scan into one file syscall for every byte.
+    let value: Value = match serde_json::from_reader(BufReader::new(file.take(1 << 20))) {
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
     let Some(object) = value.as_object() else {
         return Ok(None);
     };
-    if object.len() != 2 {
+    if object.get("lease_id").and_then(Value::as_str) != Some(lease.lease_id.as_str()) {
         return Ok(None);
     }
-    if object.get("lease_id").and_then(Value::as_str) != Some(lease_id) {
+    if object.get("delivery_id").and_then(Value::as_str) != Some(stem) {
         return Ok(None);
     }
-    match object.get("delivery_id").and_then(Value::as_str) {
-        Some(delivery_id) if delivery_id == stem && is_delivery_id(delivery_id) => {
-            Ok(Some(delivery_id.to_string()))
-        }
-        _ => Ok(None),
+    let Some(envelope) = object.get("envelope") else {
+        return Ok((object.len() == 2).then(|| AckMarker {
+            delivery_id: stem.to_string(),
+            recipient: None,
+            has_envelope: false,
+        }));
+    };
+    let bus = lease.bus.as_deref().unwrap_or(fallback_bus);
+    let matches_owner = |value: &Value| {
+        value["lease_id"].as_str() == Some(lease.lease_id.as_str())
+            && value["provider"].as_str() == Some(lease.provider.as_str())
+            && value["provider_session_id"].as_str() == Some(lease.provider_session_id.as_str())
+            && value["bus"].as_str() == bus.to_str()
+    };
+    if !matches_owner(&value)
+        || !matches_owner(envelope)
+        || envelope["delivery_id"].as_str() != Some(stem)
+        || !matches!(envelope["kind"].as_str(), Some("seal" | "message"))
+    {
+        return Ok(None);
     }
+    if envelope["kind"] == "message"
+        && (envelope["producer_schema"] != "codescribe.agent-user-message.v1"
+            || envelope["source"] != "typed"
+            || envelope["message_id"]
+                .as_str()
+                .is_none_or(|id| !is_delivery_id(id))
+            || envelope["source_event_id"] != envelope["message_id"])
+    {
+        return Ok(None);
+    }
+    let recipient = envelope["recipients"]
+        .as_array()
+        .and_then(|entries| entries.iter().find(|entry| matches_owner(entry)))
+        .and_then(|entry| {
+            let channel = match &entry["channel"] {
+                Value::String(channel) => channel.clone(),
+                Value::Number(channel) => channel.to_string(),
+                _ => return None,
+            };
+            let audience = entry["name"]
+                .as_str()
+                .or_else(|| entry["audience"].as_str())?;
+            if channel.len() != 1
+                || !channel.bytes().all(|digit| (b'1'..=b'9').contains(&digit))
+                || audience.trim().is_empty()
+            {
+                return None;
+            }
+            Some(ChannelBinding {
+                channel,
+                audience: audience.to_string(),
+            })
+        });
+    Ok(Some(AckMarker {
+        delivery_id: stem.to_string(),
+        recipient,
+        has_envelope: true,
+    }))
 }
 
 fn delivery_id_of<'a>(row: &'a AckScanRow<'_>) -> Option<&'a str> {
@@ -745,7 +836,12 @@ fn seal_delivery_id<'a>(row: &'a AckScanRow<'_>) -> Option<&'a str> {
 }
 
 fn spoken_reply_id(row: &AckScanRow<'_>) -> Option<String> {
-    if row.kind.as_deref() != Some("agent_reply") {
+    if !matches!(
+        row.kind.as_deref(),
+        Some("agent_reply" | "agent_reply_playback")
+    ) || (row.kind.as_deref() == Some("agent_reply_playback")
+        && row.state.as_deref() != Some("spoken"))
+    {
         return None;
     }
     if row.spoken != Some(true) {
@@ -851,6 +947,94 @@ mod tests {
             .filter_map(|line| serde_json::from_str(line).ok())
             .filter(|value: &Value| value.get("kind").and_then(Value::as_str) == Some("agent_ack"))
             .collect()
+    }
+
+    #[test]
+    fn owned_envelope_marker_retains_original_channel_after_rebind() {
+        let root = tempfile::tempdir().unwrap();
+        let bridge = root.path().join("bridge");
+        let bus = root.path().join("bus.jsonl");
+        write_json(
+            &bridge.join(BINDING_FILENAME),
+            &binding("replacement-session"),
+        );
+        write_json(
+            &bridge.join("leases").join(format!("{LEASE_ID}.json")),
+            &lease(&bus, json!([{ "delivery_id": SEAL_ID, "kind": "seal" }])),
+        );
+        let marker = json!({"lease_id": LEASE_ID, "delivery_id": SEAL_ID,
+            "provider": "codex", "provider_session_id": "sess-roman", "bus": bus,
+            "envelope": {"delivery_id": SEAL_ID, "lease_id": LEASE_ID,
+                "provider": "codex", "provider_session_id": "sess-roman", "bus": bus,
+                "kind": "seal", "recipients": [{"channel": "2", "name": "Roman",
+                    "provider": "codex", "provider_session_id": "sess-roman",
+                    "lease_id": LEASE_ID, "bus": bus}]}});
+        write_json(
+            &bridge
+                .join("acknowledgments")
+                .join(LEASE_ID)
+                .join(format!("{SEAL_ID}.json")),
+            &marker,
+        );
+        let result = scan(&bridge, &bus).unwrap();
+        assert_eq!(result.appended, 1);
+        let rows = ack_rows(&bus);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["agent"], "Roman");
+        assert_eq!(rows[0]["channel"], "2");
+        assert_eq!(rows[0]["provider"], "codex");
+        assert_eq!(rows[0]["provider_session_id"], "sess-roman");
+        assert_eq!(rows[0]["lease_id"], LEASE_ID);
+    }
+
+    #[test]
+    fn typed_message_ack_preserves_owned_recipient_after_rebind() {
+        let root = tempfile::tempdir().unwrap();
+        let bridge = root.path().join("bridge");
+        let bus = root.path().join("bus.jsonl");
+        write_json(
+            &bridge.join(BINDING_FILENAME),
+            &binding("replacement-session"),
+        );
+        write_json(
+            &bridge.join("leases").join(format!("{LEASE_ID}.json")),
+            &lease(&bus, json!([{ "delivery_id": SEAL_ID, "kind": "message" }])),
+        );
+        let marker = json!({"lease_id": LEASE_ID, "delivery_id": SEAL_ID,
+            "provider":"codex", "provider_session_id":"sess-roman", "bus":bus,
+            "envelope":{"delivery_id":SEAL_ID, "lease_id":LEASE_ID,
+                "provider":"codex", "provider_session_id":"sess-roman", "bus":bus,
+                "kind":"message", "producer_schema":"codescribe.agent-user-message.v1",
+                "source":"typed", "message_id":"111111111111111111111111",
+                "source_event_id":"111111111111111111111111",
+                "recipients":[{"channel":"2", "name":"Roman", "provider":"codex",
+                    "provider_session_id":"sess-roman", "lease_id":LEASE_ID, "bus":bus}]}});
+        write_json(
+            &bridge
+                .join("acknowledgments")
+                .join(LEASE_ID)
+                .join(format!("{SEAL_ID}.json")),
+            &marker,
+        );
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
+        let rows = ack_rows(&bus);
+        assert_eq!(rows[0]["agent"], "Roman");
+        assert_eq!(rows[0]["channel"], "2");
+    }
+
+    #[test]
+    fn playback_completion_has_spoken_identity_but_text_does_not() {
+        let completion: AckScanRow<'_> = serde_json::from_str(
+            r#"{"kind":"agent_reply_playback","state":"spoken","spoken":true,"reply_id":"reply-1"}"#).unwrap();
+        assert_eq!(spoken_reply_id(&completion).as_deref(), Some("reply-1"));
+        let failed: AckScanRow<'_> = serde_json::from_str(
+            r#"{"kind":"agent_reply_playback","state":"failed","spoken":false,"reply_id":"reply-1"}"#).unwrap();
+        assert!(spoken_reply_id(&failed).is_none());
+        let text: AckScanRow<'_> =
+            serde_json::from_str(r#"{"kind":"agent_reply","spoken":false,"reply_id":"reply-1"}"#)
+                .unwrap();
+        assert!(spoken_reply_id(&text).is_none());
     }
 
     #[test]

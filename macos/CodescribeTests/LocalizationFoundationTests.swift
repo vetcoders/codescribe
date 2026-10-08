@@ -37,10 +37,12 @@ final class LocalizationFoundationTests: XCTestCase {
 
   /// Counted phrases pick their noun in the catalog, never in code (R4).
   func testPluralVariationsSelectTheNoun() {
-    func servers(_ count: Int) -> String { String(localized: "\(count) servers", bundle: app) }
-    XCTAssertEqual(servers(1), "1 server")
-    XCTAssertEqual(servers(2), "2 servers")
-    XCTAssertEqual(servers(0), "0 servers")
+    func sources(_ count: Int) -> String {
+      String(localized: "\(count) tool sources", bundle: app)
+    }
+    XCTAssertEqual(sources(1), "1 tool source")
+    XCTAssertEqual(sources(2), "2 tool sources")
+    XCTAssertEqual(sources(0), "0 tool sources")
   }
 
   /// A sentence with several counts inflects each one through its own

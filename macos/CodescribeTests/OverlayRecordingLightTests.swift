@@ -171,6 +171,90 @@ final class OverlayRecordingLightTests: XCTestCase {
     }
   }
 
+  func testBusCaptureUsesAgentLightOverSettledOrdinaryTakeAndQuietMeter() {
+    let state = OverlayState()
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: 1, emittedAt: "2026-10-07T21:00:00Z", sessionId: "settled-ordinary",
+        renderedText: "Saved dictation", phase: "formatted", terminal: true,
+        reducerAction: "session_ended", canCopy: true))
+    XCTAssertTrue(state.terminal)
+    XCTAssertFalse(state.recording)
+    XCTAssertNil(state.recordingLight)
+    let text = state.activeText
+    let revision = state.revision
+    state.applyChannelRoster([
+      .init(
+        channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
+        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+    ])
+    XCTAssertTrue(state.audioCaptureActive)
+    XCTAssertTrue(state.usesAgentAccent)
+    XCTAssertEqual(state.recordingLight, .agent)
+    feed(state, db: -60, from: 0, seconds: 2)
+    XCTAssertTrue(state.levelMeter.isSilent)
+    XCTAssertEqual(state.recordingLight, .agent)
+    XCTAssertEqual(state.activeText, text)
+    XCTAssertEqual(state.revision, revision)
+    state.applyChannelRoster([])
+    XCTAssertFalse(state.audioCaptureActive)
+    XCTAssertFalse(state.usesAgentAccent)
+    XCTAssertNil(state.recordingLight)
+    XCTAssertEqual(state.activeText, text)
+  }
+
+  func testBroadcastAndNamedBusStayVioletDuringOrdinaryFinalization() {
+    for channel in ["0", "4"] {
+      let state = OverlayState()
+      state.applyTranscriptProjection(
+        transcriptProjection(
+          sequence: 1, emittedAt: "2026-10-07T22:00:00Z", sessionId: "ordinary-finalizing",
+          renderedText: "Retained text", phase: "finalizing", terminal: false,
+          reducerAction: "session_ended", canCopy: true))
+      XCTAssertEqual(state.mode, .finalizing)
+      XCTAssertEqual(state.recordingLight, .processing)
+      let text = state.activeText
+      let revision = state.revision
+      state.applyChannelRoster([
+        .init(
+          channel: channel, audience: channel == "0" ? "*" : "bruno", provider: "codex",
+          providerSessionId: "bus-agent", open: true, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: true)
+      ])
+      XCTAssertTrue(state.channelAudioCaptureActive)
+      XCTAssertTrue(state.usesAgentAccent)
+      XCTAssertEqual(state.recordingLight, .agent)
+      XCTAssertEqual(state.activeText, text)
+      XCTAssertEqual(state.revision, revision)
+      state.applyChannelRoster([])
+      XCTAssertFalse(state.usesAgentAccent)
+      XCTAssertEqual(state.recordingLight, .processing)
+      XCTAssertEqual(state.activeText, text)
+      XCTAssertEqual(state.revision, revision)
+    }
+  }
+
+  func testClosedBusRosterKeepsOrdinaryAccentAndBuiltInAgentKeepsViolet() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.applyIndicatorMode(.hold)
+    state.applyChannelRoster([
+      .init(
+        channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
+        open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+    ])
+    XCTAssertFalse(state.channelAudioCaptureActive)
+    XCTAssertFalse(state.usesAgentAccent)
+    XCTAssertEqual(state.recordingLight, .holdToTalk)
+    state.applyIndicatorMode(.toggle)
+    XCTAssertFalse(state.usesAgentAccent)
+    XCTAssertEqual(state.recordingLight, .handsFree)
+    state.applyIndicatorMode(.assistive)
+    XCTAssertTrue(state.usesAgentAccent)
+    XCTAssertEqual(state.recordingLight, .agent)
+  }
+
   // MARK: Silence from measured capture level
 
   func testLiveTakeTurnsYellowOnlyAfterSustainedQuietAndBackOnSpeech() {
@@ -266,18 +350,18 @@ final class OverlayRecordingLightTests: XCTestCase {
       return receipt
     }
     let one = OverlayWarningCopy.sealRefused(gaps([(576_000, 638_400)]), sampleRateHz: 48_000)
-    XCTAssertEqual(one.chip, "1.3 s of speech not covered · 0:12")
+    XCTAssertEqual(one.chip, "Ledger: 1.3 s to verify · ranges: 1")
     XCTAssertEqual(
       one.sentence,
-      "Committed text does not cover measured speech at 0:12–0:14; you can review and recover the available text."
+      "Unresolved ledger ranges: 0:12–0:14. This measures alignment coverage, not missing words. Review these audio intervals in Voice Lab."
     )
     let two = OverlayWarningCopy.sealRefused(
       gaps([(928_000, 939_200), (192_000, 208_000)]), sampleRateHz: 16_000)
-    XCTAssertEqual(two.chip, "1.7 s of speech not covered · 0:12, 0:58")
+    XCTAssertEqual(two.chip, "Ledger: 1.7 s to verify · ranges: 2")
     let long = OverlayWarningCopy.sealRefused(gaps([(1_040_000, 1_056_000)]), sampleRateHz: 16_000)
-    XCTAssertEqual(long.chip, "1.0 s of speech not covered · 1:05")
+    XCTAssertEqual(long.chip, "Ledger: 1.0 s to verify · ranges: 1")
     let tiny = OverlayWarningCopy.sealRefused(gaps([(0, 1_000)]), sampleRateHz: 48_000)
-    XCTAssertEqual(tiny.chip, "under 0.1 s of speech not covered · 0:00")
+    XCTAssertEqual(tiny.chip, "Ledger: <0.1 s to verify · ranges: 1")
     for rate in [nil, UInt32(0)] {
       XCTAssertEqual(
         OverlayWarningCopy.sealRefused(gaps([(0, 16_000)]), sampleRateHz: rate).chip,
@@ -306,9 +390,24 @@ final class OverlayRecordingLightTests: XCTestCase {
       reducerAction: "session_ended", canCopy: true, acousticReceipts: [acoustic],
       sealCoverage: receipt)
     state.applyTranscriptProjection(projection)
-    XCTAssertEqual(state.footerWarning?.chip, "1.3 s of speech not covered · 0:12")
+    XCTAssertEqual(state.footerWarning?.chip, "Ledger: 1.3 s to verify · ranges: 1")
     XCTAssertEqual(state.coverageRefusalNotice, state.footerWarning?.sentence)
     XCTAssertTrue(state.coverageRefusalNotice?.contains("0:12–0:14") == true)
+  }
+
+  func testOverlappingLedgerRangesAreCountedOnceAndStayOutOfTheChip() {
+    var receipt = coverage(.incomplete, speech: 160_000, covered: 0)
+    receipt.uncoveredSpeechRanges = [
+      CsProjectedSealCoverageRange(sampleStart: 80_000, sampleEnd: 96_000),
+      CsProjectedSealCoverageRange(sampleStart: 16_000, sampleEnd: 48_000),
+      CsProjectedSealCoverageRange(sampleStart: 32_000, sampleEnd: 64_000),
+      CsProjectedSealCoverageRange(sampleStart: 16_000, sampleEnd: 48_000),
+    ]
+    let copy = OverlayWarningCopy.sealRefused(receipt, sampleRateHz: 16_000)
+    XCTAssertEqual(copy.chip, "Ledger: 4.0 s to verify · ranges: 2")
+    XCTAssertFalse(copy.chip.contains("0:"), "intervals belong in the opened detail")
+    XCTAssertTrue(copy.sentence.contains("0:01–0:04, 0:05–0:06"))
+    XCTAssertTrue(copy.sentence.contains("not missing words"))
   }
 
   func testRefusedTakeShowsTheCoverageSentenceNotAMicrophoneHint() {
@@ -330,10 +429,11 @@ final class OverlayRecordingLightTests: XCTestCase {
     XCTAssertNil(state.recordingLight, "a settled take has no status light")
   }
 
-  func testLiveTranscriptWarningBlamesTheEngine() {
+  func testLiveDiagnosticDoesNotInventMissingWordsOrRecoveryWork() {
     let copy = OverlayWarningCopy.liveTranscriptBehind
     XCTAssertEqual(copy.owner, .engine)
-    XCTAssertTrue(copy.sentence.contains("not your microphone"))
+    XCTAssertTrue(copy.sentence.contains("does not measure missing words"))
+    XCTAssertTrue(copy.sentence.contains("or prove that a recovery pass is running"))
   }
 
   /// The header icon's tooltip and VoiceOver label are the same sentence.
@@ -344,9 +444,10 @@ final class OverlayRecordingLightTests: XCTestCase {
         .deletingLastPathComponent()
         .appendingPathComponent("Codescribe/Screens/Overlay/DictationOverlayView.swift"),
       encoding: .utf8)
-    XCTAssertTrue(source.contains(".help(OverlayWarningCopy.liveTranscriptBehind.sentence)"))
+    XCTAssertTrue(source.contains(".help(transcriptPreviewHelp)"))
     XCTAssertTrue(
-      source.contains(".accessibilityLabel(OverlayWarningCopy.liveTranscriptBehind.sentence)"))
+      source.contains(".accessibilityValue(transcriptPreviewHelp)"))
+    XCTAssertTrue(source.contains("OverlayWarningCopy.liveTranscriptBehind.sentence"))
     XCTAssertFalse(source.contains("OverlayRecordingLightView("))
     XCTAssertTrue(source.contains("recordingLight: state.recordingLight"))
   }
@@ -359,7 +460,7 @@ final class OverlayRecordingLightTests: XCTestCase {
         .deletingLastPathComponent()
         .appendingPathComponent("Codescribe/Screens/Overlay/DictationOverlayView.swift"),
       encoding: .utf8)
-    let start = try XCTUnwrap(source.range(of: "private func justifiedHeader"))
+    let start = try XCTUnwrap(source.range(of: "private func recordingControls"))
     let end = try XCTUnwrap(source.range(of: "private func chromeWaveform"))
     let header = String(source[start.lowerBound..<end.lowerBound])
     XCTAssertFalse(header.contains("OverlayRecordingLightView("))
@@ -371,7 +472,7 @@ final class OverlayRecordingLightTests: XCTestCase {
     for light in OverlayRecordingLight.allCases {
       var intents: [OverlayIntent] = []
       let control = OverlayRecordingControls(
-        canFinish: light != .processing, isPreviewCollapsed: false, compact: false,
+        canFinish: light != .processing, presentationMode: .expanded, compact: false,
         palette: .dark, onIntent: { intents.append($0) }, onPreviewToggle: {},
         isFinalizing: light == .processing, recordingLight: light)
       XCTAssertEqual(control.recordingSymbol, "stop.fill", "\(light)")

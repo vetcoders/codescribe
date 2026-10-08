@@ -12,9 +12,36 @@
   copy is authored in English in Swift. The English text is the lookup key.
 - **Every other language is a column in a String Catalog**, never a branch in
   code. Adding a language adds translations to the catalogs and nothing else.
-- **The interface language follows macOS** (system language, or the per-app
-  language in System Settings › General › Language & Region). The app has no
-  language switch of its own and reads no language from `settings.json`.
+- **The interface language defaults to macOS** (system language, or the per-app
+  language in System Settings › General › Language & Region). The first setup
+  screen and Settings › Creator › Interface language both offer Polski and
+  English. The choice writes `AppleLanguages` only to Codescribe's application
+  preference domain, the same per-app language preference used by macOS. It
+  never changes global language preferences or reads a UI language from
+  `settings.json`. One value type, `InterfaceLanguagePreference`
+  (`macos/Codescribe/Core/InterfaceLanguage.swift`), owns the key, the domain
+  and the resolution for both surfaces; neither view model touches
+  `UserDefaults` directly.
+- The wizard applies the selected locale immediately to SwiftUI and resolves
+  its Foundation copy through `LocalizedStringResource` with that locale.
+  `String(localized:locale:)` alone would only change interpolation formatting,
+  not the language of the lookup. The persisted preference applies to the rest
+  of the application through the first step’s explicit “Restart and continue”
+  action. The host checks the canonical bus idle predicate and agent-turn lease,
+  saves the next step, and requests normal AppDelegate termination. LaunchServices
+  reopens the same bundle only after the old PID exits; setup resumes even when
+  the wizard was opened manually. A busy or unreadable runtime retains the picker
+  and shows a retry message. Selecting the running language needs no restart.
+  Settings uses the same host restart (`AppDelegate.restartForInterfaceLanguage`)
+  with a plain relaunch intent: the choice is saved the moment it is picked, the
+  row shows “Restart now” while the saved choice differs from the running
+  language, and the relaunched app comes back with the tray in the new language
+  without reopening Settings or the wizard. The same busy and unavailable
+  messages apply; the row never relaunches on its own.
+  The initial step occupies resume slot zero. Setup has nine semantic chapters;
+  Rust writes v3 resume markers and maps v2 and bare markers into the matching
+  chapter. All permissions share chapter two; the optional local-model chapter
+  follows the dictation-language choice.
 - The dictation language (`CsLanguage`, `WHISPER_LANGUAGE`) is an STT setting.
   It is unrelated to the interface language and must stay unrelated.
 
@@ -23,15 +50,19 @@ docs, the CLI and model prompts are separate surfaces with their own rules.
 
 ### Files
 
-| File                                                            | Role                                                                   |
-| --------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `macos/Codescribe/Resources/Localization/Localizable.xcstrings` | The one table for all interface copy. Keys are extracted from Swift.   |
-| `macos/Codescribe/Resources/Localization/InfoPlist.xcstrings`   | System permission prompts (`NS…UsageDescription`). Keys are hand-kept. |
-| `macos/project.yml`                                             | `developmentLanguage: en`, extraction build settings, test language.   |
-| `scripts/l10n-sync.sh`                                          | Folds compiler-extracted strings into `Localizable.xcstrings`.         |
-| `scripts/l10n-lint.py`                                          | Static catalog checks (no build needed).                               |
-| `scripts/data/cldr/plurals.json`                                | Unicode CLDR plural rules: the plural forms each language owes.        |
-| `docs/LOCALIZATION_LEDGER.md`                                   | Inventory: classes of copy, where they live, open decisions.           |
+| File                                                            | Role                                                                      |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `macos/Codescribe/Resources/Localization/Localizable.xcstrings` | The one table for all interface copy. Keys are extracted from Swift.      |
+| `macos/Codescribe/Resources/Localization/InfoPlist.xcstrings`   | System permission prompts (`NS…UsageDescription`). Keys are hand-kept.    |
+| `macos/project.yml`                                             | `developmentLanguage: en`, extraction build settings, test language.      |
+| `scripts/l10n-sync.sh`                                          | Folds compiler-extracted strings into `Localizable.xcstrings`.            |
+| `scripts/l10n-build.sh`                                         | Compiles Debug Swift extraction without a Rust build or executable link.  |
+| `scripts/l10n-lint.py`                                          | Static catalog checks (no build needed).                                  |
+| `scripts/l10n-sheet.py`                                         | Translator worksheet: catalog → CSV per language → catalog.               |
+| `scripts/l10n-bridge-census.py`                                 | Gate: every `String` crossing the UniFFI bridge is classified data/prose. |
+| `scripts/data/l10n-bridge-fields.txt`                           | That classification; the `prose` lines are the seams still in Rust.       |
+| `scripts/data/cldr/plurals.json`                                | Unicode CLDR plural rules: the plural forms each language owes.           |
+| `docs/LOCALIZATION_LEDGER.md`                                   | Inventory: classes of copy, where they live, open decisions.              |
 
 One table on purpose. Splitting copy across tables forces `tableName:` onto
 every call site and buys nothing at this size.
@@ -59,13 +90,54 @@ make app                 # or any Debug build: emits .stringsdata into macos/bui
 make l10n-sync           # fold extracted keys into Localizable.xcstrings
 make verify-l10n-sync    # fail if the catalog differs from what the build extracted
 make verify-l10n-catalog # static catalog lint; part of `make check`
+make verify-l10n-bridge  # bridge census: no unclassified String crosses UniFFI; part of `make check`
+make l10n-sheet L10N_LANG=pl   # export the translator worksheet (CSV=... imports it back)
 ```
+
+For localization alone, use the cheaper compiler lane instead of `make app`:
+
+```sh
+export L10N_DERIVED="$PWD/macos/build/l10n"
+make l10n-build
+make l10n-sync
+make verify-l10n-sync
+make verify-l10n-catalog
+# Commit the catalog with the Swift changes.
+```
+
+`l10n-build` uses XcodeGen and the **existing Codescribe scheme**, its checked-in
+Swift/C bindings, package dependencies, bridging header and Debug settings.
+It compiles one host architecture with `SWIFT_EMIT_LOC_STRINGS=YES`.
+`MACH_O_TYPE=staticlib`, empty `OTHER_LDFLAGS` and `ENABLE_DEBUG_DYLIB=NO` archive
+the Swift objects instead of linking an executable against Rust. It builds no
+Rust library or STT sidecar, signs nothing and produces no runnable application.
+Keep its DerivedData separate from the normal app build. A cold runner still
+resolves/builds the existing Swift packages.
+
+The current app requires Xcode 27 / the macOS 27 SDK (`LanguageModelError` in
+Foundation Models). The required CI job runs on `[self-hosted, macos-public]`
+with that toolchain. Rust-only jobs use the same runner pool. An older Xcode
+that cannot compile the app fails the gate; it never skips localization checks.
+
+The archive lane and ordinary Debug compilation were compared on 2026-10-05
+at `27a130fb6`: all 128 app Swift sources produced identical `.stringsdata`.
+Plain `swiftc -typecheck` emitted none; Xcode localization export and `analyze`
+also attempted executable links, so neither removes the Rust prerequisite.
 
 The catalog tracks the **Debug** build. Debug is a superset of Release (it also
 compiles `#if DEBUG` code), so every string that ships has a row.
 
 `l10n-sync` refuses to run when any Swift source is newer than its last compile,
 because the extraction data describes the last build, not the working tree.
+The compile time of a source is the newest of its `.stringsdata`, `.o`,
+`.swiftdeps`, `.d` and `.dia` intermediates: a comment-only edit rewrites only
+the last two, and the extraction it leaves in place is still current.
+It matches the compiler's absolute source paths to current files by filesystem
+identity (device/inode, as in `samefile`), so case differences on APFS and
+worktree symlink aliases do not invalidate a build. Another worktree's files
+cannot supply extraction for this one merely by sharing names or contents.
+Ambiguous identities among current source paths fail closed; missing sources
+and source replacement during the check still require a rebuild.
 
 `build-app.sh` generates UniFFI bindings in a temporary directory, normalizes
 Swift/C output there, and installs each generated file (including the modulemap)
@@ -75,10 +147,59 @@ freshness refusal. New or changed output receives a new mtime and still requires
 compilation before `l10n-sync` accepts it. A generator or normalization failure
 publishes no staged files; the temporary directory is cleaned on exit.
 
+### What the catalog cannot see
+
+The catalog lists the strings the Swift compiler extracts. Copy that Rust
+composes and hands across the bridge as a finished `String` (ledger §4) is
+invisible to it, so it is invisible to the worksheet and ships in English in
+every language. `make verify-l10n-bridge` (`scripts/l10n-bridge-census.py`)
+keeps that set from growing: every `String` field of a `Cs*` record and every
+`String` payload of a `Cs*` enum case in the generated bindings must be
+classified in `scripts/data/l10n-bridge-fields.txt` as `data` (identifier,
+path, wire value, vendor or model name, transcript or thread content, a code
+Swift switches on) or `prose` (a sentence a person reads as it arrives). A new
+field fails the gate until the cut that adds it classifies it; a `prose` line is
+a conscious decision to add debt. A line the bindings dropped fails too, so the
+`prose` lines stay the true burn-down list. The rule for new work is the
+ledger's: Rust sends a code and arguments, Swift owns the sentence.
+
 After changing interface copy: build, `make l10n-sync`, commit the catalog with
 the code. A key that disappears from code is dropped from the catalog when it
 has no translations, and marked `stale` when it has — `verify-l10n-catalog`
 fails on stale rows so a translation is never orphaned silently.
+
+### Required PR gate
+
+`.github/workflows/rust.yml` runs `make l10n-build`, **`make verify-l10n-sync`**
+and **`make verify-l10n-catalog`**, **`make verify-l10n-bridge`** and
+**`make test-l10n-sync`** unconditionally inside **`Clippy + Tests`**
+on every PR to `main` or `develop`. It uses a fresh per-run Debug DerivedData directory,
+never cached `.stringsdata`, and never invokes the catalog-writing sync command.
+It also refuses catalog changes left by the compiler lane, so a toolchain that
+starts syncing on build cannot silently check an automatically repaired file.
+Missing tools, compilation failures, missing/outdated extraction, catalog drift
+and catalog lint errors all fail the job. Catalog lint requires full coverage
+of every bundled language; CI never passes `--allow-partial`. The sync controls
+use the real Swift compiler and prove both acceptance and fail-closed refusal.
+`--check` compares the entire catalog
+as JSON, so formatting or an EOF newline alone does not count as drift.
+
+GitHub ruleset **`main porotection`** (ID **20429200**) already requires
+**`Clippy + Tests`** from GitHub Actions (integration ID **15368**) for `main`,
+`develop` and the integration branch `feat/onboarding-language-picker`.
+Localization failures therefore fail the existing required status; no separate
+optional job or additional ruleset entry is needed. Do not move these steps
+into an optional job, add path filters/skip conditions, or swallow their failures.
+This takes effect when the workflow change is published; local/YAML validation
+does not prove GitHub merge refusal. A real negative-control PR requires explicit
+Founder authorization and must use normal merge rules without bypass.
+
+The integration-branch scope is temporary: once that branch is incorporated into
+`main`, remove `feat/onboarding-language-picker` from both workflow filters and
+the ruleset's `ref_name.include` list. Extending a ruleset applies its existing
+review/deletion/force-push rules too. The workflow change must be present in the
+integration branch before its stacked PRs can execute the new localization steps;
+requiring an older check with the same name is not proof of localization coverage.
 
 ---
 
@@ -86,6 +207,52 @@ fails on stale rows so a translation is never orphaned silently.
 
 The single invariant: **a string that reaches the screen, VoiceOver or a tooltip
 is born localized at the place where it is written as a literal.**
+
+### Product glossary — English / Polish
+
+Founder decision 2026-10-06. These are the preferred terms throughout the UI,
+including buttons, settings, history, messages, help and accessibility copy.
+
+| Meaning                                                 | English                   | Polish                    |
+| ------------------------------------------------------- | ------------------------- | ------------------------- |
+| Basic operating mode                                    | Basic mode                | Tryb podstawowy           |
+| Agent operating mode                                    | Agent mode                | Tryb agentowy             |
+| Mode-row value: basic mode (License panel)              | Basic                     | Podstawowy                |
+| Mode-row value: agent mode (License panel)              | Agent                     | Agentowy                  |
+| License-row value: lifetime agent offer (License panel) | Agent · one-time purchase | Agent · zakup jednorazowy |
+| Converting audio to text                                | transcription             | transkrypcja              |
+| The resulting text                                      | transcript                | transkrypt                |
+| Command to convert audio to text                        | Transcribe                | Transkrybuj               |
+
+Mode names and license status describe different things. Do not call Basic
+mode "Unlicensed" / "Bez licencji", or Agent mode "Agent" / "Agentic".
+The one exception is the License panel's Mode row: its label already says
+"Mode" / "Tryb", so the value is the short form — Basic / Agent in English,
+Podstawowy / Agentowy in Polish. In Polish the mode is never "Agent": that
+word is the name of the offer ("Agent · zakup jednorazowy").
+These display names do not rename persisted identifiers or bridge enums (R6).
+
+Do not use "recording", "dictation" or "speech" ("nagranie", "dyktowanie",
+"dyktando", "mowa") as umbrella names for transcription. Exceptions must
+describe the actual object or operation: an audio recording is "nagranie",
+audio capture is "nagrywanie", and actual speech is "mowa", for example in
+speech detection. Do not call an audio file a transcript.
+
+English source copy and every shipped translation change together in the same
+cut; the glossary is not a Polish-only substitution list.
+
+### Keep only useful copy
+
+Keep only copy that helps a user act, understand a state or make a decision.
+Remove repeated explanations, implementation details and future-service plans;
+show exceptional instructions and diagnostics when needed. Keep meaningful
+limits, action consequences, actionable errors and accessibility copy.
+Generic AI agents and external coding agents keep lowercase
+(`agent AI`, `agent`, `agentów`). An account used by Codescribe's Agent is an
+**Agent account** / **Konto Agenta**; API-key presence is a separate status.
+Onboarding copy changes ship together in English, Polish and the corresponding
+view. Each step presents one question or choice and at most one sentence of
+explanation; connection diagnostics belong in Settings › Agent.
 
 ### R1 — Literals passed straight to SwiftUI are already localized
 
@@ -287,15 +454,88 @@ the sentence.**
 
 ## 6. Adding a language
 
-1. Add the language to both catalogs (open them in Xcode and press `+`, or add
-   the language code under each key's `localizations`).
-2. Translate. `make verify-l10n-catalog` reports untranslated keys per language
-   and checks that every string reads the arguments of the English source by
-   number and type (R4).
-3. Build. The bundle gains `<lang>.lproj`; Sparkle's own translation for that
+1. Export the worksheet: `scripts/l10n-sheet.py export <lang> <dir>` writes one
+   CSV per catalog with a row for every string a person has to write — a plural
+   key becomes one row per form the language owes, a sentence with several
+   counts its main row plus one row per form of every substitution. Keys marked
+   `shouldTranslate: false` are left out. With a Debug build present the
+   `where` column names the screens that use each key. Translations the
+   catalog already holds are filled in, so the worksheet of a translated
+   language is a revision sheet in which new copy is the empty rows.
+2. Translate in the CSV (a spreadsheet is fine; export it back as CSV). Only
+   the translation column and `notes` are the translator's.
+3. Import: `scripts/l10n-sheet.py import <lang> <csv>...`. A key is imported
+   whole or not at all; a row that does not read the arguments of the English
+   source (R4) or spells the product `CodeScribe` is refused and its key left
+   untouched. `--check` reports without writing. Exit status 1 means something
+   was refused or is still untranslated. The catalogs are written in the byte
+   layout `xcstringstool` uses, so a later `l10n-sync` shows no spurious diff.
+4. `make verify-l10n-catalog`. The lint requires every language either catalog
+   carries to be complete in both; `--allow-partial` turns that into a report
+   while a language is being built up on a branch.
+5. Build. The bundle gains `<lang>.lproj`; Sparkle's own translation for that
    language activates with it.
-4. Run the app under that language without changing the system setting:
+6. Run the app under that language without changing the system setting:
    `open -a Codescribe --args -AppleLanguages '(pl)'`.
+
+After the import the catalog is the source of the translation; the worksheet is
+transport. New English copy added later shows up as untranslated rows in the
+next export, and until they are translated `make check` fails on coverage.
+
+### Drafts and review rounds
+
+Coverage is a gate on every cut, so the cut that adds English copy also adds
+its translation — written by the developer or the agent, not by the reviewer.
+Such a translation is imported with `scripts/l10n-sheet.py import <lang> <csv> --draft` (`make l10n-sheet L10N_LANG=pl CSV=… DRAFT=1`) and stored in state
+`needs_review`. The lint counts `needs_review` as covered and reports it
+("N awaiting review"; `--report` lists the keys), so the build is green and the
+app ships the draft until a reviewer has seen it.
+
+The reviewer never reads the whole catalog again. `scripts/l10n-sheet.py export <lang> <dir> --pending` (`make l10n-sheet L10N_LANG=pl PENDING=1`) writes only
+the keys still owed: untranslated ones (empty translation cell) and drafts
+(translation filled in, context starting with "Draft —"). The reviewer corrects
+or confirms the rows and the file is imported without `--draft`: every key it
+holds becomes `translated`, and the next pending export is empty. That closes
+a review round; keys the reviewer did not touch are confirmed by the import,
+so a round is closed only when the whole pending sheet has been read.
+
+Editing the catalog JSON by hand with `"state": "translated"` skips the review;
+drafts written by hand or by a script should carry `"state": "needs_review"`.
+
+### How a review round is run
+
+The catalog in the repository is the only source of the translation. There is
+no translation platform, no shared spreadsheet that holds the truth, and no
+scheduled sync: a round is a pull request, and the worksheet exists only for
+the minutes between export and import. (A hosted platform was tried on a copy
+of the catalogs in October 2026 and rejected: its export could not carry the
+`needs_review` state back, and a string changed on both sides was overwritten
+without notice.)
+
+A round goes like this:
+
+1. The cut that adds or changes English copy adds the draft of every language
+   the bundle carries (`--draft`). Coverage stays green; the draft is marked.
+2. The reviewer reads the app, not the file: run the Debug or installed build
+   under the language (`open -a Codescribe --args -AppleLanguages '(pl)'`) and
+   go through the screens the pending export names in its `where` column.
+3. Corrections are given in whatever form is fastest — a sentence in chat, a
+   voice note, a screenshot with the wrong word circled, an edited pending
+   CSV. The developer or the agent turns them into the catalog change and
+   imports it without `--draft`; only a change that came from the reviewer is
+   imported as `translated`. A draft the agent wrote stays `needs_review`
+   until the reviewer has seen the screen it is on.
+4. The cut is reviewed like any other: lint, sync, Swift tests, and a look at
+   the screens whose layout the longer text could break (R9).
+
+A finding that is not a wrong word is still handled in the same round, routed
+by what it is: wrong English copy is fixed in the source and in every
+language together; text that reaches the screen from Rust is first moved into
+the localizable layer (section 5) and only then translated; a clipped or
+wrapped label is a view change, not a translation; a label that lies about
+what a control does is a product bug. Nothing is parked in a document: the
+round is closed when every finding is in the catalog, in the code, or
+rejected with a reason in the pull request.
 
 The tooling names no language but the English source, so none of it changes
 when a language is added. The plural forms a language owes are read from
@@ -313,15 +553,24 @@ A language is declared by having translations. Do not add an empty language: a
 bundle that claims a language it does not carry gives a mixed interface (system
 dialogs and Sparkle switch, app copy stays English).
 
-The lint refuses a language with no translations and only reports one that is
-partly translated, so a translation can be built up in the tree. A partly
-translated language must not ship: before the first release that carries a
-language, add a gate that requires full coverage of every declared language
-(`docs/LOCALIZATION_LEDGER.md` §5.3). That gate does not exist yet.
+The lint refuses a language with no translations and a language that is partly
+translated, in either catalog: a bundle that carries a language carries all of
+it, so a translated interface never shows English in some rows. The only way to
+hold a partial translation in the tree is `scripts/l10n-lint.py --allow-partial`,
+which reports the coverage instead; `make check` never passes that flag.
 
 ---
 
 ## 7. Tests
+
+`make test-l10n-sync` uses the real Swift compiler and `xcstringstool` in a
+temporary tree. A synchronized catalog passes; adding or changing SwiftUI copy
+without sync fails. Missing, malformed or outdated extraction fails closed,
+case/worktree aliases preserve physical identity and freshness checks, and
+foreign or ambiguous source identities fail closed. Every check asserts that
+catalog bytes stay unchanged. No test copy is
+written into the app. The required CI job runs these controls; missing macOS
+or Xcode fails rather than skipping them.
 
 On macOS, `scripts/tests/test_generate_swift_bindings.py` verifies that unchanged
 normalized outputs retain bytes, inode and nanosecond mtime, changed files are
@@ -340,8 +589,17 @@ argument types, an argument dropped or added in a plural form, mixed numbering
 and a substitution without plural forms are refused; a valid reordering and the
 shipped catalogs pass. Languages the app does not carry yet are held to their
 own plural forms (Arabic, Japanese, French, Russian, Czech, Hebrew), a regional
-code to those of its language, and an unknown code is refused. It runs in
-`make verify`.
+code to those of its language, and an unknown code is refused. A language the
+bundle carries must be complete in both catalogs; `CodeScribe` is refused in
+any string. It runs in `make verify`.
+
+`scripts/tests/test_l10n_sheet.py` holds the worksheet to its word: an export
+writes one row per plural form and per substitution form, an import of a filled
+worksheet passes the lint, `--check` writes nothing, a plural with one empty
+form stays untranslated, a dropped argument, a substitution form written with
+`%@` and the spelling `CodeScribe` are refused, rows for a key that left the
+catalog are ignored with a note, and the written catalogs match the shipped
+layout byte for byte. It runs in `make verify`.
 
 Tests that assert interface copy assert the English a person reads, including
 plural forms and grouped numbers. Tests that scan Swift source for a literal

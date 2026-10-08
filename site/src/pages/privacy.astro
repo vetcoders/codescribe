@@ -9,12 +9,11 @@ import { page } from "../lib/asset";
   description="How codescribe handles audio, transcripts, AI requests, and system permissions. Local by default; cloud only when you opt in."
   path="privacy"
 >
-  <LegalPage title="Privacy Policy" eyebrow="Trust · Privacy">
+  <LegalPage title="Privacy Policy" eyebrow="Trust · Privacy" updated="2026-10-06">
     <p>
-      Codescribe is designed with privacy as a core principle. Your audio is
-      processed locally by default. This page restates the product’s privacy
-      truth for buyers and users; the engineering source of record is
-      <code>docs/guide/privacy.md</code> in the repository.
+      Codescribe supports local speech recognition. Optional cloud transcription,
+      AI formatting, agent tools, and spoken replies use the services you configure.
+      This page describes which data those paths can send and what stays on your Mac.
     </p>
 
     <h2>Privacy summary</h2>
@@ -30,11 +29,11 @@ import { page } from "../lib/asset";
         <tr>
           <td><strong>Audio</strong></td>
           <td>Your Mac only</td>
-          <td>Never leaves unless you enable cloud STT</td>
+          <td>Sent to a transcription provider when cloud STT is enabled</td>
         </tr>
         <tr>
           <td><strong>Transcripts</strong></td>
-          <td>Your Mac only</td>
+          <td>Local history; configured AI services when used</td>
           <td>Stored under <code>~/.codescribe/transcriptions/</code></td>
         </tr>
         <tr>
@@ -45,14 +44,15 @@ import { page } from "../lib/asset";
         <tr>
           <td><strong>Telemetry</strong></td>
           <td>Nowhere</td>
-          <td>No tracking, no analytics, no phone-home</td>
+          <td>No transcript analytics SDK; update and service requests are separate</td>
         </tr>
       </tbody>
     </table>
 
     <h2>What stays local</h2>
     <p>
-      These stay on your machine and cannot be flipped “to the cloud” by us:
+      The app keeps these local files and credentials. Requests to configured
+      services are described below:
     </p>
     <ul>
       <li>
@@ -79,20 +79,25 @@ import { page } from "../lib/asset";
       <li><strong>Prompts</strong> — <code>~/.codescribe/prompts/</code>.</li>
     </ul>
     <p>
-      No network is required for recording audio, running Whisper transcription,
-      pasting text, storing transcripts, or hotkeys.
-      <strong>Codescribe works completely offline in Raw mode.</strong>
+      Once the local speech models and permissions are ready, recording, local
+      transcription, hotkeys, and text delivery can run without a cloud AI service.
+      Model downloads, updates, and licence issuance need a network connection.
     </p>
 
     <h2>What can leave your Mac (opt-in only)</h2>
     <h3>Optional AI formatting / agent calls</h3>
     <p>
       When you enable AI formatting or agent features, transcribed text (not
-      audio) is sent to the provider you configure over HTTPS. That may be
+      audio) is sent to the provider you configure. Built-in remote providers use HTTPS;
+      custom endpoints use the configured transport. That may be
       OpenAI-compatible Responses/chat endpoints, Anthropic, a self-hosted stack
-      such as LibraxisAI, or local Ollama. We do not send audio files, unrelated
-      transcripts, or system inventory as part of those requests.
+      such as LibraxisAI, or local Ollama. Formatting sends transcript text and
+      instructions. Agent requests may also include the conversation history,
+      selected text, files, screenshots, and tool results used for your task.
     </p>
+    <h3>Optional spoken replies</h3>
+    <p>When a remote speech provider is selected, reply text is sent to that
+      provider to produce audio. Its privacy policy and usage charges apply.</p>
     <h3>Optional cloud STT</h3>
     <p>
       If you turn off local STT and configure a cloud STT endpoint, audio may be
@@ -120,24 +125,29 @@ import { page } from "../lib/asset";
         of content).
       </li>
       <li>
-        <strong>Speech Recognition</strong> — when using Apple’s speech path for live
-        letter-level transcript.
+        <strong>Speech Recognition</strong> — when using Apple’s speech path for a live
+        transcript.
       </li>
     </ul>
-    <p>
-      We do not request camera, location, contacts, or blanket file access
-      outside the app’s data directory (except optional full-disk flows you
-      deliberately enable).
-    </p>
+    <p>Screen Recording permission enables screenshots when used as context.
+      Agent tools can read files within their configured workspace and permissions.
+      Review the selected agent and provider before attaching sensitive material.</p>
 
     <h2>Tracking and analytics</h2>
     <p>
-      <strong>No tracking, no analytics, no phone-home.</strong>
-      The product does not ship third-party analytics SDKs or silent telemetry beacons.
-      Network activity happens only when you configure and use a remote provider (or
-      download a release from GitHub).
+      The desktop app does not ship a third-party transcript analytics SDK.
+      Update checks contact the configured Sparkle feed, model downloads contact
+      their download hosts, and optional AI services contact their providers.
+      Website analytics are disabled in the default site build; a deployment can
+      enable them explicitly.
     </p>
 
+    <h2>Website licence issuance</h2>
+    <p>The licence form sends your email over HTTPS to the Codescribe licence
+      service. The service signs a code containing a SHA-256 hash of the normalized
+      address. Its issuance log records that hash, the client IP address, and a
+      timestamp. A hash is a pseudonymous identifier, not anonymous data. The app
+      verifies the signed licence locally.</p>
     <h2>Data retention and rights</h2>
     <p>
       Audio lives locally under <code>~/.codescribe/takes/</code>,

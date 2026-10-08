@@ -1,7 +1,6 @@
 # CodescribeTests — what runs, and how
 
-Swift unit tests for the SwiftUI front-end. **893 tests, executed by
-`make test-swift`.**
+Swift unit tests for the SwiftUI front-end, executed by `make test-swift`.
 
 ```bash
 make test-swift                                    # whole suite
@@ -41,6 +40,14 @@ synthetic; no real credential is used by these unit fixtures.
    `** TEST SUCCEEDED **` and `Executed 0 tests` — a silent pass, the same trap
    `cargo test <filter>` carries. `make test-swift` fails with rc 3 when a run
    executes zero tests.
+5. **License fixtures require the checked-in DEV verifier.** Their RFC 8032
+   signature cannot validate against an app-distribution public key. The Rust
+   verifier is compiled into the bridge; clearing the environment before
+   `make test-swift` does not rebuild an existing bridge just because the key
+   changed. After an app build with a different public key, first run
+   `env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX make app-bindings`, then run tests
+   with that variable unset. Apply the app's public key separately for its
+   distribution or local-install build.
 
 ## Why the suite was believed unrunnable
 
@@ -50,6 +57,13 @@ boots the Rust core through `AppDelegate`'s eager stored properties and hangs
 compilation only" and no plan could cite them as evidence.
 
 Half of that was right.
+
+Mocking `SettingsEngine` does not isolate the view model's permission reads.
+Settings and Voice Lab tests that do not exercise macOS permission probing must
+also pass `permissionProbe: MockPermissionProbe()`. The production default is
+`NativePermissionProbe`, whose synchronous snapshot can wait on system services
+in a headless session; a refresh repeats that read. Keep permission-specific
+tests explicit about the probe they intend to exercise.
 
 **Right — the eager properties really do boot a second core in the test host.**
 The XCTest bundle uses the app as its host, so `AppDelegate` is instantiated in
@@ -134,10 +148,11 @@ run both arms again.
 of that time (14.4 s in `OverlayRefusalLayoutHangTests`), and the slowest single
 test took 5.4 s. Every test above `SWIFT_TEST_MAX_TEST_SECONDS` (default 10 s)
 is printed and fails the gate. The suite budget, `SWIFT_TEST_MAX_SECONDS`
-(default 60 s), is a coarse backstop at about twice the measured suite time.
-The per-test ceiling targets the one-test hang shape seen in the old Keychain
-regression. Raise the suite budget on a genuinely loaded host
-(`make test-swift SWIFT_TEST_MAX_SECONDS=90`) rather than removing it.
+(default 60 s), was set as a coarse backstop at about twice that 2026-09-25
+measurement. The per-test ceiling targets the one-test hang shape seen in the
+old Keychain regression. The defaults stay 60 s and 10 s. An over-budget run
+requires investigation of the test harness and host load; it does not move
+those limits.
 
 Note on exit codes: the _recipe_ exits 3 (zero tests), 4 (suite over budget),
 or 5 (one or more tests over the per-test ceiling), which
@@ -147,15 +162,21 @@ should branch on non-zero, not on the specific code.
 
 ## Coverage this actually buys
 
-893 tests across 71 Swift files (2026-10-01), including the two surfaces the
-W12 plan could previously only verify by compilation:
+Static inventory on 2026-10-07, counted in `macos/CodescribeTests`: 82 Swift
+files and 1163 methods whose declaration line is `func test`. A same-day host
+log executed 1162 tests, with 1 test skipped and 0 failures, in 73.510 s.
+Those two counts are not the same number. That run is over
+`SWIFT_TEST_MAX_SECONDS` (default 60). The budget is unchanged. The inventory
+still includes the two surfaces the W12 plan could previously only verify by
+compilation:
 
 - `OverlayStateTests.swift` — admission of complete Rust-owned transcript
   projections, sequence/session fences, acoustic-receipt requirements, and
   display/delivery behavior. The suite does not make Swift a transcript reducer:
   corrections, patches, and transcript markers are already reduced upstream.
-- `ComposerMicTests.swift` — the composer `onReplaceRange` path, including the
-  `firstIndex` → `lastIndex` alignment. 11 tests.
+- `ComposerMicTests.swift` — microphone glyph on every visual state, explicit
+  accessibility labels, idle and recording as the only actionable states, and a
+  pending attachment preview that keeps the exact staged URL. 4 tests.
 - `LocalizationFoundationTests.swift` — the String Catalog reaches the built
   app: development language, catalog-backed permission prompts, plural
   selection, per-count inflection inside one sentence, and identifier keys
@@ -172,7 +193,12 @@ needs Xcode on a runner — that is a real open item, not an oversight.
 
 ## Known residue
 
-The suite is 4.26–4.45 s (n=3, current). The bus fan-out described above is real
+The 2026-08-08 Keychain-fixed arm is 4.26–4.45 s (n=3, tree `cd2fbb9a`). That
+arm is the table above, not the current suite. A 2026-10-07 host log executed
+1162 tests, with 1 skipped and 0 failures, in 73.510 s, over the unchanged 60 s
+suite budget. Getting the suite back under that budget is a separate
+performance repair. This file does not raise `SWIFT_TEST_MAX_SECONDS` or
+`SWIFT_TEST_MAX_TEST_SECONDS`. The bus fan-out described above is real
 but is no longer the dominant cost, and it was never measured on its own: it
 grows with every future test that builds a `SettingsViewModel` or
 `TrayViewModel`, because those register on `NotificationCenter.default` and live
@@ -184,12 +210,19 @@ Open, and named rather than fixed:
 - **eager vs `lazy` has not been re-measured** with the Keychain path fixed, so
   the size of that win is unknown (see above).
 - **Nothing in `.github/workflows/` runs this gate** — or `test-engine-parity*`,
-  or `smoke-macos27`. Verified across all 495 indexed files: those targets appear
-  only in the `Makefile` and in docs. CI also triggers on `main`/`develop` only,
-  so no commit on this branch has been CI-verified at all. For the Swift suite
-  that is the Xcode-on-a-runner item above; for the parity targets it is
-  microphone/loopback hardware. Both are real constraints, but the consequence is
-  that every gate this plan built is host-local and operator-run.
+  or `smoke-macos27`. A 2026-10-07 literal scan of 903 indexed files found no
+  `test-swift` token under `.github/workflows/`. `.github/workflows/rust.yml`
+  names `smoke-macos27` once, in a comment that says CI does not run the Swift
+  suite, that smoke target, or the parity bars. The same comment still says
+  "318 Swift front-end tests". That file does not contain the tokens
+  `test-swift` or `test-engine-parity`. `test-swift` is not confined to the
+  Makefile and docs: it also lives in `scripts/test-swift.sh`,
+  `scripts/validate-gates.sh`, `scripts/validate_swift_gate.py`, and
+  `scripts/tests/`. Workflow triggers are `main`, `develop`, and
+  `feat/onboarding-language-picker`. For the Swift suite the open item is still
+  Xcode on a runner; for the parity targets it is microphone/loopback hardware.
+  Both are real constraints, and every gate this plan built stays host-local
+  and operator-run.
 
 _𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI_
 

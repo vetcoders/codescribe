@@ -124,6 +124,14 @@ impl std::fmt::Display for CsError {
 
 impl std::error::Error for CsError {}
 
+/// Passive conversation observation uses the existing runtime bus path owner.
+#[uniffi::export]
+pub fn agent_conversation_bus_path() -> String {
+    codescribe::presentation::transcript_bus::transcript_bus_path()
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Start the one process-owned async runtime. Idempotent while running; once
 /// shut down it cannot be restarted in the same process.
 #[uniffi::export]

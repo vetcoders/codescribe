@@ -37,5 +37,9 @@ private struct AppKitWindowDragRegion: NSViewRepresentable {
 
 final class OverlayWindowDragRegionView: NSView {
   override var isOpaque: Bool { false }
+  override func resetCursorRects() {
+    discardCursorRects()
+    addCursorRect(bounds, cursor: .arrow)
+  }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }

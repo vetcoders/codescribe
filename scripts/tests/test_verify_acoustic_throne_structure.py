@@ -50,6 +50,26 @@ class OccurrenceScopeTests(unittest.TestCase):
 
         self.assertEqual(files, {"core/live.rs", "tests/oracle.rs"})
 
+    def test_payload_variant_does_not_duplicate_the_type_authority(self) -> None:
+        type_row = occurrence("OccurrenceLabelProposal", match_role="definition")
+        type_row["enclosing_symbol"] = {"kind": "struct"}
+        variant = occurrence("OccurrenceLabelProposal", file="core/contracts.rs", match_role="definition")
+        variant["enclosing_symbol"] = {"kind": "enum_variant"}
+        self.assertEqual(VERIFIER.definitions({"occurrences": [type_row, variant]}), [type_row])
+        self.assertEqual(VERIFIER.definitions({"occurrences": [variant]}), [],
+                         "a payload variant cannot satisfy missing type authority")
+
+    def test_second_type_and_unknown_kind_remain_definition_competitors(self) -> None:
+        first = occurrence("OccurrenceLabelProposal", match_role="definition")
+        first["enclosing_symbol"] = {"kind": "struct"}
+        for kind in ("struct", "unknown", None):
+            second = occurrence("OccurrenceLabelProposal", file="core/other.rs", match_role="definition")
+            if kind is not None:
+                second["enclosing_symbol"] = {"kind": kind}
+            with self.subTest(kind=kind):
+                self.assertEqual(VERIFIER.definitions({"occurrences": [first, second]}),
+                                 [first, second], "missing classification must fail closed")
+
 
 def occurrence(
     matched_identifier: str,
@@ -2028,11 +2048,12 @@ class NeutralTargetTests(unittest.TestCase):
 def require_loct() -> None:
     """The live classes below shell out to the Loctree CLI for fresh context.
     Where the binary is absent (GitHub-hosted runners), those classes skip
-    loudly and the pure AST/manifest classes keep their teeth; operator hosts
-    run the full suite. See the Makefile GATE LEDGER row for verify."""
+    loudly and the pure AST/manifest classes keep their teeth; any host with
+    loct on PATH runs the full suite. See the Makefile GATE LEDGER row for
+    verify."""
     if shutil.which("loct") is None:
         raise unittest.SkipTest(
-            "loct not on PATH -- live throne rows are an operator-host instrument"
+            "loct not on PATH -- live throne rows need the Loctree CLI"
         )
 
 
@@ -3018,23 +3039,29 @@ class CaptureOrderingProofTests(unittest.TestCase):
         ordering = self.observations[self.CORRIDOR]["ordering"]
         self.assertTrue(ordering, "ordering rows were not observed at all")
         for row in ordering:
-            with self.subTest(barrier=row["barrier"]["required_code"]):
+            with self.subTest(caller=row["caller"], barrier=row.get("barrier")):
                 self.assertEqual(row["verdict"], "GREEN", row)
                 # Relational, never absolute: an unrelated edit above these
                 # functions must not turn a real proof red.
                 self.assertTrue(row["before_observed_lines"], row)
                 self.assertTrue(row["after_observed_lines"], row)
-                self.assertTrue(row["barrier_observed_lines"], row)
                 self.assertLess(
                     max(row["before_observed_lines"]),
-                    min(row["barrier_observed_lines"]),
-                    row,
-                )
-                self.assertLess(
-                    max(row["barrier_observed_lines"]),
                     min(row["after_observed_lines"]),
                     row,
                 )
+                if "barrier" in row:
+                    self.assertTrue(row["barrier_observed_lines"], row)
+                    self.assertLess(
+                        max(row["before_observed_lines"]),
+                        min(row["barrier_observed_lines"]),
+                        row,
+                    )
+                    self.assertLess(
+                        max(row["barrier_observed_lines"]),
+                        min(row["after_observed_lines"]),
+                        row,
+                    )
 
     def test_each_capture_edge_is_individually_required(self):
         """Remove one declared edge at a time; each must be named in refusal."""

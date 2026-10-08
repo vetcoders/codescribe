@@ -92,6 +92,8 @@ elif name == 'codescribe-stt-bridge' or name == 'custom-helper':
 elif name == 'swiftc' and s['mode'] == 'prerequisite-error':
     assert '-o' in args and args[args.index('-o') + 1] == 'target/release/codescribe-stt-bridge'
     sys.exit(44)
+elif name == 'git' and args == ['rev-parse', '--git-common-dir']:
+    print(str(root.parent / '.git'))
 elif name in ('security', 'git'):
     sys.exit(1)
 else:
@@ -113,7 +115,7 @@ def run_case(base, profile, layout, mode='success'):
     shutil.copyfile(source / 'scripts/lib/data-assets.sh', repo / 'scripts/lib/data-assets.sh')
     (repo / 'scripts/lib/data-assets.sh').chmod(0o755)
     (repo / 'Cargo.toml').write_text('[package]\nname="fixture"\nversion="0.0.0"\n')
-    roots = {'default': repo / 'target', 'absolute': case / 'shared',
+    roots = {'default': case / 'shared-main' / 'target', 'absolute': case / 'shared',
              'spaces': case / 'shared artifacts', 'relative': case / 'config relative',
              'relative-env': case / 'env relative'}
     root = roots[layout]
@@ -125,6 +127,10 @@ def run_case(base, profile, layout, mode='success'):
         configured = None
     elif layout == 'relative-env':
         configured = '../env relative'
+    # Make owns a shared Git target by default. Other layouts explicitly select
+    # the fixture's artifact root via Make's command-line override; metadata must
+    # still resolve relative values and select the exact dylib, never stale-local.
+    selected_target = configured or str(root)
     local = repo / 'target' / profile
     local.mkdir(parents=True)
     (local / 'libcodescribe_ffi.dylib').write_text('stale-local')
@@ -133,7 +139,7 @@ def run_case(base, profile, layout, mode='success'):
         (root / profile / 'libcodescribe_ffi.dylib').write_text('selected-' + profile)
     bridge = repo / ('custom-helper' if mode == 'override-helper' else 'target/release/codescribe-stt-bridge')
     bridge.parent.mkdir(parents=True, exist_ok=True)
-    spec = dict(repo=str(repo), root=str(root), configured=configured, mode=mode,
+    spec = dict(repo=str(repo), root=str(root), configured=selected_target, mode=mode,
                 helper=str(bridge), calls=str(case / 'calls.jsonl'), tmp=str(case / 'tmp'))
     (case / 'spec.json').write_text(json.dumps(spec))
     for name in ('cargo', 'xcodebuild', 'swiftc', 'codesign', 'security', 'git', 'xcrun', 'clang', 'cc', 'rustc'):
@@ -162,6 +168,8 @@ def run_case(base, profile, layout, mode='success'):
     args = [make, '-C', str(repo), 'test-swift',
             'SWIFT_TEST_LOG=' + str(case / 'swift.log'), 'SWIFT_TEST_CODESIGN_IDENTITY=fixture-signing',
             'SWIFT_TEST_ARGS=-only-testing:CodescribeTests/Fixture', 'DATA_ASSETS_DIR=' + str(case / 'absent-assets')]
+    if layout != 'default':
+        args.append('CARGO_TARGET_DIR=' + selected_target)
     if profile != 'debug':
         args.append('PROFILE=' + profile)
     if mode == 'override-helper':

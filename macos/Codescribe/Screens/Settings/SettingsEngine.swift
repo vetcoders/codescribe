@@ -406,6 +406,10 @@ struct MockSettingsEngine: SettingsEngine {
   var agentResetPreviewValue: CsAgentResetPreview = .sample
   var formattingSnapshot: CsPromptSnapshot = .sampleFormatting
   var assistiveSnapshot: CsPromptSnapshot = .sampleAssistive
+  /// Prompt restores land here (reference-typed): after a restore the mock
+  /// reports the built-in fallback, as the real engine does once the custom
+  /// file is removed.
+  var promptStore: MockPromptStore = MockPromptStore()
   var promptSaveObserver: ((String, String) throws -> Void)?
   var promptRestoreObserver: ((String) throws -> Void)?
   var resetAppDataObserver: ((Bool, Bool) throws -> Void)?
@@ -613,8 +617,11 @@ struct MockSettingsEngine: SettingsEngine {
 
   func getFormattingPrompt() -> String { CsSettings.samplePrompt }
   func getAssistivePrompt() -> String { CsSettings.sampleAssistivePrompt }
-  func formattingPromptSnapshot() -> CsPromptSnapshot { formattingSnapshot }
+  func formattingPromptSnapshot() -> CsPromptSnapshot {
+    promptStore.restored["correction"] ?? formattingSnapshot
+  }
   func formattingPromptSnapshot(level: String) throws -> CsPromptSnapshot {
+    if let restored = promptStore.restored[level] { return restored }
     switch level {
     case "correction": return formattingSnapshot
     case "smart": return .sampleFormattingSmart
@@ -622,7 +629,9 @@ struct MockSettingsEngine: SettingsEngine {
     default: throw NSError(domain: "FormattingPolicy", code: 1)
     }
   }
-  func assistivePromptSnapshot() -> CsPromptSnapshot { assistiveSnapshot }
+  func assistivePromptSnapshot() -> CsPromptSnapshot {
+    promptStore.restored["assistive"] ?? assistiveSnapshot
+  }
   func defaultFormattingPrompt() -> String { CsSettings.samplePrompt }
   func defaultAssistivePrompt() -> String { CsSettings.sampleAssistivePrompt }
   func setFormattingPrompt(content: String) throws {
@@ -636,12 +645,18 @@ struct MockSettingsEngine: SettingsEngine {
   }
   func restoreFormattingPromptToDefault() throws {
     try promptRestoreObserver?("formatting")
+    promptStore.restored["correction"] = .builtIn(
+      formattingSnapshot, content: CsSettings.samplePrompt)
   }
   func restoreFormattingPromptToDefault(level: String) throws {
     try promptRestoreObserver?(level)
+    let current = try formattingPromptSnapshot(level: level)
+    promptStore.restored[level] = .builtIn(current, content: current.content)
   }
   func restoreAssistivePromptToDefault() throws {
     try promptRestoreObserver?("assistive")
+    promptStore.restored["assistive"] = .builtIn(
+      assistiveSnapshot, content: CsSettings.sampleAssistivePrompt)
   }
   func resetPreview() -> CsResetPreview { resetPreviewValue }
   func resetAppData(includeKeys: Bool, includePrompts: Bool) throws {
@@ -658,6 +673,12 @@ struct MockSettingsEngine: SettingsEngine {
 /// reference-typed so the value-typed engine observes its own writes. Validation
 /// covers only what tests read; the real rules live in `core/llm/provider.rs`.
 @MainActor
+/// Snapshots the mock reports after a prompt restore, keyed by level or
+/// "assistive". Reference-typed so the struct engine can record them.
+final class MockPromptStore {
+  var restored: [String: CsPromptSnapshot] = [:]
+}
+
 final class MockProviderStore {
   enum Failure: Error, Equatable {
     case emptyName
@@ -848,6 +869,13 @@ extension CsPromptSnapshot {
     source: "custom_file",
     readError: nil
   )
+
+  /// What the engine reports once the custom file is gone: same path, the
+  /// built-in text, source `built_in_fallback`, no read error.
+  static func builtIn(_ previous: CsPromptSnapshot, content: String) -> CsPromptSnapshot {
+    CsPromptSnapshot(
+      content: content, path: previous.path, source: "built_in_fallback", readError: nil)
+  }
 }
 
 extension CsWhisperModelCatalog {
@@ -1068,7 +1096,7 @@ extension CsProviderOption {
       apiKeyAccount: account, apiKeySet: keySet, keyRequired: kind == "vendor",
       accountSignedIn: false, accountLoginEnabled: login,
       accountStatusMessage: login ? "not signed in" : "provider account login unavailable",
-      oauthClientId: nil)
+      accountIdentity: nil, oauthClientId: nil)
   }
 
   /// Preview seed mirroring `ALL_PROVIDERS` with factory endpoints; the mock

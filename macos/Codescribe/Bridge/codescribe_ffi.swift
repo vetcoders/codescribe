@@ -1162,7 +1162,7 @@ public protocol CodescribeAgentStatusProtocol: AnyObject, Sendable {
 
     /**
      * Agentic-lane readiness. `ready` is the core capability gate (assistive
-     * provider + its API key + native tools); the MCP rows are informational.
+     * provider request access + native tools); the MCP rows are informational.
      * Projects files, env and the existing credential cache. The explicit
      * background provider-access refresh acquires credentials before publication.
      */
@@ -1246,7 +1246,7 @@ public convenience init() {
 
     /**
      * Agentic-lane readiness. `ready` is the core capability gate (assistive
-     * provider + its API key + native tools); the MCP rows are informational.
+     * provider request access + native tools); the MCP rows are informational.
      * Projects files, env and the existing credential cache. The explicit
      * background provider-access refresh acquires credentials before publication.
      */
@@ -1545,17 +1545,20 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func resetPromptsToDefaults() throws
 
     /**
-     * Restore only the assistive base prompt after explicit UI confirmation.
+     * Restore only the assistive base prompt after explicit UI confirmation:
+     * the override is backed up and removed, so the built-in text is in use.
      */
     func restoreAssistivePromptToDefault() throws
 
     /**
-     * Restore one explicit formatting policy prompt after UI confirmation.
+     * Restore one explicit formatting policy prompt after UI confirmation:
+     * the override is backed up and removed, so the built-in text is in use.
      */
     func restoreFormattingPromptForLevelToDefault(level: String) throws
 
     /**
-     * Restore only the formatting base prompt after explicit UI confirmation.
+     * Restore only the formatting base prompt after explicit UI confirmation:
+     * the override is backed up and removed, so the built-in text is in use.
      */
     func restoreFormattingPromptToDefault() throws
 
@@ -2174,7 +2177,8 @@ open func resetPromptsToDefaults()throws   {try rustCallWithError(FfiConverterTy
 }
 
     /**
-     * Restore only the assistive base prompt after explicit UI confirmation.
+     * Restore only the assistive base prompt after explicit UI confirmation:
+     * the override is backed up and removed, so the built-in text is in use.
      */
 open func restoreAssistivePromptToDefault()throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_restore_assistive_prompt_to_default(
@@ -2184,7 +2188,8 @@ open func restoreAssistivePromptToDefault()throws   {try rustCallWithError(FfiCo
 }
 
     /**
-     * Restore one explicit formatting policy prompt after UI confirmation.
+     * Restore one explicit formatting policy prompt after UI confirmation:
+     * the override is backed up and removed, so the built-in text is in use.
      */
 open func restoreFormattingPromptForLevelToDefault(level: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_restore_formatting_prompt_for_level_to_default(
@@ -2195,7 +2200,8 @@ open func restoreFormattingPromptForLevelToDefault(level: String)throws   {try r
 }
 
     /**
-     * Restore only the formatting base prompt after explicit UI confirmation.
+     * Restore only the formatting base prompt after explicit UI confirmation:
+     * the override is backed up and removed, so the built-in text is in use.
      */
 open func restoreFormattingPromptToDefault()throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_restore_formatting_prompt_to_default(
@@ -2569,6 +2575,11 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * Opens no stream. Also keeps the tray honest while idle.
      */
     func admissionReadiness() async throws  -> CsAdmissionReadiness
+
+    /**
+     * Complete the canonical archive helper under the capture lifecycle lock.
+     */
+    func archiveAgentChannel(request: CsAgentArchiveRequest) async throws  -> String
 
     /**
      * The closed set of gestures a mode can bind to, with display labels. Drives
@@ -2993,6 +3004,26 @@ open func admissionReadiness()async throws  -> CsAdmissionReadiness  {
             completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterTypeCsAdmissionReadiness_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * Complete the canonical archive helper under the capture lifecycle lock.
+     */
+open func archiveAgentChannel(request: CsAgentArchiveRequest)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_archive_agent_channel(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeCsAgentArchiveRequest_lower(request)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
 }
@@ -3929,6 +3960,11 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
     func addServer(server: CsMcpServerInput) throws
 
     /**
+     * Remove the durable per-tool rule so the tool inherits again.
+     */
+    func clearToolPermission(identity: String) throws
+
+    /**
      * Snapshot of durable `agent.permissions` (settings.json).
      */
     func getPermissionPolicy()  -> CsPermissionPolicy
@@ -4061,6 +4097,17 @@ open func addServer(server: CsMcpServerInput)throws   {try rustCallWithError(Ffi
     uniffi_codescribe_ffi_fn_method_codescribemcpadmin_add_server(
             self.uniffiCloneHandle(),
         FfiConverterTypeCsMcpServerInput_lower(server),$0
+    )
+}
+}
+
+    /**
+     * Remove the durable per-tool rule so the tool inherits again.
+     */
+open func clearToolPermission(identity: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribemcpadmin_clear_tool_permission(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(identity),$0
     )
 }
 }
@@ -8086,6 +8133,81 @@ public func FfiConverterTypeCsAdmissionReadiness_lower(_ value: CsAdmissionReadi
 
 
 /**
+ * Frozen owner and verified helper paths supplied by the app's archive action.
+ */
+public struct CsAgentArchiveRequest: Equatable, Hashable {
+    public var channel: UInt8
+    public var provider: String
+    public var providerSessionId: String
+    public var leaseId: String
+    public var bus: String
+    public var executable: String
+    public var bridgeHome: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(channel: UInt8, provider: String, providerSessionId: String, leaseId: String, bus: String, executable: String, bridgeHome: String) {
+        self.channel = channel
+        self.provider = provider
+        self.providerSessionId = providerSessionId
+        self.leaseId = leaseId
+        self.bus = bus
+        self.executable = executable
+        self.bridgeHome = bridgeHome
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsAgentArchiveRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsAgentArchiveRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsAgentArchiveRequest {
+        return
+            try CsAgentArchiveRequest(
+                channel: FfiConverterUInt8.read(from: &buf),
+                provider: FfiConverterString.read(from: &buf),
+                providerSessionId: FfiConverterString.read(from: &buf),
+                leaseId: FfiConverterString.read(from: &buf),
+                bus: FfiConverterString.read(from: &buf),
+                executable: FfiConverterString.read(from: &buf),
+                bridgeHome: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsAgentArchiveRequest, into buf: inout [UInt8]) {
+        FfiConverterUInt8.write(value.channel, into: &buf)
+        FfiConverterString.write(value.provider, into: &buf)
+        FfiConverterString.write(value.providerSessionId, into: &buf)
+        FfiConverterString.write(value.leaseId, into: &buf)
+        FfiConverterString.write(value.bus, into: &buf)
+        FfiConverterString.write(value.executable, into: &buf)
+        FfiConverterString.write(value.bridgeHome, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAgentArchiveRequest_lift(_ buf: RustBuffer) throws -> CsAgentArchiveRequest {
+    return try FfiConverterTypeCsAgentArchiveRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAgentArchiveRequest_lower(_ value: CsAgentArchiveRequest) -> RustBuffer {
+    return FfiConverterTypeCsAgentArchiveRequest.lower(value)
+}
+
+
+/**
  * Assistive-lane availability for the Swift chat surface: `available` gates
  * the send, `detail` is the honest reason shown in the thread when the lane
  * cannot reach a model (empty when ready).
@@ -8221,7 +8343,7 @@ public func FfiConverterTypeCsAgentResetPreview_lower(_ value: CsAgentResetPrevi
 
 /**
  * Agentic-lane readiness verdict + rows. `ready` reflects the CORE capability
- * gate only (assistive provider configured + its API key set + native tools
+ * gate only (assistive provider access available + native tools
  * available); the MCP rows (Vibecrafted + AICX + Loctree + PRView) are
  * informational context and never flip `ready`. See the core
  * `AgenticReadinessReport` for the C4 semantics decision.
@@ -8842,6 +8964,11 @@ public func FfiConverterTypeCsCaptureHandle_lower(_ value: CsCaptureHandle) -> R
 public struct CsChannelRosterState: Equatable, Hashable {
     public var channel: String
     public var audience: String
+    /**
+     * The concrete captured or currently bound owner. Broadcast has none.
+     */
+    public var provider: String?
+    public var providerSessionId: String?
     public var `open`: Bool
     public var loud: Bool
     /**
@@ -8855,7 +8982,10 @@ public struct CsChannelRosterState: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(channel: String, audience: String, `open`: Bool, loud: Bool,
+    public init(channel: String, audience: String,
+        /**
+         * The concrete captured or currently bound owner. Broadcast has none.
+         */provider: String?, providerSessionId: String?, `open`: Bool, loud: Bool,
         /**
          * Milliseconds since the Unix epoch; `None` when no autoseal is armed.
          */autosealDeadlineUnixMs: Int64?,
@@ -8864,6 +8994,8 @@ public struct CsChannelRosterState: Equatable, Hashable {
          */followerAlive: Bool?) {
         self.channel = channel
         self.audience = audience
+        self.provider = provider
+        self.providerSessionId = providerSessionId
         self.`open` = `open`
         self.loud = loud
         self.autosealDeadlineUnixMs = autosealDeadlineUnixMs
@@ -8886,6 +9018,8 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
             try CsChannelRosterState(
                 channel: FfiConverterString.read(from: &buf),
                 audience: FfiConverterString.read(from: &buf),
+                provider: FfiConverterOptionString.read(from: &buf),
+                providerSessionId: FfiConverterOptionString.read(from: &buf),
                 open: FfiConverterBool.read(from: &buf),
                 loud: FfiConverterBool.read(from: &buf),
                 autosealDeadlineUnixMs: FfiConverterOptionInt64.read(from: &buf),
@@ -8896,6 +9030,8 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
     public static func write(_ value: CsChannelRosterState, into buf: inout [UInt8]) {
         FfiConverterString.write(value.channel, into: &buf)
         FfiConverterString.write(value.audience, into: &buf)
+        FfiConverterOptionString.write(value.provider, into: &buf)
+        FfiConverterOptionString.write(value.providerSessionId, into: &buf)
         FfiConverterBool.write(value.`open`, into: &buf)
         FfiConverterBool.write(value.loud, into: &buf)
         FfiConverterOptionInt64.write(value.autosealDeadlineUnixMs, into: &buf)
@@ -10527,19 +10663,49 @@ public func FfiConverterTypeCsMcpStatusReport_lower(_ value: CsMcpStatusReport) 
 
 
 /**
- * One labelled status line (label + value + tone) for the Settings UI.
+ * One status line for the Settings UI. `label` / `value` are the core's
+ * English rendering; Settings localizes from `facet` + `state` and the
+ * structured parts (`count`, `subject`, `detail`) instead of parsing `value`.
  */
 public struct CsMcpStatusRow: Equatable, Hashable {
     public var label: String
     public var value: String
     public var tone: CsMcpRowTone
+    public var facet: CsMcpStatusFacet
+    public var state: CsMcpStatusState
+    /**
+     * Tool or folder count behind the value, when the state carries one.
+     */
+    public var count: UInt32?
+    /**
+     * Provider label or server name behind the value, else empty.
+     */
+    public var subject: String
+    /**
+     * Error cause, env key, or free-form note behind the value, else empty.
+     */
+    public var detail: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(label: String, value: String, tone: CsMcpRowTone) {
+    public init(label: String, value: String, tone: CsMcpRowTone, facet: CsMcpStatusFacet, state: CsMcpStatusState,
+        /**
+         * Tool or folder count behind the value, when the state carries one.
+         */count: UInt32?,
+        /**
+         * Provider label or server name behind the value, else empty.
+         */subject: String,
+        /**
+         * Error cause, env key, or free-form note behind the value, else empty.
+         */detail: String) {
         self.label = label
         self.value = value
         self.tone = tone
+        self.facet = facet
+        self.state = state
+        self.count = count
+        self.subject = subject
+        self.detail = detail
     }
 
 
@@ -10558,7 +10724,12 @@ public struct FfiConverterTypeCsMcpStatusRow: FfiConverterRustBuffer {
             try CsMcpStatusRow(
                 label: FfiConverterString.read(from: &buf),
                 value: FfiConverterString.read(from: &buf),
-                tone: FfiConverterTypeCsMcpRowTone.read(from: &buf)
+                tone: FfiConverterTypeCsMcpRowTone.read(from: &buf),
+                facet: FfiConverterTypeCsMcpStatusFacet.read(from: &buf),
+                state: FfiConverterTypeCsMcpStatusState.read(from: &buf),
+                count: FfiConverterOptionUInt32.read(from: &buf),
+                subject: FfiConverterString.read(from: &buf),
+                detail: FfiConverterString.read(from: &buf)
         )
     }
 
@@ -10566,6 +10737,11 @@ public struct FfiConverterTypeCsMcpStatusRow: FfiConverterRustBuffer {
         FfiConverterString.write(value.label, into: &buf)
         FfiConverterString.write(value.value, into: &buf)
         FfiConverterTypeCsMcpRowTone.write(value.tone, into: &buf)
+        FfiConverterTypeCsMcpStatusFacet.write(value.facet, into: &buf)
+        FfiConverterTypeCsMcpStatusState.write(value.state, into: &buf)
+        FfiConverterOptionUInt32.write(value.count, into: &buf)
+        FfiConverterString.write(value.subject, into: &buf)
+        FfiConverterString.write(value.detail, into: &buf)
     }
 }
 
@@ -10794,7 +10970,8 @@ public func FfiConverterTypeCsModelDirectory_lower(_ value: CsModelDirectory) ->
 
 /**
  * Live model discovery result for one provider. `status` is one of:
- * `"fresh"`, `"cached"`, `"no_key"`, `"error"`. Errors never carry secrets.
+ * `"fresh"`, `"cached"`, `"no_key"`, `"key_rejected"` (the provider refused
+ * the stored API key), `"error"`. Errors never carry secrets.
  */
 public struct CsModelDiscovery: Equatable, Hashable {
     public var providerId: String
@@ -11902,6 +12079,8 @@ public func FfiConverterTypeCsProviderAccessSnapshot_lower(_ value: CsProviderAc
 
 /**
  * Provider identity and credential presence; never a returned secret.
+ * `account_identity` is who the stored id token says is signed in (email,
+ * else subject) — `None` while signed out or without such a claim.
  */
 public struct CsProviderOption: Equatable, Hashable {
     public var id: String
@@ -11915,11 +12094,12 @@ public struct CsProviderOption: Equatable, Hashable {
     public var accountSignedIn: Bool
     public var accountLoginEnabled: Bool
     public var accountStatusMessage: String
+    public var accountIdentity: String?
     public var oauthClientId: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, kind: String, displayName: String, wire: String, endpoint: String, apiKeyAccount: String, apiKeySet: Bool, keyRequired: Bool, accountSignedIn: Bool, accountLoginEnabled: Bool, accountStatusMessage: String, oauthClientId: String?) {
+    public init(id: String, kind: String, displayName: String, wire: String, endpoint: String, apiKeyAccount: String, apiKeySet: Bool, keyRequired: Bool, accountSignedIn: Bool, accountLoginEnabled: Bool, accountStatusMessage: String, accountIdentity: String?, oauthClientId: String?) {
         self.id = id
         self.kind = kind
         self.displayName = displayName
@@ -11931,6 +12111,7 @@ public struct CsProviderOption: Equatable, Hashable {
         self.accountSignedIn = accountSignedIn
         self.accountLoginEnabled = accountLoginEnabled
         self.accountStatusMessage = accountStatusMessage
+        self.accountIdentity = accountIdentity
         self.oauthClientId = oauthClientId
     }
 
@@ -11959,6 +12140,7 @@ public struct FfiConverterTypeCsProviderOption: FfiConverterRustBuffer {
                 accountSignedIn: FfiConverterBool.read(from: &buf),
                 accountLoginEnabled: FfiConverterBool.read(from: &buf),
                 accountStatusMessage: FfiConverterString.read(from: &buf),
+                accountIdentity: FfiConverterOptionString.read(from: &buf),
                 oauthClientId: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -11975,6 +12157,7 @@ public struct FfiConverterTypeCsProviderOption: FfiConverterRustBuffer {
         FfiConverterBool.write(value.accountSignedIn, into: &buf)
         FfiConverterBool.write(value.accountLoginEnabled, into: &buf)
         FfiConverterString.write(value.accountStatusMessage, into: &buf)
+        FfiConverterOptionString.write(value.accountIdentity, into: &buf)
         FfiConverterOptionString.write(value.oauthClientId, into: &buf)
     }
 }
@@ -13662,9 +13845,14 @@ public struct CsToolCapability: Equatable, Hashable {
     public var server: String
     public var risk: String
     /**
-     * Effective level: `allow` | `ask` | `deny`.
+     * Effective level the gate applies to the next call: `allow` | `ask` | `deny`.
      */
     public var effective: String
+    /**
+     * Rule behind `effective`: `tool` (individual), `server` or `default`
+     * (inherited), `thread` (session override).
+     */
+    public var ruleSource: String
     public var requiresApprovalFlag: Bool
 
     // Default memberwise initializers are never public by default, so we
@@ -13674,14 +13862,19 @@ public struct CsToolCapability: Equatable, Hashable {
          * Canonical identity (`server:upstream` or `native:name`).
          */identity: String, origin: String, server: String, risk: String,
         /**
-         * Effective level: `allow` | `ask` | `deny`.
-         */effective: String, requiresApprovalFlag: Bool) {
+         * Effective level the gate applies to the next call: `allow` | `ask` | `deny`.
+         */effective: String,
+        /**
+         * Rule behind `effective`: `tool` (individual), `server` or `default`
+         * (inherited), `thread` (session override).
+         */ruleSource: String, requiresApprovalFlag: Bool) {
         self.name = name
         self.identity = identity
         self.origin = origin
         self.server = server
         self.risk = risk
         self.effective = effective
+        self.ruleSource = ruleSource
         self.requiresApprovalFlag = requiresApprovalFlag
     }
 
@@ -13705,6 +13898,7 @@ public struct FfiConverterTypeCsToolCapability: FfiConverterRustBuffer {
                 server: FfiConverterString.read(from: &buf),
                 risk: FfiConverterString.read(from: &buf),
                 effective: FfiConverterString.read(from: &buf),
+                ruleSource: FfiConverterString.read(from: &buf),
                 requiresApprovalFlag: FfiConverterBool.read(from: &buf)
         )
     }
@@ -13716,6 +13910,7 @@ public struct FfiConverterTypeCsToolCapability: FfiConverterRustBuffer {
         FfiConverterString.write(value.server, into: &buf)
         FfiConverterString.write(value.risk, into: &buf)
         FfiConverterString.write(value.effective, into: &buf)
+        FfiConverterString.write(value.ruleSource, into: &buf)
         FfiConverterBool.write(value.requiresApprovalFlag, into: &buf)
     }
 }
@@ -16067,6 +16262,298 @@ public func FfiConverterTypeCsMcpRowTone_lift(_ buf: RustBuffer) throws -> CsMcp
 #endif
 public func FfiConverterTypeCsMcpRowTone_lower(_ value: CsMcpRowTone) -> RustBuffer {
     return FfiConverterTypeCsMcpRowTone.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Which status line a row is, mirrored 1:1 from the core [`McpStatusFacet`]
+ * so Settings renders a localized label per facet.
+ */
+
+public enum CsMcpStatusFacet: Equatable, Hashable {
+
+    case readiness
+    case provider
+    case nativeTools
+    case workspaceRoots
+    case vibecraftedRuntime
+    case aicxMcp
+    case loctreeMcp
+    case prviewIntegration
+    case mcpConfig
+    case mcpServer
+
+
+
+}
+
+#if compiler(>=6)
+extension CsMcpStatusFacet: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsMcpStatusFacet: FfiConverterRustBuffer {
+    typealias SwiftType = CsMcpStatusFacet
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsMcpStatusFacet {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .readiness
+
+        case 2: return .provider
+
+        case 3: return .nativeTools
+
+        case 4: return .workspaceRoots
+
+        case 5: return .vibecraftedRuntime
+
+        case 6: return .aicxMcp
+
+        case 7: return .loctreeMcp
+
+        case 8: return .prviewIntegration
+
+        case 9: return .mcpConfig
+
+        case 10: return .mcpServer
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsMcpStatusFacet, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .readiness:
+            writeInt(&buf, Int32(1))
+
+
+        case .provider:
+            writeInt(&buf, Int32(2))
+
+
+        case .nativeTools:
+            writeInt(&buf, Int32(3))
+
+
+        case .workspaceRoots:
+            writeInt(&buf, Int32(4))
+
+
+        case .vibecraftedRuntime:
+            writeInt(&buf, Int32(5))
+
+
+        case .aicxMcp:
+            writeInt(&buf, Int32(6))
+
+
+        case .loctreeMcp:
+            writeInt(&buf, Int32(7))
+
+
+        case .prviewIntegration:
+            writeInt(&buf, Int32(8))
+
+
+        case .mcpConfig:
+            writeInt(&buf, Int32(9))
+
+
+        case .mcpServer:
+            writeInt(&buf, Int32(10))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMcpStatusFacet_lift(_ buf: RustBuffer) throws -> CsMcpStatusFacet {
+    return try FfiConverterTypeCsMcpStatusFacet.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMcpStatusFacet_lower(_ value: CsMcpStatusFacet) -> RustBuffer {
+    return FfiConverterTypeCsMcpStatusFacet.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Machine state behind a row's value, mirrored 1:1 from the core
+ * [`McpStatusState`]; Settings renders a localized sentence per state.
+ */
+
+public enum CsMcpStatusState: Equatable, Hashable {
+
+    case ready
+    case accessAvailable
+    case accessUnavailable
+    case noNativeTools
+    case available
+    case synchronized
+    case rootsMismatch
+    case notConfigured
+    case live
+    case failed
+    case disabled
+    case configured
+    case error
+    case empty
+    case missing
+    case note
+
+
+
+}
+
+#if compiler(>=6)
+extension CsMcpStatusState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsMcpStatusState: FfiConverterRustBuffer {
+    typealias SwiftType = CsMcpStatusState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsMcpStatusState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .ready
+
+        case 2: return .accessAvailable
+
+        case 3: return .accessUnavailable
+
+        case 4: return .noNativeTools
+
+        case 5: return .available
+
+        case 6: return .synchronized
+
+        case 7: return .rootsMismatch
+
+        case 8: return .notConfigured
+
+        case 9: return .live
+
+        case 10: return .failed
+
+        case 11: return .disabled
+
+        case 12: return .configured
+
+        case 13: return .error
+
+        case 14: return .empty
+
+        case 15: return .missing
+
+        case 16: return .note
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsMcpStatusState, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .ready:
+            writeInt(&buf, Int32(1))
+
+
+        case .accessAvailable:
+            writeInt(&buf, Int32(2))
+
+
+        case .accessUnavailable:
+            writeInt(&buf, Int32(3))
+
+
+        case .noNativeTools:
+            writeInt(&buf, Int32(4))
+
+
+        case .available:
+            writeInt(&buf, Int32(5))
+
+
+        case .synchronized:
+            writeInt(&buf, Int32(6))
+
+
+        case .rootsMismatch:
+            writeInt(&buf, Int32(7))
+
+
+        case .notConfigured:
+            writeInt(&buf, Int32(8))
+
+
+        case .live:
+            writeInt(&buf, Int32(9))
+
+
+        case .failed:
+            writeInt(&buf, Int32(10))
+
+
+        case .disabled:
+            writeInt(&buf, Int32(11))
+
+
+        case .configured:
+            writeInt(&buf, Int32(12))
+
+
+        case .error:
+            writeInt(&buf, Int32(13))
+
+
+        case .empty:
+            writeInt(&buf, Int32(14))
+
+
+        case .missing:
+            writeInt(&buf, Int32(15))
+
+
+        case .note:
+            writeInt(&buf, Int32(16))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMcpStatusState_lift(_ buf: RustBuffer) throws -> CsMcpStatusState {
+    return try FfiConverterTypeCsMcpStatusState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMcpStatusState_lower(_ value: CsMcpStatusState) -> RustBuffer {
+    return FfiConverterTypeCsMcpStatusState.lower(value)
 }
 
 
@@ -18475,6 +18962,15 @@ fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: In
     }
 }
 /**
+ * Passive conversation observation uses the existing runtime bus path owner.
+ */
+public func agentConversationBusPath() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_agent_conversation_bus_path($0
+    )
+})
+}
+/**
  * Content-free lifecycle snapshot used by diagnostics and delivery probes.
  */
 public func applicationRuntimeSnapshot()throws  -> CsApplicationRuntimeSnapshot  {
@@ -18825,6 +19321,9 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_agent_conversation_bus_path() != 47889) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_application_runtime_snapshot() != 28624) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -18957,7 +19456,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_workspace_with_attachments() != 44225) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_agentic_readiness() != 2261) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_agentic_readiness() != 32944) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_capability_matrix() != 24926) {
@@ -19068,13 +19567,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_reset_prompts_to_defaults() != 25156) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_restore_assistive_prompt_to_default() != 32633) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_restore_assistive_prompt_to_default() != 2464) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_restore_formatting_prompt_for_level_to_default() != 25577) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_restore_formatting_prompt_for_level_to_default() != 40675) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_restore_formatting_prompt_to_default() != 40453) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_restore_formatting_prompt_to_default() != 53102) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_save_onboarding_progress() != 8525) {
@@ -19153,6 +19652,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_admission_readiness() != 59942) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_archive_agent_channel() != 55624) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_available_bindings() != 35701) {
@@ -19297,6 +19799,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_add_server() != 12098) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_clear_tool_permission() != 37009) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_get_permission_policy() != 8244) {

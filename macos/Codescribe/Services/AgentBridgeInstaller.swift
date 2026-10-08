@@ -34,6 +34,24 @@ struct AgentBridgeInstallationStatus: Equatable {
   let installedClients: [AgentBridgeClient]
   let installedPaths: [String]
   let detail: String
+  /// Detected clients whose receipt, folder marker, or rendered skill payload do not match.
+  let clientsNeedingRepair: Set<AgentBridgeClient>
+
+  init(
+    payloadAvailable: Bool,
+    bundleVersion: String?,
+    installedClients: [AgentBridgeClient],
+    installedPaths: [String],
+    detail: String,
+    clientsNeedingRepair: Set<AgentBridgeClient> = []
+  ) {
+    self.payloadAvailable = payloadAvailable
+    self.bundleVersion = bundleVersion
+    self.installedClients = installedClients
+    self.installedPaths = installedPaths
+    self.detail = detail
+    self.clientsNeedingRepair = clientsNeedingRepair
+  }
 
   static let unavailable = AgentBridgeInstallationStatus(
     payloadAvailable: false,
@@ -171,6 +189,9 @@ private struct AgentBridgeManagedMarker: Codable {
 /// directory itself is never renamed, so follower logs and ack cursors keep
 /// their inodes — and every rename forms one rollback-capable transaction;
 /// receipt replacement is the final commit point.
+/// The app-side callers of the installed `cs-bus` command live in
+/// `AgentBridgeCommands.swift`; this file stays compilable on its own so
+/// `make install-bus` can build the installer from source.
 final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   static let bundleSchema = "codescribe.agent-bridge.bundle.v1"
   static let receiptSchema = "codescribe.agent-bridge.receipt.v1"
@@ -181,9 +202,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   )
 
   private let resourceRoot: URL?
-  private let homeDirectory: URL
-  private let fileManager: FileManager
-  private let bridgeRoot: URL
+  let homeDirectory: URL
+  let fileManager: FileManager
+  let bridgeRoot: URL
   private let runtimeDirectory: URL
   private let receiptURL: URL
 
@@ -229,6 +250,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     var clients: [AgentBridgeClient] = []
     var paths: [String] = []
     var details: [String] = []
+    var clientsNeedingRepair: Set<AgentBridgeClient> = []
     for client in AgentBridgeClient.allCases.sorted(by: { $0.rawValue < $1.rawValue }) {
       let destination = client.skillDirectory(home: homeDirectory)
       let marker = managedMarker(destination: destination, client: client)
@@ -239,12 +261,21 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         marker != nil
           ? destination.standardizedFileURL.path
           : receipt?.installedPaths[client.rawValue] ?? destination.standardizedFileURL.path)
+      let receiptMatchesManagedFolder =
+        marker.map { marker in
+          guard let receipt else { return false }
+          return recorded && receipt.managedID == marker.managedID
+            && receipt.installedPaths[client.rawValue] == destination.standardizedFileURL.path
+            && managedSkillPayloadMatchesReceipt(
+              client: client, destination: destination, receipt: receipt, manifest: manifest)
+        } ?? false
+      if !receiptMatchesManagedFolder {
+        clientsNeedingRepair.insert(client)
+      }
       let evidence: String
-      if let marker {
-        if let receipt {
-          if recorded, receipt.managedID == marker.managedID,
-            receipt.installedPaths[client.rawValue] == destination.standardizedFileURL.path
-          {
+      if marker != nil {
+        if receipt != nil {
+          if receiptMatchesManagedFolder {
             evidence = String(
               localized: "receipt and managed folder found.",
               comment: "Installer evidence, follows \"<client name>: \" on one line"
@@ -277,7 +308,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       installedPaths: paths,
       detail: details.isEmpty
         ? String(localized: "Ready to install after you select an agent client.")
-        : details.joined(separator: "\n")
+        : details.joined(separator: "\n"),
+      clientsNeedingRepair: clientsNeedingRepair
     )
   }
 
@@ -378,7 +410,10 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     }
   }
 
-  private func requireSynchronizationOwnership(_ receipt: AgentBridgeReceipt) throws {
+  private func requireSynchronizationOwnership(
+    _ receipt: AgentBridgeReceipt,
+    allowMissingSelectedFolders: Bool = false
+  ) throws {
     let selected = Set(receipt.selectedClients)
     guard !receipt.managedID.isEmpty, !receipt.bundleVersion.isEmpty,
       selected.count == receipt.selectedClients.count,
@@ -446,9 +481,22 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       let destination = client.skillDirectory(home: homeDirectory)
       let expected = client.skillDirectory(home: homeDirectory.resolvingSymlinksInPath())
         .standardizedFileURL
-      guard receipt.installedPaths[client.rawValue] == destination.standardizedFileURL.path,
-        destination.resolvingSymlinksInPath().standardizedFileURL == expected,
-        let marker = managedMarker(destination: destination, client: client),
+      guard receipt.installedPaths[client.rawValue] == destination.standardizedFileURL.path else {
+        throw AgentBridgeInstallationError.conflict(
+          path: destination.path, reason: "the selected folder is not owned by this receipt")
+      }
+      if allowMissingSelectedFolders, try pathEntryExists(destination) == false {
+        guard try canonicalPathForMissingEntry(destination).path == expected.path else {
+          throw AgentBridgeInstallationError.conflict(
+            path: destination.path, reason: "the selected folder is not owned by this receipt")
+        }
+        continue
+      }
+      guard destination.resolvingSymlinksInPath().standardizedFileURL.path == expected.path else {
+        throw AgentBridgeInstallationError.conflict(
+          path: destination.path, reason: "the selected folder is not owned by this receipt")
+      }
+      guard let marker = managedMarker(destination: destination, client: client),
         marker.managedID == receipt.managedID
       else {
         throw AgentBridgeInstallationError.conflict(
@@ -470,8 +518,10 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     runtimeOnly: Bool = false,
     initializing: Bool = false
   ) throws -> AgentBridgeAdoptionResult {
-    guard runtimeOnly || !selectedClients.isEmpty else {
-      throw AgentBridgeInstallationError.selectionRequired
+    if !runtimeOnly, selectedClients.isEmpty {
+      guard let receipt = validReceipt(), !receipt.selectedClients.isEmpty else {
+        throw AgentBridgeInstallationError.selectionRequired
+      }
     }
     let manifest = try verifiedManifest()
     guard let resourceRoot else {
@@ -493,6 +543,18 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     }
 
     let previousReceipt = validReceipt()
+    // Empty selection is an explicit teardown of an existing managed client
+    // selection, never a way to initialize an empty installation. Recheck
+    // after taking the lease so a concurrent receipt change cannot broaden
+    // the deletion target.
+    if !runtimeOnly, selectedClients.isEmpty {
+      guard let previousReceipt, !previousReceipt.selectedClients.isEmpty else {
+        throw AgentBridgeInstallationError.selectionRequired
+      }
+      // Explicit deselection may forget a folder already removed outside Codescribe.
+      // Every remaining path entry still has to prove marker ownership below.
+      try requireSynchronizationOwnership(previousReceipt, allowMissingSelectedFolders: true)
+    }
     if initializing, expectedReceipt == nil,
       previousReceipt != nil || fileManager.fileExists(atPath: runtimeDirectory.path)
         || fileManager.fileExists(atPath: receiptURL.path)
@@ -535,7 +597,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     }
     for client in effectiveSelection {
       let destination = client.skillDirectory(home: homeDirectory)
-      if client != adopting, fileManager.fileExists(atPath: destination.path) {
+      if client != adopting, try pathEntryExists(destination) {
         try requireManaged(
           destination: destination,
           client: client
@@ -544,10 +606,11 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     }
     for client in deselected {
       let destination = client.skillDirectory(home: homeDirectory)
-      if fileManager.fileExists(atPath: destination.path) {
+      if try pathEntryExists(destination) {
         try requireManaged(
           destination: destination,
-          client: client
+          client: client,
+          expectedManagedID: managedID
         )
       }
     }
@@ -650,7 +713,12 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       }
       for client in deselected {
         let destination = client.skillDirectory(home: homeDirectory)
-        guard fileManager.fileExists(atPath: destination.path) else { continue }
+        guard try pathEntryExists(destination) else { continue }
+        try requireManaged(
+          destination: destination,
+          client: client,
+          expectedManagedID: managedID
+        )
         try replace(
           destination: destination,
           with: nil,
@@ -1028,9 +1096,122 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     return marker
   }
 
+  private func managedSkillPayloadMatchesReceipt(
+    client: AgentBridgeClient,
+    destination: URL,
+    receipt: AgentBridgeReceipt,
+    manifest: AgentBridgeBundleManifest
+  ) -> Bool {
+    // The receipt owns the installed generation. The current manifest supplies
+    // only the render root; comparing hashes with the bundle would reject an
+    // older installed payload when two source revisions share a version.
+    let prefix = manifest.skill + "/"
+    let entries = receipt.payloadFiles.filter { $0.path.hasPrefix(prefix) }
+    guard !entries.isEmpty,
+      entries.contains(where: { $0.path == prefix + "SKILL.md" })
+    else { return false }
+
+    let expectedRoot = client.skillDirectory(home: homeDirectory.resolvingSymlinksInPath())
+      .standardizedFileURL
+    guard destination.resolvingSymlinksInPath().standardizedFileURL == expectedRoot else {
+      return false
+    }
+
+    var renderedPaths = Set<String>()
+    for entry in entries {
+      let relative = String(entry.path.dropFirst(prefix.count))
+      guard isSafeRelativePath(relative), renderedPaths.insert(relative).inserted,
+        let expectedMode = UInt16(entry.mode, radix: 8), expectedMode <= 0o777
+      else { return false }
+      let file = destination.appendingPathComponent(relative)
+      guard
+        let values = try? file.resourceValues(forKeys: [
+          .isRegularFileKey, .isSymbolicLinkKey,
+        ]),
+        let attributes = try? fileManager.attributesOfItem(atPath: file.path),
+        values.isRegularFile == true, values.isSymbolicLink != true,
+        (attributes[.posixPermissions] as? NSNumber)?.intValue == Int(expectedMode),
+        file.resolvingSymlinksInPath().standardizedFileURL
+          == expectedRoot.appendingPathComponent(relative).standardizedFileURL,
+        let data = try? Data(contentsOf: file),
+        UInt64(data.count) == entry.bytes,
+        Self.sha256(data) == entry.sha256.lowercased()
+      else { return false }
+    }
+    return true
+  }
+
+  private func pathEntryExists(_ url: URL) throws -> Bool {
+    var metadata = stat()
+    if Darwin.lstat(url.path, &metadata) == 0 { return true }
+    let failure = errno
+    if failure == ENOENT { return false }
+    throw AgentBridgeInstallationError.conflict(
+      path: url.path,
+      reason: String(
+        localized: "The installation path could not be inspected.",
+        comment: "Agent bridge refuses an installation path it cannot inspect"
+      ) + " (errno \(failure))"
+    )
+  }
+
+  private func canonicalPathForMissingEntry(_ url: URL) throws -> URL {
+    var ancestor = url.deletingLastPathComponent().standardizedFileURL
+    var missingComponents = [url.lastPathComponent]
+    while true {
+      var metadata = stat()
+      if Darwin.lstat(ancestor.path, &metadata) == 0 {
+        let resolvedAncestor = ancestor.resolvingSymlinksInPath().standardizedFileURL
+        var resolvedMetadata = stat()
+        guard Darwin.lstat(resolvedAncestor.path, &resolvedMetadata) == 0,
+          (resolvedMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
+        else {
+          throw AgentBridgeInstallationError.conflict(
+            path: ancestor.path,
+            reason: String(
+              localized: "The installation path could not be inspected.",
+              comment: "Agent bridge refuses an installation path it cannot inspect"
+            )
+          )
+        }
+        return missingComponents.reversed().reduce(resolvedAncestor) { partial, component in
+          partial.appendingPathComponent(component, isDirectory: true)
+        }.standardizedFileURL
+      }
+      let failure = errno
+      guard failure == ENOENT else {
+        throw AgentBridgeInstallationError.conflict(
+          path: ancestor.path,
+          reason: String(
+            localized: "The installation path could not be inspected.",
+            comment: "Agent bridge refuses an installation path it cannot inspect"
+          ) + " (errno \(failure))"
+        )
+      }
+      let parent = ancestor.deletingLastPathComponent().standardizedFileURL
+      guard parent.path != ancestor.path, !ancestor.lastPathComponent.isEmpty else {
+        throw AgentBridgeInstallationError.conflict(
+          path: url.path,
+          reason: String(
+            localized: "The installation path could not be inspected.",
+            comment: "Agent bridge refuses an installation path it cannot inspect"
+          )
+        )
+      }
+      missingComponents.append(ancestor.lastPathComponent)
+      ancestor = parent
+    }
+  }
+
   /// Read-only ownership preflight, shared by updates and deselection.
-  func requireManaged(destination: URL, client: AgentBridgeClient) throws {
-    guard managedMarker(destination: destination, client: client) != nil else {
+  func requireManaged(
+    destination: URL,
+    client: AgentBridgeClient,
+    expectedManagedID: String? = nil
+  ) throws {
+    guard let marker = managedMarker(destination: destination, client: client),
+      expectedManagedID.map({ marker.managedID == $0 }) ?? true
+    else {
       throw AgentBridgeInstallationError.conflict(
         path: destination.path,
         reason: String(
@@ -1076,13 +1257,13 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     }
   }
 
-  private func commandURL(_ name: String) -> URL {
+  func commandURL(_ name: String) -> URL {
     homeDirectory.appendingPathComponent(".local/bin/" + name)
   }
 
   private static let commandMarker = "# codescribe-managed-command: "
 
-  private func managedCommandID(_ file: URL) -> String? {
+  func managedCommandID(_ file: URL) -> String? {
     guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
       values.isRegularFile == true, values.isSymbolicLink != true,
       let text = try? String(contentsOf: file, encoding: .utf8),

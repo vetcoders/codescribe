@@ -16,6 +16,7 @@ fixture() {
   mkdir -p "$FIXTURE/scripts/lib" "$FIXTURE/bin" "$FIXTURE/tmp"
   cp "$ROOT/scripts/build-dmg.sh" "$FIXTURE/scripts/producer.sh"
   cp "$ROOT/scripts/lib/release-artifact-receipt.sh" "$FIXTURE/scripts/lib/"
+  cp "$ROOT/scripts/lib/refresh-agent-publisher-manifest.py" "$FIXTURE/scripts/lib/"
   : > "$FIXTURE/scripts/entitlements.plist"
   printf 'version = "1.2.3"\n' > "$FIXTURE/Cargo.toml"
   printf 'aaaaaaaaa\n' > "$FIXTURE/head"
@@ -36,6 +37,23 @@ set -eu
 [[ "$*" == 'app PROFILE=release' ]] || exit 91
 [[ "${SCENARIO:-}" != build-failure ]] || exit 41
 mkdir -p "$FIXTURE/macos/build/Build/Products/Release/Codescribe.app"
+payload="$FIXTURE/macos/build/Build/Products/Release/Codescribe.app/Contents/Resources/agent-bridge"
+mkdir -p "$payload/bin"
+printf 'fixture publisher\n' > "$payload/bin/codescribe"
+chmod +x "$payload/bin/codescribe"
+python3 - "$payload" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+data = (root / 'bin/codescribe').read_bytes()
+(root / 'manifest.json').write_text(json.dumps({
+    'schema': 'codescribe.agent-bridge.bundle.v1',
+    'files': [{'path': 'bin/codescribe', 'bytes': len(data),
+               'sha256': hashlib.sha256(data).hexdigest()}],
+}) + '\n')
+PY
 # Simulate source advancing after build-dmg froze its identity.
 printf 'bbbbbbbbb\n' > "$FIXTURE/head"
 printf 'version = "9.9.9"\n' > "$FIXTURE/Cargo.toml"

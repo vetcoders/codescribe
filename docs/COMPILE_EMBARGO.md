@@ -54,6 +54,22 @@ inspect command receipts before admission. A policy document or phase marker
 alone must not be reported as a technical execution sandbox. Use §5.1 for
 checkpoint hooks; do not accidentally compile via `git commit`.
 
+## Shared Cargo cache — Founder decision 2026-10-07
+
+Authorized worktree-source builds use the main checkout's single `target`.
+Source location and cache location are independent. `make` resolves Git's
+common directory and exports both `CARGO_TARGET_DIR` and `CARGO_BUILD_BUILD_DIR`
+to that absolute path. Direct Cargo commands must use the same two values;
+on this machine both are `/Volumes/vc-workspace/vetcoders/codescribe/target`.
+Do not create separate worktree targets or rename caches to evade cleanup.
+Cargo fingerprints may rebuild different source, feature and profile variants
+inside this one directory; sharing is not a promise of a fixed cache size.
+
+The designated integrator owns execution and Living Tree source admission.
+This storage rule does not grant workers compilation or test authority.
+Record the source root, full source SHA and resolved target for each gate;
+serialize app production and preserve active build outputs during cleanup.
+
 ## 1. Definition
 
 `COMPILE_EMBARGO_CODING` is a phase-separated implementation technique in

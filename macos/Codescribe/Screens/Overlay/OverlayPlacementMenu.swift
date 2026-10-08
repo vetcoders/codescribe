@@ -70,8 +70,10 @@ struct OverlayPlacementMenu: View {
       }
       .font(.system(size: 11, weight: .semibold))
       .foregroundStyle(palette.mutedText.color)
-      .frame(width: 24, height: 24)
-      .contentShape(Rectangle())
+      .frame(width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter)
+      .background(palette.mutedText.color.opacity(0.08), in: Circle())
+      .overlay { Circle().strokeBorder(palette.border.color, lineWidth: 0.5) }
+      .contentShape(Circle())
     }
     .menuStyle(.button)
     .buttonStyle(.plain)

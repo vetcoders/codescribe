@@ -378,6 +378,213 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "explicit P0 PCM replay; needs signed Apple bridge and cached local Whisper"]
+    async fn forensic_formatter_refusal_keeps_full_live_pcm_session() {
+        use crate::presentation::emitter::PresentationEmitter;
+        use codescribe_core::llm::provider::{CustomProvider, WireFamily};
+        use codescribe_core::pipeline::contracts::EventSink;
+        use sha2::{Digest, Sha256};
+        use std::sync::{Arc, Mutex};
+        let _ = tracing_subscriber::fmt().with_ansi(false).with_env_filter(
+            "codescribe_core::stt::tail_provider=info,codescribe_core::pipeline::streaming::apple_live_session=info,codescribe_core::pipeline::streaming::session=info"
+        ).try_init();
+
+        struct LiveReplaySink {
+            emitter: PresentationEmitter,
+            events: Mutex<Vec<EngineEvent>>,
+        }
+        impl EventSink for LiveReplaySink {
+            fn on_capture_opened(&self, session_id: &str, capture_epoch: u64) {
+                self.emitter.on_capture_opened(session_id, capture_epoch);
+            }
+            fn on_event(&self, event: &EngineEvent) {
+                self.events.lock().unwrap().push(event.clone());
+                self.emitter.on_event(event);
+            }
+        }
+
+        let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV")
+            .expect("explicitly select the private P0 audio fixture");
+        assert_eq!(
+            hex::encode(Sha256::digest(std::fs::read(&wav).unwrap())),
+            "bbc3a7e22ad871e7f733a857d53c372143367b8d7ad58f7d98f607e63146df6b",
+            "replay must use the exact 60.89 s incident recording"
+        );
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || runtime.block_on(async move {
+            let (samples, rate) = codescribe_core::audio::load_audio_file(Path::new(&wav)).unwrap();
+            assert_eq!((samples.len(), rate), (2_922_496, 48_000));
+            // Reserve a loopback address without serving a formatter. Every
+            // attempt fails locally; no transcript or credentials leave the host.
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}/v1/responses", listener.local_addr().unwrap());
+            drop(listener);
+            let provider = CustomProvider::new("p0-replay-refusal", WireFamily::OpenAiResponses, &endpoint).unwrap();
+            let settings = UserSettings {
+                asr_mode: Some("local_power".into()), ai_formatting_enabled: Some(true),
+                formatting_level: Some("smart".into()),
+                llm_formatting_provider: Some(format!("custom:{}", provider.id)),
+                llm_formatting_model: Some("replay-refusal".into()),
+                llm_custom_providers: vec![provider], ..UserSettings::default()
+            };
+            settings.save().expect("isolated replay settings");
+            std::fs::copy(
+                Path::new(&wav).parent().unwrap().join("p0-energy-calibration.json"),
+                codescribe_core::config::energy_calibration_path(),
+            ).expect("use the incident host's measured capture calibration");
+            let snapshot = Arc::new(codescribe_core::config::Config::load_runtime_snapshot_without_keychain().unwrap());
+            assert_eq!(snapshot.llm_lanes().formatting().endpoint(), endpoint);
+            assert!(snapshot.llm_lanes().formatting().request_available());
+            assert!(snapshot.values().ai_formatting_enabled);
+            assert_eq!(snapshot.formatting_policy(), codescribe_core::config::FormattingPolicy::Smart);
+            let calibration = snapshot.energy_calibration_for_capture("MacBook Pro Microphone", rate).unwrap();
+            assert_eq!(calibration.version, "cal2-macbook-pro-microphone-1791099372411@48000hz");
+            let (layer1, _) = codescribe_core::asr_session::layer1_decision(&snapshot);
+            assert!(layer1.is_armed());
+            let ledger = Arc::new(Mutex::new(AcousticLedger::new()));
+            let buffer = Arc::new(tokio::sync::Mutex::new(String::new()));
+            let mut sink = Arc::new(LiveReplaySink {
+                emitter: PresentationEmitter::new_with_authority(buffer.clone(), None, None, None, Some(ledger.clone()), None),
+                events: Mutex::new(Vec::new()),
+            });
+            let session_id = uuid::Uuid::new_v4().to_string();
+            sink.on_capture_opened(&session_id, 1);
+            let config = codescribe_core::pipeline::streaming::SessionConfig {
+                session_id, capture_epoch: 1, runtime_settings: snapshot,
+                live_formatting_agent: None, acoustic_ledger: ledger.clone(), sample_rate: rate,
+                capture_device_name: Some("MacBook Pro Microphone".into()), language: Some("pl".into()),
+                stream_log_path: None, utterance_silence_sec: settings.toggle_silence_sec,
+                capture_turn: codescribe_core::audio::streaming_recorder::CaptureTurnIntent::HandsFree,
+                layer1, lifecycle_events: None, terminal_audio: None, last_window_closed: None,
+            };
+            let started = std::time::Instant::now();
+            codescribe_core::pipeline::streaming::replay_buffered_engine_session(&samples, config, sink.clone())
+                .await.expect("the complete live PCM session must return");
+            Arc::get_mut(&mut sink).unwrap().emitter.finish().await;
+            let delivered = buffer.lock().await.clone();
+            let events = sink.events.lock().unwrap();
+            let proposals = events.iter().filter(|event| matches!(event, EngineEvent::OccurrenceLabelProposal { .. })).count();
+            let worker_failed = events.iter().any(|event| matches!(event, EngineEvent::NoSpeech { reason } if reason.starts_with("apple_live_stream_worker")));
+            let observed = events.iter().filter_map(|event| match event {
+                EngineEvent::SealCoverage { receipt, .. } => receipt.observed_samples,
+                _ => None,
+            }).max();
+            let ledger = ledger.lock().unwrap();
+            let last_covered = ledger.last_covered_sample().unwrap_or_default();
+            let words = delivered.split_whitespace().count();
+            eprintln!("p0_live_pcm_acceptance={}", serde_json::json!({
+                "audio_samples": samples.len(), "sample_rate": rate,
+                "elapsed_seconds": started.elapsed().as_secs_f64(),
+                "events": events.len(), "formatter_proposals": proposals,
+                "worker_failed": worker_failed, "observed_samples": observed,
+                "last_covered_sample": last_covered, "delivered_words": words,
+                "warning_codes": events.iter().filter_map(|event| match event {
+                    EngineEvent::Warning { code, .. } => Some(code), _ => None,
+                }).collect::<std::collections::BTreeSet<_>>(),
+            }));
+            assert!(proposals > 0, "an armed formatter must actually return proposals");
+            assert!(!worker_failed, "optional formatter failure must not terminate ASR");
+            assert_eq!(observed, Some(samples.len() as u64), "the pipeline must observe the whole take");
+            assert!(last_covered > 987_136, "ledger admission must continue beyond the P0 cutoff");
+            assert!(words > 19, "delivery must include speech after the old 19-word prefix");
+        })).await.expect("live PCM replay must join");
+    }
+
+    #[tokio::test]
+    #[ignore = "explicit private PCM replay; needs signed Apple bridge and cached local Whisper"]
+    async fn forensic_word_ledger_number_and_negation_acceptance() {
+        use sha2::{Digest, Sha256};
+        let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV")
+            .expect("explicitly select the private audio fixture");
+        assert_eq!(
+            hex::encode(Sha256::digest(std::fs::read(&wav).unwrap())),
+            "a11546e2e049bd99de2c6305d7f80c40d4328c6599ed0425208eb56c2bef2a95",
+            "the oracle belongs to the supplied number/negation fixture"
+        );
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || runtime.block_on(async move {
+            let (samples, rate) = codescribe_core::audio::load_audio_file(Path::new(&wav)).unwrap();
+            let settings = UserSettings { asr_mode: Some("local_power".into()), ..UserSettings::default() };
+            settings.save().expect("isolated profile snapshot");
+            // Bind the archived recording's actual measured capture profile.
+            // The generic file replay intentionally has no microphone identity
+            // and cannot qualify PCM; never substitute an invented energy floor.
+            let capture_root = Path::new(&wav).ancestors().nth(3).unwrap();
+            let calibration_path = capture_root.join("Library/Application Support/Codescribe/energy-calibration.json");
+            std::fs::copy(calibration_path, codescribe_core::config::energy_calibration_path())
+                .expect("copy measured calibration into the isolated test profile");
+            let snapshot = std::sync::Arc::new(codescribe_core::config::Config::load_runtime_snapshot_without_keychain().unwrap());
+            let calibration = snapshot.energy_calibration_for_capture("EarPods Microphone", rate).unwrap();
+            assert_eq!(calibration.version, "cal2-earpods-microphone-1790960111192@48000hz");
+            let (layer1, _) = codescribe_core::asr_session::layer1_decision(&snapshot);
+            assert!(layer1.is_armed());
+            let acoustic_ledger = std::sync::Arc::new(std::sync::Mutex::new(AcousticLedger::new()));
+            let config = codescribe_core::pipeline::streaming::SessionConfig {
+                session_id: uuid::Uuid::new_v4().to_string(), capture_epoch: 1,
+                runtime_settings: snapshot, live_formatting_agent: None,
+                acoustic_ledger: acoustic_ledger.clone(), sample_rate: rate,
+                capture_device_name: Some("EarPods Microphone".into()),
+                language: Some("pl".into()), stream_log_path: None,
+                utterance_silence_sec: settings.toggle_silence_sec,
+                capture_turn: codescribe_core::audio::streaming_recorder::CaptureTurnIntent::HandsFree,
+                layer1, lifecycle_events: None, terminal_audio: None, last_window_closed: None,
+            };
+            let started = std::time::Instant::now();
+            let events = codescribe_core::pipeline::streaming::collect_buffered_engine_events_with_config(&samples, config)
+                .await.expect("production replay must complete");
+            let session = codescribe_core::audio::streaming_recorder::ProductionSessionReplay {
+                tail_patch_receipt: codescribe_core::pipeline::streaming::TailPatchSessionReceipt::from_events(&events),
+                events, acoustic_ledger, layer1_armed: true,
+                streaming_engine_label: "live_apple".into(),
+            };
+            let mut ledger = session.acoustic_ledger.lock().unwrap();
+            let mut reducer = TranscriptReducer::default();
+            let mut seen_number = false;
+            let mut regressions = 0;
+            let mut revisions = 0;
+            for event in &session.events {
+                let revision = match event {
+                    EngineEvent::LedgerMutation { observation, receipt, .. } =>
+                        reducer.apply_ledger_mutation(&ledger, observation, receipt),
+                    EngineEvent::LedgerSeal { receipt } => reducer.apply_ledger_seal(receipt),
+                    EngineEvent::OccurrenceLabelProposal { proposal } =>
+                        reducer.apply_occurrence_label_proposal(&mut ledger, proposal).1,
+                    _ => None,
+                };
+                if let Some(revision) = revision {
+                    revisions += 1;
+                    let tokens = revision.rendered_text.split(|c: char| !c.is_alphanumeric()).collect::<Vec<_>>();
+                    if seen_number && !tokens.contains(&"1286") { regressions += 1; }
+                    seen_number |= tokens.contains(&"1286");
+                }
+            }
+            let final_text = reducer.visible_projection();
+            let normalized = final_text.split(|c: char| !c.is_alphanumeric())
+                .filter(|t| !t.is_empty()).map(str::to_lowercase).collect::<Vec<_>>().join(" ");
+            let number = normalized.split_whitespace().filter(|t| *t == "1286").count();
+            let negation_one = normalized.contains("nie oddajemy agentowi");
+            let negation_two = normalized.contains("nie stoimy w miejscu");
+            eprintln!("word_ledger_pcm_acceptance={}", serde_json::json!({
+                "audio_seconds": samples.len() as f64 / f64::from(rate),
+                "elapsed_seconds": started.elapsed().as_secs_f64(),
+                "event_count": session.events.len(),
+                "warning_codes": session.events.iter().filter_map(|event| match event {
+                    EngineEvent::Warning { code, .. } => Some(code), _ => None,
+                }).collect::<std::collections::BTreeSet<_>>(),
+                "revisions": revisions, "number_occurrences": number,
+                "number_regressions": regressions, "negation_one": negation_one,
+                "negation_two": negation_two, "words": normalized.split_whitespace().count(),
+            }));
+            assert!(revisions > 0);
+            assert_eq!(number, 1, "one physical occurrence of the expected number");
+            assert_eq!(regressions, 0, "a later revision must not erase the correct number");
+            assert!(negation_one && negation_two, "both supplied negation contrasts must survive");
+            let delivery = finish_replay_delivery(final_text.clone(), None, &session.streaming_engine_label).unwrap();
+            assert_eq!(delivery.delivered_text, final_text);
+        })).await.expect("file replay must join");
+    }
+
+    #[tokio::test]
     #[ignore = "explicit private PCM replay; needs signed Apple bridge and cached local Whisper"]
     async fn forensic_saved_pcm_produces_authenticated_projection() {
         let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV")

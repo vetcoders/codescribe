@@ -512,13 +512,6 @@ reload = "restart"
 category = "stt"
 description = "Optional power-user override of the product-owned audio.seal_lane_armed setting (supported production default: ON). Unset defers to Settings; when present, both 0 and 1 win over Settings. Armed: Supervisor edges mint utterance ids at Apple PCM ingress, cumulative Apple finals are sliced by time onto those ranges, sealed spans carry silero_utterance_id, and Whisper/Apple fuse by span overlap (agreements + clear gap fills; unresolved alternatives are receipted). The session Silero still runs whenever hands-free silence arms the engine lifecycle."
 
-[vars.CODESCRIBE_SILERO_FUSION_CONTEXT]
-default = "symmetric_pad"
-type = "string"
-reload = "restart"
-category = "stt"
-description = "Bounded decode context for W13-3B Whisper windows. Unset or unrecognised resolves to symmetric_pad: 400 ms of audio on each side of the Silero utterance. Recognised tokens (trimmed, case-insensitive): utterance_only | utterance-only | exact; left_pad | left-pad | pad; stable_prompt | stable-text | prompt. NOTE the earlier entry documented a token 'utterance' that the parser does not know — it falls through to symmetric_pad; the exact-audio token is utterance_only. Every mode is context only: the window a decoder may hear is clipped at the 0.55 s long-silence fence, at end of captured PCM, and at both neighbouring utterances, while occurrence identity stays minted from the unpadded utterance range and is never widened by it. Two neighbours' contexts may overlap inside the gap between them; neither may reach a sample the other owns. The 400 ms figure is the selected default, not yet a measured optimum — short-word, fence/neighbour, retention and long-take measurements are outstanding."
-
 [vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
 default = "1800"
 type = "u64"

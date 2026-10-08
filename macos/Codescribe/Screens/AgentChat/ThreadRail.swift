@@ -264,6 +264,7 @@ private struct ThreadRow: View {
   let onCancelRename: () -> Void
 
   @FocusState private var renameFieldFocused: Bool
+  @State private var measuredContentWidth: CGFloat = 0
 
   private var isRowFocused: Bool { focus.wrappedValue == thread.id }
   private var title: String { ThreadRowTitle.displayTitle(for: thread) }
@@ -278,14 +279,15 @@ private struct ThreadRow: View {
           .hidden()
           .allowsHitTesting(false)
           .accessibilityHidden(true)
-          .background {
-            GeometryReader { geometry in
-              Color.clear.preference(
-                key: ThreadRailWidthPreference.self,
-                // Row padding: 12pt per side; rail list padding: 10pt per side.
-                value: geometry.size.width + 2 * 12 + 2 * 10)
-            }
+          .onGeometryChange(for: CGFloat.self) {
+            $0.size.width
+          } action: { width in
+            measuredContentWidth = width
           }
+          .preference(
+            key: ThreadRailWidthPreference.self,
+            // Row padding: 12pt per side; rail list padding: 10pt per side.
+            value: measuredContentWidth + 2 * 12 + 2 * 10)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 12)
@@ -390,6 +392,7 @@ private struct ThreadRow: View {
           Text(tag)
             .lineLimit(1)
             .truncationMode(.tail)
+            .fixedSize(horizontal: measuring, vertical: false)
             .font(CSFont.mono(9, .semibold))
             .foregroundStyle(isActive ? CSColor.modeAgent : CSColor.textTertiary)
             .padding(.horizontal, 6)

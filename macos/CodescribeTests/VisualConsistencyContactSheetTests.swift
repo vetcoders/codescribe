@@ -120,8 +120,8 @@ final class VisualConsistencyContactSheetTests: XCTestCase {
 }
 
 // Production floors. Wide overlay/settings cells are larger sheets, not a second
-// minimum: Settings content minimum is 880×620 (SettingsView and the window
-// minimum). Agent floors come from AgentWindowMetrics. Overlay floor is
+// minimum: Settings content minimum is 880×620 with the sidebar open
+// (SettingsView.detailMinWidth plus the sidebar). Agent floors come from AgentWindowMetrics. Overlay floor is
 // DictationOverlayWindow.minSize.
 private let overlayFloor = CGSize(
   width: DictationOverlayWindow.minSize.width,
@@ -539,10 +539,21 @@ private final class SheetRun {
 
       var settled = size
       var fittingNote: String?
-      for _ in 0..<layoutTurns {
+      // Budget stays layoutTurns × layoutPulse. Host frame is assigned above,
+      // so it is not a witness. Stop when mounted content is in the tree.
+      // A missing witness spends the whole budget, then capture still runs.
+      let layoutDeadline = Date().addingTimeInterval(layoutPulse * Double(layoutTurns))
+      while true {
         host.layoutSubtreeIfNeeded()
         window.layoutIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(layoutPulse))
+        if contentMounted(host, surface: surface, state: state) {
+          break
+        }
+        if Date() >= layoutDeadline {
+          break
+        }
+        let sliceEnd = min(layoutDeadline, Date().addingTimeInterval(layoutPulse))
+        RunLoop.main.run(mode: .default, before: sliceEnd)
       }
       if surface == "tray" {
         let fitted = host.fittingSize
@@ -637,6 +648,35 @@ private final class SheetRun {
       rendered.append(RenderedCell(measurement: measurement, png: png))
     } catch {
       failures.append("\(id) capture failed: \(error)")
+    }
+  }
+
+  /// Real mounted content. Frame size is set before the first turn.
+  private func contentMounted(_ host: NSView, surface: String, state: String) -> Bool {
+    switch surface {
+    case "overlay":
+      let headerReady = descendants(of: host, where: {
+        ($0 as? OverlayWindowDragRegionView)?.accessibilityIdentifier()
+          == "overlay-header-drag-region"
+      }).contains { view in
+        guard let frame = visibleBounds(view, in: host) else { return false }
+        return frame.width > 20 && frame.height > 8
+      }
+      if state == "formatted" {
+        let transcript = descendants(of: host, where: { $0 is LiveTranscriptNativeTextView })
+        return headerReady && !transcript.isEmpty
+      }
+      return headerReady
+    case "agent":
+      return descendants(of: host, where: { $0 is NSSplitView })
+        .contains { $0.bounds.width > 100 && $0.bounds.height > 100 }
+    case "settings":
+      return descendants(of: host, where: { $0 is NSControl && !($0 is NSTextView) })
+        .contains { $0.bounds.width > 40 && $0.bounds.height > 8 }
+    case "tray":
+      return host.fittingSize.height > 160
+    default:
+      return false
     }
   }
 

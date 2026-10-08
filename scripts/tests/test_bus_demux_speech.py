@@ -14,7 +14,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 import wave
 
 
@@ -24,6 +24,21 @@ SPEC = importlib.util.spec_from_file_location(
 DEMUX = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = DEMUX
 SPEC.loader.exec_module(DEMUX)
+
+
+def fixture_publish(bus, event, *, bridge_root=None):
+    """Isolate speech/interlocks from publication; real CLI has its own gate."""
+    raw = (json.dumps(event, ensure_ascii=False) + "\n").encode()
+    descriptor = os.open(bus, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(descriptor, "ab") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        offset = handle.tell()
+        handle.write(raw)
+        handle.flush()
+        os.fsync(handle.fileno())
+        metadata = os.fstat(handle.fileno())
+    return {"stream_id": "speech-fixture", "stream_dev": metadata.st_dev,
+            "stream_inode": metadata.st_ino, "offset": offset, "length": len(raw)}
 
 
 class SpeechCredentialTests(unittest.TestCase):
@@ -242,11 +257,14 @@ class SayReplyTests(unittest.TestCase):
         out = io.StringIO()
         with (
             patch.object(DEMUX, "_speak_xai", return_value=speaker) as spoken,
+            patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish),
             patch.object(sys, "argv", argv),
             contextlib.redirect_stdout(out),
         ):
             code = DEMUX.main()
-        return code, json.loads(out.getvalue()), spoken
+        rows = [json.loads(line) for line in out.getvalue().splitlines()]
+        self.outcome = rows[-1]
+        return code, next(row for row in rows if row["kind"] == "agent_reply"), spoken
 
     def test_name_comes_from_the_lease_when_not_given(self):
         self.attach_lease("session-a", "filip")
@@ -255,8 +273,82 @@ class SayReplyTests(unittest.TestCase):
         self.assertEqual(reply["name"], "filip")
         # The resolved name selects the profile, exactly as an explicit one.
         spoken.assert_called_once_with(
-            "Zrobione.", "rex", 1.1, playback_root=self.home, bus=self.bus
+            "Zrobione.", "rex", 1.1, playback_root=self.home, bus=self.bus, control=ANY
         )
+
+    def mute(self, session, muted=True, bus=None):
+        args = DEMUX.argparse.Namespace(
+            provider="claude-code", session=session, bus=bus or self.bus,
+            bridge_home=self.home, mute_agent=muted,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(DEMUX.set_agent_muted(args), 0)
+
+    def test_muted_reply_keeps_text_without_synthesis_and_unmute_allows_next_reply(self):
+        self.attach_lease("session-a", "filip")
+        self.mute("session-a")
+        code, reply, spoken = self.say("--session", "session-a")
+        self.assertEqual(code, 0)
+        spoken.assert_not_called()
+        self.assertEqual(self.outcome["state"], "refused")
+        self.assertEqual(self.outcome["reason"], "muted")
+        rows = [json.loads(line) for line in self.bus.read_text().splitlines()]
+        self.assertEqual(rows[0]["reply_id"], reply["reply_id"])
+        self.assertEqual(rows[0]["text"], "Zrobione.")
+        self.mute("session-a", False)
+        code, _, spoken = self.say("--session", "session-a")
+        self.assertEqual(code, 0)
+        spoken.assert_called_once()
+
+    def test_same_name_other_session_stays_audible_and_wrong_bus_cannot_mute(self):
+        self.attach_lease("session-a", "filip")
+        self.attach_lease("session-b", "filip")
+        self.mute("session-a")
+        code, _, spoken = self.say("--session", "session-b")
+        self.assertEqual(code, 0)
+        spoken.assert_called_once()
+        with self.assertRaises(ValueError):
+            self.mute("session-b", bus=self.bus.with_name("other.jsonl"))
+        self.assertFalse(DEMUX.agent_playback_muted(
+            self.home, "claude-code", "session-b", self.bus))
+
+    def test_large_valid_mailbox_can_be_muted_without_losing_history(self):
+        self.attach_lease("session-a", "filip")
+        lease = self.home / "leases" / f"{DEMUX.lease_identifier('claude-code', 'session-a')}.json"
+        row = json.loads(lease.read_text())
+        row["pending"] = [{"text": "x" * (5 << 20)}]
+        lease.write_text(json.dumps(row))
+        before = lease.read_bytes()
+        self.mute("session-a")
+        self.assertEqual(lease.read_bytes(), before)
+        self.assertTrue(DEMUX.agent_playback_muted(
+            self.home, "claude-code", "session-a", self.bus))
+
+    def test_manual_replay_works_while_automatic_speech_is_muted(self):
+        self.attach_lease("session-a", "filip")
+        self.mute("session-a")
+        _, reply, _ = self.say("--session", "session-a")
+        args = DEMUX.argparse.Namespace(bridge_home=self.home)
+        with (
+            patch.object(DEMUX, "_speak_xai", return_value=(True, None, None)) as spoken,
+            patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(DEMUX.speak_published_reply(
+                args, self.bus, reply, "a" * 24), 0)
+        spoken.assert_called_once()
+
+    def test_malformed_mute_receipt_never_authorizes_automatic_speech(self):
+        self.attach_lease("session-a", "filip")
+        self.mute("session-a")
+        path = DEMUX.playback_mute_path(self.home, "claude-code", "session-a", self.bus)
+        row = json.loads(path.read_text())
+        for field, invalid in (("muted", "false"), ("provider_session_id", "other")):
+            with self.subTest(field=field):
+                path.write_text(json.dumps({**row, field: invalid}))
+                code, _, spoken = self.say("--session", "session-a")
+                self.assertEqual(code, 0)
+                spoken.assert_not_called()
 
     def test_explicit_name_still_wins(self):
         self.attach_lease("session-a", "filip")
@@ -268,7 +360,7 @@ class SayReplyTests(unittest.TestCase):
             "leo",
             DEMUX.DEFAULT_SPEECH_SPEED,
             playback_root=self.home,
-            bus=self.bus,
+            bus=self.bus, control=ANY,
         )
 
     def test_without_lease_or_name_it_refuses(self):
@@ -289,8 +381,10 @@ class SayReplyTests(unittest.TestCase):
         )
         self.assertEqual(code, 5)
         self.assertFalse(reply["spoken"])
-        self.assertEqual(reply["reason"], "quota_exhausted")
-        row = json.loads(self.bus.read_text())
+        self.assertEqual(self.outcome["reason"], "quota_exhausted")
+        rows = [json.loads(line) for line in self.bus.read_text().splitlines()]
+        self.assertEqual(rows[0]["text"], "Zrobione.")
+        row = rows[-1]
         self.assertEqual(row["reason"], "quota_exhausted")
         self.assertEqual(row["tts_error"], "tts request failed (403)")
 
@@ -320,9 +414,9 @@ def queued_say(
         synthesized.set()
         return b"\x00\x00", None, None
 
-    def lock(descriptor):
+    def lock(descriptor, control=None):
         waiting.set()
-        return acquire(descriptor)
+        return acquire(descriptor, control)
 
     class Player:
         def __init__(self, _command, **_kwargs):
@@ -385,6 +479,7 @@ def queued_say(
         patch.object(DEMUX, "_openai_speech_key", return_value="test-only-key"),
         patch.object(DEMUX, "_acquire_playback_lock", side_effect=lock),
         patch("subprocess.Popen", side_effect=Player),
+        patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish),
         patch.object(DEMUX, "bus_path", return_value=speech_bus or Path(bus)),
         contextlib.redirect_stdout(io.StringIO()),
     ):
@@ -453,11 +548,12 @@ class PlaybackQueueTests(unittest.TestCase):
         self.addCleanup(lock.close)
         return lock
 
-    def replies(self):
+    def outcomes(self):
         return [
             row
             for line in self.bus.read_text().splitlines()
-            if (row := json.loads(line)).get("kind") == "agent_reply"
+            if (row := json.loads(line)).get("kind") == "agent_reply_playback"
+            and row.get("state") not in ("waiting", "playing")
         ]
 
     def test_parallel_say_synthesizes_in_parallel_and_plays_in_lock_order(self):
@@ -490,8 +586,8 @@ class PlaybackQueueTests(unittest.TestCase):
                 ["astra", "end"],
             ],
         )
-        self.assertEqual(len(self.replies()), 2)
-        self.assertTrue(all(row["spoken"] for row in self.replies()))
+        self.assertEqual(len(self.outcomes()), 2)
+        self.assertTrue(all(row["spoken"] for row in self.outcomes()))
 
     def test_timeout_writes_playback_busy_and_never_plays(self):
         lock = self.hold_lock()
@@ -499,7 +595,7 @@ class PlaybackQueueTests(unittest.TestCase):
         self.assertTrue(waiting.wait(5))
         self.join(child)
         self.assertFalse(playing.is_set())
-        (reply,) = self.replies()
+        (reply,) = self.outcomes()
         self.assertFalse(reply["spoken"])
         self.assertEqual(reply["reason"], "playback_busy")
         fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
@@ -520,7 +616,7 @@ class PlaybackQueueTests(unittest.TestCase):
         self.assertFalse(
             playing.is_set(), "utterance seal must not end a live microphone take"
         )
-        (reply,) = self.replies()
+        (reply,) = self.outcomes()
         self.assertFalse(reply["spoken"])
         self.assertEqual(reply["reason"], "take_live")
         with self.bus.open("a") as stream:
@@ -543,7 +639,7 @@ class PlaybackQueueTests(unittest.TestCase):
         self.assertTrue(waiting.wait(5))
         self.join(child)
         self.assertFalse(playing.is_set())
-        (reply,) = self.replies()
+        (reply,) = self.outcomes()
         self.assertEqual(reply["reason"], "take_live")
         self.assertFalse(reply["spoken"])
 
@@ -563,7 +659,7 @@ class PlaybackQueueTests(unittest.TestCase):
             )
         self.join(child)
         self.assertTrue(playing.is_set())
-        (reply,) = self.replies()
+        (reply,) = self.outcomes()
         self.assertTrue(reply["spoken"])
 
     def test_take_start_during_playback_terminates_player_and_reports_it(self):
@@ -580,7 +676,7 @@ class PlaybackQueueTests(unittest.TestCase):
                 + "\n"
             )
         self.join(child)
-        (reply,) = self.replies()
+        (reply,) = self.outcomes()
         self.assertEqual(reply["reason"], "take_started")
         self.assertFalse(reply["spoken"])
         log = [
@@ -599,7 +695,7 @@ class PlaybackQueueTests(unittest.TestCase):
             json.dumps({"status": "session_started", "session_id": "first"}) + "\n"
         )
         self.assertFalse(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
         initial_offset = cursor["offset"]
         with self.bus.open("a") as stream:
@@ -607,7 +703,7 @@ class PlaybackQueueTests(unittest.TestCase):
                 json.dumps({"status": "session_ended", "session_id": "first"}) + "\n"
             )
         self.assertTrue(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
         self.assertGreater(cursor["offset"], initial_offset)
         self.bus.rename(self.bus.with_suffix(".old"))
@@ -615,40 +711,40 @@ class PlaybackQueueTests(unittest.TestCase):
             json.dumps({"status": "session_started", "session_id": "second"}) + "\n"
         )
         self.assertFalse(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
         self.bus.write_text("")
         # Erasing history is not a terminal receipt for the observed live take.
         self.assertFalse(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
         self.bus.write_text(
             json.dumps({"status": "session_ended", "session_id": "second"}) + "\n"
         )
         self.assertTrue(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
 
     def test_idle_cursor_refuses_partial_tail_until_the_row_completes(self):
         cursor = {}
         self.assertTrue(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
         self.bus.write_text('{"status": "session_started", "session_id":')
         self.assertFalse(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
         with self.bus.open("a") as stream:
             stream.write('"take"}\n')
         self.assertFalse(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
         with self.bus.open("a") as stream:
             stream.write(
                 json.dumps({"status": "session_ended", "session_id": "take"}) + "\n"
             )
         self.assertTrue(
-            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.home)
         )
 
     # Integrator (2026-10-01): two replies played into the Founder's open
@@ -678,7 +774,7 @@ class PlaybackQueueTests(unittest.TestCase):
         self.assertTrue(waiting.wait(5))
         self.join(child)
         self.assertFalse(playing.is_set(), "an open channel microphone is a live take")
-        (reply,) = self.replies()
+        (reply,) = self.outcomes()
         self.assertFalse(reply["spoken"])
         self.assertEqual(reply["reason"], "take_live")
 
@@ -689,7 +785,7 @@ class PlaybackQueueTests(unittest.TestCase):
         self.assertTrue(waiting.wait(5))
         self.join(child)
         self.assertFalse(playing.is_set())
-        (reply,) = self.replies()
+        (reply,) = self.outcomes()
         self.assertEqual(reply["reason"], "take_live")
 
     def test_open_channel_on_a_bus_the_binding_names_blocks_speech(self):
@@ -713,7 +809,7 @@ class PlaybackQueueTests(unittest.TestCase):
         self.assertTrue(waiting.wait(5))
         self.join(child)
         self.assertFalse(playing.is_set())
-        (reply,) = self.replies()
+        (reply,) = self.outcomes()
         self.assertEqual(reply["reason"], "take_live")
 
     def test_channel_opening_during_playback_stops_the_player(self):
@@ -725,7 +821,7 @@ class PlaybackQueueTests(unittest.TestCase):
         self.assertTrue(playing.wait(5))
         self.channel_row(channel, "agent-channel-1-new", "open")
         self.join(child)
-        (reply,) = self.replies()
+        (reply,) = self.outcomes()
         self.assertFalse(reply["spoken"])
         self.assertEqual(reply["reason"], "take_started")
 
@@ -736,7 +832,7 @@ class PlaybackQueueTests(unittest.TestCase):
         child, (_, _, playing) = self.start_say("filip")
         self.join(child)
         self.assertTrue(playing.is_set())
-        (reply,) = self.replies()
+        (reply,) = self.outcomes()
         self.assertTrue(reply["spoken"])
 
     def test_assert_install_idle_refuses_while_a_channel_is_open(self):

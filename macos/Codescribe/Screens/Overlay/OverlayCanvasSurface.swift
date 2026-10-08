@@ -27,6 +27,7 @@ struct OverlayCanvasSurface<Content: View>: View {
         y: 9
       )
   }
+
 }
 
 struct OverlayCanvasBackdrop: View {
@@ -72,4 +73,16 @@ final class OverlayDesktopGlassView: NSGlassEffectView {
 
 final class OverlayDesktopEffectView: NSVisualEffectView {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Header and composer use the same system-owned control surface.
+struct OverlayControlGlass: ViewModifier {
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if #available(macOS 26.0, *) {
+      content.glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 20))
+    } else {
+      content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+    }
+  }
 }

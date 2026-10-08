@@ -53,7 +53,7 @@ final class OverlayTrayCoherenceTests: XCTestCase {
   /// tint from the same appearance-aware caution token.
   func testHeaderDiagnosticsTintFromPaletteCaution() throws {
     let view = try source("Overlay/DictationOverlayView.swift")
-    let acoustic = try XCTUnwrap(view.range(of: "exclamationmark.bubble.fill"))
+    let acoustic = try XCTUnwrap(view.range(of: "waveform.badge.magnifyingglass"))
     let preference = try XCTUnwrap(view.range(of: "exclamationmark.triangle.fill"))
     for anchor in [acoustic, preference] {
       let window = String(view[anchor.lowerBound...].prefix(200))

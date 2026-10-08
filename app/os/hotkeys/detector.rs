@@ -527,6 +527,7 @@ impl HotkeyDetector {
                 return None;
             }
             self.agent_channel_digit_down = Some(digit);
+            self.key_pressed_during_modifier = true;
             return Some(HotkeyEvent::AgentChannel { digit });
         }
         if self.fn_press_pending {
@@ -888,7 +889,10 @@ impl HotkeyDetector {
 /// be satisfied by `Cmd+Opt+Shift+V`, which belongs to the app underneath.
 /// Digit opens a channel only with the configured modifier, never with Command,
 /// and never with the modifier that was not selected.
-fn channel_chord_matches(modifier: ChannelModifier, modifiers: HotkeyModifierSnapshot) -> bool {
+pub(super) fn channel_chord_matches(
+    modifier: ChannelModifier,
+    modifiers: HotkeyModifierSnapshot,
+) -> bool {
     if modifiers.cmd {
         return false;
     }

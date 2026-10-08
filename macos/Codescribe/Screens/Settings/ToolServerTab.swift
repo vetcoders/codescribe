@@ -20,7 +20,7 @@ struct ToolServerTab: View {
             .foregroundStyle(Color.primary)
             .accessibilityHidden(true)
         }
-        Text(server)
+        Text(ToolPermissionLabels.source(server))
           .font(CSFont.ui(12, .semibold))
           .foregroundStyle(isSelected ? Color.primary : Color.secondary)
           .lineLimit(1)
@@ -42,7 +42,7 @@ struct ToolServerTab: View {
     }
     .buttonStyle(.plain)
     .csFocusRing()
-    .accessibilityLabel("\(server), \(count) tools")
+    .accessibilityLabel("\(ToolPermissionLabels.source(server)), \(count) tools")
     .accessibilityAddTraits(isSelected ? .isSelected : [])
   }
 }

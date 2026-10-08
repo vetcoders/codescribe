@@ -57,6 +57,14 @@ make install
 
 This matters because macOS TCC permissions are far more stable with a persistent code-signing identity than with ad-hoc signatures.
 
+For an isolated build/test bundle on a host whose signing keychain is locked,
+`CODESCRIBE_CODESIGN_IDENTITY=- make app` explicitly selects ad-hoc signing;
+the app build script preserves that choice instead of selecting a listed
+certificate. Make may still inspect public signing identities for its other
+targets, but this build does not require their private keys. This is a test artifact;
+Founder installs use the stable Developer ID signature and the signed prebuilt
+installation checks above.
+
 `make install-app` bakes the org public keys so Get license CSK1
 verifies. The key files live in the local developer key pack (see
 `scripts/developer-surface-gate.sh`). Production DMGs still use the
@@ -342,10 +350,20 @@ Codescribe.app/
 
 ## External Agent Bridge
 
-The existing 13-step Setup Wizard exposes the bridge inside **Agentic
-Readiness**. It does not write to the home directory merely because the step is
-shown. The operator must explicitly select Codex, Claude Code, or both and click
-Install/Reinstall.
+The existing 13-step Setup Wizard exposes the bridge on the **Agent** step. It
+does not write to the home directory merely because the step is shown,
+refreshed, skipped, or left with Back. The user selects Codex,
+Claude Code, or both; Continue installs or updates the selected managed skills
+when that selection differs from the installer receipt or a selected client's
+managed receipt/folder/file evidence needs repair. A healthy unchanged selection
+does not write. Repair reuses the ownership checks and refuses an unowned
+replacement. A failed install
+keeps Setup on the Agent step and shows the error below the client cards so the
+user can retry. Continuing from a fresh empty selection remains read-only.
+Per-client setup actions describe only selected clients without healthy managed
+evidence. Provider or native-readiness failures use the Diagnostics action and
+do not select a client. A single affected client's installation error appears
+under that card; a selection-wide error appears below the cards.
 
 The installed runtime is stable across checkout moves and deletions:
 
@@ -366,10 +384,18 @@ managed client folder carries a matching `.codescribe-managed.json`. Updates
 use staged directory renames and an atomic receipt write. Existing unowned
 folders are visible conflicts and are never overwritten; deselection removes
 only a folder whose marker still matches the receipt.
+Health checks cover every receipt-owned skill file's content and mode, including
+`SKILL.md`. The installed receipt owns these hashes; a different current bundle
+with the same version does not invalidate an intact older installation.
+Explicitly deselecting the last client can forget an already absent folder.
+Existing entries, including broken symlinks, must still prove marker ownership;
+unreadable paths refuse teardown. Ownership is checked against the same captured
+receipt again before removal. Startup synchronization keeps its strict checks.
 
-Polish dictation selection shows the bridge explanation in Polish. All other
-language selections use English fallback. Setup can be skipped and reopened
-later from the existing **Setup Wizard…** tray action.
+The full readiness report, managed installation paths, MCP status, and Refresh
+action live in **Settings › Agent › Diagnostics**. Setup keeps only the client
+choice and an inline setup failure. Setup can be reopened later from the
+existing **Setup Wizard…** tray action.
 
 ### Info.plist Keys
 

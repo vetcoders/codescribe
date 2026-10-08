@@ -1,23 +1,38 @@
 # ⌜ Codescribe ⌟
 
-[![Version](https://img.shields.io/badge/version-0.15.2-6a9bcc)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.16.0-6a9bcc)](Cargo.toml)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
-[![Landing](https://img.shields.io/badge/site-vetcoders.github.io%2Fcodescribe-788c5d)](https://vetcoders.github.io/codescribe/)
+[![Website](https://img.shields.io/badge/site-codescribe.vetcoders.io-788c5d)](https://codescribe.vetcoders.io/)
 
-**Native macOS tray dictation and assistive voice overlay: instant Apple-neural live canvas, Whisper repairing the same PCM-bound spans on the go, lexicon correction last — plus quality tooling.**
+**Native macOS dictation and voice conversations with agents.**
+
+<p align="center">
+  <img src="site/public/shots/overlay-listening-transparent.webp" width="560" alt="Codescribe live macOS dictation overlay" />
+</p>
+
+> **Pierwszy raz z Codescribe? [Otwórz przewodnik krok po kroku online](https://codescribe.vetcoders.io/guide/) lub [lokalny plik HTML](docs/codescribe-step-by-step-tutorial.html).**
+> Główny przewodnik użytkownika: instalacja, widget mini/midi/full, uprawnienia, mikrofon,
+> kanały agentów 1–9, statusy odbioru i pierwsze dyktowanie. Działa także w 100% offline.
+>
+> **New to Codescribe? [Open the step-by-step guide](https://codescribe.vetcoders.io/guide/).**
+> This README covers the repository, source installation, and developer contracts.
 
 ## Overview
 
-Codescribe is a native macOS menu-bar application that captures audio through global hotkeys, shows live local
-transcription while you speak, and pastes or routes the final result into the focused application. The shipped product
-in this repo is a tray app whose SwiftUI front-end has two explicit surfaces: settings and overlays.
+Codescribe turns speech into delivered text: hold a key, talk, release — the
+transcript lands exactly where you pointed it, with a live overlay painting the
+words as you speak, entirely on-device by default. And dictation is only half
+of it: nine numbered voice channels connect your microphone straight to AI
+agent sessions over a local bus — speak to an agent in its terminal, and it
+answers back in its own voice. The app is a SwiftUI shell over a Rust engine,
+with two explicit surfaces: settings and overlays.
 
 The transcription shape is layered and span-bound (see `docs/THE_ENGINE_CONTRACT.md`): Apple Speech is the instant
 letter-level live canvas; in Local Power mode, local Whisper transcribes partials on the go to repair weaker wording
 inside the same proven audio spans — it is not a stop-time authority; lexicon correction by dictionary substitution is the final automated layer, and
-human corrections feed the lexicon. Cloud STT is optional and used as a post-capture transcript backend, not as live
-cloud preview. AI formatting and assistive mode use OpenAI Responses API (`/v1/responses`) by default, configured in
+human corrections feed the lexicon. Cloud STT is optional: live refinement requires explicit audio-egress consent;
+file retranscription is a separate action. AI formatting and assistive mode use OpenAI Responses API (`/v1/responses`) by default, configured in
 Settings or `~/.codescribe/.env`.
 
 ```mermaid
@@ -57,17 +72,15 @@ flowchart TB
     CORE -.-> TOOLS
 ```
 
-> **Current runtime truth:** Apple Speech paints the instant live overlay.
-> Local Power arms Whisper as a background observer of bounded windows from the
-> same PCM clock; accepted wording can change only the proven target span.
-> Cloud mode may arm its configured live provider after explicit consent.
-> Full-file local/cloud Retranscribe is a separate operator action and is never
-> the automatic stop authority.
+> **How the engine thinks:** Apple Speech paints the overlay the instant you
+> speak. In Local Power mode, Whisper watches bounded windows of the same PCM
+> clock and repairs wording inside proven audio spans — measured evidence, not
+> guesswork, decides every correction. Cloud refinement is there when you want
+> it, behind an explicit audio-egress consent, and full-file Retranscribe is
+> its own deliberate action.
 
-> **Release status:** current source version is `0.15.2` (see `Cargo.toml`),
-> while the latest published GitHub Release is `v0.13.3`. No `v0.14.0` or
-> `v0.14.1` tag/Release exists yet. Source builds are candidates, not published
-> distribution artifacts.
+> **Release status:** source is at `0.16.0`; the latest published DMG is
+> [`v0.15.2`](https://github.com/vetcoders/codescribe/releases).
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
@@ -110,10 +123,10 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 
 ## Features
 
+- **Agent voice channels** — nine numbered channels deliver spoken takes into live agent sessions (Claude Code, Codex, and friends) over a local bus; agents reply in their own TTS voices
+- **Whisper Live** — streaming transcription happens _during recording_ (bounded windows + overlap on one PCM clock), so `stop()` is near-instant
 - **Rust core + SwiftUI app** — Native macOS SwiftUI shell over the Rust engine through UniFFI, with candle-core + Metal GPU
-- **Two DMG variants** — Standard (daily) embeds Silero VAD only; Whisper is downloaded from Settings → Dictation or HF cache. Optional `_full` DMG also embeds Whisper for offline/curiosity installs.
-- **Whisper Live** — Streaming transcription happens _during recording_ (chunks + overlap), so `stop()` is
-  near-instant
+- **Two DMG variants** — Standard (daily) embeds Silero VAD only; Whisper is downloaded from Settings → Dictation or HF cache. Optional `_full` DMG also embeds Whisper for fully offline installs.
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
 - **IPC Server** — Stable runtime interface for GUI/clients
 - **Quality Loop + Report** — Automated quality scoring and batch reports
@@ -177,11 +190,8 @@ Tagged builds publish DMGs through GitHub Releases:
 2. Download `Codescribe_<version>-<builddate>-<sha>.dmg` for the standard build, or the `_full` variant for the larger build with embedded Whisper.
 3. Drag `Codescribe.app` into `Applications`
 
-> **Current truth:** `v0.13.3` is the latest version published on GitHub
-> Releases. The repository is at `0.14.1`, but those newer milestones have not
-> been tagged or published. A production artifact must be Developer ID signed,
-> notarized, stapled, and pass `verify-dmg`; a source install or ad-hoc `.app` is
-> not a public release.
+> Every published DMG is Developer ID signed, notarized, stapled, and passes
+> the fail-closed `verify-dmg` payload check before it reaches the Releases page.
 
 ### Build Options
 
@@ -212,11 +222,11 @@ make logs
 
 ## Default Hotkeys (macOS)
 
-- **Dictation**: hold your configured modifier (default: **Hold Fn/Globe**) → release to send + paste
-- **Formatting**: **Double‑tap Left Option** → hands‑free recording + AI formatting (auto‑paste ON)
-- **Assistive (Agent)**: **Double‑tap Right Option** → voice‑chat overlay + agent response (auto‑paste OFF)
+- **Dictation**: hold your configured modifier (default: **Hold Fn/Globe**) → release to finish; automatic paste follows the selected paste policy
+- **Formatting**: **Double‑tap Left Option** → recording without holding a key; formatting depends on AI settings and provider access
+- **Assistive (Agent)**: **Double‑tap Right Option** → voice‑chat overlay + agent response, separate from external numbered channels
 
-Hotkeys are configured in **Settings → Modes & Shortcuts**. Double‑tap modes auto‑send an utterance when you pause, and stop on the next double‑tap.
+Hotkeys are configured in **Settings → Hotkeys** (Polish: **Ustawienia → Skróty**). Double‑tap modes start recording without holding a key and stop on the next double‑tap. Delivery and AI processing depend on the selected mode and settings.
 
 ## Settings & Secrets
 
@@ -238,7 +248,7 @@ flowchart TD
     G --> H{AI Enabled?}
     H -->|Yes| I[LLM Formatting]
     H -->|No| J[Raw Transcript]
-    I --> K[Paste to Active App]
+    I --> K[Selected delivery destination]
     J --> K
 
     E -.- E1["Metal GPU • runtime model"]
@@ -254,14 +264,14 @@ Live transcription is a four-layer relay on one PCM timeline:
    the matching occurrence behind the rewrite fence.
 3. **L2 Lexicon + Light+** performs deterministic, occurrence-preserving
    shaping.
-4. **L3 Responses formatter** can polish stable spans through the configured
-   formatting lane; it is the existing formatter, not a hidden small model.
+4. **L3 Responses formatter** polishes stable spans through the configured
+   formatting lane.
 
-Silero supplies speech probability, boundaries, and pause/time evidence; it is
-not a text layer. The presentation reducer is the only transcript authority.
-The overlay, delivery, history, Agent, and Transcript Bus consume committed
-reducer events. A full-file retranscription remains an explicit proposal, not a
-replacement pass users must wait for after every take.
+Silero supplies speech probability, boundaries, and pause/time evidence. The
+presentation reducer is the single transcript authority: overlay, delivery,
+history, Agent, and Transcript Bus all consume its committed events, so every
+surface shows the same words. Full-file retranscription is an explicit action
+you invoke when you want it — never a pass you wait for.
 
 ### Recording Modes
 
@@ -290,7 +300,7 @@ WHISPER_LANGUAGE=auto                # auto | pl | en
 # CODESCRIBE_MODEL_PATH=             # Override runtime Whisper model lookup
 
 # Hotkeys behavior
-# Per-mode bindings live in Settings -> Modes & Shortcuts (settings.json)
+# Per-mode bindings live in Settings -> Hotkeys (settings.json)
 HOLD_EXCLUSIVE=1                     # ignore extra modifiers during hold
 HOLD_START_DELAY_MS=800              # Delay before recording starts
 DOUBLE_TAP_INTERVAL_MS=200           # Toggle gesture timing
@@ -476,13 +486,17 @@ make download-model   # Download Whisper model
 
 ## Permissions
 
-Codescribe requires macOS permissions for:
+Permissions apply to the features you use:
 
 - **Microphone** — Audio recording
-- **Accessibility** — Global hotkey detection
+- **Speech Recognition** — On-device Apple Speech dictation
+- **Accessibility** — Inserting text into other applications
 - **Input Monitoring** — Keyboard event capture
+- **Screen Recording** — Screen context for the Agent
+- **Full Disk Access** — Optional access to protected files for the Agent
 
-Grant permissions in System Settings > Privacy & Security when prompted.
+The current setup completion check also includes Screen Recording, even for Basic mode; Full Disk Access is optional.
+See the [user tutorial](docs/codescribe-step-by-step-tutorial.html#permissions) for the permission steps and the distinction between closing the wizard and recording readiness. Microphone calibration and local Whisper availability are separate prerequisites described there.
 
 ## Current Focus
 

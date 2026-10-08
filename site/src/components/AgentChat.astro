@@ -2,11 +2,11 @@
 import { asset } from '../lib/asset';
 ---
 
-<section class="section agentchat" data-screen-label="Agent chat" aria-labelledby="agentchat-title">
+<section class="section agentchat" id="agent-chat" data-screen-label="Agent chat" aria-labelledby="agentchat-title">
   <div class="container">
     <div class="copy">
       <p class="eyebrow">CONTINUITY</p>
-      <h2 id="agentchat-title">A persistent agent,<br />not a disappearing<br />prompt box.</h2>
+      <h2 id="agentchat-title">Keep the conversation<br />with your work.</h2>
       <p class="sub">
         Talk to an agent that stays with your work. Ask, refine, attach files,
         follow up — and restore a thread when you need it again.
@@ -84,6 +84,10 @@ import { asset } from '../lib/asset';
     width: 100%;
     height: auto;
     display: block;
+  }
+  @media (max-width: 720px) {
+    .container { flex-direction: column; align-items: stretch; }
+    .copy, .frame { min-width: 0; width: 100%; }
   }
   @media (max-width: 480px) {
     .agentchat { padding: 84px 20px; }

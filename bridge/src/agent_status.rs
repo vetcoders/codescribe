@@ -9,8 +9,8 @@
 //! reports what the core already knows.
 
 use codescribe::agent::tools::mcp::{
-    AgenticReadinessReport, McpRowTone, McpStatusReport, McpStatusRow, probe_agentic_readiness,
-    probe_mcp_status,
+    AgenticReadinessReport, McpRowTone, McpStatusFacet, McpStatusReport, McpStatusRow,
+    McpStatusState, probe_agentic_readiness, probe_mcp_status,
 };
 use codescribe_core::agent::{ConnectorHealth, capability_matrix};
 use codescribe_core::config::Config;
@@ -39,21 +39,116 @@ impl From<McpRowTone> for CsMcpRowTone {
     }
 }
 
-/// One labelled status line (label + value + tone) for the Settings UI.
+/// Which status line a row is, mirrored 1:1 from the core [`McpStatusFacet`]
+/// so Settings renders a localized label per facet.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsMcpStatusFacet {
+    Readiness,
+    Provider,
+    NativeTools,
+    WorkspaceRoots,
+    VibecraftedRuntime,
+    AicxMcp,
+    LoctreeMcp,
+    PrviewIntegration,
+    McpConfig,
+    McpServer,
+}
+
+impl From<McpStatusFacet> for CsMcpStatusFacet {
+    /// Core facet → UniFFI enum (closed set, no lossy fallback).
+    fn from(facet: McpStatusFacet) -> Self {
+        match facet {
+            McpStatusFacet::Readiness => Self::Readiness,
+            McpStatusFacet::Provider => Self::Provider,
+            McpStatusFacet::NativeTools => Self::NativeTools,
+            McpStatusFacet::WorkspaceRoots => Self::WorkspaceRoots,
+            McpStatusFacet::VibecraftedRuntime => Self::VibecraftedRuntime,
+            McpStatusFacet::AicxMcp => Self::AicxMcp,
+            McpStatusFacet::LoctreeMcp => Self::LoctreeMcp,
+            McpStatusFacet::PrviewIntegration => Self::PrviewIntegration,
+            McpStatusFacet::McpConfig => Self::McpConfig,
+            McpStatusFacet::McpServer => Self::McpServer,
+        }
+    }
+}
+
+/// Machine state behind a row's value, mirrored 1:1 from the core
+/// [`McpStatusState`]; Settings renders a localized sentence per state.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsMcpStatusState {
+    Ready,
+    AccessAvailable,
+    AccessUnavailable,
+    NoNativeTools,
+    Available,
+    Synchronized,
+    RootsMismatch,
+    NotConfigured,
+    Live,
+    Failed,
+    Disabled,
+    Configured,
+    Error,
+    Empty,
+    Missing,
+    Note,
+}
+
+impl From<McpStatusState> for CsMcpStatusState {
+    /// Core state → UniFFI enum (closed set, no lossy fallback).
+    fn from(state: McpStatusState) -> Self {
+        match state {
+            McpStatusState::Ready => Self::Ready,
+            McpStatusState::AccessAvailable => Self::AccessAvailable,
+            McpStatusState::AccessUnavailable => Self::AccessUnavailable,
+            McpStatusState::NoNativeTools => Self::NoNativeTools,
+            McpStatusState::Available => Self::Available,
+            McpStatusState::Synchronized => Self::Synchronized,
+            McpStatusState::RootsMismatch => Self::RootsMismatch,
+            McpStatusState::NotConfigured => Self::NotConfigured,
+            McpStatusState::Live => Self::Live,
+            McpStatusState::Failed => Self::Failed,
+            McpStatusState::Disabled => Self::Disabled,
+            McpStatusState::Configured => Self::Configured,
+            McpStatusState::Error => Self::Error,
+            McpStatusState::Empty => Self::Empty,
+            McpStatusState::Missing => Self::Missing,
+            McpStatusState::Note => Self::Note,
+        }
+    }
+}
+
+/// One status line for the Settings UI. `label` / `value` are the core's
+/// English rendering; Settings localizes from `facet` + `state` and the
+/// structured parts (`count`, `subject`, `detail`) instead of parsing `value`.
 #[derive(uniffi::Record)]
 pub struct CsMcpStatusRow {
     pub label: String,
     pub value: String,
     pub tone: CsMcpRowTone,
+    pub facet: CsMcpStatusFacet,
+    pub state: CsMcpStatusState,
+    /// Tool or folder count behind the value, when the state carries one.
+    pub count: Option<u32>,
+    /// Provider label or server name behind the value, else empty.
+    pub subject: String,
+    /// Error cause, env key, or free-form note behind the value, else empty.
+    pub detail: String,
 }
 
 impl From<&McpStatusRow> for CsMcpStatusRow {
-    /// Clone one probe row into the UniFFI record (tone mapped in place).
+    /// Clone one probe row into the UniFFI record (enums mapped in place).
     fn from(row: &McpStatusRow) -> Self {
         Self {
             label: row.label.clone(),
             value: row.value.clone(),
             tone: row.tone.into(),
+            facet: row.facet.into(),
+            state: row.state.into(),
+            count: row.count,
+            subject: row.subject.clone(),
+            detail: row.detail.clone(),
         }
     }
 }
@@ -89,7 +184,7 @@ impl From<McpStatusReport> for CsMcpStatusReport {
 }
 
 /// Agentic-lane readiness verdict + rows. `ready` reflects the CORE capability
-/// gate only (assistive provider configured + its API key set + native tools
+/// gate only (assistive provider access available + native tools
 /// available); the MCP rows (Vibecrafted + AICX + Loctree + PRView) are
 /// informational context and never flip `ready`. See the core
 /// `AgenticReadinessReport` for the C4 semantics decision.
@@ -152,7 +247,7 @@ impl CodescribeAgentStatus {
     }
 
     /// Agentic-lane readiness. `ready` is the core capability gate (assistive
-    /// provider + its API key + native tools); the MCP rows are informational.
+    /// provider request access + native tools); the MCP rows are informational.
     /// Projects files, env and the existing credential cache. The explicit
     /// background provider-access refresh acquires credentials before publication.
     pub fn agentic_readiness(&self) -> CsAgenticReadiness {
@@ -398,18 +493,28 @@ mod tests {
         );
     }
 
-    /// Label, value, and tone survive the borrow→owned FFI row projection.
+    /// Display text and structured localization fields survive the FFI projection.
     #[test]
     fn row_conversion_preserves_fields() {
         let row = McpStatusRow {
             label: "loctree-mcp:".to_string(),
             value: "ready — 7 tool(s) live".to_string(),
             tone: McpRowTone::Good,
+            facet: McpStatusFacet::LoctreeMcp,
+            state: McpStatusState::Live,
+            count: Some(7),
+            subject: "loctree-mcp".to_string(),
+            detail: "discovery complete".to_string(),
         };
         let cs = CsMcpStatusRow::from(&row);
         assert_eq!(cs.label, "loctree-mcp:");
         assert_eq!(cs.value, "ready — 7 tool(s) live");
         assert_eq!(cs.tone, CsMcpRowTone::Good);
+        assert_eq!(cs.facet, CsMcpStatusFacet::LoctreeMcp);
+        assert_eq!(cs.state, CsMcpStatusState::Live);
+        assert_eq!(cs.count, Some(7));
+        assert_eq!(cs.subject, "loctree-mcp");
+        assert_eq!(cs.detail, "discovery complete");
     }
 
     // Degradation contract: the basic-lane probe always emits at least one row

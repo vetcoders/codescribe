@@ -20,7 +20,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
   case dictationEngine
   case dictationWhisper
   case dictationPreview
-  case dictationHandsFree
   case dictationPrivacy
   case dictationPermissions
 
@@ -30,22 +29,26 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     switch self {
     case .agentLanes, .agentPrompts, .agentWorkspace, .agentStatus, .agentTools, .agentMcp:
       .agent
-    case .dictationEngine, .dictationWhisper, .dictationPreview, .dictationHandsFree,
-      .dictationPrivacy, .dictationPermissions:
+    case .dictationEngine, .dictationWhisper, .dictationPreview, .dictationPrivacy,
+      .dictationPermissions:
       .engine
     }
   }
 
-  /// Segment label. Short on purpose: macOS sizes every segment to the widest
-  /// label, and six of them must fit the pane at the 880pt minimum window.
+  /// Segment label. Short on purpose: six of them share one tab bar, and they
+  /// should fit the pane at the 880pt minimum window. Each segment hugs its own
+  /// label, so one long title no longer sets the width of all six; when the six
+  /// still do not fit, `SettingsTabBar` scrolls horizontally instead of widening
+  /// the pane, so a long translation costs a scroll, never a clipped pane.
   var title: String {
     switch self {
-    case .agentLanes: String(localized: "LLM lanes", comment: "Settings tab: LLM request lanes")
+    case .agentLanes:
+      String(localized: "AI models", comment: "Settings tab: provider and model per function")
     case .agentPrompts: String(localized: "Prompts", comment: "Settings tab: editable prompts")
     case .agentWorkspace:
       String(localized: "Workspace", comment: "Settings tab: agent workspace roots")
     case .agentStatus:
-      String(localized: "Capabilities", comment: "Settings tab: agent capability matrix")
+      String(localized: "Diagnostics", comment: "Settings tab: agent connection diagnostics")
     case .agentTools: String(localized: "Tools", comment: "Settings tab: tool permissions")
     case .agentMcp: "MCP"
     case .dictationEngine:
@@ -53,8 +56,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .dictationWhisper: "Whisper"
     case .dictationPreview:
       String(localized: "Preview", comment: "Settings tab: live transcript preview timing")
-    case .dictationHandsFree:
-      String(localized: "Hands-free", comment: "Settings tab: hands-free dictation")
     case .dictationPrivacy: String(localized: "Privacy", comment: "Settings tab: cloud and privacy")
     case .dictationPermissions:
       String(localized: "Permissions", comment: "Settings tab: macOS permission matrix")
@@ -63,17 +64,23 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
   var headline: String {
     switch self {
-    case .agentLanes: String(localized: "Request lanes.")
-    case .agentPrompts: String(localized: "Prompts.")
-    case .agentWorkspace: String(localized: "Workspace roots.")
-    case .agentStatus: String(localized: "Capabilities.")
-    case .agentTools: String(localized: "Tool permissions.")
-    case .agentMcp: String(localized: "MCP servers.")
-    case .dictationEngine: String(localized: "What's actually running.")
-    case .dictationWhisper: String(localized: "Local Whisper model.")
-    case .dictationPreview: String(localized: "Preview timing.")
-    case .dictationHandsFree: String(localized: "Hands-free silence.")
-    case .dictationPrivacy: "\(CloudPrivacyCopy.title)."
+    case .agentLanes: String(localized: "Model configuration.")
+    case .agentPrompts: String(localized: "Prompts", comment: "Settings tab: editable prompts")
+    case .agentWorkspace:
+      String(localized: "Folders available to the Agent", comment: "Settings tab: Agent folders")
+    case .agentStatus:
+      String(localized: "Agent environment status", comment: "Settings tab: Diagnostics headline")
+    case .agentTools: String(localized: "Tool permissions")
+    case .agentMcp: String(localized: "MCP servers")
+    case .dictationEngine:
+      String(localized: "Speech recognition", comment: "Settings tab headline: Dictation › Engine")
+    case .dictationWhisper:
+      String(
+        localized: "Local Whisper model", comment: "Settings tab headline: Dictation › Whisper")
+    case .dictationPreview:
+      String(
+        localized: "Transcript display pace", comment: "Settings tab headline: Dictation › Preview")
+    case .dictationPrivacy: CloudPrivacyCopy.title
     case .dictationPermissions: String(localized: "Permission matrix.")
     }
   }
@@ -83,40 +90,44 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentLanes:
       String(
         localized:
-          "Provider and model per request path. Endpoints and keys live on Providers; the resolved runtime truth is below the editors."
+          "Pick a provider and a model separately for the Agent and for transcript formatting. API keys and accounts are set up under Providers."
       )
     case .agentPrompts:
       String(
         localized:
-          "Edits the BASE prompt file. The core still appends its tuning prompt at runtime."
+          "Browse and edit the base prompts. Codescribe may add further instructions to them while it runs."
       )
     case .agentWorkspace:
       String(
         localized:
-          "Directories the agent may read and write. Everything outside them is out of reach."
+          "The Agent can read and write only inside these folders. It has no access outside them."
       )
     case .agentStatus:
-      String(localized: "What the local agent substrate can currently do, and why.")
+      String(localized: "Configuration state of the Agent, its available tools and integrations.")
     case .agentTools:
-      String(localized: "Allow, ask, or deny — per tool. Deny wins over everything.")
+      String(
+        localized:
+          "Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse."
+      )
     case .agentMcp:
-      String(localized: "External MCP servers the agent can call, and their transports.")
+      String(localized: "Add MCP servers and manage the tools the Agent may use.")
     case .dictationEngine:
       String(
-        localized:
-          "Runtime rows reflect the live engine — changes apply on the next recording session."
-      )
+        localized: "Choose how speech becomes text. Changes apply from the next recording.",
+        comment: "Settings tab blurb: Dictation › Engine")
     case .dictationWhisper:
       String(
-        localized:
-          "The on-device model behind the direct Whisper engine and Local power refinement."
-      )
+        localized: "Pick a model, check its availability and manage the space it takes.",
+        comment: "Settings tab blurb: Dictation › Whisper")
     case .dictationPreview:
-      String(localized: "How the overlay paces live text. Committed transcripts are unchanged.")
-    case .dictationHandsFree:
-      String(localized: "How long the Apple engine waits in silence before it rests.")
+      String(
+        localized: "Adjust how quickly text appears in the preview window while recording."
+      )
     case .dictationPrivacy:
-      String(localized: "Where audio lives, and the one condition under which it leaves this Mac.")
+      String(
+        localized:
+          "See when Codescribe processes audio on this Mac and when it may use cloud services."
+      )
     case .dictationPermissions:
       String(localized: "Live macOS permission status. Click a missing permission to grant it.")
     }
@@ -146,7 +157,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       settingsSearchTerms(
         localized: String(
           localized: "settings.search.tab.agentWorkspace",
-          defaultValue: "roots, directory, repo, path",
+          defaultValue: "roots, directory, folders, access, repo, path",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))
@@ -154,7 +165,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       settingsSearchTerms(
         localized: String(
           localized: "settings.search.tab.agentStatus",
-          defaultValue: "capability, native, enhanced, readiness",
+          defaultValue:
+            "diagnostics, status, environment, connection, installation path, capability, readiness",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))
@@ -194,15 +206,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       settingsSearchTerms(
         localized: String(
           localized: "settings.search.tab.dictationPreview",
-          defaultValue: "preview, timing, typing, cadence, overlay",
-          comment:
-            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
-        ))
-    case .dictationHandsFree:
-      settingsSearchTerms(
-        localized: String(
-          localized: "settings.search.tab.dictationHandsFree",
-          defaultValue: "hands-free, silence, toggle, epoch",
+          defaultValue: "preview, timing, pace, typing, cadence, overlay",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))

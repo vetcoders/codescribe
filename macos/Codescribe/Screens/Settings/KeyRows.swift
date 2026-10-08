@@ -4,7 +4,10 @@ import SwiftUI
 // Row-level building blocks for credential and URL editing. Secrets go to the
 // Keychain via `setApiKey` and are NEVER read back across the FFI; presence
 // renders from `apiKeySet` / `CsKeyStatus` booleans. Composed by
-// `ProvidersPanel` (vendor + custom + speech-to-text lanes + service keys).
+// `ProvidersPanel` (vendor + custom + cloud transcription lanes + service
+// keys). A row says what the user needs and no more: label and state on one
+// line, the editor behind `Change`, Keychain account names and wire keys only
+// under a card's Advanced disclosure.
 
 // MARK: - Shared chrome
 
@@ -108,60 +111,57 @@ extension SettingsChipButton where Label == Text {
 
 // MARK: - URL row (non-secret)
 
-/// Non-secret URL field: the speech-to-text lane endpoints
+/// Non-secret URL field: the cloud transcription lane endpoints
 /// (`STT_FILE_ENDPOINT` / `STT_LIVE_ENDPOINT`) and the Cloud session-mint URL,
-/// all on Providers › Speech-to-text. Provider endpoints are NOT edited here —
-/// vendors are factory-pinned and custom hosts edit theirs in `CustomProviderForm`.
+/// all on Providers › Cloud transcription. Provider endpoints are NOT edited
+/// here — vendors are factory-pinned and custom hosts edit theirs in
+/// `CustomProviderForm`. Title, field, Save: a rejected save puts its one
+/// sentence under the field, and nothing warns about the validator ahead of it.
 struct SettingsUrlRow: View {
   let title: String
-  let keyLabel: String
   let current: String
   let placeholder: String
-  let help: String
-  var unsetLabel: String = String(localized: "unset", comment: "Status chip: no value stored")
-  let onSave: (String) -> Void
+  /// One line under the field, e.g. "Optional. Used for live transcription."
+  var caption: String?
+  /// Persists the draft; returns the sentence to show when the save was rejected.
+  let onSave: (String) -> String?
 
   @State private var draft: String = ""
+  @State private var error: String?
   @FocusState private var isFocused: Bool
   @State private var loadedInitial = false
 
-  private var isSet: Bool { !current.isEmpty }
-  private var accent: Color { isSet ? CSColor.olive : Color.secondary }
-
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 10) {
-        Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
-        Text(title)
-          .font(CSFont.ui(13.5, .semibold))
-          .foregroundStyle(Color.primary)
-        Text(keyLabel)
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(Color.secondary)
-        Spacer(minLength: 0)
-        Text(
-          isSet
-            ? String(localized: "set", comment: "Status chip: a value is stored")
-            : unsetLabel
-        )
-        .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(isSet ? CSColor.oliveLight : Color.secondary)
-      }
+    VStack(alignment: .leading, spacing: 8) {
+      Text(title)
+        .font(CSFont.ui(13.5, .semibold))
+        .foregroundStyle(Color.primary)
 
       HStack(spacing: 8) {
         TextField(placeholder, text: $draft)
           .settingsInputChrome(isFocused: isFocused)
           .focused($isFocused)
-          .onSubmit { onSave(draft) }
+          .onSubmit(save)
+          .onChange(of: draft) { _, _ in error = nil }
           .accessibilityLabel(title)
-        SettingsSaveButton(enabled: draft != current) { onSave(draft) }
+          .accessibilityHint(error ?? "")
+        SettingsSaveButton(enabled: draft != current, action: save)
           .accessibilityLabel("Save \(title)")
       }
 
-      Text(help)
-        .font(CSFont.ui(11.5))
-        .lineSpacing(2)
-        .foregroundStyle(Color.secondary)
+      if let error {
+        Text(error)
+          .font(CSFont.mono(11, .medium))
+          .foregroundStyle(CSColor.terracotta)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("settings-url-row-error")
+      }
+      if let caption {
+        Text(caption)
+          .font(CSFont.ui(11.5))
+          .lineSpacing(2)
+          .foregroundStyle(Color.secondary)
+      }
     }
     .onAppear {
       if !loadedInitial {
@@ -173,13 +173,44 @@ struct SettingsUrlRow: View {
       draft = newValue
     }
   }
+
+  private func save() {
+    error = onSave(draft)
+  }
+}
+
+// MARK: - Detail row (Advanced disclosure)
+
+/// One read-only fact for a card's Advanced disclosure: a vendor's factory
+/// endpoint, a Keychain account name, a lane's wire keys. Selectable, never edited.
+struct SettingsDetailRow: View {
+  let title: String
+  let value: String
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Text(title)
+        .font(CSFont.ui(11.5))
+        .foregroundStyle(Color.secondary)
+      Text(value)
+        .font(CSFont.mono(11, .medium))
+        .foregroundStyle(Color.primary)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .textSelection(.enabled)
+      Spacer(minLength: 0)
+    }
+    .accessibilityElement(children: .combine)
+  }
 }
 
 // MARK: - Key row (secret, write-only)
 
-/// One Keychain account: presence dot, paste-to-replace secure field, Test,
-/// Clear. `optional` marks key-optional hosts (custom providers): an absent key
-/// is a neutral state there, not a red one.
+/// One Keychain account on one line: presence dot, label, state (`Set` /
+/// `Not set` / `Optional`) and a `Change` / `Add` chip that opens the editor —
+/// paste-to-replace secure field, Save, Test, Clear. The account name is not
+/// on the row; the card's Advanced disclosure shows it. `optional` marks
+/// key-optional hosts (custom providers): an absent key is neutral there, not red.
 struct KeyRow: View {
   let account: String
   let label: String
@@ -193,6 +224,7 @@ struct KeyRow: View {
   let onTest: () -> Void
 
   @State private var draft: String = ""
+  @State private var editing = false
   @State private var operationPending = false
   @State private var operationError: String?
   @FocusState private var isFocused: Bool
@@ -210,52 +242,61 @@ struct KeyRow: View {
         Text(label)
           .font(CSFont.ui(13.5, .semibold))
           .foregroundStyle(Color.primary)
-        Text(account)
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(Color.secondary)
         Spacer(minLength: 0)
         if let probeResult {
           KeyProbeChip(result: probeResult)
         }
-        Text(isSet ? "set" : (optional ? "optional" : "not set"))
+        Text(isSet ? "Set" : (optional ? "Optional" : "Not set"))
           .font(CSFont.mono(10, .semibold))
           .foregroundStyle(isSet ? CSColor.oliveLight : accent)
+        SettingsChipButton(
+          isSet ? "Change" : "Add", tint: Color.secondary, enabled: !isUpdating
+        ) {
+          editing.toggle()
+          isFocused = editing
+        }
+        .accessibilityIdentifier("key-row-edit")
       }
 
-      HStack(spacing: 8) {
-        SecureField(isSet ? "Replace key…" : "Paste key…", text: $draft)
-          .settingsInputChrome(isFocused: isFocused)
-          .focused($isFocused)
-          .onSubmit(save)
-          .accessibilityLabel("\(label) secret")
+      if editing {
+        HStack(spacing: 8) {
+          SecureField(isSet ? "Replace key…" : "Paste key…", text: $draft)
+            .settingsInputChrome(isFocused: isFocused)
+            .focused($isFocused)
+            .onSubmit(save)
+            .accessibilityLabel("\(label) secret")
 
-        SettingsSaveButton(enabled: !isUpdating && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, action: save)
+          SettingsSaveButton(
+            enabled: !isUpdating && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            action: save
+          )
           .accessibilityLabel("Save \(label)")
 
-        SettingsChipButton(enabled: isSet && !probePending && !isUpdating, action: onTest) {
-          Group {
-            if probePending {
-              ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 20, height: 14)
-            } else {
-              Text("Test", comment: "Button label: run a connection test")
-                .font(CSFont.ui(12, .semibold))
+          SettingsChipButton(enabled: isSet && !probePending && !isUpdating, action: onTest) {
+            Group {
+              if probePending {
+                ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 20, height: 14)
+              } else {
+                Text("Test", comment: "Button label: run a connection test")
+                  .font(CSFont.ui(12, .semibold))
+              }
             }
+            .frame(width: 26, height: 18)
+            .foregroundStyle(Color.secondary)
           }
-          .frame(width: 26, height: 18)
-          .foregroundStyle(Color.secondary)
-        }
-        .help(isSet ? "Test this key" : "Save a key first to test it")
-        .accessibilityLabel("Test \(label)")
+          .help(isSet ? "Test this key" : "Save a key first to test it")
+          .accessibilityLabel("Test \(label)")
 
-        SettingsChipButton(enabled: isSet && !isUpdating, action: clear) {
-          CSIconView(
-            icon: .delete, size: 12, weight: .semibold,
-            color: isSet ? CSColor.terracotta : Color.secondary
-          )
-          .frame(width: 10, height: 18)
+          SettingsChipButton(enabled: isSet && !isUpdating, action: clear) {
+            CSIconView(
+              icon: .delete, size: 12, weight: .semibold,
+              color: isSet ? CSColor.terracotta : Color.secondary
+            )
+            .frame(width: 10, height: 18)
+          }
+          .help("Remove this key from the Keychain")
+          .accessibilityLabel("Clear \(label)")
         }
-        .help("Remove this key from the Keychain")
-        .accessibilityLabel("Clear \(label)")
       }
       if operationPending {
         HStack {
@@ -293,6 +334,7 @@ struct KeyRow: View {
       do {
         try await onSave(submitted)
         if draft == submitted { draft = "" }
+        editing = false
       } catch { operationError = error.userFacingMessage }
     }
   }
@@ -303,8 +345,10 @@ struct KeyRow: View {
     operationError = nil
     Task { @MainActor in
       defer { operationPending = false }
-      do { try await onClear() }
-      catch { operationError = error.userFacingMessage }
+      do {
+        try await onClear()
+        editing = false
+      } catch { operationError = error.userFacingMessage }
     }
   }
 }
@@ -377,25 +421,25 @@ struct KeyProbeChip: View {
 
 // MARK: - Vendor account (OAuth) row
 
-/// "Sign in with <brand>" for vendors that ship an OAuth flow. The signed-in
-/// account wins over a stored API key on the assistive lane (loader predicate
-/// `account_auth`), so the row says which credential will actually be sent.
+/// One line per vendor that ships an OAuth flow: "<brand> account", its state,
+/// and ONE action — `Sign out` while connected, `Sign in with <brand>`
+/// otherwise. Never both. The signed-in account wins over a stored API key on
+/// the assistive lane (loader predicate `account_auth`), so the row says
+/// which credential will actually be sent. The Rust one-liner stays as the
+/// tooltip; the client-id override lives in the card's Advanced disclosure.
 struct AccountLoginRow: View {
   let provider: CsProviderOption
   let loginPending: Bool
   let loginNotice: String?
   let onStart: () -> Void
   let onSignOut: () -> Void
-  let onSaveClientId: (String) -> Void
-
-  @State private var clientIdDraft: String = ""
-  @State private var editingClientId = false
 
   private var signedIn: Bool { provider.accountSignedIn }
   private var accent: Color { signedIn ? CSColor.olive : Color.secondary }
+  private var accountBrand: String { Self.brand(for: provider) }
 
   /// Short brand for the account row — OpenCode-style, not a client-id dump.
-  private var accountBrand: String {
+  static func brand(for provider: CsProviderOption) -> String {
     switch provider.id {
     case "openai-responses": return "ChatGPT"
     case "xai-responses": return "xAI"
@@ -404,33 +448,45 @@ struct AccountLoginRow: View {
     }
   }
 
+  /// `Connected as <email>` when the id token names the account, `Connected`
+  /// when it does not, `Not connected` otherwise.
+  static func status(for provider: CsProviderOption) -> String {
+    guard provider.accountSignedIn else { return String(localized: "Not connected") }
+    if let identity = provider.accountIdentity, !identity.isEmpty {
+      return String(
+        localized: "Connected as \(identity)",
+        comment: "Provider account row; the placeholder is the signed-in email")
+    }
+    return String(localized: "Connected")
+  }
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 10) {
-        Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
-        Text("\(accountBrand) account", comment: "The placeholder is a vendor brand, e.g. ChatGPT")
-          .font(CSFont.ui(12.5, .semibold))
-          .foregroundStyle(Color.primary)
-        // "signed in as <email>" / "not signed in" / "awaiting app registration".
-        Text(provider.accountStatusMessage)
-          .font(CSFont.mono(10, .semibold))
-          .foregroundStyle(accent)
+    HStack(spacing: 10) {
+      Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
+      Text("\(accountBrand) account", comment: "The placeholder is a vendor brand, e.g. ChatGPT")
+        .font(CSFont.ui(12.5, .semibold))
+        .foregroundStyle(Color.primary)
+      Text(Self.status(for: provider))
+        .font(CSFont.mono(10, .semibold))
+        .foregroundStyle(accent)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .help(provider.accountStatusMessage)
+      if let loginNotice, !loginNotice.isEmpty {
+        Text(loginNotice)
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(CSColor.terracotta)
           .lineLimit(1)
-        if let loginNotice, !loginNotice.isEmpty {
-          Text(loginNotice)
-            .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.terracotta)
-            .lineLimit(1)
-            .help(loginNotice)
-        }
-        Spacer(minLength: 0)
-        if signedIn {
-          SettingsChipButton(
-            "Sign out", tint: CSColor.terracotta, enabled: !loginPending, action: onSignOut
-          )
-          .help("Remove the stored \(accountBrand) account tokens")
-          .accessibilityLabel("Sign out of \(accountBrand)")
-        }
+          .help(loginNotice)
+      }
+      Spacer(minLength: 0)
+      if signedIn {
+        SettingsChipButton(
+          "Sign out", tint: CSColor.terracotta, enabled: !loginPending, action: onSignOut
+        )
+        .help("Remove the stored \(accountBrand) account tokens")
+        .accessibilityLabel("Sign out of \(accountBrand)")
+      } else {
         SettingsChipButton(
           enabled: provider.accountLoginEnabled && !loginPending, action: onStart
         ) {
@@ -454,38 +510,43 @@ struct AccountLoginRow: View {
         .help(provider.accountStatusMessage)
         .accessibilityLabel("Sign in with \(accountBrand)")
       }
-
-      // Client id is a non-secret public app identity. OpenAI + xAI ship
-      // defaults (NOTICE); users almost never need to paste one, so the
-      // override opens in a popover instead of taking a row.
-      Button("Advanced · OAuth client id…", action: openClientIdEditor)
-        .buttonStyle(.plain)
-        .font(CSFont.mono(10, .medium))
-        .foregroundStyle(Color.secondary)
-        .csFocusRing()
-        .popover(isPresented: $editingClientId, arrowEdge: .bottom) {
-          OAuthClientIdEditor(
-            accountBrand: accountBrand,
-            placeholder: provider.oauthClientId
-              ?? String(localized: "Override OAuth client id…"),
-            savedClientId: provider.oauthClientId ?? "",
-            draft: $clientIdDraft,
-            onSave: saveClientId
-          )
-        }
-    }
-    .onAppear { clientIdDraft = provider.oauthClientId ?? "" }
-    .onChange(of: provider.oauthClientId) { _, updated in
-      clientIdDraft = updated ?? ""
     }
   }
+}
 
-  private func openClientIdEditor() {
-    editingClientId = true
-  }
+/// `OAuth client id…` for a vendor card's Advanced disclosure. The client id
+/// is a non-secret public app identity; OpenAI + xAI ship defaults (NOTICE),
+/// so the override opens in a popover instead of taking a row.
+struct OAuthClientIdButton: View {
+  let provider: CsProviderOption
+  let onSave: (String) -> Void
 
-  private func saveClientId() {
-    onSaveClientId(clientIdDraft)
-    editingClientId = false
+  @State private var draft: String = ""
+  @State private var editing = false
+
+  private var accountBrand: String { AccountLoginRow.brand(for: provider) }
+
+  var body: some View {
+    Button("OAuth client id…") { editing = true }
+      .buttonStyle(.plain)
+      .font(CSFont.mono(10, .medium))
+      .foregroundStyle(Color.secondary)
+      .csFocusRing()
+      .popover(isPresented: $editing, arrowEdge: .bottom) {
+        OAuthClientIdEditor(
+          accountBrand: accountBrand,
+          placeholder: provider.oauthClientId ?? String(localized: "Override OAuth client id…"),
+          savedClientId: provider.oauthClientId ?? "",
+          draft: $draft,
+          onSave: {
+            onSave(draft)
+            editing = false
+          }
+        )
+      }
+      .onAppear { draft = provider.oauthClientId ?? "" }
+      .onChange(of: provider.oauthClientId) { _, updated in
+        draft = updated ?? ""
+      }
   }
 }

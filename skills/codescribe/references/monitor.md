@@ -3,10 +3,38 @@
 ## Codex native queue
 
 `cs-bus --attach --provider codex --session <thread-id> --name <name> --channel <n>`
-automatically selects `codex-queue`. The follower submits full seal text in
-occurrence order to `codex queue --thread <thread-id> --message <compact-message>`.
-Coverage-refused takes also arrive. No private hook, full JSON prompt or new
-model session is needed. The installed Codex CLI must support `queue`.
+automatically selects `codex-queue`. The follower submits the complete message
+text with compact ownership and provenance to `codex queue`. The canonical
+mailbox retains the original envelope and its acoustic evidence. The queue
+copy never proves that a delivery is still unread. The installed Codex CLI
+must support `queue`.
+
+On either the watch bell or a native queue message, read the current mailbox:
+
+```bash
+cs-bus --read-pending --provider codex --session <thread-id>
+```
+
+This returns complete unread non-draft conversational projections: unchanged
+message text, causal identity, sender, reply association, routing and provenance.
+It includes `read_delivery_ids`, `remaining` count and snapshot cursor. It omits
+PCM occurrences, acoustic receipt trees and WAV paths without altering their
+original storage. It does not acknowledge anything. The default batch is at
+most eight messages and 64 KiB of UTF-8 JSON; use
+`--read-limit` and `--read-bytes` to change those bounded limits. Oversized first
+envelopes refuse instead of truncating: increase the byte limit and read the
+complete result before ACK. Never ACK a truncated tool result.
+
+Immediately after reading each complete batch, ACK exactly its returned IDs
+**before** doing the requested work, sending a reply or waiting for a build.
+Execute or reply only to exact IDs returned as unread by this current read;
+never act on the queue copy alone. An absent queued ID is obsolete even when
+other unread messages remain. Give a short answer before starting longer work.
+Read another batch until `remaining` is zero, then check once more for arrivals
+during the drain. Preserve every distinct request and its provenance. An empty
+snapshot means the bell is obsolete; do not repeat a task, ACK an unread ID,
+or send another spoken response just for that bell. Several status updates may
+be answered together; there is no text-based deduplication or age-based deletion.
 
 Receipts under `agent-bridge/wakeups/<lease-id>/<delivery-id>.json` distinguish
 `requesting`, `provider_accepted`, `rejected`, `unavailable` and `uncertain`.
@@ -29,12 +57,11 @@ Every attachment must start the provider's output-notifying monitor on
 `cs-bus --watch --provider codex --session <thread-id>`. Its default is a short bell;
 `--bell` spells that default explicitly. It is mandatory for active tasks, even
 with native queue. Renew bounded notification windows throughout the task.
-It carries only the delivery id and notice, while native queue retains the
-complete message for the next provider turn. On a bell, use
-`cs-bus --read-delivery <id> --provider codex --session <thread-id>` to read the
-complete original envelope now and ACK after reading. This is one delivery,
-not a second command. A later queued copy must not repeat the completed task
-or speak a second answer for a delivery already acknowledged by this conversation.
+The watch remains a notice; native queue carries complete task text and compact
+provenance. `--read-delivery <id>` is the explicit diagnostic read of the complete
+original envelope, including acoustic evidence. It refuses an already acknowledged
+delivery even before the follower sweeps its mailbox. A later bell must not
+repeat the completed task or speak a second answer for an acknowledged delivery.
 
 ## Select the execution mechanism for other providers
 
@@ -135,8 +162,10 @@ active listening turn open when post-final wakeup is unavailable.
 ## Acknowledge conversation receipt
 
 The session-scoped helper retains emitted envelopes until explicit receipt.
-After this conversation has received and accepted the complete envelope,
-retain its delivery ID and disposition in the conversation record, then run:
+After this conversation has received the complete conversational projection,
+retain its delivery ID and disposition in the conversation record and immediately
+run, before any task execution or reply. Acoustic diagnostics are not a reading
+prerequisite:
 
 ```bash
 cs-bus \
@@ -146,7 +175,15 @@ cs-bus \
 Use the actual provider/session and the same `--bus`/`--bridge-home` overrides
 as the follower. Several ids are all or nothing: one id that is not pending
 refuses the call and no marker is written. Each accepted id prints one
-`acknowledged` line. This command does not start another reader. A successful
+`acknowledged` line. The immutable marker records `read_at` once: this is the
+read receipt, not proof of execution. A bell and provider acceptance never
+create this marker. For Codex, ACK also withdraws the exact pending native queue
+submission. `native_queue_settled: true` means removal was confirmed or no entry
+remains pending; false means the ACK was saved but provider withdrawal is still
+pending or unresolved. The existing follower retries transport failures in the
+background; `--status` exposes `pending_native_withdrawals`. A message already
+consumed by the model cannot be recalled. Original envelopes and transcript/audio
+history remain retained. This command does not start another reader. A successful
 `acknowledged` receipt proves acceptance was recorded, not that a command was
 executed. Keep execution disposition separately; do not repeat a completed
 action when its envelope is replayed.

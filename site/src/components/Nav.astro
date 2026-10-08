@@ -2,7 +2,7 @@
 import { asset, page } from '../lib/asset';
 
 interface Props {
-  current?: 'home' | 'lab' | 'fleet';
+  current?: 'home' | 'lab' | 'fleet' | 'guide';
 }
 const { current = 'home' } = Astro.props;
 ---
@@ -17,12 +17,12 @@ const { current = 'home' } = Astro.props;
       {current === 'home' ? (
         <>
           <a href="#modes">modes</a>
-          <a href="#agent-stack">agents</a>
+          <a href="#agent-chat">agents</a>
         </>
       ) : (
         <a href={page('')}>home</a>
       )}
-      <a href={page('fleet')} aria-current={current === 'fleet' ? 'page' : undefined}>fleet</a>
+      <a href={page('guide')} aria-current={current === 'guide' || current === 'fleet' ? 'page' : undefined}>guide</a>
       <a href={page('voice/lab')} aria-current={current === 'lab' ? 'page' : undefined}>lab</a>
       <a href="https://github.com/vetcoders/codescribe" target="_blank" rel="noopener noreferrer">github ↗</a>
       <a class="install" href={current === 'home' ? '#install' : `${page('')}#install`}>Install</a>

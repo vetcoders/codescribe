@@ -1,5 +1,65 @@
 # Hotkeys Contract
 
+## Overlay conversation viewing and speech
+
+The overlay's channel menu separates **My dictation**, **0 · All**, and exact
+named-agent conversations from the explicit **Capture channels** controls.
+Selecting a conversation is passive: it does not open or close the microphone,
+change an admitted take's destination, acknowledge an envelope, or replay speech.
+Historical conversations retain their provider/session/lease identity and name
+after rebinding. Channel 0 remains viewable when capture is closed.
+
+My dictation keeps its native editor mounted across view changes, retaining its
+selection, scroll and local revision draft. A view change cancels pending
+commit-on-blur admission; explicit transcript actions still use the existing
+reducer compare-and-swap path. Conversation messages are selectable read-only
+text. Unread reply counts describe viewing only, independently of delivery ACK.
+
+An explicit ordinary hold or toggle start closes active agent capture channels
+through their normal hangup path before admitting dictation (Founder delivery
+`f3cbd666a0d7d7e61d4d1971`, 2026-10-05).
+Each channel task joins and publishes its final receipt; its words are retained.
+For hold gestures, handover waits until the existing start delay has elapsed.
+The modifier alone can still become a channel chord or be released without a
+take; an explicit channel gesture cancels that pending ordinary hold.
+The same unified overlay then shows My dictation. Channel auto-reopening shares
+the controller's serial transition lock with this handover. Repeated lifecycle
+callbacks do not replace a view the user selected during the admitted capture.
+
+A recording Stop gesture binds the already published capture identity before
+waiting for the start transition lock. Key release, the overlay Stop and the
+recording toggle join the same retained terminal operation. A start finishing
+its admission cannot discard that Stop; timeout leaves its owner running until
+settlement. The terminal operation rechecks the captured identity under the
+transition lock and never stops a successor. Idle without a published capture
+still requires admission to be available before reporting no live take.
+
+Each reply's **Play** invokes the installed bus speech owner with its persisted
+reply ID and a fresh playback ticket. **Stop** names the exact emitted active
+ticket and provider session. These controls do not use the built-in chat player.
+The existing voice profiles, microphone interlock and serialization apply;
+failed or refused speech leaves reply text visible. Tab changes never schedule
+historical replay or start extra offscreen sound.
+
+Opening a capture channel follows the exact provider/session conversation and
+scrolls to its newest message. New messages on that open channel keep the latest
+entry visible; a passive roster poll does not replace a manually selected thread.
+The newest messages are painted first without reordering the observer history.
+
+The channel digit chord is claimed by the CoreGraphics tap: down, repeat and up
+are consumed, including an up after modifier release. Ordinary typing, other
+shortcuts and mouse events still reach the frontmost app. A successfully opened
+live channel plays **Pop**, respecting Start sound and its configured volume.
+A rejected open, a close or automatic phrase reopening does not play that cue.
+
+Each named conversation has a written-message composer. Clicking it takes the
+existing overlay keyboard gate; opening a voice channel never steals keyboard
+focus from the dictation destination. **Send** publishes an explicit typed
+message to the selected immutable provider/session/lease. Rebinding or a missing
+listener refuses publication and keeps the draft. Publication is separate from
+queue acceptance and the agent's acknowledgment; successful publication clears
+only the submitted draft, preserving text entered while the request was pending.
+
 > Technical specification for codescribe hotkey system.
 >
 > Created by Vetcoders (c)2026

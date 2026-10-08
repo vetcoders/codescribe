@@ -44,6 +44,7 @@ use tracing::warn;
 pub(crate) struct LocalExecutionControl {
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     deadline: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    tail_execution_observation: Option<std::sync::Arc<tail_provider::TailExecutionObservation>>,
     #[cfg(test)]
     cancel_at: Option<LocalExecutionBoundary>,
 }
@@ -55,6 +56,21 @@ pub(crate) enum LocalExecutionBoundary {
 }
 
 impl LocalExecutionControl {
+    pub(crate) fn with_tail_execution_observation(
+        &self,
+        observation: std::sync::Arc<tail_provider::TailExecutionObservation>,
+    ) -> Self {
+        let mut scoped = self.clone();
+        scoped.tail_execution_observation = Some(observation);
+        scoped
+    }
+
+    pub(crate) fn tail_execution_observation(
+        &self,
+    ) -> Option<&tail_provider::TailExecutionObservation> {
+        self.tail_execution_observation.as_deref()
+    }
+
     pub(crate) fn cancel(&self) {
         self.cancelled
             .store(true, std::sync::atomic::Ordering::Release);
@@ -66,20 +82,6 @@ impl LocalExecutionControl {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let deadline = current.map_or(deadline, |old| old.min(deadline));
-        *current = Some(deadline);
-        deadline
-    }
-
-    /// Replace the deadline. Cancellation is left untouched.
-    ///
-    /// [`Self::limit_until`] only moves the deadline earlier. A later phase
-    /// that has its own named budget uses this after the earlier phase has
-    /// already closed.
-    pub(crate) fn replace_deadline(&self, deadline: std::time::Instant) -> std::time::Instant {
-        let mut current = self
-            .deadline
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *current = Some(deadline);
         deadline
     }

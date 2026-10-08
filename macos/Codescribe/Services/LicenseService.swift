@@ -56,7 +56,7 @@ struct SystemLicenseKeychain: LicenseKeychainStoring {
     add[kSecValueData as String] = data
     add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
     // A signed license is an entitlement, not an authentication secret. It
-    // must load unattended at app launch, so biometric user-presence access
+    // must restore after setup, so biometric user-presence access
     // control would break the local-first restore contract.
     // nosemgrep: swift.biometrics-and-auth.missing-user-auth.keychain-without-user-auth
     let addStatus = SecItemAdd(add as CFDictionary, nil)
@@ -112,7 +112,9 @@ final class LicenseService: ObservableObject {
       licenseKeychainDisabledByEnvironment()
       ? nil
       : SystemLicenseKeychain()
-    return LicenseService(keychain: keychain, autoload: true)
+    // App startup owns restoration after the first-run boundary. Resolving
+    // this shared service for a chat or settings projection is passive.
+    return LicenseService(keychain: keychain, autoload: false)
   }()
   static let preview = LicenseService(keychain: nil, autoload: false)
 
@@ -122,6 +124,7 @@ final class LicenseService: ObservableObject {
   @Published private(set) var readState: ReadState = .loading
   @Published private(set) var isBusy = false
   @Published private(set) var lastError: String?
+  @Published private(set) var lastErrorDetails: String?
 
   // The signed payload is the authority; evaluate it at the current clock on
   // every gate read. A slow storage refresh must not freeze an active license
@@ -145,12 +148,12 @@ final class LicenseService: ObservableObject {
   var agenticBlockMessage: String {
     if persisted == nil, readState != .available {
       return readState == .loading
-        ? String(localized: "Checking license… Basic dictation remains free.")
-        : String(localized: "License access is unavailable. Retry in Settings › License. Basic dictation remains free.")
+        ? String(localized: "Checking license…")
+        : String(localized: "Couldn't read the saved license. Try again in Settings → License.")
     }
     return status.state == .expiredUpdates
-      ? String(localized: "Your license period ended. Renew to keep using Agentic — Basic dictation remains free.")
-      : String(localized: "Agentic requires a license. Basic dictation remains free.")
+      ? String(localized: "License access ended. Check Settings → License.")
+      : String(localized: "Agent mode requires a license. Open Settings → License.")
   }
 
   private let keychain: (any LicenseKeychainStoring)?
@@ -199,6 +202,8 @@ final class LicenseService: ObservableObject {
     guard !isBusy else { return }
     isBusy = true
     readState = .loading
+    lastError = nil
+    lastErrorDetails = nil
     Task { @MainActor [self] in
       defer { isBusy = false }
       let data: Data?
@@ -208,7 +213,8 @@ final class LicenseService: ObservableObject {
         // A storage failure is not evidence of absence. Retain the previously
         // verified payload and keep evaluating its time bounds normally.
         readState = .unavailable
-        lastError = error.localizedDescription
+        lastError = String(localized: "Couldn't read the saved license. Try again.")
+        lastErrorDetails = error.localizedDescription
         return
       }
       do {
@@ -219,11 +225,13 @@ final class LicenseService: ObservableObject {
         persisted = loaded
         readState = .available
         lastError = nil
+        lastErrorDetails = nil
       } catch {
         // Successfully read malformed or invalid signed data fails closed.
         persisted = nil
         readState = .unavailable
-        lastError = error.localizedDescription
+        lastError = String(localized: "Couldn't verify the saved license. Enter your key again.")
+        lastErrorDetails = error.localizedDescription
       }
     }
   }
@@ -233,14 +241,23 @@ final class LicenseService: ObservableObject {
     guard !isBusy else { return false }
     let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !key.isEmpty else {
-      lastError = String(localized: "Enter a CSK1 license key.", comment: "CSK1 is the license-key prefix — keep it verbatim")
+      lastError = String(localized: "Enter a license key.")
+      lastErrorDetails = nil
       return false
     }
     isBusy = true
+    lastError = nil
+    lastErrorDetails = nil
     defer { isBusy = false }
+    let timestamp = Int64(now().timeIntervalSince1970)
     do {
-      let timestamp = Int64(now().timeIntervalSince1970)
       _ = try activateBridge(key, timestamp)
+    } catch {
+      lastError = String(localized: "Couldn't verify the key. Check that it's correct and complete.")
+      lastErrorDetails = error.localizedDescription
+      return false
+    }
+    do {
       let candidate = PersistedLicense(key: key, lastOnlineValidation: timestamp)
       let data = try JSONEncoder().encode(candidate)
       try await storage { try $0?.save(data) }
@@ -249,9 +266,11 @@ final class LicenseService: ObservableObject {
       persisted = candidate
       readState = .available
       lastError = nil
+      lastErrorDetails = nil
       return true
     } catch {
-      lastError = error.localizedDescription
+      lastError = String(localized: "Couldn't save the key on this Mac. Try again.")
+      lastErrorDetails = error.localizedDescription
       return false
     }
   }
@@ -259,14 +278,18 @@ final class LicenseService: ObservableObject {
   func removeLicense() async {
     guard !isBusy else { return }
     isBusy = true
+    lastError = nil
+    lastErrorDetails = nil
     defer { isBusy = false }
     do {
       try await storage { try $0?.delete() }
       persisted = nil
       readState = .available
       lastError = nil
+      lastErrorDetails = nil
     } catch {
-      lastError = error.localizedDescription
+      lastError = String(localized: "Couldn't remove the key. Try again.")
+      lastErrorDetails = error.localizedDescription
     }
   }
 

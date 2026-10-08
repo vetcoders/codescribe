@@ -85,11 +85,106 @@ pub enum McpRowTone {
     Neutral,
 }
 
+/// Which status line a row is. Stable machine identity for the Settings layer,
+/// which renders a localized label per facet; `label` stays the English text
+/// for logs and tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpStatusFacet {
+    /// Core readiness verdict.
+    Readiness,
+    /// Assistive provider + credential access.
+    Provider,
+    /// Compiled-in native tool count.
+    NativeTools,
+    /// Settings roots vs native-tool roots.
+    WorkspaceRoots,
+    VibecraftedRuntime,
+    AicxMcp,
+    LoctreeMcp,
+    PrviewIntegration,
+    /// `mcp.json` itself: missing, empty, unreadable, or a parse note.
+    McpConfig,
+    /// One configured MCP server; `subject` carries its name.
+    McpServer,
+}
+
+/// Machine state behind a row's value text. Each facet uses the subset that
+/// applies; the Settings layer renders a localized sentence per state and
+/// interpolates `count`, `subject`, and `detail`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpStatusState {
+    /// Readiness verdict passed (`subject` = provider label, `count` = native tools).
+    Ready,
+    /// Provider access available (`subject` = provider label).
+    AccessAvailable,
+    /// Provider access missing (`subject` = provider label, `detail` = env key).
+    AccessUnavailable,
+    /// No native tools compiled in.
+    NoNativeTools,
+    /// Native tools present (`count`).
+    Available,
+    /// Settings roots match native-tool roots (`count` = roots).
+    Synchronized,
+    /// Settings roots differ from native-tool roots (`detail` = both lists).
+    RootsMismatch,
+    /// Optional server absent from `mcp.json`.
+    NotConfigured,
+    /// Discovery succeeded (`count` = tools, `subject` = server name when relevant).
+    Live,
+    /// Discovery failed (`detail` = root cause).
+    Failed,
+    Disabled,
+    /// Configured but the agent has not run discovery yet.
+    Configured,
+    /// `mcp.json` unreadable or its path unavailable (`detail` = cause).
+    Error,
+    /// `mcp.json` present with no servers.
+    Empty,
+    /// No `mcp.json` at all.
+    Missing,
+    /// Informational note (`detail`).
+    Note,
+}
+
 /// One labelled status line in the Engine tab's "MCP Servers" section.
+///
+/// `label` / `value` are the English rendering used by logs and tests; the
+/// Settings layer renders its own localized text from `facet`, `state`, and the
+/// structured parts, never by parsing `value`.
 pub struct McpStatusRow {
     pub label: String,
     pub value: String,
     pub tone: McpRowTone,
+    pub facet: McpStatusFacet,
+    pub state: McpStatusState,
+    /// Tool or folder count behind the value, when the state carries one.
+    pub count: Option<u32>,
+    /// Provider label or server name behind the value, when there is one.
+    pub subject: String,
+    /// Error cause, env key, or free-form note behind the value.
+    pub detail: String,
+}
+
+impl McpStatusRow {
+    /// Row with no count, subject, or detail; callers fill the parts that apply.
+    fn new(
+        facet: McpStatusFacet,
+        state: McpStatusState,
+        label: impl Into<String>,
+        value: impl Into<String>,
+        tone: McpRowTone,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+            tone,
+            facet,
+            state,
+            count: None,
+            subject: String::new(),
+            detail: String::new(),
+        }
+    }
 }
 
 /// Honest snapshot of MCP config + runtime state for the Settings UI.
@@ -127,14 +222,15 @@ impl McpStatusReport {
         label: &str,
         value: String,
         tone: McpRowTone,
+        state: McpStatusState,
+        detail: String,
     ) -> Self {
         Self {
             config_path_display,
             configured,
             rows: vec![McpStatusRow {
-                label: label.to_string(),
-                value,
-                tone,
+                detail,
+                ..McpStatusRow::new(McpStatusFacet::McpConfig, state, label, value, tone)
             }],
         }
     }
@@ -156,6 +252,8 @@ pub fn probe_mcp_status() -> McpStatusReport {
                 "Status:",
                 format!("config path unavailable: {error}"),
                 McpRowTone::Bad,
+                McpStatusState::Error,
+                error.to_string(),
             );
         }
     };
@@ -175,18 +273,23 @@ fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
             "Status:",
             "no mcp.json (optional — MCP off)".to_string(),
             McpRowTone::Neutral,
+            McpStatusState::Missing,
+            String::new(),
         );
     }
 
     let config = match McpConfigFile::load(path) {
         Ok(config) => config,
         Err(error) => {
+            let cause = anyhow_root_cause(&error);
             return McpStatusReport::single(
                 config_path_display,
                 true,
                 "Config error:",
-                anyhow_root_cause(&error),
+                cause.clone(),
                 McpRowTone::Bad,
+                McpStatusState::Error,
+                cause,
             );
         }
     };
@@ -198,6 +301,8 @@ fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
             "Status:",
             "config present, no servers defined".to_string(),
             McpRowTone::Warn,
+            McpStatusState::Empty,
+            String::new(),
         );
     }
 
@@ -215,20 +320,54 @@ fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
             .get(name)
             .and_then(|server| server.enabled)
             .unwrap_or(true);
-        let (value, tone) = match runtime.get(name) {
-            Some(ServerRuntime::Tools(count)) => (format!("{count} tool(s)"), McpRowTone::Good),
-            Some(ServerRuntime::Failed(reason)) => (format!("failed: {reason}"), McpRowTone::Bad),
-            Some(ServerRuntime::Disabled) => ("disabled".to_string(), McpRowTone::Neutral),
-            None if !enabled => ("disabled".to_string(), McpRowTone::Neutral),
+        let (value, tone, state, count, detail) = match runtime.get(name) {
+            Some(ServerRuntime::Tools(count)) => (
+                format!("{count} tool(s)"),
+                McpRowTone::Good,
+                McpStatusState::Live,
+                Some(*count as u32),
+                String::new(),
+            ),
+            Some(ServerRuntime::Failed(reason)) => (
+                format!("failed: {reason}"),
+                McpRowTone::Bad,
+                McpStatusState::Failed,
+                None,
+                reason.clone(),
+            ),
+            Some(ServerRuntime::Disabled) => (
+                "disabled".to_string(),
+                McpRowTone::Neutral,
+                McpStatusState::Disabled,
+                None,
+                String::new(),
+            ),
+            None if !enabled => (
+                "disabled".to_string(),
+                McpRowTone::Neutral,
+                McpStatusState::Disabled,
+                None,
+                String::new(),
+            ),
             None => (
                 "configured (agent not started)".to_string(),
                 McpRowTone::Warn,
+                McpStatusState::Configured,
+                None,
+                String::new(),
             ),
         };
         rows.push(McpStatusRow {
-            label: format!("{name}:"),
-            value,
-            tone,
+            count,
+            subject: name.clone(),
+            detail,
+            ..McpStatusRow::new(
+                McpStatusFacet::McpServer,
+                state,
+                format!("{name}:"),
+                value,
+                tone,
+            )
         });
     }
 
@@ -247,15 +386,20 @@ fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
 /// they are context only and NEVER gate `ready` — the core capability gate
 /// (provider + key + native tools) is the sole arbiter of readiness. PRView is
 /// handled separately by [`classify_prview`], also as optional context.
-const AGENTIC_PREREQS: &[(&str, &str)] = &[
-    ("Vibecrafted runtime:", "vibecrafted-mcp"),
-    ("AICX MCP:", "aicx-mcp"),
-    ("Loctree MCP:", "loctree-mcp"),
+const AGENTIC_PREREQS: &[(McpStatusFacet, &str, &str)] = &[
+    (
+        McpStatusFacet::VibecraftedRuntime,
+        "Vibecrafted runtime:",
+        "vibecrafted-mcp",
+    ),
+    (McpStatusFacet::AicxMcp, "AICX MCP:", "aicx-mcp"),
+    (McpStatusFacet::LoctreeMcp, "Loctree MCP:", "loctree-mcp"),
 ];
 
 /// Core capability gate — the REAL ability of the agent to act. This is the only
-/// input that decides `ready`: a configured assistive-lane provider whose API
-/// key is present, the compiled-in native tool set, and exact agreement between
+/// input that decides `ready`: a usable sealed assistive lane with current
+/// credential access (account access, API key, or a key-optional provider),
+/// the native tool set, and exact agreement between
 /// the persisted Settings roots and the roots resolved by native tools. Operator
 /// tooling (MCP servers) is informational and never enters this verdict.
 #[derive(Debug, Clone)]
@@ -264,8 +408,8 @@ pub struct CoreReadiness {
     pub provider_label: String,
     /// Keychain/env account holding that provider's assistive key.
     pub key_env_key: String,
-    /// Whether that key is present (non-empty) in env or Keychain.
-    pub key_set: bool,
+    /// Whether the sealed lane is usable and a request has credential access.
+    pub provider_access_available: bool,
     /// Number of native (compiled-in) tools available to the agent.
     pub native_tool_count: usize,
     /// Roots rendered by Settings from fresh persisted config.
@@ -285,7 +429,7 @@ pub fn probe_core_readiness(runtime_settings: &RuntimeSettingsSnapshot) -> CoreR
     assemble_core_readiness(
         assistive_lane.provider_display_name().to_string(),
         assistive_lane.credential().key_account().to_string(),
-        assistive_lane.request_available(),
+        assistive_lane.available() && assistive_lane.request_available(),
         configured_workspace_roots,
         tool_workspace_roots,
     )
@@ -312,7 +456,7 @@ fn configured_workspace_roots(runtime_settings: &RuntimeSettingsSnapshot) -> Vec
 fn assemble_core_readiness(
     provider_label: String,
     key_env_key: String,
-    key_set: bool,
+    provider_access_available: bool,
     configured_workspace_roots: Vec<String>,
     tool_workspace_roots: Vec<String>,
 ) -> CoreReadiness {
@@ -323,7 +467,7 @@ fn assemble_core_readiness(
     CoreReadiness {
         provider_label,
         key_env_key,
-        key_set,
+        provider_access_available,
         native_tool_count,
         configured_workspace_roots,
         tool_workspace_roots,
@@ -341,7 +485,7 @@ fn workspace_roots_match(core: &CoreReadiness) -> bool {
 /// Readiness verdict for the Agentic operating lane.
 ///
 /// `ready` is decided SOLELY by the core capability gate ([`CoreReadiness`]:
-/// assistive provider configured + its API key set + native tools compiled in +
+/// assistive provider access available + native tools compiled in +
 /// exact Settings/native-tool workspace-root parity).
 /// The per-server MCP rows (Vibecrafted / AICX / Loctree / PRView) are
 /// INFORMATIONAL context only — they can never flip `ready` — because they are
@@ -362,7 +506,7 @@ impl AgenticReadinessReport {
     }
 
     /// `true` only when the core capability gate passes: a configured assistive
-    /// provider with its API key set, at least one native tool available, and
+    /// provider with request access, at least one native tool available, and
     /// matching non-empty Settings/native-tool workspace roots.
     /// Operator-tooling MCP rows are informational and never affect this verdict.
     pub fn is_ready(&self) -> bool {
@@ -375,41 +519,68 @@ impl AgenticReadinessReport {
 /// readiness (the core gate owns that). Absent → neutral "not configured
 /// (optional)"; live → good; configured-but-unstarted or failed → warn.
 fn classify_operator_tool(
+    facet: McpStatusFacet,
     label: &str,
     server_name: &str,
     config: &McpConfigFile,
     runtime: &BTreeMap<String, ServerRuntime>,
 ) -> McpStatusRow {
     let configured = config.servers.get(server_name);
-    let (value, tone) = match (configured, runtime.get(server_name)) {
+    let mut row = match (configured, runtime.get(server_name)) {
         // Not present in mcp.json — optional operator tooling is simply absent.
-        (None, _) => ("not configured (optional)".to_string(), McpRowTone::Neutral),
+        (None, _) => McpStatusRow::new(
+            facet,
+            McpStatusState::NotConfigured,
+            label,
+            "not configured (optional)",
+            McpRowTone::Neutral,
+        ),
         // Real discovery succeeded — tools are live.
-        (Some(_), Some(ServerRuntime::Tools(count))) => {
-            (format!("ready — {count} tool(s) live"), McpRowTone::Good)
-        }
+        (Some(_), Some(ServerRuntime::Tools(count))) => McpStatusRow {
+            count: Some(*count as u32),
+            ..McpStatusRow::new(
+                facet,
+                McpStatusState::Live,
+                label,
+                format!("ready — {count} tool(s) live"),
+                McpRowTone::Good,
+            )
+        },
         // Configured but discovery failed: surface the concrete reason (warn, not
         // blocking — the agent still works without this operator surface).
-        (Some(_), Some(ServerRuntime::Failed(reason))) => {
-            (format!("failed: {reason}"), McpRowTone::Warn)
-        }
+        (Some(_), Some(ServerRuntime::Failed(reason))) => McpStatusRow {
+            detail: reason.clone(),
+            ..McpStatusRow::new(
+                facet,
+                McpStatusState::Failed,
+                label,
+                format!("failed: {reason}"),
+                McpRowTone::Warn,
+            )
+        },
         (Some(cfg), runtime_state) => {
             let enabled = cfg.enabled.unwrap_or(true);
             if matches!(runtime_state, Some(ServerRuntime::Disabled)) || !enabled {
-                ("disabled".to_string(), McpRowTone::Neutral)
+                McpStatusRow::new(
+                    facet,
+                    McpStatusState::Disabled,
+                    label,
+                    "disabled",
+                    McpRowTone::Neutral,
+                )
             } else {
-                (
-                    "configured — agent not started yet".to_string(),
+                McpStatusRow::new(
+                    facet,
+                    McpStatusState::Configured,
+                    label,
+                    "configured — agent not started yet",
                     McpRowTone::Warn,
                 )
             }
         }
     };
-    McpStatusRow {
-        label: label.to_string(),
-        value,
-        tone,
-    }
+    row.subject = server_name.to_string();
+    row
 }
 
 /// Classify PRView as an INFORMATIONAL row. Per the C4 decision PRView is
@@ -425,31 +596,64 @@ fn classify_prview(
         .servers
         .iter()
         .find(|(name, _)| name.to_ascii_lowercase().contains("prview"));
-    let (value, tone) = match detected {
+    let facet = McpStatusFacet::PrviewIntegration;
+    let label = "PRView integration:";
+    let (value, tone, state, count, detail) = match detected {
         Some((name, cfg)) => match runtime.get(name) {
             Some(ServerRuntime::Tools(count)) => (
                 format!("ready — {count} tool(s) live (via \"{name}\")"),
                 McpRowTone::Good,
+                McpStatusState::Live,
+                Some(*count as u32),
+                String::new(),
             ),
-            Some(ServerRuntime::Failed(reason)) => (format!("failed: {reason}"), McpRowTone::Warn),
-            Some(ServerRuntime::Disabled) => ("disabled".to_string(), McpRowTone::Neutral),
+            Some(ServerRuntime::Failed(reason)) => (
+                format!("failed: {reason}"),
+                McpRowTone::Warn,
+                McpStatusState::Failed,
+                None,
+                reason.clone(),
+            ),
+            Some(ServerRuntime::Disabled) => (
+                "disabled".to_string(),
+                McpRowTone::Neutral,
+                McpStatusState::Disabled,
+                None,
+                String::new(),
+            ),
             None => {
                 if cfg.enabled.unwrap_or(true) {
                     (
                         format!("configured — agent not started yet (via \"{name}\")"),
                         McpRowTone::Warn,
+                        McpStatusState::Configured,
+                        None,
+                        String::new(),
                     )
                 } else {
-                    ("disabled".to_string(), McpRowTone::Neutral)
+                    (
+                        "disabled".to_string(),
+                        McpRowTone::Neutral,
+                        McpStatusState::Disabled,
+                        None,
+                        String::new(),
+                    )
                 }
             }
         },
-        None => ("not configured (optional)".to_string(), McpRowTone::Neutral),
+        None => (
+            "not configured (optional)".to_string(),
+            McpRowTone::Neutral,
+            McpStatusState::NotConfigured,
+            None,
+            String::new(),
+        ),
     };
     McpStatusRow {
-        label: "PRView integration:".to_string(),
-        value,
-        tone,
+        count,
+        subject: detected.map(|(name, _)| name.clone()).unwrap_or_default(),
+        detail,
+        ..McpStatusRow::new(facet, state, label, value, tone)
     }
 }
 
@@ -528,78 +732,132 @@ fn assemble_readiness(
 
     let tools_present = core.native_tool_count > 0;
     let roots_match = workspace_roots_match(&core);
-    let ready = core.key_set && tools_present && roots_match;
+    let ready = core.provider_access_available && tools_present && roots_match;
 
     // ---- Core capability gate rows (these decide `ready`). ----
     let verdict = if ready {
         McpStatusRow {
-            label: "Agentic readiness:".to_string(),
-            value: format!(
-                "ready — {} configured, key set, {} native tool(s)",
-                core.provider_label, core.native_tool_count
-            ),
-            tone: McpRowTone::Good,
+            count: Some(core.native_tool_count as u32),
+            subject: core.provider_label.clone(),
+            ..McpStatusRow::new(
+                McpStatusFacet::Readiness,
+                McpStatusState::Ready,
+                "Agentic readiness:",
+                format!(
+                    "ready — {} configured, access available, {} native tool(s)",
+                    core.provider_label, core.native_tool_count
+                ),
+                McpRowTone::Good,
+            )
         }
     } else {
-        let reason = if !core.key_set {
-            format!("assistive API key missing (set {})", core.key_env_key)
+        let (reason, state) = if !core.provider_access_available {
+            (
+                format!(
+                    "assistive provider access unavailable (sign in or set {})",
+                    core.key_env_key
+                ),
+                McpStatusState::AccessUnavailable,
+            )
         } else if !tools_present {
-            "no native tools available".to_string()
+            (
+                "no native tools available".to_string(),
+                McpStatusState::NoNativeTools,
+            )
         } else {
-            "workspace roots differ between Settings and native tools".to_string()
+            (
+                "workspace roots differ between Settings and native tools".to_string(),
+                McpStatusState::RootsMismatch,
+            )
         };
         McpStatusRow {
-            label: "Agentic readiness:".to_string(),
-            value: format!("not ready — {reason}"),
-            tone: McpRowTone::Bad,
+            subject: core.provider_label.clone(),
+            detail: core.key_env_key.clone(),
+            ..McpStatusRow::new(
+                McpStatusFacet::Readiness,
+                state,
+                "Agentic readiness:",
+                format!("not ready — {reason}"),
+                McpRowTone::Bad,
+            )
         }
     };
 
     let provider_row = McpStatusRow {
-        label: "Provider:".to_string(),
-        value: if core.key_set {
-            format!("{} — key set", core.provider_label)
-        } else {
-            format!(
-                "{} — key missing (set {})",
-                core.provider_label, core.key_env_key
-            )
-        },
-        tone: if core.key_set {
-            McpRowTone::Good
-        } else {
-            McpRowTone::Bad
-        },
+        subject: core.provider_label.clone(),
+        detail: core.key_env_key.clone(),
+        ..McpStatusRow::new(
+            McpStatusFacet::Provider,
+            if core.provider_access_available {
+                McpStatusState::AccessAvailable
+            } else {
+                McpStatusState::AccessUnavailable
+            },
+            "Provider:",
+            if core.provider_access_available {
+                format!("{} — access available", core.provider_label)
+            } else {
+                format!(
+                    "{} — access unavailable (sign in or set {})",
+                    core.provider_label, core.key_env_key
+                )
+            },
+            if core.provider_access_available {
+                McpRowTone::Good
+            } else {
+                McpRowTone::Bad
+            },
+        )
     };
 
     let tools_row = McpStatusRow {
-        label: "Native tools:".to_string(),
-        value: format!("{} tool(s) available", core.native_tool_count),
-        tone: if tools_present {
-            McpRowTone::Good
-        } else {
-            McpRowTone::Bad
-        },
+        count: Some(core.native_tool_count as u32),
+        ..McpStatusRow::new(
+            McpStatusFacet::NativeTools,
+            if tools_present {
+                McpStatusState::Available
+            } else {
+                McpStatusState::NoNativeTools
+            },
+            "Native tools:",
+            format!("{} tool(s) available", core.native_tool_count),
+            if tools_present {
+                McpRowTone::Good
+            } else {
+                McpRowTone::Bad
+            },
+        )
     };
 
+    let roots_detail = format!(
+        "Settings={:?}, native tools={:?}",
+        core.configured_workspace_roots, core.tool_workspace_roots
+    );
     let roots_row = McpStatusRow {
-        label: "Workspace roots:".to_string(),
-        value: if roots_match {
-            format!(
-                "{} configured — native tools synchronized",
-                core.configured_workspace_roots.len()
-            )
-        } else {
-            format!(
-                "mismatch — Settings={:?}, native tools={:?}",
-                core.configured_workspace_roots, core.tool_workspace_roots
-            )
-        },
-        tone: if roots_match {
-            McpRowTone::Good
-        } else {
-            McpRowTone::Bad
-        },
+        count: Some(core.configured_workspace_roots.len() as u32),
+        detail: roots_detail.clone(),
+        ..McpStatusRow::new(
+            McpStatusFacet::WorkspaceRoots,
+            if roots_match {
+                McpStatusState::Synchronized
+            } else {
+                McpStatusState::RootsMismatch
+            },
+            "Workspace roots:",
+            if roots_match {
+                format!(
+                    "{} configured — native tools synchronized",
+                    core.configured_workspace_roots.len()
+                )
+            } else {
+                format!("mismatch — {roots_detail}")
+            },
+            if roots_match {
+                McpRowTone::Good
+            } else {
+                McpRowTone::Bad
+            },
+        )
     };
 
     let mut rows = Vec::with_capacity(AGENTIC_PREREQS.len() + 6);
@@ -611,13 +869,19 @@ fn assemble_readiness(
     // ---- Informational operator-tooling rows (never gate `ready`). ----
     if let Some(note) = config_note {
         rows.push(McpStatusRow {
-            label: "MCP config:".to_string(),
-            value: note,
-            tone: McpRowTone::Warn,
+            detail: note.clone(),
+            ..McpStatusRow::new(
+                McpStatusFacet::McpConfig,
+                McpStatusState::Note,
+                "MCP config:",
+                note,
+                McpRowTone::Warn,
+            )
         });
     }
-    for (label, server_name) in AGENTIC_PREREQS {
+    for (facet, label, server_name) in AGENTIC_PREREQS {
         rows.push(classify_operator_tool(
+            *facet,
             label,
             server_name,
             &config,
@@ -1622,12 +1886,12 @@ mod tests {
             .unwrap_or_else(|| panic!("row '{label}' present"))
     }
 
-    /// Core gate that PASSES: provider configured, key set, native tools present.
+    /// Core gate that PASSES: provider access available, native tools present.
     fn core_ready() -> CoreReadiness {
         CoreReadiness {
             provider_label: "OpenAI (Responses)".to_string(),
             key_env_key: "LLM_OPENAI_API_KEY".to_string(),
-            key_set: true,
+            provider_access_available: true,
             native_tool_count: 10,
             configured_workspace_roots: vec!["~/Git".to_string()],
             tool_workspace_roots: vec!["~/Git".to_string()],
@@ -1649,6 +1913,37 @@ mod tests {
         );
         assert!(!core.provider_label.is_empty());
         assert!(!core.key_env_key.is_empty());
+    }
+
+    #[test]
+    fn core_readiness_requires_a_model_for_a_key_optional_custom_provider() {
+        use codescribe_core::config::{CapturedRuntimeInputs, Config};
+        use codescribe_core::llm::provider::{CustomProvider, WireFamily};
+
+        let root = tempfile::tempdir().expect("isolated runtime root");
+        let mut input = CapturedRuntimeInputs::defaults_at(root.path().to_path_buf(), 1);
+        let provider = CustomProvider::new(
+            "Readiness fixture",
+            WireFamily::OpenAiResponses,
+            "http://localhost:8080/v1",
+        )
+        .expect("valid custom provider");
+        input.user_settings.llm_assistive_provider = Some(format!("custom:{}", provider.id));
+        input.user_settings.llm_custom_providers = vec![provider];
+
+        let without_model = Config::runtime_snapshot_from_captured(input.clone());
+        let lane = without_model.llm_lanes().assistive();
+        assert!(lane.request_available(), "the custom endpoint needs no key");
+        assert!(!lane.available(), "the loader refuses a missing model");
+        assert!(
+            !super::probe_core_readiness(&without_model).provider_access_available,
+            "credential access alone cannot make an unusable lane ready"
+        );
+
+        input.user_settings.llm_assistive_model = Some("fixture-model".to_string());
+        let with_model = Config::runtime_snapshot_from_captured(input);
+        assert!(with_model.llm_lanes().assistive().available());
+        assert!(super::probe_core_readiness(&with_model).provider_access_available);
     }
 
     /// A passing core gate is READY with zero operator MCP tooling; MCP absence
@@ -1676,10 +1971,55 @@ mod tests {
         let provider = find_row(&report, "Provider:");
         assert_eq!(provider.tone, McpRowTone::Good);
         assert!(
-            provider.value.contains("key set"),
+            provider.value.contains("access available") && !provider.value.contains("key set"),
             "got: {}",
             provider.value
         );
+    }
+
+    /// Every readiness row carries a stable facet + state and the structured
+    /// parts the Settings layer renders from; the English `value` is never
+    /// the only carrier of a count or a provider name.
+    #[test]
+    fn readiness_rows_carry_facet_state_and_structured_parts() {
+        use super::{McpStatusFacet, McpStatusState};
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("mcp.json"); // never created
+
+        let report = probe_agentic_readiness_at(&path, core_ready());
+        let verdict = find_row(&report, "Agentic readiness:");
+        assert_eq!(verdict.facet, McpStatusFacet::Readiness);
+        assert_eq!(verdict.state, McpStatusState::Ready);
+        assert_eq!(verdict.subject, core_ready().provider_label);
+        assert_eq!(verdict.count, Some(core_ready().native_tool_count as u32));
+
+        let provider = find_row(&report, "Provider:");
+        assert_eq!(provider.facet, McpStatusFacet::Provider);
+        assert_eq!(provider.state, McpStatusState::AccessAvailable);
+        assert_eq!(provider.detail, core_ready().key_env_key);
+
+        let tools = find_row(&report, "Native tools:");
+        assert_eq!(tools.facet, McpStatusFacet::NativeTools);
+        assert_eq!(tools.state, McpStatusState::Available);
+
+        let roots = find_row(&report, "Workspace roots:");
+        assert_eq!(roots.facet, McpStatusFacet::WorkspaceRoots);
+        assert_eq!(roots.state, McpStatusState::Synchronized);
+        assert_eq!(
+            roots.count,
+            Some(core_ready().configured_workspace_roots.len() as u32)
+        );
+
+        for (label, facet) in [
+            ("Vibecrafted runtime:", McpStatusFacet::VibecraftedRuntime),
+            ("AICX MCP:", McpStatusFacet::AicxMcp),
+            ("Loctree MCP:", McpStatusFacet::LoctreeMcp),
+            ("PRView integration:", McpStatusFacet::PrviewIntegration),
+        ] {
+            let row = find_row(&report, label);
+            assert_eq!(row.facet, facet, "{label}");
+            assert_eq!(row.state, McpStatusState::NotConfigured, "{label}");
+        }
     }
 
     /// Vibecrafted/AICX/Loctree/PRView rows stay Neutral/optional when unconfigured
@@ -1707,13 +2047,12 @@ mod tests {
         }
     }
 
-    /// Full MCP substrate cannot rescue readiness when the core gate has no
-    /// assistive API key.
+    /// Full MCP substrate cannot rescue readiness when provider access is unavailable.
     #[test]
-    fn missing_assistive_key_blocks_readiness_even_with_full_substrate() {
+    fn unavailable_provider_access_blocks_readiness_even_with_full_substrate() {
         let temp = tempfile::tempdir().expect("temp dir");
         let path = temp.path().join("mcp.json");
-        // Full operator substrate present — but the core gate has no key.
+        // Full operator substrate present — but the core gate has no provider access.
         let config = json!({
             "mcpServers": {
                 "vibecrafted-mcp": { "command": "vibecrafted-mcp", "enabled": true },
@@ -1725,18 +2064,18 @@ mod tests {
         fs::write(&path, config.to_string()).expect("write config");
 
         let core = CoreReadiness {
-            key_set: false,
+            provider_access_available: false,
             ..core_ready()
         };
         let report = probe_agentic_readiness_at(&path, core);
         assert!(
             !report.is_ready(),
-            "no API key must block readiness regardless of MCP substrate"
+            "unavailable provider access must block readiness regardless of MCP substrate"
         );
         let verdict = find_row(&report, "Agentic readiness:");
         assert_eq!(verdict.tone, McpRowTone::Bad);
         assert!(
-            verdict.value.contains("key missing") || verdict.value.contains("key"),
+            verdict.value.contains("provider access unavailable"),
             "got: {}",
             verdict.value
         );

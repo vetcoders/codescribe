@@ -37,12 +37,12 @@ enum OverlayAnchor: String, CaseIterable, Identifiable {
 
   var systemImage: String {
     switch self {
-    case .topLeft: return "arrow.up.left"
-    case .topCenter: return "arrow.up"
-    case .topRight: return "arrow.up.right"
-    case .bottomLeft: return "arrow.down.left"
-    case .bottomCenter: return "arrow.down"
-    case .bottomRight: return "arrow.down.right"
+    case .topLeft: return "arrow.up.left.square"
+    case .topCenter: return "arrow.up.square"
+    case .topRight: return "arrow.up.right.square"
+    case .bottomLeft: return "arrow.down.left.square"
+    case .bottomCenter: return "arrow.down.square"
+    case .bottomRight: return "arrow.down.right.square"
     }
   }
 }

@@ -153,6 +153,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     scrollView.drawsBackground = false
     scrollView.hasHorizontalScroller = false
     scrollView.hasVerticalScroller = true
+    scrollView.scrollerInsets.right = OverlayResizeHit.scrollbarInset
     scrollView.autohidesScrollers = true
     scrollView.horizontalScrollElasticity = .none
     scrollView.documentView = textView

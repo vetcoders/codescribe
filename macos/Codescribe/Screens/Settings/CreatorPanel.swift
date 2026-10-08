@@ -1,6 +1,7 @@
 import SwiftUI
 
-// Creator setup panel: live permission checklist + editable voice/formatting
+// Creator setup panel: interface language (the per-app macOS preference the
+// setup wizard also writes), live permission checklist, editable voice/formatting
 // controls (language, AI formatting, formatting level) written through the core
 // router, plus quick-start cards and launchpad chips.
 // Permission rows reflect LIVE AVAuthorization / AX / IOHID / CG status.
@@ -13,7 +14,12 @@ struct CreatorPanel: View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(String(localized: "Get set up."))
 
-      SettingsSectionLabel(String(localized: "Permission checklist"))
+      SettingsSectionLabel(String(localized: "Interface", comment: "Settings group: app language"))
+        .padding(.top, CSSpace.section)
+      InterfaceLanguageRow(model: model)
+        .padding(.top, CSSpace.control)
+
+      SettingsSectionLabel(String(localized: "Permissions"))
         .padding(.top, CSSpace.section)
       VStack(spacing: 8) {
         ForEach([
@@ -36,21 +42,13 @@ struct CreatorPanel: View {
         .padding(.top, CSSpace.section)
       VStack(spacing: 8) {
         LanguageIdentityRow(selection: languageBinding)
-        SettingsControlRow(
-          title: String(localized: "AI formatting"),
-          subtitle: String(
-            localized: "Master switch. The Off level below always skips the LLM.")
-        ) {
+        SettingsControlRow(title: String(localized: "AI formatting")) {
           Toggle("", isOn: formattingEnabledBinding)
             .toggleStyle(.switch)
             .labelsHidden()
             .tint(CSColor.chromeAccent)
         }
-        SettingsControlRow(
-          title: String(localized: "Auto Format"),
-          subtitle: String(
-            localized: "Correction, balanced editing, or a tool-enabled Max consultation")
-        ) {
+        SettingsControlRow(title: String(localized: "Formatting level")) {
           Picker("", selection: formattingLevelBinding) {
             ForEach(FormattingPolicyOption.allCases) { policy in
               Text(policy.visibleName).tag(policy.rawValue)
@@ -98,19 +96,16 @@ struct CreatorPanel: View {
         QuickStartCard(
           icon: .mic,
           title: "Test mic",
-          subtitle: "Check levels & engine",
           accessibilityId: "settings-quickstart-test-mic"
         ) { model.performQuickStart(.testMic) }
         QuickStartCard(
           icon: .overlay,
           title: "Open overlay",
-          subtitle: "Start a dictation session",
           accessibilityId: "settings-quickstart-open-overlay"
         ) { model.performQuickStart(.openOverlay) }
         QuickStartCard(
           icon: .shortcuts,
           title: "Tune shortcuts",
-          subtitle: "Hotkeys",
           accessibilityId: "settings-quickstart-tune-shortcuts"
         ) { model.performQuickStart(.tuneShortcuts) }
       }
@@ -119,12 +114,6 @@ struct CreatorPanel: View {
     .padding(.horizontal, CSSpace.xl)
     .padding(.vertical, CSSpace.section)
     .onAppear { model.refreshCreatorAgentBridge() }
-    .onReceive(
-      NotificationCenter.default.publisher(
-        for: SettingsViewModel.agentBridgeLaunchSynchronizationDidFinish)
-    ) { _ in
-      model.refreshCreatorAgentBridge()
-    }
     .confirmationDialog(
       "Replace a manually installed Codescribe skill?",
       isPresented: Binding(
@@ -149,20 +138,20 @@ struct CreatorPanel: View {
   private var agentBridgeSection: some View {
     VStack(alignment: .leading, spacing: CSSpace.control) {
       SettingsSectionLabel(String(localized: "Connect your coding agent"))
-      Text(
-        "Install the Codescribe skill and bus helper from this app. No repository clone or manual file copying is needed."
-      )
-      .font(.callout)
-      .foregroundStyle(Color.primary)
+      Text("Install or update the skill directly from Codescribe.")
+        .font(.callout)
+        .foregroundStyle(Color.primary)
       ForEach(AgentBridgeClient.allCases) { client in
+        let installed = model.creatorAgentBridgeStatus.installedClients.contains(client)
         SettingsControlRow(
           title: client.displayName,
-          subtitle: String(localized: "Named voice messages to your existing conversation")
+          subtitle: installed
+            ? String(
+              localized: "creator.agentBridge.clientInstalled", defaultValue: "Installed",
+              comment: "Status on an agent client row: the Codescribe skill is installed")
+            : nil
         ) {
-          Button(
-            model.creatorAgentBridgeStatus.installedClients.contains(client)
-              ? "Update skill" : "Install skill"
-          ) {
+          Button(installed ? "Update skill" : "Install skill") {
             model.installCreatorAgentBridge(for: client)
           }
           .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
@@ -174,11 +163,13 @@ struct CreatorPanel: View {
           }
         }
       }
-      Button("Refresh installation status", action: model.refreshCreatorAgentBridge)
-      Text(model.creatorAgentBridgeStatus.detail)
-        .font(.caption)
-        .foregroundStyle(Color.secondary)
-        .textSelection(.enabled)
+      Button("Refresh status", action: model.refreshCreatorAgentBridge)
+      if !model.creatorAgentBridgeStatus.payloadAvailable {
+        Text(model.creatorAgentBridgeStatus.detail)
+          .font(.callout)
+          .foregroundStyle(Color.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
       if let notice = model.creatorAgentBridgeNotice {
         Text(notice).font(.callout).foregroundStyle(Color.primary).textSelection(.enabled)
       }
@@ -272,9 +263,8 @@ struct LanguageIdentityPresentation: Identifiable, Equatable {
   }
 
   static let supportingCopy = String(
-    localized:
-      "Programming vocabulary and your \(SettingsSection.voiceLab.title) entries enrich the selected language.",
-    comment: "The placeholder is the name of the Voice Lab settings section"
+    localized: "Domain vocabulary and Dictionary entries improve speech recognition.",
+    comment: "Dictionary is the name of the Voice Lab settings section"
   )
 
   static let choices: [LanguageIdentityPresentation] = [
@@ -289,14 +279,9 @@ private struct LanguageIdentityRow: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      VStack(alignment: .leading, spacing: 2) {
-        Text("Whisper language")
-          .font(CSFont.ui(13.5, .semibold))
-          .foregroundStyle(Color.primary)
-        Text("Choose automatic detection or a language-specialized path")
-          .font(CSFont.ui(11.5))
-          .foregroundStyle(Color.secondary)
-      }
+      Text("Recognition language")
+        .font(CSFont.ui(13.5, .semibold))
+        .foregroundStyle(Color.primary)
 
       LanguageIdentityPicker(selection: $selection)
 
@@ -370,7 +355,7 @@ private struct LanguageIdentityPicker: View {
     }
     .frame(maxWidth: 460)
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Whisper language")
+    .accessibilityLabel("Recognition language")
   }
 }
 
@@ -378,7 +363,8 @@ private struct LanguageIdentityPicker: View {
 
 struct SettingsControlRow<Control: View>: View {
   let title: String
-  let subtitle: String
+  /// Omitted when the title already carries the whole meaning of the row.
+  var subtitle: String? = nil
   @ViewBuilder var control: () -> Control
 
   var body: some View {
@@ -387,14 +373,81 @@ struct SettingsControlRow<Control: View>: View {
         Text(title)
           .font(.body.weight(.semibold))
           .foregroundStyle(.primary)
-        Text(subtitle)
-          .font(.subheadline)
-          .foregroundStyle(.secondary)
+        if let subtitle {
+          Text(subtitle)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       control()
     }
     .settingsGroupedInset()
+  }
+}
+
+// MARK: - Interface language row
+
+/// Picker + restart action for the app language. Mirrors the wizard's first
+/// step on the same preference: the choice saves at once, the whole app speaks
+/// it after the host's idle-guarded restart, and a busy runtime keeps the
+/// choice saved with a retry message instead of relaunching under a take.
+private struct InterfaceLanguageRow: View {
+  @ObservedObject var model: SettingsViewModel
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      SettingsControlRow(
+        title: String(localized: "Interface language", comment: "Settings row: app language"),
+        subtitle: String(
+          localized: "Menus, Settings and the Agent window. Dictation has its own language.",
+          comment: "Interface language row explanation")
+      ) {
+        Picker("", selection: selection) {
+          ForEach(InterfaceLanguage.allCases, id: \.self) { language in
+            Text(language.nativeName).tag(language)
+          }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 200)
+        .disabled(model.applyingInterfaceLanguage)
+        .accessibilityIdentifier("settings-interface-language")
+      }
+      if model.interfaceLanguageNeedsRestart {
+        HStack(spacing: 12) {
+          Text(
+            "Codescribe will restart in this language. Your recording must finish first.",
+            comment: "Interface language restart explanation in Settings"
+          )
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          Button(
+            model.applyingInterfaceLanguage
+              ? String(localized: "Restarting…", comment: "Interface language restart in flight")
+              : String(localized: "Restart now", comment: "Apply the interface language")
+          ) { model.applyInterfaceLanguage() }
+          .disabled(model.applyingInterfaceLanguage)
+          .accessibilityIdentifier("settings-interface-language-restart")
+        }
+      }
+      if let notice = model.interfaceLanguageNotice {
+        Text(notice)
+          .font(.callout)
+          .foregroundStyle(CSColor.terracotta)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("settings-interface-language-notice")
+      }
+    }
+  }
+
+  private var selection: Binding<InterfaceLanguage> {
+    Binding(
+      get: { model.interfaceLanguage },
+      set: { model.selectInterfaceLanguage($0) }
+    )
   }
 }
 
@@ -411,15 +464,13 @@ private struct PermissionChecklistRow: View {
   var body: some View {
     HStack(spacing: 12) {
       statusBadge
+      // A granted row says it with the badge; the status stays for VoiceOver.
       Text(kind.displayName)
         .font(CSFont.ui(13.5, .medium))
         .foregroundStyle(Color.primary)
         .frame(maxWidth: .infinity, alignment: .leading)
-      if granted {
-        Text("granted", comment: "Permission status: this permission is granted")
-          .font(CSFont.mono(11, .semibold))
-          .foregroundStyle(CSColor.oliveLight)
-      } else {
+        .accessibilityValue(state.label)
+      if !granted {
         Button {
           if state == .notDetermined, kind.supportsInAppPermissionRequest {
             Task { @MainActor in
@@ -477,7 +528,6 @@ private struct PermissionChecklistRow: View {
 private struct QuickStartCard: View {
   let icon: CSIcon
   let title: LocalizedStringKey
-  let subtitle: LocalizedStringKey
   let accessibilityId: String
   let action: () -> Void
 
@@ -491,11 +541,6 @@ private struct QuickStartCard: View {
           .font(CSFont.ui(13, .semibold))
           .foregroundStyle(Color.primary)
           .padding(.top, 9)
-        Text(subtitle)
-          .font(CSFont.ui(11.5))
-          .lineSpacing(2)
-          .foregroundStyle(Color.secondary)
-          .padding(.top, 3)
         Spacer(minLength: 0)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -514,7 +559,6 @@ private struct QuickStartCard: View {
     .csFocusRing(cornerRadius: CSRadius.card)
     .onHover { hovered = $0 }
     .accessibilityLabel(title)
-    .accessibilityHint(subtitle)
     .accessibilityIdentifier(accessibilityId)
   }
 }

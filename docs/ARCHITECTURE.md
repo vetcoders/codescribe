@@ -83,7 +83,7 @@ Two INFO receipts prove the path in `codescribe.log`:
   — assistive overlay submission is user-triggered after the stop budget ends,
   so its real agent-runtime send reports its own wall clock.
 
-The Settings "Active STT" row consumes the last serving verdict published by
+The Settings "Last transcription engine" row consumes the last serving verdict published by
 `app/controller/serving_status.rs` through UniFFI `current_serving_verdict()` —
 runtime truth (including Apple→Whisper fallback), never configured preference.
 

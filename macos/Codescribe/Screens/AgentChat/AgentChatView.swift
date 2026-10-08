@@ -410,7 +410,7 @@ private struct ThreadDetail: View {
         if thread.backendId != nil {
           Section {
             Button("Export to Markdown") { export(thread, assistantOnly: false) }
-            Button("Export assistant replies only") { export(thread, assistantOnly: true) }
+            Button("Export Agent replies only") { export(thread, assistantOnly: true) }
           } header: {
             Text(
               "Exports save to the Transcripts folder",
@@ -645,7 +645,7 @@ enum ThreadExportOutcome: Equatable {
       let folder = Self.folderLabel(of: path)
       return assistantOnly
         ? Text(
-          "Saved the assistant replies as \(file) in \(folder).",
+          "Saved the Agent replies as \(file) in \(folder).",
           comment: "Placeholders: file name, then folder path")
         : Text(
           "Saved the whole thread as \(file) in \(folder).",

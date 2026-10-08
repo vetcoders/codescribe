@@ -48,13 +48,6 @@ struct LLMLanesSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text(
-        "Pick a provider and a model per request path. Discovery lists what the provider serves; the Model ID field always accepts a name the list does not know."
-      )
-      .font(CSFont.ui(11.5))
-      .lineSpacing(2)
-      .foregroundStyle(Color.secondary)
-
       if let notice = model.laneResetNotice {
         LaneResetNotice(text: notice)
       }
@@ -80,6 +73,23 @@ private struct LLMLaneEditor: View {
 
   private var laneModel: LLMLaneModel { model.llmLane(lane) }
 
+  private var trimmedDraft: String {
+    modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  /// The field shows the stored override; Save means "store something new".
+  private var canSave: Bool {
+    !trimmedDraft.isEmpty && trimmedDraft != laneModel.configuredModel
+  }
+
+  private var hasOverride: Bool { !laneModel.configuredModel.isEmpty }
+
+  /// Formatting on the Agent's provider shares its discovery record, so the
+  /// same failure would print twice; the footer defers to the line above.
+  private var failureShownOnAgent: Bool {
+    laneModel.repeatsDiscoveryFailure(of: model.llmLane(.assistive))
+  }
+
   private var discoveryDotColor: Color {
     switch laneModel.discovery.status {
     case "fresh": return CSColor.olive
@@ -104,7 +114,9 @@ private struct LLMLaneEditor: View {
           .fixedSize(horizontal: false, vertical: true)
       }
 
-      SettingsControlRow(title: String(localized: "Provider"), subtitle: lane.providerKey) {
+      // The settings keys behind these rows live under "Active configuration
+      // details" on the tab; the card itself stays free of identifiers.
+      SettingsControlRow(title: String(localized: "Provider")) {
         Menu {
           ForEach(model.providers, id: \.id) { provider in
             Button {
@@ -132,7 +144,7 @@ private struct LLMLaneEditor: View {
         .accessibilityValue(laneModel.providerDisplayName)
       }
 
-      SettingsControlRow(title: String(localized: "Model"), subtitle: lane.modelKey) {
+      SettingsControlRow(title: String(localized: "Model")) {
         VStack(alignment: .trailing, spacing: 8) {
           // Discovery state ("discovering…", cached, failed) is the footer line below.
           if laneModel.usesDiscoveredPicker {
@@ -162,44 +174,84 @@ private struct LLMLaneEditor: View {
 
           // Always present: custom hosts may publish no list, and a name the
           // list does not know is still a valid model for the lane (D2).
+          // The field holds the stored override; with none, the placeholder
+          // is the provider default that actually resolved.
           HStack(spacing: 8) {
             TextField(laneModel.resolvedModel, text: $modelDraft)
               .settingsInputChrome(isFocused: modelFocused)
               .focused($modelFocused)
               .onSubmit(saveModel)
               .accessibilityLabel("\(lane.title) model ID")
-            SettingsSaveButton(enabled: !modelDraft.isEmpty, action: saveModel)
+            SettingsSaveButton(enabled: canSave, action: saveModel)
               .accessibilityLabel("Save \(lane.title) model")
-            Button("Reset") {
+            Button(String(localized: "Reset model", comment: "Clears the lane's model override")) {
               modelDraft = ""
               model.setLLMModel("", for: lane)
             }
             .font(CSFont.ui(11.5, .semibold))
             .foregroundStyle(Color.secondary)
             .csFocusRing()
+            .disabled(!hasOverride)
             .help("Clear this model override")
             .accessibilityLabel("Reset \(lane.title) model")
           }
+
+          Text(
+            hasOverride
+              ? String(
+                localized: "Set manually", comment: "Model field caption: an override is stored")
+              : String(
+                localized: "Provider default model",
+                comment: "Model field caption: no override, the provider default resolves")
+          )
+          .font(CSFont.ui(10.5))
+          .foregroundStyle(Color.secondary)
+          .accessibilityLabel("\(lane.title) model source")
         }
-        .frame(width: 380)
+        .frame(width: 440)
+        .onAppear { modelDraft = laneModel.configuredModel }
+        .onChange(of: laneModel.configuredModel) { _, stored in modelDraft = stored }
       }
 
-      HStack(spacing: 8) {
-        Circle()
-          .fill(discoveryDotColor.opacity(0.85))
-          .frame(width: 7, height: 7)
-        Text(laneModel.discoveryDescription)
-          .font(CSFont.mono(10.5, .medium))
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(spacing: 8) {
+          if failureShownOnAgent {
+            Text("Same provider as the Agent; the model list error is shown above.")
+              .font(CSFont.ui(11.5))
+              .foregroundStyle(Color.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          } else {
+            Circle()
+              .fill(discoveryDotColor.opacity(0.85))
+              .frame(width: 7, height: 7)
+            Text(laneModel.discoveryDescription)
+              .font(CSFont.ui(11.5))
+              .foregroundStyle(Color.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          Spacer(minLength: 0)
+          Button("Refresh") {
+            model.refreshModelDiscovery(providerId: laneModel.providerId)
+          }
+          .font(CSFont.ui(11, .semibold))
           .foregroundStyle(Color.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-        Spacer(minLength: 0)
-        Button("Refresh") {
-          model.refreshModelDiscovery(providerId: laneModel.providerId)
+          .csFocusRing()
+          .accessibilityLabel("Refresh \(lane.title) models")
         }
-        .font(CSFont.ui(11, .semibold))
-        .foregroundStyle(Color.secondary)
-        .csFocusRing()
-        .accessibilityLabel("Refresh \(lane.title) models")
+        // The provider's own words, on request only; the main line stays plain.
+        if !failureShownOnAgent, let details = laneModel.discoveryErrorDetails {
+          DisclosureGroup("Error details") {
+            Text(details)
+              .font(CSFont.mono(10.5))
+              .foregroundStyle(Color.secondary)
+              .textSelection(.enabled)
+              .fixedSize(horizontal: false, vertical: true)
+              .padding(.top, 4)
+          }
+          .font(CSFont.ui(11.5))
+          .foregroundStyle(Color.secondary)
+          .accessibilityIdentifier("lane-discovery-error-details")
+        }
       }
       .padding(.leading, 2)
     }
@@ -215,8 +267,8 @@ private struct LLMLaneEditor: View {
   }
 
   private func saveModel() {
-    model.setLLMModel(modelDraft, for: lane)
-    modelDraft = ""
+    guard canSave else { return }
+    model.setLLMModel(trimmedDraft, for: lane)
   }
 }
 

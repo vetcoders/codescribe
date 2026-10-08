@@ -465,7 +465,7 @@ private struct ShowEarlierButton: View {
 
 /// Floating return affordance. It remains available after a stream settles:
 /// finishing generation never takes the operator's chosen reading position.
-private struct JumpToCurrentButton: View {
+struct JumpToCurrentButton: View {
   let action: () -> Void
   @State private var hovering = false
 
@@ -1346,7 +1346,7 @@ private struct AssistantTurn: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       HStack(spacing: 8) {
-        Text("Assistant · \(message.timestamp)")
+        Text("Agent · \(message.timestamp)")
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textTertiary)
         speechButton
