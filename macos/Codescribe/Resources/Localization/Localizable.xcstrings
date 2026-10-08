@@ -2767,7 +2767,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pytaj o zgodę"
+            "value" : "Pytaj"
           }
         }
       }
@@ -4303,6 +4303,16 @@
         }
       }
     },
+    "Command is not offered because it collides with tab switching." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Command nie jest dostępny, bo koliduje z przełączaniem kart."
+          }
+        }
+      }
+    },
     "Commit" : {
       "localizations" : {
         "pl" : {
@@ -5268,12 +5278,12 @@
         }
       }
     },
-    "Ctrl + digit switches an Agent channel. Choose Fn to use Fn + digit instead. Command is not offered — it collides with tab switching." : {
+    "Ctrl + digit switches an Agent channel. Choose Fn to use Fn + digit instead." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ctrl + cyfra przełącza kanał Agenta. Wybierz Fn, aby używać Fn + cyfra. Command nie jest dostępny — koliduje z przełączaniem kart."
+            "value" : "Ctrl + cyfra przełącza kanał Agenta. Wybierz Fn, aby używać Fn + cyfra."
           }
         }
       }
@@ -9510,12 +9520,12 @@
         }
       }
     },
-    "One tap starts dictation and the next tap stops it. Holding past the hold delay records only while you hold. Set the macOS Fn key action to Do Nothing, because macOS can otherwise claim a double press for its own dictation." : {
+    "One tap starts dictation and the next tap stops it. Holding records only while you hold." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Jedno naciśnięcie uruchamia dyktowanie, kolejne je zatrzymuje. Przytrzymanie dłuższe niż próg nagrywa tylko tak długo, jak trzymasz klawisz. Ustaw działanie klawisza Fn w macOS na „Nic nie rób”, bo inaczej macOS może przejąć podwójne naciśnięcie na własne dyktowanie."
+            "value" : "Jedno naciśnięcie uruchamia dyktowanie, kolejne je zatrzymuje. Przytrzymanie nagrywa tylko tak długo, jak trzymasz klawisz."
           }
         }
       }
@@ -12500,6 +12510,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ustawiony ręcznie"
+          }
+        }
+      }
+    },
+    "Set the macOS Fn key action to Do Nothing. Otherwise macOS can claim a double press for its own dictation." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ustaw działanie klawisza Fn w macOS na „Nic nie rób”. Inaczej macOS może przejąć podwójne naciśnięcie na własne dyktowanie."
           }
         }
       }
@@ -17164,13 +17184,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Hold Fn (🌐)"
+            "value" : "Hold Fn"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Przytrzymaj Fn (🌐)"
+            "value" : "Przytrzymaj Fn"
           }
         }
       }
@@ -18563,24 +18583,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klawisz Fn jest również skonfigurowany w macOS. Podczas dyktowania Codescribe może przechwycić jego krótkie naciśnięcie. Ta uwaga nie blokuje zapisu skrótów."
-          }
-        }
-      }
-    },
-    "settings.shortcuts.notices" : {
-      "comment" : "Shortcuts screen: heading above informational, non-blocking notes",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Notes"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Uwagi"
           }
         }
       }
