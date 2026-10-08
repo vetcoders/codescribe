@@ -35,6 +35,8 @@ mod delivery_route;
 mod helpers;
 /// Hold/toggle timing, agent-send vetoes, stop adjudication policy.
 mod hotkey_policy;
+/// Best-effort RMS frame feed for the loopback Voice Lab relay.
+mod lab_feed;
 /// Production-owned, content-private PCM replay of the overlay engine cone.
 pub mod production_replay;
 /// Public serving-status surface for tray/UI consumers.
@@ -4379,6 +4381,16 @@ impl RecordingController {
         })));
 
         tokio::spawn(async move {
+            // Voice Lab feed: the Lab's bound lane watches Codescribe's own
+            // capture instead of opening a second browser microphone. One
+            // failed POST disarms the feed for this broadcast session — a
+            // machine without a running Lab pays a single refused connection.
+            let lab_armed = Arc::new(AtomicBool::new(true));
+            let lab_client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(400))
+                .build()
+                .ok();
+            let mut lab_batcher = lab_feed::LabFeedBatcher::new(std::time::Instant::now());
             while let Some(rms) = level_rx.recv().await {
                 // Cleanup drops the callback sender. Do not drain a buffered
                 // sample after that boundary: it belongs to the closed session
@@ -4391,6 +4403,26 @@ impl RecordingController {
                         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                     payload: IpcEventPayload::AudioLevel { rms },
                 });
+                if let Some(client) = &lab_client
+                    && lab_armed.load(Ordering::Relaxed)
+                    && let Some(batch) = lab_batcher.offer(rms, std::time::Instant::now())
+                {
+                    let payload = lab_feed::frames_payload(&batch);
+                    let client = client.clone();
+                    let armed = Arc::clone(&lab_armed);
+                    tokio::spawn(async move {
+                        let delivered = client
+                            .post(lab_feed::LAB_FRAMES_URL)
+                            .json(&payload)
+                            .send()
+                            .await
+                            .map(|resp| resp.status().is_success())
+                            .unwrap_or(false);
+                        if !delivered {
+                            armed.store(false, Ordering::Relaxed);
+                        }
+                    });
+                }
             }
         });
     }
