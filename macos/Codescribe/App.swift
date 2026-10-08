@@ -173,6 +173,25 @@ struct CodescribeApp: App {
     settingsWindow
   }
 
+  /// One Settings model per window presentation. The interface-language row
+  /// restarts through the same AppDelegate guard as the setup wizard: bus idle,
+  /// no agent turn, no recording.
+  private func settingsModel() -> SettingsViewModel {
+    let model = SettingsViewModel(
+      engine: RealSettingsEngine(),
+      agentStatus: RealAgentStatusEngine(),
+      mcpAdmin: RealMCPAdminEngine(),
+      hotkeys: RealHotkeysEngine(),
+      licenseService: LicenseService.shared
+    )
+    let delegate = appDelegate
+    model.onApplyInterfaceLanguage = { beforeTermination in
+      try await delegate.restartForInterfaceLanguage(
+        relaunch: .plain, beforeTermination: beforeTermination)
+    }
+    return model
+  }
+
   private var settingsWindow: some Scene {
     Window("Settings", id: SettingsView.windowID) {
       if QualityCaptureHost.isRunningTests {
@@ -180,14 +199,7 @@ struct CodescribeApp: App {
         // also avoid opening real model caches before the test runner starts.
         EmptyView()
       } else {
-        SettingsView(
-          model: SettingsViewModel(
-            engine: RealSettingsEngine(),
-            agentStatus: RealAgentStatusEngine(),
-            mcpAdmin: RealMCPAdminEngine(),
-            hotkeys: RealHotkeysEngine(),
-            licenseService: LicenseService.shared
-          ))
+        SettingsView(model: settingsModel())
       }
     }
     .defaultSize(width: 1000, height: 720)
@@ -197,6 +209,22 @@ struct CodescribeApp: App {
         Button("Settings…") { openWindow.presentSettings() }
           .keyboardShortcut(",", modifiers: .command)
       }
+    }
+  }
+}
+
+/// What the relaunched process opens after an interface-language restart. The
+/// wizard resumes setup where it stopped; Settings relaunches plainly, the same
+/// way its "clear defaults" actions do, and the tray returns in the new language.
+enum InterfaceLanguageRelaunch: Equatable {
+  case resumeSetup
+  case plain
+
+  /// Extra process arguments for `open --args`; empty means a plain launch.
+  var launchArguments: [String] {
+    switch self {
+    case .resumeSetup: ["--resume-onboarding"]
+    case .plain: []
     }
   }
 }
@@ -295,7 +323,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     engine: RealOnboardingEngine(),
     applyInterfaceLanguage: { [weak self] beforeTermination in
       guard let self else { throw InterfaceLanguageRestartError.unavailable }
-      try await self.restartForInterfaceLanguage(beforeTermination: beforeTermination)
+      try await self.restartForInterfaceLanguage(
+        relaunch: .resumeSetup, beforeTermination: beforeTermination)
     }
   )
   private var languageRestartProcess: Process?
@@ -728,7 +757,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     return .terminateLater
   }
 
-  private func restartForInterfaceLanguage(beforeTermination: @MainActor () -> Void) async throws {
+  func restartForInterfaceLanguage(
+    relaunch: InterfaceLanguageRelaunch, beforeTermination: @MainActor () -> Void
+  ) async throws {
     guard languageRestartProcess == nil else { throw InterfaceLanguageRestartError.unavailable }
     let lease = try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease()
     guard !(await hotkeys.isRecording()) else { throw InterfaceLanguageRestartError.busy }
@@ -736,10 +767,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     process.executableURL = URL(fileURLWithPath: "/bin/sh")
     // Values are positional arguments, never interpolated shell source. Wait
     // for normal AppDelegate cleanup and exit before LaunchServices opens us.
-    process.arguments = [
-      "-c", Self.languageRelaunchScript, "codescribe-language-restart",
-      String(ProcessInfo.processInfo.processIdentifier), Bundle.main.bundleURL.path,
-    ]
+    process.arguments =
+      [
+        "-c", Self.languageRelaunchScript, "codescribe-language-restart",
+        String(ProcessInfo.processInfo.processIdentifier), Bundle.main.bundleURL.path,
+      ] + relaunch.launchArguments
     process.standardInput = FileHandle.nullDevice
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
@@ -756,6 +788,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
   }
 
+  /// `$1` old PID, `$2` bundle path, `$3…` process arguments for the relaunch
+  /// (none for a plain launch). `open` gets `--args` only when there are some.
   static let languageRelaunchScript = """
     count=0
     while /bin/kill -0 "$1" 2>/dev/null; do
@@ -763,7 +797,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       [ "$count" -lt 240 ] || exit 1
       /bin/sleep 0.25
     done
-    exec /usr/bin/open "$2" --args --resume-onboarding
+    bundle="$2"
+    shift 2
+    if [ "$#" -gt 0 ]; then
+      exec /usr/bin/open "$bundle" --args "$@"
+    fi
+    exec /usr/bin/open "$bundle"
     """
 
   private func shutdownForTermination() async {

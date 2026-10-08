@@ -25,19 +25,3 @@ enum OnboardingStep: Equatable {
     flow[min(max(0, index), count - 1)]
   }
 }
-
-/// Interface copy follows the macOS per-app language preference, independently
-/// of the language passed to speech recognition.
-enum InterfaceLanguage: String, CaseIterable {
-  case polish = "pl"
-  case english = "en"
-
-  var nativeName: String { self == .polish ? "Polski" : "English" }
-  var locale: Locale { Locale(identifier: rawValue) }
-
-  static func preferred(from languages: [String]) -> InterfaceLanguage {
-    let supported = [InterfaceLanguage.english, .polish].map(\.rawValue)
-    let match = Bundle.preferredLocalizations(from: supported, forPreferences: languages).first
-    return match.flatMap(InterfaceLanguage.init(rawValue:)) ?? .english
-  }
-}
