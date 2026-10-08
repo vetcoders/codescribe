@@ -23,13 +23,16 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
     private(set) var resets = 0
     private var persisted: [CsModeBinding]
     private let rejects: (CsWorkMode, CsShortcutBinding) -> Bool
+    private let conflicts: ([CsModeBinding]) -> [CsHotkeyConflict]
 
     init(
       persisted: [CsModeBinding] = CsModeBinding.sampleBindings,
-      rejects: @escaping (CsWorkMode, CsShortcutBinding) -> Bool = { _, _ in false }
+      rejects: @escaping (CsWorkMode, CsShortcutBinding) -> Bool = { _, _ in false },
+      conflicts: @escaping ([CsModeBinding]) -> [CsHotkeyConflict] = { _ in [] }
     ) {
       self.persisted = persisted
       self.rejects = rejects
+      self.conflicts = conflicts
     }
 
     func modeBindings() -> [CsModeBinding] { persisted }
@@ -55,7 +58,7 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
       persisted = CsModeBinding.sampleBindings
     }
 
-    func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict] { [] }
+    func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict] { conflicts(candidate) }
     func rearmAfterPermissionGrant() {}
     func channelModifier() -> String { "ctrl" }
     func setChannelModifier(_ value: String) throws {}
@@ -122,6 +125,67 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
       "a refused gesture must not linger in the picker")
     XCTAssertEqual(model.draftBindings.first { $0.mode == .dictation }?.binding, .doubleCtrl)
     XCTAssertFalse(model.hasPendingBindingChanges)
+  }
+
+  /// A partial save can leave the snapped-back draft in a blocking conflict:
+  /// Dictation=Double Ctrl lands, Agent=Hold Ctrl is refused and snaps back to
+  /// Double Right Option, which Double Ctrl disables
+  /// (app/os/shortcut_registry.rs). The conflict must not swallow the receipt:
+  /// both the completed write and the refusal stay reportable.
+  func testPartialSaveKeepsItsReceiptWhenThePersistedSetConflicts() throws {
+    let engine = RecordingHotkeysEngine(
+      rejects: { mode, binding in mode == .assistive && binding == .holdCtrl },
+      conflicts: { candidate in
+        let dictation = candidate.first { $0.mode == .dictation }?.binding
+        let assistive = candidate.first { $0.mode == .assistive }?.binding
+        guard dictation == .doubleCtrl, assistive == .doubleRightOption else { return [] }
+        return [
+          CsHotkeyConflict(
+            gestureLabel: "Double-tap Right Option",
+            message: "Dictation is set to Double Ctrl, so Right Option toggle is disabled.",
+            blocking: true)
+        ]
+      })
+    let model = model(engine)
+    XCTAssertEqual(model.draftBindings.first { $0.mode == .assistive }?.binding, .doubleRightOption)
+
+    model.editDraftBinding(mode: .dictation, binding: .doubleCtrl)
+    model.editDraftBinding(mode: .assistive, binding: .holdCtrl)
+    XCTAssertTrue(model.canSaveBindings, "the draft itself is conflict-free")
+
+    model.saveBindings()
+
+    XCTAssertTrue(model.hasBlockingBindingConflicts, "the snapped-back set conflicts")
+    let receipt = try XCTUnwrap(model.bindingSaveReceipt, "a conflict must not hide the receipt")
+    XCTAssertEqual(receipt.saved, [.dictation])
+    XCTAssertEqual(receipt.rejected, [.assistive])
+    XCTAssertNotNil(receipt.failureDetail)
+  }
+
+  /// The receipt confirms persistence only. The detector routes a subset of
+  /// the pairs the picker offers (docs/HOTKEYS_CONTRACT.md), so the sentence
+  /// must not claim the gesture is in effect.
+  func testSavedSentenceClaimsPersistenceNotEffect() throws {
+    let receipt = HotkeyBindingSaveReceipt(
+      saved: [.formatting], rejected: [], failureDetail: nil, locale: Locale(identifier: "en"))
+    let sentence = try XCTUnwrap(receipt.sentence)
+    XCTAssertTrue(sentence.hasPrefix("Saved: "), sentence)
+    XCTAssertFalse(sentence.localizedCaseInsensitiveContains("in effect"), sentence)
+  }
+
+  /// Mode names are joined in the interface language, not the regional
+  /// locale: a Polish UI on an English-region Mac still reads "i", not "and".
+  func testModeListFollowsTheInterfaceLocale() throws {
+    let english = HotkeyBindingSaveReceipt(
+      saved: [.dictation, .assistive], rejected: [], failureDetail: nil,
+      locale: Locale(identifier: "en"))
+    let polish = HotkeyBindingSaveReceipt(
+      saved: [.dictation, .assistive], rejected: [], failureDetail: nil,
+      locale: Locale(identifier: "pl"))
+
+    XCTAssertTrue(try XCTUnwrap(english.sentence).contains(" and "))
+    XCTAssertTrue(try XCTUnwrap(polish.sentence).contains(" i "))
+    XCTAssertFalse(try XCTUnwrap(polish.sentence).contains(" and "))
   }
 
   /// The receipt describes one finished save. Editing again, or resetting,

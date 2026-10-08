@@ -143,13 +143,18 @@ The gesture pill shows the chord (`2× Left ⌥ (Option)`); VoiceOver reads the
 spelled-out form, so the left and right Option gestures stay distinguishable.
 
 **Save mode shortcuts** / **Restore default mode shortcuts** sit directly under
-the three rows. The screen reports, in order: a blocking conflict that refuses
-the save, otherwise unsaved changes, otherwise what the last save actually
-persisted. The confirmation is a re-read from disk, not an echo of the picker:
-the bridge can refuse one mode while accepting another in the same save, so a
-refused gesture is named and its picker snaps back to the gesture in effect. A
-binding present in `settings.json` is still not proof that the gesture fires —
-see **Settings picker vs routed combinations** in `docs/HOTKEYS_CONTRACT.md`.
+the three rows. The screen reports a blocking conflict that refuses the save,
+otherwise unsaved changes; underneath, and independently of either line, what
+the last save actually persisted. The confirmation is a re-read from disk, not
+an echo of the picker: the bridge can refuse one mode while accepting another
+in the same save, so a refused gesture is named and its picker snaps back to
+the gesture it still holds. That snap-back can itself land in a conflict (a
+refused Agent hold returns to Double Right Option, which Double Ctrl dictation
+disables); the conflict line and the receipt then show together. The receipt
+says **Saved**, not "in effect": a binding present in `settings.json` is not
+proof that the gesture fires — see **Settings picker vs routed combinations**
+in `docs/HOTKEYS_CONTRACT.md`. Mode names in the receipt are joined in the
+interface language, not the macOS region.
 
 **Conflicts** and notes are separate. A conflict blocks the save and sits in a
 coloured card above the Save button; a note does not block and sits under it as

@@ -10,6 +10,11 @@ import Foundation
 // `Ok` nor the absence of a thrown error proves anything landed. The only
 // honest confirmation is a re-read, compared mode by mode against what was
 // requested.
+//
+// A re-read proves persistence and nothing more: the detector routes only a
+// subset of the mode/gesture pairs the picker offers (see "Settings picker vs
+// routed combinations" in docs/HOTKEYS_CONTRACT.md), so the receipt says
+// "Saved", never "in effect".
 
 /// What the last save actually achieved, as read back from persisted settings.
 struct HotkeyBindingSaveReceipt: Equatable {
@@ -20,6 +25,10 @@ struct HotkeyBindingSaveReceipt: Equatable {
   /// First rejection reported by the engine, verbatim. Kept as the technical
   /// detail line; it is wire text, not copy.
   let failureDetail: String?
+  /// Locale for joining the mode names. The interface language the running
+  /// process resolved, not the regional locale: a Polish UI on an English
+  /// region must not join Polish names with "and".
+  var locale: Locale = InterfaceLanguage.preferred(from: Bundle.main.preferredLocalizations).locale
 
   var isEmpty: Bool { saved.isEmpty && rejected.isEmpty }
   var hasRejection: Bool { !rejected.isEmpty }
@@ -37,17 +46,17 @@ struct HotkeyBindingSaveReceipt: Equatable {
 
   private var savedSentence: String? {
     guard !saved.isEmpty else { return nil }
-    let names = saved.map(\.visibleName).formatted(.list(type: .and))
+    let names = saved.map(\.visibleName).formatted(.list(type: .and).locale(locale))
     return String(
       localized: "settings.shortcuts.save.saved",
-      defaultValue: "Saved and in effect: \(names).",
+      defaultValue: "Saved: \(names).",
       comment: "Shortcuts screen: the placeholder lists work mode names, e.g. Dictation and Agent"
     )
   }
 
   private var rejectedSentence: String? {
     guard !rejected.isEmpty else { return nil }
-    let names = rejected.map(\.visibleName).formatted(.list(type: .and))
+    let names = rejected.map(\.visibleName).formatted(.list(type: .and).locale(locale))
     return String(
       localized: "settings.shortcuts.save.rejected",
       defaultValue: "Not saved: \(names). The gesture in effect is unchanged.",

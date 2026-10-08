@@ -189,30 +189,39 @@ struct ShortcutsPanel: View {
     }
   }
 
-  /// Pending edits, the reason a save is refused, or the persisted outcome of
-  /// the last save — never a guess built from the draft.
+  /// Pending edits or the reason a save is refused, and, independently, the
+  /// persisted outcome of the last save — never a guess built from the draft.
+  ///
+  /// The receipt is not an `else` branch. A partial save can leave the
+  /// snapped-back draft in a blocking conflict (Dictation=Double Ctrl lands,
+  /// Agent=Hold Ctrl is refused and snaps back to Double Right Option, which
+  /// Double Ctrl disables); the conflict line and the receipt then both apply,
+  /// and hiding the receipt would hide completed writes and the refusal.
   @ViewBuilder private var saveStatus: some View {
-    if model.hasBlockingBindingConflicts {
-      statusLine(
-        color: CSColor.terracotta,
-        text: String(localized: "Resolve the conflict above to save the mode shortcuts.")
-      )
-    } else if model.hasPendingBindingChanges {
-      statusLine(
-        color: CSColor.amber,
-        text: String(localized: "Unsaved changes to the mode gestures.")
-      )
-    } else if let receipt = model.bindingSaveReceipt, let sentence = receipt.sentence {
-      VStack(alignment: .leading, spacing: 3) {
+    VStack(alignment: .leading, spacing: 6) {
+      if model.hasBlockingBindingConflicts {
         statusLine(
-          color: receipt.hasRejection ? CSColor.terracotta : CSColor.olive,
-          text: sentence
+          color: CSColor.terracotta,
+          text: String(localized: "Resolve the conflict above to save the mode shortcuts.")
         )
-        if let detail = receipt.failureDetail {
-          Text(verbatim: detail)
-            .font(CSFont.mono(10, .medium))
-            .foregroundStyle(Color.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+      } else if model.hasPendingBindingChanges {
+        statusLine(
+          color: CSColor.amber,
+          text: String(localized: "Unsaved changes to the mode gestures.")
+        )
+      }
+      if let receipt = model.bindingSaveReceipt, let sentence = receipt.sentence {
+        VStack(alignment: .leading, spacing: 3) {
+          statusLine(
+            color: receipt.hasRejection ? CSColor.terracotta : CSColor.olive,
+            text: sentence
+          )
+          if let detail = receipt.failureDetail {
+            Text(verbatim: detail)
+              .font(CSFont.mono(10, .medium))
+              .foregroundStyle(Color.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
         }
       }
     }
