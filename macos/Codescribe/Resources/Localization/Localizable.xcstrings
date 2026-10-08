@@ -3935,6 +3935,17 @@
         }
       }
     },
+    "Codescribe will restart in this language. Your recording must finish first." : {
+      "comment" : "Interface language restart explanation in Settings",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe uruchomi się ponownie w tym języku. Najpierw zakończ nagrywanie."
+          }
+        }
+      }
+    },
     "Collapse" : {
       "comment" : "Fold the message back to its head",
       "localizations" : {
@@ -7041,18 +7052,23 @@
         }
       }
     },
-    "Interface language" : {
-      "comment" : "First setup step eyebrow",
+    "Interface" : {
+      "comment" : "Settings group: app language",
       "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Interface language"
-          }
-        },
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
+            "value" : "Interfejs"
+          }
+        }
+      }
+    },
+    "Interface language" : {
+      "comment" : "First setup step eyebrow\nSettings row: app language",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
             "value" : "Język aplikacji"
           }
         }
@@ -7738,6 +7754,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Trwa pomiar…"
+          }
+        }
+      }
+    },
+    "Menus, Settings and the Agent window. Dictation has its own language." : {
+      "comment" : "Interface language row explanation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Menu, Ustawienia i okno Agenta. Dyktowanie ma własny język."
           }
         }
       }
@@ -11136,6 +11163,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Uruchom ponownie i kontynuuj"
+          }
+        }
+      }
+    },
+    "Restart now" : {
+      "comment" : "Apply the interface language",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uruchom ponownie"
+          }
+        }
+      }
+    },
+    "Restarting…" : {
+      "comment" : "Interface language restart in flight",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ponowne uruchamianie…"
           }
         }
       }
