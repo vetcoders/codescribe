@@ -2585,8 +2585,16 @@ final class SettingsViewModel: ObservableObject {
     )
   }
 
+  /// Session-scoped editing mode, not persisted truth: "Custom" is a choice the
+  /// user makes, so the picker has to keep showing it while the four values
+  /// still happen to match a named preset. Set by picking Custom and by any
+  /// manual slider move; cleared by picking a named preset or No preview.
+  @Published private(set) var previewCustomEditing = false
+
   var previewTimingPreset: PreviewTimingPreset {
-    detectPreset(previewTimingConfiguration)
+    let configuration = previewTimingConfiguration
+    if previewCustomEditing, configuration.overlayEnabled { return .custom }
+    return detectPreset(configuration)
   }
 
   /// Preset writes go through the existing batch router: one settings.json
@@ -2594,12 +2602,22 @@ final class SettingsViewModel: ObservableObject {
   func applyPreviewTimingPreset(_ preset: PreviewTimingPreset) {
     switch preset {
     case .custom:
-      return
+      // Custom owns no values of its own — the sliders are its editor, and the
+      // four stored values stay exactly as they are, including the ones left
+      // behind by No preview. The one write it owes is undoing No preview, so
+      // the sliders it opens describe a preview that will actually appear.
+      previewCustomEditing = true
+      guard !previewTimingConfiguration.overlayEnabled else { return }
+      persistMany([
+        CsConfigEntry(key: "TRANSCRIPTION_OVERLAY_ENABLED", value: "1")
+      ])
     case .off:
+      previewCustomEditing = false
       persistMany([
         CsConfigEntry(key: "TRANSCRIPTION_OVERLAY_ENABLED", value: "0")
       ])
     case .smooth, .snappy, .relaxed:
+      previewCustomEditing = false
       guard let values = presetValues(preset) else { return }
       persistMany([
         CsConfigEntry(key: "TRANSCRIPTION_OVERLAY_ENABLED", value: "1"),
@@ -2624,22 +2642,28 @@ final class SettingsViewModel: ObservableObject {
     onOverlayPreferenceChanged()
   }
 
+  /// A manual slider move is what makes the configuration Custom, even when the
+  /// new value is still inside a named preset's tolerance.
   func setPreviewBufferDelayMs(_ value: UInt64) {
+    previewCustomEditing = true
     settings.bufferDelayMs = value
     persist("CODESCRIBE_BUFFER_DELAY_MS", String(value))
   }
 
   func setPreviewTypingCps(_ value: Float) {
+    previewCustomEditing = true
     settings.typingCps = value
     persist("CODESCRIBE_TYPING_CPS", String(format: "%.1f", value))
   }
 
   func setPreviewEmitWordsMax(_ value: UInt64) {
+    previewCustomEditing = true
     settings.emitWordsMax = value
     persist("CODESCRIBE_EMIT_WORDS_MAX", String(value))
   }
 
   func setPreviewInterimSeconds(_ value: Float) {
+    previewCustomEditing = true
     settings.bufferedInterimSec = value
     persist("CODESCRIBE_BUFFERED_INTERIM_SEC", String(format: "%.1f", value))
   }

@@ -6,9 +6,9 @@ import Foundation
 /// adapters only: reads come from the same snapshot and every write goes
 /// through the existing setter.
 extension SettingsViewModel {
-  /// "Custom" is a no-op by `applyPreviewTimingPreset`'s own contract: the
-  /// sliders are the custom editor, and the preset reads back as Custom once
-  /// they leave every named preset.
+  /// "Custom" writes no timing values — the sliders are its editor. It only
+  /// undoes "No preview" and puts the model into custom editing mode, so the
+  /// picker keeps reading back as Custom until a named preset is chosen.
   var previewPresetPicker: PreviewTimingPreset {
     get { previewTimingPreset }
     set { applyPreviewTimingPreset(newValue) }

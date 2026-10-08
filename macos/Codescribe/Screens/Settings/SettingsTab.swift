@@ -80,7 +80,9 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .dictationWhisper:
       String(
         localized: "Local Whisper model", comment: "Settings tab headline: Dictation › Whisper")
-    case .dictationPreview: String(localized: "Preview timing.")
+    case .dictationPreview:
+      String(
+        localized: "Transcript display pace", comment: "Settings tab headline: Dictation › Preview")
     case .dictationHandsFree: String(localized: "Hands-free silence.")
     case .dictationPrivacy: "\(CloudPrivacyCopy.title)."
     case .dictationPermissions: String(localized: "Permission matrix.")
@@ -122,7 +124,9 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         localized: "Pick a model, check its availability and manage the space it takes.",
         comment: "Settings tab blurb: Dictation › Whisper")
     case .dictationPreview:
-      String(localized: "How the overlay paces live text. Committed transcripts are unchanged.")
+      String(
+        localized: "Adjust how quickly text appears in the preview window while recording."
+      )
     case .dictationHandsFree:
       String(localized: "How long the Apple engine waits in silence before it rests.")
     case .dictationPrivacy:
@@ -205,7 +209,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       settingsSearchTerms(
         localized: String(
           localized: "settings.search.tab.dictationPreview",
-          defaultValue: "preview, timing, typing, cadence, overlay",
+          defaultValue: "preview, timing, pace, typing, cadence, overlay",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))
