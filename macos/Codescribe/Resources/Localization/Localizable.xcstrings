@@ -18582,13 +18582,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Saved and in effect: %@."
+            "value" : "Saved: %@."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zapisane i działają: %@."
+            "value" : "Zapisano: %@."
           }
         }
       }
