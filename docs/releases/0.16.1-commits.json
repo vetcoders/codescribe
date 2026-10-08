@@ -1,7 +1,7 @@
 {
   "version": "0.16.1",
   "from_sha": "edfc2153f46b6c596227f8cce7110a92389a1d99",
-  "to_sha": "426657f7e3d3562c1331025d5845317c7f52b862",
+  "to_sha": "29836579ef87e453e50c8cd9d429cf580f4f79f7",
   "scope": "Committed source history; not runtime or distribution acceptance.",
   "commits": [
     {
@@ -14,6 +14,12 @@
       "sha": "426657f7e3d3562c1331025d5845317c7f52b862",
       "date": "2026-10-08",
       "subject": "Batch overlay delivery cache checkpoints",
+      "squash_headings": []
+    },
+    {
+      "sha": "29836579ef87e453e50c8cd9d429cf580f4f79f7",
+      "date": "2026-10-08",
+      "subject": "Retain take ownership through Stop and fit manual overlay controls",
       "squash_headings": []
     }
   ]
