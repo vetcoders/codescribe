@@ -1,0 +1,1103 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import { page } from '../lib/asset';
+---
+
+<Layout
+  title="Codescribe — Przewodnik użytkownika i kanały agentów | User Guide"
+  description="Kompletny przewodnik po Codescribe: dyktowanie, widget mini/midi/full, kanały agentów 1–9, protokół dostawy, skróty klawiszowe i statusy odbioru."
+  path="guide"
+>
+  <Nav current="guide" />
+  <main id="main">
+    <header class="hero">
+      <div class="container">
+        <div class="hero-top">
+          <p class="eyebrow">CODESRIBE · USER GUIDE · 2026</p>
+          <div class="lang-switch" role="group" aria-label="Wybór języka / Language selection">
+            <button type="button" class="lang-btn active" data-lang="pl" aria-pressed="true">PL</button>
+            <button type="button" class="lang-btn" data-lang="en" aria-pressed="false">EN</button>
+          </div>
+        </div>
+
+        <h1 class="lang-text" data-pl="Mów. Pisz.<br/>Pracuj z agentami." data-en="Speak. Write.<br/>Work with agents.">
+          Mów. Pisz.<br/>Pracuj z agentami.
+        </h1>
+
+        <p class="lede lang-text"
+          data-pl="Dyktuj tekst do swoich aplikacji albo rozmawiaj z agentami w ich własnych sesjach. Jeden widget daje Ci natychmiastową transkrypcję, rozmowy i pełną kontrolę nad mikrofonem."
+          data-en="Dictate text into your applications or converse with agents directly in their sessions. One lightweight overlay gives you live transcription, conversations, and complete mic control.">
+          Dyktuj tekst do swoich aplikacji albo rozmawiaj z agentami w ich własnych sesjach. Jeden widget daje Ci natychmiastową transkrypcję, rozmowy i pełną kontrolę nad mikrofonem.
+        </p>
+
+        <div class="chips">
+          <span class="chip">macOS 14+</span>
+          <span class="chip">Codescribe 0.16.0</span>
+          <span class="chip lang-text" data-pl="Głos i tekst" data-en="Voice & Text">Głos i tekst</span>
+          <span class="chip lang-text" data-pl="Działa offline" data-en="Works offline">Działa offline</span>
+        </div>
+
+        <nav class="guide-nav" aria-label="Spis treści przewodnika">
+          <a href="#start" class="lang-text" data-pl="Na początek" data-en="Getting Started">Na początek</a>
+          <a href="#widget" class="lang-text" data-pl="Widget (Mini/Midi/Pełny)" data-en="Overlay Widget">Widget</a>
+          <a href="#connect" class="lang-text" data-pl="Podłącz agenta" data-en="Connect Agent">Podłącz agenta</a>
+          <a href="#talk" class="lang-text" data-pl="Głos i tekst" data-en="Voice & Text">Głos i tekst</a>
+          <a href="#receipts" class="lang-text" data-pl="Statusy odbioru" data-en="Delivery Statuses">Statusy odbioru</a>
+          <a href="#demo" class="lang-text" data-pl="Interaktywne demo" data-en="Interactive Demo">Interaktywne demo</a>
+        </nav>
+      </div>
+    </header>
+
+    <!-- 01 · START -->
+    <section id="start" class="section">
+      <div class="container">
+        <div class="section-heading">
+          <span class="step-badge">01 · <span class="lang-text" data-pl="WYBIERZ ZASTOSOWANIE" data-en="CHOOSE YOUR WORKFLOW">WYBIERZ ZASTOSOWANIE</span></span>
+          <h2 class="lang-text" data-pl="Trzy sposoby pracy" data-en="Three Ways to Work">Trzy sposoby pracy</h2>
+        </div>
+
+        <div class="cards-grid">
+          <article class="card">
+            <span class="card-icon" aria-hidden="true">Aa</span>
+            <h3 class="lang-text" data-pl="Dyktowanie" data-en="Dictation">Dyktowanie</h3>
+            <p class="lang-text"
+              data-pl="Mów zamiast pisać. Rozpoznany tekst pojawia się w widoku Moje dyktowanie; jego wklejenie do aktywnego programu zależy od wybranej konfiguracji (automatycznie lub na życzenie)."
+              data-en="Speak instead of typing. Transcribed text appears in My Dictation; insertion into your target app respects your configuration (auto-paste or review first).">
+              Mów zamiast pisać. Rozpoznany tekst pojawia się w widoku Moje dyktowanie; jego wklejenie do aktywnego programu zależy od wybranej konfiguracji (automatycznie lub na życzenie).
+            </p>
+            <a href="#talk" class="card-link lang-text" data-pl="Gesty dyktowania →" data-en="Dictation gestures →">Gesty dyktowania →</a>
+          </article>
+
+          <article class="card">
+            <span class="card-icon" aria-hidden="true">◈</span>
+            <h3 class="lang-text" data-pl="Kanały agentów" data-en="Agent Channels">Kanały agentów</h3>
+            <p class="lang-text"
+              data-pl="Zwracaj się do zewnętrznej sesji agenta (Codex, Claude, Gemini) przez numer kanału 1–9. W tej samej rozmowie możesz wysyłać tekst i czytać odpowiedzi z potwierdzeniem dostarczenia."
+              data-en="Address external agent sessions (Codex, Claude, Gemini) via channel numbers 1–9. In the same thread you can send text or speech and receive verified replies.">
+              Zwracaj się do zewnętrznej sesji agenta (Codex, Claude, Gemini) przez numer kanału 1–9. W tej samej rozmowie możesz wysyłać tekst i czytać odpowiedzi z potwierdzeniem dostarczenia.
+            </p>
+            <a href="#connect" class="card-link lang-text" data-pl="Podłączenie sesji →" data-en="Connecting sessions →">Podłączenie sesji →</a>
+          </article>
+
+          <article class="card">
+            <span class="card-icon" aria-hidden="true">✦</span>
+            <h3 class="lang-text" data-pl="Wbudowany Agent" data-en="Built-in Agent">Wbudowany Agent</h3>
+            <p class="lang-text"
+              data-pl="Okno Agenta i tryb Assistive to osobna powierzchnia Codescribe dla szybkich podsumowań i redakcji. Korzystają z tego samego, bezpiecznego właściciela mikrofonu bez kolizji."
+              data-en="The Agent window and Assistive mode provide a native surface for quick summaries and context editing, sharing the singular microphone controller safely.">
+              Okno Agenta i tryb Assistive to osobna powierzchnia Codescribe dla szybkich podsumowań i redakcji. Korzystają z tego samego, bezpiecznego właściciela mikrofonu bez kolizji.
+            </p>
+            <a href="#talk" class="card-link lang-text" data-pl="Rozróżnienie gestów →" data-en="Gesture guide →">Rozróżnienie gestów →</a>
+          </article>
+        </div>
+
+        <p class="note lang-text"
+          data-pl="Zacznij od ustawień mikrofonu, silnika transkrypcji i uprawnień w aplikacji. Wybrane skróty sprawdzisz w Settings / Ustawienia → Hotkeys / Skróty."
+          data-en="Configure microphone permissions, speech engines, and hotkeys in Settings → Hotkeys. This guide does not mutate your personal settings.">
+          Zacznij od ustawień mikrofonu, silnika transkrypcji i uprawnień w aplikacji. Wybrane skróty sprawdzisz w Settings / Ustawienia → Hotkeys / Skróty.
+        </p>
+      </div>
+    </section>
+
+    <!-- 02 · WIDGET SCHEMATIC -->
+    <section id="widget" class="section">
+      <div class="container">
+        <div class="section-heading">
+          <span class="step-badge">02 · <span class="lang-text" data-pl="JEDEN WIDGET" data-en="ONE OVERLAY">JEDEN WIDGET</span></span>
+          <h2 class="lang-text"
+            data-pl="Mały, kiedy nie jest potrzebny.<br/>Pełny, kiedy pracujesz."
+            data-en="Compact when idle.<br/>Expansive when working.">
+            Mały, kiedy nie jest potrzebny.<br/>Pełny, kiedy pracujesz.
+          </h2>
+        </div>
+
+        <p class="section-desc lang-text"
+          data-pl="Otwórz widget z menu Codescribe w pasku systemowym przez Open widget / Otwórz widget. Samo otwarcie widoku nie rozpoczyna nagrywania."
+          data-en="Open the widget from the menu bar via Open widget. Merely revealing the window never opens the microphone.">
+          Otwórz widget z menu Codescribe w pasku systemowym przez Open widget / Otwórz widget. Samo otwarcie widoku nie rozpoczyna nagrywania.
+        </p>
+
+        <figure class="widget-figure">
+          <div class="segmented" role="group" aria-label="Rozmiar schematu widgetu">
+            <button type="button" class="mode active" data-mode="mini" aria-pressed="true">Mini</button>
+            <button type="button" class="mode" data-mode="midi" aria-pressed="false">Midi</button>
+            <button type="button" class="mode" data-mode="full" aria-pressed="false">Pełny / Full</button>
+          </div>
+
+          <div class="widget-stage">
+            <div class="mock-widget mini" id="widget-schematic">
+              <div class="mock-header">
+                <span class="dot" aria-hidden="true"></span>
+                <strong>codescribe</strong>
+                <span class="mock-wave" aria-hidden="true">▂▅▃▆▂▅▃</span>
+                <span class="mock-symbol agent-mark" aria-hidden="true">◈</span>
+                <svg aria-hidden="true" class="mic-symbol" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+                  <rect x="9" y="3" width="6" height="11" rx="3"></rect>
+                  <path d="M6 10v2a6 6 0 0 0 12 0v-2M12 18v4M8 22h8"></path>
+                </svg>
+                <span class="mock-symbol" aria-hidden="true">⌃</span>
+              </div>
+              <div class="mock-content">
+                <div class="mock-tabs">
+                  <span class="lang-text" data-pl="Moje dyktowanie" data-en="My Dictation">Moje dyktowanie</span>
+                  <span class="selected lang-text" data-pl="Rozmowa" data-en="Conversation">Rozmowa</span>
+                </div>
+                <div class="mock-thread">
+                  <p class="thread-name">
+                    2 · Twój agent
+                    <span class="thread-status lang-text" data-pl="Podłączony" data-en="Connected">Podłączony</span>
+                  </p>
+                  <div class="bubble user">
+                    <small class="lang-text" data-pl="Ty" data-en="You">Ty</small>
+                    <p class="lang-text" data-pl="Podsumuj zmiany i wskaż następny krok." data-en="Summarize changes and provide the next step.">Podsumuj zmiany i wskaż następny krok.</p>
+                    <span class="receipt lang-text" data-pl="Przeczytano" data-en="Read / Acknowledged">Przeczytano</span>
+                  </div>
+                  <div class="bubble reply">
+                    <small>Agent</small>
+                    <p class="lang-text" data-pl="Zmiany są podsumowane. Następny krok to sprawdzenie wyniku." data-en="Changes summarized. Next step is verifying the test suite.">Zmiany są podsumowane. Następny krok to sprawdzenie wyniku.</p>
+                    <div class="mock-play">
+                      <span aria-hidden="true">▶</span>
+                      <span class="lang-text" data-pl="Odtworzono" data-en="Spoken">Odtworzono</span>
+                    </div>
+                  </div>
+                  <div class="mock-compose">
+                    <span class="lang-text" data-pl="Napisz do agenta..." data-en="Message agent...">Napisz do agenta...</span>
+                    <span aria-hidden="true">↑</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p id="widget-explanation" class="widget-caption" aria-live="polite">
+            Mini zostawia podstawowe przyciski i nie zajmuje miejsca na ekranie.
+          </p>
+          <figcaption class="lang-text"
+            data-pl="Interaktywny schemat widgetu. Kliknij Mini, Midi lub Pełny, aby zobaczyć zachowanie stanów interfejsu."
+            data-en="Interactive widget schematic. Click Mini, Midi, or Full to preview interface states.">
+            Interaktywny schemat widgetu. Kliknij Mini, Midi lub Pełny, aby zobaczyć zachowanie stanów interfejsu.
+          </figcaption>
+        </figure>
+
+        <div class="cards-grid">
+          <article class="card">
+            <h3 class="lang-text" data-pl="Mini → Midi" data-en="Mini → Midi">Mini → Midi</h3>
+            <p class="lang-text"
+              data-pl="Najedź wskaźnikiem na mini. Pojawi się szerszy pasek z podglądem fali i kanału; po odejściu wskaźnika wróci do mini, jeśli nie został przypięty."
+              data-en="Hover over mini to expand into midi with live waveform and channel marker; unhovering collapses back if not pinned.">
+              Najedź wskaźnikiem na mini. Pojawi się szerszy pasek z podglądem fali i kanału; po odejściu wskaźnika wróci do mini, jeśli nie został przypięty.
+            </p>
+          </article>
+          <article class="card">
+            <h3 class="lang-text" data-pl="Pełny widok" data-en="Full View">Pełny widok</h3>
+            <p class="lang-text"
+              data-pl="Rozwiń widget przyciskiem. Otrzymasz zachowany tekst transkrypcji lub wątek rozmowy z polem edycji. Zmiana widoku nigdy nie kasuje bufora."
+              data-en="Expand to reveal complete transcript buffer or conversation history with input field. Folding never destroys text state.">
+              Rozwiń widget przyciskiem. Otrzymasz zachowany tekst transkrypcji lub wątek rozmowy z polem edycji. Zmiana widoku nigdy nie kasuje bufora.
+            </p>
+          </article>
+          <article class="card">
+            <h3 class="lang-text" data-pl="Szuflada agentów" data-en="Agent Drawer">Szuflada agentów</h3>
+            <p class="lang-text"
+              data-pl="W nagłówku otworzysz listę agentów i zapisanych rozmów na kanałach 1–9. Wybór rozmowy służy przeglądaniu; mikrofon ma osobny gest."
+              data-en="Access connected agents and history across channels 1–9. Selecting a thread is strictly browsing; mic capture has dedicated hotkeys.">
+              W nagłówku otworzysz listę agentów i zapisanych rozmów na kanałach 1–9. Wybór rozmowy służy przeglądaniu; mikrofon ma osobny gest.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- 03 · CONNECT AGENT -->
+    <section id="connect" class="section">
+      <div class="container">
+        <div class="section-heading">
+          <span class="step-badge">03 · <span class="lang-text" data-pl="TWOJA SESJA, TWÓJ KANAŁ" data-en="YOUR SESSION, YOUR CHANNEL">TWOJA SESJA, TWÓJ KANAŁ</span></span>
+          <h2 class="lang-text" data-pl="Podłącz agenta w jego rozmowie" data-en="Connect an Agent Inside Its Session">Podłącz agenta w jego rozmowie</h2>
+        </div>
+
+        <p class="section-desc lang-text"
+          data-pl="Wywołaj zainstalowany skill codescribe w sesji, którą chcesz podłączyć. Podaj wolny numer kanału i imię. Głos jest opcjonalny."
+          data-en="Invoke the installed codescribe skill inside the active agent session. Specify an available channel digit (1–9) and name. Voice is optional.">
+          Wywołaj zainstalowany skill codescribe w sesji, którą chcesz podłączyć. Podaj wolny numer kanału i imię. Głos jest opcjonalny.
+        </p>
+
+        <div class="quote">
+          <span class="quote-text lang-text"
+            data-pl="„Użyj skilla codescribe. Wybierz wolny kanał, podłącz tę sesję i podaj mi jej numer. Na razie odpowiadaj tekstowo.”"
+            data-en="“Use the codescribe skill. Pick a free channel, attach this session, and tell me its number. Respond with text for now.”">
+            „Użyj skilla codescribe. Wybierz wolny kanał, podłącz tę sesję i podaj mi jej numer. Na razie odpowiadaj tekstowo.”
+          </span>
+        </div>
+
+        <p class="lang-text"
+          data-pl="W Codex wywołaj <code>$codescribe</code>. W Claude Code lub Gemini użyj polecenia <code>/codescribe Imię 2</code>. Pod spodem helper łączy się z szyną transkrypcji bez dotykania audio."
+          data-en="In Codex call <code>$codescribe</code>. In Claude Code or Gemini use <code>/codescribe Name 2</code>. Underneath, the helper connects to the transcript bus with zero audio overhead.">
+          W Codex wywołaj <code>$codescribe</code>. W Claude Code lub Gemini użyj polecenia <code>/codescribe Imię 2</code>. Pod spodem helper łączy się z szyną transkrypcji bez dotykania audio.
+        </p>
+
+        <ol class="simple-steps">
+          <li>
+            <strong class="lang-text" data-pl="Agent potwierdza podłączenie" data-en="Agent confirms attachment">Agent potwierdza podłączenie:</strong>
+            <span class="lang-text" data-pl="zwraca imię, numer kanału oraz identyfikator dzierżawy." data-en="returns name, channel digit, and lease ID.">zwraca imię, numer kanału oraz identyfikator dzierżawy.</span>
+          </li>
+          <li>
+            <strong class="lang-text" data-pl="Weryfikujesz w widgetcie" data-en="Verify in overlay">Weryfikujesz w widgetcie:</strong>
+            <span class="lang-text" data-pl="na liście kanałów pojawia się zielony znacznik aktywnego nasłuchu." data-en="channel roster displays active green listener badge.">na liście kanałów pojawia się zielony znacznik aktywnego nasłuchu.</span>
+          </li>
+          <li>
+            <strong class="lang-text" data-pl="Wysyłasz próbę" data-en="Send test ping">Wysyłasz próbę:</strong>
+            <span class="lang-text" data-pl="krótka wiadomość natychmiast zmienia status na Przeczytano i przynosi odpowiedź." data-en="short message immediately yields Read receipt and response.">krótka wiadomość natychmiast zmienia status na Przeczytano i przynosi odpowiedź.</span>
+          </li>
+        </ol>
+
+        <div class="cards-grid">
+          <article class="card">
+            <div class="step-num">1–9</div>
+            <h3 class="lang-text" data-pl="Konkretny agent" data-en="Dedicated Agent">Konkretny agent</h3>
+            <p class="lang-text"
+              data-pl="Każdy kanał jest powiązany z unikalną sesją. Wolny numer pozwala zachować pozostałe rozmowy równolegle."
+              data-en="Each channel binds to a distinct session, preserving parallel working contexts.">
+              Każdy kanał jest powiązany z unikalną sesją. Wolny numer pozwala zachować pozostałe rozmowy równolegle.
+            </p>
+          </article>
+
+          <article class="card">
+            <div class="step-num">0 · ALL</div>
+            <h3 class="lang-text" data-pl="Do wszystkich" data-en="Broadcast All">Do wszystkich</h3>
+            <p class="lang-text"
+              data-pl="Rozgłoszenie do wszystkich podłączonych agentów na lokalnej szynie. Przydatne do jednoczesnych briefów."
+              data-en="Broadcasts to every connected listener on the local bus simultaneously.">
+              Rozgłoszenie do wszystkich podłączonych agentów na lokalnej szynie. Przydatne do jednoczesnych briefów.
+            </p>
+          </article>
+
+          <article class="card">
+            <div class="step-num lang-text" data-pl="GŁOS" data-en="VOICE">GŁOS</div>
+            <h3 class="lang-text" data-pl="Głos jest opcjonalny" data-en="Optional Voice">Głos jest opcjonalny</h3>
+            <p class="lang-text"
+              data-pl="Odpowiedź głosowa wymaga skonfigurowanego profilu TTS (xAI lub OpenAI). Brak głosu nigdy nie blokuje tekstu."
+              data-en="Voice playback requires a configured TTS provider (xAI / OpenAI). Text delivery always works independently.">
+              Odpowiedź głosowa wymaga skonfigurowanego profilu TTS (xAI lub OpenAI). Brak głosu nigdy nie blokuje tekstu.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- 04 · VOICE & TEXT -->
+    <section id="talk" class="section">
+      <div class="container">
+        <div class="section-heading">
+          <span class="step-badge">04 · <span class="lang-text" data-pl="GŁOS LUB TEKST" data-en="VOICE OR TEXT">GŁOS LUB TEKST</span></span>
+          <h2 class="lang-text" data-pl="Rozmowa nie wymaga ciągłego nagrywania" data-en="Conversations Without Continuous Recording">Rozmowa nie wymaga ciągłego nagrywania</h2>
+        </div>
+
+        <div class="two-cols">
+          <article class="card">
+            <h3 class="lang-text" data-pl="Wiadomość głosowa" data-en="Voice Message">Wiadomość głosowa</h3>
+            <ol class="step-list">
+              <li class="lang-text" data-pl="Otwórz kanał przyciskiem Mów do agenta lub skrótem (Ctrl + 1–9)." data-en="Open channel via Talk to Agent button or shortcut (Ctrl + 1–9).">Otwórz kanał przyciskiem Mów do agenta lub skrótem (Ctrl + 1–9).</li>
+              <li class="lang-text" data-pl="Powiedz swoje polecenie. Podgląd tekstu aktualizuje się na żywo." data-en="Speak your command. Live preview updates as words finalize.">Powiedz swoje polecenie. Podgląd tekstu aktualizuje się na żywo.</li>
+              <li class="lang-text" data-pl="Zakończ nagranie tym samym skrótem. Tekst zostaje zatwierdzony i doręczony." data-en="Finish recording with the same shortcut. The take is sealed and delivered.">Zakończ nagranie tym samym skrótem. Tekst zostaje zatwierdzony i doręczony.</li>
+            </ol>
+          </article>
+
+          <article class="card">
+            <h3 class="lang-text" data-pl="Wiadomość tekstowa" data-en="Text Message">Wiadomość tekstowa</h3>
+            <ol class="step-list">
+              <li class="lang-text" data-pl="Wybierz rozmowę podłączonego agenta w szufladzie." data-en="Select the connected agent in the drawer.">Wybierz rozmowę podłączonego agenta w szufladzie.</li>
+              <li class="lang-text" data-pl="Wpisz treść w polu wiadomości na dole widgetu." data-en="Type your message into the compose bar.">Wpisz treść w polu wiadomości na dole widgetu.</li>
+              <li class="lang-text" data-pl="Wyślij przez Enter (Shift + Enter tworzy nowy wiersz)." data-en="Send with Enter (Shift + Enter inserts a newline).">Wyślij przez Enter (Shift + Enter tworzy nowy wiersz).</li>
+            </ol>
+          </article>
+        </div>
+
+        <div class="callout">
+          <strong class="lang-text" data-pl="Przeglądanie ≠ nagrywanie." data-en="Browsing ≠ recording.">Przeglądanie ≠ nagrywanie.</strong>
+          <span class="lang-text"
+            data-pl="Kliknięcie nazwy rozmowy lub kanału zmienia wyłącznie widok. Nagrywanie wymaga świadomego gestu skrótu lub przycisku mikrofonu."
+            data-en="Selecting a thread only changes view projection. Recording always requires an intentional hotkey or mic trigger.">
+            Kliknięcie nazwy rozmowy lub kanału zmienia wyłącznie widok. Nagrywanie wymaga świadomego gestu skrótu lub przycisku mikrofonu.
+          </span>
+        </div>
+
+        <div class="tablewrap">
+          <table>
+            <caption class="lang-text" data-pl="Kluczowe gesty klawiaturowe w Codescribe" data-en="Key Hotkey Gestures in Codescribe">Kluczowe gesty klawiaturowe w Codescribe</caption>
+            <thead>
+              <tr>
+                <th class="lang-text" data-pl="Zastosowanie" data-en="Action">Zastosowanie</th>
+                <th class="lang-text" data-pl="Domyślny gest i zachowanie" data-en="Default Gesture & Behavior">Domyślny gest i zachowanie</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong class="lang-text" data-pl="Zwykłe dyktowanie" data-en="Standard Dictation">Zwykłe dyktowanie</strong></td>
+                <td class="lang-text" data-pl="Przytrzymanie Fn/Globe: mów, puść klawisz. Tekst trafia do schowka lub kursora." data-en="Hold Fn/Globe: speak, release. Delivers to cursor or clipboard.">Przytrzymanie Fn/Globe: mów, puść klawisz. Tekst trafia do schowka lub kursora.</td>
+              </tr>
+              <tr>
+                <td><strong class="lang-text" data-pl="Dyktowanie z formatowaniem" data-en="AI Formatting">Dyktowanie z formatowaniem</strong></td>
+                <td class="lang-text" data-pl="Skrót formatowania: wygładza tekst, interpunkcję i strukturę przez model AI." data-en="Formatting hotkey: refines punctuation, flow, and clarity via AI.">Skrót formatowania: wygładza tekst, interpunkcję i strukturę przez model AI.</td>
+              </tr>
+              <tr>
+                <td><strong class="lang-text" data-pl="Assistive" data-en="Assistive Mode">Assistive</strong></td>
+                <td class="lang-text" data-pl="Dwuklik prawego Option: przekazuje zaznaczony tekst i głos do wbudowanego Agenta." data-en="Double-tap Right Option: routes selection and prompt to internal agent.">Dwuklik prawego Option: przekazuje zaznaczony tekst i głos do wbudowanego Agenta.</td>
+              </tr>
+              <tr>
+                <td><strong class="lang-text" data-pl="Okno Agenta" data-en="Agent Window">Okno Agenta</strong></td>
+                <td class="lang-text" data-pl="⌘ + Shift + Spacja: otwiera okno bez uruchamiania mikrofonu." data-en="⌘ + Shift + Space: opens floating agent view without microphone capture.">⌘ + Shift + Spacja: otwiera okno bez uruchamiania mikrofonu.</td>
+              </tr>
+              <tr>
+                <td><strong class="lang-text" data-pl="Kanały agentów 1–9" data-en="Agent Channels 1–9">Kanały agentów 1–9</strong></td>
+                <td class="lang-text" data-pl="Ctrl + cyfra (1–9): otwiera/zamyka mikrofon wybranego agenta. 0 adresuje wszystkich." data-en="Ctrl + digit (1–9): toggles recording for that agent. 0 broadcasts to all.">Ctrl + cyfra (1–9): otwiera/zamyka mikrofon wybranego agenta. 0 adresuje wszystkich.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 05 · RECEIPTS & TRUTH -->
+    <section id="receipts" class="section">
+      <div class="container">
+        <div class="section-heading">
+          <span class="step-badge">05 · <span class="lang-text" data-pl="STATUSY ODBIORU" data-en="DELIVERY TRUTH">STATUSY ODBIORU</span></span>
+          <h2 class="lang-text" data-pl="„Przeczytano” to konkretny dowód" data-en="“Read” is Cryptographic Evidence">„Przeczytano” to konkretny dowód</h2>
+        </div>
+
+        <div class="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th class="lang-text" data-pl="Etap" data-en="Stage">Etap</th>
+                <th class="lang-text" data-pl="Dokładne znaczenie w runtime" data-en="Runtime Meaning">Dokładne znaczenie w runtime</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong class="lang-text" data-pl="Podgląd wypowiedzi" data-en="Utterance Draft">Podgląd wypowiedzi</strong></td>
+                <td class="lang-text" data-pl="Tekst w trakcie rozpoznawania mowy. Kolejne rewizje aktualizują ten sam szkic; nie generują fałszywych zleceń." data-en="Live speech-to-text preview. Revisions update the same take without spawning duplicate tasks.">Tekst w trakcie rozpoznawania mowy. Kolejne rewizje aktualizują ten sam szkic; nie generują fałszywych zleceń.</td>
+              </tr>
+              <tr>
+                <td><strong class="lang-text" data-pl="W kolejce" data-en="Queued">W kolejce</strong></td>
+                <td class="lang-text" data-pl="Wypowiedź domknięta (seal). Koperta oczekuje na szynie transkrypcji na pobranie przez odbiornik sesji." data-en="Utterance sealed. Envelope committed to the transcript bus awaiting session pickup.">Wypowiedź domknięta (seal). Koperta oczekuje na szynie transkrypcji na pobranie przez odbiornik sesji.</td>
+              </tr>
+              <tr>
+                <td><strong class="lang-text" data-pl="Dzwonek (Bell)" data-en="Bell Notified">Dzwonek (Bell)</strong></td>
+                <td class="lang-text" data-pl="Agent otrzymał sygnał wybudzenia o nowej kopercie. Oznacza impuls, a nie przeczytanie treści." data-en="Process wakeup signal dispatched. Confirms notification, not envelope consumption.">Agent otrzymał sygnał wybudzenia o nowej kopercie. Oznacza impuls, a nie przeczytanie treści.</td>
+              </tr>
+              <tr>
+                <td><span class="ack-pill lang-text" data-pl="Przeczytano" data-en="Read (ACK)">Przeczytano</span></td>
+                <td class="lang-text" data-pl="Agent odczytał pełną kopertę i zatwierdził odbiór przez komendę --ack. Potwierdzenie dotyczy pobrania wiadomości, a nie ukończenia zadania." data-en="Agent read the full envelope and signed ACK via cs-bus --ack. Confirms message reception, not task completion.">Agent odczytał pełną kopertę i zatwierdził odbiór przez komendę --ack. Potwierdzenie dotyczy pobrania wiadomości, a nie ukończenia zadania.</td>
+              </tr>
+              <tr>
+                <td><strong class="lang-text" data-pl="Odpowiedź / Odtworzono" data-en="Replied / Spoken">Odpowiedź / Odtworzono</strong></td>
+                <td class="lang-text" data-pl="Agent opublikował odpowiedź tekstową. Jeśli profil posiada głos, audio jest odtwarzane w tle z przyciskiem Stop." data-en="Agent published text reply. If voice profile is active, TTS playback plays with Stop control.">Agent opublikował odpowiedź tekstową. Jeśli profil posiada głos, audio jest odtwarzane w tle z przyciskiem Stop.</td>
+              </tr>
+              <tr>
+                <td><strong class="lang-text" data-pl="Brak odbiornika" data-en="No Reader">Brak odbiornika</strong></td>
+                <td class="lang-text" data-pl="Rozmowa zachowana w archiwum, ale proces agenta nie jest połączony. Wystarczy podpiąć sesję ponownie." data-en="History retained, but active listener process is absent. Re-attach current session to resume.">Rozmowa zachowana w archiwum, ale proces agenta nie jest połączony. Wystarczy podpiąć sesję ponownie.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 06 · INTERACTIVE SIMULATOR -->
+    <section id="demo" class="section">
+      <div class="container">
+        <div class="section-heading">
+          <span class="step-badge">06 · <span class="lang-text" data-pl="ZOBACZ PRZEPŁYW" data-en="SEE THE PIPELINE">ZOBACZ PRZEPŁYW</span></span>
+          <h2 class="lang-text" data-pl="Jedna wiadomość, precyzyjne etapy" data-en="One Message, Explicit Phases">Jedna wiadomość, precyzyjne etapy</h2>
+        </div>
+
+        <p class="section-desc lang-text"
+          data-pl="Przetestuj symulację przepływu wiadomości na żywo. Demo działa czysto w przeglądarce — nie wymaga mikrofonu ani agenta."
+          data-en="Explore the live simulated delivery flow. Runs entirely clientside without requiring microphone or agents.">
+          Przetestuj symulację przepływu wiadomości na żywo. Demo działa czysto w przeglądarce — nie wymaga mikrofonu ani agenta.
+        </p>
+
+        <div class="flow-pipeline" aria-label="Etapy wiadomości">
+          <div class="flow-node"><strong class="lang-text" data-pl="Wysyłasz" data-en="Send">Wysyłasz</strong><small class="lang-text" data-pl="Głos / tekst" data-en="Voice / text">Głos / tekst</small></div>
+          <span class="flow-arrow" aria-hidden="true">→</span>
+          <div class="flow-node"><strong class="lang-text" data-pl="Dzwonek" data-en="Bell">Dzwonek</strong><small class="lang-text" data-pl="Powiadomienie" data-en="Wakeup">Powiadomienie</small></div>
+          <span class="flow-arrow" aria-hidden="true">→</span>
+          <div class="flow-node"><strong class="lang-text" data-pl="Przeczytano" data-en="ACK Read">Przeczytano</strong><small class="lang-text" data-pl="Odczyt koperty" data-en="Envelope read">Odczyt koperty</small></div>
+          <span class="flow-arrow" aria-hidden="true">→</span>
+          <div class="flow-node"><strong class="lang-text" data-pl="Odpowiedź" data-en="Reply">Odpowiedź</strong><small class="lang-text" data-pl="Tekst + głos" data-en="Text + voice">Tekst + głos</small></div>
+        </div>
+
+        <div class="demo-box">
+          <p id="demo-count" class="demo-step-counter">Krok 1 z 5</p>
+          <div id="demo-output" class="demo-stage" aria-live="polite">
+            <h3 class="lang-text" data-pl="Wysyłasz wiadomość" data-en="You send a message">Wysyłasz wiadomość</h3>
+            <p class="lang-text" data-pl="„Podsumuj zmiany i wskaż następny krok”. Mikrofon pozostaje wyłączony." data-en="“Summarize changes and provide the next step”. Microphone remains idle.">„Podsumuj zmiany i wskaż następny krok”. Mikrofon pozostaje wyłączony.</p>
+          </div>
+          <div class="demo-buttons">
+            <button type="button" id="demo-next" class="btn-primary lang-text" data-pl="Następny krok" data-en="Next Step">Następny krok</button>
+            <button type="button" id="demo-reset" class="btn-secondary lang-text" data-pl="Od początku" data-en="Reset">Od początku</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 07 · SPECS & CALL TO ACTION -->
+    <section class="section cta-section">
+      <div class="container text-center">
+        <h2 class="lang-text" data-pl="Gotowy do pracy z głosem?" data-en="Ready to Bring Voice to Your Stack?">Gotowy do pracy z głosem?</h2>
+        <p class="cta-desc lang-text"
+          data-pl="Pobierz podpisany, notaryzowany instalator Codescribe i zacznij dyktować w 60 sekund."
+          data-en="Download signed, notarized Codescribe and start dictating in under 60 seconds.">
+          Pobierz podpisany, notaryzowany instalator Codescribe i zacznij dyktować w 60 sekund.
+        </p>
+        <a class="install-btn" href={`${page('')}#install`}>Download Codescribe (.dmg)</a>
+      </div>
+    </section>
+  </main>
+  <Footer />
+</Layout>
+
+<style>
+  .section {
+    padding: 80px 24px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .container {
+    max-width: 1040px;
+    margin: 0 auto;
+  }
+  .hero {
+    padding: 120px 24px 72px;
+    border-bottom: 1px solid var(--hairline);
+    background: radial-gradient(ellipse at top, rgba(217, 119, 87, 0.08), transparent 70%);
+  }
+  .hero-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+  }
+  .eyebrow {
+    font: 600 12px var(--font-mono);
+    color: var(--terracotta);
+    letter-spacing: 0.14em;
+    margin: 0;
+  }
+  .lang-switch {
+    display: flex;
+    gap: 4px;
+    background: var(--bg-soft);
+    border: 1px solid var(--stroke);
+    border-radius: 8px;
+    padding: 3px;
+  }
+  .lang-btn {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font: 600 12px var(--font-mono);
+    padding: 4px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .lang-btn.active {
+    background: var(--terracotta);
+    color: #0a0a0a;
+  }
+  h1 {
+    font: 700 clamp(38px, 6.5vw, 68px) / 1.05 var(--font-display);
+    color: var(--ink);
+    letter-spacing: -0.04em;
+    margin: 16px 0 24px;
+  }
+  h2 {
+    font: 700 clamp(28px, 4.4vw, 42px) / 1.15 var(--font-display);
+    color: var(--ink);
+    letter-spacing: -0.03em;
+    margin: 12px 0 24px;
+  }
+  h3 {
+    font: 600 21px / 1.25 var(--font-display);
+    color: var(--ink);
+    margin: 0 0 10px;
+  }
+  .lede {
+    font: 400 19px / 1.6 var(--font-display);
+    color: var(--muted-2);
+    max-width: 720px;
+    margin: 0 0 28px;
+  }
+  .section-desc {
+    font: 400 17px / 1.6 var(--font-display);
+    color: var(--muted-2);
+    max-width: 700px;
+    margin: 0 0 32px;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 32px;
+  }
+  .chip {
+    padding: 5px 12px;
+    background: var(--bg-chip);
+    border: 1px solid var(--stroke);
+    border-radius: 999px;
+    font: 500 12px var(--font-mono);
+    color: var(--muted);
+  }
+  .guide-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 24px;
+  }
+  .guide-nav a {
+    padding: 8px 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--stroke);
+    border-radius: 8px;
+    font: 500 13px var(--font-mono);
+    color: var(--ink-2);
+    text-decoration: none;
+    transition: border-color 0.15s ease;
+  }
+  .guide-nav a:hover {
+    border-color: var(--terracotta);
+  }
+  .step-badge {
+    font: 600 12px var(--font-mono);
+    color: var(--terracotta);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .cards-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+    margin-top: 28px;
+  }
+  .two-cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-top: 28px;
+  }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--stroke);
+    border-radius: var(--radius-card);
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+  }
+  .card p {
+    font: 400 15px / 1.6 var(--font-display);
+    color: var(--muted-2);
+    margin: 0 0 16px;
+    flex: 1;
+  }
+  .card-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--stroke-2);
+    border-radius: 10px;
+    color: var(--terracotta);
+    font: 700 18px var(--font-mono);
+    margin-bottom: 16px;
+    background: var(--bg-soft);
+  }
+  .card-link {
+    font: 600 13px var(--font-mono);
+    color: var(--terracotta);
+    text-decoration: none;
+    margin-top: auto;
+  }
+  .step-num {
+    font: 700 14px var(--font-mono);
+    color: var(--terracotta);
+    margin-bottom: 12px;
+  }
+  .quote {
+    border-left: 3px solid var(--terracotta);
+    background: var(--bg-card);
+    border-radius: 0 10px 10px 0;
+    padding: 18px 24px;
+    margin: 24px 0;
+    font: 500 17px / 1.6 var(--font-display);
+    color: var(--ink);
+  }
+  .simple-steps {
+    list-style: none;
+    padding: 0;
+    margin: 24px 0;
+  }
+  .simple-steps li {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--hairline);
+    font: 400 15px / 1.6 var(--font-display);
+    color: var(--muted-2);
+  }
+  .simple-steps strong {
+    color: var(--ink);
+    margin-right: 6px;
+  }
+  .step-list {
+    padding-left: 20px;
+    margin: 0;
+  }
+  .step-list li {
+    padding: 6px 0;
+    font: 400 15px / 1.55 var(--font-display);
+    color: var(--muted-2);
+  }
+  .callout {
+    background: rgba(217, 119, 87, 0.06);
+    border: 1px solid rgba(217, 119, 87, 0.25);
+    border-left: 3px solid var(--terracotta);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 28px 0;
+    font: 400 15px / 1.6 var(--font-display);
+    color: var(--ink-2);
+  }
+  .tablewrap {
+    overflow-x: auto;
+    margin: 28px 0;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  caption {
+    text-align: left;
+    color: var(--muted);
+    font: 500 13px var(--font-mono);
+    margin-bottom: 12px;
+  }
+  th, td {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--stroke);
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    color: var(--muted);
+    font: 600 12px var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  td {
+    color: var(--muted-2);
+  }
+  td strong {
+    color: var(--ink);
+  }
+  .ack-pill {
+    display: inline-block;
+    padding: 3px 8px;
+    background: rgba(120, 140, 93, 0.15);
+    border: 1px solid rgba(120, 140, 93, 0.35);
+    color: #9db178;
+    border-radius: 6px;
+    font: 600 12px var(--font-mono);
+  }
+
+  /* Widget schematic stage */
+  .widget-figure {
+    border: 1px solid var(--stroke);
+    border-radius: 20px;
+    padding: 32px 24px;
+    background: radial-gradient(ellipse at center, rgba(217, 119, 87, 0.06), transparent 75%), var(--bg-card);
+    margin: 32px 0;
+  }
+  .segmented {
+    display: flex;
+    gap: 4px;
+    width: fit-content;
+    padding: 4px;
+    background: var(--bg);
+    border: 1px solid var(--stroke);
+    border-radius: 10px;
+    margin: 0 auto 24px;
+  }
+  .mode {
+    padding: 6px 18px;
+    color: var(--muted);
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    font: 500 13px var(--font-mono);
+    cursor: pointer;
+  }
+  .mode.active {
+    background: var(--terracotta);
+    color: #0a0a0a;
+  }
+  .widget-stage {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 380px;
+    padding: 16px 0;
+  }
+  .mock-widget {
+    width: 230px;
+    background: rgba(22, 24, 30, 0.95);
+    border: 1px solid var(--stroke-2);
+    border-radius: 18px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+    font-size: 13px;
+    transition: width 0.2s ease;
+  }
+  .mock-widget.midi { width: 420px; }
+  .mock-widget.full { width: 620px; }
+  .mock-header {
+    height: 48px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 16px;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .mock-header strong {
+    font: 700 15px var(--font-display);
+    color: var(--ink);
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--terracotta);
+    flex-shrink: 0;
+  }
+  .mock-wave {
+    color: var(--terracotta);
+    flex: 1;
+    text-align: center;
+    letter-spacing: 2px;
+    font-size: 12px;
+  }
+  .mock-symbol {
+    color: var(--muted);
+    font-size: 16px;
+  }
+  .mini .mock-wave, .mini .agent-mark { display: none; }
+  .mock-content { display: none; }
+  .full .mock-content { display: block; }
+  .mock-tabs {
+    display: flex;
+    gap: 16px;
+    color: var(--muted);
+    font: 500 12px var(--font-mono);
+    border-bottom: 1px solid var(--hairline);
+    padding: 10px 16px;
+  }
+  .mock-tabs .selected { color: var(--terracotta); }
+  .mock-thread { padding: 16px; }
+  .thread-name {
+    margin: 0 0 14px;
+    font: 600 13px var(--font-display);
+    color: var(--ink);
+  }
+  .thread-status {
+    font: 400 11px var(--font-mono);
+    color: #9db178;
+    float: right;
+  }
+  .bubble {
+    padding: 10px 14px;
+    border-radius: 12px;
+    margin-bottom: 10px;
+    max-width: 88%;
+    font-size: 13px;
+    line-height: 1.45;
+    background: #1a1d24;
+  }
+  .bubble p { margin: 4px 0 6px; color: var(--ink-2); }
+  .bubble small { color: var(--muted); font-size: 11px; }
+  .bubble.user {
+    margin-left: auto;
+    border: 1px solid rgba(217, 119, 87, 0.35);
+    background: rgba(217, 119, 87, 0.08);
+  }
+  .receipt { color: var(--terracotta); font: 500 11px var(--font-mono); }
+  .mock-play {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    color: var(--muted);
+    font: 11px var(--font-mono);
+  }
+  .mock-compose {
+    display: flex;
+    justify-content: space-between;
+    border: 1px solid var(--stroke);
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 14px;
+    background: var(--bg);
+  }
+  .widget-caption {
+    text-align: center;
+    max-width: 600px;
+    margin: 16px auto 8px;
+    color: var(--ink-2);
+    font: 500 14px var(--font-display);
+  }
+  figcaption {
+    text-align: center;
+    font: 400 12px var(--font-mono);
+    color: var(--muted-3);
+  }
+
+  /* Flow pipeline */
+  .flow-pipeline {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin: 28px 0;
+  }
+  .flow-node {
+    flex: 1;
+    min-width: 140px;
+    border: 1px solid var(--stroke);
+    border-radius: 10px;
+    background: var(--bg-card);
+    padding: 14px 16px;
+  }
+  .flow-node strong {
+    display: block;
+    font: 600 14px var(--font-display);
+    color: var(--ink);
+  }
+  .flow-node small {
+    color: var(--muted);
+    font: 400 12px var(--font-mono);
+  }
+  .flow-arrow {
+    color: var(--terracotta);
+    font-size: 20px;
+  }
+
+  /* Interactive demo box */
+  .demo-box {
+    border: 1px solid var(--stroke);
+    border-radius: var(--radius-card);
+    background: var(--bg-card);
+    padding: 24px;
+    margin-top: 24px;
+  }
+  .demo-step-counter {
+    color: var(--terracotta);
+    font: 600 12px var(--font-mono);
+    margin: 0 0 12px;
+  }
+  .demo-stage {
+    min-height: 90px;
+    border-left: 3px solid var(--terracotta);
+    padding-left: 18px;
+    margin-bottom: 20px;
+  }
+  .demo-stage h3 { margin: 0 0 8px; font-size: 18px; }
+  .demo-stage p { margin: 0; color: var(--muted-2); font-size: 15px; }
+  .demo-buttons { display: flex; gap: 10px; }
+  .btn-primary {
+    background: var(--terracotta);
+    color: #0a0a0a;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 20px;
+    font: 600 13px var(--font-display);
+    cursor: pointer;
+  }
+  .btn-secondary {
+    background: transparent;
+    color: var(--ink-2);
+    border: 1px solid var(--stroke);
+    border-radius: 8px;
+    padding: 10px 20px;
+    font: 500 13px var(--font-display);
+    cursor: pointer;
+  }
+  .btn-primary:disabled { opacity: 0.5; cursor: default; }
+
+  /* CTA */
+  .cta-section {
+    text-align: center;
+    background: radial-gradient(ellipse at bottom, rgba(217, 119, 87, 0.1), transparent 75%);
+  }
+  .cta-desc {
+    color: var(--muted-2);
+    font-size: 17px;
+    margin: 0 auto 28px;
+    max-width: 580px;
+  }
+  .install-btn {
+    display: inline-block;
+    padding: 14px 28px;
+    background: var(--terracotta);
+    color: #0a0a0a;
+    border-radius: 10px;
+    font: 700 15px var(--font-display);
+    text-decoration: none;
+    transition: transform 0.15s ease;
+  }
+  .install-btn:hover {
+    transform: translateY(-2px);
+  }
+
+  @media (max-width: 768px) {
+    .cards-grid, .two-cols { grid-template-columns: 1fr; }
+    .flow-arrow { display: none; }
+    .mock-widget.midi, .mock-widget.full { width: 100%; }
+    .hero { padding: 96px 18px 48px; }
+    .section { padding: 60px 18px; }
+  }
+</style>
+
+<script is:inline>
+  // Mode switcher for the widget schematic
+  const modes = document.querySelectorAll('[data-mode]');
+  const widget = document.getElementById('widget-schematic');
+  const widgetText = document.getElementById('widget-explanation');
+  const modeDescriptions = {
+    mini: {
+      pl: 'Mini zostawia podstawowe przyciski i nie zajmuje miejsca na ekranie.',
+      en: 'Mini leaves essential controls without occupying screen real estate.'
+    },
+    midi: {
+      pl: 'Midi pokazuje szerszy pasek. W aplikacji pojawia się przy najechaniu wskaźnikiem na mini.',
+      en: 'Midi reveals a wider bar with live waveform upon hovering over mini.'
+    },
+    full: {
+      pl: 'Pełny widok mieści zachowaną transkrypcję lub rozmowę, z polem wiadomości na dole.',
+      en: 'Full view holds complete transcript or conversation thread with compose bar.'
+    }
+  };
+
+  let activeMode = 'mini';
+  let currentLang = 'pl';
+
+  modes.forEach(button => button.addEventListener('click', () => {
+    activeMode = button.dataset.mode;
+    widget.className = 'mock-widget ' + activeMode;
+    widgetText.textContent = modeDescriptions[activeMode][currentLang];
+    modes.forEach(item => {
+      const selected = item === button;
+      item.setAttribute('aria-pressed', String(selected));
+      item.classList.toggle('active', selected);
+    });
+  }));
+
+  // Demo step simulator
+  const demoSteps = [
+    {
+      pl: ['Wysyłasz wiadomość', '„Podsumuj zmiany i wskaż następny krok”. Mikrofon pozostaje wyłączony.'],
+      en: ['You send a message', '“Summarize changes and provide the next step”. Microphone remains off.']
+    },
+    {
+      pl: ['Agent dostaje dzwonek (Bell)', 'Powiadomienie mówi, że w skrzynce jest koperta do odczytania. Sam dzwonek nie jest jeszcze przeczytaniem.'],
+      en: ['Agent receives Bell wakeup', 'Notification signals that an envelope is in the mailbox. Wakeup itself is not yet read acknowledgment.']
+    },
+    {
+      pl: ['Przeczytano (ACK)', 'Agent odczytał pełną wiadomość i zatwierdził dokładną dostawę przez cs-bus --ack. Potwierdzona pozycja schodzi z kolejki.'],
+      en: ['Read (ACK signed)', 'Agent consumes the envelope and confirms delivery via cs-bus --ack. Item is cleared from pending queue.']
+    },
+    {
+      pl: ['Pojawia się odpowiedź', 'Tekst wraca do rozmowy w overlay. Jeśli skonfigurowano profil głosu, audio odtwarza się w tle.'],
+      en: ['Response arrives', 'Text returns to the overlay thread. If TTS voice profile is configured, speech streams in background.']
+    },
+    {
+      pl: ['Spóźniony dzwonek (Idempotencja)', 'Agent sprawdza skrzynkę po dzwonku. Gdy jest pusta, nie powtarza zadania i nie dubluje odpowiedzi.'],
+      en: ['Late wakeup check (Idempotent)', 'Agent inspects mailbox on wakeup. If already empty, it cleanly exits without duplicate reply.']
+    }
+  ];
+
+  let demoStepIndex = 0;
+  const demoNext = document.getElementById('demo-next');
+  const demoReset = document.getElementById('demo-reset');
+  const demoOutput = document.getElementById('demo-output');
+  const demoCount = document.getElementById('demo-count');
+
+  function renderDemoStep() {
+    const cur = demoSteps[demoStepIndex][currentLang];
+    const h3 = document.createElement('h3');
+    const p = document.createElement('p');
+    h3.textContent = cur[0];
+    p.textContent = cur[1];
+    demoOutput.replaceChildren(h3, p);
+    demoCount.textContent = (currentLang === 'pl' ? 'Krok ' : 'Step ') + (demoStepIndex + 1) + ' / ' + demoSteps.length;
+    demoNext.disabled = demoStepIndex === demoSteps.length - 1;
+  }
+
+  demoNext.addEventListener('click', () => {
+    if (demoStepIndex < demoSteps.length - 1) {
+      demoStepIndex += 1;
+      renderDemoStep();
+    }
+  });
+
+  demoReset.addEventListener('click', () => {
+    demoStepIndex = 0;
+    renderDemoStep();
+  });
+
+  // Language switcher (PL / EN)
+  const langBtns = document.querySelectorAll('.lang-btn');
+  const langTexts = document.querySelectorAll('.lang-text');
+
+  function applyLanguage(lang) {
+    currentLang = lang;
+    langBtns.forEach(btn => {
+      const active = btn.dataset.lang === lang;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', String(active));
+    });
+
+    langTexts.forEach(el => {
+      const text = el.getAttribute('data-' + lang);
+      if (text) {
+        if (text.includes('<br/>') || text.includes('<code>')) {
+          el.innerHTML = text;
+        } else {
+          el.textContent = text;
+        }
+      }
+    });
+
+    if (widgetText && modeDescriptions[activeMode]) {
+      widgetText.textContent = modeDescriptions[activeMode][lang];
+    }
+    renderDemoStep();
+  }
+
+  langBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      applyLanguage(btn.dataset.lang);
+      try { localStorage.setItem('cs-guide-lang', btn.dataset.lang); } catch (e) {}
+    });
+  });
+
+  try {
+    const saved = localStorage.getItem('cs-guide-lang');
+    if (saved === 'en' || saved === 'pl') {
+      applyLanguage(saved);
+    }
+  } catch (e) {}
+</script>

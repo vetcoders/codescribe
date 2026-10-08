@@ -5,11 +5,9 @@ import process from "node:process";
 const isPagesDeployment = process.env.PAGES_DEPLOYMENT === "true";
 
 // Caddy serves the canonical site at /. Pages serves its copy at /codescribe/.
-// Public assets and navigation use the resulting BASE_URL through asset.ts.
+// Canonical site URL is always https://codescribe.vetcoders.io for sitemaps and indexing.
 export default defineConfig({
-  site: isPagesDeployment
-    ? "https://vetcoders.github.io"
-    : "https://codescribe.vetcoders.io",
+  site: "https://codescribe.vetcoders.io",
   base: isPagesDeployment ? "/codescribe" : "/",
   trailingSlash: "ignore",
   build: {

@@ -3,16 +3,19 @@
 [![Version](https://img.shields.io/badge/version-0.16.0-6a9bcc)](Cargo.toml)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
-[![Landing](https://img.shields.io/badge/site-vetcoders.github.io%2Fcodescribe-788c5d)](https://vetcoders.github.io/codescribe/)
+[![Website](https://img.shields.io/badge/site-codescribe.vetcoders.io-788c5d)](https://codescribe.vetcoders.io/)
 
 **Native macOS dictation and voice conversations with agents.**
 
-> **Pierwszy raz z Codescribe? [Zacznij od instrukcji krok po kroku](docs/codescribe-step-by-step-tutorial.html).**
-> Główny przewodnik użytkownika: instalacja, kreator, uprawnienia, mikrofon,
-> modele, pierwsze dyktowanie i rozmowy z agentami. Pobierz plik HTML i otwórz go
-> w przeglądarce — instrukcja działa także offline.
+<p align="center">
+  <img src="site/public/shots/overlay-listening-transparent.webp" width="560" alt="Codescribe live macOS dictation overlay" />
+</p>
+
+> **Pierwszy raz z Codescribe? [Otwórz przewodnik krok po kroku online](https://codescribe.vetcoders.io/guide/) lub [lokalny plik HTML](docs/codescribe-step-by-step-tutorial.html).**
+> Główny przewodnik użytkownika: instalacja, widget mini/midi/full, uprawnienia, mikrofon,
+> kanały agentów 1–9, statusy odbioru i pierwsze dyktowanie. Działa także w 100% offline.
 >
-> **New to Codescribe? [Open the step-by-step user tutorial (Polish)](docs/codescribe-step-by-step-tutorial.html).**
+> **New to Codescribe? [Open the step-by-step guide](https://codescribe.vetcoders.io/guide/).**
 > This README covers the repository, source installation, and developer contracts.
 
 ## Overview

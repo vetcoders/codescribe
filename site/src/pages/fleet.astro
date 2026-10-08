@@ -1,125 +1,22 @@
 ---
-import Layout from '../layouts/Layout.astro';
-import Nav from '../components/Nav.astro';
-import Footer from '../components/Footer.astro';
-import { asset, page } from '../lib/asset';
+import { page } from '../lib/asset';
+const guideUrl = page('guide');
 ---
 
-<Layout title="Agent channels — Codescribe" description="Talk to connected agent sessions from the Codescribe overlay. Choose a recipient, attach context, read the reply, and track delivery status." path="fleet">
-  <Nav current="fleet" />
-  <main id="main">
-    <section class="section hero" aria-labelledby="fleet-title">
-      <div class="container">
-        <p class="eyebrow">CONNECTED AGENTS</p>
-        <h1 id="fleet-title">Keep the conversation<br />in your workflow.</h1>
-        <p class="sub">Address a connected agent by name or channel. Speak the request,
-          attach the context, and read its answer in the overlay. Your existing
-          agent session supplies the tools and working context.</p>
-      </div>
-    </section>
-
-    <section class="section screens" aria-labelledby="screens-title">
-      <div class="container">
-        <p class="eyebrow">CHOOSE THE RECIPIENT</p>
-        <h2 id="screens-title">One overlay for your conversations.</h2>
-        <div class="screen-row">
-          <div class="screen-copy">
-            <h3>Named channels.</h3>
-            <p>Assign a supported agent session to a numbered channel. The roster
-              shows the recipient, listener status, and acknowledgments separately.
-              Switch with your configured shortcut.</p>
-          </div>
-          <figure>
-            <a class="screen-link" href={asset('shots/fleet-channels.webp')} aria-label="View the channel roster screenshot">
-              <img src={asset('shots/fleet-channels.webp')} width="744" height="472" loading="lazy" decoding="async"
-                alt="Codescribe channel roster with named recipients, listener status, and acknowledgment status" />
-            </a>
-            <figcaption>Product screenshot. Names and channel assignments are user configured.</figcaption>
-          </figure>
-        </div>
-        <div class="screen-row">
-          <div class="screen-copy">
-            <h3>Shortcuts that fit your work.</h3>
-            <p>Configure recording gestures and the channel modifier. Attach selected
-              text while speaking, and choose whether completed dictation is pasted
-              automatically or held for review.</p>
-          </div>
-          <figure>
-            <a class="screen-link" href={asset('shots/fleet-hotkeys.webp')} aria-label="View the shortcuts settings screenshot">
-              <img src={asset('shots/fleet-hotkeys.webp')} width="2366" height="1796" loading="lazy" decoding="async"
-                alt="Codescribe shortcuts settings for dictation, formatting, selection, agent channels, and paste behavior" />
-            </a>
-            <figcaption>Product screenshot. Labels and available controls may differ by version.</figcaption>
-          </figure>
-        </div>
-      </div>
-    </section>
-
-    <section class="section circuit" aria-labelledby="loop-title">
-      <div class="container">
-        <p class="eyebrow">THE WORKFLOW</p>
-        <h2 id="loop-title">Ask, follow up, keep the reply.</h2>
-        <ol class="steps">
-          <li><span class="n">01</span><p><strong>Connect.</strong> Install the agent bridge and attach a supported runtime session to a named channel.</p></li>
-          <li><span class="n">02</span><p><strong>Address.</strong> Choose the recipient and speak your request. You can include selected text or files as context.</p></li>
-          <li><span class="n">03</span><p><strong>Follow.</strong> Listener and delivery status help you distinguish a connected reader from an acknowledged message.</p></li>
-          <li><span class="n">04</span><p><strong>Reply.</strong> Read the agent's answer in the overlay. Spoken replies are optional and require a configured speech provider.</p></li>
-          <li><span class="n">05</span><p><strong>Continue.</strong> Keep the conversation in the agent's existing session. A delivery acknowledgment confirms receipt, not completion of the task.</p></li>
-        </ol>
-      </div>
-    </section>
-
-    <section class="section disc" aria-labelledby="setup-title">
-      <div class="container">
-        <p class="eyebrow">SETUP AND DATA</p>
-        <h2 id="setup-title">Use the services you choose.</h2>
-        <p class="sub">Agent channels need an installed bridge, an attached runtime,
-          and the credentials required by that runtime. Provider behavior determines
-          when queued requests become available to a session; delivery time varies.</p>
-        <p class="note">Requests and attached context go to the selected agent and its
-          configured services. Remote AI and speech providers have their own data
-          policies. <a href={page('privacy')}>Read how Codescribe handles your data</a>.</p>
-        <p class="note">Connection instructions and the current supported runtime paths
-          are documented in the <a href="https://github.com/vetcoders/codescribe/blob/main/skills/codescribe/SKILL.md">agent bridge guide</a>.</p>
-      </div>
-    </section>
-
-    <section class="section cta" aria-labelledby="cta-title">
-      <div class="container">
-        <h2 id="cta-title">Bring voice to your next task.</h2>
-        <a class="button" href={`${page('')}#install`}>Download Codescribe</a>
-      </div>
-    </section>
-  </main>
-  <Footer />
-</Layout>
-
-<style>
-  .section { padding: 96px 24px; border-bottom: 1px solid var(--hairline); }
-  .container { max-width: 1040px; margin: 0 auto; }
-  .hero { padding: 130px 24px 96px; text-align: center; }
-  h1 { font: 700 clamp(40px, 7vw, 72px) / 1.04 var(--font-display); letter-spacing: -0.04em; color: var(--ink); margin: 18px 0; }
-  h2 { font: 700 clamp(28px, 4.6vw, 44px) / 1.1 var(--font-display); letter-spacing: -0.03em; color: var(--ink); margin: 16px 0 28px; }
-  h3 { font: 600 23px / 1.2 var(--font-display); color: var(--ink); }
-  .sub, .note, .screen-copy p { font: 400 17px / 1.65 var(--font-display); color: var(--muted-2); }
-  .hero .sub { max-width: 660px; margin: 0 auto; }
-  .screen-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); align-items: center; gap: 56px; margin-top: 56px; }
-  figure { margin: 0; min-width: 0; }
-  .screen-link { display: block; border: 1px solid var(--stroke); border-radius: 12px; overflow: hidden; background: var(--bg-chip); }
-  .screen-link img { display: block; width: 100%; height: auto; }
-  figcaption { margin-top: 12px; font: 400 12px / 1.55 var(--font-mono); color: var(--muted-3); }
-  .steps { list-style: none; padding: 0; margin: 32px 0 0; }
-  .steps li { display: flex; align-items: baseline; gap: 24px; border-top: 1px solid var(--hairline); padding: 20px 0; }
-  .n { color: var(--terracotta); font: 500 13px var(--font-mono); }
-  .steps p { margin: 0; font: 400 17px / 1.65 var(--font-display); color: var(--muted-2); }
-  .steps strong { color: var(--ink); }
-  .note a { text-underline-offset: 4px; }
-  .cta { text-align: center; }
-  .button { display: inline-block; padding: 14px 26px; border-radius: 10px; background: var(--terracotta); color: var(--bg); font-weight: 600; text-decoration: none; }
-  @media (max-width: 720px) {
-    .section { padding: 72px 20px; }
-    .hero { padding-top: 96px; }
-    .screen-row { grid-template-columns: 1fr; gap: 24px; }
-    .steps li { gap: 16px; }
-  }
-</style>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Redirecting to Codescribe Guide & Agent Channels...</title>
+    <meta http-equiv="refresh" content={`0;url=${guideUrl}`} />
+    <link rel="canonical" href="https://codescribe.vetcoders.io/guide/" />
+    <script is:inline define:vars={{ guideUrl }}>
+      window.location.replace(guideUrl);
+    </script>
+  </head>
+  <body style="background: #090a0d; color: #f4f2ec; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 60px 20px; text-align: center;">
+    <p style="font-size: 16px; color: #9a9d97;">
+      Redirecting to <a href={guideUrl} style="color: #d97757; text-decoration: underline;">Codescribe Guide & Agent Channels</a>...
+    </p>
+  </body>
+</html>
