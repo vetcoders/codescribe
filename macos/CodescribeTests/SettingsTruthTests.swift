@@ -561,7 +561,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(inherited.identity, "native:apply_patch")
     XCTAssertFalse(inherited.hasIndividualRule)
     XCTAssertEqual(
-      ToolPermissionLabels.ruleCaption(inherited.ruleSource), "Inherited from the category default")
+      ToolPermissionLabels.ruleCaption(inherited.ruleSource), "Category default")
     let individual = ToolPermissionItem(
       capability: CsToolCapability(
         name: "search", identity: "loctree-mcp:search", origin: "mcp:loctree-mcp",
@@ -569,7 +569,7 @@ final class SettingsTruthTests: XCTestCase {
         requiresApprovalFlag: false))
     XCTAssertTrue(individual.hasIndividualRule)
     XCTAssertEqual(ToolPermissionLabels.ruleCaption("tool"), "Individual rule")
-    XCTAssertEqual(ToolPermissionLabels.ruleCaption("server"), "Inherited from the server rule")
+    XCTAssertEqual(ToolPermissionLabels.ruleCaption("server"), "Server rule")
   }
 
   /// P0-9 residual: permissions hierarchy groups server→tool, filters by query,

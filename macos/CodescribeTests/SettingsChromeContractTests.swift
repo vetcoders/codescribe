@@ -617,8 +617,9 @@ final class SettingsChromeContractTests: XCTestCase {
       "Changes": "Zmiany",
       "Network": "Sieć",
       "Individual rule": "Własna reguła",
-      "Inherited from the category default": "Dziedziczone z ustawienia kategorii",
-      "Restore inheritance": "Przywróć dziedziczenie",
+      "Category default": "Ustawienie kategorii",
+      "Server rule": "Reguła serwera",
+      "Remove rule": "Usuń regułę",
       "Discovering tools from the MCP servers…": "Wykrywanie narzędzi z serwerów MCP…",
     ]
     for (key, value) in expected {
@@ -627,6 +628,7 @@ final class SettingsChromeContractTests: XCTestCase {
     for retired in [
       "Tool permissions.", "Allow, ask, or deny — per tool. Deny wins over everything.",
       "Tool overrides · %lld", "Read-only", "Side effects", "Global / unknown", "%lld servers",
+      "Inherited from the category default", "Inherited from the server rule", "Restore inheritance",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }

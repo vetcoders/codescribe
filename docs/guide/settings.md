@@ -379,9 +379,9 @@ asking (Allow), when it needs approval (Ask), and when it must refuse (Deny).
   stands in until then. Tool sources down the left (Native plus every MCP
   server, names verbatim), the selected source's tools on the right. Each row
   shows a readable name above the raw identity, the source and localized risk
-  class, and whether the level is an individual rule or inherited (from the
-  server rule or the category default). "Restore inheritance" removes an
-  individual rule; the row then shows the inherited level again.
+  class, and where the level comes from: "Individual rule", "Server rule" or
+  "Category default". "Remove rule" drops an individual rule; the row then
+  shows the server rule or the category default again.
 - The level a row shows is the level the gate applies to the tool's next call:
   Settings and the runtime read the same resolver, so a category default
   changed here takes effect without an explicit rule per tool.
