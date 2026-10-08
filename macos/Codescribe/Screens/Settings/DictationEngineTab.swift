@@ -1,21 +1,27 @@
 import SwiftUI
 
-/// Dictation › Engine: the live STT truth (read-only rows sourced from the
-/// CsSettings snapshot, not hardcoded), then the editable engine controls.
+/// Dictation › Engine: the recognition mode first (the one editable choice),
+/// then what the last transcription actually used — read-only rows sourced
+/// from the runtime verdict and the settings snapshot, never hardcoded.
 struct DictationEngineTab: View {
   @ObservedObject var model: SettingsViewModel
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel(String(localized: "Runtime truth · read-only rows"))
+      SettingsSectionLabel(
+        String(localized: "Recognition mode", comment: "Engine tab section: the mode picker"))
+      DictationEngineControls(model: model)
+        .padding(.top, CSSpace.control)
+
+      SettingsSectionLabel(
+        String(
+          localized: "Last transcription",
+          comment: "Engine tab section: read-only rows about the last transcription")
+      )
+      .padding(.top, CSSpace.section)
       DictationRuntimeRows(model: model)
         .padding(.top, CSSpace.control)
         .onAppear { model.refreshServingStatus() }
-
-      SettingsSectionLabel(String(localized: "Engine controls"))
-        .padding(.top, CSSpace.section)
-      DictationEngineControls(model: model)
-        .padding(.top, CSSpace.control)
     }
   }
 }

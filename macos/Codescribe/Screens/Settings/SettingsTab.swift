@@ -75,8 +75,11 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       String(localized: "Agent environment status", comment: "Settings tab: Diagnostics headline")
     case .agentTools: String(localized: "Tool permissions")
     case .agentMcp: String(localized: "MCP servers")
-    case .dictationEngine: String(localized: "Active speech engine.")
-    case .dictationWhisper: String(localized: "Local Whisper model.")
+    case .dictationEngine:
+      String(localized: "Speech recognition", comment: "Settings tab headline: Dictation › Engine")
+    case .dictationWhisper:
+      String(
+        localized: "Local Whisper model", comment: "Settings tab headline: Dictation › Whisper")
     case .dictationPreview: String(localized: "Preview timing.")
     case .dictationHandsFree: String(localized: "Hands-free silence.")
     case .dictationPrivacy: "\(CloudPrivacyCopy.title)."
@@ -112,14 +115,12 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       String(localized: "Add MCP servers and manage the tools the Agent may use.")
     case .dictationEngine:
       String(
-        localized:
-          "Runtime rows reflect the live engine — changes apply on the next recording session."
-      )
+        localized: "Choose how speech becomes text. Changes apply from the next recording.",
+        comment: "Settings tab blurb: Dictation › Engine")
     case .dictationWhisper:
       String(
-        localized:
-          "The on-device model behind the direct Whisper engine and Local power refinement."
-      )
+        localized: "Pick a model, check its availability and manage the space it takes.",
+        comment: "Settings tab blurb: Dictation › Whisper")
     case .dictationPreview:
       String(localized: "How the overlay paces live text. Committed transcripts are unchanged.")
     case .dictationHandsFree:

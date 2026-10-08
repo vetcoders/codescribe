@@ -47,14 +47,21 @@ struct LastServingVerdict: Equatable {
   let fallbackUsed: Bool
 }
 
+/// The model preference row of the Engine tab: the model the selected mode
+/// actually loads. Nil when the mode has no model preference to show.
+struct SttModelRow: Equatable {
+  let label: String
+  let value: String
+}
+
 /// Format Active STT from the last serving verdict. Config projection is forbidden.
 /// Live Apple is `local_apple` → `Apple`. Do not append the dead Smart-final-pass token.
 /// `Apple` and `Whisper` are proper names and stay verbatim; every other word is copy.
 func formatActiveSTT(lastServing: LastServingVerdict?) -> String {
   guard let verdict = lastServing else {
     return String(
-      localized: "Not yet served",
-      comment: "Active STT row before the first transcription of this launch"
+      localized: "No transcription in this app session",
+      comment: "Last transcription engine row before the first transcription of this launch"
     )
   }
   switch verdict.engine {
@@ -1475,6 +1482,13 @@ final class SettingsViewModel: ObservableObject {
     whisperModelCatalog = engine.loadWhisperModelCatalog()
   }
 
+  /// "Check model": install state, option catalog and resident-engine truth
+  /// in one pass, so the picker, the status rows and the storage rows agree.
+  func recheckWhisperModel() {
+    refreshWhisperModelStatus()
+    refreshWhisperModelCatalog()
+  }
+
   /// The saved selection, for the picker's binding. Falls back to the settings
   /// snapshot before the first live catalog refresh.
   var whisperModelSelection: String {
@@ -1975,18 +1989,32 @@ final class SettingsViewModel: ObservableObject {
 
   var whisperLanguageCode: String { settings.whisperLanguage.shortCode }
 
-  var sttModelDescription: String {
-    // `localModel` (LOCAL_MODEL) is the local execution path; `whisperModel`
-    // (WHISPER_MODEL) is the cloud HTTP STT model id. Show the value the
-    // active engine actually resolves so the label and the runtime path agree.
-    let localEngineInPlay = settings.useLocalStt || asrModeId == "local_power"
-    let preference =
-      localEngineInPlay
-      ? settings.localModel
-      : (settings.whisperModel ?? settings.localModel)
-    return preference.isEmpty
-      ? String(localized: "unset", comment: "Model row: no model preference stored, lower case")
-      : preference
+  /// Model row for the selected mode. Apple only has no model preference and
+  /// Cloud has no runtime consumer of `WHISPER_MODEL` (the loader stores it,
+  /// nothing reads it), so neither mode shows a row; a local model id would
+  /// be a false promise there. Local power shows the saved local selection —
+  /// the catalog's effective reference when loaded, else `LOCAL_MODEL`.
+  var sttModelRow: SttModelRow? {
+    guard asrModeId == "local_power" else { return nil }
+    let preference = whisperModelCatalog?.configured ?? settings.localModel
+    return SttModelRow(
+      label: String(
+        localized: "Local Whisper model",
+        comment: "Engine tab row: the on-device model Local power loads"),
+      value: preference.isEmpty
+        ? String(localized: "unset", comment: "Model row: no model preference stored, lower case")
+        : preference
+    )
+  }
+
+  /// "Polish (pl)" — the readable name plus the code written to
+  /// `WHISPER_LANGUAGE`; automatic detection has no code worth showing.
+  var whisperLanguageDisplay: String {
+    let language = settings.whisperLanguage
+    guard language != .auto else { return language.displayName }
+    return String(
+      localized: "\(language.displayName) (\(language.shortCode))",
+      comment: "Engine tab language value: readable language name, then its two-letter code")
   }
 
   private var assistiveKeyState: SettingsKeyState {

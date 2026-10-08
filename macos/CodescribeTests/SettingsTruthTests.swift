@@ -1850,8 +1850,8 @@ final class SettingsTruthTests: XCTestCase {
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())
     // No runtime verdict yet — never project configured engine as Active STT.
     model.lastServingVerdict = nil
-    XCTAssertEqual(model.activeSTT, "Not yet served")
-    XCTAssertEqual(formatActiveSTT(lastServing: nil), "Not yet served")
+    XCTAssertEqual(model.activeSTT, "No transcription in this app session")
+    XCTAssertEqual(formatActiveSTT(lastServing: nil), "No transcription in this app session")
 
     // Deterministic Apple→Whisper fallback status.
     let fallback = LastServingVerdict(
@@ -1882,7 +1882,7 @@ final class SettingsTruthTests: XCTestCase {
         engine: engine, routingMode: "smart", disposition: nil, fallbackUsed: false)
       XCTAssertEqual(formatActiveSTT(lastServing: verdict), label)
     }
-    XCTAssertFalse(model.activeSTT.contains("Not yet served"))
+    XCTAssertFalse(model.activeSTT.contains("No transcription in this app session"))
   }
 
   func testActiveSTTRefreshesFromServingProviderOnDemand() {
@@ -1891,7 +1891,7 @@ final class SettingsTruthTests: XCTestCase {
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(),
       servingStatusProvider: { snapshot }
     )
-    XCTAssertEqual(model.activeSTT, "Not yet served")
+    XCTAssertEqual(model.activeSTT, "No transcription in this app session")
 
     snapshot = LastServingVerdict(
       engine: "local_apple",
@@ -2125,5 +2125,40 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
     CsPermissionPolicy(
       defaultLevel: "ask", readOnlyDefault: "allow", sideEffectDefault: "ask", tools: [],
       servers: serverRules)
+  }
+
+  /// The Engine tab model row follows the selected mode, not the saved
+  /// local id: Local power shows the saved selection, Apple only and Cloud
+  /// show nothing (`WHISPER_MODEL` has no runtime consumer).
+  func testSttModelRowShowsLocalSelectionOnlyInLocalPower() {
+    var persisted = CsSettings.sample
+    persisted.asrMode = "local_power"
+    let engine = MockSettingsEngine(settingsLoader: { persisted })
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    XCTAssertEqual(model.asrModeId, "local_power")
+    XCTAssertEqual(model.sttModelRow?.label, "Local Whisper model")
+    XCTAssertEqual(model.sttModelRow?.value, persisted.localModel)
+
+    model.refreshWhisperModelCatalog()
+    XCTAssertEqual(
+      model.sttModelRow?.value, CsWhisperModelCatalog.sample.configured,
+      "once the catalog is loaded the effective selection wins")
+
+    model.setAsrMode("apple_only")
+    XCTAssertNil(model.sttModelRow)
+    model.setAsrMode("cloud")
+    XCTAssertNil(model.sttModelRow, "Cloud has no runtime model preference to promise")
+  }
+
+  func testWhisperLanguageDisplayPairsNameWithCodeExceptAuto() {
+    var persisted = CsSettings.sample
+    persisted.whisperLanguage = .polish
+    let engine = MockSettingsEngine(settingsLoader: { persisted })
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    XCTAssertEqual(model.whisperLanguageDisplay, "Polish (pl)")
+    model.setLanguage(.english)
+    XCTAssertEqual(model.whisperLanguageDisplay, "English (en)")
+    model.setLanguage(.auto)
+    XCTAssertEqual(model.whisperLanguageDisplay, "Auto", "no code worth showing for detection")
   }
 }

@@ -1,22 +1,34 @@
 import SwiftUI
 
-/// Read-only STT truth rows (LLM truth lives on Agent › LLM lanes).
+/// Read-only rows about the last transcription (LLM truth lives on Agent › LLM
+/// lanes). No readiness dot: the engine row reports what served the last take,
+/// not whether the configuration looks healthy.
 struct DictationRuntimeRows: View {
   @ObservedObject var model: SettingsViewModel
 
   var body: some View {
     VStack(spacing: 0) {
       RuntimeRow(
-        key: String(localized: "Active STT"), value: model.activeSTT,
-        tint: true, trailing: .dot(model.sttHealthy ? CSColor.oliveLight : CSColor.amber))
+        key: String(
+          localized: "Last transcription engine",
+          comment:
+            "Engine tab row: the engine that served the last transcription of this app session"
+        ),
+        value: model.activeSTT,
+        tint: true, trailing: .none)
+      if let row = model.sttModelRow {
+        divider
+        RuntimeRow(key: row.label, value: row.value, tint: false, mono: true, trailing: .none)
+      }
       divider
       RuntimeRow(
-        key: String(localized: "STT model (preference)"), value: model.sttModelDescription,
-        tint: false, mono: true, trailing: .none)
-      divider
-      RuntimeRow(
-        key: String(localized: "Whisper language"), value: model.whisperLanguageCode,
-        tint: true, mono: true, trailing: .none)
+        key: String(
+          localized: "Spoken language",
+          comment:
+            "Engine tab row: the language setting handed to Apple, local Whisper and the cloud engine"
+        ),
+        value: model.whisperLanguageDisplay,
+        tint: true, trailing: .none)
     }
     .clipShape(.rect(cornerRadius: CSRadius.composer))
     .overlay {

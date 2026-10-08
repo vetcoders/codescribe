@@ -382,6 +382,25 @@ folder already absent; it never deletes an existing unowned or unreadable path.
 
 Prompt files live in `~/.codescribe/prompts/`.
 
+## Dictation
+
+Open **Settings → Dictation**. The first two tabs are:
+
+- **Engine** — _Recognition mode_ first (Apple only, Local power, Cloud), with a
+  one-line description of the selected mode under the picker. Below it, _Last
+  transcription_: the engine that served the last take (runtime truth from the
+  serving verdict, “No transcription in this app session” before the first take,
+  no readiness dot), the local Whisper model row only in Local power (the saved
+  selection; Cloud shows no model row), and the spoken language as “Polish (pl)”.
+  The language applies to Apple live recognition, local Whisper and the cloud
+  tail alike.
+- **Whisper model** — _Selected model_ (picker, install state with **Check
+  model**, a resident-vs-next-load row that never calls the next load “in use”),
+  _Other detected models_ (models on disk the loader refuses, with a plain
+  reason), _Data footprint_ (installed directories with state, size and
+  **Remove**; the selected model explains why it cannot be removed). Full paths,
+  sources and raw validation errors live under the collapsed **Model details**.
+
 ## Audio & Input
 
 Open **Settings → Audio & Input**.

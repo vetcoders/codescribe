@@ -10,6 +10,71 @@ final class AudioPanelTests: XCTestCase {
     XCTAssertTrue(DictationWhisperModelTab.canRemoveModel(status: "broken"))
   }
 
+  func testStorageStatusCodesMapToReadableLabelsAndUnknownStaysVerbatim() {
+    XCTAssertEqual(DictationWhisperModelTab.statusLabel("active"), "Selected")
+    XCTAssertEqual(DictationWhisperModelTab.statusLabel("usable"), "Ready")
+    XCTAssertEqual(DictationWhisperModelTab.statusLabel("refused"), "Refused")
+    XCTAssertEqual(DictationWhisperModelTab.statusLabel("broken"), "Broken")
+    XCTAssertEqual(DictationWhisperModelTab.statusLabel("weird"), "weird")
+  }
+
+  /// Bridge refusal prose is English; the row shows one plain sentence and
+  /// keeps the raw text for the details disclosure.
+  func testRefusalReasonsCollapseToPlainSentences() {
+    XCTAssertEqual(
+      DictationWhisperModelTab.reasonSummary(
+        "Quantized weights are not supported by the local engine"),
+      "The local engine does not support quantized (Q8) models.")
+    XCTAssertEqual(
+      DictationWhisperModelTab.reasonSummary("invalid Whisper tokenizer at /x/tokenizer.json"),
+      "The model's tokenizer is invalid. See Model details.")
+    XCTAssertEqual(
+      DictationWhisperModelTab.reasonSummary("Whisper tokenizer is missing required token"),
+      "The model's tokenizer is invalid. See Model details.")
+    XCTAssertEqual(
+      DictationWhisperModelTab.reasonSummary("model weights file missing"),
+      "The model files are incomplete. See Model details.")
+    XCTAssertEqual(
+      DictationWhisperModelTab.reasonSummary("something else"),
+      "The model failed validation. See Model details.")
+    XCTAssertEqual(DictationWhisperModelTab.reasonSummary(nil), "Unavailable")
+  }
+
+  /// `loaded` (resident weights) and `resolvedPath` (next load) are distinct
+  /// facts; the row never calls the next load "in use".
+  func testResidencyLabelDistinguishesLoadedFromNextLoad() {
+    let sample = CsWhisperModelCatalog.sample
+    XCTAssertEqual(DictationWhisperModelTab.residencyLabel(sample), "Loaded in memory")
+
+    var pending = sample
+    pending.loaded = nil
+    XCTAssertEqual(
+      DictationWhisperModelTab.residencyLabel(pending),
+      "Not loaded yet · loads on the next recording")
+
+    var switched = sample
+    switched.loaded = sample.options[1].path
+    XCTAssertEqual(
+      DictationWhisperModelTab.residencyLabel(switched),
+      "Loaded in memory: Large v3 · FP16 · next recording loads Large v3 Turbo · FP16")
+
+    var unresolved = sample
+    unresolved.resolvedPath = nil
+    XCTAssertEqual(
+      DictationWhisperModelTab.residencyLabel(unresolved),
+      "The selected model cannot be resolved; the next recording has no model to load.")
+
+    XCTAssertEqual(DictationWhisperModelTab.residencyLabel(nil), "Checking the model catalog…")
+  }
+
+  func testSelectedOptionLabelFallsBackToRawReference() {
+    let sample = CsWhisperModelCatalog.sample
+    XCTAssertEqual(DictationWhisperModelTab.selectedOptionLabel(sample), "Large v3 Turbo · FP16")
+    var orphan = sample
+    orphan.configured = "ghost-model"
+    XCTAssertEqual(DictationWhisperModelTab.selectedOptionLabel(orphan), "ghost-model")
+  }
+
   func testSelectedInputWritesPromotedKeyAndSurvivesSettingsRoundTrip() {
     var writes: [(String, String)] = []
     let liveSnapshot = CsAudioInputSnapshot(
