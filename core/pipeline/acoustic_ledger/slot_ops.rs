@@ -577,11 +577,24 @@ impl AcousticLedger {
         );
         let accounted =
             self.empty_decode_scope_accounted(observation, decode.sample_start, decode.sample_end);
+        super::super::trail::record_decode_work(self, observation, decode, accounted);
         if !accounted {
             self.require_text_recovery(owner);
         }
         self.reconcile_returned_word_debt(owner);
         accounted
+    }
+
+    /// Authenticate the exact recorded work scope independently of accounting.
+    pub(crate) fn has_returned_decode_work(
+        &self,
+        observation: &ObservationIdentity,
+        decode: &OccurrenceIdentity,
+    ) -> bool {
+        decode.same_capture(&observation.occurrence)
+            && self.successful_empty_decodes.contains(observation)
+            && self.decoded_word_windows.get(observation)
+                == Some(&(decode.sample_start, decode.sample_end))
     }
 
     /// Estimated word fences do not decide whether the decoded PCM cut speech.
@@ -2882,7 +2895,8 @@ mod slot_ops_tests {
                                     owner,
                                     "poprawione",
                                     &pcm
-                                )]
+                                )],
+                                (0, pcm.len() as u64),
                             )
                             .grants_mutation()
                         );
@@ -3170,7 +3184,27 @@ mod slot_ops_tests {
                     .with_decode_window(0, pcm.len() as u64)
             })
             .collect::<Vec<_>>();
-        let split_decision = corroborate_candidate(&mut ledger, &mut split, &pins);
+        // Both contexts are slices of the measured capture. A request number
+        // alone cannot turn the first frame into another lexical witness.
+        let first_frame_end = 14_400;
+        assert!(owner.sample_end < first_frame_end && first_frame_end < pcm.len() as u64);
+        assert!(
+            pcm[first_frame_end as usize..]
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        let first_pins = pins
+            .iter()
+            .cloned()
+            .map(|pin| pin.with_decode_window(0, first_frame_end))
+            .collect::<Vec<_>>();
+        let first_decision = ledger.admit_word_slots(&split, &first_pins);
+        let split_decision = if let Some(trial) = ledger.next_word_trial(true) {
+            split = ledger.next_word_observation(ObservationProducer::Whisper, 1103, &owner);
+            ledger.admit_word_trial(&trial, &split, &pins, &pins)
+        } else {
+            first_decision
+        };
         let sources = ledger.slots_of(&owner).unwrap().to_vec();
         println!(
             "parent-tail={parent_has_tail} actual split decision={split_decision:?}; sources={sources:?}; operations={:?}",
@@ -3502,7 +3536,7 @@ mod slot_ops_tests {
                     .join(" ");
                 let before = ledger.slot_operations().len();
                 let receipt = if proof == "complete" {
-                    corroborate_candidate(&mut ledger, &mut next, &pins)
+                    corroborate_candidate(&mut ledger, &mut next, &pins, (320, pcm.len() as u64))
                 } else {
                     ledger.admit_word_slots(&next, &pins)
                 };
@@ -3628,7 +3662,7 @@ mod slot_ops_tests {
                 ("empty", (5_000, 5_000), false),
                 ("disjoint", (10_000, 15_000), false),
             ] {
-                let (mut ledger, owner, _) = forensic_merge_capture("split-frame-integrity", 1);
+                let (mut ledger, owner, pcm) = forensic_merge_capture("split-frame-integrity", 1);
                 let sources = ledger.slots_of(&owner).unwrap().to_vec();
                 assert_eq!(sources.len(), 1);
                 assert!(ledger.complete_word_slot(&sources[0]));
@@ -3638,7 +3672,7 @@ mod slot_ops_tests {
                 let pin = WordPin::new(4_000, 9_000, "mamy").with_decode_window(frame.0, frame.1);
                 let before = ledger.slot_operations().len();
                 let result = if valid {
-                    corroborate_candidate(&mut ledger, &mut next, &[pin])
+                    corroborate_candidate(&mut ledger, &mut next, &[pin], (320, pcm.len() as u64))
                 } else {
                     ledger.admit_word_slots(&next, &[pin])
                 };
@@ -3808,6 +3842,20 @@ mod slot_ops_tests {
     fn pinned(words: &[WordPin]) -> AcousticLedger {
         let mut ledger = AcousticLedger::new();
         ledger.admit_word_slots(&observation(ObservationProducer::Apple, 0), words);
+        ledger
+    }
+
+    fn measured_pinned(words: &[WordPin]) -> AcousticLedger {
+        let mut pcm = vec![0.0_f32; 24_000];
+        for word in words {
+            pcm[word.sample_start as usize..word.sample_end as usize].fill(0.2);
+        }
+        let mut ledger = super::super::word_adjudication_tests::measured_ledger(&owner(), &pcm);
+        assert!(
+            ledger
+                .admit_word_slots(&observation(ObservationProducer::Apple, 0), words)
+                .grants_mutation()
+        );
         ledger
     }
 
@@ -4659,7 +4707,7 @@ mod slot_ops_tests {
                     }
                     let pins = bounded_group_words(acoustic);
                     let mut next = observation(producer, 1);
-                    let receipt = corroborate_candidate(&mut ledger, &mut next, &pins);
+                    let receipt = corroborate_candidate(&mut ledger, &mut next, &pins, (0, 20_000));
                     assert!(receipt.is_correct(), "{producer:?}: {apple} → {acoustic}");
                     assert_eq!(ledger.text_of(&owner()), Some(acoustic));
                     assert_eq!(ledger.slots_of(&owner()).unwrap().len(), pins.len());
@@ -5001,7 +5049,7 @@ mod slot_ops_tests {
 
     #[test]
     fn whisper_omission_keeps_plan_and_corrects_the_other_word() {
-        let mut ledger = pinned(&[
+        let mut ledger = measured_pinned(&[
             WordPin::new(0, 1_000, "plan"),
             WordPin::new(2_000, 4_000, "weryfikowałeś"),
         ]);
@@ -5014,6 +5062,7 @@ mod slot_ops_tests {
                 WordPin::new(2_050, 4_050, "zweryfikowałeś").with_decode_window(0, 16_000),
                 WordPin::new(5_000, 6_000, "kod").with_decode_window(0, 16_000),
             ],
+            (0, 20_000),
         );
         assert_eq!(ledger.text_of(&owner()), Some("plan zweryfikowałeś kod"));
         let slots = ledger.slots_of(&owner()).unwrap();
@@ -5165,7 +5214,7 @@ mod slot_ops_tests {
 
     #[test]
     fn explicit_split_needs_child_boundaries_otherwise_text_has_group_accuracy() {
-        let mut ledger = pinned(&[WordPin::new(0, 2_000, "naprawdę")]);
+        let mut ledger = measured_pinned(&[WordPin::new(0, 2_000, "naprawdę")]);
         let target = SlotTarget::from(&ledger.slots_of(&owner()).unwrap()[0]);
         let next = observation(ObservationProducer::Whisper, 1);
         assert_eq!(
@@ -5184,13 +5233,16 @@ mod slot_ops_tests {
         let trial = ledger
             .next_word_trial(true)
             .expect("split requires a lexical resolution");
-        let mut input = ledger.word_evidence_input(&next).unwrap().clone();
         let confirmed = observation(ObservationProducer::Whisper, 3);
-        input.observation = confirmed.clone();
+        let witness = children
+            .clone()
+            .map(|pin| pin.with_decode_window(0, 20_000));
+        ledger.stage_word_evidence(&confirmed, &witness, None, "unknown");
+        let mut input = ledger.word_evidence_input(&confirmed).unwrap().clone();
         input.trial = Some(trial.clone());
         ledger.restore_word_evidence(input);
         let receipt = ledger
-            .split_word_slot(&confirmed, &target, &children)
+            .split_word_slot(&confirmed, &target, &witness)
             .unwrap();
         ledger.close_word_trial(&trial, "resolved");
         assert_eq!(receipt.sources.len(), 1);
@@ -5201,12 +5253,13 @@ mod slot_ops_tests {
             vec![OccurrenceIdentity::new("slot-test", 1, 0, 1_000)]
         );
 
-        let mut group = pinned(&[WordPin::new(0, 2_000, "naprawdę")]);
+        let mut group = measured_pinned(&[WordPin::new(0, 2_000, "naprawdę")]);
         let mut next = next;
         corroborate_candidate(
             &mut group,
             &mut next,
             &[WordPin::new(0, 2_000, "na prawdę").with_decode_window(0, 16_000)],
+            (0, 20_000),
         );
         assert_eq!(group.slots_of(&owner()).unwrap().len(), 1);
         assert_eq!(group.text_of(&owner()), Some("na prawdę"));

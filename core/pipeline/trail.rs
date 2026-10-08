@@ -41,6 +41,23 @@ pub struct TrailAdmission {
     pub offered_slots: Option<Vec<WordSlot>>,
     pub slot_revision: bool,
     pub capture_rate_hz: Option<u32>,
+    /// The exact non-mutating corridor requested outside a word batch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_mutating: Option<TrailNonMutatingInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum TrailNonMutatingInput {
+    Refuse {
+        reason: super::acoustic_ledger::RefuseReason,
+    },
+    KeepVisible {
+        reason: super::acoustic_ledger::NoAuthorityReason,
+    },
+    SupersededStub {
+        pin: OccurrenceIdentity,
+    },
 }
 
 /// Serialized production inputs; PCM geometry and confidence travel unchanged.
@@ -499,6 +516,12 @@ pub struct TrailDecision {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TrailEvent {
+    DecodeWork {
+        observation: ObservationIdentity,
+        decode: OccurrenceIdentity,
+        speech: TrailSpeechEvidence,
+        accounted: bool,
+    },
     OccurrenceSealed {
         occurrence: OccurrenceIdentity,
         receipt_id: String,
@@ -707,6 +730,29 @@ pub(super) fn is_enabled(occurrence: &OccurrenceIdentity) -> bool {
 }
 
 /// The only enqueue corridor; JSON encoding and filesystem access live in the worker.
+pub(super) fn record_decode_work(
+    ledger: &AcousticLedger,
+    observation: &ObservationIdentity,
+    decode: &OccurrenceIdentity,
+    accounted: bool,
+) {
+    if !is_enabled(&observation.occurrence) {
+        return;
+    }
+    let Some(speech) = &ledger.speech_evidence else {
+        return;
+    };
+    record(
+        &observation.occurrence,
+        TrailEvent::DecodeWork {
+            observation: observation.clone(),
+            decode: decode.clone(),
+            speech: TrailSpeechEvidence::from_evidence(speech),
+            accounted,
+        },
+    );
+}
+
 pub(super) fn record(occurrence: &OccurrenceIdentity, event: TrailEvent) {
     let Some(registry) = SINKS.get() else {
         return;
@@ -1063,6 +1109,7 @@ fn validate_envelope(records: &[TrailRecord]) -> io::Result<()> {
             TrailEvent::WordTrialClosed { receipt } => Some(&receipt.trial.owner),
             TrailEvent::Qualification { evidence, .. } => Some(&evidence.occurrence),
             TrailEvent::Decision { decision } => Some(&decision.observation.occurrence),
+            TrailEvent::DecodeWork { observation, .. } => Some(&observation.occurrence),
             TrailEvent::Frontier { occurrence, .. } => Some(occurrence),
             TrailEvent::SlotStart { operation } => Some(&operation.observation.occurrence),
             TrailEvent::SlotEnd { operation } => Some(&operation.observation.occurrence),
@@ -1274,6 +1321,22 @@ fn replay_validated(
             return Err(io::Error::other("decision lacks slot effects"));
         }
         match &row.event {
+            TrailEvent::DecodeWork {
+                observation,
+                decode,
+                speech,
+                accounted,
+            } => {
+                if !decode.same_capture(&observation.occurrence) {
+                    return Err(io::Error::other("decode work capture differs"));
+                }
+                ledger.record_speech_evidence(&speech.evidence()?);
+                if ledger.record_empty_decode_work(observation, decode) != *accounted
+                    || !ledger.has_returned_decode_work(observation, decode)
+                {
+                    return Err(io::Error::other("decode work accounting differs"));
+                }
+            }
             TrailEvent::SlotStart { operation } => {
                 if pending.is_some() {
                     return Err(io::Error::other("nested slot input"));
@@ -1304,12 +1367,42 @@ fn replay_validated(
                 if let Some(rate) = input.capture_rate_hz {
                     ledger.bind_capture_rate(rate);
                 }
-                let verdict = ledger.admit_with_slots(
-                    &decision.observation,
-                    &decision.candidate_label,
-                    input.offered_slots.clone(),
-                    input.slot_revision,
-                );
+                let verdict = if let Some(operation) = &input.non_mutating {
+                    if input.offered_slots.is_some() || input.slot_revision {
+                        return Err(io::Error::other(
+                            "non-mutating input contains mutation slots",
+                        ));
+                    }
+                    match operation {
+                        TrailNonMutatingInput::Refuse { reason } => ledger.refuse_replacement(
+                            &decision.observation,
+                            &decision.candidate_label,
+                            *reason,
+                        ),
+                        TrailNonMutatingInput::KeepVisible { reason } => ledger
+                            .keep_visible_unanchored(
+                                &decision.observation,
+                                &decision.candidate_label,
+                                *reason,
+                            ),
+                        TrailNonMutatingInput::SupersededStub { pin } => ledger
+                            .refuse_superseded_stub(
+                                &decision.observation,
+                                &decision.candidate_label,
+                                pin,
+                            )
+                            .ok_or_else(|| {
+                                io::Error::other("superseded stub lacks complete source")
+                            })?,
+                    }
+                } else {
+                    ledger.admit_with_slots(
+                        &decision.observation,
+                        &decision.candidate_label,
+                        input.offered_slots.clone(),
+                        input.slot_revision,
+                    )
+                };
                 let actual = ledger
                     .layer_trail()
                     .last()
@@ -1327,7 +1420,15 @@ fn replay_validated(
                 if let Some(pending) = &mut pending {
                     pending.effects.push(effects);
                 } else if !effects_match(&ledger, effects) {
-                    return Err(io::Error::other("replay decision effects differ"));
+                    let entry = ledger
+                        .layer_trail()
+                        .last()
+                        .expect("decision already replayed");
+                    return Err(io::Error::other(format!(
+                        "replay decision effects differ at {}: actual={:?}; expected={effects:?}",
+                        entry.ordinal,
+                        decision_effects(&ledger, entry)
+                    )));
                 }
             }
             TrailEvent::SlotEnd { operation } => {
@@ -1505,6 +1606,138 @@ mod tests {
     }
 
     #[test]
+    fn empty_decode_work_accounts_quiet_tail_without_a_lexical_vote() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = OccurrenceIdentity::new("retained-decode-trail", 17, 0, 24_000);
+        let sink =
+            TrailSink::open_in(dir.path(), &owner.session, owner.capture_epoch, 128).unwrap();
+        let mut pcm = vec![0.0; 24_000];
+        pcm[2_000..6_000].fill(0.2);
+        pcm[8_000..12_000].fill(0.2);
+        let mut ledger =
+            super::super::acoustic_ledger::word_adjudication_tests::measured_ledger(&owner, &pcm);
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+        assert!(ledger.require_text_recovery(&owner));
+        let words = |end| {
+            vec![
+                WordPin::new(2_000, 6_000, "Iwo").with_decode_window(0, end),
+                WordPin::new(8_000, 12_000, "Iwo").with_decode_window(0, end),
+            ]
+        };
+        let first = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        assert!(
+            ledger
+                .admit_word_slots(&first, &words(16_000))
+                .grants_mutation()
+        );
+        let choices = ledger.word_choices().to_vec();
+        let sources = ledger.slots_of(&owner).unwrap().to_vec();
+        assert!(ledger.text_recovery_pending(&owner));
+        let returned = ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, owner.clone());
+        let decode = owner.clone();
+        assert!(ledger.record_empty_decode_work(&returned, &decode));
+        assert_eq!(ledger.word_choices(), choices);
+        assert_eq!(ledger.slots_of(&owner).unwrap(), sources);
+        assert!(!ledger.text_recovery_pending(&owner));
+        assert!(
+            !ledger.record_empty_decode_work(&returned, &decode),
+            "one returned work identity"
+        );
+        ledger.note_frontier_return(&owner, ObservationProducer::Whisper);
+        let seal = ledger.seal(&owner).unwrap().clone();
+        drop(sink);
+        let rows = read_trail(&trail_path(dir.path(), &owner.session).unwrap()).unwrap();
+        forensic_trail_assert_exact_replay(&ledger, &owner, &rows);
+        assert_eq!(
+            replay_decisions(&rows, |_, _, _| {})
+                .unwrap()
+                .seal_of(&owner),
+            Some(&seal)
+        );
+        for fault in ["foreign", "extent", "accounting"] {
+            let mut forged = rows.clone();
+            let (decode, accounted) = forged
+                .iter_mut()
+                .find_map(|row| match &mut row.event {
+                    TrailEvent::DecodeWork {
+                        decode, accounted, ..
+                    } => Some((decode, accounted)),
+                    _ => None,
+                })
+                .unwrap();
+            match fault {
+                "foreign" => decode.capture_epoch += 1,
+                "extent" => decode.sample_end += 1,
+                "accounting" => *accounted = false,
+                _ => unreachable!(),
+            }
+            let mut projected = 0;
+            assert!(
+                replay_decisions(&forged, |_, _, _| projected += 1).is_err(),
+                "{fault}"
+            );
+            assert_eq!(projected, 0, "{fault}");
+        }
+    }
+
+    #[test]
+    fn standalone_non_mutating_inputs_roundtrip_and_reject_forgery() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = OccurrenceIdentity::new("non-mutating-trail", 17, 0, 16_000);
+        let sink =
+            TrailSink::open_in(dir.path(), &owner.session, owner.capture_epoch, 128).unwrap();
+        let mut ledger = forensic_trail_measured_ledger(&owner);
+        ledger.admit_word_slots(
+            &ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone()),
+            &[WordPin::new(2_000, 6_000, "zachowaj")],
+        );
+        let before = ledger.slots_of(&owner).unwrap().to_vec();
+        ledger.keep_visible_unanchored(
+            &ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, owner.clone()),
+            "brzeg",
+            super::super::acoustic_ledger::NoAuthorityReason::ExclusiveTailAwaitingWholeSpan,
+        );
+        ledger.refuse_replacement(
+            &ObservationIdentity::new(ObservationProducer::Whisper, 3, 0, owner.clone()),
+            "powtórka",
+            super::super::acoustic_ledger::RefuseReason::ReplayedRangeIdentity,
+        );
+        assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+        drop(sink);
+        let rows = read_trail(&trail_path(dir.path(), &owner.session).unwrap()).unwrap();
+        forensic_trail_assert_exact_replay(&ledger, &owner, &rows);
+        for fault in ["missing", "reason", "mutation"] {
+            let mut forged = rows.clone();
+            let decision = forged
+                .iter_mut()
+                .find_map(|row| match &mut row.event {
+                    TrailEvent::Decision { decision } if decision.observation.request == 2 => {
+                        Some(decision)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            match fault {
+                "missing" => decision.input = None,
+                "reason" => {
+                    decision.input.as_mut().unwrap().non_mutating =
+                        Some(TrailNonMutatingInput::KeepVisible {
+                            reason: super::super::acoustic_ledger::NoAuthorityReason::NoRange,
+                        })
+                }
+                "mutation" => decision.input.as_mut().unwrap().offered_slots = Some(before.clone()),
+                _ => unreachable!(),
+            }
+            let mut projected = 0;
+            assert!(
+                replay_decisions(&forged, |_, _, _| projected += 1).is_err(),
+                "{fault}"
+            );
+            assert_eq!(projected, 0, "validation precedes projection: {fault}");
+        }
+    }
+
+    #[test]
     fn sealed_choice_cleanup_replays_v3_and_keeps_v2_cursors() {
         for legacy in [false, true] {
             let dir = tempfile::tempdir().unwrap();
@@ -1659,7 +1892,7 @@ mod tests {
             &[WordPin::new(2_000, 6_000, "1286")],
         );
         let trial = ledger.next_word_trial(true).unwrap();
-        let pins = [WordPin::new(2_000, 6_000, "1286").with_decode_window(0, 16_000)];
+        let pins = [WordPin::new(2_000, 6_000, "1286").with_decode_window(320, 16_000)];
         let confirmed = ledger.next_word_observation(ObservationProducer::Whisper, 3, &owner);
         ledger.admit_word_trial(&trial, &confirmed, &pins, &pins);
         assert_eq!(ledger.text_of(&owner), Some("1286"));
@@ -1716,6 +1949,7 @@ mod tests {
             &mut ledger,
             &mut measured,
             &[WordPin::new(2_500, 6_500, "zweryfikowałeś").with_decode_window(0, 16_000)],
+            (320, 16_000),
         );
         assert!(corrected.grants_mutation(), "{corrected:?}");
         assert_eq!(ledger.text_of(&owner), Some("zweryfikowałeś"));
@@ -1749,7 +1983,7 @@ mod tests {
         assert_eq!(words.len(), 1);
         assert_eq!(
             (words[0].decode_sample_start, words[0].decode_sample_end),
-            (Some(0), Some(16_000))
+            (Some(320), Some(16_000))
         );
         words[0].sample_start += 1;
         assert_replay_refused_before_projection(&wrong_pin);
@@ -1892,26 +2126,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let owner = OccurrenceIdentity::new(format!("slot-trail-{scenario}"), 11, 0, 16_000);
         let sink = TrailSink::open_in(dir.path(), &owner.session, 11, 128).unwrap();
-        let mut ledger = AcousticLedger::new();
-        ledger.bind_capture_rate(16_000);
-        let calibration = EnergyCalibration::new("slot-trail", 1.0, 1);
-        assert!(
-            ledger
-                .qualify(
-                    &AcousticEvidence {
-                        occurrence: owner.clone(),
-                        duration_ms: 1_000.0,
-                        energy_integral: 10.0,
-                        mean_rms_dbfs: -12.0,
-                        peak_dbfs: -3.0,
-                        vad_open_sample: Some(0),
-                        vad_close_sample: Some(16_000),
-                        evidence_calibration_version: calibration.version.clone(),
-                    },
-                    &calibration
-                )
-                .is_qualified()
-        );
+        let mut pcm = vec![0.0_f32; 24_000];
+        pcm[..16_000].fill(0.2);
+        let mut ledger =
+            super::super::acoustic_ledger::word_adjudication_tests::measured_ledger(&owner, &pcm);
         let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone());
         let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone());
         let children = [
@@ -1931,7 +2149,8 @@ mod tests {
                     &mut confirmed,
                     &children
                         .clone()
-                        .map(|pin| pin.with_decode_window(0, 16_000)),
+                        .map(|pin| pin.with_decode_window(0, 20_000)),
+                    (0, 24_000),
                 );
                 assert_eq!(ledger.text_of(&owner), Some("na prawdę"));
                 assert!(
@@ -2223,7 +2442,7 @@ mod tests {
         let mut ledger = AcousticLedger::new();
         let energy = crate::audio::capture_receipt::CaptureEnergyOwner::bind(session, 7);
         let mut writer = crate::audio::capture_receipt::CaptureLevelAccumulator::bound_to(&energy);
-        let mut pcm = vec![0.2_f32; 20_000];
+        let mut pcm = vec![0.2_f32; 24_000];
         pcm[16_000..].fill(0.0);
         writer.push_samples(&pcm);
         ledger.bind_capture_rate(16_000);
@@ -2288,6 +2507,7 @@ mod tests {
                 &mut ledger,
                 &mut observation,
                 &[WordPin::new(0, 16_000, "zweryfikowałeś").with_decode_window(0, 20_000)],
+                (0, 24_000),
             );
             assert!(receipt.grants_mutation());
             assert_eq!(ledger.text_of(&owner), Some("zweryfikowałeś"));

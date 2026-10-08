@@ -2351,6 +2351,7 @@ impl AcousticLedger {
                 offered_slots: slots.clone(),
                 slot_revision,
                 capture_rate_hz: self.capture_rate_hz,
+                non_mutating: None,
             }
         });
         self.offered_observations += 1;
@@ -3152,6 +3153,10 @@ impl AcousticLedger {
         text: &str,
         reason: NoAuthorityReason,
     ) -> MutationReceipt {
+        self.record_non_mutating_input(
+            observation,
+            super::trail::TrailNonMutatingInput::KeepVisible { reason },
+        );
         self.offered_observations += 1;
         self.kept_visible += 1;
         self.note_answered(observation);
@@ -3203,6 +3208,10 @@ impl AcousticLedger {
         text: &str,
         reason: RefuseReason,
     ) -> MutationReceipt {
+        self.record_non_mutating_input(
+            observation,
+            super::trail::TrailNonMutatingInput::Refuse { reason },
+        );
         self.offered_observations += 1;
         self.note_answered(observation);
         let decision = MutationReceipt::Refuse {
@@ -3211,6 +3220,56 @@ impl AcousticLedger {
         };
         self.record_layer_decision(observation, text, &decision, None);
         decision
+    }
+
+    pub(crate) fn refuse_superseded_stub(
+        &mut self,
+        observation: &ObservationIdentity,
+        text: &str,
+        pin: &OccurrenceIdentity,
+    ) -> Option<MutationReceipt> {
+        if !pin.same_capture(&observation.occurrence) {
+            return None;
+        }
+        let sources = self
+            .occurrences()
+            .filter(|owner| owner.same_capture(&observation.occurrence))
+            .flat_map(|owner| self.slots_of(owner).unwrap_or(&[]).iter())
+            .filter(|slot| {
+                slot.producer == ObservationProducer::Whisper
+                    && self.word_slot_targets_pin(slot, pin)
+                    && self.complete_word_slot(slot)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if sources.len() != 1 {
+            return None;
+        }
+        self.record_non_mutating_input(
+            observation,
+            super::trail::TrailNonMutatingInput::SupersededStub { pin: pin.clone() },
+        );
+        self.retain_slot_alternative(observation, text, sources, "window_stub_superseded");
+        Some(self.refuse_replacement(observation, text, RefuseReason::ReplacedByWhisper))
+    }
+
+    fn record_non_mutating_input(
+        &mut self,
+        observation: &ObservationIdentity,
+        operation: super::trail::TrailNonMutatingInput,
+    ) {
+        if self.trail_input.is_none() && super::trail::is_enabled(&observation.occurrence) {
+            self.trail_input = Some(super::trail::TrailAdmission {
+                source_slots: self
+                    .slots_of(&observation.occurrence)
+                    .unwrap_or(&[])
+                    .to_vec(),
+                offered_slots: None,
+                slot_revision: false,
+                capture_rate_hz: self.capture_rate_hz,
+                non_mutating: Some(operation),
+            });
+        }
     }
 
     // -- admission: does this region physically exist? ----------------------
@@ -8909,7 +8968,11 @@ mod tests {
     #[test]
     fn one_pcm_slot_replaces_variant_chain_and_numeric_double() {
         for (first, second, final_word) in [("Vite", "Vita", "Vitae"), ("21.", "21.", "21.")] {
-            let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+            let occurrence = occ(0, 16_000);
+            let mut pcm = vec![0.0_f32; 24_000];
+            pcm[1_000..4_000].fill(0.2);
+            let mut ledger = word_adjudication_tests::measured_ledger(&occurrence, &pcm);
+            ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Whisper]);
             let apple_first = obs(ObservationProducer::Apple, 0, occurrence.clone());
             ledger.admit_word_slots(&apple_first, &[WordPin::new(1_000, 4_000, first)]);
             let apple_second = obs(ObservationProducer::Apple, 1, occurrence.clone());
@@ -8919,6 +8982,7 @@ mod tests {
                 &mut ledger,
                 &mut whisper,
                 &[WordPin::new(1_000, 4_000, final_word).with_decode_window(0, 16_000)],
+                (0, 20_000),
             );
 
             assert_eq!(ledger.text_of(&occurrence), Some(final_word));

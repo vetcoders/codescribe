@@ -1039,7 +1039,14 @@ impl AcousticLedger {
                 if !c.conflict
                     || c.attempted
                     || self.is_sealed(&c.owner)
-                    || (!stopping && c.whisper.iter().filter(|h| h.complete).count() < 2)
+                    || (!stopping
+                        && c.support()
+                            .iter()
+                            .filter(|h| h.family() == ObservationProducer::Whisper && h.complete)
+                            .filter_map(|h| h.decode)
+                            .collect::<BTreeSet<_>>()
+                            .len()
+                            < 2)
                 {
                     return false;
                 }
@@ -1061,8 +1068,15 @@ impl AcousticLedger {
                     && (c.has_decode(coverage, Some((coverage.sample_start, coverage.sample_end)))
                         || !ranges.iter().all(|range| {
                             range.same_capture(coverage)
-                                && range.sample_start >= coverage.sample_start
+                                && range.sample_start > coverage.sample_start
                                 && range.sample_end <= coverage.sample_end
+                                && !self.decode_word_fence_incomplete(
+                                    range,
+                                    coverage.sample_start,
+                                    coverage.sample_end,
+                                    range.sample_start,
+                                    range.sample_end,
+                                )
                         }))
                 {
                     return false;

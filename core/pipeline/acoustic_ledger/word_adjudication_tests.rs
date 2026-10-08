@@ -1,6 +1,54 @@
 //! Integrator-owned counterexamples for local adjudication, independent of ASR.
 use super::*;
 
+pub(crate) fn measured_ledger(owner: &OccurrenceIdentity, pcm: &[f32]) -> AcousticLedger {
+    use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+    assert!(owner.sample_start < owner.sample_end && owner.sample_end <= pcm.len() as u64);
+    let energy = CaptureEnergyOwner::bind(&owner.session, owner.capture_epoch);
+    let mut writer = CaptureLevelAccumulator::bound_to(&energy);
+    for chunk in pcm.chunks(320) {
+        writer.push_samples(chunk);
+    }
+    let speech = energy.session_active_speech_ranges(&owner.session, owner.capture_epoch, 16_000);
+    assert_eq!(
+        speech.availability().observed_samples(),
+        Some(pcm.len() as u64)
+    );
+    let samples = &pcm[owner.sample_start as usize..owner.sample_end as usize];
+    let integral = samples
+        .iter()
+        .map(|sample| f64::from(*sample).powi(2))
+        .sum::<f64>();
+    let peak = samples
+        .iter()
+        .map(|sample| f64::from(sample.abs()))
+        .fold(0.0_f64, f64::max);
+    assert!(integral > 0.0 && peak > 0.0);
+    let calibration = EnergyCalibration::new("word-fixture-pcm", 1.0, 1);
+    let mut ledger = AcousticLedger::new();
+    ledger.bind_capture_rate(16_000);
+    assert!(
+        ledger
+            .qualify(
+                &AcousticEvidence {
+                    occurrence: owner.clone(),
+                    duration_ms: samples.len() as f64 / 16.0,
+                    energy_integral: integral,
+                    mean_rms_dbfs: 20.0 * (integral / samples.len() as f64).sqrt().log10(),
+                    peak_dbfs: 20.0 * peak.log10(),
+                    vad_open_sample: Some(owner.sample_start),
+                    vad_close_sample: Some(owner.sample_end),
+                    evidence_calibration_version: calibration.version.clone(),
+                },
+                &calibration
+            )
+            .is_qualified()
+    );
+    ledger.record_speech_evidence(&speech);
+    ledger.record_decode_fence_energy(&energy, pcm.len() as u64, None);
+    ledger
+}
+
 fn fixture() -> (AcousticLedger, OccurrenceIdentity) {
     let owner = OccurrenceIdentity::new("local-word-trial", 1, 0, 160_000);
     let mut ledger = AcousticLedger::new();
@@ -76,6 +124,57 @@ fn disputed() -> (AcousticLedger, OccurrenceIdentity) {
     );
     assert_eq!(ledger.text_of(&owner), Some("56"));
     (ledger, owner)
+}
+
+#[test]
+fn incomplete_decoder_fence_does_not_spend_a_later_complete_trial() {
+    use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+
+    let (mut ledger, owner) = disputed();
+    let mut pcm = vec![0.0_f32; 160_000];
+    pcm[48_000..64_000].fill(0.2);
+    let energy = CaptureEnergyOwner::bind(&owner.session, owner.capture_epoch);
+    let mut writer = CaptureLevelAccumulator::bound_to(&energy);
+    for chunk in pcm.chunks(320) {
+        writer.push_samples(chunk);
+    }
+    ledger.record_speech_evidence(&energy.session_active_speech_ranges(
+        &owner.session,
+        owner.capture_epoch,
+        16_000,
+    ));
+    ledger.record_decode_fence_energy(&energy, pcm.len() as u64, None);
+
+    let clipped = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, 16_000, 64_000);
+    assert!(ledger.decode_word_fence_incomplete(&owner, 16_000, 64_000, 48_000, 64_000));
+    assert!(
+        ledger
+            .next_word_trial_in(false, Some(&clipped), None)
+            .is_none(),
+        "an edge-incomplete frame must not spend the component's only trial"
+    );
+    assert_eq!(ledger.text_of(&owner), Some("56"));
+    assert!(ledger.has_word_conflicts());
+
+    let complete = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, 16_000, 144_000);
+    let trial = ledger
+        .next_word_trial_in(false, Some(&complete), None)
+        .expect("the later fresh complete frame can still resolve the dispute");
+    let observation = ledger.next_word_observation(ObservationProducer::Whisper, 9, &owner);
+    let pins = [WordPin::new(48_000, 64_000, "1286").with_decode_window(16_000, 144_000)];
+    assert!(
+        ledger
+            .admit_word_trial(&trial, &observation, &pins, &pins)
+            .grants_mutation()
+    );
+    assert_eq!(ledger.text_of(&owner), Some("1286"));
+    assert!(!ledger.has_word_conflicts());
+    assert!(
+        ledger
+            .next_word_trial_in(false, Some(&complete), None)
+            .is_none()
+    );
+    assert_eq!(ledger.conservation().residue(), 0);
 }
 
 #[test]
@@ -297,12 +396,13 @@ fn context_quality_is_bounded_at_extreme_sample_offsets() {
     assert!(context_quality(u64::MAX / 3, u64::MAX / 2, (0, u64::MAX)) <= 1_000_000);
 }
 
-/// Old geometry fixtures now provide an explicit resolving observation instead
-/// of granting a lexical correction solely because Whisper arrived later.
+/// Fixture decoder results must identify another captured context explicitly;
+/// renaming the original request does not provide a resolving observation.
 pub(crate) fn corroborate_candidate(
     ledger: &mut AcousticLedger,
     observation: &mut ObservationIdentity,
     pins: &[WordPin],
+    witness_frame: (u64, u64),
 ) -> MutationReceipt {
     let mut receipt = ledger.admit_word_slots(observation, pins);
     while let Some(trial) = ledger.next_word_trial(true) {
@@ -310,12 +410,29 @@ pub(crate) fn corroborate_candidate(
             trial.owner, observation.occurrence,
             "fixture conflict scope"
         );
+        assert!(witness_frame.0 < witness_frame.1);
+        let captured = ledger
+            .speech_evidence
+            .as_ref()
+            .and_then(|speech| speech.availability().observed_samples())
+            .expect("a corroborating fixture needs measured capture PCM");
+        assert!(witness_frame.1 <= captured);
+        assert!(pins.iter().all(|pin| {
+            pin.decode_sample_start.zip(pin.decode_sample_end) != Some(witness_frame)
+                && witness_frame.0 <= pin.sample_start
+                && pin.sample_end <= witness_frame.1
+        }));
+        let witness = pins
+            .iter()
+            .cloned()
+            .map(|pin| pin.with_decode_window(witness_frame.0, witness_frame.1))
+            .collect::<Vec<_>>();
         *observation = ledger.next_word_observation(
             ObservationProducer::Whisper,
             10_000 + trial.id,
             &trial.owner,
         );
-        receipt = ledger.admit_word_trial(&trial, observation, pins, pins);
+        receipt = ledger.admit_word_trial(&trial, observation, &witness, &witness);
     }
     receipt
 }

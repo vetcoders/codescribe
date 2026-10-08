@@ -12708,6 +12708,7 @@ mod tests {
                         offered_slots: None,
                         slot_revision: false,
                         capture_rate_hz: None,
+                        non_mutating: None,
                     }),
                     result_slots: ledger.slots_of(&occurrence).unwrap().to_vec(),
                     revision_before: None,
