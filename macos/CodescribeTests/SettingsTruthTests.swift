@@ -298,10 +298,10 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(
       SettingsTab.tabs(in: .engine),
       [
-        .dictationEngine, .dictationWhisper, .dictationPreview, .dictationHandsFree,
-        .dictationPrivacy, .dictationPermissions,
+        .dictationEngine, .dictationWhisper, .dictationPreview, .dictationPrivacy,
+        .dictationPermissions,
       ],
-      "every former Dictation collapsible is a tab"
+      "every Dictation concern is a tab; the raw recognition timings live in Lab"
     )
     for tab in SettingsTab.allCases {
       XCTAssertFalse(tab.title.isEmpty)

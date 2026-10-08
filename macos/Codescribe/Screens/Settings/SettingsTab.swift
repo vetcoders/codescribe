@@ -20,7 +20,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
   case dictationEngine
   case dictationWhisper
   case dictationPreview
-  case dictationHandsFree
   case dictationPrivacy
   case dictationPermissions
 
@@ -30,8 +29,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     switch self {
     case .agentLanes, .agentPrompts, .agentWorkspace, .agentStatus, .agentTools, .agentMcp:
       .agent
-    case .dictationEngine, .dictationWhisper, .dictationPreview, .dictationHandsFree,
-      .dictationPrivacy, .dictationPermissions:
+    case .dictationEngine, .dictationWhisper, .dictationPreview, .dictationPrivacy,
+      .dictationPermissions:
       .engine
     }
   }
@@ -57,8 +56,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .dictationWhisper: "Whisper"
     case .dictationPreview:
       String(localized: "Preview", comment: "Settings tab: live transcript preview timing")
-    case .dictationHandsFree:
-      String(localized: "Hands-free", comment: "Settings tab: hands-free dictation")
     case .dictationPrivacy: String(localized: "Privacy", comment: "Settings tab: cloud and privacy")
     case .dictationPermissions:
       String(localized: "Permissions", comment: "Settings tab: macOS permission matrix")
@@ -83,8 +80,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .dictationPreview:
       String(
         localized: "Transcript display pace", comment: "Settings tab headline: Dictation › Preview")
-    case .dictationHandsFree: String(localized: "Hands-free silence.")
-    case .dictationPrivacy: "\(CloudPrivacyCopy.title)."
+    case .dictationPrivacy: CloudPrivacyCopy.title
     case .dictationPermissions: String(localized: "Permission matrix.")
     }
   }
@@ -127,10 +123,11 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       String(
         localized: "Adjust how quickly text appears in the preview window while recording."
       )
-    case .dictationHandsFree:
-      String(localized: "How long the Apple engine waits in silence before it rests.")
     case .dictationPrivacy:
-      String(localized: "Where audio lives, and the one condition under which it leaves this Mac.")
+      String(
+        localized:
+          "See when Codescribe processes audio on this Mac and when it may use cloud services."
+      )
     case .dictationPermissions:
       String(localized: "Live macOS permission status. Click a missing permission to grant it.")
     }
@@ -210,14 +207,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         localized: String(
           localized: "settings.search.tab.dictationPreview",
           defaultValue: "preview, timing, pace, typing, cadence, overlay",
-          comment:
-            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
-        ))
-    case .dictationHandsFree:
-      settingsSearchTerms(
-        localized: String(
-          localized: "settings.search.tab.dictationHandsFree",
-          defaultValue: "hands-free, silence, toggle, epoch",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))

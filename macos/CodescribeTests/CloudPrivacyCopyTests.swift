@@ -3,63 +3,124 @@ import XCTest
 @testable import Codescribe
 
 /// Pins the cloud-privacy settings copy to the contract the Rust core
-/// enforces (config::cloud_asr + asr_session::consent). The copy is a promise
-/// surface: if it drifts from the enforced behavior — consent-gated egress,
-/// Apple-only fallback, no vendor keys, content-free telemetry — these tests
-/// are the tripwire.
+/// enforces (`core/config/cloud_asr.rs`, `core/asr_session/consent.rs`,
+/// `core/asr_session/cloud.rs`, `core/config/keychain.rs`,
+/// `bridge/src/recording.rs`). The copy is a promise surface: these tests
+/// guard the promises, not the sentences, so the wording can be rewritten
+/// while the enforced behavior stays described truthfully.
 @MainActor
 final class CloudPrivacyCopyTests: XCTestCase {
-  /// The copy states the explicit-consent contract for audio egress.
-  func testCopyStatesExplicitConsentBeforeEgress() {
-    XCTAssertTrue(CloudPrivacyCopy.intro.contains("only after you explicitly allow it"))
-    XCTAssertTrue(CloudPrivacyCopy.modeCloud.contains("explicit consent"))
-  }
-
-  /// All three product modes are named, in the canonical order.
-  func testCopyNamesAllThreeModes() {
-    XCTAssertTrue(CloudPrivacyCopy.modeAppleOnly.hasPrefix("Apple only"))
-    XCTAssertTrue(CloudPrivacyCopy.modeCloud.hasPrefix("Cloud"))
-    XCTAssertTrue(CloudPrivacyCopy.modeLocalPower.hasPrefix("Local power"))
-    XCTAssertEqual(CloudPrivacyCopy.lines.count, 6)
-    XCTAssertEqual(
-      CloudPrivacyCopy.lines[1...3],
-      [
-        CloudPrivacyCopy.modeAppleOnly,
-        CloudPrivacyCopy.modeCloud,
-        CloudPrivacyCopy.modeLocalPower,
-      ]
-    )
-  }
-
-  /// The refusal shape is spelled out: Apple + dictionary, and explicitly
-  /// no local model as a hidden substitute.
-  func testCopyStatesAppleOnlyFallbackWithoutHiddenLocalLoad() {
-    XCTAssertTrue(CloudPrivacyCopy.consentFallback.contains("Cloud never arms"))
-    XCTAssertTrue(CloudPrivacyCopy.consentFallback.contains("no local model is loaded"))
-  }
-
-  /// Cloud copy stays provider-neutral (the vendor lives behind the
-  /// Libraxis gateway) and states that no vendor keys are stored.
-  func testCloudCopyIsProviderNeutralAndKeyFree() {
-    XCTAssertTrue(CloudPrivacyCopy.modeCloud.contains("Libraxis gateway"))
-    XCTAssertTrue(CloudPrivacyCopy.modeCloud.contains("no vendor keys"))
-    let vendors = [
-      "OpenAI", "Deepgram", "AssemblyAI", "Google", "Azure", "Speechmatics", "Groq",
-    ]
-    for line in CloudPrivacyCopy.lines {
-      for vendor in vendors {
-        XCTAssertFalse(
-          line.contains(vendor),
-          "privacy copy must not name a cloud vendor: \(vendor)"
-        )
+  /// Every rendered line is non-empty and every block is headed, so a block
+  /// cannot ship as an unlabelled wall of text.
+  func testBlocksAreHeadedAndNonEmpty() {
+    XCTAssertFalse(CloudPrivacyCopy.blocks.isEmpty)
+    for block in CloudPrivacyCopy.blocks {
+      XCTAssertFalse(block.heading.isEmpty, "block \(block.id) needs a heading")
+      XCTAssertFalse(block.lines.isEmpty, "block \(block.id) needs at least one line")
+      for line in block.lines {
+        XCTAssertFalse(line.isEmpty, "block \(block.id) carries an empty line")
       }
     }
   }
 
-  /// The telemetry promise is bounded exactly like the typed core telemetry:
-  /// identifiers and counters, never audio or transcript content.
-  /// The picker is clickable and writes the promoted consent + mode keys.
-  /// Copy stays; this pins that Cloud is not display-only prose.
+  /// Cloud audio egress is consent-gated, and the copy says the consent is
+  /// explicit rather than implied by picking a mode.
+  func testCopyStatesConsentGatesCloudAudioEgress() {
+    XCTAssertTrue(
+      CloudPrivacyCopy.withoutConsent.localizedCaseInsensitiveContains("without your consent"),
+      "the refusal line must name the missing consent as the cause")
+    XCTAssertTrue(
+      CloudPrivacyCopy.consentIsNotLiveEgress.localizedCaseInsensitiveContains("cloud mode"),
+      "the egress condition must name the mode that arms it")
+  }
+
+  /// The stored consent record is a row of its own, and the copy denies the
+  /// reading that a stored grant means audio is leaving now.
+  func testConsentIsShownSeparatelyFromTheSelectedMode() {
+    XCTAssertNotEqual(CloudPrivacyCopy.currentModeLabel, CloudPrivacyCopy.savedConsentLabel)
+    XCTAssertFalse(CloudPrivacyCopy.currentModeLabel.isEmpty)
+    XCTAssertFalse(CloudPrivacyCopy.savedConsentLabel.isEmpty)
+    XCTAssertNotEqual(CloudPrivacyCopy.consentGranted, CloudPrivacyCopy.consentNotGranted)
+    XCTAssertTrue(
+      CloudPrivacyCopy.consentIsNotLiveEgress.localizedCaseInsensitiveContains("does not mean"),
+      "a saved grant must be separated from live egress in words, not only in layout")
+  }
+
+  /// A refusal resolves to Apple on-device plus the dictionary, and the copy
+  /// rules out a local model loaded as a silent substitute.
+  func testRefusalResolvesToAppleOnDeviceWithoutLoadingLocalWeights() {
+    let line = CloudPrivacyCopy.withoutConsent
+    XCTAssertTrue(line.localizedCaseInsensitiveContains("Cloud never arms"))
+    XCTAssertTrue(line.localizedCaseInsensitiveContains("Apple on-device"))
+    XCTAssertTrue(line.localizedCaseInsensitiveContains("dictionary"))
+    XCTAssertTrue(
+      line.localizedCaseInsensitiveContains("no local model is loaded"),
+      "the copy must deny the hidden local substitution")
+  }
+
+  /// Choosing the local lane is not an install, so the copy must not promise
+  /// that picking Local power downloads weights.
+  func testLocalPowerSelectionIsNotDescribedAsADownload() {
+    XCTAssertTrue(
+      CloudPrivacyCopy.localPowerInstall.localizedCaseInsensitiveContains("does not download"),
+      "the copy must separate choosing the lane from installing the model")
+  }
+
+  /// Both egress surfaces are named: the live Cloud mode session and the
+  /// explicit re-transcription of a finished recording, which does not run
+  /// through the mode picker.
+  func testEgressNamesBothCloudModeAndExplicitRetranscription() {
+    let audio = CloudPrivacyCopy.egressAudio
+    XCTAssertTrue(audio.localizedCaseInsensitiveContains("Cloud mode"))
+    XCTAssertTrue(
+      audio.localizedCaseInsensitiveContains("re-transcription"),
+      "the second audio egress must be named, not folded into Cloud mode")
+    XCTAssertTrue(
+      CloudPrivacyCopy.egressText.localizedCaseInsensitiveContains("AI requests"),
+      "text egress belongs to configured AI providers")
+  }
+
+  /// Telemetry is bounded exactly like the typed core telemetry: identifiers
+  /// and counters, never audio or transcript content.
+  func testTelemetryCopyExcludesAudioAndTranscriptText() {
+    let line = CloudPrivacyCopy.diagnostics
+    XCTAssertTrue(line.localizedCaseInsensitiveContains("Never audio"))
+    XCTAssertTrue(line.localizedCaseInsensitiveContains("never transcript text"))
+    for field in ["identifiers", "counts", "seconds of audio", "error"] {
+      XCTAssertTrue(
+        line.localizedCaseInsensitiveContains(field),
+        "diagnostics copy must enumerate the recorded field: \(field)")
+    }
+  }
+
+  /// Keys the user configures are Keychain items, and the no-vendor-key
+  /// promise stays restricted to the gateway architecture.
+  func testKeyCopyNamesTheKeychainAndBoundsTheGatewayPromise() {
+    let line = CloudPrivacyCopy.apiKeys
+    XCTAssertTrue(line.localizedCaseInsensitiveContains("macOS Keychain"))
+    XCTAssertTrue(line.localizedCaseInsensitiveContains("Libraxis gateway"))
+    if let keyFree = line.range(of: "no vendor key", options: .caseInsensitive) {
+      XCTAssertTrue(
+        line[keyFree.upperBound...].localizedCaseInsensitiveContains("Libraxis gateway"),
+        "a no-vendor-key claim must be bounded to the gateway lane that earns it")
+    }
+  }
+
+  /// The copy stays provider-neutral: the vendor lives behind the gateway.
+  func testCopyNeverNamesACloudVendor() {
+    let vendors = ["OpenAI", "Deepgram", "AssemblyAI", "Google", "Azure", "Speechmatics", "Groq"]
+    var lines = CloudPrivacyCopy.blocks.flatMap(\.lines)
+    lines.append(CloudPrivacyCopy.consentIsNotLiveEgress)
+    for line in lines {
+      for vendor in vendors {
+        XCTAssertFalse(
+          line.contains(vendor), "privacy copy must not name a cloud vendor: \(vendor)")
+      }
+    }
+  }
+
+  /// Selecting Cloud on the Engine picker is the explicit grant: it writes the
+  /// consent record and the mode together. The copy above describes this write.
   func testPickerPersistsCloudOnlyAfterExplicitGrant() {
     var writes: [(String, String)] = []
     var persisted = CsSettings.sample
@@ -87,14 +148,29 @@ final class CloudPrivacyCopyTests: XCTestCase {
     XCTAssertEqual(model.asrModeId, "cloud")
   }
 
-  func testTelemetryCopyExcludesContent() {
-    XCTAssertTrue(CloudPrivacyCopy.telemetry.contains("Never audio"))
-    XCTAssertTrue(CloudPrivacyCopy.telemetry.contains("never transcript text"))
-    for field in ["latency", "bytes", "error", "model"] {
-      XCTAssertTrue(
-        CloudPrivacyCopy.telemetry.contains(field),
-        "telemetry copy must enumerate the allowed field: \(field)"
-      )
-    }
+  /// The status rows render the live mode label and a consent state that
+  /// tracks the stored record, so neither row can go stale against the other.
+  func testStatusRowValuesTrackTheStoredRecord() {
+    var withoutRecord = CsSettings.sample
+    withoutRecord.asrMode = nil
+    withoutRecord.cloudConsent = nil
+    let plain = SettingsViewModel(
+      engine: MockSettingsEngine(settingsLoader: { withoutRecord }),
+      permissionProbe: MockPermissionProbe()
+    )
+    XCTAssertFalse(plain.cloudConsentGranted)
+    XCTAssertFalse(plain.asrModeLabel.isEmpty)
+
+    var withRecord = withoutRecord
+    withRecord.cloudConsent = "granted"
+    let granted = SettingsViewModel(
+      engine: MockSettingsEngine(settingsLoader: { withRecord }),
+      permissionProbe: MockPermissionProbe()
+    )
+    XCTAssertTrue(granted.cloudConsentGranted)
+    XCTAssertEqual(granted.asrModeId, "apple_only")
+    XCTAssertEqual(
+      granted.asrModeLabel, plain.asrModeLabel,
+      "a granted record alone does not move the lane to Cloud")
   }
 }

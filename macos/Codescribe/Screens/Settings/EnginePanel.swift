@@ -4,8 +4,8 @@ import SwiftUI
 // concern. The Engine tab shows the live STT truth (read-only rows sourced from
 // the CsSettings snapshot, not hardcoded) and the engine controls; the other
 // tabs used to be collapsibles stacked under it. Editable owners: STT/layered
-// engine controls, preview timing, and the hands-free silence window — all
-// persisted through the promoted-key config router.
+// engine controls and preview timing — both persisted through the promoted-key
+// config router. The raw recognition timings live on the Lab desk.
 
 struct EnginePanel: View {
   @ObservedObject var model: SettingsViewModel
@@ -17,8 +17,6 @@ struct EnginePanel: View {
         DictationWhisperModelTab(model: model)
       case .dictationPreview:
         DictationPreviewTimingTab(model: model)
-      case .dictationHandsFree:
-        DictationHandsFreeTab(model: model)
       case .dictationPrivacy:
         DictationCloudPrivacyTab(model: model)
       case .dictationPermissions:
