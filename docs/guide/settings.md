@@ -151,22 +151,25 @@ refused gesture is named and its picker snaps back to the gesture in effect. A
 binding present in `settings.json` is still not proof that the gesture fires —
 see **Settings picker vs routed combinations** in `docs/HOTKEYS_CONTRACT.md`.
 
-**Conflicts** and **Notes** are separate. A conflict blocks the save; a note
-does not. The macOS Fn/Globe configuration message is a note: it says Codescribe
-may intercept the short press while dictation runs, and explicitly that it does
-not block saving. Both carry the technical identifier that came across the
-bridge under the sentence.
+**Conflicts** and notes are separate. A conflict blocks the save and sits in a
+coloured card above the Save button; a note does not block and reads as a plain
+secondary footnote under it. The macOS Fn configuration message is a note: it
+says Codescribe may intercept the short press while dictation runs, and
+explicitly that it does not block saving. The technical identifier that came
+across the bridge is in the row's tooltip, not on screen.
 
 **Dictation context** is its own section, below the gestures. Shift or Command
 during an already-started Fn hold attaches the selected text; it does not switch
 the take to the Agent. **Arm with** chooses Shift (default) or Command. The
 Fn+Shift-from-idle timing rules sit in the row's tooltip.
 
-**Extra gestures** holds the three input surfaces: **Agent channel**
-(`Ctrl + digit`, or `Fn + digit`; Command is not offered), **Tap Fn to dictate**
-(one tap starts, the next stops, a longer hold records only while held — set the
-macOS Fn key action to _Do Nothing_) and **Middle mouse acts as Fn** (whose
-ordinary click can still reach the app in front).
+**Extra gestures** holds the three input surfaces, each described in two
+sentences with the caveats in the row's tooltip: **Agent channel**
+(`Ctrl + digit`, or `Fn + digit`; the tooltip explains why Command is not
+offered), **Tap Fn to dictate** (one tap starts, the next stops, a longer hold
+records only while held; the tooltip asks to set the macOS Fn key action to
+_Do Nothing_) and **Middle mouse acts as Fn** (whose ordinary click can still
+reach the app in front). The Fn gesture is labelled plainly as **Hold Fn**.
 
 **Automatic paste** keeps **Safe**, **Comfort** and **Off**, with the picker on
 its own full-width row and only the selected mode explained underneath. The
