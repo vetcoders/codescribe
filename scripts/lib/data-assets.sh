@@ -71,7 +71,7 @@ data_assets_dir() {
       printf '%s\n' "$dir"
       return 0
     fi
-  done < <(data_assets_candidates)
+  done <<< "$(data_assets_candidates)"
   printf '%s\n' "$last"
 }
 
@@ -98,7 +98,7 @@ resolve_data_asset() {
       printf '%s\n' "$dir/$base"
       return 0
     fi
-  done < <(data_assets_candidates)
+  done <<< "$(data_assets_candidates)"
 
   {
     printf 'fixture not found: %s\n' "$wanted"
