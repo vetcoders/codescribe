@@ -1725,17 +1725,23 @@ final class SettingsTruthTests: XCTestCase {
   /// The chips under the template are real editing controls: each appends its
   /// field through the persisted write, and an unknown field is refused.
   func testTemplateFieldChipAppendsThroughThePersistedWrite() {
+    // Like settings.json, the mock serves back the template it was handed.
+    var stored = CsSettings.sample
+    stored.transcriptTagTemplate = "<codescribe lang=\""
     var writes: [(key: String, value: String)] = []
-    let engine = MockSettingsEngine(updateConfigObserver: { key, value in
-      writes.append((key, value))
-    })
+    let engine = MockSettingsEngine(
+      settingsLoader: { stored },
+      updateConfigObserver: { key, value in
+        writes.append((key, value))
+        if key == "TRANSCRIPT_TAG_TEMPLATE" { stored.transcriptTagTemplate = value }
+      })
     let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
-    model.setTranscriptTagTemplate("<codescribe lang=\"")
+    XCTAssertEqual(model.settings.transcriptTagTemplate, "<codescribe lang=\"")
 
     model.insertTranscriptTagPlaceholder("{lang}")
     model.insertTranscriptTagPlaceholder("{bogus}")
 
-    XCTAssertEqual(writes.map(\.key), ["TRANSCRIPT_TAG_TEMPLATE", "TRANSCRIPT_TAG_TEMPLATE"])
+    XCTAssertEqual(writes.map(\.key), ["TRANSCRIPT_TAG_TEMPLATE"], "the unknown field writes nothing")
     XCTAssertEqual(writes.last?.value, "<codescribe lang=\"{lang}")
     XCTAssertEqual(model.settings.transcriptTagTemplate, "<codescribe lang=\"{lang}")
   }

@@ -2585,7 +2585,8 @@ final class SettingsViewModel: ObservableObject {
     voiceLabTeachMessage = nil
     // The engine reports every eligible pair it applied, learned before or
     // not; the growth of the flattened rules list is what is actually new.
-    let rulesBefore = customLexiconEntries.count
+    // Read the list from the engine: the panel's copy may not be loaded yet.
+    let rulesBefore = (try? engine.loadLexiconCustomEntries().count) ?? customLexiconEntries.count
     Task { @MainActor [weak self] in
       guard let self else { return }
       do {

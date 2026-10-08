@@ -853,7 +853,7 @@ final class SettingsChromeContractTests: XCTestCase {
   /// Polish. The resets keep their safeguards; only the copy got shorter.
   func testAboutPaneReadsAsTheAppAndItsData() throws {
     let panel = try XCTUnwrap(try settingsSources()["UserPanel.swift"])
-    XCTAssertTrue(panel.contains("String(localized: \"About the app and your data\")"))
+    XCTAssertTrue(panel.contains("String(localized: \"About the app and your data\""))
     XCTAssertTrue(
       panel.contains(
         "\"Check the Codescribe version, where your data lives and the privacy settings.\""))
@@ -861,15 +861,15 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("\"Build timestamp: \\(model.buildInfo.builtAt)\""))
     XCTAssertTrue(panel.contains("configRepairSummary().map(ConfigRepairNotice.init(raw:))"))
     XCTAssertFalse(panel.contains("Text(summary)"), "the raw repair line is no longer the headline")
-    XCTAssertTrue(panel.contains("String(localized: \"App data\")"))
+    XCTAssertTrue(panel.contains("String(localized: \"App data\""))
     XCTAssertTrue(panel.contains("pathRow(String(localized: \"Transcripts\"), model.transcriptsPath)"))
-    XCTAssertTrue(panel.contains("String(localized: \"First dictation confirmation\")"))
+    XCTAssertTrue(panel.contains("String(localized: \"First dictation confirmation\""))
     XCTAssertTrue(panel.contains(".disabled(!availability.serviceEnabled)"))
-    XCTAssertTrue(panel.contains("String(localized: \"Transcript source markers\")"))
+    XCTAssertTrue(panel.contains("String(localized: \"Transcript source markers\""))
     XCTAssertTrue(panel.contains("String(localized: \"Add markers to transcripts\""))
     XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $showingTemplate)"))
     XCTAssertTrue(panel.contains("model.insertTranscriptTagPlaceholder(placeholder)"))
-    XCTAssertTrue(panel.contains("Button(\"Restore default template\")"))
+    XCTAssertTrue(panel.contains("Button(String(localized: \"Restore default template\""))
     XCTAssertTrue(panel.contains("\"Terms of Use and License\""))
     XCTAssertTrue(panel.contains("\"Codescribe documentation\""))
     XCTAssertTrue(
@@ -877,8 +877,8 @@ final class SettingsChromeContractTests: XCTestCase {
         "\"Also reset my base prompts (assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt)\""
       ))
     // Safeguards stay: typed words, both checkboxes, the alerts.
-    XCTAssertTrue(panel.contains("model.resetConfirmationWord"))
-    XCTAssertTrue(panel.contains("model.resetAgentConfirmationWord"))
+    XCTAssertTrue(panel.contains("Type \\(resetConfirmationWord) to continue"))
+    XCTAssertTrue(panel.contains("Type \\(resetAgentConfirmationWord) to continue"))
     XCTAssertTrue(panel.contains("model.resetImpactDescription"))
     XCTAssertTrue(panel.contains("model.resetAgentImpactDescription"))
 
