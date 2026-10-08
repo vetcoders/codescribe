@@ -4,17 +4,6 @@
     "" : {
       "shouldTranslate" : false
     },
-    "%@ — no access (sign in or set %@)" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ — brak dostępu (zaloguj się lub ustaw %2$@)"
-          }
-        }
-      },
-      "comment" : "First placeholder is the provider name, second an environment variable name"
-    },
     "%@\nEndpoint: %@" : {
       "comment" : "Tooltip: probe message, then the endpoint that was probed",
       "localizations" : {
@@ -45,6 +34,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%1$@\nNie udało się w pełni cofnąć zmian. Zachowaj te ścieżki, by móc odzyskać dane:\n%2$@"
+          }
+        }
+      }
+    },
+    "%@ (%@)" : {
+      "comment" : "Engine tab language value: readable language name, then its two-letter code",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ (%2$@)"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ (%2$@)"
           }
         }
       }
@@ -274,23 +280,6 @@
         }
       }
     },
-    "%@ · %@ · identical tokenizer: %@" : {
-      "comment" : "Placeholders: storage state, size on disk, name of the twin model",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "%1$@ · %2$@ · identical tokenizer: %3$@"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ · %2$@ · ten sam tokenizer co %3$@"
-          }
-        }
-      }
-    },
     "%@ · nobody listening" : {
       "comment" : "Channel row; the placeholder is the delivery state of that channel",
       "localizations" : {
@@ -303,6 +292,7 @@
       }
     },
     "%@ — access available" : {
+      "comment" : "Placeholder is the provider name",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -310,8 +300,18 @@
             "value" : "%@ — dostęp dostępny"
           }
         }
-      },
-      "comment" : "Placeholder is the provider name"
+      }
+    },
+    "%@ — no access (sign in or set %@)" : {
+      "comment" : "First placeholder is the provider name, second an environment variable name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ — brak dostępu (zaloguj się lub ustaw %2$@)"
+          }
+        }
+      }
     },
     "%@ — unavailable" : {
       "localizations" : {
@@ -803,6 +803,7 @@
       }
     },
     "%lld folders — native tools synchronized" : {
+      "comment" : "Plural: number of folders the Agent may use",
       "localizations" : {
         "en" : {
           "variations" : {
@@ -825,12 +826,6 @@
         "pl" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld folder — narzędzia natywne zsynchronizowane"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -843,6 +838,12 @@
                   "value" : "%lld folderów — narzędzia natywne zsynchronizowane"
                 }
               },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld folder — narzędzia natywne zsynchronizowane"
+                }
+              },
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -852,8 +853,7 @@
             }
           }
         }
-      },
-      "comment" : "Plural: number of folders the Agent may use"
+      }
     },
     "%lld live rules (variant→canonical) · %lld with correction provenance · %lld store rows." : {
       "localizations" : {
@@ -1085,6 +1085,7 @@
       }
     },
     "%lld native tools" : {
+      "comment" : "Plural: count of native tools",
       "localizations" : {
         "en" : {
           "variations" : {
@@ -1107,12 +1108,6 @@
         "pl" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld narzędzie natywne"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -1125,6 +1120,12 @@
                   "value" : "%lld narzędzi natywnych"
                 }
               },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld narzędzie natywne"
+                }
+              },
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -1134,8 +1135,7 @@
             }
           }
         }
-      },
-      "comment" : "Plural: count of native tools"
+      }
     },
     "%lld of %lld" : {
       "localizations" : {
@@ -1351,6 +1351,7 @@
       }
     },
     "%lld tool sources" : {
+      "comment" : "Plural: native plus MCP servers",
       "localizations" : {
         "en" : {
           "variations" : {
@@ -1373,12 +1374,6 @@
         "pl" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld źródło narzędzi"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -1391,6 +1386,12 @@
                   "value" : "%lld źródeł narzędzi"
                 }
               },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld źródło narzędzi"
+                }
+              },
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -1400,10 +1401,10 @@
             }
           }
         }
-      },
-      "comment" : "Plural: native plus MCP servers"
+      }
     },
     "%lld tools" : {
+      "comment" : "Plural: count of tools",
       "localizations" : {
         "en" : {
           "variations" : {
@@ -1426,12 +1427,6 @@
         "pl" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld narzędzie"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -1444,6 +1439,12 @@
                   "value" : "%lld narzędzi"
                 }
               },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld narzędzie"
+                }
+              },
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -1453,8 +1454,7 @@
             }
           }
         }
-      },
-      "comment" : "Plural: count of tools"
+      }
     },
     "%lld unread replies" : {
       "localizations" : {
@@ -1762,6 +1762,7 @@
       }
     },
     "AICX MCP" : {
+      "comment" : "Diagnostics row label",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -1769,8 +1770,7 @@
             "value" : "AICX MCP"
           }
         }
-      },
-      "comment" : "Diagnostics row label"
+      }
     },
     "API key" : {
       "comment" : "Setup provider API key row label",
@@ -1896,32 +1896,12 @@
         }
       }
     },
-    "Active STT" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aktywny silnik rozpoznawania mowy"
-          }
-        }
-      }
-    },
     "Active configuration details" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Szczegóły aktywnej konfiguracji"
-          }
-        }
-      }
-    },
-    "Active speech engine." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Aktywny silnik rozpoznawania mowy"
           }
         }
       }
@@ -2215,6 +2195,7 @@
       }
     },
     "Agent environment status" : {
+      "comment" : "Settings tab: Diagnostics headline",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -2222,8 +2203,7 @@
             "value" : "Stan środowiska Agenta"
           }
         }
-      },
-      "comment" : "Settings tab: Diagnostics headline"
+      }
     },
     "Agent listening..." : {
       "comment" : "Tray status: the assistive (agent) lane is recording",
@@ -2604,16 +2584,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tylko Apple — rozpoznawanie mowy Apple na tym Macu i Twój słownik. Tryb domyślny, do którego aplikacja wraca po każdym błędzie."
-          }
-        }
-      }
-    },
-    "Apple only: live Apple recognition. Local power: live Apple recognition refined by the on-device Whisper model. Cloud: the cloud provider you agreed to, without local Whisper." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Tylko Apple: rozpoznawanie Apple na żywo. Tryb lokalny: rozpoznawanie Apple na żywo doprecyzowane lokalnym modelem Whisper. Chmura: wybrany dostawca chmurowy po wyrażeniu zgody, bez lokalnego Whispera."
           }
         }
       }
@@ -3068,6 +3038,17 @@
         }
       }
     },
+    "Broken" : {
+      "comment" : "Model storage state: validation failed",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uszkodzony"
+          }
+        }
+      }
+    },
     "Browse and edit the base prompts. Codescribe may add further instructions to them while it runs." : {
       "localizations" : {
         "pl" : {
@@ -3353,6 +3334,7 @@
       }
     },
     "Changes" : {
+      "comment" : "Tool risk class",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3360,8 +3342,7 @@
             "value" : "Zmiany"
           }
         }
-      },
-      "comment" : "Tool risk class"
+      }
     },
     "Changes, processes and network" : {
       "localizations" : {
@@ -3424,6 +3405,28 @@
         }
       }
     },
+    "Check model" : {
+      "comment" : "Whisper tab button: re-read install state, catalog and disk",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdź model"
+          }
+        }
+      }
+    },
+    "Checked at %@" : {
+      "comment" : "Setup provider panel receipt next to Refresh status; the argument is the wall-clock time (HH:MM:SS) the last snapshot landed",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdzono o %@"
+          }
+        }
+      }
+    },
     "Checking acoustic admission…" : {
       "localizations" : {
         "pl" : {
@@ -3450,17 +3453,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdzanie licencji…"
-          }
-        }
-      }
-    },
-    "Checked at %@" : {
-      "comment" : "Setup provider panel receipt next to Refresh status; the argument is the wall-clock time (HH:MM:SS) the last snapshot landed",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdzono o %@"
           }
         }
       }
@@ -3527,6 +3519,17 @@
         }
       }
     },
+    "Checking the model catalog…" : {
+      "comment" : "Whisper tab: catalog not loaded yet",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdzanie katalogu modeli…"
+          }
+        }
+      }
+    },
     "Choose Stop recording or use your recording shortcut to finish this take." : {
       "localizations" : {
         "pl" : {
@@ -3563,6 +3566,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wybierz stałą pozycję na ekranie albo pozwól na swobodne przeciąganie"
+          }
+        }
+      }
+    },
+    "Choose how speech becomes text. Changes apply from the next recording." : {
+      "comment" : "Settings tab blurb: Dictation › Engine",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz, jak mowa zamienia się w tekst. Zmiany obowiązują od następnego nagrania."
           }
         }
       }
@@ -4123,6 +4137,7 @@
       }
     },
     "Configuration error: %@" : {
+      "comment" : "Placeholder is an error message",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -4130,8 +4145,7 @@
             "value" : "Błąd konfiguracji: %@"
           }
         }
-      },
-      "comment" : "Placeholder is an error message"
+      }
     },
     "Configuration present, but no servers defined" : {
       "localizations" : {
@@ -4174,6 +4188,7 @@
       }
     },
     "Configured — agent not started yet (server %@)" : {
+      "comment" : "Placeholder is a server name",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -4181,10 +4196,10 @@
             "value" : "Skonfigurowano — agent nie został jeszcze uruchomiony (serwer %@)"
           }
         }
-      },
-      "comment" : "Placeholder is a server name"
+      }
     },
     "Configured: %lld · Tested: %lld · Issues: %lld" : {
+      "comment" : "MCP summary counts",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -4192,8 +4207,7 @@
             "value" : "Skonfigurowane: %1$lld · Przetestowane: %2$lld · Problemy: %3$lld"
           }
         }
-      },
-      "comment" : "MCP summary counts"
+      }
     },
     "Conflicts" : {
       "localizations" : {
@@ -4350,17 +4364,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kontynuuj tę samą konsultację w kolejnych nagraniach albo rozpocznij nową bez usuwania wcześniejszej historii."
-          }
-        }
-      }
-    },
-    "The download continues in the background when you leave this step or close setup. Check its progress in Settings." : {
-      "comment" : "Whisper download never blocks navigation, closing the wizard or completing setup",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Pobieranie trwa w tle także po przejściu do kolejnego kroku lub zamknięciu konfiguracji. Postęp znajdziesz w Ustawieniach."
           }
         }
       }
@@ -4600,6 +4603,26 @@
         }
       }
     },
+    "Could not complete restoring %@. Check the current source shown above." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się dokończyć przywracania: %@. Sprawdź aktualne źródło pokazane powyżej."
+          }
+        }
+      }
+    },
+    "Could not complete saving %@. Check the current source shown above." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się dokończyć zapisu: %@. Sprawdź aktualne źródło pokazane powyżej."
+          }
+        }
+      }
+    },
     "Could not fetch %@ models. Check the provider under Providers." : {
       "comment" : "The placeholder is the provider name",
       "localizations" : {
@@ -4658,26 +4681,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się ponownie wczytać wątków. Wyświetlana jest poprzednia lista."
-          }
-        }
-      }
-    },
-    "Could not complete restoring %@. Check the current source shown above." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie udało się dokończyć przywracania: %@. Sprawdź aktualne źródło pokazane powyżej."
-          }
-        }
-      }
-    },
-    "Could not complete saving %@. Check the current source shown above." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie udało się dokończyć zapisu: %@. Sprawdź aktualne źródło pokazane powyżej."
           }
         }
       }
@@ -5381,6 +5384,7 @@
       }
     },
     "Destructive" : {
+      "comment" : "Tool risk class",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5388,8 +5392,7 @@
             "value" : "Destrukcyjne"
           }
         }
-      },
-      "comment" : "Tool risk class"
+      }
     },
     "Details" : {
       "localizations" : {
@@ -5401,6 +5404,16 @@
         }
       }
     },
+    "Detected installations and runtime" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wykryte instalacje i runtime"
+          }
+        }
+      }
+    },
     "Detects keyboard shortcuts to start and stop recording. Without it, global recording shortcuts are unavailable." : {
       "comment" : "Why the app asks for the Input Monitoring scope",
       "localizations" : {
@@ -5408,16 +5421,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Wykrywa skróty klawiszowe rozpoczynające i kończące nagrywanie. Bez tego uprawnienia globalne skróty nagrywania są niedostępne."
-          }
-        }
-      }
-    },
-    "Detected installations and runtime" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wykryte instalacje i runtime"
           }
         }
       }
@@ -5631,13 +5634,12 @@
         }
       }
     },
-    "Download the dedicated Whisper model to transcribe speech entirely on your Mac, without configuring cloud providers." : {
-      "comment" : "Explain the benefit of the local transcription model",
+    "Download Whisper" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Pobierz dedykowany model Whisper, aby transkrybować mowę w całości na swoim Macu, bez konfigurowania dostawców chmurowych."
+            "state" : "translated",
+            "value" : "Pobierz model Whisper"
           }
         }
       }
@@ -5660,6 +5662,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pobieranie zakończone, ale model nadal jest niedostępny"
+          }
+        }
+      }
+    },
+    "Download source" : {
+      "comment" : "Model details: Hugging Face repository",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Źródło pobierania"
+          }
+        }
+      }
+    },
+    "Download the dedicated Whisper model to transcribe speech entirely on your Mac, without configuring cloud providers." : {
+      "comment" : "Explain the benefit of the local transcription model",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Pobierz dedykowany model Whisper, aby transkrybować mowę w całości na swoim Macu, bez konfigurowania dostawców chmurowych."
           }
         }
       }
@@ -5890,16 +5914,6 @@
         }
       }
     },
-    "Engine controls" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ustawienia silnika"
-          }
-        }
-      }
-    },
     "Engine not wired yet." : {
       "localizations" : {
         "pl" : {
@@ -6067,6 +6081,7 @@
       }
     },
     "Failed: %@" : {
+      "comment" : "Placeholder is an error message",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -6074,8 +6089,7 @@
             "value" : "Błąd: %@"
           }
         }
-      },
-      "comment" : "Placeholder is an error message"
+      }
     },
     "Favorite" : {
       "localizations" : {
@@ -6786,6 +6800,17 @@
         }
       }
     },
+    "Hugging Face cache" : {
+      "comment" : "Model source",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "pamięć podręczna Hugging Face"
+          }
+        }
+      }
+    },
     "Hugging Face · %@ · %@" : {
       "comment" : "Download source: first placeholder is a repository id, second is approximate disk size",
       "localizations" : {
@@ -6848,16 +6873,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "W odpowiedzi na: %@"
-          }
-        }
-      }
-    },
-    "In use" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "W użyciu"
           }
         }
       }
@@ -6979,6 +6994,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zainstaluj skill"
+          }
+        }
+      }
+    },
+    "Install state" : {
+      "comment" : "Whisper tab row: are the weights on disk",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stan instalacji"
           }
         }
       }
@@ -7242,12 +7268,6 @@
         "pl" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Ostatni test: pomyślny · %lld narzędzie"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -7260,6 +7280,12 @@
                   "value" : "Ostatni test: pomyślny · %lld narzędzi"
                 }
               },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Ostatni test: pomyślny · %lld narzędzie"
+                }
+              },
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -7267,6 +7293,28 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "Last transcription" : {
+      "comment" : "Engine tab section: read-only rows about the last transcription",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ostatnia transkrypcja"
+          }
+        }
+      }
+    },
+    "Last transcription engine" : {
+      "comment" : "Engine tab row: the engine that served the last transcription of this app session",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silnik ostatniej transkrypcji"
           }
         }
       }
@@ -7395,6 +7443,17 @@
         }
       }
     },
+    "Live Apple recognition, refined by the local Whisper model." : {
+      "comment" : "ASR mode description: Local power",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozpoznawanie Apple na żywo z lokalnym doprecyzowaniem Whispera."
+          }
+        }
+      }
+    },
     "Live Whisper refinement" : {
       "localizations" : {
         "pl" : {
@@ -7455,6 +7514,17 @@
         }
       }
     },
+    "Live recognition by Apple." : {
+      "comment" : "ASR mode description: Apple only",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozpoznawanie na żywo przez Apple."
+          }
+        }
+      }
+    },
     "Live transcript" : {
       "localizations" : {
         "pl" : {
@@ -7487,18 +7557,8 @@
         }
       }
     },
-    "Live — %@ (server %@)" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Działa — %1$@ (serwer %2$@)"
-          }
-        }
-      },
-      "comment" : "First placeholder is a tool count phrase, second a server name"
-    },
     "Live — %@" : {
+      "comment" : "Placeholder is a tool count phrase",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7506,8 +7566,18 @@
             "value" : "Działa — %@"
           }
         }
-      },
-      "comment" : "Placeholder is a tool count phrase"
+      }
+    },
+    "Live — %@ (server %@)" : {
+      "comment" : "First placeholder is a tool count phrase, second a server name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Działa — %1$@ (serwer %2$@)"
+          }
+        }
+      }
     },
     "Load helper text into the correction editor without saving" : {
       "localizations" : {
@@ -7515,6 +7585,55 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wczytaj tekst z procesu pomocnicznego do edytora poprawek bez zapisywania"
+          }
+        }
+      }
+    },
+    "Loaded in memory" : {
+      "comment" : "Model details: resident weights\nWhisper tab: the selected model is resident",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Załadowany do pamięci"
+          }
+        }
+      }
+    },
+    "Loaded in memory: %@ · next recording loads %@" : {
+      "comment" : "Whisper tab: resident model differs from the next load. Placeholders: two model names",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Loaded in memory: %1$@ · next recording loads %2$@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "W pamięci: %1$@ · następne nagranie załaduje %2$@"
+          }
+        }
+      }
+    },
+    "Loads from" : {
+      "comment" : "Model details: path",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ładowany z"
+          }
+        }
+      }
+    },
+    "Local FP16 model (%@) for direct Whisper or Local power refinement." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lokalny model FP16 (%@) dla silnika Whisper i doprecyzowania w trybie lokalnym."
           }
         }
       }
@@ -7529,12 +7648,13 @@
         }
       }
     },
-    "Local Whisper model." : {
+    "Local Whisper model" : {
+      "comment" : "Engine tab row: the on-device model Local power loads\nSettings tab headline: Dictation › Whisper",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Lokalny model Whisper."
+            "value" : "Lokalny model Whisper"
           }
         }
       }
@@ -7555,17 +7675,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dane lokalne"
-          }
-        }
-      }
-    },
-    "Transcription on your Mac" : {
-      "comment" : "Setup chapter heading for fully local transcription",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Transkrypcja na Twoim Macu"
           }
         }
       }
@@ -7602,6 +7711,7 @@
       }
     },
     "Loctree MCP" : {
+      "comment" : "Diagnostics row label",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7609,8 +7719,7 @@
             "value" : "Loctree MCP"
           }
         }
-      },
-      "comment" : "Diagnostics row label"
+      }
     },
     "Low confidence" : {
       "comment" : "Dictionary badge: the engine was unsure here",
@@ -7624,6 +7733,7 @@
       }
     },
     "MCP configuration" : {
+      "comment" : "Diagnostics row label",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7631,8 +7741,7 @@
             "value" : "Konfiguracja MCP"
           }
         }
-      },
-      "comment" : "Diagnostics row label"
+      }
     },
     "MCP servers" : {
       "localizations" : {
@@ -7931,6 +8040,7 @@
       }
     },
     "Mismatch — %@" : {
+      "comment" : "Placeholder lists both folder sets",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7938,8 +8048,7 @@
             "value" : "Rozjazd — %@"
           }
         }
-      },
-      "comment" : "Placeholder lists both folder sets"
+      }
     },
     "Missing {text}; delivered transcript will be appended after the template." : {
       "comment" : "{text} is a template token the user types — keep it verbatim",
@@ -7983,7 +8092,19 @@
         }
       }
     },
+    "Model details" : {
+      "comment" : "Whisper tab disclosure: paths, sources and raw errors",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szczegóły modelu"
+          }
+        }
+      }
+    },
     "Model provider" : {
+      "comment" : "Diagnostics row label",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7991,8 +8112,7 @@
             "value" : "Dostawca modelu"
           }
         }
-      },
-      "comment" : "Diagnostics row label"
+      }
     },
     "Models unavailable" : {
       "localizations" : {
@@ -8297,6 +8417,7 @@
       }
     },
     "Native" : {
+      "comment" : "Tool source: built-in tools",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8304,13 +8425,13 @@
             "value" : "Natywne"
           }
         }
-      },
-      "comment" : "Tool source: built-in tools"
+      }
     },
     "Native container" : {
       "shouldTranslate" : false
     },
     "Native tools" : {
+      "comment" : "Diagnostics row label",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8318,10 +8439,10 @@
             "value" : "Narzędzia natywne"
           }
         }
-      },
-      "comment" : "Diagnostics row label"
+      }
     },
     "Native: %lld · Enhanced: %lld · Unavailable: %lld" : {
+      "comment" : "Capability summary counts",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8329,10 +8450,10 @@
             "value" : "Natywne: %1$lld · Rozszerzone: %2$lld · Niedostępne: %3$lld"
           }
         }
-      },
-      "comment" : "Capability summary counts"
+      }
     },
     "Network" : {
+      "comment" : "Tool risk class",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8340,8 +8461,7 @@
             "value" : "Sieć"
           }
         }
-      },
-      "comment" : "Tool risk class"
+      }
     },
     "Network error" : {
       "localizations" : {
@@ -8410,6 +8530,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Następny"
+          }
+        }
+      }
+    },
+    "Next recording loads" : {
+      "comment" : "Model details: resolved path",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Następne nagranie załaduje"
           }
         }
       }
@@ -8790,6 +8921,17 @@
         }
       }
     },
+    "No transcription in this app session" : {
+      "comment" : "Last transcription engine row before the first transcription of this launch",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak transkrypcji w tej sesji aplikacji"
+          }
+        }
+      }
+    },
     "No transcripts yet" : {
       "localizations" : {
         "pl" : {
@@ -8843,6 +8985,17 @@
         }
       }
     },
+    "Not loaded yet · loads on the next recording" : {
+      "comment" : "Whisper tab: no resident weights",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jeszcze nie załadowany · załaduje się przy następnym nagraniu"
+          }
+        }
+      }
+    },
     "Not ready" : {
       "localizations" : {
         "pl" : {
@@ -8874,6 +9027,7 @@
       }
     },
     "Not ready — no provider access (sign in or set %@)" : {
+      "comment" : "Placeholder is an environment variable name",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8881,8 +9035,7 @@
             "value" : "Niegotowy — brak dostępu do dostawcy (zaloguj się lub ustaw %@)"
           }
         }
-      },
-      "comment" : "Placeholder is an environment variable name"
+      }
     },
     "Not selected" : {
       "comment" : "VoiceOver value for a language not chosen",
@@ -8917,23 +9070,12 @@
       }
     },
     "Not tested" : {
+      "comment" : "MCP server test state",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie sprawdzono"
-          }
-        }
-      },
-      "comment" : "MCP server test state"
-    },
-    "Not yet served" : {
-      "comment" : "Active STT row before the first transcription of this launch",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Jeszcze nie wykonano transkrypcji"
           }
         }
       }
@@ -8980,6 +9122,7 @@
       }
     },
     "OK — %lld tools" : {
+      "comment" : "Plural: MCP server test result",
       "localizations" : {
         "en" : {
           "variations" : {
@@ -9002,12 +9145,6 @@
         "pl" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "OK — %lld narzędzie"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -9020,6 +9157,12 @@
                   "value" : "OK — %lld narzędzi"
                 }
               },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "OK — %lld narzędzie"
+                }
+              },
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -9029,8 +9172,7 @@
             }
           }
         }
-      },
-      "comment" : "Plural: MCP server test result"
+      }
     },
     "Off" : {
       "comment" : "Toggle state",
@@ -9327,17 +9469,6 @@
         }
       }
     },
-    "Whisper model for local dictation" : {
-      "comment" : "Heading for the model that enables fully local transcription",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Model Whisper do lokalnego dyktowania"
-          }
-        }
-      }
-    },
     "Optional override (settings.json) — empty restores the shipped default." : {
       "localizations" : {
         "pl" : {
@@ -9431,7 +9562,19 @@
         }
       }
     },
+    "Other detected models" : {
+      "comment" : "Whisper tab section: models found on disk that cannot be selected",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inne wykryte modele"
+          }
+        }
+      }
+    },
     "Overall status" : {
+      "comment" : "Diagnostics row label",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9439,8 +9582,7 @@
             "value" : "Stan ogólny"
           }
         }
-      },
-      "comment" : "Diagnostics row label"
+      }
     },
     "Overlay actions" : {
       "localizations" : {
@@ -9473,6 +9615,7 @@
       }
     },
     "PRView integration" : {
+      "comment" : "Diagnostics row label",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9480,8 +9623,7 @@
             "value" : "Integracja PRView"
           }
         }
-      },
-      "comment" : "Diagnostics row label"
+      }
     },
     "Paste after dictation" : {
       "localizations" : {
@@ -9611,6 +9753,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Uprawnienia"
+          }
+        }
+      }
+    },
+    "Pick a model, check its availability and manage the space it takes." : {
+      "comment" : "Settings tab blurb: Dictation › Whisper",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz model, sprawdź jego dostępność i zarządzaj zajmowanym miejscem."
           }
         }
       }
@@ -9917,6 +10070,7 @@
       }
     },
     "Processes" : {
+      "comment" : "Tool risk class",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9924,8 +10078,7 @@
             "value" : "Procesy"
           }
         }
-      },
-      "comment" : "Tool risk class"
+      }
     },
     "Processing..." : {
       "comment" : "Tray status: transcribing",
@@ -10243,6 +10396,7 @@
       }
     },
     "Read data" : {
+      "comment" : "Tool risk class",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10250,8 +10404,7 @@
             "value" : "Odczyt danych"
           }
         }
-      },
-      "comment" : "Tool risk class"
+      }
     },
     "Read error" : {
       "localizations" : {
@@ -10314,7 +10467,7 @@
       }
     },
     "Ready" : {
-      "comment" : "Menu bar tooltip: ready to record",
+      "comment" : "Menu bar tooltip: ready to record\nModel storage state: loader accepts it",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10389,6 +10542,7 @@
       }
     },
     "Ready — %@ configured, access available, %@" : {
+      "comment" : "Diagnostics verdict; first placeholder is the provider name, second a tool count phrase",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10396,8 +10550,7 @@
             "value" : "Gotowy — skonfigurowano %1$@, dostęp dostępny, %2$@"
           }
         }
-      },
-      "comment" : "Diagnostics verdict; first placeholder is the provider name, second a tool count phrase"
+      }
     },
     "Received" : {
       "localizations" : {
@@ -10436,6 +10589,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Język rozpoznawania"
+          }
+        }
+      }
+    },
+    "Recognition mode" : {
+      "comment" : "Engine tab section: the mode picker",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tryb rozpoznawania"
           }
         }
       }
@@ -10718,6 +10882,17 @@
         }
       }
     },
+    "Refused" : {
+      "comment" : "Model storage state: loader refuses the format",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odrzucony"
+          }
+        }
+      }
+    },
     "Relaxed" : {
       "localizations" : {
         "pl" : {
@@ -10729,6 +10904,7 @@
       }
     },
     "Remove" : {
+      "comment" : "Button label: remove an MCP server",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10736,8 +10912,7 @@
             "value" : "Usuń"
           }
         }
-      },
-      "comment" : "Button label: remove an MCP server"
+      }
     },
     "Remove %@?" : {
       "localizations" : {
@@ -11031,6 +11206,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wymagane do zatwierdzania wypowiedzi. Zapisywane w ustawieniach Codescribe."
+          }
+        }
+      }
+    },
+    "Required local FP16 model (%@). Missing or invalid weights keep Local power not ready." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wymagany lokalny model FP16 (%@). Bez poprawnych wag tryb lokalny nie jest gotowy."
           }
         }
       }
@@ -11399,36 +11584,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Używane urządzenie: %@"
-          }
-        }
-      }
-    },
-    "Runtime rows reflect the live engine — changes apply on the next recording session." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Informacje o stanie pokazują aktualnie używany silnik. Zmiany zaczną obowiązywać przy następnym nagraniu."
-          }
-        }
-      }
-    },
-    "Runtime truth · read-only rows" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bieżący stan · tylko do odczytu"
-          }
-        }
-      }
-    },
-    "STT model (preference)" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Model rozpoznawania mowy (preferowany)"
           }
         }
       }
@@ -11904,12 +12059,23 @@
       }
     },
     "Selected" : {
-      "comment" : "VoiceOver value for a chosen language",
+      "comment" : "Model details: the saved selection\nModel storage state: the runtime loads it\nVoiceOver value for a chosen language",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wybrano"
+          }
+        }
+      }
+    },
+    "Selected model" : {
+      "comment" : "Whisper tab section: the picker and its state",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybrany model"
           }
         }
       }
@@ -12812,6 +12978,17 @@
         }
       }
     },
+    "Speech recognition" : {
+      "comment" : "Settings tab headline: Dictation › Engine",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozpoznawanie mowy"
+          }
+        }
+      }
+    },
     "Speech refused" : {
       "localizations" : {
         "en" : {
@@ -12876,6 +13053,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Odtworzono"
+          }
+        }
+      }
+    },
+    "Spoken language" : {
+      "comment" : "Engine tab row: the language setting handed to Apple, local Whisper and the cloud engine",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Język mówiony"
           }
         }
       }
@@ -13703,6 +13891,7 @@
       }
     },
     "Testing…" : {
+      "comment" : "MCP server test state",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -13710,8 +13899,7 @@
             "value" : "Sprawdzanie…"
           }
         }
-      },
-      "comment" : "MCP server test state"
+      }
     },
     "Text formatting" : {
       "shouldTranslate" : false
@@ -13829,6 +14017,17 @@
         }
       }
     },
+    "The cloud provider you agreed to." : {
+      "comment" : "ASR mode description: Cloud; choosing it is the consent",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dostawca chmurowy wybrany za Twoją zgodą."
+          }
+        }
+      }
+    },
     "The cloud transcriber was unsure of this word" : {
       "localizations" : {
         "pl" : {
@@ -13885,6 +14084,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się odczytać pliku własnego promptu, dlatego używany jest wbudowany prompt."
+          }
+        }
+      }
+    },
+    "The download continues in the background when you leave this step or close setup. Check its progress in Settings." : {
+      "comment" : "Whisper download never blocks navigation, closing the wizard or completing setup",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Pobieranie trwa w tle także po przejściu do kolejnego kroku lub zamknięciu konfiguracji. Postęp znajdziesz w Ustawieniach."
           }
         }
       }
@@ -13981,6 +14191,17 @@
         }
       }
     },
+    "The local engine does not support quantized (Q8) models." : {
+      "comment" : "Whisper model refusal: quantized weights",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lokalny silnik nie obsługuje modeli skwantyzowanych (Q8)."
+          }
+        }
+      }
+    },
     "The middle mouse button follows the same press, hold, and tap rules as Fn. The click still reaches the frontmost app." : {
       "localizations" : {
         "pl" : {
@@ -14001,12 +14222,35 @@
         }
       }
     },
-    "The on-device model behind the direct Whisper engine and Local power refinement." : {
+    "The model failed validation. See Model details." : {
+      "comment" : "Whisper model refusal: generic",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Model działający na tym Macu, używany przez silnik Whisper i do doprecyzowania transkrypcji w trybie lokalnym."
+            "value" : "Model nie przeszedł weryfikacji. Zobacz Szczegóły modelu."
+          }
+        }
+      }
+    },
+    "The model files are incomplete. See Model details." : {
+      "comment" : "Whisper model refusal: files missing",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pliki modelu są niekompletne. Zobacz Szczegóły modelu."
+          }
+        }
+      }
+    },
+    "The model's tokenizer is invalid. See Model details." : {
+      "comment" : "Whisper model refusal: tokenizer validation failed",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tokenizer modelu jest nieprawidłowy. Zobacz Szczegóły modelu."
           }
         }
       }
@@ -14037,6 +14281,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ponownie transkrybowane nagranie nie jest już bieżące"
+          }
+        }
+      }
+    },
+    "The selected model cannot be removed." : {
+      "comment" : "Whisper tab storage row: why Remove is disabled",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybranego modelu nie można usunąć."
+          }
+        }
+      }
+    },
+    "The selected model cannot be resolved; the next recording has no model to load." : {
+      "comment" : "Whisper tab: resolution failed",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie można odnaleźć wybranego modelu; następne nagranie nie ma modelu do załadowania."
           }
         }
       }
@@ -14165,12 +14431,12 @@
         }
       }
     },
-    "This build embeds Whisper — the on-disk model selection is ignored." : {
+    "This build embeds Whisper. The on-disk model selection is ignored." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ta wersja aplikacji korzysta z wbudowanego modelu Whisper. Nie używa modelu z dysku."
+            "value" : "Ta wersja aplikacji korzysta z wbudowanego modelu Whisper. Wybór modelu z dysku jest pomijany."
           }
         }
       }
@@ -14566,6 +14832,17 @@
         }
       }
     },
+    "Transcription on your Mac" : {
+      "comment" : "Setup chapter heading for fully local transcription",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Transkrypcja na Twoim Macu"
+          }
+        }
+      }
+    },
     "Transcription unavailable" : {
       "comment" : "Settings health footer, sentence case",
       "localizations" : {
@@ -14692,6 +14969,7 @@
       }
     },
     "Unclassified" : {
+      "comment" : "Tool risk class",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -14699,8 +14977,7 @@
             "value" : "Niesklasyfikowane"
           }
         }
-      },
-      "comment" : "Tool risk class"
+      }
     },
     "Unclassified tools" : {
       "localizations" : {
@@ -15012,6 +15289,7 @@
       }
     },
     "VibeCrafted runtime" : {
+      "comment" : "Diagnostics row label",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -15019,8 +15297,7 @@
             "value" : "Runtime VibeCrafted"
           }
         }
-      },
-      "comment" : "Diagnostics row label"
+      }
     },
     "View conversation without changing the microphone" : {
       "localizations" : {
@@ -15429,16 +15706,6 @@
         }
       }
     },
-    "Whisper language" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Język modelu Whisper"
-          }
-        }
-      }
-    },
     "Whisper model" : {
       "comment" : "Shared Whisper download control heading",
       "localizations" : {
@@ -15446,6 +15713,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Model Whisper"
+          }
+        }
+      }
+    },
+    "Whisper model for local dictation" : {
+      "comment" : "Heading for the model that enables fully local transcription",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Model Whisper do lokalnego dyktowania"
           }
         }
       }
@@ -15998,6 +16276,17 @@
         }
       }
     },
+    "configured path" : {
+      "comment" : "Model source",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "skonfigurowana ścieżka"
+          }
+        }
+      }
+    },
     "context" : {
       "localizations" : {
         "pl" : {
@@ -16167,6 +16456,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "adres API: %@"
+          }
+        }
+      }
+    },
+    "environment override" : {
+      "comment" : "Model source",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "nadpisanie przez zmienną środowiskową"
           }
         }
       }
@@ -16534,6 +16834,17 @@
         }
       }
     },
+    "identical tokenizer: %@" : {
+      "comment" : "Whisper tab storage row. Placeholder: name of the twin model",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ten sam tokenizer co %@"
+          }
+        }
+      }
+    },
     "incomplete coverage" : {
       "localizations" : {
         "pl" : {
@@ -16690,17 +17001,6 @@
         }
       }
     },
-    "loads on next take" : {
-      "comment" : "Whisper model row: no weights resident; the next take loads the selected model",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Załaduje się przy następnym nagraniu"
-          }
-        }
-      }
-    },
     "local Whisper HQ" : {
       "comment" : "Retranscribe pass: the local engine",
       "localizations" : {
@@ -16756,6 +17056,7 @@
       }
     },
     "mcp.json could not be read (optional): %@" : {
+      "comment" : "Placeholder is an error message",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -16763,8 +17064,7 @@
             "value" : "Nie udało się odczytać mcp.json (opcjonalne): %@"
           }
         }
-      },
-      "comment" : "Placeholder is an error message"
+      }
     },
     "mcp.server.disabled" : {
       "comment" : "MCP server state",
@@ -16828,6 +17128,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "model %@"
+          }
+        }
+      }
+    },
+    "models folder" : {
+      "comment" : "Model source",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "folder modeli"
           }
         }
       }
@@ -16909,6 +17220,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "jeszcze nie wczytano"
+          }
+        }
+      }
+    },
+    "nothing" : {
+      "comment" : "Model details: no resident weights",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "nic"
           }
         }
       }
@@ -17697,6 +18019,7 @@
       }
     },
     "source: %@" : {
+      "comment" : "Placeholder is an identifier",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -17704,8 +18027,7 @@
             "value" : "źródło: %@"
           }
         }
-      },
-      "comment" : "Placeholder is an identifier"
+      }
     },
     "status" : {
       "comment" : "Tool inspect field",
@@ -17907,6 +18229,7 @@
       }
     },
     "tool: %@ · source: %@" : {
+      "comment" : "Mono detail under a capability row; placeholders are identifiers",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -17914,8 +18237,7 @@
             "value" : "narzędzie: %1$@ · źródło: %2$@"
           }
         }
-      },
-      "comment" : "Mono detail under a capability row; placeholders are identifiers"
+      }
     },
     "tray.keycap.off" : {
       "comment" : "Tray keycap, a few letters wide: this toggle is disabled",
