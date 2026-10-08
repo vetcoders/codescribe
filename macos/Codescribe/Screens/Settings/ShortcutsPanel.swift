@@ -1,13 +1,20 @@
 import SwiftUI
 
 // Shortcuts panel: edit the per-mode trigger gestures (Dictation / Formatting /
-// Assistive). Picker-based on purpose — the binding space is a CLOSED set
+// Assistive) plus the input surfaces and paste policy around them.
+//
+// Picker-based on purpose — the binding space is a CLOSED set
 // (docs/HOTKEYS_CONTRACT.md: Hold Fn/Ctrl/… + Double-tap Ctrl/Option), so a
-// free-form "press keys" recorder would be both harder (hold vs double-tap timing)
-// and wrong (it can't map arbitrary keystrokes into this fixed enum). Conflicts
-// validate inline via the revived shortcut_registry; a save is gated on a clean
-// draft. The hotkey engine seeds at launch and live-reloads on write, so a saved
-// change takes effect on the running CGEventTap without a restart.
+// free-form "press keys" recorder would be both harder (hold vs double-tap
+// timing) and wrong (it can't map arbitrary keystrokes into this fixed enum).
+//
+// Two different save contracts live on this one screen, and the copy says so:
+// the three mode gestures are a DRAFT that needs the explicit Save button,
+// while every other control here writes on change. Conflicts validate inline
+// via the revived shortcut_registry; a save is gated on a clean draft and then
+// confirmed against persisted truth, never against the draft. The hotkey engine
+// seeds at launch and live-reloads on write, so a saved change takes effect on
+// the running CGEventTap without a restart.
 
 struct ShortcutsPanel: View {
   @ObservedObject var model: SettingsViewModel
@@ -25,18 +32,12 @@ struct ShortcutsPanel: View {
         permissionNote.padding(.top, 18)
       }
 
-      bindingRows.padding(.top, CSSpace.lg)
+      modeSection.padding(.top, CSSpace.lg)
+      dictationContextSection.padding(.top, 12)
       inputSurfaceSection.padding(.top, 12)
       pasteModeSection.padding(.top, 12)
-      deferredInsertSection.padding(.top, 12)
+      pasteOnDemandSection.padding(.top, 12)
       badgeLegend.padding(.top, 12)
-
-      if !model.bindingConflicts.isEmpty {
-        conflictList.padding(.top, 16)
-      }
-
-      actions.padding(.top, CSSpace.section)
-      hint.padding(.top, 14)
     }
     .padding(.horizontal, CSSpace.xl)
     .padding(.vertical, CSSpace.section)
@@ -44,14 +45,31 @@ struct ShortcutsPanel: View {
 
   // MARK: Header
 
+  /// The blurb separates the two save contracts instead of claiming that
+  /// everything on the screen persists by itself.
   private var header: some View {
     SettingsPageHeader(
-      String(localized: "Trigger keys."),
-      blurb: String(localized: "One gesture per mode. Changes apply immediately — no restart.")
+      String(localized: "Keyboard shortcuts"),
+      blurb: String(
+        localized:
+          "The three mode gestures are saved with the button below. Every other setting here applies as soon as you change it."
+      )
     )
   }
 
-  // MARK: Per-mode binding rows
+  // MARK: Per-mode gestures, their conflicts and their save
+
+  /// The one draft-and-save island on this screen: three gestures, the blocking
+  /// conflicts that refuse the save, the save itself, and the notes that do not
+  /// block it.
+  private var modeSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      bindingRows
+      if !blockingConflicts.isEmpty { conflictList }
+      saveRow
+      if !informationalNotices.isEmpty { noticeList }
+    }
+  }
 
   private var bindingRows: some View {
     VStack(spacing: 0) {
@@ -68,30 +86,28 @@ struct ShortcutsPanel: View {
   }
 
   private func bindingRow(_ row: CsModeBinding) -> some View {
-    VStack(alignment: .leading, spacing: 11) {
-      HStack(spacing: 12) {
-        VStack(alignment: .leading, spacing: 3) {
-          Text(row.mode.visibleName)
-            .font(CSFont.ui(13.5, .semibold))
-            .foregroundStyle(Color.primary)
-          Text(row.mode.blurb)
-            .font(CSFont.ui(11.5, .medium))
-            .foregroundStyle(Color.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-
-        bindingPicker(row)
+    HStack(spacing: 12) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text(row.mode.visibleName)
+          .font(CSFont.ui(13.5, .semibold))
+          .foregroundStyle(Color.primary)
+        Text(row.mode.blurb)
+          .font(CSFont.ui(11.5, .medium))
+          .foregroundStyle(Color.secondary)
+          .fixedSize(horizontal: false, vertical: true)
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
 
-      if row.mode == .assistive {
-        assistiveModeSplit()
-      }
+      bindingPicker(row)
     }
     .padding(.horizontal, 16)
     .padding(.vertical, 14)
     .background(Color.primary.opacity(0.04))
   }
 
+  /// The pill shows the terse gesture (`2× Left ⌥ (Option)`); VoiceOver reads
+  /// the spelled-out form, so left and right Option stay distinguishable for a
+  /// screen reader that skips key caps.
   private func bindingPicker(_ row: CsModeBinding) -> some View {
     Menu {
       ForEach(model.bindingOptions, id: \.binding) { option in
@@ -104,6 +120,7 @@ struct ShortcutsPanel: View {
             Text(option.binding.visibleName)
           }
         }
+        .accessibilityLabel(Text(option.binding.spokenName))
       }
     } label: {
       HStack(spacing: 8) {
@@ -126,67 +143,159 @@ struct ShortcutsPanel: View {
     .menuStyle(.borderlessButton)
     .menuIndicator(.hidden)
     .fixedSize()
+    .accessibilityLabel(Text(row.mode.visibleName))
+    .accessibilityValue(Text(row.binding.spokenName))
   }
 
-  private func assistiveModeSplit() -> some View {
-    VStack(alignment: .leading, spacing: 7) {
-      assistiveModeVariant(
-        title: "Attach selection",
-        gesture: armGestureLabel,
-        description:
-          "Shift or Command during an already-started Fn hold attaches {selection_N}. It does not start voice chat, hide the overlay, or stop the take. Fn+Shift from idle is dictation, not Assistive."
-      )
-      // Arm modifier is attach-only (default Shift; Cmd alternative).
-      HStack(spacing: 8) {
-        Text("Arm with")
-          .font(CSFont.ui(11, .medium))
-          .foregroundStyle(Color.secondary)
-        Picker("Arm modifier", selection: armModifierBinding) {
-          Text(verbatim: "Shift").tag("shift")
-          Text(verbatim: "Command").tag("cmd")
+  // MARK: Save the mode gestures
+
+  /// Directly under the three gestures, because these two buttons govern only
+  /// those three.
+  private var saveRow: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 12) {
+        Button {
+          model.saveBindings()
+        } label: {
+          Text("Save mode shortcuts")
+            .font(CSFont.ui(12.5, .semibold))
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
+            .foregroundStyle(model.canSaveBindings ? Color.primary : Color.secondary)
+            .background(
+              RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                .fill(
+                  model.canSaveBindings
+                    ? CSColor.terracotta.opacity(0.9)
+                    : Color.primary.opacity(0.06))
+            )
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(maxWidth: 180)
+        .csFocusRing()
+        .disabled(!model.canSaveBindings)
+
+        Button {
+          model.resetBindingsToDefaults()
+        } label: {
+          Text("Restore default mode shortcuts")
+            .font(CSFont.ui(12.5, .semibold))
+            .foregroundStyle(Color.secondary)
+        }
+        .csFocusRing()
+
+        Spacer(minLength: 0)
       }
-      .padding(.top, 2)
+
+      saveStatus
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(CSColor.assistive.opacity(0.08))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(CSColor.assistive.opacity(0.18), lineWidth: 1)
-    )
   }
 
-  private func assistiveModeVariant(
-    title: LocalizedStringKey, gesture: String, description: LocalizedStringKey
-  ) -> some View {
-    HStack(alignment: .top, spacing: 9) {
-      Circle()
-        .fill(CSColor.assistive)
-        .frame(width: 6, height: 6)
-        .padding(.top, 5)
-      VStack(alignment: .leading, spacing: 1) {
-        Text(title)
-          .font(CSFont.ui(11.5, .semibold))
-          .foregroundStyle(CSColor.assistiveLight)
-        Text(description)
-          .font(CSFont.ui(11, .medium))
-          .foregroundStyle(Color.secondary)
-          .fixedSize(horizontal: false, vertical: true)
+  /// Pending edits, the reason a save is refused, or the persisted outcome of
+  /// the last save — never a guess built from the draft.
+  @ViewBuilder private var saveStatus: some View {
+    if model.hasBlockingBindingConflicts {
+      statusLine(
+        color: CSColor.terracotta,
+        text: String(localized: "Resolve the conflict above to save the mode shortcuts.")
+      )
+    } else if model.hasPendingBindingChanges {
+      statusLine(
+        color: CSColor.amber,
+        text: String(localized: "Unsaved changes to the mode gestures.")
+      )
+    } else if let receipt = model.bindingSaveReceipt, let sentence = receipt.sentence {
+      VStack(alignment: .leading, spacing: 3) {
+        statusLine(
+          color: receipt.hasRejection ? CSColor.terracotta : CSColor.olive,
+          text: sentence
+        )
+        if let detail = receipt.failureDetail {
+          Text(verbatim: detail)
+            .font(CSFont.mono(10, .medium))
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       }
-      Spacer(minLength: 8)
-      Text(gesture)
-        .font(CSFont.mono(10.5, .semibold))
-        .foregroundStyle(Color.primary)
-        .multilineTextAlignment(.trailing)
+    }
+  }
+
+  private func statusLine(color: Color, text: String) -> some View {
+    HStack(alignment: .top, spacing: 8) {
+      Text(verbatim: "●")
+        .font(CSFont.mono(11, .medium))
+        .foregroundStyle(color)
+      Text(text)
+        .font(CSFont.ui(11.5, .medium))
+        .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
+    }
+  }
+
+  // MARK: Dictation context (attach selection)
+
+  /// Its own section, not a sub-row of the Agent gesture: attaching a selection
+  /// belongs to the running dictation hold and never switches the take to the
+  /// Agent.
+  private var dictationContextSection: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      SettingsSectionLabel(String(localized: "Dictation context"))
+      VStack(alignment: .leading, spacing: 7) {
+        HStack(alignment: .top, spacing: 9) {
+          Circle()
+            .fill(CSColor.assistive)
+            .frame(width: 6, height: 6)
+            .padding(.top, 5)
+          VStack(alignment: .leading, spacing: 1) {
+            Text("Attach selection")
+              .font(CSFont.ui(11.5, .semibold))
+              .foregroundStyle(CSColor.assistiveLight)
+            Text(
+              "Shift or Command during an already-started Fn hold attaches the selected text. It does not switch to the Agent."
+            )
+            .font(CSFont.ui(11, .medium))
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+          }
+          Spacer(minLength: 8)
+          Text(armGestureLabel)
+            .font(CSFont.mono(10.5, .semibold))
+            .foregroundStyle(Color.primary)
+            .multilineTextAlignment(.trailing)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        // The timing rules stay in help, out of the main description.
+        .help(
+          String(
+            localized:
+              "Fn+Shift from idle is dictation, not the Agent. Further pulses during the same hold attach the next selections; the take, the overlay and the destination do not change."
+          )
+        )
+
+        // Arm modifier is attach-only (default Shift; Cmd alternative).
+        HStack(spacing: 8) {
+          Text("Arm with")
+            .font(CSFont.ui(11, .medium))
+            .foregroundStyle(Color.secondary)
+          Picker("Arm modifier", selection: armModifierBinding) {
+            Text(verbatim: "Shift").tag("shift")
+            Text(verbatim: "Command").tag("cmd")
+          }
+          .pickerStyle(.segmented)
+          .labelsHidden()
+          .frame(maxWidth: 180)
+        }
+        .padding(.top, 2)
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 10)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(
+        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+          .fill(CSColor.assistive.opacity(0.08))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+          .strokeBorder(CSColor.assistive.opacity(0.18), lineWidth: 1)
+      )
     }
   }
 
@@ -202,13 +311,18 @@ struct ShortcutsPanel: View {
     )
   }
 
+  // MARK: Indicator states
+
+  /// The dot is the colour; the label is the state it stands for. Full words
+  /// and no line limit, so a longer translation wraps instead of ending in an
+  /// ellipsis.
   private var badgeLegend: some View {
     VStack(alignment: .leading, spacing: 8) {
-      SettingsSectionLabel(String(localized: "Dot colors"))
-      HStack(spacing: 12) {
-        legendItem(color: CSColor.terracotta, text: "Red — dictation or formatting is recording")
-        legendItem(color: CSColor.assistive, text: "Purple — voice goes to the Agent")
-        legendItem(color: CSColor.amber, text: "Orange — processing after recording")
+      SettingsSectionLabel(String(localized: "Indicator states"))
+      HStack(alignment: .top, spacing: 12) {
+        legendItem(color: CSColor.terracotta, text: "Recording")
+        legendItem(color: CSColor.assistive, text: "Agent")
+        legendItem(color: CSColor.amber, text: "Processing")
       }
       HStack(spacing: 12) {
         VStack(alignment: .leading, spacing: 2) {
@@ -218,6 +332,7 @@ struct ShortcutsPanel: View {
           Text("Base size; Agent mode stays proportionally larger")
             .font(CSFont.ui(10.5, .medium))
             .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -252,51 +367,55 @@ struct ShortcutsPanel: View {
     )
   }
 
-  // MARK: Channel, Fn tap, middle mouse
+  // MARK: Extra gestures — channel, Fn tap, middle mouse
 
-  /// Three input surfaces on the same hotkey config as the mode rows.
-  /// Command is absent from the channel picker. Both toggles default off.
+  /// Three input surfaces on the same hotkey config as the mode rows, all
+  /// writing on change. Command is absent from the channel picker. Both
+  /// toggles default off.
   private var inputSurfaceSection: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      inputSurfaceRow(
-        title: "Agent channel",
-        detail:
-          "Ctrl+digit switches an agent channel. Choose Fn if you want the globe key instead. Command is not offered — it collides with tab switching."
-      ) {
-        Picker("Agent channel modifier", selection: channelModifierBinding) {
-          Text(verbatim: "Ctrl").tag("ctrl")
-          Text(verbatim: "Fn").tag("fn")
+    VStack(alignment: .leading, spacing: 8) {
+      SettingsSectionLabel(String(localized: "Extra gestures"))
+      VStack(alignment: .leading, spacing: 0) {
+        inputSurfaceRow(
+          title: "Agent channel",
+          detail:
+            "Ctrl + digit switches an Agent channel. Choose Fn to use Fn + digit instead. Command is not offered — it collides with tab switching."
+        ) {
+          Picker("Agent channel modifier", selection: channelModifierBinding) {
+            Text(verbatim: "Ctrl").tag("ctrl")
+            Text(verbatim: "Fn").tag("fn")
+          }
+          .pickerStyle(.segmented)
+          .labelsHidden()
+          .frame(maxWidth: 160)
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(maxWidth: 160)
+        divider
+        inputSurfaceRow(
+          title: "Tap Fn to dictate",
+          detail:
+            "One tap starts dictation and the next tap stops it. Holding past the hold delay records only while you hold. Set the macOS Fn key action to Do Nothing, because macOS can otherwise claim a double press for its own dictation."
+        ) {
+          Toggle("Tap Fn to dictate", isOn: fnTapBinding)
+            .labelsHidden()
+            .toggleStyle(.switch)
+        }
+        divider
+        inputSurfaceRow(
+          title: "Middle mouse acts as Fn",
+          detail:
+            "The middle mouse button follows the same press, hold and tap rules as Fn. Its ordinary click can still reach the app in front."
+        ) {
+          Toggle("Middle mouse acts as Fn", isOn: middleMouseBinding)
+            .labelsHidden()
+            .toggleStyle(.switch)
+        }
       }
-      divider
-      inputSurfaceRow(
-        title: "Tap Fn to dictate",
-        detail:
-          "A quick Fn press starts dictation and the next tap stops it. Holding past the hold delay stays hold-to-talk. For best results set the macOS Fn key action to Do Nothing — Codescribe reacts to a single tap, and macOS can claim a double-press for its own dictation."
-      ) {
-        Toggle("Tap Fn to dictate", isOn: fnTapBinding)
-          .labelsHidden()
-          .toggleStyle(.switch)
-      }
-      divider
-      inputSurfaceRow(
-        title: "Middle mouse acts as Fn",
-        detail:
-          "The middle mouse button follows the same press, hold, and tap rules as Fn. The click still reaches the frontmost app."
-      ) {
-        Toggle("Middle mouse acts as Fn", isOn: middleMouseBinding)
-          .labelsHidden()
-          .toggleStyle(.switch)
-      }
+      .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+      )
     }
-    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-    )
   }
 
   private func inputSurfaceRow<Control: View>(
@@ -336,47 +455,39 @@ struct ShortcutsPanel: View {
   // MARK: Automatic paste mode
 
   /// Safe / Comfort / Off — one persisted `PASTE_MODE` shared with the tray
-  /// Quick settings row. Each mode carries its one-sentence contract so the
-  /// choice is explained where it is made.
+  /// Quick settings row. The picker owns a full-width row of its own, and only
+  /// the SELECTED mode explains itself: three permanent paragraphs made the
+  /// choice harder to read, and squeezing the segmented control next to the
+  /// title wrapped the label after two words in a narrow window.
   private var pasteModeSection: some View {
     VStack(alignment: .leading, spacing: 8) {
       SettingsSectionLabel(String(localized: "Automatic paste"))
-      HStack(spacing: 12) {
-        VStack(alignment: .leading, spacing: 2) {
-          Text("Paste after dictation")
-            .font(CSFont.ui(12.5, .semibold))
-            .foregroundStyle(Color.primary)
-          Text("Where the transcript goes when a Hold or toggle take ends.")
-            .font(CSFont.ui(10.5, .medium))
-            .foregroundStyle(Color.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+      VStack(alignment: .leading, spacing: 2) {
+        Text("Paste after dictation")
+          .font(CSFont.ui(12.5, .semibold))
+          .foregroundStyle(Color.primary)
+        Text("Where the transcript goes when a Hold or toggle take ends.")
+          .font(CSFont.ui(10.5, .medium))
+          .foregroundStyle(Color.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
 
-        Picker("Paste mode", selection: pasteModeBinding) {
-          ForEach(CsPasteMode.allModes, id: \.self) { mode in
-            Text(mode.visibleName).tag(mode)
-          }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .fixedSize()
-        .accessibilityIdentifier("settings.pasteMode")
-      }
-      Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 6, verticalSpacing: 3) {
+      Picker("Paste mode", selection: pasteModeBinding) {
         ForEach(CsPasteMode.allModes, id: \.self) { mode in
-          GridRow {
-            Text(mode.visibleName)
-              .font(CSFont.ui(10.5, .semibold))
-              .foregroundStyle(mode == model.pasteMode ? Color.primary : Color.secondary)
-              .fixedSize()
-            Text(mode.blurb)
-              .font(CSFont.ui(10.5, .medium))
-              .foregroundStyle(Color.secondary)
-              .fixedSize(horizontal: false, vertical: true)
-          }
+          Text(mode.visibleName).tag(mode)
         }
       }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .fixedSize()
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityIdentifier("settings.pasteMode")
+
+      Text(model.pasteMode.blurb)
+        .font(CSFont.ui(10.5, .medium))
+        .foregroundStyle(Color.secondary)
+        .fixedSize(horizontal: false, vertical: true)
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 11)
@@ -398,39 +509,42 @@ struct ShortcutsPanel: View {
     )
   }
 
-  // MARK: Deferred insert chord
+  // MARK: Paste on demand
 
-  /// Command chord delivering an armed transcript at the caret. A closed
-  /// four-option set mirroring core `DeferredInsertShortcut`; writes go
+  /// Command chord delivering a transcript that is waiting to be inserted. A
+  /// closed four-option set mirroring core `DeferredInsertShortcut`; writes go
   /// through the same `update_config` brain as every other setting. Off by
   /// default — the tap is listen-only, so a host app bound to the same chord
-  /// would also react (core/config/types.rs).
-  private var deferredInsertSection: some View {
+  /// would also react (core/config/types.rs). The picker sits on its own
+  /// full-width row so neither the name nor the warning wraps after two words.
+  private var pasteOnDemandSection: some View {
     VStack(alignment: .leading, spacing: 8) {
       SettingsSectionLabel(String(localized: "Deferred insert"))
-      HStack(spacing: 12) {
-        VStack(alignment: .leading, spacing: 2) {
-          Text("Insert armed transcript")
-            .font(CSFont.ui(12.5, .semibold))
-            .foregroundStyle(Color.primary)
-          Text(
-            "Global chord pastes the armed transcript at the caret. Apps bound to the same chord will also react."
-          )
+      VStack(alignment: .leading, spacing: 2) {
+        Text("Paste transcript")
+          .font(CSFont.ui(12.5, .semibold))
+          .foregroundStyle(Color.primary)
+        Text("Choose the shortcut that pastes the transcript waiting to be inserted.")
           .font(CSFont.ui(10.5, .medium))
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-
-        Picker("Deferred insert shortcut", selection: deferredInsertBinding) {
-          ForEach(DeferredInsertShortcutOption.allCases) { option in
-            Text(option.visibleName).tag(option)
-          }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .fixedSize()
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
+
+      Picker("Deferred insert shortcut", selection: deferredInsertBinding) {
+        ForEach(DeferredInsertShortcutOption.allCases) { option in
+          Text(option.visibleName).tag(option)
+        }
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .fixedSize()
+      .frame(maxWidth: .infinity, alignment: .leading)
+
+      Text("The app you are pasting into may handle this shortcut as well.")
+        .font(CSFont.ui(10.5, .medium))
+        .foregroundStyle(Color.secondary)
+        .fixedSize(horizontal: false, vertical: true)
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 11)
@@ -453,44 +567,77 @@ struct ShortcutsPanel: View {
   }
 
   private func legendItem(color: Color, text: LocalizedStringKey) -> some View {
-    HStack(spacing: 6) {
-      Circle().fill(color).frame(width: 7, height: 7)
+    HStack(alignment: .top, spacing: 6) {
+      Circle().fill(color).frame(width: 7, height: 7).padding(.top, 4)
       Text(text)
         .font(CSFont.ui(11.5, .medium))
         .foregroundStyle(Color.secondary)
-        .lineLimit(2)
         .fixedSize(horizontal: false, vertical: true)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  // MARK: Conflicts (inline validation)
+  // MARK: Conflicts and notes (inline validation)
+
+  /// Blocking entries refuse the save. Non-blocking ones are facts about the
+  /// machine: `fn_tap_intercept_note` is deliberately not a conflict in the
+  /// core, and must not be painted as one here either.
+  private var blockingConflicts: [HotkeyConflictPresentation] {
+    model.bindingConflicts
+      .map { $0.presentation(options: model.bindingOptions) }
+      .filter(\.blocking)
+  }
+
+  private var informationalNotices: [HotkeyConflictPresentation] {
+    model.bindingConflicts
+      .map { $0.presentation(options: model.bindingOptions) }
+      .filter { !$0.blocking }
+  }
 
   private var conflictList: some View {
     VStack(alignment: .leading, spacing: 8) {
       SettingsSectionLabel(String(localized: "Conflicts"))
-      ForEach(Array(model.bindingConflicts.enumerated()), id: \.offset) { _, conflict in
-        conflictRow(conflict)
+      ForEach(Array(blockingConflicts.enumerated()), id: \.offset) { _, conflict in
+        validationRow(conflict, accent: CSColor.terracotta, marker: "!")
       }
     }
   }
 
-  private func conflictRow(_ conflict: CsHotkeyConflict) -> some View {
-    let accent = conflict.blocking ? CSColor.terracotta : CSColor.amber
-    let accentLight = conflict.blocking ? CSColor.terracotta : CSColor.amber
-    return HStack(alignment: .top, spacing: 9) {
-      Text(verbatim: conflict.blocking ? "!" : "i")
+  private var noticeList: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      SettingsSectionLabel(
+        String(
+          localized: "settings.shortcuts.notices", defaultValue: "Notes",
+          comment: "Shortcuts screen: heading above informational, non-blocking notes"))
+      ForEach(Array(informationalNotices.enumerated()), id: \.offset) { _, notice in
+        validationRow(notice, accent: CSColor.amber, marker: "i")
+      }
+    }
+  }
+
+  private func validationRow(
+    _ entry: HotkeyConflictPresentation, accent: Color, marker: String
+  ) -> some View {
+    HStack(alignment: .top, spacing: 9) {
+      Text(verbatim: marker)
         .font(CSFont.ui(11, .bold))
-        .foregroundStyle(accentLight)
+        .foregroundStyle(accent)
         .frame(width: 14)
       VStack(alignment: .leading, spacing: 2) {
-        Text(conflict.visibleGesture(options: model.bindingOptions))
+        Text(entry.gesture)
           .font(CSFont.mono(11, .semibold))
-          .foregroundStyle(accentLight)
-        Text(conflict.message)
+          .foregroundStyle(accent)
+        Text(entry.message)
           .font(CSFont.ui(12, .medium))
           .foregroundStyle(Color.primary)
           .fixedSize(horizontal: false, vertical: true)
+        // Wire identifiers stay on screen whenever the sentence above is ours.
+        if let technical = entry.technical {
+          Text(verbatim: technical)
+            .font(CSFont.mono(10, .medium))
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       }
     }
     .padding(.horizontal, 14)
@@ -543,57 +690,6 @@ struct ShortcutsPanel: View {
       } else {
         PermissionKind.accessibility.openSystemSettings()
       }
-    }
-  }
-
-  // MARK: Actions
-
-  private var actions: some View {
-    HStack(spacing: 12) {
-      Button {
-        model.resetBindingsToDefaults()
-      } label: {
-        Text("Reset to defaults")
-          .font(CSFont.ui(12.5, .semibold))
-          .foregroundStyle(Color.secondary)
-      }
-      .csFocusRing()
-
-      Spacer(minLength: 0)
-
-      Button {
-        model.saveBindings()
-      } label: {
-        Text("Save")
-          .font(CSFont.ui(12.5, .semibold))
-          .padding(.horizontal, 18)
-          .padding(.vertical, 8)
-          .foregroundStyle(model.canSaveBindings ? Color.primary : Color.secondary)
-          .background(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .fill(
-                model.canSaveBindings
-                  ? CSColor.terracotta.opacity(0.9)
-                  : Color.primary.opacity(0.06))
-          )
-      }
-      .csFocusRing()
-      .disabled(!model.canSaveBindings)
-    }
-  }
-
-  private var hint: some View {
-    HStack(spacing: 8) {
-      Text(verbatim: "●")
-        .font(CSFont.mono(11, .medium))
-        .foregroundStyle(model.hasBlockingBindingConflicts ? CSColor.terracotta : CSColor.olive)
-      Text(
-        model.hasBlockingBindingConflicts
-          ? "Resolve the conflict above before saving"
-          : "Bindings persist to settings.json and reload the detector live"
-      )
-      .font(CSFont.mono(11, .medium))
-      .foregroundStyle(Color.secondary)
     }
   }
 

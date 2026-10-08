@@ -130,19 +130,57 @@ writes `CODESCRIBE_CLOUD_CONSENT=granted` together with the mode.
 
 Open **Settings → Modes & Shortcuts**.
 
-This tab owns the global shortcut model:
+The tab holds two different save contracts, and the header says so: the three
+mode gestures are a draft and need **Save mode shortcuts**; every other control
+on the page writes as soon as you change it.
 
-- **Dictation**
-- **Formatting**
-- **Assistive**
+**Mode gestures.** One gesture per work mode — **Dictation** (turns speech into
+text), **Formatting** (dictation with AI formatting) and **Agent** (passes the
+recognized text to the Agent). None of the three promises a paste: where the
+transcript goes is **Automatic paste** below, and `PASTE_MODE=off` means nowhere.
+The gesture pill shows the chord (`2× Left ⌥ (Option)`); VoiceOver reads the
+spelled-out form, so the left and right Option gestures stay distinguishable.
 
-Each mode gets one binding. You can customize or disable it.
+**Save mode shortcuts** / **Restore default mode shortcuts** sit directly under
+the three rows. The screen reports, in order: a blocking conflict that refuses
+the save, otherwise unsaved changes, otherwise what the last save actually
+persisted. The confirmation is a re-read from disk, not an echo of the picker:
+the bridge can refuse one mode while accepting another in the same save, so a
+refused gesture is named and its picker snaps back to the gesture in effect. A
+binding present in `settings.json` is still not proof that the gesture fires —
+see **Settings picker vs routed combinations** in `docs/HOTKEYS_CONTRACT.md`.
 
-The same tab also owns:
+**Conflicts** and **Notes** are separate. A conflict blocks the save; a note
+does not. The macOS Fn/Globe configuration message is a note: it says Codescribe
+may intercept the short press while dictation runs, and explicitly that it does
+not block saving. Both carry the technical identifier that came across the
+bridge under the sentence.
 
-- `Hold delay`
-- `Double-tap interval`
-- hotkey conflict detection / details
+**Dictation context** is its own section, below the gestures. Shift or Command
+during an already-started Fn hold attaches the selected text; it does not switch
+the take to the Agent. **Arm with** chooses Shift (default) or Command. The
+Fn+Shift-from-idle timing rules sit in the row's tooltip.
+
+**Extra gestures** holds the three input surfaces: **Agent channel**
+(`Ctrl + digit`, or `Fn + digit`; Command is not offered), **Tap Fn to dictate**
+(one tap starts, the next stops, a longer hold records only while held — set the
+macOS Fn key action to _Do Nothing_) and **Middle mouse acts as Fn** (whose
+ordinary click can still reach the app in front).
+
+**Automatic paste** keeps **Safe**, **Comfort** and **Off**, with the picker on
+its own full-width row and only the selected mode explained underneath. The
+terminal, command and password-field safeguards are unchanged.
+
+**Deferred insert** holds **Paste transcript**: the shortcut that pastes a
+transcript waiting to be inserted. The target app may handle the same chord.
+
+**Indicator states** names the three dot states in full — Recording, Agent,
+Processing — and sets the pointer indicator size (Off / 4px / 8px / 12px; the
+Agent indicator stays proportionally larger).
+
+`HOLD_START_DELAY_MS` and `DOUBLE_TAP_INTERVAL_MS` govern the same gestures but
+have no control on this tab; they are settings keys
+(`docs/ENV_REGISTRY.toml`, `docs/HOTKEYS_CONTRACT.md`).
 
 ## Providers and Agent
 
