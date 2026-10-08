@@ -5829,6 +5829,16 @@
         }
       }
     },
+    "Discovering tools from the MCP servers…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wykrywanie narzędzi z serwerów MCP…"
+          }
+        }
+      }
+    },
     "Dismiss" : {
       "localizations" : {
         "pl" : {
