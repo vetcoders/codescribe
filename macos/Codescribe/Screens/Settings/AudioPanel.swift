@@ -518,10 +518,13 @@ struct AudioPanel: View {
       SettingsSectionLabel(String(localized: "Audio retention"))
         .padding(.top, CSSpace.section)
       VStack(alignment: .leading, spacing: CSSpace.control) {
-        Picker("Keep completed recordings", selection: Binding(
-          get: { model.audioRetention },
-          set: { model.setAudioRetention($0) }
-        )) {
+        Picker(
+          "Keep completed recordings",
+          selection: Binding(
+            get: { model.audioRetention },
+            set: { model.setAudioRetention($0) }
+          )
+        ) {
           Text("Forever").tag("forever")
           Text("30 days").tag("30_days")
           Text("7 days").tag("7_days")
