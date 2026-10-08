@@ -598,6 +598,44 @@ Common overrides:
 - `CODESCRIBE_EMIT_WORDS_MAX`
 - `CODESCRIBE_BUFFERED_INTERIM_SEC`
 
+## Dictionary
+
+**Settings → Dictionary** shows what was corrected, what the app actually
+learned, and where the active rules come from.
+
+- **Counters** — three separate values: corrections (takes whose text
+  changed), unchanged takes (kept for their confidence telemetry only) and
+  active rules (every variant → canonical pair the engine applies). A
+  vocabulary correction is not a learned rule; nothing here implies otherwise.
+- **Recent corrections** — one card per correction. **Differences between
+  versions** compares the stages that actually changed: _Formatting changed
+  (raw STT → delivered)_ when Smart/Max rewrote the raw text, and _Your
+  correction (delivered → corrected)_ for the manual edit, so a formatter's
+  rewrite is never charged to the engine's hearing. Each span is labelled
+  **Added**, **Removed** or **Replaced**; replaced fragments can span several
+  words. Minor casing and punctuation changes stay collapsed. **Full
+  comparison · X → Y characters** opens the raw STT, the text after
+  formatting and the text after your correction. The footer reads _Version N ·
+  date_ in the interface language. **Diagnostic details** holds the count of
+  records without confidence telemetry; it describes the records, not the
+  engine.
+- **Play original / Retranscribe** — the archived take is paired by its exact
+  raw transcript. When several archived recordings share that transcript the
+  pairing is ambiguous and both actions refuse, saying so; the panel also
+  explains the other reasons Retranscribe is unavailable (no archived
+  recording, no helper engine in Apple-only mode, a pass still running).
+- **Learn from corrections…** — reviews every saved correction and the
+  suggested rules, then adds the new vocabulary rules it can derive. The
+  confirmation states that scope first; the result line reports the real
+  growth of the rules list (_Added 2 rules from corrections · 9 active
+  rules_, or _No new rules_ when everything eligible was already learned).
+  Corrections, their revision history and the extraction safeguards are
+  unchanged by learning.
+- **My rules** — the active rules with their provenance (_from a correction_
+  or _added by hand_); up to five rules read as a list, more are paged.
+  Rules cannot be edited or removed from the app yet; see
+  [CONFIG.md](../CONFIG.md) for the lexicon files.
+
 ## About
 
 **Settings → About** (the last item under _Account_) describes the app and its

@@ -2572,7 +2572,8 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
-  /// Mine corrections.jsonl + proposed lexicon into the live custom dictionary.
+  /// Learn from corrections: mine corrections.jsonl + proposed lexicon into
+  /// the live custom dictionary.
   /// Teach replays the whole correction store and rewrites the lexicon — real
   /// disk I/O whose cost scales with the corpus. Running it inline froze
   /// Settings for the duration; it now runs off the main actor like the key
@@ -2582,19 +2583,19 @@ final class SettingsViewModel: ObservableObject {
     guard let engine, !voiceLabTeachPending else { return }
     voiceLabTeachPending = true
     voiceLabTeachMessage = nil
+    // The engine reports every eligible pair it applied, learned before or
+    // not; the growth of the flattened rules list is what is actually new.
+    let rulesBefore = customLexiconEntries.count
     Task { @MainActor [weak self] in
       guard let self else { return }
       do {
         let result = try await engine.teachDictionaryFromStoreAsync()
         self.voiceLabTeachPending = false
-        let fromCorrections = Int(result.fromCorrections)
-        let fromProposed = Int(result.fromProposed)
         let totalRules = Int(result.totalRules)
-        let correctionSourced = Int(result.rulesFromCorrectionSource)
-        self.voiceLabTeachMessage = String(
-          localized:
-            "Taught +\(fromCorrections) from corrections, +\(fromProposed) from proposed → \(totalRules) live rules (\(correctionSourced) correction-sourced).",
-          comment: "Counted teach summary; the live-rules count needs a plural variation"
+        self.voiceLabTeachMessage = learnResultMessage(
+          added: totalRules - rulesBefore,
+          fromSuggestions: Int(result.fromProposed),
+          activeRules: totalRules
         )
         self.refreshVoiceLab()
       } catch {

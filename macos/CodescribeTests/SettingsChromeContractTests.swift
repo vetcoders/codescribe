@@ -907,6 +907,59 @@ final class SettingsChromeContractTests: XCTestCase {
     }
   }
 
+  /// Settings → Dictionary: a fixed header, three honest counters, versions
+  /// compared stage by stage, and a Learn action that states its scope first.
+  func testDictionaryPaneReadsAsCorrectionsAndRules() throws {
+    let panel = try XCTUnwrap(try settingsSources()["VoiceLabPanel.swift"])
+    XCTAssertTrue(panel.contains("String(localized: \"Dictionary and corrections\")"))
+    XCTAssertTrue(
+      panel.contains(
+        "\"Browse corrected transcripts and the rules that help recognize your vocabulary.\""))
+    XCTAssertFalse(panel.contains("dictionaryHeadline("), "no dynamic multi-line headline")
+    XCTAssertFalse(panel.contains("dictionarySubtitle("), "no repeated provenance subtitle")
+    XCTAssertTrue(panel.contains("dictionaryCounters("))
+    XCTAssertTrue(panel.contains("String(localized: \"Learn from corrections…\""))
+    XCTAssertTrue(panel.contains("Text(learnScopeMessage(corrections: corrections.count))"))
+    XCTAssertFalse(panel.contains("Button(\"Teach\") {\n            model.teachDictionaryFromStore()"))
+    XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $showingDiagnostics)"))
+    XCTAssertTrue(panel.contains("\"Differences between versions\""))
+    XCTAssertFalse(panel.contains("Text(\"Changed\""))
+    XCTAssertTrue(panel.contains("stageDiffBlock(stage, index: stageIndex, showTitle: stages.count > 1)"))
+    XCTAssertTrue(panel.contains("Text(diffSpanKind(span).label)"))
+    XCTAssertTrue(panel.contains("fullComparisonLabel("))
+    XCTAssertTrue(panel.contains("\"Corrected text\""))
+    XCTAssertFalse(panel.contains("\"Corrected original\""))
+    XCTAssertTrue(panel.contains("correctionFooter("))
+    XCTAssertFalse(panel.contains("Text(\"revision \\(row.revision)\")"))
+    XCTAssertTrue(panel.contains("String(localized: \"My rules · \\(model.customLexiconEntries.count)\")"))
+    XCTAssertTrue(panel.contains("lexiconProvenanceLine("))
+    XCTAssertTrue(panel.contains("model.customLexiconEntries.count <= dictionaryRuleListLimit"))
+    XCTAssertTrue(panel.contains("if corrections.count > 1 {"))
+    XCTAssertTrue(panel.contains("if model.ruleCandidates.count > 1 {"))
+    XCTAssertTrue(panel.contains(".disabled(retranscribeReason != nil)"))
+    XCTAssertTrue(panel.contains("archivedAudioLookup(configDir: lease.rootDirectory(), rawText: row.rawText)"))
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "Dictionary and corrections": "Słownik i poprawki",
+      "Browse corrected transcripts and the rules that help recognize your vocabulary.":
+        "Przeglądaj poprawione transkrypcje i reguły, które pomagają rozpoznawać Twoje słownictwo.",
+      "Differences between versions": "Różnice między wersjami",
+      "Corrected text": "Poprawiony tekst",
+      "Learn from corrections…": "Ucz słownik z poprawek…",
+      "Diagnostic details": "Szczegóły diagnostyczne",
+      "from a correction": "Na podstawie poprawki",
+      "added by hand": "Dodano ręcznie",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    XCTAssertEqual(polish["My rules · %lld"], "Moje reguły · %lld")
+    XCTAssertEqual(polish["Version %llu"], "Wersja %llu")
+    XCTAssertEqual(
+      polish["Full comparison · %lld → %lld characters"], "Pełne porównanie · %1$lld → %2$lld znaków")
+  }
+
   func testAvailabilityTintsUseSolidTerracotta() throws {
     let model = try XCTUnwrap(settingsSources()["SettingsViewModel.swift"])
     XCTAssertEqual(
