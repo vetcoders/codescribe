@@ -171,9 +171,10 @@ PY
 
 seal "James, komenda po recovery." transcript_sealed 13
 second="$WORKDIR/second.jsonl"
+# Recover the same identity; an explicit different name requests a rename.
 python3 "$DEMUX" \
   --bus "$BUS" --bridge-home "$BRIDGE_HOME" \
-  --provider codex --session codex-session-a --name changed \
+  --provider codex --session codex-session-a --name james \
   --drafts --from-start >"$second"
 python3 - "$first" "$second" <<'PY'
 import json, sys
@@ -234,12 +235,24 @@ module.atomic_json(lease.path, saved)
 assert module.active_leases(Path(sys.argv[3]), 120) == []
 restored = module.SessionLease(
     root=Path(sys.argv[3]), provider="codex", provider_session_id="active-session",
-    name="different", bus=Path(sys.argv[2]), requested_id=None, ttl_seconds=120,
+    name=None, bus=Path(sys.argv[2]), requested_id=None, ttl_seconds=120,
     follow_from_end=True,
 )
 assert restored.resumed and restored.cursor == 17, restored.attach_receipt()
 assert restored.name == "iwo", restored.attach_receipt()
 restored.close()
+
+# Explicit rename keeps the session's lease and unread cursor while changing
+# its direct-routing identity. Recovery alone above does not request a rename.
+renamed = module.SessionLease(
+    root=Path(sys.argv[3]), provider="codex", provider_session_id="active-session",
+    name="different", bus=Path(sys.argv[2]), requested_id=None, ttl_seconds=120,
+    follow_from_end=True,
+)
+assert renamed.resumed and renamed.cursor == 17, renamed.attach_receipt()
+assert renamed.lease_id == restored.lease_id, renamed.attach_receipt()
+assert renamed.name == "different", renamed.attach_receipt()
+renamed.close()
 
 # A damaged state record is not a fresh session. Preserve its bytes and refuse
 # attachment rather than skipping unread commands by starting at EOF.
