@@ -327,7 +327,7 @@ private final class SheetRun {
 
   func takeSettings(sizeName: String, scheme: EvidenceScheme, size: CGSize) {
     let model = isolatedSettingsModel()
-    model.onQuickStartDictation = {}
+    model.onQuickStartOpenWidget = {}
     take(
       id: "settings-creator-\(sizeName)-\(scheme.rawValue)",
       surface: "settings",

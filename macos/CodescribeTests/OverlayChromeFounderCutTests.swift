@@ -512,9 +512,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
   }
 
-  func testOpenWidgetUsesTheCachedPanelAndPreservesContentAndPreference() throws {
+  func testSettingsAndTrayOpenWidgetUseTheCachedPanelWithoutStartingCapture() throws {
     let state = OverlayState.previewFormatted()
     let text = state.activeText
+    let captureGeneration = state.captureGeneration
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "Widget.Tray")) as? FloatingOverlayPanel)
@@ -532,7 +533,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       },
       orderPanelFront: { $0.orderFrontRegardless() }, orderPanelOut: { $0.orderOut(nil) })
     let preference = state.expandedByDefault
-    controller.showWidget()
+    let settingsModel = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())
+    settingsModel.onQuickStartOpenWidget = { controller.showWidget() }
+    settingsModel.performQuickStart(.openWidget)
     let root = try XCTUnwrap(panel.contentView)
     settle(root)
     let canvas = try XCTUnwrap(findTranscript(in: root))
@@ -553,6 +557,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(state.activeText, text)
     XCTAssertEqual(state.expandedByDefault, preference)
     XCTAssertFalse(state.transcriptOverlayEnabled, "an explicit open is not a preference write")
+    XCTAssertFalse(state.recording)
+    XCTAssertEqual(state.captureGeneration, captureGeneration)
   }
 
   func testOverlayCursorComesFromItsOwnNativeHitSurface() throws {

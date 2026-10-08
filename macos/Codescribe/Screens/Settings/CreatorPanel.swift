@@ -100,9 +100,9 @@ struct CreatorPanel: View {
         ) { model.performQuickStart(.testMic) }
         QuickStartCard(
           icon: .overlay,
-          title: "Open overlay",
-          accessibilityId: "settings-quickstart-open-overlay"
-        ) { model.performQuickStart(.openOverlay) }
+          title: "Open widget",
+          accessibilityId: "settings-quickstart-open-widget"
+        ) { model.performQuickStart(.openWidget) }
         QuickStartCard(
           icon: .shortcuts,
           title: "Tune shortcuts",

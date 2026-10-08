@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- Settings uses the same "Open widget" entry as the Tray: it shows the widget
+  without starting or toggling a recording.
 - The widget button cycles through MINI, MIDI and regular transcript views.
   All three forms support edge resizing around the same upper-right pin.
 - Recording opens MIDI when the default transcript option is off, and regular
