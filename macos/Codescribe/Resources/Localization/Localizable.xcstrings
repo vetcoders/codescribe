@@ -193,16 +193,6 @@
         }
       }
     },
-    "%@ model source" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "%@ — źródło modelu"
-          }
-        }
-      }
-    },
     "%@ needs setup" : {
       "comment" : "Status below an agent client card; %@ is Codex or Claude Code",
       "localizations" : {
@@ -3504,6 +3494,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nagrywanie trwa, dopóki go nie zatrzymasz."
+          }
+        }
+      }
+    },
+    "Category default" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ustawienie kategorii"
           }
         }
       }
@@ -7096,26 +7096,6 @@
         }
       }
     },
-    "Inherited from the category default" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dziedziczone z ustawienia kategorii"
-          }
-        }
-      }
-    },
-    "Inherited from the server rule" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dziedziczone z reguły serwera"
-          }
-        }
-      }
-    },
     "Input Monitoring" : {
       "localizations" : {
         "pl" : {
@@ -9857,12 +9837,12 @@
         }
       }
     },
-    "Overridden for the current thread" : {
+    "Overridden for this thread" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nadpisane dla bieżącego wątku"
+            "value" : "Zmienione w tym wątku"
           }
         }
       }
@@ -11291,6 +11271,16 @@
         }
       }
     },
+    "Remove rule" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usuń regułę"
+          }
+        }
+      }
+    },
     "Remove the stored %@ account tokens" : {
       "localizations" : {
         "pl" : {
@@ -11701,16 +11691,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przywróć domyślny…"
-          }
-        }
-      }
-    },
-    "Restore inheritance" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przywróć dziedziczenie"
           }
         }
       }
@@ -12458,6 +12438,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nazwa serwera"
+          }
+        }
+      }
+    },
+    "Server rule" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reguła serwera"
           }
         }
       }
