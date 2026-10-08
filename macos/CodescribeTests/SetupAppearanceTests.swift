@@ -48,6 +48,7 @@ final class SetupAppearanceTests: XCTestCase {
       window.contentView = nil
       window.close()
     }
+    let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
     for dark in [false, true] {
       for progress in OnboardingStep.flow.indices {
         let model = OnboardingViewModel(
@@ -74,6 +75,46 @@ final class SetupAppearanceTests: XCTestCase {
         XCTAssertGreaterThan(png.count, 800)
         XCTAssertEqual(model.stepIndex, originalStep, "Rendering must not advance setup")
         XCTAssertFalse(window.isVisible, "Setup snapshots must stay offscreen")
+        if #available(macOS 26.0, *) {
+          let backdrop = firstSubview(of: OverlayDesktopGlassView.self, in: host)
+          if reduced {
+            XCTAssertNil(backdrop, "Reduced transparency must use the solid shared backdrop")
+          } else {
+            let glass = try XCTUnwrap(backdrop, "Every setup step must use the overlay glass")
+            XCTAssertNil(glass.hitTest(NSPoint(x: glass.bounds.midX, y: glass.bounds.midY)))
+          }
+        } else {
+          XCTAssertEqual(
+            firstSubview(of: OverlayDesktopEffectView.self, in: host) == nil, reduced)
+        }
+      }
+    }
+  }
+
+  func testSharedBackdropHonorsReducedTransparencyAndLeavesContentInteractive() throws {
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      for reduced in [false, true] {
+        let host = NSHostingView(
+          rootView: OverlayCanvasBackdrop(palette: palette, reduceTransparency: reduced))
+        host.frame = NSRect(x: 0, y: 0, width: 300, height: 200)
+        let window = NSWindow(
+          contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
+        host.layoutSubtreeIfNeeded()
+        if #available(macOS 26.0, *) {
+          let backdrop = firstSubview(of: OverlayDesktopGlassView.self, in: host)
+          XCTAssertEqual(backdrop == nil, reduced)
+          if let backdrop {
+            XCTAssertNil(backdrop.hitTest(NSPoint(x: 150, y: 100)))
+          }
+        } else {
+          XCTAssertEqual(
+            firstSubview(of: OverlayDesktopEffectView.self, in: host) == nil, reduced)
+        }
       }
     }
   }
