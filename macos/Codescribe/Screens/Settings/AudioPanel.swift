@@ -34,6 +34,92 @@ struct AudioReadinessStep: Identifiable, Equatable {
   let detail: String
 }
 
+/// One technical fact behind the readiness rows, shown only under the
+/// disclosure. The rows above say whether recording works; these say with which
+/// stored measurement, for the rare case where that matters.
+struct AudioCalibrationDetail: Identifiable, Equatable {
+  let id: String
+  let label: String
+  let value: String
+}
+
+/// Reads the measured profile out of the controller verdict. Nothing here is
+/// computed: a missing field is an omitted row, never an invented value.
+func audioCalibrationDetails(_ readiness: CsAdmissionReadiness?) -> [AudioCalibrationDetail] {
+  guard let readiness else { return [] }
+  var details: [AudioCalibrationDetail] = []
+  if let device = readiness.deviceName, !device.isEmpty {
+    details.append(
+      AudioCalibrationDetail(
+        id: "device", label: String(localized: "Measured microphone"), value: device))
+  }
+  if let rate = readiness.sampleRate, rate > 0 {
+    details.append(
+      AudioCalibrationDetail(
+        id: "sampleRate",
+        label: String(localized: "Sample rate"),
+        value: String(
+          localized: "\(rate.formatted()) Hz",
+          comment: "The placeholder is an audio sample rate in hertz")
+      ))
+  }
+  if let version = readiness.calibrationVersion, !version.isEmpty {
+    details.append(
+      AudioCalibrationDetail(
+        id: "profile", label: String(localized: "Calibration profile"), value: version))
+  }
+  if !readiness.calibrationStatus.isEmpty {
+    details.append(
+      AudioCalibrationDetail(
+        id: "status",
+        label: String(localized: "Calibration state"),
+        value: readiness.calibrationStatus))
+  }
+  if !readiness.calibrationPath.isEmpty {
+    details.append(
+      AudioCalibrationDetail(
+        id: "path",
+        label: String(localized: "Calibration file"),
+        value: readiness.calibrationPath))
+  }
+  return details
+}
+
+/// The retention sentence states what the SELECTED choice does. The choices are
+/// not variants of one rule: a finite age expires completed takes once they are
+/// past it, while `off` discards only takes captured while it is selected, so
+/// they cannot share a sentence. Unknown values resolve to `forever`, exactly
+/// as the config loader does.
+func audioRetentionDetail(_ choice: String) -> String {
+  switch choice {
+  case "off":
+    return String(
+      localized:
+        "Audio from a new recording is discarded as soon as processing finishes. Recordings already saved are kept, and text history stays available."
+    )
+  case "24h":
+    return String(
+      localized:
+        "Audio from a completed recording is deleted 24 hours after it finishes. Text history stays available."
+    )
+  case "7_days":
+    return String(
+      localized:
+        "Audio from a completed recording is deleted 7 days after it finishes. Text history stays available."
+    )
+  case "30_days":
+    return String(
+      localized:
+        "Audio from a completed recording is deleted 30 days after it finishes. Text history stays available."
+    )
+  default:
+    return String(
+      localized:
+        "Audio from completed recordings stays on this Mac until you delete it. Nothing expires automatically."
+    )
+  }
+}
+
 /// Stable four-step projection of recording readiness. The bridge verdict is
 /// still authoritative; this only makes its prerequisites visible together so
 /// users do not discover them one failed take at a time.
@@ -41,7 +127,7 @@ func audioReadinessSteps(
   input: CsAudioInputSnapshot,
   microphonePermission: PermissionState,
   admission: CsAdmissionReadiness?,
-  dictationShortcut: String,
+  dictationShortcut: String?,
   recording isRecording: Bool? = false,
   preparing: Bool = false,
   processing: Bool = false
@@ -75,12 +161,15 @@ func audioReadinessSteps(
       detail: String(localized: "Complete step 1 before measuring this input.")
     )
   } else if let admission {
-    if let version = admission.calibrationVersion, admission.calibrationStatus == "sealed" {
+    if admission.calibrationVersion != nil, admission.calibrationStatus == "sealed" {
+      // The stored profile identifier stays available under Calibration
+      // details; the row itself answers whether recording can rely on it.
       calibration = AudioReadinessStep(
         id: .calibration,
         tone: .healthy,
         title: String(localized: "Microphone calibrated"),
-        detail: version
+        detail: String(
+          localized: "Codescribe has measured how loudly you speak into this microphone.")
       )
     } else {
       calibration = AudioReadinessStep(
@@ -100,21 +189,18 @@ func audioReadinessSteps(
     )
   }
 
+  // One name across every state of this row: the user should not have to learn
+  // that "seal check" and "committing fragments" are the same prerequisite.
+  let sealLaneTitle = String(localized: "Committing transcript fragments")
   let sealLane: AudioReadinessStep
   if microphonePermission != .granted {
     sealLane = AudioReadinessStep(
       id: .sealLane,
       tone: .fallback,
-      title: String(localized: "Seal check waits for microphone access"),
-      detail: String(localized: "Complete step 1 before validating the acoustic lane.")
+      title: sealLaneTitle,
+      detail: String(localized: "Complete step 1 before checking this.")
     )
   } else if let admission {
-    let source =
-      admission.sealLaneSource == "env_override"
-      ? String(
-        localized: "Controlled by \(admission.sealLaneEnv) override.",
-        comment: "The placeholder is an environment variable name")
-      : String(localized: "Controlled by the product setting below.")
     if admission.code == "admission_seal_vad_unavailable" {
       sealLane = AudioReadinessStep(
         id: .sealLane,
@@ -123,21 +209,37 @@ func audioReadinessSteps(
         detail: admission.message
       )
     } else {
+      // One title plus the readable switch state; the sentence also says who
+      // owns the switch, because an override keeps Settings read-only.
+      let detail: String
+      switch (admission.sealLaneSource == "env_override", admission.sealLaneArmed) {
+      case (true, true):
+        detail = String(
+          localized: "On, set by the \(admission.sealLaneEnv) override; the switch is read-only.",
+          comment: "The placeholder is an environment variable name")
+      case (true, false):
+        detail = String(
+          localized:
+            "Off, set by the \(admission.sealLaneEnv) override. Recording stays blocked until the override is removed.",
+          comment: "The placeholder is an environment variable name")
+      case (false, true):
+        detail = String(localized: "On. Change it with the switch in this row.")
+      case (false, false):
+        detail = String(localized: "Off. Recording cannot start until you turn this on.")
+      }
       sealLane = AudioReadinessStep(
         id: .sealLane,
         tone: admission.sealLaneArmed ? .healthy : .unavailable,
-        title: admission.sealLaneArmed
-          ? String(localized: "Seal lane armed")
-          : String(localized: "Seal lane must be enabled"),
-        detail: source
+        title: sealLaneTitle,
+        detail: detail
       )
     }
   } else {
     sealLane = AudioReadinessStep(
       id: .sealLane,
       tone: .fallback,
-      title: String(localized: "Checking seal lane…"),
-      detail: String(localized: "Reading the effective product setting and override.")
+      title: sealLaneTitle,
+      detail: String(localized: "Reading the current setting…")
     )
   }
 
@@ -187,9 +289,7 @@ func audioReadinessSteps(
         ? String(localized: "Ready to record")
         : String(localized: "Finish setup above"),
       detail: admission.ready
-        ? String(
-          localized: "Use \(dictationShortcut) or choose Start recording.",
-          comment: "The placeholder is the configured dictation gesture")
+        ? recordingStartHint(dictationShortcut)
         : admission.message
     )
   } else {
@@ -212,6 +312,20 @@ func audioReadinessSteps(
     sealLane,
     recording,
   ]
+}
+
+/// Names the two real ways to start a take. Without a configured gesture the
+/// sentence must not send the user after a shortcut that does not exist, so the
+/// dynamic name appears only when Hotkeys actually binds one.
+func recordingStartHint(_ dictationShortcut: String?) -> String {
+  guard let dictationShortcut, !dictationShortcut.isEmpty else {
+    return String(
+      localized:
+        "Click Start recording. You can also set a Dictation shortcut under Settings › Hotkeys.")
+  }
+  return String(
+    localized: "Press \(dictationShortcut) or click Start recording.",
+    comment: "The placeholder is the configured dictation gesture")
 }
 
 /// Present the persisted product choice independently from its effective
@@ -342,7 +456,8 @@ func audioInputDisplayState(_ snapshot: CsAudioInputSnapshot) -> AudioInputDispl
       title: String(
         localized: "System default: \(runtimeDevice)",
         comment: "The placeholder is an input device name"),
-      detail: String(localized: "The recorder resolves this device from Core Audio at runtime.")
+      detail: String(
+        localized: "Codescribe records on whichever microphone macOS currently uses.")
     )
   }
 
@@ -358,6 +473,7 @@ func audioInputDisplayState(_ snapshot: CsAudioInputSnapshot) -> AudioInputDispl
 struct AudioPanel: View {
   @ObservedObject var model: SettingsViewModel
   @State private var recordingControls: (state: OverlayState, tray: TrayViewModel)?
+  @State private var showingCalibrationDetails = false
 
   private static let systemDefaultChoice = "__codescribe_system_default__"
 
@@ -366,13 +482,15 @@ struct AudioPanel: View {
       HStack(alignment: .top, spacing: 12) {
         VStack(alignment: .leading, spacing: 0) {
           SettingsPageHeader(
-            String(localized: "Hear the real input."),
+            String(localized: "Microphone and recording"),
             blurb: String(
-              localized: "Device choice and sound feedback use the live recorder config.")
+              localized:
+                "Choose a microphone, check that recording is ready and adjust the sound settings."
+            )
           )
         }
         Spacer(minLength: 0)
-        Button("Refresh") {
+        Button("Refresh microphones") {
           model.refreshAudioInput()
         }
         .csFocusRing()
@@ -411,9 +529,12 @@ struct AudioPanel: View {
           Text("Off").tag("off")
         }
         .pickerStyle(.menu)
-        Text("Off discards the audio of new takes once processing finishes. Text history stays available. A take already in progress keeps the choice it started with.")
+        // The sentence follows the selected choice: "Forever" must not carry
+        // the warning that belongs to "Off".
+        Text(audioRetentionDetail(model.audioRetention))
           .font(CSFont.ui(12))
           .foregroundStyle(Color.secondary)
+          .fixedSize(horizontal: false, vertical: true)
       }
       .padding(.top, CSSpace.control)
 
@@ -431,7 +552,9 @@ struct AudioPanel: View {
       SettingsControlRow(
         title: String(localized: "Microphone"),
         subtitle: String(
-          localized: "Saved in settings.json; runtime falls back safely if it disappears")
+          localized:
+            "Codescribe records on this microphone. If it is unplugged, recording continues on the system microphone."
+        )
       ) {
         Picker("Input device", selection: inputDeviceBinding) {
           Text("System default").tag(Self.systemDefaultChoice)
@@ -451,19 +574,17 @@ struct AudioPanel: View {
         .accessibilityValue(inputDeviceAccessibilityValue)
       }
 
+      // The button names what it does; the sentence that repeated it is gone.
       HStack {
-        Text("Restores the system default microphone.")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(Color.secondary)
-        Spacer(minLength: 12)
-        Button("Use system default") {
+        Spacer(minLength: 0)
+        Button("Use the system microphone") {
           model.resetAudioInputDevice()
         }
         .csFocusRing()
         .font(CSFont.mono(10.5, .semibold))
         .foregroundStyle(CSColor.chromeAccent)
         .disabled(model.settings.audioInputDevice == nil)
-        .accessibilityLabel("Reset audio input to system default")
+        .accessibilityHint("Clears the saved microphone and follows the macOS input device")
       }
     }
     .settingsGroupedInset()
@@ -490,8 +611,47 @@ struct AudioPanel: View {
           .foregroundStyle(Color.secondary)
           .accessibilityLabel("Calibration result")
       }
+
+      calibrationDetails
     }
     .settingsGroupedInset()
+  }
+
+  /// The stored measurement, kept out of the four rows above. Collapsed by
+  /// default: the rows answer whether recording works, this answers with which
+  /// profile, which only matters when a measurement is in question.
+  @ViewBuilder
+  private var calibrationDetails: some View {
+    let details = audioCalibrationDetails(model.admission)
+    if !details.isEmpty {
+      DisclosureGroup(isExpanded: $showingCalibrationDetails) {
+        VStack(alignment: .leading, spacing: 6) {
+          ForEach(details) { detail in
+            // Same shape as the Whisper model details: label above a verbatim,
+            // selectable value. A stored path is never a localization key.
+            VStack(alignment: .leading, spacing: 1) {
+              Text(verbatim: detail.label)
+                .font(CSFont.mono(10, .semibold))
+                .foregroundStyle(Color.secondary)
+              Text(verbatim: detail.value)
+                .font(CSFont.mono(10, .medium))
+                .foregroundStyle(Color.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(detail.label)
+            .accessibilityValue(detail.value)
+          }
+        }
+        .padding(.top, CSSpace.xs)
+      } label: {
+        SettingsSectionLabel(String(localized: "Calibration details"))
+      }
+      .padding(.top, CSSpace.xs)
+      .accessibilityIdentifier("audio-calibration-details")
+    }
   }
 
   private func readinessCockpit(
@@ -620,16 +780,19 @@ struct AudioPanel: View {
       }
     case .sealLane:
       let sealLane = sealLaneControlState(model.admission)
-      Toggle("Seal lane", isOn: sealLaneBinding)
+      Toggle("Committing transcript fragments", isOn: sealLaneBinding)
         .toggleStyle(.switch)
         .labelsHidden()
         .tint(CSColor.chromeAccent)
         .disabled(!sealLane.isEnabled)
-        .accessibilityLabel("Seal lane")
+        .accessibilityLabel("Committing transcript fragments")
         .accessibilityValue(sealLaneAccessibilityValue(sealLane))
         .accessibilityHint(
           sealLane.isEnabled
-            ? String(localized: "Controls whether committed utterances can be sealed.")
+            ? String(
+              localized:
+                "Codescribe must be able to commit finished fragments before a recording can start."
+            )
             : sealLane.detail
         )
     case .recording:
@@ -704,9 +867,10 @@ struct AudioPanel: View {
       || (recordingState?.mode == .finalizing && recordingState?.terminal == false)
   }
 
-  private var dictationShortcutLabel: String {
+  /// Nil when Hotkeys binds no Dictation gesture: the readiness row then names
+  /// the button instead of a shortcut the user does not have.
+  private var dictationShortcutLabel: String? {
     model.modeBindings.first { $0.mode == .dictation }?.binding.visibleName
-      ?? String(localized: "your Dictation shortcut")
   }
 
   private var microphonePermissionActionTitle: String {
@@ -732,7 +896,7 @@ struct AudioPanel: View {
   private var feedbackSection: some View {
     VStack(alignment: .leading, spacing: 14) {
       SettingsControlRow(
-        title: String(localized: "Start sound"),
+        title: String(localized: "Recording start signal"),
         subtitle: String(localized: "Play the recorder's live start confirmation")
       ) {
         Toggle("", isOn: soundFeedbackBinding)
