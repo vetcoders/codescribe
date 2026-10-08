@@ -597,9 +597,10 @@ struct ShortcutsPanel: View {
     }
   }
 
-  /// Informational notes read as a footnote under the save row: secondary
-  /// text, no card and no colour, so amber stays for conflicts that need a
-  /// decision (Founder, 2026-10-08).
+  /// Informational notes read as a quiet field under the save row: the faint
+  /// row background, a monochrome globe (the Fn key's own symbol) and
+  /// secondary text, so amber stays for conflicts that need a decision
+  /// (Founder, 2026-10-08).
   private var noticeList: some View {
     VStack(alignment: .leading, spacing: 4) {
       ForEach(Array(informationalNotices.enumerated()), id: \.offset) { _, notice in
@@ -610,17 +611,23 @@ struct ShortcutsPanel: View {
 
   private func noticeRow(_ entry: HotkeyConflictPresentation) -> some View {
     HStack(alignment: .top, spacing: 9) {
-      Text(verbatim: "i")
-        .font(CSFont.ui(11, .bold))
+      Image(systemName: "globe")
+        .font(CSFont.ui(12, .semibold))
         .foregroundStyle(Color.secondary)
         .frame(width: 14)
+        .accessibilityHidden(true)
       Text(entry.message)
         .font(CSFont.ui(11.5, .medium))
         .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
     .padding(.horizontal, 14)
+    .padding(.vertical, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(Color.primary.opacity(0.04))
+    )
   }
 
   private func validationRow(
