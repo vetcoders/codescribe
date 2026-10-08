@@ -37,9 +37,9 @@ regressions below; installation receipts are recorded separately. No public rele
 
 <!-- release-notes:0.16.1:start -->
 
-Source history: 2 commits; [complete inventory](docs/releases/0.16.1-commits.json). Squash headings describe intermediate work and may include later revisions.
+Source history: 3 commits; [complete inventory](docs/releases/0.16.1-commits.json). Squash headings describe intermediate work and may include later revisions.
 
-<!-- release-boundary: 0.16.1 426657f7e3d3562c1331025d5845317c7f52b862 -->
+<!-- release-boundary: 0.16.1 29836579ef87e453e50c8cd9d429cf580f4f79f7 -->
 <!-- release-notes:0.16.1:end -->
 
 ## Release reality
