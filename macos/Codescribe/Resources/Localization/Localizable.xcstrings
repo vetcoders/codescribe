@@ -430,6 +430,165 @@
         }
       }
     },
+    "%lld active rules" : {
+      "comment" : "Dictionary counter; plural",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld active rule"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld active rules"
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld aktywne reguły"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld aktywnych reguł"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld aktywna reguła"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld aktywnej reguły"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld added by hand" : {
+      "comment" : "Rule provenance; plural",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld added by hand"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld added by hand"
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld dodane ręcznie"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld dodanych ręcznie"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld dodana ręcznie"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld dodanej ręcznie"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld archived recordings share this exact transcript, so Codescribe cannot tell which one is this take." : {
+      "comment" : "Dictionary: why Retranscribe and playback are disabled; plural",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld archived recording shares this exact transcript, so Codescribe cannot tell which one is this take."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld archived recordings share this exact transcript, so Codescribe cannot tell which one is this take."
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld archiwalne nagrania mają dokładnie taką transkrypcję, więc Codescribe nie wie, które z nich jest tym nagraniem."
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld archiwalnych nagrań ma dokładnie taką transkrypcję, więc Codescribe nie wie, które z nich jest tym nagraniem."
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld archiwalne nagranie ma dokładnie taką transkrypcję, więc Codescribe nie wie, które z nich jest tym nagraniem."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld archiwalnego nagrania ma dokładnie taką transkrypcję, więc Codescribe nie wie, które z nich jest tym nagraniem."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%lld attachments" : {
       "localizations" : {
         "en" : {
@@ -535,235 +694,8 @@
         }
       }
     },
-    "%lld corrections (%lld vocabulary) · %lld unchanged takes · %lld rules in dictionary" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%#@corrections@ (%#@vocabulary@) · %#@unchangedTakes@ · %#@rules@ in dictionary"
-          },
-          "substitutions" : {
-            "corrections" : {
-              "argNum" : 1,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg correction"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg corrections"
-                    }
-                  }
-                }
-              }
-            },
-            "rules" : {
-              "argNum" : 4,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg rule"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg rules"
-                    }
-                  }
-                }
-              }
-            },
-            "unchangedTakes" : {
-              "argNum" : 3,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg unchanged take"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg unchanged takes"
-                    }
-                  }
-                }
-              }
-            },
-            "vocabulary" : {
-              "argNum" : 2,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg vocabulary"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg vocabulary"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%#@corrections@ (%#@vocabulary@) · %#@unchangedTakes@ · %#@rules@ w słowniku"
-          },
-          "substitutions" : {
-            "corrections" : {
-              "argNum" : 1,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "few" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg korekty"
-                    }
-                  },
-                  "many" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg korekt"
-                    }
-                  },
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg korekta"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg korekty"
-                    }
-                  }
-                }
-              }
-            },
-            "rules" : {
-              "argNum" : 4,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "few" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg reguły"
-                    }
-                  },
-                  "many" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg reguł"
-                    }
-                  },
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg reguła"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg reguły"
-                    }
-                  }
-                }
-              }
-            },
-            "unchangedTakes" : {
-              "argNum" : 3,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "few" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg nagrania bez zmian"
-                    }
-                  },
-                  "many" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg nagrań bez zmian"
-                    }
-                  },
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg nagranie bez zmian"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg nagrania bez zmian"
-                    }
-                  }
-                }
-              }
-            },
-            "vocabulary" : {
-              "argNum" : 2,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "few" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg korekty słownictwa"
-                    }
-                  },
-                  "many" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg korekt słownictwa"
-                    }
-                  },
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg korekta słownictwa"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg korekty słownictwa"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "%lld corrections on disk · dictionary empty — Teach explicitly promotes eligible store pairs now." : {
+    "%lld corrections" : {
+      "comment" : "Dictionary counter; plural",
       "localizations" : {
         "en" : {
           "variations" : {
@@ -771,13 +703,13 @@
               "one" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld correction on disk · dictionary empty — Teach explicitly promotes eligible store pairs now."
+                  "value" : "%lld correction"
                 }
               },
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld corrections on disk · dictionary empty — Teach explicitly promotes eligible store pairs now."
+                  "value" : "%lld corrections"
                 }
               }
             }
@@ -789,25 +721,25 @@
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld korekty na dysku · słownik jest pusty — „Naucz” dodaje do niego zapisane pary, które spełniają wymagania."
+                  "value" : "%lld korekty"
                 }
               },
               "many" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld korekt na dysku · słownik jest pusty — „Naucz” dodaje do niego zapisane pary, które spełniają wymagania."
+                  "value" : "%lld korekt"
                 }
               },
               "one" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld korekta na dysku · słownik jest pusty — „Naucz” dodaje do niego zapisane pary, które spełniają wymagania."
+                  "value" : "%lld korekta"
                 }
               },
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld korekty na dysku · słownik jest pusty — „Naucz” dodaje do niego zapisane pary, które spełniają wymagania."
+                  "value" : "%lld korekty"
                 }
               }
             }
@@ -868,175 +800,105 @@
         }
       }
     },
-    "%lld live rules (variant→canonical) · %lld with correction provenance · %lld store rows." : {
+    "%lld from corrections" : {
+      "comment" : "Rule provenance; plural",
       "localizations" : {
         "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%#@rules@ (variant→canonical) · %#@provenance@ · %#@rows@."
-          },
-          "substitutions" : {
-            "provenance" : {
-              "argNum" : 2,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg with correction provenance"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg with correction provenance"
-                    }
-                  }
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld from correction"
                 }
-              }
-            },
-            "rows" : {
-              "argNum" : 3,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg store row"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg store rows"
-                    }
-                  }
-                }
-              }
-            },
-            "rules" : {
-              "argNum" : 1,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg live rule"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg live rules"
-                    }
-                  }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld from corrections"
                 }
               }
             }
           }
         },
         "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%#@rules@ (wariant → forma docelowa) · %#@provenance@ · %#@rows@."
-          },
-          "substitutions" : {
-            "provenance" : {
-              "argNum" : 2,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "few" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg na podstawie korekt"
-                    }
-                  },
-                  "many" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg na podstawie korekt"
-                    }
-                  },
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg na podstawie korekt"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg na podstawie korekt"
-                    }
-                  }
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld na podstawie poprawek"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld na podstawie poprawek"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld na podstawie poprawki"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld na podstawie poprawek"
                 }
               }
-            },
-            "rows" : {
-              "argNum" : 3,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "few" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg pozycje w bazie"
-                    }
-                  },
-                  "many" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg pozycji w bazie"
-                    }
-                  },
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg pozycja w bazie"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg pozycji w bazie"
-                    }
-                  }
+            }
+          }
+        }
+      }
+    },
+    "%lld from earlier versions" : {
+      "comment" : "Rule provenance; plural",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld from an earlier version"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld from earlier versions"
                 }
               }
-            },
-            "rules" : {
-              "argNum" : 1,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "few" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg aktywne reguły"
-                    }
-                  },
-                  "many" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg aktywnych reguł"
-                    }
-                  },
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg aktywna reguła"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg aktywnej reguły"
-                    }
-                  }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld z wcześniejszych wersji"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld z wcześniejszych wersji"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld z wcześniejszych wersji"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld z wcześniejszych wersji"
                 }
               }
             }
@@ -1480,6 +1342,59 @@
         }
       }
     },
+    "%lld unchanged takes" : {
+      "comment" : "Dictionary counter; plural",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld unchanged take"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld unchanged takes"
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld nagrania bez zmian"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld nagrań bez zmian"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld nagranie bez zmian"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld nagrania bez zmian"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%lld unread replies" : {
       "localizations" : {
         "en" : {
@@ -1700,17 +1615,6 @@
         }
       }
     },
-    "(removed) " : {
-      "comment" : "Diff marker: the word was deleted",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "(usunięto)"
-          }
-        }
-      }
-    },
     "+%lld minor (punctuation, casing)" : {
       "localizations" : {
         "pl" : {
@@ -1910,12 +1814,34 @@
         }
       }
     },
+    "About" : {
+      "comment" : "Settings section: the app, its data and resets",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O aplikacji"
+          }
+        }
+      }
+    },
     "About codescribe" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "O codescribe"
+          }
+        }
+      }
+    },
+    "About the app and your data" : {
+      "comment" : "About panel header",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O aplikacji i danych"
           }
         }
       }
@@ -2121,6 +2047,17 @@
         }
       }
     },
+    "Add markers to transcripts" : {
+      "comment" : "About panel: switch",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodawaj znaczniki do transkrypcji"
+          }
+        }
+      }
+    },
     "Add provider" : {
       "localizations" : {
         "pl" : {
@@ -2148,6 +2085,123 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dodaj klucz API tego dostawcy w sekcji Dostawcy, aby pobrać listę modeli, albo wpisz identyfikator modelu poniżej."
+          }
+        }
+      }
+    },
+    "Added" : {
+      "comment" : "Diff span kind",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodano"
+          }
+        }
+      }
+    },
+    "Added %lld rules from corrections and suggestions · %@" : {
+      "comment" : "Dictionary: Learn result; plural on the first number",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Added %lld rule from corrections and suggestions · %@"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Added %lld rules from corrections and suggestions · %@"
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Dodano %lld reguły na podstawie poprawek i propozycji · %@"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Dodano %lld reguł na podstawie poprawek i propozycji · %@"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Dodano %lld regułę na podstawie poprawek i propozycji · %@"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Dodano %lld reguły na podstawie poprawek i propozycji · %@"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Added %lld rules from corrections · %@" : {
+      "comment" : "Dictionary: Learn result; plural on the first number",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Added %lld rule from corrections · %@"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Added %lld rules from corrections · %@"
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Dodano %lld reguły na podstawie poprawek · %@"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Dodano %lld reguł na podstawie poprawek · %@"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Dodano %lld regułę na podstawie poprawek · %@"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Dodano %lld reguły na podstawie poprawek · %@"
+                }
+              }
+            }
           }
         }
       }
@@ -2188,12 +2242,116 @@
         }
       }
     },
+    "After formatting · %lld characters" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "After formatting · %lld character"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "After formatting · %lld characters"
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Po formatowaniu · %lld znaki"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Po formatowaniu · %lld znaków"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Po formatowaniu · %lld znak"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Po formatowaniu · %lld znaku"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "After this much silence the Apple engine goes idle. Recognition resumes when you start speaking again." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Po tak długiej ciszy silnik Apple przechodzi w stan spoczynku. Rozpoznawanie wznawia się, gdy znowu zaczniesz mówić."
+          }
+        }
+      }
+    },
+    "After your correction · %lld characters" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "After your correction · %lld character"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "After your correction · %lld characters"
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Po Twojej poprawce · %lld znaki"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Po Twojej poprawce · %lld znaków"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Po Twojej poprawce · %lld znak"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Po Twojej poprawce · %lld znaku"
+                }
+              }
+            }
           }
         }
       }
@@ -2394,16 +2552,6 @@
         }
       }
     },
-    "Agent transcript tagging" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Oznaczanie transkrypcji dla agentów"
-          }
-        }
-      }
-    },
     "Agent unavailable" : {
       "comment" : "Settings health footer, sentence case",
       "localizations" : {
@@ -2567,22 +2715,24 @@
         }
       }
     },
-    "Also remove API keys from Keychain" : {
+    "Also remove API keys from Keychain (not recoverable from Trash)" : {
+      "comment" : "About panel: reset checkbox",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Usuń także klucze API z pęku kluczy"
+            "value" : "Usuń też klucze API z pęku kluczy (nie da się ich odzyskać z Kosza)"
           }
         }
       }
     },
-    "Also reset my base prompts (assistive.txt and formatting.txt)" : {
+    "Also reset my base prompts (assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt)" : {
+      "comment" : "About panel: reset checkbox; the four file names stay verbatim",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zresetuj także moje bazowe prompty (assistive.txt i formatting.txt)"
+            "value" : "Zresetuj też moje prompty bazowe (assistive.txt, formatting.txt, formatting-smart.txt i formatting-max.txt)"
           }
         }
       }
@@ -2607,6 +2757,17 @@
         }
       }
     },
+    "An outdated configuration setting was detected. It needs a review." : {
+      "comment" : "About panel: a .env key is unknown or shadows a setting; nothing is changed automatically",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wykryto przestarzałe ustawienie konfiguracji. Wymaga sprawdzenia."
+          }
+        }
+      }
+    },
     "Anchor" : {
       "comment" : "Overlay placement menu: header above the screen positions the overlay snaps to",
       "localizations" : {
@@ -2614,16 +2775,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pozycja"
-          }
-        }
-      }
-    },
-    "Anonymous activation" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Anonimowe zgłoszenie pierwszego użycia"
           }
         }
       }
@@ -2656,6 +2807,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pominięte opcje znajdziesz później w Ustawieniach."
+          }
+        }
+      }
+    },
+    "App data" : {
+      "comment" : "About panel: the ~/.codescribe folder",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dane aplikacji"
           }
         }
       }
@@ -3216,6 +3378,27 @@
         }
       }
     },
+    "Browse corrected transcripts and the rules that help recognize your vocabulary." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przeglądaj poprawione transkrypcje i reguły, które pomagają rozpoznawać Twoje słownictwo."
+          }
+        }
+      }
+    },
+    "Build timestamp: %@" : {
+      "comment" : "About panel details: the raw CSBuiltAt value",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Znacznik czasu kompilacji: %@"
+          }
+        }
+      }
+    },
     "Built" : {
       "localizations" : {
         "pl" : {
@@ -3519,17 +3702,6 @@
         }
       }
     },
-    "Changed" : {
-      "comment" : "Dictionary: header above the words the correction changed",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zmienione słowa"
-          }
-        }
-      }
-    },
     "Changes" : {
       "comment" : "Tool risk class",
       "localizations" : {
@@ -3620,6 +3792,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdź model"
+          }
+        }
+      }
+    },
+    "Check the Codescribe version, where your data lives and the privacy settings." : {
+      "comment" : "About panel blurb",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdź wersję Codescribe, lokalizację danych i ustawienia prywatności."
           }
         }
       }
@@ -4109,6 +4292,17 @@
         }
       }
     },
+    "Codescribe documentation" : {
+      "comment" : "About panel: docs link",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dokumentacja Codescribe"
+          }
+        }
+      }
+    },
     "Codescribe has measured how loudly you speak into this microphone." : {
       "localizations" : {
         "pl" : {
@@ -4166,6 +4360,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codescribe nagrywa z mikrofonu aktualnie używanego przez macOS."
+          }
+        }
+      }
+    },
+    "Codescribe reviews all %lld saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to My rules. Existing rules, corrections and their history stay as they are." : {
+      "comment" : "Dictionary: confirmation before Learn from corrections; plural",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Codescribe reviews the %lld saved correction and the suggested rules, then adds the new vocabulary rules it can derive to My rules. Existing rules, corrections and their history stay as they are."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Codescribe reviews all %lld saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to My rules. Existing rules, corrections and their history stay as they are."
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Codescribe przejrzy wszystkie %lld zapisane poprawki i proponowane reguły, a potem doda do Moich reguł nowe reguły słownictwa, które uda się z nich wyprowadzić. Istniejące reguły, poprawki i ich historia pozostaną bez zmian."
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Codescribe przejrzy wszystkie %lld zapisanych poprawek i proponowane reguły, a potem doda do Moich reguł nowe reguły słownictwa, które uda się z nich wyprowadzić. Istniejące reguły, poprawki i ich historia pozostaną bez zmian."
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Codescribe przejrzy %lld zapisaną poprawkę i proponowane reguły, a potem doda do Moich reguł nowe reguły słownictwa, które uda się z nich wyprowadzić. Istniejące reguły, poprawki i ich historia pozostaną bez zmian."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Codescribe przejrzy wszystkie %lld zapisanej poprawki i proponowane reguły, a potem doda do Moich reguł nowe reguły słownictwa, które uda się z nich wyprowadzić. Istniejące reguły, poprawki i ich historia pozostaną bez zmian."
+                }
+              }
+            }
           }
         }
       }
@@ -4391,16 +4638,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wykonaj krok 1 przed pomiarem tego wejścia."
-          }
-        }
-      }
-    },
-    "Config, logs & runtime data" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Konfiguracja, logi i dane z działania aplikacji"
           }
         }
       }
@@ -4739,6 +4976,7 @@
       }
     },
     "Copy path" : {
+      "comment" : "About panel: copy button tooltip",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -4754,6 +4992,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kopiuj poprzednie nagranie do schowka"
+          }
+        }
+      }
+    },
+    "Copy the %@ path" : {
+      "comment" : "About panel: copy button",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kopiuj ścieżkę: %@"
           }
         }
       }
@@ -4789,13 +5038,13 @@
         }
       }
     },
-    "Corrected original" : {
+    "Corrected text" : {
       "comment" : "Dictionary: header above the editor holding the corrected text",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poprawiona transkrypcja"
+            "value" : "Poprawiony tekst"
           }
         }
       }
@@ -4807,16 +5056,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Korekta"
-          }
-        }
-      }
-    },
-    "Correction history and custom dictionary. Teach is explicit bulk promotion; automatic learning still needs 3 matching human corrections." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Historia poprawek i własny słownik. Funkcja „Naucz” umożliwia ręczne dodanie wielu reguł naraz. Automatyczne uczenie nadal wymaga 3 zgodnych poprawek wprowadzonych ręcznie."
           }
         }
       }
@@ -5320,16 +5559,6 @@
         }
       }
     },
-    "Custom dictionary · %lld" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Własny słownik · %lld"
-          }
-        }
-      }
-    },
     "Custom prompt file in use." : {
       "localizations" : {
         "pl" : {
@@ -5467,6 +5696,17 @@
         }
       }
     },
+    "Default: off · Now: %@" : {
+      "comment" : "About panel: shipped default and the current switch state",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Domyślnie: wyłączone · Teraz: %@"
+          }
+        }
+      }
+    },
     "Defaults" : {
       "localizations" : {
         "pl" : {
@@ -5537,59 +5777,6 @@
         }
       }
     },
-    "Delivered after formatting · %lld characters" : {
-      "comment" : "Dictionary: header above the text that was delivered; the count is its length",
-      "localizations" : {
-        "en" : {
-          "variations" : {
-            "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Delivered after formatting · %lld character"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Delivered after formatting · %lld characters"
-                }
-              }
-            }
-          }
-        },
-        "pl" : {
-          "variations" : {
-            "plural" : {
-              "few" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Przekazany tekst po formatowaniu · %lld znaki"
-                }
-              },
-              "many" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Przekazany tekst po formatowaniu · %lld znaków"
-                }
-              },
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Przekazany tekst po formatowaniu · %lld znak"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Przekazany tekst po formatowaniu · %lld znaku"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "Delivery interrupted" : {
       "localizations" : {
         "pl" : {
@@ -5654,6 +5841,7 @@
       }
     },
     "Details" : {
+      "comment" : "About panel: disclosure with raw diagnostic values",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5685,6 +5873,7 @@
       }
     },
     "Diagnostic details" : {
+      "comment" : "Dictionary: disclosure over telemetry coverage",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5744,6 +5933,27 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Słownik"
+          }
+        }
+      }
+    },
+    "Dictionary and corrections" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Słownik i poprawki"
+          }
+        }
+      }
+    },
+    "Differences between versions" : {
+      "comment" : "Dictionary: header above the compared versions of the text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Różnice między wersjami"
           }
         }
       }
@@ -6044,59 +6254,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zmiany są zapisywane w pliku mcp.json. Ręczne zmiany (env, własne pola) zostają zachowane."
-          }
-        }
-      }
-    },
-    "Edited · %lld characters" : {
-      "comment" : "Dictionary: header above the text after the person's edit; the count is its length",
-      "localizations" : {
-        "en" : {
-          "variations" : {
-            "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Edited · %lld character"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Edited · %lld characters"
-                }
-              }
-            }
-          }
-        },
-        "pl" : {
-          "variations" : {
-            "plural" : {
-              "few" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Po edycji · %lld znaki"
-                }
-              },
-              "many" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Po edycji · %lld znaków"
-                }
-              },
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Po edycji · %lld znak"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Po edycji · %lld znaku"
-                }
-              }
-            }
           }
         }
       }
@@ -6526,6 +6683,17 @@
         }
       }
     },
+    "First dictation confirmation" : {
+      "comment" : "About panel section",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Potwierdzenie pierwszego dyktowania"
+          }
+        }
+      }
+    },
     "Fixed windows" : {
       "shouldTranslate" : false
     },
@@ -6587,6 +6755,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Formatowanie"
+          }
+        }
+      }
+    },
+    "Formatting changed (raw STT → delivered)" : {
+      "comment" : "Dictionary: header of the diff between raw STT and the delivered text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmiany formatowania (surowa transkrypcja → tekst przekazany)"
           }
         }
       }
@@ -6695,6 +6874,17 @@
         }
       }
     },
+    "Full comparison · %lld → %lld characters" : {
+      "comment" : "Dictionary: toggle showing the full texts; the numbers are character counts",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pełne porównanie · %1$lld → %2$lld znaków"
+          }
+        }
+      }
+    },
     "Full local Whisper file pass over the last session audio" : {
       "localizations" : {
         "pl" : {
@@ -6711,22 +6901,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozpoznawanie mowy z całego wybranego pliku audio lokalnie, za pomocą Whisper"
-          }
-        }
-      }
-    },
-    "Full transcript · raw %lld chars · edited %lld chars" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Full transcript · raw %1$lld chars · edited %2$lld chars"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pełna transkrypcja · liczba znaków przed edycją: %1$lld · po edycji: %2$lld"
           }
         }
       }
@@ -6902,12 +7076,12 @@
         }
       }
     },
-    "Hide full transcript" : {
+    "Hide full comparison" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ukryj pełną transkrypcję"
+            "value" : "Ukryj pełne porównanie"
           }
         }
       }
@@ -7112,6 +7286,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Urządzenie wejściowe"
+          }
+        }
+      }
+    },
+    "Insert %@ into the template" : {
+      "comment" : "About panel: template field chip",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wstaw %@ do szablonu"
           }
         }
       }
@@ -7508,6 +7693,49 @@
         }
       }
     },
+    "Learn" : {
+      "comment" : "Dictionary: confirmation button",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ucz"
+          }
+        }
+      }
+    },
+    "Learn dictionary rules from all saved corrections" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ucz słownik reguł na podstawie wszystkich zapisanych poprawek"
+          }
+        }
+      }
+    },
+    "Learn from corrections?" : {
+      "comment" : "Dictionary: confirmation title",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uczyć słownik z poprawek?"
+          }
+        }
+      }
+    },
+    "Learn from corrections…" : {
+      "comment" : "Dictionary: button",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ucz słownik z poprawek…"
+          }
+        }
+      }
+    },
     "Leave empty to keep the stored key" : {
       "localizations" : {
         "pl" : {
@@ -7659,16 +7887,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aktualny stan uprawnień macOS. Kliknij brakujące uprawnienie, aby je przyznać."
-          }
-        }
-      }
-    },
-    "Live preview" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Podgląd na żywo"
           }
         }
       }
@@ -7834,16 +8052,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lokalny model Whisper"
-          }
-        }
-      }
-    },
-    "Local by design." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Z myślą o pracy lokalnej."
           }
         }
       }
@@ -8530,12 +8738,13 @@
         }
       }
     },
-    "Moves only Agent conversations, runtime identity, MCP and tool state to Trash. Agent provider and MCP connector secrets are deleted permanently. Recordings, transcriptions, dictionary, lexicon, quality reports, prompts, audio, hotkeys, dictation, license, and macOS permissions are preserved." : {
+    "Moves Agent conversations, MCP configuration and tool state to Trash. Agent provider keys and MCP connector secrets are deleted permanently. Everything else stays." : {
+      "comment" : "About panel: short scope of the Agent reset; the confirmation shows the full scope",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Usuwa dane Agenta: rozmowy, stan sesji, konfigurację MCP i stan narzędzi.\n\nKlucze dostawców Agenta i dane dostępowe konektorów MCP zostaną trwale usunięte. Pozostałe dane Codescribe — w tym nagrania, transkrypcje, słownik, leksykon, raporty jakości, prompty, audio, skróty klawiszowe, ustawienia dyktowania, licencja i uprawnienia macOS — pozostaną bez zmian."
+            "value" : "Przenosi rozmowy Agenta, konfigurację MCP i stan narzędzi do Kosza. Klucze dostawców Agenta i sekrety łączników MCP są usuwane trwale. Reszta zostaje."
           }
         }
       }
@@ -8560,12 +8769,13 @@
         }
       }
     },
-    "Moves recordings, transcript history, conversations, logs, preferences, and local configuration to Trash so they can be recovered. Your assistive.txt and formatting.txt base prompts are preserved by default." : {
+    "Moves recordings, transcripts, conversations, logs, preferences and local configuration to Trash. Your base prompts stay unless you choose otherwise below." : {
+      "comment" : "About panel: short scope of the app-data reset; the confirmation shows the full scope",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Przenosi nagrania, historię transkrypcji, rozmowy, logi, preferencje i lokalną konfigurację do kosza.\nTwoje własne prompty Agenta i formatowania (`assistive.txt` i `formatting.txt`) pozostaną bez zmian."
+            "value" : "Przenosi nagrania, transkrypcje, rozmowy, logi, preferencje i lokalną konfigurację do Kosza. Prompty bazowe zostają, chyba że poniżej zdecydujesz inaczej."
           }
         }
       }
@@ -8602,6 +8812,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Moje dyktowanie"
+          }
+        }
+      }
+    },
+    "My rules · %lld" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Moje reguły · %lld"
           }
         }
       }
@@ -8776,16 +8996,6 @@
         }
       }
     },
-    "No account is required. Your configuration and transcript history stay on this Mac." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie potrzebujesz konta. Twoja konfiguracja i historia transkrypcji pozostają na tym Macu."
-          }
-        }
-      }
-    },
     "No agents connected" : {
       "localizations" : {
         "pl" : {
@@ -8802,6 +9012,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Brak zapisanego nagrania dla tego wpisu. Plik last_session.wav nie zostanie użyty w zamian."
+          }
+        }
+      }
+    },
+    "No archived recording for this correction." : {
+      "comment" : "Dictionary: why Retranscribe is disabled",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak archiwalnego nagrania dla tej poprawki."
           }
         }
       }
@@ -9009,6 +9230,17 @@
         }
       }
     },
+    "No new rules: everything eligible is already in My rules · %@" : {
+      "comment" : "Dictionary: Learn found nothing new; the placeholder is the active rules count",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak nowych reguł: wszystko, co się kwalifikuje, jest już w Moich regułach · %@"
+          }
+        }
+      }
+    },
     "No new transcript was produced for this take." : {
       "localizations" : {
         "pl" : {
@@ -9035,6 +9267,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie zapisano wyniku."
+          }
+        }
+      }
+    },
+    "No rules yet — corrections you save and rules you teach will appear here." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie ma jeszcze reguł. Pojawią się tu poprawki, które zapiszesz, i reguły, których nauczysz słownik."
           }
         }
       }
@@ -9148,6 +9390,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie ma jeszcze żadnych transkrypcji"
+          }
+        }
+      }
+    },
+    "Not available in this version: nothing is sent, whatever the switch says." : {
+      "comment" : "About panel: the analytics domain is empty in this build",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niedostępne w tej wersji: nic nie jest wysyłane, niezależnie od położenia przełącznika."
           }
         }
       }
@@ -9406,22 +9659,12 @@
         }
       }
     },
-    "Off by default. The event contains only the app version and macOS version — never audio or transcript text." : {
+    "Off by default. When enabled, all four prompt files move to Trash with the rest of the app data." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Domyślnie wyłączone. Zgłoszenie zawiera tylko wersję aplikacji i wersję macOS. Nie zawiera nagrania ani tekstu transkrypcji."
-          }
-        }
-      }
-    },
-    "Off by default. When enabled, both prompt files move to Trash with the rest of the app data." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Domyślnie wyłączone. Po włączeniu oba pliki promptów zostaną przeniesione do kosza wraz z pozostałymi danymi aplikacji."
+            "value" : "Domyślnie wyłączone. Po włączeniu wszystkie cztery pliki promptów trafią do Kosza razem z resztą danych aplikacji."
           }
         }
       }
@@ -9490,6 +9733,17 @@
         }
       }
     },
+    "One anonymous event with the app version and the macOS version. Never audio or text." : {
+      "comment" : "About panel: opt-in switch subtitle",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jedno anonimowe zdarzenie z wersją aplikacji i wersją macOS. Nigdy audio ani tekst."
+          }
+        }
+      }
+    },
     "One tap starts dictation and the next tap stops it. Holding records only while you hold." : {
       "localizations" : {
         "pl" : {
@@ -9530,26 +9784,6 @@
         }
       }
     },
-    "Open Codescribe documentation" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Otwórz dokumentację Codescribe"
-          }
-        }
-      }
-    },
-    "Open Privacy Policy" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Otwórz politykę prywatności"
-          }
-        }
-      }
-    },
     "Open Settings" : {
       "localizations" : {
         "pl" : {
@@ -9567,16 +9801,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Otwórz Ustawienia systemowe"
-          }
-        }
-      }
-    },
-    "Open Terms of Use and EULA" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Otwórz warunki korzystania i umowę licencyjną (EULA)"
           }
         }
       }
@@ -10308,7 +10532,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "polityka prywatności"
+            "value" : "Polityka prywatności"
           }
         }
       }
@@ -11311,6 +11535,17 @@
         }
       }
     },
+    "Removed" : {
+      "comment" : "Diff span kind",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usunięto"
+          }
+        }
+      }
+    },
     "Rename" : {
       "localizations" : {
         "pl" : {
@@ -11419,6 +11654,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zastąp ręczną kopię…"
+          }
+        }
+      }
+    },
+    "Replaced" : {
+      "comment" : "Diff span kind",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zamieniono"
           }
         }
       }
@@ -11655,22 +11901,23 @@
         }
       }
     },
-    "Restore default" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przywróć domyślny"
-          }
-        }
-      }
-    },
     "Restore default mode shortcuts" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przywróć domyślne skróty trybów"
+          }
+        }
+      }
+    },
+    "Restore default template" : {
+      "comment" : "About panel: button",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć domyślny szablon"
           }
         }
       }
@@ -11756,12 +12003,34 @@
         }
       }
     },
+    "Retranscribe needs the Local power or Cloud mode." : {
+      "comment" : "Dictionary: why Retranscribe is disabled",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ponowna transkrypcja wymaga Trybu lokalnego lub Chmury."
+          }
+        }
+      }
+    },
     "Retranscribe this take on the helper engine" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Rozpoznaj mowę z tego nagrania ponownie w procesie pomocniczym"
+          }
+        }
+      }
+    },
+    "Retranscribing…" : {
+      "comment" : "Dictionary: the helper pass is still running",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trwa ponowna transkrypcja…"
           }
         }
       }
@@ -12352,22 +12621,23 @@
         }
       }
     },
+    "Send a confirmation after the first successful dictation" : {
+      "comment" : "About panel: opt-in switch title",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wyślij potwierdzenie po pierwszym udanym dyktowaniu"
+          }
+        }
+      }
+    },
     "Send message" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyślij wiadomość"
-          }
-        }
-      }
-    },
-    "Send one content-free event after your first successful dictation" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wyślij jedno zgłoszenie po pierwszym udanym dyktowaniu, bez nagrania i tekstu"
           }
         }
       }
@@ -12526,6 +12796,17 @@
         }
       }
     },
+    "Setting to review: %@" : {
+      "comment" : "About panel details: the .env key names needing review, comma-separated",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ustawienie do sprawdzenia: %@"
+          }
+        }
+      }
+    },
     "Settings" : {
       "localizations" : {
         "pl" : {
@@ -12605,16 +12886,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Podsumowanie konfiguracji"
-          }
-        }
-      }
-    },
-    "Share anonymous activation ping" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wyślij anonimowe zgłoszenie pierwszego użycia"
           }
         }
       }
@@ -13910,16 +14181,6 @@
     "System surfaces own their material and borders." : {
       "shouldTranslate" : false
     },
-    "Tag transcripts for AI agents" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Oznaczaj transkrypcje dla agentów AI"
-          }
-        }
-      }
-    },
     "Take not sealed yet" : {
       "localizations" : {
         "pl" : {
@@ -13951,79 +14212,6 @@
         }
       }
     },
-    "Taught +%lld from corrections, +%lld from proposed → %lld live rules (%lld correction-sourced)." : {
-      "comment" : "Counted teach summary; the live-rules count needs a plural variation",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Taught +%1$lld from corrections, +%2$lld from proposed → %#@rules@ (%4$lld correction-sourced)."
-          },
-          "substitutions" : {
-            "rules" : {
-              "argNum" : 3,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg live rule"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg live rules"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dodano +%1$lld z korekt i +%2$lld z propozycji → %#@rules@ (%4$lld na podstawie korekt)."
-          },
-          "substitutions" : {
-            "rules" : {
-              "argNum" : 3,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "few" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg aktywne reguły"
-                    }
-                  },
-                  "many" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg aktywnych reguł"
-                    }
-                  },
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg aktywna reguła"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg aktywnej reguły"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "Teach" : {
       "localizations" : {
         "pl" : {
@@ -14046,16 +14234,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dodaj do słownika: %1$@ → %2$@"
-          }
-        }
-      }
-    },
-    "Teach dictionary from corrections and proposed rules" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Uzupełnij słownik na podstawie poprawek i proponowanych reguł"
           }
         }
       }
@@ -14091,6 +14269,28 @@
         }
       }
     },
+    "Template and preview" : {
+      "comment" : "About panel: disclosure with the marker template",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szablon i podgląd"
+          }
+        }
+      }
+    },
+    "Template preview" : {
+      "comment" : "About panel: label over the rendered template",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podgląd szablonu"
+          }
+        }
+      }
+    },
     "Terminal and process tools always require Allow once. Commands and paths remain constrained to Agent workspace roots." : {
       "localizations" : {
         "pl" : {
@@ -14108,6 +14308,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Warunki użytkowania i EULA"
+          }
+        }
+      }
+    },
+    "Terms of Use and License" : {
+      "comment" : "About panel: legal link",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Warunki korzystania i licencja"
           }
         }
       }
@@ -14331,6 +14542,28 @@
         }
       }
     },
+    "The configuration could not be fully checked. See the details." : {
+      "comment" : "About panel: the launch repair receipt is a refusal or unknown",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się w pełni sprawdzić konfiguracji. Zobacz szczegóły."
+          }
+        }
+      }
+    },
+    "The configuration was repaired when Codescribe started." : {
+      "comment" : "About panel: fields were reset or files recreated at launch",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konfiguracja została naprawiona przy uruchomieniu Codescribe."
+          }
+        }
+      }
+    },
     "The configured device is present and selected by the recorder." : {
       "localizations" : {
         "pl" : {
@@ -14357,16 +14590,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Połączone konto obsługuje żądania Agenta, ale lista modeli wymaga klucza API tego dostawcy. Zostaw bieżący model albo wpisz identyfikator modelu poniżej."
-          }
-        }
-      }
-    },
-    "The custom dictionary is empty — accepted overlay corrections will appear here." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Własny słownik jest pusty. Pojawią się tu poprawki zatwierdzone w overlayu."
           }
         }
       }
@@ -14879,12 +15102,12 @@
         }
       }
     },
-    "Toggle the full transcript for this correction" : {
+    "Toggle the full comparison for this correction" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pokaż lub ukryj pełną transkrypcję dla tej poprawki"
+            "value" : "Pokaż lub ukryj pełne porównanie tej poprawki"
           }
         }
       }
@@ -15062,6 +15285,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się potwierdzić spójności zmian w transkrypcji."
+          }
+        }
+      }
+    },
+    "Transcript source markers" : {
+      "comment" : "About panel section",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Znaczniki źródła transkrypcji"
           }
         }
       }
@@ -15549,17 +15783,6 @@
         }
       }
     },
-    "User" : {
-      "comment" : "Settings section: account profile",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Użytkownik"
-          }
-        }
-      }
-    },
     "Uses audio from the take currently shown in the overlay." : {
       "localizations" : {
         "pl" : {
@@ -15581,12 +15804,34 @@
         }
       }
     },
+    "Vendor API keys (OpenAI, Anthropic, xAI, Libraxis) are shared with Formatting: if Formatting uses one of them, enter that key again afterwards." : {
+      "comment" : "Agent reset confirmation: the deleted Keychain accounts are also read by the Formatting lane",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucze API dostawców (OpenAI, Anthropic, xAI, Libraxis) są wspólne z Formatowaniem: jeśli Formatowanie używa któregoś z nich, wpisz ten klucz ponownie."
+          }
+        }
+      }
+    },
     "Version" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wersja"
+          }
+        }
+      }
+    },
+    "Version %llu" : {
+      "comment" : "Dictionary: correction revision",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wersja %llu"
           }
         }
       }
@@ -16106,12 +16351,13 @@
         }
       }
     },
-    "Wrap delivered dictation in an explicit source tag" : {
+    "Wrap delivered dictation in a marker that names its source" : {
+      "comment" : "About panel: switch subtitle",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Otaczaj przekazywany tekst z dyktowania znacznikami wskazującymi jego źródło"
+            "value" : "Otaczaj dostarczone dyktowanie znacznikiem z nazwą źródła"
           }
         }
       }
@@ -16221,24 +16467,35 @@
         }
       }
     },
-    "Your assistive.txt and three formatting prompt files will also move to Trash." : {
-      "comment" : "assistive.txt is a file name — keep it verbatim",
+    "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt prompts will also move to Trash." : {
+      "comment" : "The four file names stay verbatim",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Plik assistive.txt i trzy pliki promptów formatowania również zostaną przeniesione do Kosza."
+            "value" : "Twoje prompty assistive.txt, formatting.txt, formatting-smart.txt i formatting-max.txt również trafią do Kosza."
           }
         }
       }
     },
-    "Your assistive.txt and three formatting prompt files will be preserved." : {
-      "comment" : "assistive.txt is a file name — keep it verbatim",
+    "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt prompts will be preserved." : {
+      "comment" : "The four file names stay verbatim",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Plik assistive.txt i trzy pliki promptów formatowania zostaną zachowane."
+            "value" : "Twoje prompty assistive.txt, formatting.txt, formatting-smart.txt i formatting-max.txt zostaną zachowane."
+          }
+        }
+      }
+    },
+    "Your correction (delivered → corrected)" : {
+      "comment" : "Dictionary: header of the diff between the delivered and the corrected text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Twoja poprawka (tekst przekazany → poprawiony)"
           }
         }
       }
@@ -16329,6 +16586,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "w użyciu"
+          }
+        }
+      }
+    },
+    "added by hand" : {
+      "comment" : "Dictionary: lexicon rule source",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodano ręcznie"
           }
         }
       }
@@ -16570,6 +16838,28 @@
         }
       }
     },
+    "closed" : {
+      "comment" : "Dictionary: quality record action",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "zamknięto"
+          }
+        }
+      }
+    },
+    "closed without review" : {
+      "comment" : "Dictionary: quality record action",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "zamknięto bez przeglądu"
+          }
+        }
+      }
+    },
     "cloud" : {
       "comment" : "Retranscribe pass: the cloud engine",
       "localizations" : {
@@ -16603,7 +16893,7 @@
       }
     },
     "copied" : {
-      "comment" : "Button state after copying",
+      "comment" : "Button state after copying\nDictionary: quality record action",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -16744,6 +17034,17 @@
         }
       }
     },
+    "edited" : {
+      "comment" : "Dictionary: quality record action",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "edytowano"
+          }
+        }
+      }
+    },
     "ended" : {
       "comment" : "Tool activity row: no result arrived\nTool call status: ended without a result",
       "localizations" : {
@@ -16844,6 +17145,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "formatowanie…"
+          }
+        }
+      }
+    },
+    "from a correction" : {
+      "comment" : "Dictionary: lexicon rule source",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Na podstawie poprawki"
           }
         }
       }
@@ -17723,6 +18035,28 @@
         }
       }
     },
+    "off" : {
+      "comment" : "Switch state, lowercase, in a sentence",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "wyłączone"
+          }
+        }
+      }
+    },
+    "on" : {
+      "comment" : "Switch state, lowercase, in a sentence",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "włączone"
+          }
+        }
+      }
+    },
     "open System Settings" : {
       "localizations" : {
         "pl" : {
@@ -17783,6 +18117,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lokalnie"
+          }
+        }
+      }
+    },
+    "pasted" : {
+      "comment" : "Dictionary: quality record action",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "wklejono"
           }
         }
       }
@@ -17982,16 +18327,6 @@
         }
       }
     },
-    "revision %llu" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "wersja %llu"
-          }
-        }
-      }
-    },
     "rewritten by your dictionary" : {
       "comment" : "VoiceOver marker spoken on a word the user's dictionary replaced",
       "localizations" : {
@@ -18021,6 +18356,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "w toku"
+          }
+        }
+      }
+    },
+    "saved correction" : {
+      "comment" : "Dictionary: quality record action",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "zapisana poprawka"
+          }
+        }
+      }
+    },
+    "sent to Agent" : {
+      "comment" : "Dictionary: quality record action",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "wysłano do Agenta"
           }
         }
       }
@@ -18240,13 +18597,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "account, profile, sign in, identity"
+            "value" : "about, version, build, commit, data folder, privacy, reset, trash"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "account, profile, sign in, identity, konto, profil, logowanie, tożsamość"
+            "value" : "about, version, build, commit, data folder, privacy, reset, trash, o aplikacji, wersja, kompilacja, dane, prywatność, reset, kosz"
           }
         }
       }
