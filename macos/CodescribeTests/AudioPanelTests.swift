@@ -279,7 +279,7 @@ final class AudioPanelTests: XCTestCase {
     XCTAssertTrue(writes.isEmpty, "reset must not route an empty device string")
   }
 
-  // Hands-free silence (TOGGLE_SILENCE_SEC) is Engine-owned epoch lifecycle;
+  // The silence window (TOGGLE_SILENCE_SEC) is Engine-owned epoch lifecycle;
   // its write contract is asserted in SettingsTruthTests. Audio owns only
   // hardware selection and sound feedback.
   func testAudioKnobsWriteOnlyLiveRuntimeConfigKeys() {

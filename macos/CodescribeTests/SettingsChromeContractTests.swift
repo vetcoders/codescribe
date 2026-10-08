@@ -102,7 +102,9 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(tabbed.count, 2)
     for section in tabbed {
       let english = SettingsTab.tabs(in: section).map(\.title)
-      XCTAssertEqual(english.count, 6, "\(section.rawValue)")
+      // Agent keeps six tabs; Dictation has five since the raw recognition
+      // timings moved to Lab.
+      XCTAssertEqual(english.count, section == .engine ? 5 : 6, "\(section.rawValue)")
       // Brand names ("MCP", "Whisper") are not catalog keys and read the same.
       let translated = english.map { polish[$0] ?? $0 }
       XCTAssertNotEqual(translated, english, "\(section.rawValue): no Polish labels resolved")
