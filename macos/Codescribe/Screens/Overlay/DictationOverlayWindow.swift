@@ -23,7 +23,6 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// or default expanded size: manual sizing, an open editor, or a dirty draft.
   /// The panel remains the only writer of the transition frame.
   var qualifiedExpandedHeight: ((CGFloat) -> CGFloat?)?
-  var onWidgetInteractionChanged: ((OverlayWidgetInteraction, Bool) -> Void)?
   fileprivate var presence: OverlayPresence?
   private var dragStart: (mouse: NSPoint, frame: NSRect, miniFrame: NSRect?)?
   private var dragMoved = false
@@ -36,8 +35,6 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var transitionRight: CGFloat?
   private var frameTransitionTarget: NSRect?
   private var frameTransitionGeneration: UInt64 = 0
-  private var menuObservers: [NSObjectProtocol] = []
-  private var trackingMenus: Set<ObjectIdentifier> = []
   private(set) var isFrameTransitioning = false
   var isUserResizing: Bool { resizeStart != nil }
   var sizeForPersistence: NSSize { expandedSize ?? frame.size }
@@ -164,37 +161,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   func startPresence() {
     presence?.start()
-    guard menuObservers.isEmpty else { return }
-    for (name, tracking) in [
-      (NSMenu.didBeginTrackingNotification, true), (NSMenu.didEndTrackingNotification, false),
-    ] {
-      menuObservers.append(
-        NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) {
-          [weak self] notification in
-          guard let menu = notification.object as? NSMenu else { return }
-          let identity = ObjectIdentifier(menu)
-          MainActor.assumeIsolated {
-            guard let self, !self.menuObservers.isEmpty else { return }
-            if tracking {
-              guard self.isVisible else { return }
-              self.trackingMenus.insert(identity)
-            } else {
-              self.trackingMenus.remove(identity)
-            }
-            self.onWidgetInteractionChanged?(.menu, !self.trackingMenus.isEmpty)
-          }
-        })
-    }
   }
 
   func invalidatePresence() {
     cancelUserResize()
     presence?.invalidate()
-    menuObservers.forEach(NotificationCenter.default.removeObserver)
-    menuObservers.removeAll()
-    trackingMenus.removeAll()
-    onWidgetInteractionChanged?(.menu, false)
-    onWidgetInteractionChanged?(.dragging, false)
   }
 
   override var canBecomeKey: Bool { allowsKeyForTranscript }
@@ -250,7 +221,6 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     }
     if event.type == .leftMouseDown {
       if isUserResizing { endUserResize() }
-      if dragStart != nil { onWidgetInteractionChanged?(.dragging, false) }
       dragStart = nil
       dragMoved = false
       if styleMask.contains(.resizable), let contentView,
@@ -269,7 +239,6 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     case .leftMouseDown where isWindowDragHit(at: event.locationInWindow):
       settleFrameTransition()
       dragStart = (screenPoint(for: event), frame, miniFrame)
-      onWidgetInteractionChanged?(.dragging, true)
     case .leftMouseDragged where dragStart != nil:
       guard let dragStart else { return }
       let current = screenPoint(for: event)
@@ -289,7 +258,6 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       }
       dragStart = nil
       dragMoved = false
-      onWidgetInteractionChanged?(.dragging, false)
       if moved { onUserDragEnded?(origin) }
     default:
       super.sendEvent(event)
@@ -305,7 +273,6 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       return false
     }
     resizeStart = (point, frame, edge)
-    onWidgetInteractionChanged?(.dragging, true)
     onUserResize?()
     return true
   }
@@ -326,7 +293,6 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   func endUserResize() {
     guard isUserResizing else { return }
     resizeStart = nil
-    onWidgetInteractionChanged?(.dragging, false)
     let pending = pendingResizePresentation
     pendingResizePresentation = nil
     if let pending { setPresentationMode(pending.mode, animated: pending.animated) }
@@ -337,7 +303,6 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private func cancelUserResize() {
     resizeStart = nil
     pendingResizePresentation = nil
-    onWidgetInteractionChanged?(.dragging, false)
   }
 
   /// Native tracking owns the interior, including SwiftUI text and links
@@ -346,7 +311,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   @discardableResult
   func refreshCursor(at point: NSPoint) -> Bool {
     guard let contentView else { return false }
-    let resizeEdge = styleMask.contains(.resizable)
+    let resizeEdge =
+      styleMask.contains(.resizable)
       && OverlayResizeHit.edge(at: point, in: contentView.bounds) != nil
     guard resizeEdge || isWindowDragHit(at: point) else { return false }
     let desired = resizeEdge ? cursor(at: point) : NSCursor.arrow
@@ -582,9 +548,7 @@ enum DictationOverlayWindow {
       guard !OverlayController.isApplyingFrame else { return }
       state?.userResizedOverlay()
     }
-    panel.onWidgetInteractionChanged = { [weak state] interaction, held in
-      state?.setWidgetInteraction(interaction, held: held)
-    }
+
     panel.contentView = OverlayContentContainer(hosting: hosting)
 
     // User-resizable: borderless windows still honour edge-drag resize when

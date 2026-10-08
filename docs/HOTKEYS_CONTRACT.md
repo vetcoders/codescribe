@@ -2,6 +2,11 @@
 
 ## Overlay conversation viewing and speech
 
+Overlay size is selected explicitly. The preview button toggles mini/full; its
+context menu selects mini, compact (midi), or transcription (full). Pointer entry
+and departure preserve that selection. Hover still provides button feedback and
+pauses terminal auto-hide; it does not change the capture route or window size.
+
 The overlay's channel menu separates **My dictation**, **0 · All**, and exact
 named-agent conversations from the explicit **Capture channels** controls.
 Selecting a conversation is passive: it does not open or close the microphone,
@@ -18,7 +23,8 @@ text. Unread reply counts describe viewing only, independently of delivery ACK.
 An explicit ordinary hold or toggle start closes active agent capture channels
 through their normal hangup path before admitting dictation (Founder delivery
 `f3cbd666a0d7d7e61d4d1971`, 2026-10-05).
-Each channel task joins and publishes its final receipt; its words are retained.
+Each channel releases its PCM feed before dictation admission. Its retained
+terminal task then joins and publishes the final receipt; its words are retained.
 For hold gestures, handover waits until the existing start delay has elapsed.
 The modifier alone can still become a channel chord or be released without a
 take; an explicit channel gesture cancels that pending ordinary hold.
@@ -33,6 +39,20 @@ its admission cannot discard that Stop; timeout leaves its owner running until
 settlement. The terminal operation rechecks the captured identity under the
 transition lock and never stops a successor. Idle without a published capture
 still requires admission to be available before reporting no live take.
+
+Native recording gestures remain FIFO ordered through capture admission. A Stop
+acknowledges only after its PCM subscription is released and the capture and
+transition locks are free. The same retained terminal operation owns archive
+finalization, recognition, reducer publication and delivery; explicit Stop APIs
+still wait for its terminal result. `Busy` refuses a new take until the old
+foreground retires, while channel gestures can use the released capture slot.
+A preempting start waits on the predecessor's foreground settlement receipt,
+not merely on a mutex that the terminal drain has released.
+
+Each take archives exactly its own admitted native PCM, even when a channel
+keeps the physical microphone open. Releasing the feed freezes its sample count
+under the same registry lock as capture admission. A bounded archive queue or
+write failure refuses incomplete evidence; it never certifies a shortened WAV.
 
 Each reply's **Play** invokes the installed bus speech owner with its persisted
 reply ID and a fresh playback ticket. **Stop** names the exact emitted active
@@ -614,3 +634,13 @@ outside the detector.
 ---
 
 _Copyright © 2024–2026 Vetcoders_
+
+### Publication timeout ownership
+
+A foreground terminal-publication timeout is an incomplete attempt, not a Bus end.
+The original `ClosedTake`, presentation sink, exact Bus and retention lease move
+into the controller's tracked closed-capture tails before foreground reset. The
+tail retries publication with backoff and classifies/archives/ends only that take
+after acknowledgement. It cannot paste, paint, or reset a successor. Permanent
+publisher refusal remains unfinished and visible to shutdown admission; timeout
+never grants permission to discard unpublished terminal evidence.

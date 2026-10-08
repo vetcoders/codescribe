@@ -1108,7 +1108,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertLessThan(
       scale, hitShape, "Hover growth must not change the button's layout or hit shape")
     XCTAssertTrue(close.contains("closeDotHovered = $0"))
-    XCTAssertTrue(close.contains("state.setWidgetInteraction(.closeControl, held: $0)"))
+    XCTAssertFalse(close.contains("setPresentationMode"), "Close hover must never morph the window")
     XCTAssertTrue(close.contains(".contentShape(Circle().inset(by: -7.5))"))
     XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")
     XCTAssertTrue(header.contains("Text(verbatim: \"codescribe\")"))

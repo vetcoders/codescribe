@@ -58,6 +58,7 @@ struct OverlayRecordingControls: View {
   let onPreviewToggle: () -> Void
   var showsRecordingButton = true
   var onShowDictation: (() -> Void)?
+  var onPresentationSelect: ((OverlayPresentationMode) -> Void)?
 
   /// Recording and preview keep fixed hairline circles, leaving the remaining
   /// width to the waveform (Founder, 2026-09-29: "ten stop jest olbrzymi").
@@ -111,7 +112,7 @@ struct OverlayRecordingControls: View {
     case .expanded: String(localized: "Collapse widget")
     }
   }
-  /// Full view is always an explicit click; hover reveals only the midi strip.
+  /// Expanding the widget is always an explicit click.
   var previewSymbol: String {
     switch presentationMode {
     case .mini: OverlayControlSymbols.miniToTranscript
@@ -211,6 +212,20 @@ struct OverlayRecordingControls: View {
             .strokeBorder(palette.border.color, lineWidth: 1 / max(displayScale, 1))
             .accessibilityHidden(true)
         }
+    }
+    .contextMenu {
+      if let onPresentationSelect {
+        Picker(
+          "Live preview",
+          selection: Binding(get: { presentationMode }, set: onPresentationSelect)
+        ) {
+          Text("Collapse widget").tag(OverlayPresentationMode.mini)
+          Text("Compact").tag(OverlayPresentationMode.midi)
+          Text("Transcription").tag(OverlayPresentationMode.expanded)
+        }
+        .pickerStyle(.inline)
+        .accessibilityIdentifier("overlay-presentation-picker")
+      }
     }
     .buttonStyle(.plain)
     .csFocusOutline()
@@ -346,12 +361,7 @@ struct DictationOverlayView: View {
       pointerInsideOverlay = inside
       state.setPointerHovering(inside)
     }
-    .task(id: state.widgetHoverDeadline) {
-      guard let deadline = state.widgetHoverDeadline else { return }
-      do { try await ContinuousClock().sleep(until: deadline) } catch { return }
-      guard !Task.isCancelled else { return }
-      state.expireWidgetHover()
-    }
+
     .onAppear {
       FontLoader.register()
     }
@@ -412,9 +422,9 @@ struct DictationOverlayView: View {
           }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: state.isCollapsed)
-        .overlay(alignment: .trailing) {
+        .overlay(alignment: .topTrailing) {
           if state.showsAgentMonitor && !state.isCollapsed {
-            ZStack(alignment: .trailing) {
+            ZStack(alignment: .topTrailing) {
               Button {
                 state.hideAgentSidebar()
               } label: {
@@ -425,22 +435,23 @@ struct DictationOverlayView: View {
               .buttonStyle(.plain)
               .accessibilityLabel("Close agent sidebar")
               .accessibilityIdentifier("overlay-agent-drawer-dismiss")
-              channelStatusView.monitorBody
-                .padding(12)
-                .frame(width: min(360, max(0, (geometry.size.width - 16) * 0.78)))
-                .frame(maxHeight: .infinity)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .padding(.trailing, 8)
-                .accessibilityIdentifier("overlay-agent-sidebar")
-                .background {
-                  GeometryReader { drawer in
-                    Color.clear.preference(
-                      key: OverlayDrawerFramePreferenceKey.self,
-                      value: drawer.frame(in: .named("overlay-canvas")))
-                  }
-                  .allowsHitTesting(false)
+              channelStatusView.monitorBody(
+                maximumHeight: max(0, geometry.size.height - headerHeight - 8 - 16 - 24)
+              )
+              .padding(12)
+              .frame(width: min(360, max(0, (geometry.size.width - 16) * 0.78)))
+              .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+              .clipShape(RoundedRectangle(cornerRadius: 14))
+              .padding(.trailing, 8)
+              .accessibilityIdentifier("overlay-agent-sidebar")
+              .background {
+                GeometryReader { drawer in
+                  Color.clear.preference(
+                    key: OverlayDrawerFramePreferenceKey.self,
+                    value: drawer.frame(in: .named("overlay-canvas")))
                 }
+                .allowsHitTesting(false)
+              }
             }
             .padding(.top, headerHeight + 8)
             .padding(.bottom, 16)
@@ -659,7 +670,7 @@ struct DictationOverlayView: View {
     // The cached panel survives orderOut. Observe its window outside
     // ViewThatFits so hidden header candidates cannot compete for visibility.
     .background {
-      OverlayRenderVisibility(onHidden: { state.clearWidgetHover() }) { visible in
+      OverlayRenderVisibility(onHidden: { state.clearPointerHover() }) { visible in
         state.setConversationVisible(visible)
         guard overlayVisible != visible else { return }
         var transaction = Transaction(animation: nil)
@@ -715,7 +726,6 @@ struct DictationOverlayView: View {
     .buttonStyle(.plain)
     .onHover {
       closeDotHovered = $0
-      state.setWidgetInteraction(.closeControl, held: $0)
     }
     .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: closeDotHovered)
     .focusable(false)
@@ -736,7 +746,8 @@ struct DictationOverlayView: View {
       recordingLight: state.recordingLight, animates: overlayVisible)
     controls.showsRecordingButton = showsMicrophone
     controls.onShowDictation = state.showTranscription
-    return controls.onHover { state.setWidgetInteraction(.primaryControls, held: $0) }
+    controls.onPresentationSelect = state.setPresentationMode
+    return controls
   }
 
   private func justifiedHeader(compact: Bool) -> some View {

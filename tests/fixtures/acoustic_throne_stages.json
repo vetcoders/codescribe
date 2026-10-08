@@ -2125,10 +2125,65 @@
               "ast_contract": "stop"
             },
             {
-              "symbol": "complete_stop",
+              "symbol": "close_capture",
               "file": "core/audio/streaming_recorder.rs",
               "required_code": [],
-              "ast_contract": "complete_stop"
+              "ast_contract": "close_capture"
+            },
+            {
+              "symbol": "release_take_pcm_feed",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "release_take_pcm_feed"
+            },
+            {
+              "symbol": "release_capture_subscriber",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "release_capture_subscriber"
+            },
+            {
+              "symbol": "finish_closed_capture",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "finish_closed_capture"
+            },
+            {
+              "symbol": "detach_closed_take",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "detach_closed_take"
+            },
+            {
+              "symbol": "detach_take_state",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "detach_take_state"
+            },
+            {
+              "symbol": "is_settled",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "is_settled"
+            },
+            {
+              "symbol": "finish",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "finish",
+              "signature_contains": "pub async fn finish(&mut self)"
+            },
+            {
+              "symbol": "copy_stop_error",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "copy_stop_error"
+            },
+            {
+              "symbol": "finalize_take_archive",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "finalize_take_archive"
             }
           ],
           "required_invocations": [
@@ -2256,16 +2311,80 @@
               "caller_file": "app/presentation/emitter.rs"
             },
             {
-              "callee": "terminal_finality",
-              "callee_file": "core/pipeline/acoustic_ledger.rs",
-              "caller": "complete_stop",
-              "caller_file": "core/audio/streaming_recorder.rs"
+              "caller": "stop",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "close_capture",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "close_capture",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "release_take_pcm_feed",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "release_take_pcm_feed",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "release_capture_subscriber",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
             },
             {
               "caller": "stop",
               "caller_file": "core/audio/streaming_recorder.rs",
-              "callee": "complete_stop",
+              "callee": "finish_closed_capture",
               "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "finish_closed_capture",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "detach_closed_take",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "detach_closed_take",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "detach_take_state",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "finish_closed_capture",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "finish",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "finish_closed_capture",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "is_settled",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "finish",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "finalize_take_archive",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "finish",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "copy_stop_error",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "finish",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "terminal_finality",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
               "minimum_count": 1
             }
           ],
@@ -2678,9 +2797,23 @@
             "symbol": {
               "enum": [
                 "paste_text_from_overlay",
+                "noop",
                 "execute_clipboard_paste",
                 "stop",
-                "complete_stop"
+                "close_capture",
+                "release_take_pcm_feed",
+                "release_capture_subscriber",
+                "finish_closed_capture",
+                "detach_closed_take",
+                "detach_take_state",
+                "is_settled",
+                "finish",
+                "copy_stop_error",
+                "finalize_take_archive",
+                "terminal_finality",
+                "has_no_capture_facts",
+                "matches_refused_document",
+                "process_terminal_stop_error"
               ]
             },
             "accepted": {

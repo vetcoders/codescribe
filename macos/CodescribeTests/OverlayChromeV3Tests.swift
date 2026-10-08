@@ -29,7 +29,7 @@ final class OverlayChromeV3Tests: XCTestCase {
     XCTAssertTrue(close.contains("OverlayCloseCross()"))
     XCTAssertTrue(close.contains(".onHover {"))
     XCTAssertTrue(close.contains("closeDotHovered = $0"))
-    XCTAssertTrue(close.contains("state.setWidgetInteraction(.closeControl, held: $0)"))
+    XCTAssertFalse(close.contains("setPresentationMode"), "Close hover must never morph the window")
     XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")
     XCTAssertFalse(tail.contains("Text(\"×\")"))
     XCTAssertTrue(tail.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))

@@ -1151,6 +1151,35 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     }
   }
 
+  func testFourAgentMonitorScrollsWithinShortCanvasAndHugsTallCanvas() throws {
+    let channels = ["1", "2", "4", "7"].map {
+      OverlayChannelDelivery(
+        channel: $0, agent: "agent-\($0)", deliveryID: "receipt-\($0)", stage: .received,
+        isOpen: true)
+    }
+    for maximumHeight: CGFloat in [174, 588] {
+      let view = OverlayChannelStatusView(
+        channels: channels, unavailable: false, palette: .dark, animates: false)
+      let host = NSHostingView(
+        rootView: view.monitorBody(maximumHeight: maximumHeight).frame(width: 336))
+      let window = NSWindow(
+        contentRect: .init(x: 0, y: 0, width: 336, height: maximumHeight), styleMask: [.titled],
+        backing: .buffered, defer: false)
+      window.contentView = host
+      window.orderFrontRegardless()
+      defer { window.orderOut(nil) }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+      host.layoutSubtreeIfNeeded()
+      XCTAssertLessThanOrEqual(host.fittingSize.height, maximumHeight + 1)
+      XCTAssertGreaterThan(host.fittingSize.height, 100)
+      if maximumHeight > 500 {
+        XCTAssertLessThan(
+          host.fittingSize.height, 400, "four agents do not need a screen-height drawer")
+      }
+    }
+  }
+
   func testDeadFollowerIsVisibleWithoutRewritingDeliveryOrOpenState() {
     let channel = OverlayChannelDelivery(
       channel: "3", agent: "roman", deliveryID: "delivery-3", stage: .queued, isOpen: true)

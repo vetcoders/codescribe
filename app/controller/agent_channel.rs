@@ -1002,16 +1002,9 @@ impl RecordingController {
         TakeTruth::observe_ledger(&ledger, &session_id, Self::CHANNEL_CAPTURE_EPOCH)
     }
 
-    /// The one closing throne of a live channel session, for silence and
-    /// hang-up alike (a session no live process owns is sealed by
-    /// [`Self::seal_orphaned_channel_sessions`]). It consumes the open record,
-    /// which its caller removed from `agent_channels` exactly once, so a
-    /// session gets at most one `sealed` receipt. The receipt follows the
-    /// capture close: `end_channel_session` joins the transcription task, so
-    /// every evidence row of the session is already on the bus when a
-    /// follower reads the boundary. It does not wait for a ledger terminal
-    /// seal: a take whose coverage was refused has no other row that
-    /// releases its words.
+    /// Release the channel's capture interest before recognition/archive drain.
+    /// The original open record and lease remain owned by its tracked tail;
+    /// only that tail publishes its seal, after its producer has joined.
     async fn close_open_channel(
         &self,
         digit: u8,
@@ -1020,21 +1013,115 @@ impl RecordingController {
         shared_bus: &Path,
         autoseal_secs: u64,
     ) -> Result<()> {
-        let retained_audio = {
+        let closed = {
             let mut recorder_guard = self.recorder.lock().await;
             match recorder_guard.as_mut() {
                 Some(recorder) => {
-                    // Retire the stored sender before the last channel closes
-                    // the stream. Its captured Arc drops with CoreAudio, so the
-                    // bounded worker rejects queued blocks before the next
-                    // physical capture. Shared dictation/other channels keep it.
                     if recorder.capture_subscriber_count() == 1 && !recorder.has_take_subscriber() {
                         recorder.set_level_callback(None);
                     }
-                    let (_last, audio_path) = recorder.end_channel_session(open.subscriber).await?;
-                    audio_path
+                    Some(recorder.close_channel_session(open.subscriber).await)
                 }
                 None => None,
+            }
+        };
+        // This foreground owns the close gesture. A late tail never hides a
+        // new channel's badge, changes its state, or broadcasts old UI.
+        let state = self.current_state().await;
+        let channels = self.agent_channels.lock().await;
+        if channels.is_empty() && state == super::State::Idle {
+            hold_badge::hide_hold_badge();
+        }
+        drop(channels);
+        let retained_capture =
+            super::retainable_session_id(open.session_id.as_deref()).and_then(|id| {
+                codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
+            });
+        let shared_bus = shared_bus.to_path_buf();
+        let live = matches!(open.mode, ChannelOpenMode::Live);
+        let settlement = Self::settle_closed_channel(
+            digit,
+            open,
+            reason,
+            shared_bus,
+            autoseal_secs,
+            closed,
+            retained_capture,
+        );
+        if !live {
+            return settlement.await;
+        }
+        let task = tokio::spawn(async move {
+            if let Err(error) = settlement.await {
+                tracing::warn!(%error, digit, "released channel terminal tail failed");
+            }
+        });
+        let mut tails = self
+            .closed_capture_tails
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        tails.retain(|task| !task.is_finished());
+        tails.push(task);
+        Ok(())
+    }
+
+    async fn settle_closed_channel(
+        digit: u8,
+        open: OpenAgentChannel,
+        reason: ChannelSealReason,
+        shared_bus: PathBuf,
+        autoseal_secs: u64,
+        closed: Option<crate::audio::streaming_recorder::ClosedChannel>,
+        retained_capture: Option<
+            Arc<codescribe_core::state::history::audio_retention::CaptureLease>,
+        >,
+    ) -> Result<()> {
+        let stopped = match closed {
+            Some(closed) => closed.finish().await.map(|(_, path)| path),
+            None => Ok(None),
+        };
+        let (retained_audio, failure_detail) = match stopped {
+            Ok(path) => (path, None),
+            Err(error) => {
+                tracing::warn!(%error, digit, "channel producer/archive failed after capture release");
+                if let Some(lease) = retained_capture.as_ref() {
+                    lease.protect_retry();
+                }
+                let failure =
+                    error.downcast_ref::<crate::audio::streaming_recorder::CaptureStopFailure>();
+                let mut path = failure.and_then(|failure| failure.audio_path.clone());
+                let archive = failure
+                    .and_then(|failure| {
+                        failure
+                            .cause
+                            .downcast_ref::<codescribe_core::audio::recorder::CaptureArchiveError>()
+                    })
+                    .cloned();
+                if let Some(archive) = archive {
+                    if let Some(lease) = retained_capture.as_ref()
+                        && let Some(source) = archive.source_path.as_ref()
+                    {
+                        let _ = lease.record(std::slice::from_ref(source), false);
+                    }
+                    match tokio::task::spawn_blocking(move || {
+                        let recovered = archive.recover_complete_archive()?;
+                        archive.acknowledge_recovery(&recovered)?;
+                        Ok::<_, anyhow::Error>(recovered.path().to_path_buf())
+                    })
+                    .await
+                    {
+                        Ok(Ok(recovered)) => path = Some(recovered),
+                        other => tracing::warn!(
+                            ?other,
+                            digit,
+                            "closed channel complete archive recovery failed"
+                        ),
+                    }
+                }
+                (
+                    path,
+                    Some(format!("channel terminal processing failed: {error:#}")),
+                )
             }
         };
         // The channel task has joined. Freeze its ledger before `open` drops
@@ -1049,10 +1136,16 @@ impl RecordingController {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .clone();
-            super::retain_session_audio(
+            super::retain_session_audio_with_lease(
                 open.session_id.as_deref(),
                 path,
-                codescribe_core::state::SessionTranscriptArchive::Committed(&heard),
+                match failure_detail.as_deref() {
+                    Some(detail) => {
+                        codescribe_core::state::SessionTranscriptArchive::Unavailable(detail)
+                    }
+                    None => codescribe_core::state::SessionTranscriptArchive::Committed(&heard),
+                },
+                retained_capture.clone(),
                 &observer,
             )
             .await;
@@ -1074,23 +1167,24 @@ impl RecordingController {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
-        if let Some(bus) = open.transcript_bus.as_ref() {
+        let mut refinement_warnings = refinement_warnings;
+        if let Some(detail) = failure_detail {
+            refinement_warnings.push(detail);
+        }
+        let receipt = if let Some(bus) = open.transcript_bus.as_ref() {
             bus.record_channel_receipt(&seal_receipt_line(reason, &opened, &refinement_warnings));
+            Ok(())
         } else {
             append_seal_receipt(
-                open.bus.as_deref().unwrap_or(shared_bus),
+                open.bus.as_deref().unwrap_or(&shared_bus),
                 reason,
                 &opened,
                 &refinement_warnings,
-            )?;
-        }
+            )
+        };
         super::finish_audio_capture(open.session_id.as_deref());
-        let state = self.current_state().await;
-        let channels = self.agent_channels.lock().await;
-        if channels.is_empty() && state == super::State::Idle {
-            hold_badge::hide_hold_badge();
-        }
-        Ok(())
+        drop(retained_capture);
+        Ok(receipt?)
     }
 
     /// Startup reconciliation of the channel-session ledger. A session whose
@@ -1188,8 +1282,9 @@ impl RecordingController {
             .await
     }
 
-    /// Ordinary capture admission holds the controller's serial lock. Join
-    /// each channel and publish its existing close receipt before that admission.
+    /// Ordinary capture admission holds the controller's serial lock. Release
+    /// each channel feed before admission; tracked tails join and publish its
+    /// existing close receipt independently of the next capture.
     pub(crate) async fn close_agent_channels_for_dictation(&self) -> Result<()> {
         let mut open: Vec<_> = self.agent_channels.lock().await.drain().collect();
         open.sort_by_key(|(digit, _)| *digit);

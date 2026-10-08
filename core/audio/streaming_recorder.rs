@@ -13,7 +13,9 @@
 //! prove publication. Dropping the sink early truncates delivered text.
 
 use crate::asr_session::recorder::{RecorderLifecycleHandle, recorder_lifecycle_channel};
-use crate::audio::recorder::{Recorder, RecorderConfig};
+use crate::audio::recorder::{
+    ClosedCaptureArchive, Recorder, RecorderConfig, SpillSender, SpillSink, convert_mono_f32_to_i16,
+};
 use crate::config::{RuntimeSettingsSnapshot, UserSettings};
 use crate::pipeline::acoustic_ledger::AcousticLedger;
 #[cfg(test)]
@@ -26,7 +28,7 @@ use crate::pipeline::streaming::{
 use anyhow::{Context, Result, anyhow};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
@@ -367,9 +369,13 @@ pub struct StreamingRecorder {
     /// Agent-channel tasks. Separate from the take's `transcription_handle`.
     channel_tasks: Vec<ChannelTask>,
     captured_samples: Arc<AtomicU64>,
+    /// Exact take archive, independent of the physical capture's lifetime.
+    take_archive: Option<SpillSink>,
     /// The existing capture owner's archive result, frozen before a closed
     /// take can leave the controller slot. Consumed by its ordinary stop tail.
     prepared_capture_archive: Option<Result<Option<std::path::PathBuf>>>,
+    /// Retained stop owner for callers that cancel and retry inline settlement.
+    terminal_take: Option<ClosedTake>,
     terminal_audio_sender: Option<
         std::sync::mpsc::Sender<
             Result<crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive, String>,
@@ -384,6 +390,13 @@ struct PcmFeed {
     id: CaptureSubscriberId,
     kind: CaptureSubscriberKind,
     sender: mpsc::Sender<Vec<f32>>,
+    archive: Option<TakeArchiveFeed>,
+}
+
+struct TakeArchiveFeed {
+    sender: SpillSender,
+    captured_samples: Arc<AtomicU64>,
+    send_failed: Arc<AtomicBool>,
 }
 
 /// Subscriber feeds behind one lock.
@@ -459,7 +472,9 @@ impl StreamingRecorder {
             pcm_feeds: Arc::new(StdMutex::new(Vec::new())),
             channel_tasks: Vec::new(),
             captured_samples: Arc::new(AtomicU64::new(0)),
+            take_archive: None,
             prepared_capture_archive: None,
+            terminal_take: None,
             terminal_audio_sender: None,
             last_window_closed: None,
         })
@@ -496,7 +511,9 @@ impl StreamingRecorder {
             pcm_feeds: Arc::new(StdMutex::new(Vec::new())),
             channel_tasks: Vec::new(),
             captured_samples: Arc::new(AtomicU64::new(0)),
+            take_archive: None,
             prepared_capture_archive: None,
+            terminal_take: None,
             terminal_audio_sender: None,
             last_window_closed: None,
         })
@@ -556,6 +573,7 @@ impl StreamingRecorder {
                 id,
                 kind,
                 sender: pcm_feed,
+                archive: None,
             });
         id
     }
@@ -709,7 +727,9 @@ impl StreamingRecorder {
     /// `event_sink`.
     pub async fn start_event_session(&mut self, language: Option<String>) -> Result<()> {
         anyhow::ensure!(
-            self.prepared_capture_archive.is_none(),
+            self.prepared_capture_archive.is_none()
+                && self.take_archive.is_none()
+                && self.terminal_take.is_none(),
             "previous closed capture still owns its terminal archive result"
         );
         let event_sink = self.event_sink.clone().ok_or_else(|| {
@@ -743,35 +763,55 @@ impl StreamingRecorder {
         // Clear previous transcript and reset drop counter
         *self.transcript_buffer.lock().await = String::new();
         self.dropped_chunks.store(0, Ordering::Relaxed);
-        self.captured_samples.store(0, Ordering::Relaxed);
+        self.captured_samples = Arc::new(AtomicU64::new(0));
 
         // Create channel for audio chunks. This is intentionally larger than a
         // normal live queue: cold STT initialization happens behind this buffer.
         let (tx, rx) = mpsc::channel::<Vec<f32>>(AUDIO_BACKLOG_CHUNKS);
 
-        // The take joins the capture as one subscriber. A capture another
-        // subscriber already opened stays open and is shared; this take then
-        // owes no whole-capture WAV at stop (its terminal PCM lane is the
-        // live-buffer archive, wired with the agent channel in W1b).
+        // Open the one physical capture before admitting the take, so its
+        // archive uses the actual native rate even when config differs.
         let shared_capture = self.has_non_take_subscriber() && self.recorder.is_active();
-        let take_subscriber = self.acquire_capture_subscriber(CaptureSubscriberKind::Take, tx);
-        self.take_subscriber = Some(take_subscriber);
-
-        // One callback per physical capture fans every block out to all
-        // subscriber feeds; per-block cost stays O(subscribers) try_sends.
         self.install_pcm_fanout_callback();
-
-        // Start actual audio stream: the first subscriber opens it; a shared
-        // capture is already running.
         if !shared_capture && let Err(error) = self.recorder.start().await {
-            self.release_capture_subscriber(take_subscriber);
             return Err(error);
         }
+        let actual_sample_rate = self.recorder.actual_sample_rate();
+        let archive = match SpillSink::spawn_take(actual_sample_rate) {
+            Ok(archive) => archive,
+            Err(error) => {
+                if !shared_capture {
+                    let _ = self.recorder.stop().await;
+                }
+                return Err(error.context("Cannot admit take without its native PCM archive"));
+            }
+        };
+        let archive_feed = TakeArchiveFeed {
+            sender: archive
+                .sender()
+                .context("Take archive has no sample sender")?,
+            captured_samples: Arc::clone(&self.captured_samples),
+            send_failed: archive.send_failure_handle(),
+        };
+        self.next_capture_subscriber += 1;
+        let take_subscriber = CaptureSubscriberId(self.next_capture_subscriber);
+        self.capture_subscribers
+            .push((take_subscriber, CaptureSubscriberKind::Take));
+        self.pcm_feeds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(PcmFeed {
+                id: take_subscriber,
+                kind: CaptureSubscriberKind::Take,
+                sender: tx,
+                archive: Some(archive_feed),
+            });
+        self.take_subscriber = Some(take_subscriber);
+        self.take_archive = Some(archive);
         self.capture_epoch = next_capture_epoch;
         event_sink.on_capture_opened(&session_id, next_capture_epoch);
 
         // Update sample rate to match real input stream
-        let actual_sample_rate = self.recorder.actual_sample_rate();
         let capture_device_name = self.recorder.last_input_device().map(str::to_owned);
         crate::audio::capture_receipt::publish_open_capture_path(
             crate::audio::capture_receipt::CapturePathMeta::from_open_path(
@@ -801,16 +841,11 @@ impl StreamingRecorder {
         let (layer1, _decision_receipt) = crate::asr_session::layer1_decision(&runtime_settings);
         let (lifecycle_handle, lifecycle_events) = recorder_lifecycle_channel();
         self.lifecycle_handle = Some(lifecycle_handle);
-        // A take that shares another subscriber's capture owes no whole-capture
-        // WAV at stop, so the session must not wait on the terminal archive
-        // handoff; its terminal PCM lane arrives with the agent channel (W1b).
-        let terminal_audio = if shared_capture {
-            None
-        } else {
-            let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
-            self.terminal_audio_sender = Some(terminal_tx);
-            Some(terminal_rx)
-        };
+        // Every take owes its own PCM receipt; channel sharing never changes
+        // the terminal handoff or makes it wait for whole-device closure.
+        let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
+        self.terminal_audio_sender = Some(terminal_tx);
+        let terminal_audio = Some(terminal_rx);
         let (last_window_tx, last_window_rx) = oneshot::channel();
         self.last_window_closed = Some(last_window_rx);
         self.transcription_handle = Some(tokio::spawn(async move {
@@ -845,10 +880,8 @@ impl StreamingRecorder {
     fn install_pcm_fanout_callback(&mut self) {
         let dropped = Arc::clone(&self.dropped_chunks);
         let level_callback = self.level_callback.clone();
-        let captured_samples = Arc::clone(&self.captured_samples);
         let pcm_feeds = Arc::clone(&self.pcm_feeds);
         self.recorder.set_callback(Box::new(move |data| {
-            captured_samples.fetch_add(data.len() as u64, Ordering::Relaxed);
             if let Some(ref level_cb) = level_callback {
                 level_cb(block_rms(data));
             }
@@ -974,35 +1007,36 @@ impl StreamingRecorder {
         &mut self,
         id: CaptureSubscriberId,
     ) -> Result<(bool, Option<std::path::PathBuf>)> {
+        self.close_channel_session(id).await.finish().await
+    }
+
+    /// Close just this channel's capture interest. Recognition and archive
+    /// joins transfer out of the physical recorder's slot before they wait.
+    pub async fn close_channel_session(&mut self, id: CaptureSubscriberId) -> ClosedChannel {
         let position = self
             .channel_tasks
             .iter()
             .position(|task| task.subscriber == id);
         let removed = position.map(|index| self.channel_tasks.remove(index));
         let last = self.release_capture_subscriber(id);
-        let mut audio_path = None;
-        if last && self.recorder.is_active() {
-            // Channel audio retention parity (W5): a channel that owns the
-            // capture keeps its whole-capture WAV, like a dictation take. A
-            // shared capture stays open and owes this channel no WAV.
-            audio_path = self.recorder.stop().await?;
+        let archive = if last && self.recorder.is_active() {
+            self.recorder.close_capture().await;
+            self.recorder.detach_closed_spill()
+        } else {
+            None
+        };
+        ClosedChannel {
+            last,
+            task: removed,
+            archive,
         }
-        if let Some(removed) = removed {
-            removed
-                .task
-                .await
-                .context("channel transcription task failed")?;
-            drop(removed.lifecycle);
-            drop(removed.last_window);
-        }
-        Ok((last, audio_path))
     }
 
     /// Stop the session and return the accumulated transcript plus the WAV path.
     ///
     /// Ordered shutdown: release the take's subscription, stop capture when no
-    /// subscriber remains (a shared capture stays open and yields no WAV
-    /// here), await the transcription task, let the presentation layer drain,
+    /// subscriber remains, save its exact WAV even when capture remains shared,
+    /// await the transcription task, let the presentation layer drain,
     /// then release the sink. Any chunks dropped to backpressure during the
     /// session are logged here — that counter is the signal that audio was
     /// actually lost.
@@ -1018,23 +1052,8 @@ impl StreamingRecorder {
             );
         }
 
-        // The take's subscription is released first: its PCM feed closes and
-        // the session drains exactly as a physical close would make it. The
-        // physical stream stops only when no subscriber remains; a capture
-        // shared with other subscribers stays open and owes this take no
-        // whole-capture WAV.
-        let release = self.release_take_pcm_feed();
-        let stopped = if let Some(prepared) = self.prepared_capture_archive.take() {
-            prepared
-        } else {
-            match release {
-                TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
-                    self.recorder.stop().await
-                }
-                TakeFeedRelease::CaptureShared => Ok(None),
-            }
-        };
-        self.complete_stop(stopped).await
+        let was_active = self.close_capture().await;
+        self.finish_closed_capture(was_active).await
     }
 
     /// Close the take's capture interest independently of the session drain
@@ -1058,10 +1077,12 @@ impl StreamingRecorder {
     /// formatter completion is part of this signal. The controller owns the
     /// single stop-instant deadline; lane loss closes the channel without an ack.
     pub async fn wait_live_finals_admitted(&mut self) -> bool {
-        let Some(receiver) = self.last_window_closed.take() else {
+        let Some(receiver) = self.last_window_closed.as_mut() else {
             return false;
         };
-        receiver.await.is_ok()
+        let admitted = receiver.await.is_ok();
+        self.last_window_closed = None;
+        admitted
     }
 
     /// Continue the owned stop tail after the microphone has closed.
@@ -1069,20 +1090,83 @@ impl StreamingRecorder {
         &mut self,
         was_active: bool,
     ) -> Result<(String, Option<std::path::PathBuf>)> {
-        let stopped = self
-            .prepared_capture_archive
-            .take()
-            .unwrap_or_else(|| self.recorder.finalize_closed_capture(was_active));
-        self.complete_stop(stopped).await
+        if self.terminal_take.is_none() {
+            self.terminal_take = Some(self.detach_closed_take(was_active));
+        }
+        let take = self.terminal_take.as_mut().expect("closed take retained");
+        let result = take.finish().await;
+        if take.is_settled() {
+            self.terminal_take = None;
+        }
+        result
+    }
+
+    /// Transfer exactly this take's terminal work out of the capture slot.
+    /// The physical recorder and all channel interests stay here. The caller
+    /// must first close_capture; releasing its feed fences archive PCM/count.
+    pub fn detach_closed_take(&mut self, was_active: bool) -> ClosedTake {
+        if let Some(take) = self.terminal_take.take() {
+            return take;
+        }
+        let archive = self.take_archive.take();
+        let physical_archive = if was_active {
+            self.recorder.detach_closed_spill()
+        } else {
+            None
+        };
+        let stopped = self.prepared_capture_archive.take().or_else(|| {
+            archive
+                .is_none()
+                .then(|| self.recorder.finalize_closed_capture(was_active))
+        });
+        self.detach_take_state(stopped, archive, physical_archive)
+    }
+
+    fn detach_take_state(
+        &mut self,
+        stopped: Option<Result<Option<std::path::PathBuf>>>,
+        archive: Option<SpillSink>,
+        physical_archive: Option<ClosedCaptureArchive>,
+    ) -> ClosedTake {
+        ClosedTake {
+            stopped,
+            archive,
+            physical_archive,
+            archive_worker: None,
+            task_failure: None,
+            transcript_buffer: std::mem::replace(
+                &mut self.transcript_buffer,
+                Arc::new(Mutex::new(String::new())),
+            ),
+            transcription_handle: self.transcription_handle.take(),
+            event_sink: self.event_sink.take(),
+            authority_session_id: self.authority_session_id.clone(),
+            acoustic_ledger: self.acoustic_ledger.clone(),
+            capture_epoch: self.capture_epoch,
+            sample_rate: self.sample_rate,
+            seal_lane_armed: self.seal_lane_armed(),
+            captured_samples: Arc::clone(&self.captured_samples),
+            terminal_audio_sender: self.terminal_audio_sender.take(),
+            lifecycle_handle: self.lifecycle_handle.take(),
+            last_window_closed: self.last_window_closed.take(),
+        }
     }
 
     /// A detached tail may own a complete saved file, never the only failed
     /// PCM in RAM. Freeze finalization without waiting for recognition. Failure
     /// stays queued for the ordinary typed stop/recovery consumer to handle.
     pub fn prepare_closed_capture_archive(&mut self, was_active: bool) -> Result<()> {
-        anyhow::ensure!(!self.recorder.is_active(), "capture is still active");
+        anyhow::ensure!(
+            self.take_subscriber.is_none(),
+            "take PCM feed is still active"
+        );
         if self.prepared_capture_archive.is_none() {
-            self.prepared_capture_archive = Some(self.recorder.finalize_closed_capture(was_active));
+            self.prepared_capture_archive = Some(match self.take_archive.take() {
+                Some(archive) => {
+                    finalize_take_archive(archive, self.captured_samples.load(Ordering::Relaxed))
+                }
+                None => self.recorder.finalize_closed_capture(was_active),
+            });
         }
         match self.prepared_capture_archive.as_ref() {
             Some(Ok(_)) => Ok(()),
@@ -1091,15 +1175,218 @@ impl StreamingRecorder {
         }
     }
 
-    /// The production stop tail. Tests inject only the recorder's archive
-    /// outcome; notification, task join, drain and failure selection stay here.
+    /// Inject an archive result into the same owned terminal settlement.
+    #[cfg(test)]
     async fn complete_stop(
         &mut self,
         stopped: Result<Option<std::path::PathBuf>>,
     ) -> Result<(String, Option<std::path::PathBuf>)> {
+        if self.terminal_take.is_none() {
+            self.terminal_take = Some(self.detach_take_state(Some(stopped), None, None));
+        } else if let Some(take) = self.terminal_take.as_mut() {
+            // Retry keeps the original worker and sink rather than detaching
+            // the now-empty live slot a second time.
+            if take.archive_worker.is_none() {
+                take.stopped = Some(stopped);
+            }
+        }
+        self.finish_closed_capture(false).await
+    }
+
+    /// Stop the session and return only the transcript.
+    ///
+    /// Same ordered shutdown as [`Self::stop`], but the WAV path is dropped.
+    /// The file itself is still written by the recorder — this discards the
+    /// handle, it does not suppress the write.
+    pub async fn stop_and_discard_path(&mut self) -> Result<String> {
+        let (transcript, _audio_path) = self.stop().await?;
+        Ok(transcript)
+    }
+}
+
+/// A released channel's existing recognition task and optional device archive.
+/// It cannot capture or mutate the controller's current UI/session state.
+pub struct ClosedChannel {
+    last: bool,
+    task: Option<ChannelTask>,
+    archive: Option<ClosedCaptureArchive>,
+}
+
+impl ClosedChannel {
+    pub async fn finish(mut self) -> Result<(bool, Option<std::path::PathBuf>)> {
+        let archive = match self.archive.take() {
+            Some(archive) => tokio::task::spawn_blocking(move || {
+                archive
+                    .finalize()
+                    .map(|(path, _)| Some(path))
+                    .map_err(anyhow::Error::new)
+            })
+            .await
+            .context("channel archive worker failed")
+            .and_then(|result| result),
+            None => Ok(None),
+        };
+        // Archive failure still owes the original task's complete drain.
+        let task = match self.task.take() {
+            Some(removed) => {
+                let joined = removed
+                    .task
+                    .await
+                    .context("channel transcription task failed");
+                drop(removed.lifecycle);
+                drop(removed.last_window);
+                joined
+            }
+            None => Ok(()),
+        };
+        match (archive, task) {
+            (Ok(path), Ok(())) => Ok((self.last, path)),
+            (archive, task) => {
+                let (audio_path, cause, task_failure) = match archive {
+                    Ok(path) => (path, task.expect_err("task failure selected"), None),
+                    Err(error) => (None, error, task.err()),
+                };
+                Err(anyhow::Error::new(CaptureStopFailure {
+                    session_id: None,
+                    capture_epoch: 0,
+                    audio_path,
+                    cause,
+                    task_failure,
+                }))
+            }
+        }
+    }
+}
+
+/// The existing take's detached stop tail, never a second capture owner.
+/// Its ledger and sink are the original authority, moved with the worker.
+pub struct ClosedTake {
+    stopped: Option<Result<Option<std::path::PathBuf>>>,
+    archive: Option<SpillSink>,
+    physical_archive: Option<ClosedCaptureArchive>,
+    archive_worker: Option<JoinHandle<Result<Option<std::path::PathBuf>>>>,
+    task_failure: Option<anyhow::Error>,
+    transcript_buffer: Arc<Mutex<String>>,
+    transcription_handle: Option<JoinHandle<()>>,
+    event_sink: Option<Arc<dyn EventSink>>,
+    authority_session_id: Option<String>,
+    acoustic_ledger: Option<Arc<StdMutex<AcousticLedger>>>,
+    capture_epoch: u64,
+    sample_rate: u32,
+    seal_lane_armed: bool,
+    captured_samples: Arc<AtomicU64>,
+    terminal_audio_sender: Option<
+        std::sync::mpsc::Sender<
+            Result<crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive, String>,
+        >,
+    >,
+    lifecycle_handle: Option<RecorderLifecycleHandle>,
+    last_window_closed: Option<oneshot::Receiver<()>>,
+}
+
+impl ClosedTake {
+    /// True only after archive, producer and publication ownership all settled.
+    pub fn is_settled(&self) -> bool {
+        self.archive.is_none()
+            && self.physical_archive.is_none()
+            && self.archive_worker.is_none()
+            && self.transcription_handle.is_none()
+            && self.event_sink.is_none()
+    }
+
+    pub fn capture_identity(&self) -> (Option<&str>, u64) {
+        (self.authority_session_id.as_deref(), self.capture_epoch)
+    }
+
+    pub fn capture_ledger_handle(&self) -> Option<Arc<StdMutex<AcousticLedger>>> {
+        self.acoustic_ledger.as_ref().map(Arc::clone)
+    }
+
+    pub fn acoustic_ledger_handle(&self) -> Option<Arc<StdMutex<AcousticLedger>>> {
+        self.capture_ledger_handle()
+    }
+
+    pub fn seal_lane_armed(&self) -> bool {
+        self.seal_lane_armed
+    }
+
+    pub async fn wait_live_finals_admitted(&mut self) -> bool {
+        let Some(receiver) = self.last_window_closed.as_mut() else {
+            return false;
+        };
+        let admitted = receiver.await.is_ok();
+        self.last_window_closed = None;
+        admitted
+    }
+
+    /// Save the exact take PCM before terminal refinement and wait for the
+    /// original task/reducer. Blocking disk work never holds capture's mutex.
+    pub async fn finish(&mut self) -> Result<(String, Option<std::path::PathBuf>)> {
+        if self.archive_worker.is_none()
+            && (self.archive.is_some() || self.physical_archive.is_some())
+        {
+            let archive = self.archive.take();
+            let physical_archive = self.physical_archive.take();
+            let expected_samples = self.captured_samples.load(Ordering::Relaxed);
+            let supplied = self.stopped.take();
+            // Store before the first await: cancellation drops only the borrow,
+            // never the disk worker or its eventual typed recovery evidence.
+            self.archive_worker = Some(tokio::task::spawn_blocking(move || {
+                let stopped = match archive {
+                    Some(archive) => finalize_take_archive(archive, expected_samples),
+                    None => supplied.unwrap_or(Ok(None)),
+                };
+                if let Some(archive) = physical_archive
+                    && let Err(error) = archive.finalize()
+                {
+                    // This archive spans the physical device's lifetime. It
+                    // must never be retained under the narrower take identity.
+                    match error.recover_complete_archive() {
+                        Ok(recovered) => {
+                            error.acknowledge_recovery(&recovered)?;
+                            warn!(source = ?error.source_path, recovered = %recovered.path().display(),
+                                "auxiliary physical archive recovered separately from owned take");
+                        }
+                        Err(recovery) => {
+                            let audio_path = stopped.as_ref().ok().and_then(Clone::clone);
+                            let cause = stopped.err().unwrap_or_else(|| anyhow!(
+                                "auxiliary physical archive recovery failed: {recovery:#}; exact take WAV remains separate"
+                            ));
+                            return Err(anyhow::Error::new(CaptureStopFailure {
+                                session_id: None,
+                                capture_epoch: 0,
+                                audio_path,
+                                cause,
+                                task_failure: Some(anyhow::Error::new(error)),
+                            }));
+                        }
+                    }
+                }
+                stopped
+            }));
+        }
+        if let Some(worker) = self.archive_worker.as_mut() {
+            self.stopped = Some(match worker.await {
+                Ok(stopped) => stopped,
+                Err(error) => Err(anyhow!("take archive worker failed: {error}")),
+            });
+            self.archive_worker = None;
+        }
+        let stopped = self.stopped.get_or_insert(Ok(None));
         if let Some(sender) = self.terminal_audio_sender.take() {
-            let receipt = match &stopped {
-                Ok(Some(path)) => Ok(
+            let owned_path = stopped
+                .as_ref()
+                .ok()
+                .and_then(|path| path.as_ref())
+                .or_else(|| {
+                    stopped
+                        .as_ref()
+                        .err()
+                        .and_then(|error| error.downcast_ref::<CaptureStopFailure>())
+                        .and_then(|failure| failure.audio_path.as_ref())
+                });
+            let receipt = match (owned_path, &*stopped) {
+                (Some(path), _) => Ok(
                     crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive {
                         session_id: self.authority_session_id.clone().unwrap_or_default(),
                         capture_epoch: self.capture_epoch,
@@ -1108,8 +1395,8 @@ impl StreamingRecorder {
                         path: path.clone(),
                     },
                 ),
-                Ok(None) => Err("capture finalized without a WAV archive".into()),
-                Err(error) => Err(format!("capture archive finalization failed: {error}")),
+                (None, Ok(_)) => Err("capture finalized without a WAV archive".into()),
+                (None, Err(error)) => Err(format!("capture archive finalization failed: {error}")),
             };
             let _ = sender.send(receipt);
         }
@@ -1118,16 +1405,14 @@ impl StreamingRecorder {
         // 2. Wait for worker to finish processing remaining chunks
         // Borrow until joined: cancellation of a caller must not detach the
         // handle. Named controller Stop keeps this future alive across expiry.
-        let task_failure = if let Some(handle) = self.transcription_handle.as_mut() {
+        if let Some(handle) = self.transcription_handle.as_mut() {
             debug!("Waiting for transcription session task to finish...");
-            handle
+            self.task_failure = handle
                 .await
                 .context("Transcription session task failed")
-                .err()
-        } else {
-            None
-        };
-        self.transcription_handle = None;
+                .err();
+            self.transcription_handle = None;
+        }
 
         // 3. Fence the existing FIFO after the producer has joined. Neither
         // unchanged bytes nor an expired bound proves that publication ended.
@@ -1152,17 +1437,67 @@ impl StreamingRecorder {
             self.event_sink = None;
         }
 
-        // No early return may bypass the owned shutdown tail. Archive failure
-        // is primary when both operations failed; never invent a saved path.
+        // This lock is also an await. Keep archive and task outcomes in the
+        // owner until every cancelable operation has completed.
+        let transcript = self.transcript_buffer.lock().await.clone();
+        if let Some(drain) = drain_failure {
+            // Publication is incomplete, so retain the original sink and
+            // outcomes for retry. Typed PCM errors keep their recovery Arcs.
+            let stopped = self.stopped.as_ref().expect("archive result retained");
+            let task_failure = self.task_failure.as_ref().map(copy_stop_error);
+            let (audio_path, cause, secondary) = match stopped {
+                Ok(path) => (path.clone(), task_failure, None),
+                Err(error) => match error.downcast_ref::<CaptureStopFailure>() {
+                    Some(failure) => {
+                        let secondary = match (
+                            failure.task_failure.as_ref().map(copy_stop_error),
+                            task_failure,
+                        ) {
+                            (Some(archive), Some(task)) => Some(
+                                archive
+                                    .context(format!("transcription task also failed: {task:#}")),
+                            ),
+                            (archive, task) => archive.or(task),
+                        };
+                        (
+                            failure.audio_path.clone(),
+                            Some(copy_stop_error(&failure.cause)),
+                            secondary,
+                        )
+                    }
+                    None => (None, Some(copy_stop_error(error)), task_failure),
+                },
+            };
+            let cause = match cause {
+                Some(cause) => cause.context(format!("presentation drain also failed: {drain:#}")),
+                None => drain,
+            };
+            return Err(anyhow::Error::new(CaptureStopFailure {
+                session_id: self.authority_session_id.clone(),
+                capture_epoch: self.capture_epoch,
+                audio_path,
+                cause,
+                task_failure: secondary,
+            }));
+        }
+
+        // All awaits are over. Settled outcomes can now leave the owner.
+        let stopped = self.stopped.take().expect("archive result retained");
+        let task_failure = self.task_failure.take();
         let (audio_path, cause, task_failure) = match stopped {
             Ok(path) => (path, task_failure, None),
-            Err(error) => (None, Some(error), task_failure),
-        };
-        let cause = match (cause, drain_failure) {
-            (Some(cause), Some(drain)) => {
-                Some(cause.context(format!("presentation drain also failed: {drain:#}")))
-            }
-            (cause, drain) => cause.or(drain),
+            Err(error) => match error.downcast::<CaptureStopFailure>() {
+                Ok(failure) => {
+                    let secondary = match (failure.task_failure, task_failure) {
+                        (Some(archive), Some(task)) => Some(
+                            archive.context(format!("transcription task also failed: {task:#}")),
+                        ),
+                        (archive, task) => archive.or(task),
+                    };
+                    (failure.audio_path, Some(failure.cause), secondary)
+                }
+                Err(error) => (None, Some(error), task_failure),
+            },
         };
         if let Some(cause) = cause {
             return Err(anyhow::Error::new(CaptureStopFailure {
@@ -1174,7 +1509,6 @@ impl StreamingRecorder {
             }));
         }
 
-        let transcript = self.transcript_buffer.lock().await.clone();
         // A gesture shorter than one complete speech window can contain PCM
         // while producing no Silero/ledger observation. It is still a take,
         // but cannot owe a terminal transcript receipt. A longer unobserved
@@ -1224,16 +1558,41 @@ impl StreamingRecorder {
             })),
         }
     }
+}
 
-    /// Stop the session and return only the transcript.
-    ///
-    /// Same ordered shutdown as [`Self::stop`], but the WAV path is dropped.
-    /// The file itself is still written by the recorder — this discards the
-    /// handle, it does not suppress the write.
-    pub async fn stop_and_discard_path(&mut self) -> Result<String> {
-        let (transcript, _audio_path) = self.stop().await?;
-        Ok(transcript)
+/// Duplicate only a diagnostic returned while its stop owner remains pending.
+/// Archive evidence shares its original recovery buffers and physical identity.
+fn copy_stop_error(error: &anyhow::Error) -> anyhow::Error {
+    if let Some(archive) = error.downcast_ref::<crate::audio::recorder::CaptureArchiveError>() {
+        return anyhow::Error::new(archive.clone());
     }
+    if let Some(failure) = error.downcast_ref::<CaptureStopFailure>() {
+        return anyhow::Error::new(CaptureStopFailure {
+            session_id: failure.session_id.clone(),
+            capture_epoch: failure.capture_epoch,
+            audio_path: failure.audio_path.clone(),
+            cause: copy_stop_error(&failure.cause),
+            task_failure: failure.task_failure.as_ref().map(copy_stop_error),
+        });
+    }
+    anyhow!("{error:#}")
+}
+
+fn finalize_take_archive(
+    archive: SpillSink,
+    expected_samples: u64,
+) -> Result<Option<std::path::PathBuf>> {
+    let (path, count) = archive.finalize().map_err(|mut error| {
+        // Queue refusal preserves an explicit gap, never a shortened success.
+        error.captured_samples = usize::try_from(expected_samples).unwrap_or(usize::MAX);
+        anyhow::Error::new(error)
+    })?;
+    anyhow::ensure!(
+        count as u64 == expected_samples,
+        "take archive sample count disagrees: captured={expected_samples}, written={count}; source={}",
+        path.display(),
+    );
+    Ok(Some(path))
 }
 
 /// Offer one captured block to every subscriber feed.
@@ -1247,6 +1606,18 @@ fn offer_pcm_to_feeds(feeds: &mut Vec<PcmFeed>, data: &[f32], dropped: &AtomicU6
     feeds.retain(|feed| {
         if duck_channels && feed.kind == CaptureSubscriberKind::Channel {
             return true;
+        }
+        if let Some(archive) = &feed.archive {
+            archive
+                .captured_samples
+                .fetch_add(data.len() as u64, Ordering::Relaxed);
+            if !archive.send_failed.load(Ordering::SeqCst)
+                && archive.sender.send(convert_mono_f32_to_i16(data)).is_err()
+            {
+                // A full archive queue is an explicit refusal, never a WAV
+                // receipt for a shortened take. The physical archive remains.
+                archive.send_failed.store(true, Ordering::SeqCst);
+            }
         }
         match feed.sender.try_send(data.to_vec()) {
             Ok(()) => true,
@@ -1655,6 +2026,235 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[serial]
+    #[serial(tts_duck)]
+    async fn shared_take_archive_is_exact_and_tail_leaves_channel_feed_available() {
+        crate::audio::tts_duck::clear();
+        let mut recorder = StreamingRecorder::new().unwrap();
+        recorder.sample_rate = 16_000;
+        let (channel_tx, mut channel_rx) = mpsc::channel(8);
+        let channel =
+            recorder.acquire_capture_subscriber(CaptureSubscriberKind::Channel, channel_tx);
+        offer_pcm_to_feeds(
+            &mut recorder.pcm_feeds.lock().unwrap(),
+            &[0.1; 40],
+            &recorder.dropped_chunks,
+        );
+        let archive = SpillSink::spawn_take(16_000).unwrap();
+        recorder.captured_samples = Arc::new(AtomicU64::new(0));
+        let (take_tx, mut take_rx) = mpsc::channel(8);
+        let take_id = recorder.acquire_capture_subscriber(CaptureSubscriberKind::Take, take_tx);
+        recorder.take_subscriber = Some(take_id);
+        recorder
+            .pcm_feeds
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|feed| feed.id == take_id)
+            .unwrap()
+            .archive = Some(TakeArchiveFeed {
+            sender: archive.sender().unwrap(),
+            captured_samples: Arc::clone(&recorder.captured_samples),
+            send_failed: archive.send_failure_handle(),
+        });
+        recorder.take_archive = Some(archive);
+        offer_pcm_to_feeds(
+            &mut recorder.pcm_feeds.lock().unwrap(),
+            &[0.25; 160],
+            &recorder.dropped_chunks,
+        );
+        assert_eq!(take_rx.recv().await.unwrap(), vec![0.25; 160]);
+        let was_active = recorder.close_capture().await;
+        assert!(
+            !was_active,
+            "remaining channel owns physical capture interest"
+        );
+        assert_eq!(recorder.capture_subscriber_count(), 1);
+        let release = Arc::new(tokio::sync::Notify::new());
+        let worker_release = Arc::clone(&release);
+        recorder.transcription_handle = Some(tokio::spawn(async move {
+            worker_release.notified().await;
+        }));
+        let closed = recorder.detach_closed_take(was_active);
+        let count = Arc::clone(&closed.captured_samples);
+        let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
+        let mut closed = closed;
+        closed.terminal_audio_sender = Some(terminal_tx);
+        let tail = tokio::spawn(async move { closed.finish().await });
+        offer_pcm_to_feeds(
+            &mut recorder.pcm_feeds.lock().unwrap(),
+            &[0.8; 320],
+            &recorder.dropped_chunks,
+        );
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            160,
+            "channel continuation cannot extend take archive"
+        );
+        // Replacing the next take's slots must not overwrite the detached owner.
+        recorder.captured_samples = Arc::new(AtomicU64::new(900));
+        *recorder.transcript_buffer.lock().await = "next take".into();
+        let receipt =
+            tokio::task::spawn_blocking(move || terminal_rx.recv_timeout(Duration::from_secs(2)))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        assert_eq!(receipt.sample_count, 160);
+        assert!(!tail.is_finished(), "terminal worker still owns old take");
+        let mut wav = hound::WavReader::open(&receipt.path).unwrap();
+        assert_eq!(wav.spec().sample_rate, 16_000);
+        let pcm: Vec<i16> = wav.samples().map(Result::unwrap).collect();
+        assert_eq!(pcm, convert_mono_f32_to_i16(&[0.25; 160]));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), channel_rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            vec![0.1; 40]
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), channel_rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            vec![0.25; 160]
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), channel_rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            vec![0.8; 320]
+        );
+        release.notify_one();
+        let (text, path) = tail.await.unwrap().unwrap();
+        assert!(
+            text.is_empty(),
+            "new take text never enters old terminal result"
+        );
+        assert_eq!(path.as_ref(), Some(&receipt.path));
+        assert!(recorder.release_capture_subscriber(channel));
+        std::fs::remove_file(path.unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    #[serial(tts_duck)]
+    async fn auxiliary_physical_recovery_never_replaces_exact_take_pcm() {
+        crate::audio::tts_duck::clear();
+        let exact = crate::audio::recorder::spill_take_wav_for_tests(&[700; 160], 16_000).unwrap();
+        let physical =
+            crate::audio::recorder::failed_physical_archive_fixture(&[2100; 800], 16_000);
+        let mut recorder = StreamingRecorder::new().unwrap();
+        recorder.sample_rate = 16_000;
+        recorder.captured_samples.store(160, Ordering::Relaxed);
+        let mut closed =
+            recorder.detach_take_state(Some(Ok(Some(exact.clone()))), None, Some(physical));
+        let (_, path) = closed.finish().await.unwrap();
+        assert_eq!(path.as_ref(), Some(&exact));
+        let mut wav = hound::WavReader::open(&exact).unwrap();
+        let pcm: Vec<i16> = wav.samples().map(Result::unwrap).collect();
+        assert_eq!(
+            pcm,
+            vec![700; 160],
+            "broader physical PCM cannot become take evidence"
+        );
+        std::fs::remove_file(exact).unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    #[serial(tts_duck)]
+    async fn channel_close_releases_feed_before_slow_worker_and_keeps_take_available() {
+        crate::audio::tts_duck::clear();
+        let mut recorder = StreamingRecorder::new().unwrap();
+        let (channel_tx, mut channel_rx) = mpsc::channel(8);
+        let channel =
+            recorder.acquire_capture_subscriber(CaptureSubscriberKind::Channel, channel_tx);
+        let (take_tx, mut take_rx) = mpsc::channel(8);
+        let take = recorder.acquire_capture_subscriber(CaptureSubscriberKind::Take, take_tx);
+        let release = Arc::new(tokio::sync::Notify::new());
+        let worker_release = Arc::clone(&release);
+        let (lifecycle, _) = recorder_lifecycle_channel();
+        let (_, last_window) = oneshot::channel();
+        recorder.channel_tasks.push(ChannelTask {
+            subscriber: channel,
+            task: tokio::spawn(async move {
+                worker_release.notified().await;
+            }),
+            lifecycle,
+            last_window,
+        });
+        let closed = recorder.close_channel_session(channel).await;
+        assert_eq!(recorder.capture_subscriber_count(), 1);
+        assert!(recorder.channel_tasks.is_empty());
+        assert!(matches!(
+            channel_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+        let tail = tokio::spawn(async move { closed.finish().await });
+        offer_pcm_to_feeds(
+            &mut recorder.pcm_feeds.lock().unwrap(),
+            &[0.3; 40],
+            &recorder.dropped_chunks,
+        );
+        assert_eq!(take_rx.recv().await.unwrap(), vec![0.3; 40]);
+        assert!(
+            !tail.is_finished(),
+            "hangup admission does not wait for channel STT"
+        );
+        release.notify_one();
+        let (last, path) = tail.await.unwrap().unwrap();
+        assert!(!last);
+        assert!(
+            path.is_none(),
+            "shared channel cannot claim a whole-device WAV"
+        );
+        assert!(recorder.release_capture_subscriber(take));
+    }
+
+    #[test]
+    #[serial(tts_duck)]
+    fn take_archive_backpressure_refuses_without_blocking_other_subscribers() {
+        crate::audio::tts_duck::clear();
+        let (archive_tx, _undrained_archive) = std::sync::mpsc::sync_channel(1);
+        let (take_tx, mut take_rx) = mpsc::channel(8);
+        let (channel_tx, mut channel_rx) = mpsc::channel(8);
+        let samples = Arc::new(AtomicU64::new(0));
+        let refused = Arc::new(AtomicBool::new(false));
+        let mut feeds = vec![
+            PcmFeed {
+                id: CaptureSubscriberId(1),
+                kind: CaptureSubscriberKind::Take,
+                sender: take_tx,
+                archive: Some(TakeArchiveFeed {
+                    sender: SpillSender::Take(archive_tx),
+                    captured_samples: Arc::clone(&samples),
+                    send_failed: Arc::clone(&refused),
+                }),
+            },
+            PcmFeed {
+                id: CaptureSubscriberId(2),
+                kind: CaptureSubscriberKind::Channel,
+                sender: channel_tx,
+                archive: None,
+            },
+        ];
+        let dropped = AtomicU64::new(0);
+        for _ in 0..3 {
+            offer_pcm_to_feeds(&mut feeds, &[0.2; 40], &dropped);
+        }
+        assert!(refused.load(Ordering::SeqCst));
+        assert_eq!(samples.load(Ordering::Relaxed), 120);
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
+        for _ in 0..3 {
+            assert_eq!(take_rx.try_recv().unwrap(), vec![0.2; 40]);
+            assert_eq!(channel_rx.try_recv().unwrap(), vec![0.2; 40]);
+        }
+    }
+
     /// The capture callback's fan-out is bounded and non-blocking: a full feed
     /// drops the block and counts it, a closed feed is reaped, and neither
     /// blocks nor removes the healthy feeds.
@@ -1665,6 +2265,7 @@ mod tests {
 
         let (open_tx, mut open_rx) = mpsc::channel::<Vec<f32>>(1);
         feeds.push(PcmFeed {
+            archive: None,
             id: CaptureSubscriberId(1),
             kind: CaptureSubscriberKind::Take,
             sender: open_tx,
@@ -1674,6 +2275,7 @@ mod tests {
             .try_send(vec![0.0])
             .expect("prefill the bounded feed to capacity");
         feeds.push(PcmFeed {
+            archive: None,
             id: CaptureSubscriberId(2),
             kind: CaptureSubscriberKind::Take,
             sender: full_tx,
@@ -1681,6 +2283,7 @@ mod tests {
         let (closed_tx, closed_rx) = mpsc::channel::<Vec<f32>>(1);
         drop(closed_rx);
         feeds.push(PcmFeed {
+            archive: None,
             id: CaptureSubscriberId(3),
             kind: CaptureSubscriberKind::Take,
             sender: closed_tx,
@@ -2390,7 +2993,68 @@ mod capture_stop_failure_tests {
             .await
             .is_err()
         );
-        assert!(recorder.last_window_closed.is_none());
+        assert!(
+            recorder.last_window_closed.is_some(),
+            "caller cancellation must retain the close receipt"
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_worker_and_saved_result_survive_cancelled_stop_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cancelled-archive.wav");
+        let bytes = write_wav(&path);
+        let mut recorder = recorder();
+        recorder.acoustic_ledger = Some(Arc::new(StdMutex::new(stop_finality_ledger(true, false))));
+        *recorder.transcript_buffer.lock().await = "committed words".into();
+        let mut closed = recorder.detach_take_state(None, None, None);
+        let (release_tx, release_rx) = oneshot::channel();
+        let saved = path.clone();
+        closed.archive_worker = Some(tokio::spawn(async move {
+            release_rx.await.unwrap();
+            Ok(Some(saved))
+        }));
+        recorder.terminal_take = Some(closed);
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                recorder.finish_closed_capture(false)
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            recorder
+                .terminal_take
+                .as_ref()
+                .unwrap()
+                .archive_worker
+                .is_some()
+        );
+        let old_text = Arc::clone(&recorder.terminal_take.as_ref().unwrap().transcript_buffer);
+        let text_guard = old_text.lock().await;
+        release_tx.send(()).unwrap();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                recorder.finish_closed_capture(false)
+            )
+            .await
+            .is_err()
+        );
+        let take = recorder.terminal_take.as_ref().unwrap();
+        assert!(take.archive_worker.is_none());
+        assert_eq!(
+            take.stopped.as_ref().unwrap().as_ref().unwrap().as_ref(),
+            Some(&path)
+        );
+        drop(text_guard);
+        assert_eq!(
+            recorder.finish_closed_capture(false).await.unwrap(),
+            ("committed words".into(), Some(path.clone()))
+        );
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        assert_released(&recorder);
     }
 
     fn write_wav(path: &std::path::Path) -> Vec<u8> {
@@ -2412,6 +3076,7 @@ mod capture_stop_failure_tests {
     }
 
     fn assert_released(recorder: &StreamingRecorder) {
+        assert!(recorder.terminal_take.is_none());
         assert!(recorder.transcription_handle.is_none());
         assert!(recorder.terminal_audio_sender.is_none());
         assert!(recorder.lifecycle_handle.is_none());
@@ -2609,7 +3274,10 @@ mod capture_stop_failure_tests {
             recorder.complete_stop(Ok(Some(path.clone()))),
         )
         .await;
-        let retained = recorder.transcription_handle.is_some();
+        let retained = recorder
+            .terminal_take
+            .as_ref()
+            .is_some_and(|take| take.transcription_handle.is_some());
         release_tx.send(()).unwrap();
         let error = recorder
             .complete_stop(Ok(Some(path.clone())))
@@ -2924,11 +3592,23 @@ mod capture_stop_failure_tests {
         assert_eq!(failure.audio_path.as_deref(), Some(path.as_path()));
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         assert!(
-            recorder.event_sink.is_some(),
+            recorder
+                .terminal_take
+                .as_ref()
+                .is_some_and(|take| take.event_sink.is_some()),
             "unfinished publication must remain owned"
         );
         delayed.await.unwrap();
-        assert_eq!(&*recorder.transcript_buffer.lock().await, "final");
+        assert_eq!(
+            &*recorder
+                .terminal_take
+                .as_ref()
+                .unwrap()
+                .transcript_buffer
+                .lock()
+                .await,
+            "final"
+        );
     }
     #[tokio::test]
     async fn explicit_publication_ack_preserves_a_same_length_terminal_correction() {
@@ -2986,7 +3666,10 @@ mod capture_stop_failure_tests {
         assert!(failure.cause.to_string().contains("timed out"));
         assert_eq!(failure.audio_path.as_deref(), Some(path.as_path()));
         assert!(
-            recorder.event_sink.is_some(),
+            recorder
+                .terminal_take
+                .as_ref()
+                .is_some_and(|take| take.event_sink.is_some()),
             "uncompleted publication remains owned"
         );
         assert_eq!(std::fs::read(path).unwrap(), wav);
@@ -3007,7 +3690,12 @@ mod capture_stop_failure_tests {
         let failure = error.downcast_ref::<CaptureStopFailure>().unwrap();
         assert!(failure.cause.to_string().contains("foreign capture"));
         assert_eq!(failure.capture_epoch, 8);
-        assert!(recorder.event_sink.is_some());
+        assert!(
+            recorder
+                .terminal_take
+                .as_ref()
+                .is_some_and(|take| take.event_sink.is_some())
+        );
         assert_eq!(std::fs::read(path).unwrap(), wav);
     }
 }

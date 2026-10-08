@@ -2984,12 +2984,12 @@ impl AppleSealState {
         if matches!(reason, RefinementFailure::NotScheduled) {
             // One code covers "never sent" and "matched, then refused".
             // A blank owner still owes a witness, so the frontier stays open.
-            let blank = !self
+            let blank = self
                 .acoustic_ledger
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .text_of(occurrence)
-                .is_some_and(|label| !label.trim().is_empty());
+                .is_none_or(|label| label.trim().is_empty());
             if !blank {
                 self.return_whisper_without_label(ev_tx, id, occurrence);
                 self.emit_pending_seal(ev_tx, id);

@@ -1,5 +1,8 @@
 # Widget hover, agent archive and audio controls
 
+Historical receipt. The 2026-10-08 manual presentation cut supersedes the automatic
+mini/midi hover behavior below; see `HOTKEYS_CONTRACT.md` and the 0.16.1 changelog.
+
 Updated: 2026-10-07. Author and integrator: Astra, Codex session
 `01a11150-1934-7432-8573-b5bb95b9edb6`, explicitly designated by the Founder.
 Runtime: Fleet Worktree `/Users/polyversai/.vibecrafted/worktrees/e19c/codescribe`;
