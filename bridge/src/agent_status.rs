@@ -493,18 +493,28 @@ mod tests {
         );
     }
 
-    /// Label, value, and tone survive the borrow→owned FFI row projection.
+    /// Display text and structured localization fields survive the FFI projection.
     #[test]
     fn row_conversion_preserves_fields() {
         let row = McpStatusRow {
             label: "loctree-mcp:".to_string(),
             value: "ready — 7 tool(s) live".to_string(),
             tone: McpRowTone::Good,
+            facet: McpStatusFacet::LoctreeMcp,
+            state: McpStatusState::Live,
+            count: Some(7),
+            subject: "loctree-mcp".to_string(),
+            detail: "discovery complete".to_string(),
         };
         let cs = CsMcpStatusRow::from(&row);
         assert_eq!(cs.label, "loctree-mcp:");
         assert_eq!(cs.value, "ready — 7 tool(s) live");
         assert_eq!(cs.tone, CsMcpRowTone::Good);
+        assert_eq!(cs.facet, CsMcpStatusFacet::LoctreeMcp);
+        assert_eq!(cs.state, CsMcpStatusState::Live);
+        assert_eq!(cs.count, Some(7));
+        assert_eq!(cs.subject, "loctree-mcp");
+        assert_eq!(cs.detail, "discovery complete");
     }
 
     // Degradation contract: the basic-lane probe always emits at least one row

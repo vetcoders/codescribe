@@ -112,6 +112,8 @@ data  CsMcpServerInput.token
 data  CsMcpStatusReport.configPathDisplay
 prose CsMcpStatusRow.label
 prose CsMcpStatusRow.value
+data  CsMcpStatusRow.subject
+prose CsMcpStatusRow.detail
 data  CsMcpTestResult.serverName
 data  CsMcpTestResult.serverVersion
 data  CsMcpTestResult.protocolVersion
@@ -276,6 +278,7 @@ data  CsToolCapability.origin
 data  CsToolCapability.server
 data  CsToolCapability.risk
 data  CsToolCapability.effective
+data  CsToolCapability.ruleSource
 data  CsToolGrant.key
 data  CsToolGrant.grantedAt
 data  CsTranscriptProjectionEvent.schema

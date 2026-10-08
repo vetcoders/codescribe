@@ -8,9 +8,9 @@
 //!   as [`AgentEvent`]s over an mpsc channel, including tool-call lifecycle,
 //!   for the agent loop.
 //!
-//! Endpoints are validated before every request (see `validated_endpoint_url`):
-//! plain HTTP is loopback-only and private/internal hosts are refused, which is
-//! what the two `nosemgrep` SSRF waivers in this file rely on.
+//! Endpoints are validated before the initial streaming POST (see `validated_endpoint_url`):
+//! plain HTTP is loopback-only. Private/internal targets are refused except
+//! the registry's exact TLS Libraxis endpoint, which supports split DNS.
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
@@ -25,6 +25,7 @@ use tracing::{debug, info, warn};
 use crate::agent::event::AgentEvent;
 
 use super::ai_formatting::{AiReasoningCallback, AiStreamCallback};
+use super::provider::ProviderKind;
 use super::responses_output::{ResponsesOutputItem, extract_output_channels};
 
 /// Whole-request ceiling handed to `reqwest`. Deliberately far longer than any
@@ -179,8 +180,8 @@ impl<'a> ResponsesStreamingManager<'a> {
     /// Rejects an invalid or private endpoint URL, a non-success HTTP status,
     /// an `error` SSE event, and a stream that exceeds [`STREAM_DEADLINE`].
     pub async fn stream<T: Serialize>(&self, request: &T) -> Result<ResponsesStreamOutput> {
-        let endpoint_url =
-            validated_endpoint_url(self.endpoint).context("Invalid Responses API endpoint URL")?;
+        let endpoint_url = validated_endpoint_url(self.endpoint)
+            .map_err(|reason| anyhow::anyhow!("Invalid Responses API endpoint URL: {reason}"))?;
         let request_builder = apply_extra_headers(
             apply_auth_headers(
                 // nosemgrep: rust.actix.ssrf.reqwest-taint.reqwest-taint -- URL is validated by `validated_endpoint_url`.
@@ -691,8 +692,8 @@ async fn run_agent_stream(
         initial_response_timeout,
         inter_chunk_timeout,
     } = transport;
-    let endpoint_url =
-        validated_endpoint_url(&endpoint).context("Invalid agent streaming endpoint URL")?;
+    let endpoint_url = validated_endpoint_url(&endpoint)
+        .map_err(|reason| anyhow::anyhow!("Invalid agent streaming endpoint URL: {reason}"))?;
     let request_builder = apply_extra_headers(
         apply_auth_headers(
             // nosemgrep: rust.actix.ssrf.reqwest-taint.reqwest-taint -- URL is validated by `validated_endpoint_url`.
@@ -907,31 +908,42 @@ fn apply_extra_headers(
         })
 }
 
-/// SSRF gate for every outgoing request in this module.
+/// SSRF gate for the initial streaming POST in this module.
 ///
 /// Accepts `https` anywhere, and `http` only for literal loopback hosts.
-/// Rejects private/internal hosts both literally (`is_private_host`) and after
-/// DNS resolution (`resolves_to_private_host`), which blocks a public name that
-/// points at an internal address. The `nosemgrep` waivers on the `reqwest`
-/// call sites in this file are justified by this function — keep them in sync.
+/// Rejects private/internal hosts both literally and after DNS resolution.
+/// The registry's exact pinned Libraxis TLS endpoint may resolve privately on
+/// the Founder's network; certificate validation still authenticates its host.
+/// This does not admit arbitrary Custom hosts, ports, paths or credentials.
+/// The `nosemgrep` waivers on request call sites rely on this boundary.
 ///
 /// # Errors
 /// Empty input, unparseable URL, missing host, non-`https`/`http` scheme,
-/// plain HTTP to a non-loopback host, or any private/internal target.
+/// plain HTTP to a non-loopback host, or an unregistered private target.
 fn validated_endpoint_url(endpoint: &str) -> Result<reqwest::Url> {
+    validated_endpoint_with_resolution(endpoint, resolves_to_private_host)
+}
+
+fn validated_endpoint_with_resolution(
+    endpoint: &str,
+    resolve_private: impl FnOnce(&reqwest::Url) -> Result<bool>,
+) -> Result<reqwest::Url> {
     let endpoint = endpoint.trim();
     if endpoint.is_empty() {
         anyhow::bail!("Endpoint URL is empty");
     }
 
-    let url = reqwest::Url::parse(endpoint).context("Endpoint is not a valid URL")?;
+    // Every error returned here is safe to display without the supplied URL,
+    // resolver diagnostics, userinfo or query parameters.
+    let url = reqwest::Url::parse(endpoint)
+        .map_err(|_| anyhow::anyhow!("Endpoint is not a valid URL"))?;
     let is_loopback = is_loopback_host(&url);
 
     match url.scheme() {
         "https" => {}
         "http" if is_loopback => {}
         "http" => anyhow::bail!("Plain HTTP is only allowed for localhost loopback endpoints"),
-        other => anyhow::bail!("Unsupported endpoint URL scheme: {}", other),
+        _ => anyhow::bail!("Unsupported endpoint URL scheme"),
     }
 
     if url.host_str().is_none() {
@@ -942,7 +954,12 @@ fn validated_endpoint_url(endpoint: &str) -> Result<reqwest::Url> {
         anyhow::bail!("Private/internal endpoint URLs are not allowed");
     }
 
-    if resolves_to_private_host(&url) && !is_loopback {
+    if is_loopback {
+        return Ok(url);
+    }
+
+    let resolves_private = resolve_private(&url)?;
+    if resolves_private && url.as_str() != ProviderKind::LibraxisResponses.endpoint() {
         anyhow::bail!("Endpoint resolves to a private/internal address");
     }
 
@@ -991,36 +1008,38 @@ fn is_private_host(url: &reqwest::Url) -> bool {
 ///
 /// Catches the rebinding shape a literal check misses: a public-looking name
 /// whose DNS answer points inside the network. Hosts already written as literal
-/// IPs return `false` here (`is_private_host` covers them). Fails closed —
-/// missing host, resolution failure, or an empty answer all count as private.
-fn resolves_to_private_host(url: &reqwest::Url) -> bool {
+/// IPs return `false` here (`is_private_host` covers them). Resolution failure
+/// and an empty answer fail closed with separate, safe diagnostic reasons.
+fn resolves_to_private_host(url: &reqwest::Url) -> Result<bool> {
     let Some(host_raw) = url.host_str() else {
-        return true;
+        anyhow::bail!("Endpoint URL is missing a host");
     };
     let host = host_raw.trim_matches(['[', ']']);
 
     if host.parse::<IpAddr>().is_ok() {
-        return false;
+        return Ok(false);
     }
 
     let port = url
         .port_or_known_default()
         .unwrap_or(if url.scheme() == "http" { 80 } else { 443 });
 
-    let addrs = (host, port).to_socket_addrs();
-    let Ok(iter) = addrs else {
-        return true;
-    };
+    let iter = (host, port)
+        .to_socket_addrs()
+        .map_err(|_| anyhow::anyhow!("Endpoint DNS resolution failed"))?;
 
     let mut resolved_any = false;
     for addr in iter {
         resolved_any = true;
         if is_private_ip(addr.ip()) {
-            return true;
+            return Ok(true);
         }
     }
 
-    !resolved_any
+    if !resolved_any {
+        anyhow::bail!("Endpoint DNS returned no addresses");
+    }
+    Ok(false)
 }
 
 /// Version-dispatching private-address check.
@@ -2505,6 +2524,297 @@ mod tests {
                 .to_string()
                 .contains("Private/internal endpoint URLs are not allowed")
         );
+    }
+
+    #[test]
+    fn pinned_libraxis_endpoint_accepts_split_dns_without_trusting_other_urls() {
+        let pinned = super::ProviderKind::LibraxisResponses.endpoint();
+        let url = super::validated_endpoint_with_resolution(pinned, |_| Ok(true))
+            .expect("the registered TLS gateway supports the Founder's split DNS");
+        assert_eq!(url.as_str(), pinned);
+
+        for endpoint in [
+            "https://api.libraxis.com:8443/v1/responses",
+            "https://api.libraxis.com/other",
+            "https://api.libraxis.com/v1/responses?token=private-query",
+            "https://private-user:private-password@api.libraxis.com/v1/responses",
+            "https://api.libraxis.com.evil.example/v1/responses",
+            "https://other.example/v1/responses",
+        ] {
+            let error = super::validated_endpoint_with_resolution(endpoint, |_| Ok(true))
+                .expect_err("only the registry's exact TLS endpoint is admitted");
+            assert_eq!(
+                error.to_string(),
+                "Endpoint resolves to a private/internal address"
+            );
+            for secret in ["private-user", "private-password", "private-query"] {
+                assert!(!format!("{error:#}").contains(secret));
+            }
+        }
+    }
+
+    #[test]
+    fn endpoint_resolution_failures_remain_distinct_and_closed() {
+        for reason in [
+            "Endpoint DNS resolution failed",
+            "Endpoint DNS returned no addresses",
+        ] {
+            for endpoint in [
+                super::ProviderKind::LibraxisResponses.endpoint(),
+                "https://other.example/v1/responses",
+            ] {
+                let error = super::validated_endpoint_with_resolution(endpoint, |_| {
+                    Err(anyhow::anyhow!(reason))
+                })
+                .expect_err("even the registered gateway requires a DNS answer");
+                assert_eq!(error.to_string(), reason);
+            }
+        }
+        assert!(
+            super::validated_endpoint_with_resolution(
+                "https://other.example/v1/responses",
+                |_| Ok(false)
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn loopback_endpoints_do_not_require_dns_and_private_literals_stay_refused() {
+        for endpoint in [
+            "http://localhost:8100/v1/responses",
+            "http://127.0.0.1:8100/v1/responses",
+            "http://[::1]:8100/v1/responses",
+        ] {
+            super::validated_endpoint_with_resolution(endpoint, |_| {
+                panic!("literal loopback must not consult DNS")
+            })
+            .expect("local Responses servers are supported");
+        }
+        for endpoint in [
+            "https://192.168.254.226/v1/responses",
+            "https://10.0.0.1/v1/responses",
+            "https://[fc00::1]/v1/responses",
+            "http://http://127.0.0.1:8100/v1/responses",
+            "http://api.libraxis.com/v1/responses",
+        ] {
+            assert!(
+                super::validated_endpoint_with_resolution(endpoint, |_| panic!(
+                    "literal URL refusal must precede DNS"
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_endpoint_refusal_reports_safe_reason_without_sending_a_request() {
+        let client = Client::new();
+        let manager = ResponsesStreamingManager::new(
+            &client,
+            "https://user:password@192.168.254.226/v1/responses?token=secret-query",
+            "test-key",
+            StreamCallbacks {
+                assistant: None,
+                reasoning: None,
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+        let mut rx = manager
+            .stream_agent(&json!({"model":"buddy","stream":true}))
+            .await
+            .unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event, AgentEvent::Error("Invalid agent streaming endpoint URL: Private/internal endpoint URLs are not allowed".into()));
+        assert!(rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn agent_http_success_with_flat_transport_error_is_not_clean_completion() {
+        let mut server = mockito::Server::new_async().await;
+        // The Founder supplied this exact flat error after a long localhost
+        // stream. Replay its terminal boundary, not the truncated whole log
+        // or its unmeasured per-token timing.
+        let body = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"To pytanie\"}\n\n",
+            "event: error\n",
+            "data: {\"type\":\"error\",\"code\":\"responses_transport_failed\",\"message\":\"Internal server error.\",\"param\":null,\"sequence_number\":1141}\n\n"
+        );
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+        let endpoint = format!("{}/v1/responses", server.url());
+        let client = Client::new();
+        let manager = ResponsesStreamingManager::new(
+            &client,
+            &endpoint,
+            "test-key",
+            StreamCallbacks {
+                assistant: None,
+                reasoning: None,
+            },
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        );
+        let mut rx = manager
+            .stream_agent(
+                &json!({"model":"grant-ai/Qwen3.8-Flash-Next-Abliterated-MLX-4bit","stream":true}),
+            )
+            .await
+            .unwrap();
+        let events = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut events = Vec::new();
+            while let Some(event) = rx.recv().await {
+                events.push(event);
+            }
+            events
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            events,
+            vec![
+                AgentEvent::TextDelta("To pytanie".into()),
+                AgentEvent::Error(
+                    "Agent SSE error responses_transport_failed: Internal server error.".into()
+                ),
+            ]
+        );
+        mock.assert_async().await;
+    }
+
+    // These fixtures reconstruct the event shapes and token order supplied by
+    // the Founder on 2026-10-08. They are not byte-for-byte network captures.
+    #[tokio::test]
+    async fn agent_stream_reads_founder_gateway_and_local_responses_shapes_once() {
+        for (root_id, item_id, model, deltas, route_events, progress_per_token) in [
+            (
+                "resp_a332f6f81c284f3fb902e006d7b2b5b5",
+                "resp_5071024737574e9e82f907b2311fccc4:message:0",
+                "buddy",
+                vec![
+                    "C", "ze", "ść", "!", " 👋", " Mi", "ło", " Cię", " wid", "zieć", ".", " Co",
+                    " u", " Ciebie", "?", " W", " czym", " mogę", " dziś", " pomóc", "?",
+                ],
+                true,
+                false,
+            ),
+            (
+                "resp_575b6ccb14b647c3a1169f56f2f6c16f",
+                "resp_575b6ccb14b647c3a1169f56f2f6c16f:message:0",
+                "grant-ai/Qwen3.8-Flash-Next-Abliterated-MLX-4bit",
+                vec![
+                    "Hello", "!", " How", " can", " I", " help", " you", " today", "?",
+                ],
+                false,
+                true,
+            ),
+        ] {
+            let text = deltas.concat();
+            let mut body = String::new();
+            let mut push_event = |value: serde_json::Value| {
+                body.push_str(&format!(
+                    "event: {}\ndata: {value}\n\n",
+                    value["type"].as_str().unwrap()
+                ));
+            };
+            push_event(
+                json!({"type":"response.created","response":{"id":root_id,"status":"in_progress","model":model}}),
+            );
+            if route_events {
+                for phase in ["queued", "waiting"] {
+                    push_event(
+                        json!({"type":format!("response.route.{phase}"),"response_id":root_id}),
+                    );
+                }
+            }
+            push_event(
+                json!({"type":"response.output_item.added","output_index":0,"item":{"id":item_id,"type":"message","role":"assistant","content":[]}}),
+            );
+            push_event(
+                json!({"type":"response.content_part.added","item_id":item_id,"output_index":0,"content_index":0,"part":{"type":"output_text","text":""}}),
+            );
+            if route_events {
+                body.push_str(&": heartbeat\n\n".repeat(9));
+            }
+            for delta in &deltas {
+                body.push_str(&format!("data: {}\n\n", json!({"type":"response.output_text.delta","item_id":item_id,"output_index":0,"content_index":0,"delta":delta})));
+                if progress_per_token {
+                    body.push_str(&format!("data: {}\n\n", json!({"type":"response.in_progress","response":{"id":root_id,"status":"in_progress"}})));
+                }
+            }
+            let output = json!({"id":item_id,"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":text}]});
+            for value in [
+                json!({"type":"response.output_text.done","item_id":item_id,"text":text}),
+                json!({"type":"response.content_part.done","item_id":item_id,"part":{"type":"output_text","text":text}}),
+                json!({"type":"response.output_item.done","output_index":0,"item":output}),
+                json!({"type":"response.route.terminal","response_id":root_id}),
+                json!({"type":"response.completed","response":{"id":root_id,"status":"completed","output":[output]}}),
+            ] {
+                body.push_str(&format!("data: {value}\n\n"));
+            }
+            body.push_str("data: [DONE]\n\n");
+            let mut server = mockito::Server::new_async().await;
+            let mock = server
+                .mock("POST", "/v1/responses")
+                .match_body(mockito::Matcher::Json(json!({"model":model,"stream":true})))
+                .with_status(200)
+                .with_header("content-type", "text/event-stream")
+                .with_body(body)
+                .create_async()
+                .await;
+            let endpoint = format!("{}/v1/responses", server.url());
+            let client = Client::new();
+            let manager = ResponsesStreamingManager::new(
+                &client,
+                &endpoint,
+                "test-key",
+                StreamCallbacks {
+                    assistant: None,
+                    reasoning: None,
+                },
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            );
+            let mut rx = manager
+                .stream_agent(&json!({"model":model,"stream":true}))
+                .await
+                .unwrap();
+            let events = tokio::time::timeout(Duration::from_secs(3), async {
+                let mut events = Vec::new();
+                while let Some(event) = rx.recv().await {
+                    events.push(event);
+                }
+                events
+            })
+            .await
+            .expect("both supplied event shapes must terminate");
+            let expected: Vec<AgentEvent> = deltas
+                .into_iter()
+                .map(|delta| AgentEvent::TextDelta(delta.into()))
+                .chain([
+                    AgentEvent::TextDone(text),
+                    AgentEvent::ResponseDone {
+                        response_id: Some(root_id.into()),
+                        clean: true,
+                    },
+                ])
+                .collect();
+            assert_eq!(
+                events, expected,
+                "gateway extensions and snapshots must not duplicate or swallow text"
+            );
+            mock.assert_async().await;
+        }
     }
 
     #[test]

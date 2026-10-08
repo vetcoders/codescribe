@@ -282,19 +282,20 @@ Swift-side notes:
 
 ### B4 — Status rows
 
-`CsMcpStatusRow { label, value, tone }` is filled with finished text by
-`app/agent/tools/mcp.rs` (about 45 literals and patterns, counted over the whole
-file): "no mcp.json (optional — MCP off)", "ready — {count} tool(s) live",
-"configured — agent not started yet", the Agentic readiness card
-("Provider:", "{} — key missing (set {})", "Workspace roots:", …). Shown in
-Settings and Onboarding.
+`CsMcpStatusRow` now carries `facet`, `state`, `count`, `subject` and `detail`.
+`AgentStatusPresentation.swift` derives localized labels and values from those
+parts; the English `label` and `value` remain available for logs and tests.
+`subject` carries a provider or server identifier and is classified as data.
 
-Recommended: the row carries a state enum plus arguments (count, server name,
-reason); Swift renders label and value. Product names in labels (Vibecrafted,
-AICX, Loctree, PRView) stay verbatim. `"{count} tool(s)"` becomes a proper
-plural on the Swift side. One pattern prints a Rust `Debug` dump of two lists
-into the row ("mismatch — Settings={:?}, native tools={:?}") and should carry
-the lists as data.
+`detail` remains a prose seam: it can carry a Rust-authored configuration note,
+an error cause, an environment variable name, or the formatted folder mismatch.
+Swift localizes the surrounding sentence but displays this argument as received.
+It is therefore classified as prose rather than treating every diagnostic as
+an identifier. The remaining cut is typed diagnostic codes and structured folder
+lists so Swift owns those sentences too. Product and server names stay verbatim.
+
+`CsToolCapability.ruleSource` is a permission-source wire code consumed by a
+localized Swift switch; it is classified as data.
 
 ### B5 — Agent turn events
 
