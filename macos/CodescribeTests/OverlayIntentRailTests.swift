@@ -383,7 +383,7 @@ final class OverlayIntentRailTests: XCTestCase {
       phase: "coverage_refused", text: "Words kept without a seal",
       canPaste: true, canInsert: true, canCopy: true, canRetranscribe: true,
       canFormat: true, terminal: true)
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     let slots = OverlayBottomChromeSlots(
       mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
       isCollapsed: state.isCollapsed, showsDiagnostics: true)
@@ -403,7 +403,7 @@ final class OverlayIntentRailTests: XCTestCase {
       phase: "formatted", text: "Sealed words",
       canPaste: true, canInsert: true, canCopy: true, canRetranscribe: true,
       canFormat: true, terminal: true)
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     let slots = OverlayBottomChromeSlots(
       mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
       isCollapsed: state.isCollapsed)
@@ -627,7 +627,7 @@ final class OverlayIntentRailTests: XCTestCase {
       + [
         OverlayControlSymbols.history, OverlayControlSymbols.previousTake,
         OverlayControlSymbols.actions, OverlayControlSymbols.placement,
-        OverlayControlSymbols.miniToTranscript, OverlayControlSymbols.midiToTranscript,
+        OverlayControlSymbols.miniToMidi, OverlayControlSymbols.midiToTranscript,
         OverlayControlSymbols.returnToMini, "pin.fill",
         "arrow.up.and.down.and.arrow.left.and.right",
       ] + OverlayAnchor.allCases.map(\.systemImage)
@@ -909,7 +909,7 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertEqual(routedIntents, [.finish])
     XCTAssertTrue(previewCollapsed)
     XCTAssertEqual(expanded.previewAccessibilityLabel, "Collapse widget")
-    XCTAssertEqual(expanded.previewSymbol, "arrow.up.right")
+    XCTAssertEqual(expanded.previewSymbol, "arrow.left")
 
     let collapsed = OverlayRecordingControls(
       canFinish: true,
@@ -920,8 +920,8 @@ final class OverlayIntentRailTests: XCTestCase {
       onPreviewToggle: { previewCollapsed.toggle() }
     )
     XCTAssertTrue(collapsed.showsStop)
-    XCTAssertEqual(collapsed.previewAccessibilityLabel, "Expand widget")
-    XCTAssertEqual(collapsed.previewSymbol, "arrow.down.left", "click opens the full view")
+    XCTAssertEqual(collapsed.previewAccessibilityLabel, "Expand to compact widget")
+    XCTAssertEqual(collapsed.previewSymbol, "arrow.right", "click opens MIDI")
 
     let unavailable = OverlayRecordingControls(
       canFinish: false,

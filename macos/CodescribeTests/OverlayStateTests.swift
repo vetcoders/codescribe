@@ -471,15 +471,15 @@ final class OverlayStateTests: XCTestCase {
     let lena = try navigationConversation()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
     state.setConversationVisible(false)
-    if !state.isCollapsed { state.toggleCollapsed() }
+    if !state.isCollapsed { state.setPresentationMode(.mini) }
     let reply = replyFocusConversation(lena)
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [reply]))
     XCTAssertEqual(state.selectedConversationID, lena.id)
     XCTAssertEqual(state.unreadReplies(in: reply), 1)
-    if !state.isCollapsed { state.toggleCollapsed() }
+    if !state.isCollapsed { state.setPresentationMode(.mini) }
     state.setConversationVisible(true)
     XCTAssertEqual(state.unreadReplies(in: reply), 1)
-    if state.isCollapsed { state.toggleCollapsed() }
+    if state.isCollapsed { state.setPresentationMode(.expanded) }
     state.setConversationVisible(true)
     XCTAssertEqual(state.unreadReplies(in: reply), 0)
   }
@@ -655,7 +655,7 @@ final class OverlayStateTests: XCTestCase {
     let lena = try navigationConversation()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
     state.selectConversation(lena.id)
-    if !state.isCollapsed { state.toggleCollapsed() }
+    if !state.isCollapsed { state.setPresentationMode(.mini) }
     state.setConversationVisible(false)
     let reply = replyFocusConversation(lena, id: "reply:collapsed-owner")
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [reply]))
@@ -1261,7 +1261,7 @@ final class OverlayStateTests: XCTestCase {
     let named = try XCTUnwrap(snapshot.conversations.first { $0.channel == "2" })
     state.selectConversation(named.id)
     XCTAssertEqual(state.unreadReplies(in: named), 1, "selection while hidden is not reading")
-    if state.isCollapsed { state.toggleCollapsed() }
+    if state.isCollapsed { state.setPresentationMode(.expanded) }
     state.setConversationVisible(true)
     XCTAssertEqual(state.unreadReplies(in: named), 0)
     XCTAssertTrue(state.pendingReplyControls.isEmpty, "reading does not request playback")
@@ -2251,16 +2251,16 @@ final class OverlayStateTests: XCTestCase {
   // IDLE-1: authored under W1; execution belongs to the integrator after close.
   func testCaretActivityStopsWithCaptureEvenWhenProjectionStillSaysListening() {
     let state = OverlayState()
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     XCTAssertFalse(state.animatesTranscriptCaret)
     state.handleRecordingPreparing()
     XCTAssertFalse(state.animatesTranscriptCaret, "Warmup has no live audio yet")
     state.handleRecordingStarted()
     XCTAssertTrue(state.animatesTranscriptCaret)
 
-    state.toggleCollapsed()
+    state.setPresentationMode(.mini)
     XCTAssertFalse(state.animatesTranscriptCaret, "Clipped content stays mounted")
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     XCTAssertTrue(state.animatesTranscriptCaret)
 
     projectText("streaming", to: state, phase: "finalizing")
@@ -2285,7 +2285,7 @@ final class OverlayStateTests: XCTestCase {
     for phase in ["formatted", "no_speech", "error", "coverage_refused"] {
       let clock = OverlayStateTestClock()
       let state = OverlayState(nowProvider: { clock.now })
-      state.toggleCollapsed()
+      state.setPresentationMode(.expanded)
       state.handleRecordingPreparing()
       state.handleRecordingStarted()
       XCTAssertTrue(state.animatesTranscriptCaret)
@@ -2303,7 +2303,7 @@ final class OverlayStateTests: XCTestCase {
 
   func testErrorBeforeTerminalProjectionStopsIdleRenderActivity() {
     let state = OverlayState()
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
     state.handleError(message: "Capture failed")
@@ -4306,7 +4306,7 @@ final class OverlayStateTests: XCTestCase {
   @MainActor
   func testFormattedOverlayMinimumHeightSnapshotRenders() throws {
     let state = OverlayState()
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     let longTranscript = Array(
       repeating:
         "Choose Insert to paste the text where you want it and press Return. The clipboard is untouched.",

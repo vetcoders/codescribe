@@ -67,7 +67,147 @@ private final class CursorTrackingSurface: NSView {
   }
 }
 
+private final class PositionedOverlayCursorEvent: NSEvent {
+  let point: NSPoint
+  init(at point: NSPoint) {
+    self.point = point
+    super.init()
+  }
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+  override var type: NSEvent.EventType { .cursorUpdate }
+  override var locationInWindow: NSPoint { point }
+}
+
 final class OverlayResizeHitTests: XCTestCase {
+  @MainActor
+  func testEveryCornerReachesEveryOtherFormAroundTheSameUpperRightPin() throws {
+    let state = OverlayState.previewFormatted()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "Resize.threeForms"))
+        as? FloatingOverlayPanel)
+    panel.orderFrontRegardless()
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    let text = state.activeText
+    let generation = state.captureGeneration
+    let sizes: [(OverlayPresentationMode, NSSize)] = [
+      (.mini, DictationOverlayWindow.collapsedSize), (.midi, DictationOverlayWindow.midiSize),
+      (.expanded, NSSize(width: 600, height: 300)),
+    ]
+    let visible = try XCTUnwrap(NSScreen.main?.visibleFrame)
+    let pin = NSPoint(x: visible.maxX - 40, y: visible.maxY - 40)
+    // Corners change both axes, horizontal edges select mini/MIDI, vertical
+    // edges select strip/transcript. Together all native edges remain usable.
+    for (source, sourceSize) in sizes {
+      for (target, targetSize) in sizes where source != target {
+        for edge in [OverlayResizeHit.Edge.topLeft, .topRight, .bottomLeft, .bottomRight] {
+          state.setPresentationMode(source)
+          panel.settleFrameTransition()
+          panel.setFrame(
+            NSRect(
+              x: pin.x - sourceSize.width, y: pin.y - sourceSize.height,
+              width: sourceSize.width, height: sourceSize.height), display: true)
+          let left = edge == .topLeft || edge == .bottomLeft
+          let bottom = edge == .bottomLeft || edge == .bottomRight
+          let start = NSPoint(
+            x: left ? 2 : sourceSize.width - 2,
+            y: bottom ? 2 : sourceSize.height - 2)
+          let delta = NSSize(
+            width: (targetSize.width - sourceSize.width) * (left ? -1 : 1),
+            height: (targetSize.height - sourceSize.height) * (bottom ? -1 : 1))
+          XCTAssertTrue(panel.styleMask.contains(.resizable))
+          sendSyntheticDrag(through: panel, from: start, delta: delta, eventNumberBase: 9_500)
+          panel.settleFrameTransition()
+          XCTAssertEqual(state.presentationMode, target, "\(source) → \(target) via \(edge)")
+          XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
+          XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
+          XCTAssertEqual(state.activeText, text)
+          XCTAssertEqual(state.captureGeneration, generation)
+          XCTAssertFalse(panel.isUserResizing)
+        }
+      }
+    }
+  }
+
+  @MainActor
+  func testResizeCursorIsStableAcrossNativeCursorUpdateAndMotion() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 100, y: 100, width: 400, height: 300),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: false)
+    let text = CursorTrackingTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+    panel.contentView = OverlayContentContainer(hosting: text)
+    defer { panel.orderOut(nil) }
+    let saved = NSCursor.current
+    defer { saved.set() }
+    let point = NSPoint(x: 2, y: 150)
+    let cursor = OverlayResizeHit.cursor(for: .left)
+    for index in 0..<20 {
+      XCTAssertTrue(OverlayResizeHit.cursor(for: .left) === cursor)
+      panel.sendEvent(PositionedOverlayCursorEvent(at: point))
+      panel.sendEvent(
+        mouseEvent(
+          .mouseMoved, at: point, in: panel, timestamp: 1,
+          eventNumber: index, pressure: 0))
+      XCTAssertTrue(NSCursor.current === cursor)
+      XCTAssertFalse(panel.refreshCursor(at: point))
+    }
+    XCTAssertEqual(text.motions, 0)
+  }
+
+  @MainActor
+  func testStraightEdgesAlsoSelectStripAndTranscriptForms() throws {
+    let state = OverlayState.previewFormatted()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "Resize.straightEdges"))
+        as? FloatingOverlayPanel)
+    panel.orderFrontRegardless()
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    let visible = try XCTUnwrap(NSScreen.main?.visibleFrame)
+    let pin = NSPoint(x: visible.maxX - 40, y: visible.maxY - 40)
+    for edge in [OverlayResizeHit.Edge.left, .right, .top, .bottom] {
+      let horizontal = edge == .left || edge == .right
+      let initial =
+        horizontal ? DictationOverlayWindow.collapsedSize : DictationOverlayWindow.midiSize
+      state.setPresentationMode(horizontal ? .mini : .midi)
+      panel.settleFrameTransition()
+      panel.setFrame(
+        NSRect(
+          x: pin.x - initial.width, y: pin.y - initial.height,
+          width: initial.width, height: initial.height), display: true)
+      let start = NSPoint(
+        x: horizontal ? (edge == .left ? 2 : initial.width - 2) : initial.width / 2,
+        y: horizontal ? initial.height / 2 : (edge == .bottom ? 2 : initial.height - 2))
+      let delta = NSSize(
+        width: horizontal ? (edge == .left ? -210 : 210) : 0,
+        height: horizontal ? 0 : (edge == .bottom ? -254 : 254))
+      sendSyntheticDrag(through: panel, from: start, delta: delta, eventNumberBase: 9_600)
+      panel.settleFrameTransition()
+      XCTAssertEqual(state.presentationMode, horizontal ? .midi : .expanded)
+      XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
+      let enlarged = panel.frame.size
+      let reverseStart = NSPoint(
+        x: horizontal ? (edge == .left ? 2 : enlarged.width - 2) : enlarged.width / 2,
+        y: horizontal ? enlarged.height / 2 : (edge == .bottom ? 2 : enlarged.height - 2))
+      sendSyntheticDrag(
+        through: panel, from: reverseStart,
+        delta: NSSize(width: -delta.width, height: -delta.height),
+        eventNumberBase: 9_700)
+      panel.settleFrameTransition()
+      XCTAssertEqual(state.presentationMode, horizontal ? .mini : .midi)
+      XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
+    }
+  }
+
   @MainActor
   func testPanelPreservesNativeInteriorPointerAfterTracking() throws {
     let panel = FloatingOverlayPanel(
@@ -206,7 +346,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   func testRealOverlayEdgeWheelScrollsExistingTranscript() throws {
     let state = OverlayState()
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     project(
       String(repeating: "A long visible transcript line.\n", count: 100), sequence: 1, to: state)
     let panel = try XCTUnwrap(
@@ -450,7 +590,7 @@ final class OverlayResizeHitTests: XCTestCase {
       var transitions: [Bool] = []
       state.onPresentationModeChanged = { transitions.append($0 != .expanded) }
       for folded in [false, true, false] {
-        if state.isCollapsed != folded { state.toggleCollapsed() }
+        if state.isCollapsed != folded { state.setPresentationMode(folded ? .mini : .expanded) }
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         let preview = try XCTUnwrap(recorder.frames.preview)
@@ -894,7 +1034,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   func testRealOverlayKeepsTranscriptBetweenHeaderAndDock() throws {
     let state = OverlayState()
-    state.toggleCollapsed()  // This test measures the explicitly expanded transcript.
+    state.setPresentationMode(.expanded)  // This test measures the explicitly expanded transcript.
     project(
       "first line with uncut caps\nsecond line\nthird line\nfourth line\nfifth line\nlast line above the dock",
       sequence: 1,
@@ -972,7 +1112,7 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
     XCTAssertEqual(panel.sizeForPersistence, savedSize)
     XCTAssertEqual(state.activeText, text)
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     let deadline = Date().addingTimeInterval(1.5)
     while panel.isFrameTransitioning && Date() < deadline {
       RunLoop.main.run(until: Date().addingTimeInterval(0.01))
@@ -987,7 +1127,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   func testRealOverlayBreathesToSixtyPercentThenHonorsManualResize() throws {
     let state = OverlayState()
-    state.toggleCollapsed()  // Auto-sizing applies only to the expanded transcript.
+    state.setPresentationMode(.expanded)  // Auto-sizing applies only to the expanded transcript.
     var builtPanel: FloatingOverlayPanel?
     let controller = OverlayController(
       state: state,

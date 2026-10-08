@@ -334,6 +334,9 @@ final class OverlayController: ObservableObject {
       }
       floating.onUserResizeEnded = { [weak self] in
         guard let self else { return }
+        if self.state.freeMotion, let floating = self.panel as? FloatingOverlayPanel {
+          OverlayPlacement.persistOrigin(floating.originForPersistence)
+        }
         if self.placementAfterUserResize {
           self.placementAfterUserResize = false
           self.applyPlacement()

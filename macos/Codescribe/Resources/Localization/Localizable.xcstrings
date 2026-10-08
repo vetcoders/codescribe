@@ -6265,6 +6265,26 @@
         }
       }
     },
+    "Expand to compact widget" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozwiń do MIDI"
+          }
+        }
+      }
+    },
+    "Expand transcript" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozwiń transkrypt"
+          }
+        }
+      }
+    },
     "Expand widget" : {
       "localizations" : {
         "pl" : {

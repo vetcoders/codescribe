@@ -26,11 +26,11 @@ final class OverlayHoverInteractionTests: XCTestCase {
   func testExplicitCollapseStaysCollapsedUnderPointer() {
     let state = OverlayState()
     state.setPointerHovering(true)
-    state.toggleCollapsed()
-    XCTAssertEqual(state.presentationMode, .expanded)
-    state.toggleCollapsed()
-    for inside in [true, false, true] { state.setPointerHovering(inside) }
-    XCTAssertEqual(state.presentationMode, .mini)
+    for mode in [OverlayPresentationMode.midi, .expanded, .mini] {
+      state.toggleCollapsed()
+      for inside in [true, false, true] { state.setPointerHovering(inside) }
+      XCTAssertEqual(state.presentationMode, mode)
+    }
   }
 
   func testHeaderRecordingStillUsesTheTakePreference() {
@@ -41,7 +41,7 @@ final class OverlayHoverInteractionTests: XCTestCase {
     state.setPointerHovering(true)
     state.requestHeaderRecording(.startRecording)
     state.handleRecordingPreparing()
-    XCTAssertEqual(state.presentationMode, state.expandedByDefault ? .expanded : .mini)
+    XCTAssertEqual(state.presentationMode, state.expandedByDefault ? .expanded : .midi)
     state.finishControllerRecording()
   }
 

@@ -502,7 +502,11 @@ final class OverlayState {
   @ObservationIgnored var onPresentationModeChanged: ((OverlayPresentationMode) -> Void)?
   /// Presentation changes come from explicit controls; pointer motion never morphs the window.
   func toggleCollapsed() {
-    setPresentationMode(isCollapsed ? .expanded : .mini)
+    switch presentationMode {
+    case .mini: setPresentationMode(.midi)
+    case .midi: setPresentationMode(.expanded)
+    case .expanded: setPresentationMode(.mini)
+    }
   }
 
   func requestHeaderRecording(_ intent: OverlayIntent) {
@@ -531,10 +535,10 @@ final class OverlayState {
     applyPreferredExpansion()
   }
 
-  private func applyPreferredExpansion() {
+  private func applyPreferredExpansion(forTake: Bool = false) {
     guard let engine else { return }
     expandedByDefault = engine.overlayExpandedByDefault()
-    setPresentationMode(expandedByDefault ? .expanded : .mini)
+    setPresentationMode(expandedByDefault ? .expanded : (forTake ? .midi : .mini))
   }
 
   func setKeepVisibleBetweenTakes(_ enabled: Bool) {
@@ -2465,7 +2469,7 @@ final class OverlayState {
       resetTranscript()
       errorMessage = nil
       beginCaptureClock()
-      applyPreferredExpansion()
+      applyPreferredExpansion(forTake: true)
     }
     recording = true
     refreshOverlayPolicyTruth()
@@ -2487,7 +2491,7 @@ final class OverlayState {
       resetTranscript()
       errorMessage = nil
       beginCaptureClock()
-      applyPreferredExpansion()
+      applyPreferredExpansion(forTake: true)
     }
     if captureStartedAtUptime == nil {
       beginCaptureClock()
