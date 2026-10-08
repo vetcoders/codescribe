@@ -29,6 +29,12 @@ expect() {
 expect accept '[claude/vc-implement] fix(bridge): schema'
 expect accept '[codex/vc-ownership] release: embed models by default'
 expect accept '[copilot/vc-implement] fix(bus): bounded history'
+expect accept '[junie/vc-implement] fix(ci): fixture candidates'
+expect accept '[junie/vc-workflow] chore: provenance'
+expect accept '[maciej/manual] docs: founder note'
+expect accept '[Maciej/manual] docs: founder note'
+expect accept '[maciej/vc-manual] docs: founder note'
+expect accept '[Maciej/vc-manual] docs: founder note'
 expect accept '[ok-commit] fix: overlay crash'
 expect accept "Merge branch 'feature' into develop"
 expect accept 'Squashed commit of the following:'
@@ -36,6 +42,8 @@ expect accept 'Squashed commit of the following:'
 # What git writes on its own, and what blocked a real commit on 2026-08-28.
 expect accept 'Revert "[claude/vc-implement] feat(overlay): swift"'
 expect accept 'Revert "Revert "[codex/vc-workflow] fix(stt): coarse timing""'
+expect accept 'Revert "[junie/vc-implement] fix(ci): fixture candidates"'
+expect accept 'Revert "[Maciej/manual] docs: founder note"'
 expect accept "Revert \"Merge branch 'feature' into develop\""
 
 # A revert cannot invent provenance the original never had.
@@ -45,6 +53,12 @@ expect block 'Revert ""'
 # must not slip through the peeling loop.
 expect block 'Revertowanie czegos'
 expect block 'fix: no tag at all'
+expect block '[unknown/vc-manual] docs: unknown author'
+expect block '[junie/manual] fix: malformed agent workflow'
+expect block '[junie/vc-] fix: missing workflow'
+expect block '[maciej/vc-implement] fix: not a manual founder commit'
+expect block '[Maciej/manual]'
+expect block 'Revert "[unknown/manual] docs: unknown author"'
 expect block ''
 
 if [ "$failures" -ne 0 ]; then
