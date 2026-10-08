@@ -664,7 +664,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "Native tools": "Narzędzia natywne",
       "VibeCrafted runtime": "Runtime VibeCrafted",
       "PRView integration": "Integracja PRView",
-      "Ready — %1$@ configured, access available, %2$@":
+      "Ready — %@ configured, access available, %@":
         "Gotowy — skonfigurowano %1$@, dostęp dostępny, %2$@",
       "Configured — agent not started yet": "Skonfigurowano — agent nie został jeszcze uruchomiony",
       "Not configured (optional)": "Nieskonfigurowane (opcjonalne)",
@@ -672,11 +672,11 @@ final class SettingsChromeContractTests: XCTestCase {
       "Technical details": "Szczegóły techniczne",
       "Available tools and integrations": "Dostępne narzędzia i integracje",
       "Built-in Codescribe tool": "Wbudowane narzędzie Codescribe",
-      "tool: %1$@ · source: %2$@": "narzędzie: %1$@ · źródło: %2$@",
+      "tool: %@ · source: %@": "narzędzie: %1$@ · źródło: %2$@",
       "capability.tier.native": "Natywne",
       "capability.tier.enhanced": "Rozszerzone",
       "Configuration source:": "Źródło konfiguracji:",
-      "Configured: %1$lld · Tested: %2$lld · Issues: %3$lld":
+      "Configured: %lld · Tested: %lld · Issues: %lld":
         "Skonfigurowane: %1$lld · Przetestowane: %2$lld · Problemy: %3$lld",
       "status.tone.good": "Gotowe",
       "status.tone.warn": "Ostrzeżenie",

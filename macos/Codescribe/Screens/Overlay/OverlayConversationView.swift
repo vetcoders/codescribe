@@ -30,6 +30,7 @@ struct OverlayConversationView: View {
   var onComposerTypingActivity: () -> Void = {}
 
   @State private var followsLatest = true
+  @State private var userScrolling = false
   @State private var composerHeight: CGFloat = 0
   @State private var navigationHeight: CGFloat = 32
 
@@ -70,21 +71,10 @@ struct OverlayConversationView: View {
           .onChange(of: isPresented) { _, presented in
             if presented, followsLatest { scrollToLatest(proxy) }
           }
-          .onChange(of: geometry.size) { _, size in
-            if isPresented, followsLatest, size.width > 0, size.height > 0 {
-              scrollToLatest(proxy)
-            }
-          }
-          .onChange(of: composerHeight) { _, _ in
-            if followsLatest { scrollToLatest(proxy) }
-          }
           .onChange(of: orderedMessages.last) { previous, latest in
             if previous?.id != latest?.id || followsLatest || followsLiveChannel {
               scrollToLatest(proxy)
             }
-          }
-          .onChange(of: textScale) { _, _ in
-            if followsLatest { scrollToLatest(proxy) }
           }
       }
       .foregroundStyle(palette.primaryText.color)
@@ -185,12 +175,21 @@ struct OverlayConversationView: View {
   private func trackedMessages(maxBubbleWidth: CGFloat) -> some View {
     if #available(macOS 15.0, *) {
       messageList(maxBubbleWidth: maxBubbleWidth)
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .defaultScrollAnchor(followsLatest ? .bottom : nil, for: .sizeChanges)
+        .defaultScrollAnchor(.top, for: .alignment)
+        .onScrollPhaseChange { _, phase, context in
+          userScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
+          if isPresented, userScrolling {
+            followsLatest =
+              context.geometry.visibleRect.maxY >= context.geometry.contentSize.height - 48
+          }
+        }
         .onScrollGeometryChange(for: Bool.self) { geometry in
           geometry.visibleRect.maxY >= geometry.contentSize.height - 48
         } action: { _, atBottom in
-          // The retained compact canvas has no visible scroll position.
-          // Keep the user's follow/history intent until it is presented again.
-          guard isPresented else { return }
+          // Resizing the retained canvas must not replace the user's reading intent.
+          guard isPresented, userScrolling else { return }
           followsLatest = atBottom
         }
     } else {
