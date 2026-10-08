@@ -1,6 +1,7 @@
 import SwiftUI
 
-// Creator setup panel: live permission checklist + editable voice/formatting
+// Creator setup panel: interface language (the per-app macOS preference the
+// setup wizard also writes), live permission checklist, editable voice/formatting
 // controls (language, AI formatting, formatting level) written through the core
 // router, plus quick-start cards and launchpad chips.
 // Permission rows reflect LIVE AVAuthorization / AX / IOHID / CG status.
@@ -12,6 +13,11 @@ struct CreatorPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(String(localized: "Get set up."))
+
+      SettingsSectionLabel(String(localized: "Interface", comment: "Settings group: app language"))
+        .padding(.top, CSSpace.section)
+      InterfaceLanguageRow(model: model)
+        .padding(.top, CSSpace.control)
 
       SettingsSectionLabel(String(localized: "Permissions"))
         .padding(.top, CSSpace.section)
@@ -377,6 +383,71 @@ struct SettingsControlRow<Control: View>: View {
       control()
     }
     .settingsGroupedInset()
+  }
+}
+
+// MARK: - Interface language row
+
+/// Picker + restart action for the app language. Mirrors the wizard's first
+/// step on the same preference: the choice saves at once, the whole app speaks
+/// it after the host's idle-guarded restart, and a busy runtime keeps the
+/// choice saved with a retry message instead of relaunching under a take.
+private struct InterfaceLanguageRow: View {
+  @ObservedObject var model: SettingsViewModel
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      SettingsControlRow(
+        title: String(localized: "Interface language", comment: "Settings row: app language"),
+        subtitle: String(
+          localized: "Menus, Settings and the Agent window. Dictation has its own language.",
+          comment: "Interface language row explanation")
+      ) {
+        Picker("", selection: selection) {
+          ForEach(InterfaceLanguage.allCases, id: \.self) { language in
+            Text(language.nativeName).tag(language)
+          }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 200)
+        .disabled(model.applyingInterfaceLanguage)
+        .accessibilityIdentifier("settings-interface-language")
+      }
+      if model.interfaceLanguageNeedsRestart {
+        HStack(spacing: 12) {
+          Text(
+            "Codescribe will restart in this language. Your recording must finish first.",
+            comment: "Interface language restart explanation in Settings"
+          )
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          Button(
+            model.applyingInterfaceLanguage
+              ? String(localized: "Restarting…", comment: "Interface language restart in flight")
+              : String(localized: "Restart now", comment: "Apply the interface language")
+          ) { model.applyInterfaceLanguage() }
+          .disabled(model.applyingInterfaceLanguage)
+          .accessibilityIdentifier("settings-interface-language-restart")
+        }
+      }
+      if let notice = model.interfaceLanguageNotice {
+        Text(notice)
+          .font(.callout)
+          .foregroundStyle(CSColor.terracotta)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("settings-interface-language-notice")
+      }
+    }
+  }
+
+  private var selection: Binding<InterfaceLanguage> {
+    Binding(
+      get: { model.interfaceLanguage },
+      set: { model.selectInterfaceLanguage($0) }
+    )
   }
 }
 

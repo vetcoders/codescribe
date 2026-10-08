@@ -1092,6 +1092,15 @@ final class SettingsViewModel: ObservableObject {
   /// details shows it under the installed paths.
   @Published private(set) var creatorAgentBridgeLaunchDetail: String?
   @Published private(set) var settings: CsSettings
+  // Interface language. The choice is the per-app macOS language preference
+  // owned by `InterfaceLanguagePreference`; the setup wizard writes the same
+  // one. The running process keeps its launch language until the host restarts
+  // it through the same idle guard the wizard uses (`onApplyInterfaceLanguage`).
+  @Published private(set) var interfaceLanguage: InterfaceLanguage
+  @Published private(set) var applyingInterfaceLanguage = false
+  @Published private(set) var interfaceLanguageNotice: String?
+  var onApplyInterfaceLanguage: ((@escaping @MainActor () -> Void) async throws -> Void)?
+  private let languagePreference: InterfaceLanguagePreference
   @Published private(set) var newMaxConsultationPending = false
   @Published private(set) var maxConsultationNotice: String?
   @Published private(set) var maxToolApprovals: [PendingToolApproval] = []
@@ -1232,6 +1241,10 @@ final class SettingsViewModel: ObservableObject {
     licenseService: LicenseService? = nil,
     buildInfo: AppBuildInfo = .current(),
     whisperDownloadStore: WhisperDownloadStore = .shared,
+    languagePreferences: UserDefaults = .standard,
+    preferredLanguages: [String] = Locale.preferredLanguages,
+    processInterfaceLanguage: InterfaceLanguage = .preferred(
+      from: Bundle.main.preferredLocalizations),
     runtimeLlmLaneProvider: @escaping (CsLlmLane) -> CsRuntimeLlmLane = { lane in
       runtimeLlmLane(lane: lane)
     },
@@ -1255,6 +1268,10 @@ final class SettingsViewModel: ObservableObject {
     self.licenseService = licenseService ?? .preview
     self.buildInfo = buildInfo
     self.whisperDownloadStore = whisperDownloadStore
+    self.languagePreference = InterfaceLanguagePreference(
+      defaults: languagePreferences, preferredLanguages: preferredLanguages,
+      processLanguage: processInterfaceLanguage)
+    self.interfaceLanguage = languagePreference.current
     self.runtimeLlmLaneProvider = runtimeLlmLaneProvider
     self.audioRecordingControlProvider =
       audioRecordingControlProvider ?? Self.liveAudioRecordingControlProvider(for: engine)
@@ -2064,6 +2081,48 @@ final class SettingsViewModel: ObservableObject {
     maxApprovalBusy = false
     if maxApprovalRefreshRequested {
       await refreshMaxToolApprovals()
+    }
+  }
+
+  // MARK: - Interface language
+
+  /// True while a saved choice waits for a relaunch: the picker shows the saved
+  /// language, the window still speaks the one the process started with.
+  var interfaceLanguageNeedsRestart: Bool {
+    languagePreference.needsRestart(for: interfaceLanguage)
+  }
+
+  /// Saves the choice at once; nothing else in the app changes until restart.
+  /// Picking the running language again clears a pending restart.
+  func selectInterfaceLanguage(_ language: InterfaceLanguage) {
+    guard !applyingInterfaceLanguage else { return }
+    interfaceLanguage = language
+    languagePreference.select(language)
+    interfaceLanguageNotice = nil
+  }
+
+  /// Restart the app in the saved language through the host's idle guard. A
+  /// busy runtime (recording, agent turn) keeps the choice saved and explains
+  /// how to retry; the row never relaunches on its own.
+  func applyInterfaceLanguage() {
+    guard interfaceLanguageNeedsRestart, !applyingInterfaceLanguage else { return }
+    guard let onApplyInterfaceLanguage else {
+      interfaceLanguageNotice = InterfaceLanguageRestartError.unavailable.message(
+        locale: Locale.current)
+      return
+    }
+    applyingInterfaceLanguage = true
+    interfaceLanguageNotice = nil
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer { applyingInterfaceLanguage = false }
+      do {
+        try languagePreference.flush()
+        try await onApplyInterfaceLanguage {}
+      } catch {
+        interfaceLanguageNotice = (error as? InterfaceLanguageRestartError ?? .unavailable)
+          .message(locale: Locale.current)
+      }
     }
   }
 

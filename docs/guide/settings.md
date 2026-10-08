@@ -23,6 +23,18 @@ For the product semantics behind preview, verdict, fallback, and AI categories, 
 - Menu bar icon → **Settings**
 - Chat Overlay → **Settings** tab
 
+## Interface language
+
+Settings → **Creator** → **Interface language** switches the app between
+Polski and English. The choice is saved at once as Codescribe's per-app macOS
+language preference (the same one System Settings › General › Language & Region
+› Applications shows); it never touches `settings.json` or the dictation
+language. The running app keeps its language until you press **Restart now**:
+Codescribe waits for an idle moment (no recording, no agent turn) and relaunches
+in the chosen language. If a take or an agent turn is in progress, the row keeps
+your choice and asks you to try again. The setup wizard's first screen offers
+the same switch.
+
 ## Transcription
 
 Open **Settings → Transcription**.
