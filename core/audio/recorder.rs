@@ -288,6 +288,23 @@ impl std::fmt::Display for RecoveredCaptureArchive {
 }
 
 impl CaptureArchiveError {
+    /// A detached stop tail checks the same proof without mutating a capture
+    /// that other channels or a newer take still own.
+    pub fn acknowledge_recovery(&self, recovered: &RecoveredCaptureArchive) -> Result<()> {
+        let evidence = &recovered.evidence;
+        anyhow::ensure!(
+            self.sample_rate == evidence.sample_rate
+                && self.captured_samples == evidence.captured_samples
+                && self.written_samples == evidence.written_samples
+                && self.buffer_start_offset == evidence.buffer_start_offset
+                && self.source_path == evidence.source_path
+                && Arc::ptr_eq(&self.retained_samples, &evidence.retained_samples)
+                && Arc::ptr_eq(&self.unwritten_samples, &evidence.unwritten_samples),
+            "recovered archive proof belongs to a different failed capture"
+        );
+        Ok(())
+    }
+
     /// Rebuild only a fully accounted native PCM take. A physical tail beyond
     /// `written_samples` is unconfirmed and must never be spliced twice.
     fn complete_pcm(&self) -> Result<Vec<i16>> {
@@ -1117,6 +1134,35 @@ impl Recorder {
         Ok(Some(temp_path))
     }
 
+    /// Transfer the closed physical archive to the existing take's stop tail.
+    /// No writer join or file I/O occurs while the controller holds capture.
+    pub(crate) fn detach_closed_spill(&mut self) -> Option<ClosedCaptureArchive> {
+        if self.is_active() || self.archive_error.is_some() {
+            return None;
+        }
+        let spill = self.spill.take()?;
+        let mut buffer = self
+            .buffer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let frames = self.buffer_start_offset.load(Ordering::SeqCst) + buffer.len();
+        self.last_duration = frames as f32 / self.actual_sample_rate as f32;
+        self.diagnostics = RecorderDiagnostics {
+            frames,
+            bytes: frames * std::mem::size_of::<i16>(),
+            duration_sec: self.last_duration,
+        };
+        let retained_samples = std::mem::take(&mut *buffer);
+        let buffer_start_offset = self.buffer_start_offset.load(Ordering::SeqCst);
+        self.buffer_start_offset.store(0, Ordering::SeqCst);
+        Some(ClosedCaptureArchive {
+            spill,
+            captured_samples: frames,
+            buffer_start_offset,
+            retained_samples,
+        })
+    }
+
     /// Recovery receipt for an unsuccessful archive; starting a new take cannot erase it.
     pub fn archive_error(&self) -> Option<&CaptureArchiveError> {
         self.archive_error.as_ref()
@@ -1137,17 +1183,8 @@ impl Recorder {
             .archive_error
             .as_ref()
             .context("no failed take owns archive recovery")?;
+        error.acknowledge_recovery(recovered)?;
         let evidence = &recovered.evidence;
-        anyhow::ensure!(
-            error.sample_rate == evidence.sample_rate
-                && error.captured_samples == evidence.captured_samples
-                && error.written_samples == evidence.written_samples
-                && error.buffer_start_offset == evidence.buffer_start_offset
-                && error.source_path == evidence.source_path
-                && Arc::ptr_eq(&error.retained_samples, &evidence.retained_samples)
-                && Arc::ptr_eq(&error.unwritten_samples, &evidence.unwritten_samples),
-            "recovered archive proof belongs to a different failed capture"
-        );
         self.last_duration = evidence.captured_samples as f32 / evidence.sample_rate as f32;
         self.diagnostics.frames = evidence.captured_samples;
         self.diagnostics.bytes = evidence.captured_samples * std::mem::size_of::<i16>();
@@ -1306,13 +1343,31 @@ pub fn spill_take_wav_for_tests(samples: &[i16], sample_rate: u32) -> Result<Pat
     Ok(path)
 }
 
+#[cfg(test)]
+pub(crate) fn failed_physical_archive_fixture(
+    samples: &[i16],
+    sample_rate: u32,
+) -> ClosedCaptureArchive {
+    // Keep the real spill in the configured take directory so it outlives the
+    // fixture's admission scope and uses the production recovery owner.
+    let spill = SpillSink::spawn(sample_rate, &takes_dir().unwrap()).unwrap();
+    spill.sender().unwrap().send(samples.to_vec()).unwrap();
+    spill.send_failure_handle().store(true, Ordering::SeqCst);
+    ClosedCaptureArchive {
+        spill,
+        captured_samples: samples.len(),
+        buffer_start_offset: 0,
+        retained_samples: samples.iter().copied().collect(),
+    }
+}
+
 /// Disk spill for a streaming session: every captured chunk is forwarded to a
 /// dedicated writer thread over a channel (the CoreAudio callback only clones
 /// and sends — no disk I/O on the audio thread) and lands in a WAV via
 /// incremental `hound` writes. `finalize()` closes the writer and returns the
 /// COMPLETE take, immune to [`STREAMING_BUFFER_CAP_SECONDS`] eviction.
-struct SpillSink {
-    tx: Option<std::sync::mpsc::Sender<Vec<i16>>>,
+pub(crate) struct SpillSink {
+    tx: Option<SpillSender>,
     handle:
         Option<std::thread::JoinHandle<std::result::Result<(PathBuf, usize), CaptureArchiveError>>>,
     path: PathBuf,
@@ -1321,12 +1376,82 @@ struct SpillSink {
     send_failed: Arc<AtomicBool>,
 }
 
+/// Physical capture evidence transferred without copying or clearing its only
+/// retained PCM. Writer failures merge this ring with confirmed spill ranges.
+pub(crate) struct ClosedCaptureArchive {
+    spill: SpillSink,
+    captured_samples: usize,
+    buffer_start_offset: usize,
+    retained_samples: VecDeque<i16>,
+}
+
+impl ClosedCaptureArchive {
+    pub(crate) fn finalize(self) -> std::result::Result<(PathBuf, usize), CaptureArchiveError> {
+        let sample_rate = self.spill.sample_rate;
+        let finalized = self.spill.finalize();
+        let failure = match finalized {
+            Ok((path, samples)) if samples == self.captured_samples => return Ok((path, samples)),
+            Ok((path, samples)) => CaptureArchiveError {
+                cause: "spill sample accounting does not cover the captured take".into(),
+                source_path: Some(path),
+                sample_rate,
+                captured_samples: self.captured_samples,
+                written_samples: samples,
+                unwritten_samples: Arc::new(Vec::new()),
+                buffer_start_offset: self.buffer_start_offset,
+                retained_samples: Arc::new(Vec::new()),
+            },
+            Err(error) => error,
+        };
+        Err(CaptureArchiveError {
+            captured_samples: self.captured_samples,
+            buffer_start_offset: self.buffer_start_offset,
+            retained_samples: Arc::new(self.retained_samples.into_iter().collect()),
+            ..failure
+        })
+    }
+}
+
+#[derive(Clone)]
+pub(crate) enum SpillSender {
+    Capture(std::sync::mpsc::Sender<Vec<i16>>),
+    Take(std::sync::mpsc::SyncSender<Vec<i16>>),
+}
+
+impl SpillSender {
+    pub(crate) fn send(&self, samples: Vec<i16>) -> std::result::Result<(), Vec<i16>> {
+        match self {
+            Self::Capture(sender) => sender.send(samples).map_err(|error| error.0),
+            Self::Take(sender) => sender.try_send(samples).map_err(|error| match error {
+                std::sync::mpsc::TrySendError::Full(samples)
+                | std::sync::mpsc::TrySendError::Disconnected(samples) => samples,
+            }),
+        }
+    }
+}
+
 impl SpillSink {
     /// Open the spill WAV in `dir` and start the writer thread.
     fn spawn(sample_rate: u32, dir: &std::path::Path) -> Result<Self> {
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<i16>>();
+        Self::spawn_writer(sample_rate, dir, SpillSender::Capture(tx), rx)
+    }
+
+    /// One take's disk archive; bounded admission never blocks CoreAudio.
+    pub(crate) fn spawn_take(sample_rate: u32) -> Result<Self> {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<i16>>(128);
+        Self::spawn_writer(sample_rate, &takes_dir()?, SpillSender::Take(tx), rx)
+    }
+
+    fn spawn_writer(
+        sample_rate: u32,
+        dir: &std::path::Path,
+        tx: SpillSender,
+        rx: std::sync::mpsc::Receiver<Vec<i16>>,
+    ) -> Result<Self> {
         let path = dir.join(format!(
             "codescribe_recording_{}.wav",
-            chrono::Utc::now().timestamp_millis()
+            uuid::Uuid::new_v4().as_u128()
         ));
         let spec = hound::WavSpec {
             channels: CHANNELS,
@@ -1344,9 +1469,11 @@ impl SpillSink {
         writer
             .flush()
             .map_err(|e| anyhow::anyhow!("spill wav admission flush {}: {e}", path.display()))?;
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<i16>>();
         let written_samples = Arc::new(AtomicUsize::new(0));
         let progress = Arc::clone(&written_samples);
+        let bounded_take = matches!(&tx, SpillSender::Take(_));
+        let send_failed = Arc::new(AtomicBool::new(false));
+        let writer_failed = Arc::clone(&send_failed);
         let writer_path = path.clone();
         let handle = std::thread::Builder::new()
             .name("audio-spill".into())
@@ -1380,6 +1507,11 @@ impl SpillSink {
                         failure = Some(cause);
                     }
                     if failure.is_some() {
+                        if bounded_take {
+                            // Stop future take-archive admission at the first
+                            // disk failure; retain only its bounded queued PCM.
+                            writer_failed.store(true, Ordering::SeqCst);
+                        }
                         unwritten.extend(chunk);
                     } else {
                         written += chunk.len();
@@ -1414,13 +1546,17 @@ impl SpillSink {
             path,
             sample_rate,
             written_samples,
-            send_failed: Arc::new(AtomicBool::new(false)),
+            send_failed,
         })
     }
 
     /// Clone of the sender for the capture callback (send-only, non-blocking).
-    fn sender(&self) -> Option<std::sync::mpsc::Sender<Vec<i16>>> {
+    pub(crate) fn sender(&self) -> Option<SpillSender> {
         self.tx.clone()
+    }
+
+    pub(crate) fn send_failure_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.send_failed)
     }
 
     /// Feed one mono i16 chunk. Test-only surface: the live path sends
@@ -1434,7 +1570,7 @@ impl SpillSink {
 
     /// Close the channel, join the writer, return the finalized take.
     /// Failure retains its cause, source path and recoverable sample ranges.
-    fn finalize(mut self) -> std::result::Result<(PathBuf, usize), CaptureArchiveError> {
+    pub(crate) fn finalize(mut self) -> std::result::Result<(PathBuf, usize), CaptureArchiveError> {
         self.tx.take(); // drop our sender; callback senders die with the stream
         let joined = self.handle.take().map(|handle| handle.join());
         match joined {
@@ -1502,7 +1638,7 @@ fn downmix_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
 /// saturates instead of wrapping to the opposite polarity. `buffer_start_offset`
 /// advances by exactly the number of evicted samples, which is what keeps
 /// [`Recorder::snapshot_wav`] offsets absolute across a trimmed buffer.
-fn convert_mono_f32_to_i16(samples: &[f32]) -> Vec<i16> {
+pub(crate) fn convert_mono_f32_to_i16(samples: &[f32]) -> Vec<i16> {
     samples
         .iter()
         .map(|sample| {

@@ -449,7 +449,8 @@ final class OverlayController: ObservableObject {
       !state.isRevisionDraftDirty
     else { return nil }
     let screen = panel?.screen ?? NSScreen.main
-    let restingHeight = (panel as? FloatingOverlayPanel)?.sizeForPersistence.height
+    let restingHeight =
+      (panel as? FloatingOverlayPanel)?.sizeForPersistence.height
       ?? panel?.frame.height
       ?? DictationOverlayWindow.defaultSize.height
     return OverlayContentSizePolicy.preferredHeight(
@@ -539,7 +540,7 @@ final class OverlayController: ObservableObject {
     placementAfterTransition = false
     placementAfterUserResize = false
     contentSizeAfterUserResize = false
-    state.clearWidgetHover()
+    state.clearPointerHover()
     // Persist the user's chosen size for next launch (replaces frame autosave,
     // which used to write back the old feedback loop's runaway sizes) — and,
     // in free motion, the dragged origin.

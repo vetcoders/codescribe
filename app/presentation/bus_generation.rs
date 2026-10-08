@@ -87,6 +87,8 @@ pub struct Segment {
     pub ino: u64,
     pub day: Option<String>,
     pub compressed: bool,
+    /// Verified logical bytes after archive processing, including a successful
+    /// attempt that the filesystem retained without compression.
     pub sha256: Option<String>,
     pub superseded: Option<RetiredCopy>,
 }
@@ -435,7 +437,10 @@ fn schedule_archives(path: &Path, closed: Option<String>) {
                 manifest
                     .segments
                     .iter()
-                    .filter(|s| s.day.is_some() && (!s.compressed || s.superseded.is_some()))
+                    .filter(|s| {
+                        s.day.is_some()
+                            && ((!s.compressed && s.sha256.is_none()) || s.superseded.is_some())
+                    })
                     .map(|s| s.id.clone()),
             );
             work.inspected = true;
@@ -622,16 +627,33 @@ pub fn compress_segment(root: &Path, id: &str) -> io::Result<()> {
     if segment.compressed {
         return retire_copy(root, id);
     }
+    if segment.sha256.is_some() {
+        return Ok(());
+    }
     let before = source_identity(&fs::metadata(&segment.path)?);
     if before.dev != segment.dev || before.ino != segment.ino || before.length != segment.length {
         return Err(invalid());
     }
-    let stage = compress_prepared(&segment.path)?.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Unsupported,
-            "original archive preserved without verified compression",
-        )
-    })?;
+    let Some(stage) = compress_prepared(&segment.path)? else {
+        let (length, digest) = digest_file(&segment.path)?;
+        if length != segment.length || source_identity(&fs::metadata(&segment.path)?) != before {
+            return Err(invalid());
+        }
+        let _lease = Lease::acquire(root)?;
+        let mut manifest = view(root)?.ok_or_else(invalid)?;
+        let entry = manifest
+            .segments
+            .iter_mut()
+            .find(|s| s.id == id && s.ino == segment.ino && !s.compressed)
+            .ok_or_else(invalid)?;
+        if source_identity(&fs::metadata(&entry.path)?) != before {
+            return Err(invalid());
+        }
+        // Keep the original bytes and physical identity. A verified no-benefit
+        // result is settled archive work, not a compression failure to retry.
+        entry.sha256 = Some(digest);
+        return write_manifest(root, &manifest);
+    };
     let (_, digest) = digest_file(&stage)?;
     if source_identity(&fs::metadata(&segment.path)?) != before {
         return Err(invalid());
@@ -1046,15 +1068,21 @@ fn compress_prepared(source: &Path) -> io::Result<Option<PathBuf>> {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()?;
-        if !status.success() || !compressed(&target)? {
+        if !status.success() {
             let _ = fs::remove_file(&target);
-            return Ok(None);
+            return Err(io::Error::other(format!(
+                "archive compression command failed: {status}"
+            )));
         }
         if digest_file(source)? != digest_file(&target)?
             || source_identity(&fs::metadata(source)?) != before
         {
             let _ = fs::remove_file(&target);
             return Err(invalid());
+        }
+        if !compressed(&target)? {
+            fs::remove_file(&target)?;
+            return Ok(None);
         }
         File::open(&target)?.sync_all()?;
         Ok(Some(target))
@@ -1317,6 +1345,36 @@ mod integrator_generation_acceptance {
         assert!(prepare_append(&path, &mut file).is_err());
         assert_eq!(fs::read(&path).unwrap(), old);
         assert!(view(&path).unwrap().unwrap().segments.is_empty());
+    }
+
+    #[test]
+    fn successful_small_archive_attempt_settles_without_replacing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bus.jsonl");
+        let bytes = b"{\"small\":true}\n";
+        let mut file = pinned_previous_day(&path, bytes);
+        let id = prepare_append(&path, &mut file).unwrap().unwrap();
+        let original = view(&path).unwrap().unwrap().segments[0].clone();
+        compress_segment(&path, &id).unwrap();
+        let settled = view(&path).unwrap().unwrap().segments[0].clone();
+        assert!(
+            !settled.compressed,
+            "tiny archive has no compression benefit"
+        );
+        assert_eq!(settled.path, original.path);
+        assert_eq!(
+            (settled.dev, settled.ino, settled.length),
+            (original.dev, original.ino, original.length)
+        );
+        assert_eq!(fs::read(&settled.path).unwrap(), bytes);
+        assert_eq!(settled.sha256, Some(digest_file(&settled.path).unwrap().1));
+        let manifest_before = fs::read(manifest_path(&path)).unwrap();
+        compress_segment(&path, &id).unwrap();
+        assert_eq!(fs::read(manifest_path(&path)).unwrap(), manifest_before);
+        let mut reader = Reader::open(&path).unwrap();
+        let mut read = Vec::new();
+        reader.read_to_end(&mut read).unwrap();
+        assert_eq!(read, bytes);
     }
 
     #[test]

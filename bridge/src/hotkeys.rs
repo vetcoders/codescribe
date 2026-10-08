@@ -1768,7 +1768,10 @@ async fn dispatch_recording_with_capture_gate(
     optimistically_show_overlay(&event).await;
     let dispatch = dispatch_recording_hotkey_event(event, Arc::clone(&controller)).await;
     compensate_orphaned_preparing(&controller).await;
-    if controller.current_state().await == State::Idle {
+    let state_after = controller.current_state().await;
+    if state_after == State::Idle
+        || (state_after == State::Busy && controller.stopped_capture_feed_closed())
+    {
         let _ = CAPTURE_OWNER.compare_exchange(
             CAPTURE_OWNER_CONTROLLER,
             CAPTURE_OWNER_NONE,
@@ -1847,7 +1850,7 @@ async fn dispatch_recording_hotkey_event(
                 force_raw: false,
                 force_ai: false,
             };
-            controller.handle_hotkey_event(input).await?;
+            controller.admit_hotkey_event(input).await?;
         }
         HotkeyEvent::HoldUpdate { mode } => {
             let input = HotkeyInput {
@@ -1858,7 +1861,7 @@ async fn dispatch_recording_hotkey_event(
                 force_raw: false,
                 force_ai: false,
             };
-            controller.handle_hotkey_event(input).await?;
+            controller.admit_hotkey_event(input).await?;
         }
         HotkeyEvent::AttachSelection => {
             controller.attach_hold_selection().await?;
@@ -1872,7 +1875,7 @@ async fn dispatch_recording_hotkey_event(
                 force_raw: false,
                 force_ai: true,
             };
-            controller.handle_hotkey_event(input).await?;
+            controller.admit_hotkey_event(input).await?;
         }
         HotkeyEvent::ToggleRaw => {
             let input = HotkeyInput {
@@ -1883,7 +1886,7 @@ async fn dispatch_recording_hotkey_event(
                 force_raw: true,
                 force_ai: false,
             };
-            controller.handle_hotkey_event(input).await?;
+            controller.admit_hotkey_event(input).await?;
         }
         HotkeyEvent::ToggleAssistive => {
             let input = HotkeyInput {
@@ -1894,7 +1897,7 @@ async fn dispatch_recording_hotkey_event(
                 force_raw: false,
                 force_ai: false,
             };
-            controller.handle_hotkey_event(input).await?;
+            controller.admit_hotkey_event(input).await?;
         }
         HotkeyEvent::AgentChannel { digit } => {
             controller.toggle_agent_channel(digit).await?;

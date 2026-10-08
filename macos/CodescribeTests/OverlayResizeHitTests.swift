@@ -343,6 +343,7 @@ final class OverlayResizeHitTests: XCTestCase {
     for size in [
       CGSize(width: 320, height: 260), CGSize(width: 470, height: 280),
       CGSize(width: 700, height: 400),
+      CGSize(width: 686, height: 277), CGSize(width: 706, height: 696),
     ] {
       let state = OverlayState.previewFormatted()
       let text = state.activeText
@@ -371,6 +372,10 @@ final class OverlayResizeHitTests: XCTestCase {
       XCTAssertGreaterThanOrEqual(drawer.minY, 46, "drawer stays below header")
       XCTAssertLessThanOrEqual(drawer.maxX, size.width + 0.5)
       XCTAssertLessThanOrEqual(drawer.maxY, size.height + 0.5)
+      if size.height > 600 {
+        XCTAssertLessThan(
+          drawer.height, size.height / 2, "short roster must not stretch across a tall canvas")
+      }
       measuredWidths.append(drawer.width)
       XCTAssertEqual(state.presentationMode, .expanded)
       XCTAssertEqual(state.activeText, text)

@@ -73,13 +73,13 @@ use codescribe_core::pipeline::contracts::EngineEvent;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock, broadcast, mpsc, watch};
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::audio::streaming_recorder::{
-    CaptureStopFailure, CaptureTurnIntent, StreamingRecorder, TerminalSealRefused,
+    CaptureStopFailure, CaptureTurnIntent, ClosedTake, StreamingRecorder, TerminalSealRefused,
 };
 use crate::config::models::ModelManager;
 use crate::config::{Config, FormattingPolicy, PasteMode, RuntimeSettingsSnapshot, UserSettings};
@@ -323,17 +323,20 @@ fn finish_audio_capture(id: Option<&str>) {
     }
 }
 
-/// Copy this take's ledger before the recorder slot can move on.
+/// Observe the original take ledger after its final refinement completes.
 ///
 /// The handle belongs to the recorder that just stopped. A missing handle, a
 /// zero epoch, or a session that disagrees with the retention id is reported
 /// as unavailable evidence. Nothing here mints a receipt.
-fn freeze_take_observer(
-    recorder: &StreamingRecorder,
+fn observe_take_ledger(
+    identity: (Option<&str>, u64),
+    handle: Option<
+        Arc<std::sync::Mutex<codescribe_core::pipeline::acoustic_ledger::AcousticLedger>>,
+    >,
     retention_id: Option<&str>,
 ) -> codescribe_core::pipeline::take_truth::TakeTruth {
     use codescribe_core::pipeline::take_truth::TakeTruth;
-    let (recorder_session, raw_epoch) = recorder.capture_identity();
+    let (recorder_session, raw_epoch) = identity;
     let epoch = (raw_epoch != 0).then_some(raw_epoch);
     let session_id = match (recorder_session, retention_id) {
         (Some(session), None) => Some(session.to_string()),
@@ -350,7 +353,7 @@ fn freeze_take_observer(
         }
         (None, _) => None,
     };
-    let Some(handle) = recorder.acoustic_ledger_handle() else {
+    let Some(handle) = handle else {
         warn!(
             session_id = session_id.as_deref().unwrap_or(""),
             epoch = epoch.unwrap_or(0),
@@ -977,6 +980,17 @@ fn recover_capture_stop_failure(
             return error.context(message);
         }
         if let Some(recovered) = recovered {
+            if let Some(archive) = error
+                .downcast_ref::<CaptureStopFailure>()
+                .and_then(|failure| {
+                    failure
+                        .cause
+                        .downcast_ref::<codescribe_core::audio::recorder::CaptureArchiveError>()
+                })
+                && let Err(ack) = archive.acknowledge_recovery(&recovered)
+            {
+                return error.context(format!("recovered archive ownership refused: {ack:#}"));
+            }
             if let Some(failure) = error.downcast_mut::<CaptureStopFailure>() {
                 failure.audio_path = Some(path);
             }
@@ -1318,7 +1332,7 @@ where
     }
 }
 
-/// Stop the recorder for a finished take and classify the outcome.
+/// Settle the original closed take and classify the outcome.
 ///
 /// A ledger refusal of the terminal transcript ([`TerminalSealRefused`]) is a
 /// legitimate take outcome, not a recorder failure: the capture stopped and the
@@ -1332,17 +1346,64 @@ where
 /// stop propagated the refusal with `?` past its own state reset, the
 /// controller stayed `Busy` for good, the Bus session never ended and every
 /// later Finish press was ignored until the app was restarted.
-async fn stop_recorder_for_terminal(
-    recorder: &mut StreamingRecorder,
+async fn stop_closed_take_for_terminal(
+    mut take: ClosedTake,
     session_id: Option<&str>,
-    capture_closed: Option<bool>,
+) -> (
+    Result<(String, Option<std::path::PathBuf>)>,
+    codescribe_core::pipeline::take_truth::TakeTruth,
+) {
+    // This helper runs in an already tracked, retired take tail. A timeout
+    // is an incomplete publication attempt, never permission to drop its sink.
+    let mut pending_reported = false;
+    loop {
+        let (stopped, observer, pending) =
+            try_stop_closed_take_for_terminal(take, session_id).await;
+        let Some(original) = pending else {
+            return (stopped, observer);
+        };
+        if !pending_reported {
+            warn!(session_id, error = ?stopped.as_ref().err(),
+                "closed take publication pending; original owner retained for retry");
+            pending_reported = true;
+        }
+        take = original;
+        // Permanent refusal stays visibly unsettled. Backoff prevents a
+        // disconnected publisher from creating a busy retry loop.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// One foreground attempt. An incomplete publication transfers its original
+/// owner back to the controller, before any Bus end or history classification.
+async fn try_stop_closed_take_for_terminal(
+    mut take: ClosedTake,
+    session_id: Option<&str>,
+) -> (
+    Result<(String, Option<std::path::PathBuf>)>,
+    codescribe_core::pipeline::take_truth::TakeTruth,
+    Option<ClosedTake>,
+) {
+    let (session, epoch) = take.capture_identity();
+    let session = session.map(str::to_owned);
+    let ledger = take.acoustic_ledger_handle();
+    let stopped = take.finish().await;
+    let observer = observe_take_ledger((session.as_deref(), epoch), ledger, session_id);
+    if !take.is_settled() {
+        return (stopped, observer, Some(take));
+    }
+    let classified =
+        classify_terminal_stop(stopped, session_id, session, epoch, observer.clone()).await;
+    (classified, observer, None)
+}
+
+async fn classify_terminal_stop(
+    stopped: Result<(String, Option<std::path::PathBuf>)>,
+    session_id: Option<&str>,
+    capture_session: Option<String>,
+    capture_epoch: u64,
+    observer: codescribe_core::pipeline::take_truth::TakeTruth,
 ) -> Result<(String, Option<std::path::PathBuf>)> {
-    let (capture_session, capture_epoch) = recorder.capture_identity();
-    let capture_session = capture_session.map(str::to_owned);
-    let stopped = match capture_closed {
-        Some(was_active) => recorder.finish_closed_capture(was_active).await,
-        None => recorder.stop().await,
-    };
     match stopped {
         Ok(stopped) => Ok(stopped),
         Err(err) => match err.downcast::<TerminalSealRefused>() {
@@ -1355,7 +1416,6 @@ async fn stop_recorder_for_terminal(
                 );
                 match refusal.audio_path.as_deref() {
                     Some(path) => {
-                        let observer = freeze_take_observer(recorder, session_id);
                         retain_session_audio(
                             session_id,
                             path,
@@ -1370,7 +1430,6 @@ async fn stop_recorder_for_terminal(
             }
             Err(err) => {
                 if err.downcast_ref::<CaptureStopFailure>().is_some() {
-                    let observer = freeze_take_observer(recorder, session_id);
                     let session_id = session_id.map(str::to_owned);
                     let lease = retainable_session_id(session_id.as_deref()).and_then(|id| {
                         codescribe_core::state::history::audio_retention::capture(
@@ -1404,15 +1463,6 @@ async fn stop_recorder_for_terminal(
                         Ok(error) => error,
                         Err(error) => anyhow::anyhow!("audio recovery worker failed: {error}"),
                     };
-                    if let Some(proof) = recovered
-                        .downcast_ref::<codescribe_core::audio::recorder::RecoveredCaptureArchive>(
-                    ) && let Err(acknowledgement) =
-                        recorder.recorder.acknowledge_archive_recovery(proof)
-                    {
-                        return Err(recovered.context(format!(
-                            "CRITICAL: recovered audio ownership could not settle: {acknowledgement:#}"
-                        )));
-                    }
                     Err(recovered)
                 } else {
                     Err(err.context("Failed to stop recorder"))
@@ -1467,7 +1517,16 @@ type CaptureSettlementResult = std::result::Result<CaptureStopOutcome, String>;
 struct CaptureSettlement {
     capture_id: String,
     result: watch::Receiver<Option<CaptureSettlementResult>>,
+    closed: watch::Receiver<bool>,
     task: JoinHandle<()>,
+}
+
+enum CaptureStopAdmission {
+    Settling(
+        watch::Receiver<Option<CaptureSettlementResult>>,
+        watch::Receiver<bool>,
+    ),
+    Immediate(CaptureStopOutcome),
 }
 
 #[cfg(test)]
@@ -2987,7 +3046,7 @@ impl RecordingController {
     /// Settle the painted live finals before archive and terminal refinement drain.
     async fn deliver_frozen_canvas_at_stop(
         &self,
-        recorder: &mut StreamingRecorder,
+        recorder: &mut ClosedTake,
         take_id: Option<&str>,
         intent: (bool, bool, CaptureTurnIntent),
         stop: StopCanvasRequest,
@@ -3142,37 +3201,13 @@ impl RecordingController {
         }
     }
 
-    /// The microphone is already closed and the old paste is already settled.
-    /// Move that recorder's remaining drain into a tracked, take-owned tail.
+    /// The microphone is already closed. Transfer preempted or publication-
+    /// pending terminal work and its exact Bus into one tracked take-owned tail.
     /// It retains audio and Bus finality but has no authority over the next UI.
-    async fn detach_preempted_stop(
-        &self,
-        slot: &mut Option<StreamingRecorder>,
-        take_id: Option<&str>,
-        was_active: bool,
-    ) -> Result<()> {
-        let recorder = Self::recorder_from_guard_mut(slot, "Preempted stop")?;
-        anyhow::ensure!(
-            !recorder.recorder.is_active(),
-            "preemption requires closed capture"
-        );
-        let replacement = StreamingRecorder::with_config(recorder.recorder.config.clone())?;
-        if recorder.prepare_closed_capture_archive(was_active).is_err() {
-            // Do not replace this slot while it owns failed PCM. The ordinary
-            // stop consumes the frozen result, sends terminal failure to STT
-            // and attempts durable recovery before any controller reset.
-            return match stop_recorder_for_terminal(recorder, take_id, Some(was_active)).await {
-                Err(error) => Err(error),
-                Ok(_) => Err(anyhow::anyhow!(
-                    "closed capture archive failure lost its cause"
-                )),
-            };
-        }
+    async fn detach_preempted_stop(&self, take: ClosedTake, take_id: Option<&str>) -> Result<()> {
         if let Some(emitter) = self.active_presentation.read().await.as_ref() {
             emitter.retire_presentation();
         }
-        recorder.set_level_callback(None);
-        let mut recorder = slot.replace(replacement).expect("recorder checked above");
         let bus = self.active_transcript_bus.write().await.take();
         let take_id = take_id.map(str::to_owned);
         let retained_capture = retainable_session_id(take_id.as_deref()).and_then(|id| {
@@ -3180,13 +3215,9 @@ impl RecordingController {
         });
         let delivery = *self.delivery_disposition.read().await;
         let task = tokio::spawn(async move {
-            let stopped =
-                stop_recorder_for_terminal(&mut recorder, take_id.as_deref(), Some(was_active))
-                    .await;
-            Self::clear_recorder_callbacks(&mut recorder);
+            let (stopped, observer) = stop_closed_take_for_terminal(take, take_id.as_deref()).await;
             let reason = match &stopped {
                 Ok((text, path)) => {
-                    let observer = freeze_take_observer(&recorder, take_id.as_deref());
                     if let Some(path) = path.as_deref() {
                         retain_session_audio_with_lease(
                             take_id.as_deref(),
@@ -3203,7 +3234,7 @@ impl RecordingController {
                     TranscriptSessionEndReason::CoverageRefused
                 }
                 Err(error) => {
-                    warn!(take_id = ?take_id, %error, "preempted take terminal drain failed");
+                    warn!(take_id = ?take_id, %error, "retired take terminal drain failed");
                     TranscriptSessionEndReason::TranscriptionFailed
                 }
             };
@@ -4515,13 +4546,8 @@ impl RecordingController {
     /// - **Hold + assistive=true**: force Assistive mode (Shift pressed = AI augmentation)
     /// - **Toggle + force_ai=true**: force AI formatting (normal hands-off)
     /// - **Toggle + assistive=true**: force Assistive hands-off
-    pub async fn handle_hotkey_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
-        let hold_generation = (event.key_type == HotkeyType::Hold
-            && event.action == HotkeyAction::Down)
-            .then(|| self.hold_start_generation.load(Ordering::SeqCst));
-        // Stop gestures enter before mode updates: a RAW toggle during hold
-        // must not rewrite the take's destination while asking to end it.
-        let stop_gesture = {
+    fn is_stop_gesture(&self, event: &HotkeyInput) -> Result<bool> {
+        Ok({
             let Ok(state) = self.state.try_read() else {
                 return Err(anyhow::anyhow!("hotkey admission unavailable"));
             };
@@ -4540,7 +4566,46 @@ impl RecordingController {
                 && event.action == HotkeyAction::Press
                 && event.force_raw
                 && *state == State::RecHold)
-        };
+        })
+    }
+
+    /// Admit each native gesture in FIFO order. Stop returns only after its
+    /// PCM feed is closed and capture locks are released; terminal work remains
+    /// owned by the same settlement task. Explicit stop APIs await completion.
+    pub async fn admit_hotkey_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
+        if !self.is_stop_gesture(&event)? {
+            return self.handle_hotkey_event(event).await;
+        }
+        match self.current_capture_stop() {
+            CaptureStopAdmission::Immediate(CaptureStopOutcome::NoLiveCapture) => Ok(()),
+            CaptureStopAdmission::Immediate(outcome) => {
+                Err(anyhow::anyhow!("Stop admission unresolved: {outcome:?}"))
+            }
+            CaptureStopAdmission::Settling(mut result, mut closed) => loop {
+                if *closed.borrow_and_update() {
+                    return Ok(());
+                }
+                if let Some(settled) = result.borrow_and_update().clone() {
+                    return match settled.map_err(anyhow::Error::msg)? {
+                        CaptureStopOutcome::Stopped | CaptureStopOutcome::NoLiveCapture => Ok(()),
+                        outcome => Err(anyhow::anyhow!("Stop admission unresolved: {outcome:?}")),
+                    };
+                }
+                tokio::select! {
+                    change = closed.changed() => { change.map_err(|_| anyhow::anyhow!("capture-close receipt lost"))?; }
+                    change = result.changed() => { change.map_err(|_| anyhow::anyhow!("capture settlement owner lost"))?; }
+                }
+            },
+        }
+    }
+
+    pub async fn handle_hotkey_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
+        let hold_generation = (event.key_type == HotkeyType::Hold
+            && event.action == HotkeyAction::Down)
+            .then(|| self.hold_start_generation.load(Ordering::SeqCst));
+        // Stop gestures enter before mode updates: a RAW toggle during hold
+        // must not rewrite the take's destination while asking to end it.
+        let stop_gesture = self.is_stop_gesture(&event)?;
         if stop_gesture {
             return self.stop_recording_from_external_surface().await;
         }
@@ -4551,8 +4616,21 @@ impl RecordingController {
         if next_start && preempt_stop_paste_for_next_take() {
             // The old owner copies and retires before this gesture may open a
             // microphone or capture a new target. Its slow drain is detached.
-            let settled = self.serial_lock.lock().await;
-            drop(settled);
+            let result = self
+                .capture_settlement
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .map(|operation| operation.result.clone());
+            if let Some(result) = result {
+                anyhow::ensure!(
+                    matches!(
+                        Self::await_capture_stop(result).await?,
+                        CaptureStopOutcome::Stopped | CaptureStopOutcome::NoLiveCapture
+                    ),
+                    "preceding take has not retired its foreground"
+                );
+            }
         }
         let mut current_state = self.current_state().await;
 
@@ -5940,6 +6018,8 @@ impl RecordingController {
     async fn stop_toggle_and_adjudicate_inner(
         &self,
         expected: Option<&str>,
+        serial: OwnedMutexGuard<()>,
+        closed: Option<watch::Sender<bool>>,
     ) -> Result<CaptureStopOutcome> {
         // Phase-timed instrumentation retained from the original failure.
         // STOP_TIMEOUT now bounds only callers, never this owned body.
@@ -6026,28 +6106,35 @@ impl RecordingController {
             // The live slot is `{uuid}:stopping` here. File-lane identity is
             // the Bus uuid snapped before that rewrite.
             let was_active = recorder.close_capture().await;
+            let mut take = recorder.detach_closed_take(was_active);
+            Self::clear_recorder_callbacks(recorder);
+            drop(recorder_guard);
+            drop(serial);
+            if let Some(closed) = closed { closed.send_replace(true); }
             let StopCanvasDelivery { delivery: initial_delivery, preempted } = self
                 .deliver_frozen_canvas_at_stop(
-                    recorder,
+                    &mut take,
                     session_id_snapshot.as_deref(),
                     (assistive, force_ai, capture_turn),
                     stop,
                 )
                 .await;
             if preempted {
-                self.detach_preempted_stop(&mut recorder_guard, session_id_snapshot.as_deref(), was_active).await?;
+                self.detach_preempted_stop(take, session_id_snapshot.as_deref()).await?;
                 initial_delivery?;
                 return Ok(ProcessRecordingOutcome::default());
             }
-            let stopped =
-                stop_recorder_for_terminal(recorder, session_id_snapshot.as_deref(), Some(was_active)).await;
+            let (stopped, observer, pending) =
+                try_stop_closed_take_for_terminal(take, session_id_snapshot.as_deref()).await;
+            if let Some(take) = pending {
+                // Move the exact old Bus out before foreground timeout/reset.
+                // The tracked tail alone owns eventual publication and history.
+                self.detach_preempted_stop(take, session_id_snapshot.as_deref()).await?;
+            }
             rec_stop_secs = phase2.elapsed().as_secs_f64();
             // Read the take's own intent before the per-take state is cleared.
             // The recorder is the single owner of this fact; the stop path must
             // not re-derive it from the assistive flag or the active screen.
-            Self::clear_recorder_callbacks(recorder);
-            let observer = freeze_take_observer(recorder, session_id_snapshot.as_deref());
-            drop(recorder_guard);
             // The session is over whichever way `stop()` went; the engine that
             // served it is the same on a clean stop and on a refused seal.
             Self::publish_live_serving_verdict(serving_engine);
@@ -6229,46 +6316,66 @@ impl RecordingController {
     /// The retained terminal owner checks that identity under the serial lock;
     /// a delayed gesture cannot discover or stop a replacement after waiting.
     pub async fn stop_current_capture(self: &Arc<Self>) -> Result<CaptureStopOutcome> {
-        let receiver = {
-            let Ok(mut slot) = self.capture_settlement.try_lock() else {
-                return Ok(CaptureStopOutcome::AdmissionUnavailable);
-            };
-            if let Some(operation) = slot
-                .as_ref()
-                .filter(|op| !op.task.is_finished() || op.result.borrow().is_none())
-            {
-                operation.result.clone()
-            } else {
-                let Ok(state) = self.state.try_read() else {
-                    return Ok(CaptureStopOutcome::AdmissionUnavailable);
-                };
-                if *state == State::Idle {
-                    // Idle is only conclusive once any unpublished start has
-                    // released admission. A published take below already has
-                    // its own identity and can register Stop without this lock.
-                    let Ok(_serial) = self.serial_lock.try_lock() else {
-                        return Ok(CaptureStopOutcome::AdmissionUnavailable);
-                    };
-                    // No active terminal body to cancel. Invalidate a delayed
-                    // hold that has not crossed this same admission boundary.
-                    self.hold_start_generation.fetch_add(1, Ordering::SeqCst);
-                    return Ok(CaptureStopOutcome::NoLiveCapture);
-                }
-                if !matches!(*state, State::RecHold | State::RecToggle) {
-                    // Conversation has a separate loop owner, and Busy without
-                    // a settlement receipt is not proof of a released resource.
-                    return Ok(CaptureStopOutcome::AdmissionUnavailable);
-                }
-                let Ok(identity) = self.session_id.try_read() else {
-                    return Ok(CaptureStopOutcome::AdmissionUnavailable);
-                };
-                let Some(id) = identity.as_deref() else {
-                    return Ok(CaptureStopOutcome::AdmissionUnavailable);
-                };
-                self.register_capture_stop(&mut slot, id)
-            }
+        match self.current_capture_stop() {
+            CaptureStopAdmission::Immediate(outcome) => Ok(outcome),
+            CaptureStopAdmission::Settling(result, _) => Self::await_capture_stop(result).await,
+        }
+    }
+
+    fn current_capture_stop(self: &Arc<Self>) -> CaptureStopAdmission {
+        let Ok(mut slot) = self.capture_settlement.try_lock() else {
+            return CaptureStopAdmission::Immediate(CaptureStopOutcome::AdmissionUnavailable);
         };
-        Self::await_capture_stop(receiver).await
+        if let Some(operation) = slot
+            .as_ref()
+            .filter(|op| !op.task.is_finished() || op.result.borrow().is_none())
+        {
+            CaptureStopAdmission::Settling(operation.result.clone(), operation.closed.clone())
+        } else {
+            let Ok(state) = self.state.try_read() else {
+                return CaptureStopAdmission::Immediate(CaptureStopOutcome::AdmissionUnavailable);
+            };
+            if *state == State::Idle {
+                // Idle is only conclusive once any unpublished start has
+                // released admission. A published take below already has
+                // its own identity and can register Stop without this lock.
+                let Ok(_serial) = self.serial_lock.try_lock() else {
+                    return CaptureStopAdmission::Immediate(
+                        CaptureStopOutcome::AdmissionUnavailable,
+                    );
+                };
+                // No active terminal body to cancel. Invalidate a delayed
+                // hold that has not crossed this same admission boundary.
+                self.hold_start_generation.fetch_add(1, Ordering::SeqCst);
+                return CaptureStopAdmission::Immediate(CaptureStopOutcome::NoLiveCapture);
+            }
+            if !matches!(*state, State::RecHold | State::RecToggle) {
+                // Conversation has a separate loop owner, and Busy without
+                // a settlement receipt is not proof of a released resource.
+                return CaptureStopAdmission::Immediate(CaptureStopOutcome::AdmissionUnavailable);
+            }
+            let Ok(identity) = self.session_id.try_read() else {
+                return CaptureStopAdmission::Immediate(CaptureStopOutcome::AdmissionUnavailable);
+            };
+            let Some(id) = identity.as_deref() else {
+                return CaptureStopAdmission::Immediate(CaptureStopOutcome::AdmissionUnavailable);
+            };
+            let result = self.register_capture_stop(&mut slot, id);
+            CaptureStopAdmission::Settling(
+                result,
+                slot.as_ref().expect("registered stop").closed.clone(),
+            )
+        }
+    }
+
+    /// Native dispatch may release its take-ownership claim once the owned
+    /// stop has fenced PCM. Busy still vetoes new takes until foreground reset.
+    pub fn stopped_capture_feed_closed(&self) -> bool {
+        self.capture_settlement
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .is_some_and(|operation| *operation.closed.borrow())
     }
 
     /// Legacy void bridge surface must not turn Pending into successful Stop.
@@ -6281,8 +6388,12 @@ impl RecordingController {
 
     /// Only the registered owner calls terminal processing. Routing and identity
     /// are decided in the same serialization section as the terminal effects.
-    async fn stop_external_capture(&self, expected: Option<&str>) -> Result<CaptureStopOutcome> {
-        let _serial = self.serial_lock.lock().await;
+    async fn stop_external_capture(
+        &self,
+        expected: Option<&str>,
+        closed: watch::Sender<bool>,
+    ) -> Result<CaptureStopOutcome> {
+        let serial = Arc::clone(&self.serial_lock).lock_owned().await;
         match self.capture_gate(expected).await {
             CaptureStopOutcome::Stopped => {}
             refused => return Ok(refused),
@@ -6300,12 +6411,13 @@ impl RecordingController {
         if single_turn
             || should_use_toggle_adjudicated_stop(state, assistive, toggle_final_pass_enabled())
         {
-            self.stop_toggle_and_adjudicate_inner(expected).await
+            self.stop_toggle_and_adjudicate_inner(expected, serial, Some(closed))
+                .await
         } else if matches!(state, State::RecHold | State::RecToggle) {
             #[cfg(test)]
             self.observe_capture_settlement(CaptureSettlementStage::Admitted);
             self.cancel_pending_hold_start().await;
-            self.finish_recording_locked()
+            self.finish_recording_locked(serial, Some(closed))
                 .await
                 .map(|()| CaptureStopOutcome::Stopped)
         } else {
@@ -6406,11 +6518,12 @@ impl RecordingController {
         capture_id: &str,
     ) -> watch::Receiver<Option<CaptureSettlementResult>> {
         let (sender, receiver) = watch::channel(None);
+        let (closed_sender, closed) = watch::channel(false);
         let controller = Arc::clone(self);
         let owned_id = capture_id.to_owned();
         let task = tokio::spawn(async move {
             let settled = controller
-                .stop_external_capture(Some(&owned_id))
+                .stop_external_capture(Some(&owned_id), closed_sender)
                 .await
                 .map_err(|error| format!("{error:#}"));
             sender.send_replace(Some(settled));
@@ -6418,6 +6531,7 @@ impl RecordingController {
         *slot = Some(CaptureSettlement {
             capture_id: capture_id.to_owned(),
             result: receiver.clone(),
+            closed,
             task,
         });
         #[cfg(test)]
@@ -6580,7 +6694,11 @@ impl RecordingController {
     }
 
     /// Only the capture settlement task calls this with serial_lock held.
-    async fn finish_recording_locked(&self) -> Result<()> {
+    async fn finish_recording_locked(
+        &self,
+        serial: OwnedMutexGuard<()>,
+        closed: Option<watch::Sender<bool>>,
+    ) -> Result<()> {
         let stop_start = std::time::Instant::now();
         let current_state = *self.state.read().await;
 
@@ -6612,7 +6730,13 @@ impl RecordingController {
         let force_ai = *self.force_ai_mode.read().await;
 
         let result = self
-            .process_recording(session_id, assistive, hold_mode, force_raw, force_ai, stop)
+            .process_recording(
+                session_id,
+                (assistive, hold_mode, force_raw, force_ai),
+                stop,
+                serial,
+                closed,
+            )
             .await;
 
         self.reset_finished_recording_state(&result).await;
@@ -6632,12 +6756,12 @@ impl RecordingController {
     async fn process_recording(
         &self,
         session_id: Option<String>,
-        assistive: bool,
-        hold_mode: HoldMode,
-        force_raw: bool,
-        force_ai: bool,
+        mode: (bool, HoldMode, bool, bool),
         stop: StopCanvasRequest,
+        serial: OwnedMutexGuard<()>,
+        closed: Option<watch::Sender<bool>>,
     ) -> Result<ProcessRecordingOutcome> {
+        let (assistive, hold_mode, force_raw, force_ai) = mode;
         if cfg!(test) {
             info!(
                 "process_recording: skipped in tests (assistive={}, hold_mode={:?}, force_raw={}, force_ai={})",
@@ -6655,28 +6779,34 @@ impl RecordingController {
         let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Process-recording")?;
         let serving_engine = recorder.streaming_engine_label();
         let was_active = recorder.close_capture().await;
+        let mut take = recorder.detach_closed_take(was_active);
+        Self::clear_recorder_callbacks(recorder);
+        drop(recorder_guard);
+        drop(serial);
+        if let Some(closed) = closed {
+            closed.send_replace(true);
+        }
         let StopCanvasDelivery {
             delivery: initial_delivery,
             preempted,
         } = self
             .deliver_frozen_canvas_at_stop(
-                recorder,
+                &mut take,
                 take_id.as_deref(),
                 (assistive, force_ai, CaptureTurnIntent::HandsFree),
                 stop,
             )
             .await;
         if preempted {
-            self.detach_preempted_stop(&mut recorder_guard, take_id.as_deref(), was_active)
-                .await?;
+            self.detach_preempted_stop(take, take_id.as_deref()).await?;
             initial_delivery?;
             return Ok(ProcessRecordingOutcome::default());
         }
-        let stopped =
-            stop_recorder_for_terminal(recorder, take_id.as_deref(), Some(was_active)).await;
-        Self::clear_recorder_callbacks(recorder);
-        let observer = freeze_take_observer(recorder, take_id.as_deref());
-        drop(recorder_guard); // Release lock
+        let (stopped, observer, pending) =
+            try_stop_closed_take_for_terminal(take, take_id.as_deref()).await;
+        if let Some(take) = pending {
+            self.detach_preempted_stop(take, take_id.as_deref()).await?;
+        }
         Self::publish_live_serving_verdict(serving_engine);
         let (streaming_text, raw_audio_path_opt) = match stopped {
             Ok(stopped) => stopped,
@@ -9882,7 +10012,17 @@ mod owned_capture_settlement_tests {
                     .contains("Pending")
             );
             assert_eq!(controller.current_state().await, State::Busy);
-            assert!(controller.serial_lock.try_lock().is_err());
+            if route == 1 || route == 2 {
+                assert!(
+                    controller.serial_lock.try_lock().is_err(),
+                    "hold intent is still being frozen before capture close"
+                );
+            } else {
+                assert!(
+                    controller.serial_lock.try_lock().is_ok(),
+                    "closed capture must release gesture admission while reset waits"
+                );
+            }
             assert_eq!(rows(&dir).len(), 1);
             assert_eq!(
                 controller.stop_capture_if_owned("owned").await.unwrap(),
@@ -10151,6 +10291,65 @@ mod owned_capture_settlement_tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn native_stop_acknowledges_close_while_terminal_reset_remains_owned() {
+        let (controller, mut stages, dir) = fixture().await;
+        let held = controller.hold_mode.write().await;
+        let caller = tokio::spawn({
+            let controller = Arc::clone(&controller);
+            async move {
+                controller
+                    .admit_hotkey_event(HotkeyInput {
+                        key_type: HotkeyType::Toggle,
+                        action: HotkeyAction::Press,
+                        assistive: false,
+                        hold_mode: HoldMode::Raw,
+                        force_raw: false,
+                        force_ai: true,
+                    })
+                    .await
+            }
+        });
+        stage(&mut stages, CaptureSettlementStage::Resetting).await;
+        tokio::time::timeout(Duration::from_secs(1), caller)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(controller.stopped_capture_feed_closed());
+        assert!(controller.serial_lock.try_lock().is_ok());
+        assert!(controller.recorder.try_lock().is_ok());
+        assert_eq!(controller.current_state().await, State::Busy);
+        assert_eq!(
+            rows(&dir).len(),
+            1,
+            "close admission is not a terminal receipt"
+        );
+        assert!(
+            !controller
+                .capture_settlement
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .task
+                .is_finished()
+        );
+        assert_eq!(
+            controller
+                .start_toggle_recording(false, CaptureTurnIntent::SingleTurn)
+                .await
+                .unwrap(),
+            CaptureAdmission::NotAdmitted
+        );
+        drop(held);
+        assert_eq!(
+            controller.stop_capture_if_owned("owned").await.unwrap(),
+            CaptureStopOutcome::Stopped
+        );
+        assert_eq!(rows(&dir).len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn held_hold_mode_cannot_block_public_stop_and_settles_once_after_release() {
         let (controller, mut stages, dir) = fixture().await;
         let held = controller.hold_mode.write().await;
@@ -10167,7 +10366,8 @@ mod owned_capture_settlement_tests {
             .unwrap();
         assert_eq!(outcome, CaptureStopOutcome::Pending);
         assert_eq!(controller.current_state().await, State::Busy);
-        assert!(controller.serial_lock.try_lock().is_err());
+        assert!(controller.serial_lock.try_lock().is_ok());
+        assert!(controller.recorder.try_lock().is_ok());
         assert_eq!(rows(&dir).len(), 1, "pending is not a terminal receipt");
         drop(held);
         assert_eq!(
@@ -10222,22 +10422,28 @@ mod owned_capture_settlement_tests {
                 .id(),
             task_id
         );
-        // A successor obeys the real start serialization boundary. It cannot
-        // install new state until every predecessor terminal side effect ends.
-        let (entered, mut successor_entered) = tokio::sync::oneshot::channel();
-        let successor = tokio::spawn({
-            let controller = Arc::clone(&controller);
-            async move {
-                let _serial = controller.serial_lock.lock().await;
-                *controller.session_id.write().await = Some("successor".to_string());
-                controller.set_state(State::RecToggle).await;
-                entered.send(()).unwrap();
-            }
-        });
-        assert!(successor_entered.try_recv().is_err());
+        // Use the production start admission, which checks Busy under the
+        // serial lock. Owning that lock alone never authorizes a successor.
+        assert_eq!(
+            controller
+                .start_toggle_recording(false, CaptureTurnIntent::SingleTurn)
+                .await
+                .unwrap(),
+            CaptureAdmission::NotAdmitted
+        );
+        assert_eq!(
+            controller.session_id.read().await.as_deref(),
+            Some("owned:stopping")
+        );
         drop(held);
-        successor_entered.await.unwrap();
-        successor.await.unwrap();
+        assert_eq!(
+            controller.stop_capture_if_owned("owned").await.unwrap(),
+            CaptureStopOutcome::Stopped
+        );
+        // After the predecessor's terminal task exits, its completed receipt
+        // cannot reset a later admitted capture.
+        *controller.session_id.write().await = Some("successor".into());
+        controller.set_state(State::RecToggle).await;
         assert_eq!(
             controller.stop_capture_if_owned("owned").await.unwrap(),
             CaptureStopOutcome::Stopped
@@ -10422,9 +10628,9 @@ mod serving_status_producer_falsifiers {
         );
         controller.set_state(State::RecToggle).await;
 
-        let _serial = controller.serial_lock.lock().await;
+        let serial = Arc::clone(&controller.serial_lock).lock_owned().await;
         controller
-            .stop_toggle_and_adjudicate_inner(None)
+            .stop_toggle_and_adjudicate_inner(None, serial, None)
             .await
             .expect("idle recorder stops cleanly");
 
@@ -12166,5 +12372,157 @@ mod truth_retention_parent_binding_tests {
             std::fs::read(detached.join("last_session.wav.truth.json")).unwrap(),
             serde_json::to_vec_pretty(&card).unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod closed_take_publication_tests {
+    use super::*;
+    use crate::presentation::transcript_bus::CleanTranscriptEvent;
+    use codescribe_core::pipeline::contracts::{EngineEvent, EventSink};
+
+    struct HeldPublication {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        published: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Drop for HeldPublication {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl EventSink for HeldPublication {
+        fn on_event(&self, _: &EngineEvent) {}
+
+        fn wait_presentation_published<'a>(
+            &'a self,
+            session_id: &'a str,
+            _: u64,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+            Box::pin(async move {
+                assert_eq!(session_id, "old-take");
+                self.entered.notify_one();
+                self.release.notified().await;
+                self.published.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
+
+    fn open_bus(id: &str, path: std::path::PathBuf) -> Arc<TranscriptBus> {
+        let bus = Arc::new(
+            TranscriptBus::open_at(
+                TranscriptSession {
+                    session_id: id.into(),
+                    mode: TranscriptMode::Agent,
+                    has_latched_target: false,
+                    latched_target_is_self: false,
+                    audience: None,
+                    badge_only: false,
+                },
+                path,
+                None,
+            )
+            .unwrap(),
+        );
+        bus.publish_started();
+        bus
+    }
+
+    fn events(path: &std::path::Path) -> Vec<CleanTranscriptEvent> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_publication_keeps_original_tail_and_closes_only_old_bus() {
+        let root = tempfile::tempdir().unwrap();
+        let old_path = root.path().join("old.jsonl");
+        let new_path = root.path().join("new.jsonl");
+        let controller = RecordingController::new_without_keychain();
+        *controller.active_transcript_bus.write().await =
+            Some(open_bus("old-take", old_path.clone()));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let published = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut recorder = StreamingRecorder::new().unwrap();
+        let inputs =
+            codescribe_core::config::CapturedRuntimeInputs::defaults_at(root.path().to_owned(), 1);
+        recorder.bind_session_authority(
+            "old-take".into(),
+            Arc::new(Config::runtime_snapshot_from_captured(inputs)),
+        );
+        recorder.set_event_sink(Some(Arc::new(HeldPublication {
+            entered: entered.clone(),
+            release: release.clone(),
+            published: published.clone(),
+            dropped: dropped.clone(),
+        })));
+        // No microphone/provider is needed to falsify ownership of the exact
+        // production ClosedTake. Exact PCM/archive refusal is covered separately.
+        let take = recorder.detach_closed_take(false);
+        let stopping =
+            tokio::spawn(
+                async move { try_stop_closed_take_for_terminal(take, Some("old-take")).await },
+            );
+        entered.notified().await;
+        tokio::time::advance(std::time::Duration::from_millis(3001)).await;
+        let (result, _, pending) = stopping.await.unwrap();
+        assert!(result.unwrap_err().is::<CaptureStopFailure>());
+        let pending = pending.expect("timeout retains the original standalone owner");
+        assert!(!pending.is_settled());
+        assert!(!dropped.load(Ordering::SeqCst));
+        assert!(!published.load(Ordering::SeqCst));
+        assert_eq!(
+            events(&old_path).len(),
+            1,
+            "timeout is not terminal Bus proof"
+        );
+        controller
+            .detach_preempted_stop(pending, Some("old-take"))
+            .await
+            .unwrap();
+        assert!(controller.active_transcript_bus.read().await.is_none());
+        *controller.active_transcript_bus.write().await =
+            Some(open_bus("successor", new_path.clone()));
+        *controller.session_id.write().await = Some("successor".into());
+        controller.set_state(State::RecToggle).await;
+        entered.notified().await;
+        release.notify_one();
+        let tasks = std::mem::take(&mut *controller.closed_capture_tails.lock().unwrap());
+        assert_eq!(tasks.len(), 1);
+        for task in tasks {
+            task.await.unwrap();
+        }
+        assert!(published.load(Ordering::SeqCst));
+        assert!(dropped.load(Ordering::SeqCst));
+        let old_events = events(&old_path);
+        assert_eq!(
+            old_events.len(),
+            2,
+            "one original start and one original terminal"
+        );
+        assert_eq!(
+            old_events[1].end_reason,
+            Some(TranscriptSessionEndReason::Completed)
+        );
+        assert_eq!(
+            events(&new_path).len(),
+            1,
+            "old completion cannot end the successor"
+        );
+        assert_eq!(controller.current_state().await, State::RecToggle);
+        assert_eq!(
+            controller.session_id.read().await.as_deref(),
+            Some("successor")
+        );
+        assert!(controller.active_transcript_bus.read().await.is_some());
     }
 }

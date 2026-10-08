@@ -3,12 +3,8 @@ import Observation
 import SwiftUI
 
 /// Window presentation only; the reducer continues to own the transcript.
-enum OverlayPresentationMode: CaseIterable {
+enum OverlayPresentationMode: CaseIterable, Hashable {
   case mini, midi, expanded
-}
-
-enum OverlayWidgetInteraction: Hashable {
-  case primaryControls, closeControl, menu, dragging
 }
 
 // View model for the dictation overlay, backed by the redesign hotkey/controller
@@ -504,16 +500,9 @@ final class OverlayState {
   private(set) var keepVisibleBetweenTakes = false
   private(set) var expansionPreferenceError: String?
   @ObservationIgnored var onPresentationModeChanged: ((OverlayPresentationMode) -> Void)?
-  private(set) var widgetHoverDeadline: ContinuousClock.Instant?
-  @ObservationIgnored private var widgetHoverTarget: OverlayPresentationMode?
-  @ObservationIgnored private var widgetHoverInteractions: Set<OverlayWidgetInteraction> = []
-  @ObservationIgnored private var widgetMidiIsAutomatic = false
-  @ObservationIgnored private var widgetHoverSuppressedUntilExit = false
-
+  /// Presentation changes come from explicit controls; pointer motion never morphs the window.
   func toggleCollapsed() {
-    let target: OverlayPresentationMode = isCollapsed ? .expanded : .mini
-    setPresentationMode(target)
-    if target == .mini { widgetHoverSuppressedUntilExit = isPointerHovering }
+    setPresentationMode(isCollapsed ? .expanded : .mini)
   }
 
   func requestHeaderRecording(_ intent: OverlayIntent) {
@@ -522,57 +511,13 @@ final class OverlayState {
   }
 
   func setPresentationMode(_ mode: OverlayPresentationMode) {
-    widgetHoverDeadline = nil
-    widgetHoverTarget = nil
-    widgetMidiIsAutomatic = false
     guard presentationMode != mode else { return }
     presentationMode = mode
     if mode != .expanded { showsAgentMonitor = false }
     onPresentationModeChanged?(mode)
   }
 
-  func setWidgetInteraction(_ interaction: OverlayWidgetInteraction, held: Bool) {
-    let changed =
-      held
-      ? widgetHoverInteractions.insert(interaction).inserted
-      : widgetHoverInteractions.remove(interaction) != nil
-    if changed { scheduleWidgetHover() }
-  }
-
-  private func scheduleWidgetHover() {
-    widgetHoverDeadline = nil
-    widgetHoverTarget = nil
-    guard widgetHoverInteractions.isEmpty, !isEditingTranscript else { return }
-    if isPointerHovering && isMini && !widgetHoverSuppressedUntilExit {
-      widgetHoverTarget = .midi
-      widgetHoverDeadline = .now.advanced(by: .milliseconds(500))
-    } else if !isPointerHovering && presentationMode == .midi && widgetMidiIsAutomatic {
-      widgetHoverTarget = .mini
-      widgetHoverDeadline = .now.advanced(by: .milliseconds(420))
-    }
-  }
-
-  /// The view sleeps until this deadline; stale entry/exit tasks cannot route a
-  /// later user action, capture or menu interaction.
-  func expireWidgetHover(at now: ContinuousClock.Instant = .now) {
-    guard let deadline = widgetHoverDeadline, now >= deadline,
-      let target = widgetHoverTarget, widgetHoverInteractions.isEmpty, !isEditingTranscript
-    else { return }
-    guard
-      (target == .midi && isPointerHovering && isMini)
-        || (target == .mini && !isPointerHovering && presentationMode == .midi
-          && widgetMidiIsAutomatic)
-    else { return }
-    setPresentationMode(target)
-    widgetMidiIsAutomatic = target == .midi
-  }
-
-  func clearWidgetHover() {
-    widgetHoverDeadline = nil
-    widgetHoverTarget = nil
-    widgetHoverInteractions.removeAll()
-    widgetMidiIsAutomatic = false
-    widgetHoverSuppressedUntilExit = false
+  func clearPointerHover() {
     isPointerHovering = false
   }
 
@@ -2246,8 +2191,6 @@ final class OverlayState {
   func setPointerHovering(_ hovering: Bool) {
     guard hovering != isPointerHovering else { return }
     isPointerHovering = hovering
-    if !hovering { widgetHoverSuppressedUntilExit = false }
-    scheduleWidgetHover()
     guard isTerminalMode else { return }
     if hovering {
       cancelAutoHide()

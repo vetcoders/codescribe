@@ -351,57 +351,57 @@ struct OverlayChannelStatusView: View {
   }
 
   var monitorBody: some View {
-    ChannelRosterContent(palette: palette) {
+    monitorBody(maximumHeight: 480)
+  }
+
+  func monitorBody(maximumHeight: CGFloat) -> some View {
+    OverlayAgentMonitorBody(maximumHeight: maximumHeight, palette: palette) {
+      HStack {
+        Text("Agents").font(.system(size: 13 * textScale, weight: .semibold))
+        Spacer()
+        Button {
+          onDismissMonitor?()
+        } label: {
+          OverlayMicrophoneGlyph(symbol: "xmark", tint: palette.mutedText.color)
+        }
+        .buttonStyle(.plain).csFocusOutline()
+        .accessibilityLabel("Close agent sidebar")
+        .help("Close agent sidebar")
+      }
+    } content: {
       VStack(alignment: .leading, spacing: 8) {
-        HStack {
-          Text("Agents").font(.system(size: 13 * textScale, weight: .semibold))
-          Spacer()
-          Button {
-            onDismissMonitor?()
-          } label: {
-            OverlayMicrophoneGlyph(symbol: "xmark", tint: palette.mutedText.color)
-          }
-          .buttonStyle(.plain).csFocusOutline()
-          .accessibilityLabel("Close agent sidebar")
-          .help("Close agent sidebar")
-        }
-        ScrollView {
-          VStack(alignment: .leading, spacing: 8) {
-            Button {
-              onShowTranscription?()
-            } label: {
-              HStack(spacing: 10) {
-                Image(systemName: "text.alignleft")
-                  .foregroundStyle(palette.mutedText.color)
-                Text("Transcription")
-                Spacer()
-                if selectedConversationID == nil {
-                  Image(systemName: "checkmark")
-                    .foregroundStyle(palette.mutedText.color)
-                }
-              }
-              .padding(.horizontal, 10).padding(.vertical, 6)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .contentShape(RoundedRectangle(cornerRadius: 9))
-              .background(
-                selectedConversationID == nil ? palette.mutedText.color.opacity(0.10) : .clear,
-                in: RoundedRectangle(cornerRadius: 9))
+        Button {
+          onShowTranscription?()
+        } label: {
+          HStack(spacing: 10) {
+            Image(systemName: "text.alignleft")
+              .foregroundStyle(palette.mutedText.color)
+            Text("Transcription")
+            Spacer()
+            if selectedConversationID == nil {
+              Image(systemName: "checkmark")
+                .foregroundStyle(palette.mutedText.color)
             }
-            .buttonStyle(.plain).csFocusOutline()
-            .disabled(onShowTranscription == nil)
-            .accessibilityIdentifier("overlay-show-transcription")
-            if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
-              onSelectConversation != nil
-            {
-              conversationRow(broadcast, saved: false)
-            }
-            Divider()
-            details
-              .font(.system(size: 13 * textScale, weight: .medium))
-              .foregroundStyle(palette.primaryText.color)
           }
+          .padding(.horizontal, 10).padding(.vertical, 6)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .contentShape(RoundedRectangle(cornerRadius: 9))
+          .background(
+            selectedConversationID == nil ? palette.mutedText.color.opacity(0.10) : .clear,
+            in: RoundedRectangle(cornerRadius: 9))
         }
-        .clipped()
+        .buttonStyle(.plain).csFocusOutline()
+        .disabled(onShowTranscription == nil)
+        .accessibilityIdentifier("overlay-show-transcription")
+        if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
+          onSelectConversation != nil
+        {
+          conversationRow(broadcast, saved: false)
+        }
+        Divider()
+        details
+          .font(.system(size: 13 * textScale, weight: .medium))
+          .foregroundStyle(palette.primaryText.color)
       }
     }
     .font(.system(size: 13 * textScale))
@@ -776,5 +776,48 @@ struct ChannelRosterContent<Content: View>: View {
       .padding(.vertical, 8)
       .frame(maxWidth: .infinity, alignment: .leading)
       .preferredColorScheme(style.colorScheme)
+  }
+}
+
+/// A roster hugs its measured content but never grows past the canvas budget.
+/// Both measurements are SwiftUI points; Retina changes pixel density, not layout.
+/// The header stays outside the scroll viewport so Close is always reachable.
+private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
+  let maximumHeight: CGFloat
+  let palette: OverlayAppearancePalette
+  @ViewBuilder let header: Header
+  @ViewBuilder let content: Content
+  @State private var headerHeight: CGFloat = 22
+  @State private var contentHeight: CGFloat?
+
+  private var viewportHeight: CGFloat {
+    let available = max(0, maximumHeight - headerHeight - 8 - 16)
+    return min(contentHeight ?? available, available)
+  }
+
+  var body: some View {
+    ChannelRosterContent(palette: palette) {
+      VStack(alignment: .leading, spacing: 8) {
+        header
+          .fixedSize(horizontal: false, vertical: true)
+          .onGeometryChange(for: CGFloat.self) {
+            $0.size.height
+          } action: {
+            headerHeight = $0
+          }
+        ScrollView(.vertical) {
+          content
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) {
+              $0.size.height
+            } action: {
+              contentHeight = $0
+            }
+        }
+        .scrollIndicators(.visible)
+        .frame(height: viewportHeight)
+        .clipped()
+      }
+    }
   }
 }

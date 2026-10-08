@@ -1,6 +1,6 @@
 # ⌜ Codescribe ⌟
 
-[![Version](https://img.shields.io/badge/version-0.16.0-6a9bcc)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.16.1-6a9bcc)](Cargo.toml)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
 [![Website](https://img.shields.io/badge/site-codescribe.vetcoders.io-788c5d)](https://codescribe.vetcoders.io/)
