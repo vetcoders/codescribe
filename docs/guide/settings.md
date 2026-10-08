@@ -45,14 +45,18 @@ This tab owns the transcript pipeline itself:
   - `Local transcript`
   - `Cloud final transcript`
   - optional cloud endpoint + API key
-- **Preview Timing**
-  - `Buffer delay`
-  - `Typing speed`
-  - `Words per tick`
-  - `Interim interval`
-  - live preview panel showing:
-    - when partial targets are published
-    - how those targets would become visible on the overlay
+- **Transcript display pace** (Dictation → Preview)
+  - presets: `Smooth`, `Snappy`, `Relaxed`, `No preview`, `Custom`
+  - `Detailed settings` — collapsed by default, opened by `Custom`:
+    - `Update delay` → `CODESCRIBE_BUFFER_DELAY_MS`
+    - `Character pace` → `CODESCRIBE_TYPING_CPS`
+    - `Max words per update` → `CODESCRIBE_EMIT_WORDS_MAX`
+    - `Interim result interval` → `CODESCRIBE_BUFFERED_INTERIM_SEC`
+  - `No preview` writes only `TRANSCRIPTION_OVERLAY_ENABLED=0` and keeps the
+    four values on disk; the sliders are disabled while it is selected.
+    `Custom` turns the preview back on without touching those values.
+  - moving any slider makes the configuration `Custom`; the three named presets
+    are detected back from the stored values within a small tolerance
 - **Final Transcript**
   - `Local file-based final pass`
   - `AI Formatting`
@@ -64,7 +68,8 @@ This tab owns the transcript pipeline itself:
 ### Current runtime truth
 
 - When **Transcription overlay** is ON, the app is optimized for low-latency live preview.
-- When **Transcription overlay** is OFF, the floating preview is hidden and runtime uses a more buffered cadence to reduce local load.
+- When **Transcription overlay** is OFF, the floating preview is hidden and runtime uses a more buffered cadence to reduce local load. Concretely, a non-assistive take ignores the stored `Interim result interval` and runs at the fixed no-overlay cadence instead (`app/controller/mod.rs`, `apply_runtime_transcription_profile`). An agent (assistive) take keeps the stored interval even with the overlay off.
+- The interim cadence is an audio-segmentation knob, not only a display knob: `core/audio/chunker.rs` turns it into `interim_limit` and cuts the utterance there, so the engine sees different slices. Do not promise that the display-pace settings leave the committed transcript untouched.
 - Turning it OFF — from the tray toggle or the Settings preview preset — also closes an overlay that is already on screen; it does not wait for the next take. Two things stay: an open agent channel, whose live microphone stays visible, and a take you are correcting — while the caret is in the transcript or a draft is not committed, the overlay waits, then leaves after the usual five seconds once the draft is committed or discarded.
 - A blocked recording or a microphone calibration result still shows its status card with the overlay OFF. That card leaves by itself after the usual five seconds, even when **Keep visible between takes** is pinned: the pin keeps the transcript overlay, and with the overlay OFF there is none.
 - `USE_LOCAL_STT=0` changes the **committed transcript path after capture**; it does not move live preview to the cloud.
