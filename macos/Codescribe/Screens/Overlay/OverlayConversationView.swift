@@ -73,7 +73,9 @@ struct OverlayConversationView: View {
           .overlay(alignment: .bottom) {
             ZStack {
               if !followsLatest {
-                Button { scrollToLatest(proxy) } label: {
+                Button {
+                  scrollToLatest(proxy)
+                } label: {
                   Image(systemName: "chevron.down")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(palette.primaryText.color)
@@ -272,6 +274,35 @@ struct OverlayConversationView: View {
     }
   }
 
+  @ViewBuilder
+  private func messageReceipts(_ message: OverlayConversationMessage) -> some View {
+    if !message.recipients.isEmpty {
+      if message.recipients.count > 1 {
+        let readCount = message.recipients.filter { $0.acknowledged }.count
+        Menu {
+          ForEach(message.recipients, id: \.owner.id) { recipient in
+            Text(verbatim: "\(recipient.owner.name) · \(Self.receiptStatusText(for: recipient))")
+          }
+        } label: {
+          Text("Read \(readCount)/\(message.recipients.count)")
+            .font(.system(size: 10 * textScale))
+            .foregroundStyle(palette.mutedText.color)
+            .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Show details")
+        .accessibilityIdentifier("overlay-message-receipts-\(message.id)")
+      } else {
+        ForEach(message.recipients, id: \.owner.id) { recipient in
+          Text(Self.receiptStatusText(for: recipient))
+            .font(.system(size: 10 * textScale))
+            .foregroundStyle(palette.mutedText.color)
+        }
+      }
+    }
+  }
+
   private func messageRow(_ message: OverlayConversationMessage, maxBubbleWidth: CGFloat)
     -> some View
   {
@@ -308,16 +339,7 @@ struct OverlayConversationView: View {
       MarkdownText(raw: message.text, size: 13, bodyColor: palette.primaryText.color)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
-      ForEach(message.recipients, id: \.owner.id) { recipient in
-        VStack(alignment: .leading, spacing: 2) {
-          if conversation.channel == "0" { Text(verbatim: recipient.owner.name) }
-          HStack(spacing: 8) {
-            Text(Self.receiptStatusText(for: recipient))
-          }
-        }
-        .font(.system(size: 10 * textScale))
-        .foregroundStyle(palette.mutedText.color)
-      }
+      messageReceipts(message)
       if message.kind == .reply && message.supportsSpeechPlayback {
         HStack(spacing: 10) {
           let active = message.playback.map { ["waiting", "playing"].contains($0.state) } ?? false

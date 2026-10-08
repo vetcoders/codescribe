@@ -194,6 +194,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     XCTAssertTrue(state.replyControlErrors.isEmpty)
   }
 
+  @MainActor
   func testReadLabelRequiresCanonicalAcknowledgmentRatherThanQueueAcceptance() throws {
     var bus = OverlayChannelDelivery.Bus()
     bus.consume(occurrence(0, revision: 1))
@@ -220,6 +221,80 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     bus.consume(ack)
     recipient = try XCTUnwrap(lenaConversation(bus).messages.first?.recipients.first)
     XCTAssertEqual(OverlayConversationView.receiptStatusText(for: recipient), "Read")
+  }
+
+  @MainActor
+  func testBroadcastReceiptMenuStaysCompactInAllAndAgentViewsAcrossAcknowledgments() throws {
+    let recipients = [
+      owner(leaseA), owner(leaseB, session: "agent-b", name: "Adam", channel: "4"),
+      owner(String(repeating: "c", count: 32), session: "agent-c", name: "Astra", channel: "3"),
+      owner(String(repeating: "d", count: 32), session: "agent-d", name: "Bruno", channel: "1"),
+    ]
+    var bus = OverlayChannelDelivery.Bus()
+    var question = occurrence(0, revision: 1, text: "Krótka wiadomość", recipients: recipients)
+    question["audience"] = "*"
+    question["session_id"] = "agent-channel-0-test"
+    question["occurrence_session_id"] = "agent-channel-0-test"
+    bus.consume(question)
+
+    func elements(_ object: Any) -> [any NSAccessibilityProtocol] {
+      guard let element = object as? any NSAccessibilityProtocol else { return [] }
+      let native = (object as? NSView)?.subviews ?? []
+      return [element] + ((element.accessibilityChildren() ?? []) + native).flatMap(elements)
+    }
+    func scrollViews(_ root: NSView) -> [NSScrollView] {
+      (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
+    }
+    for readCount in 0...4 {
+      if readCount > 0 {
+        let prior = try lenaConversation(bus).messages[0]
+        var ack = recipients[readCount - 1]
+        ack.merge([
+          "schema": "codescribe.agent-ack.v1",
+          "delivery_id": try XCTUnwrap(prior.recipients[readCount - 1].deliveryID),
+        ]) { _, new in new }
+        bus.consume(ack)
+      }
+      for channel in ["0", "2"] {
+        let conversation = try XCTUnwrap(
+          bus.conversations(busPath: busPath).first { $0.channel == channel })
+        let message = try XCTUnwrap(conversation.messages.first)
+        XCTAssertEqual(message.recipients.count, 4)
+        for scale in [CGFloat(1), CGFloat(1.6)] {
+          let view = OverlayConversationView(
+            conversation: conversation, palette: .light, topInset: 0, bottomInset: 0,
+            pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+            draft: .constant("Zachowaj szkic"), sending: false, sendError: nil, onSend: {})
+          let host = NSHostingView(rootView: view.environment(\.csTextScale, scale))
+          host.sizingOptions = []
+          host.frame = NSRect(x: 0, y: 0, width: 360, height: 400)
+          let window = NSWindow(
+            contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+          window.isReleasedWhenClosed = false
+          window.contentView = host
+          defer { window.close() }
+          window.orderFrontRegardless()
+          host.layoutSubtreeIfNeeded()
+          RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+          host.layoutSubtreeIfNeeded()
+          let tree = elements(host)
+          let expected = String(localized: "Read \(readCount)/\(4)")
+          let control = try XCTUnwrap(
+            tree.first {
+              $0.accessibilityRole() == .menuButton && $0.accessibilityLabel() == expected
+            },
+            "channel=\(channel) scale=\(scale): native menu missing; roles=\(tree.map { $0.accessibilityRole()?.rawValue ?? "" })"
+          )
+          XCTAssertEqual(control.accessibilityLabel(), expected)
+          let frame = control.accessibilityFrame()
+          XCTAssertGreaterThan(frame.height, 0)
+          XCTAssertLessThanOrEqual(frame.height, 32, "receipts must occupy one line")
+          XCTAssertLessThan(frame.width, 230, "receipt must fit a narrow message card")
+          let scroll = try XCTUnwrap(scrollViews(host).first)
+          XCTAssertNotNil(scroll.documentView)
+        }
+      }
+    }
   }
 
   func testPlayIconKeepsAdjacentPlaybackStateAndExactControls() throws {

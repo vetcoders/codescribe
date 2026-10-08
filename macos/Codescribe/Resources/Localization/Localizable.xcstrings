@@ -10660,6 +10660,22 @@
         }
       }
     },
+    "Read %lld/%lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Read %1$lld/%2$lld"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przeczytano %1$lld/%2$lld"
+          }
+        }
+      }
+    },
     "Read data" : {
       "comment" : "Tool risk class",
       "localizations" : {
