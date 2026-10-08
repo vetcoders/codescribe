@@ -161,7 +161,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(tools.components(separatedBy: "defaultRow(title: \"").count, 4)
     let levels = ["Allow", "Ask", "Deny"]
     let polishLevels = try levels.map { try XCTUnwrap(polish[$0]) }
-    XCTAssertEqual(polishLevels, ["Zezwalaj", "Pytaj o zgodę", "Blokuj"])
+    XCTAssertEqual(polishLevels, ["Zezwalaj", "Pytaj", "Blokuj"])
     // The tools column at the minimum window: the detail column minus the pane
     // padding, the 190 pt server column, the gap between them and the row's
     // own padding. A row keeps at least 96 pt for the tool name.
