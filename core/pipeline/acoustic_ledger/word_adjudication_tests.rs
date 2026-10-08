@@ -675,3 +675,103 @@ fn sealed_words_release_revision_hypotheses_and_keep_finality() {
     assert_eq!(ledger.len(), 256);
     assert_eq!(ledger.conservation().residue(), 0);
 }
+
+/// Regression family: the `56` take-over and "obiecujący" → "odwzujący".
+/// Two edge-of-window recognitions agree on a non-word; neither sits in the
+/// middle third of its decode window, so neither holds publication rights
+/// over the banded incumbent.
+#[test]
+fn edge_window_agreement_cannot_overwrite_a_banded_incumbent() {
+    let (mut ledger, owner) = fixture();
+    // Banded incumbent: pin 48k..64k inside decode (0,144k) → full margin.
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        1,
+        "obiecujący",
+        Some((0, 144_000)),
+    );
+    assert_eq!(ledger.text_of(&owner), Some("obiecujący"));
+    // Two agreeing edge recognitions: margins 4k and 8k of 144k windows.
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        2,
+        "odwzujący",
+        Some((44_000, 188_000)),
+    );
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        3,
+        "odwzujący",
+        Some((40_000, 184_000)),
+    );
+    assert_eq!(
+        ledger.text_of(&owner),
+        Some("obiecujący"),
+        "edge agreement must inform, never overwrite"
+    );
+    assert!(
+        ledger
+            .word_choices()
+            .iter()
+            .any(|choice| choice.reason == "outside_publication_band"),
+        "the refusal names the publication band"
+    );
+}
+
+/// The same correction from inside the band is accepted: the band grants the
+/// rights the edge was denied.
+#[test]
+fn banded_recognition_corrects_the_incumbent() {
+    let (mut ledger, owner) = fixture();
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        1,
+        "obiecujący",
+        Some((0, 144_000)),
+    );
+    // Edge proposal first (informs), banded confirmation second (writes).
+    // The confirming window differs from the incumbent's — a replay of the
+    // same decode is not fresh evidence — and its pin 48k..64k sits in the
+    // middle third of (12k,120k): margins 36k/56k of a 108k window.
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        2,
+        "odwzujący",
+        Some((44_000, 188_000)),
+    );
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        3,
+        "odwzujący",
+        Some((12_000, 120_000)),
+    );
+    assert_eq!(ledger.text_of(&owner), Some("odwzujący"));
+}
+
+/// First placement stays ungated: at recording start there is no earlier
+/// window to own those seconds, and refusing edge words would lose them.
+#[test]
+fn first_placement_from_a_window_edge_still_lands() {
+    let (mut ledger, owner) = fixture();
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        1,
+        "początek",
+        Some((44_000, 188_000)),
+    );
+    assert_eq!(ledger.text_of(&owner), Some("początek"));
+}
