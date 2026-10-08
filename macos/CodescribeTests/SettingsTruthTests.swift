@@ -464,7 +464,7 @@ final class SettingsTruthTests: XCTestCase {
       (.voiceLab, "voiceLab", "Dictionary", .dictionary),
       (.lab, "lab", "Lab", .lab),
       (.license, "license", "License", .license),
-      (.user, "user", "User", .user),
+      (.user, "user", "About", .user),
     ]
 
     XCTAssertEqual(SettingsSection.allCases.count, expectations.count)
@@ -1468,7 +1468,8 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(
       model.resetImpactDescription(includeKeys: false, includePrompts: false),
       "Moves 5,000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
-        + "Your assistive.txt and three formatting prompt files will be preserved. "
+        + "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt "
+        + "prompts will be preserved. "
         + "Codescribe will relaunch as a fresh install."
     )
     XCTAssertTrue(resetConfirmationMatches("RESET"))
@@ -1715,8 +1716,28 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(calls.map(\.prompts), [false, true])
     XCTAssertTrue(
       model.resetImpactDescription(includeKeys: false, includePrompts: true)
-        .contains("assistive.txt and three formatting prompt files will also move to Trash")
+        .contains(
+          "assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt prompts will also move to Trash"
+        )
     )
+  }
+
+  /// The chips under the template are real editing controls: each appends its
+  /// field through the persisted write, and an unknown field is refused.
+  func testTemplateFieldChipAppendsThroughThePersistedWrite() {
+    var writes: [(key: String, value: String)] = []
+    let engine = MockSettingsEngine(updateConfigObserver: { key, value in
+      writes.append((key, value))
+    })
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    model.setTranscriptTagTemplate("<codescribe lang=\"")
+
+    model.insertTranscriptTagPlaceholder("{lang}")
+    model.insertTranscriptTagPlaceholder("{bogus}")
+
+    XCTAssertEqual(writes.map(\.key), ["TRANSCRIPT_TAG_TEMPLATE", "TRANSCRIPT_TAG_TEMPLATE"])
+    XCTAssertEqual(writes.last?.value, "<codescribe lang=\"{lang}")
+    XCTAssertEqual(model.settings.transcriptTagTemplate, "<codescribe lang=\"{lang}")
   }
 
   func testAgentResetIsSeparatelyConfirmedAndNamesPreservedSurfaces() throws {
@@ -1740,6 +1761,9 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertFalse(resetAgentConfirmationMatches("reset agent"))
     XCTAssertTrue(model.resetAgentImpactDescription().contains("Recordings, transcriptions"))
     XCTAssertTrue(model.resetAgentImpactDescription().contains("license"))
+    // The deleted vendor accounts are the ones Formatting reads on that
+    // vendor; the confirmation must say so while secrets are present.
+    XCTAssertTrue(model.resetAgentImpactDescription().contains("shared with Formatting"))
 
     try engine.resetAgentData()
     XCTAssertEqual(calls, 1)

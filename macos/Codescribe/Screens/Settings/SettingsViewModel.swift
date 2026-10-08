@@ -356,7 +356,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .lab:
       return String(localized: "Lab", comment: "Settings section: developer experiments")
     case .license: return String(localized: "License", comment: "Settings section")
-    case .user: return String(localized: "User", comment: "Settings section: account profile")
+    case .user:
+      return String(localized: "About", comment: "Settings section: the app, its data and resets")
     }
   }
 
@@ -410,7 +411,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .voiceLab: return "character.book.closed"
     case .lab: return "waveform.path.ecg"
     case .license: return "checkmark.seal"
-    case .user: return "person.crop.circle"
+    case .user: return "info.circle"
     }
   }
 
@@ -493,7 +494,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
       settingsSearchTerms(
         localized: String(
           localized: "settings.search.section.user",
-          defaultValue: "account, profile, sign in, identity",
+          defaultValue: "about, version, build, commit, data folder, privacy, reset, trash",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))
@@ -1890,14 +1891,16 @@ final class SettingsViewModel: ObservableObject {
     if includePrompts {
       message += " "
       message += String(
-        localized: "Your assistive.txt and three formatting prompt files will also move to Trash.",
-        comment: "assistive.txt is a file name — keep it verbatim"
+        localized:
+          "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt prompts will also move to Trash.",
+        comment: "The four file names stay verbatim"
       )
     } else {
       message += " "
       message += String(
-        localized: "Your assistive.txt and three formatting prompt files will be preserved.",
-        comment: "assistive.txt is a file name — keep it verbatim"
+        localized:
+          "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt prompts will be preserved.",
+        comment: "The four file names stay verbatim"
       )
     }
     if includeKeys {
@@ -1943,12 +1946,21 @@ final class SettingsViewModel: ObservableObject {
     let preview = agentResetPreview
     let threads = Int(preview.threads)
     let files = Int(preview.files)
+    // The vendor API keys the Agent reset deletes are the same Keychain
+    // accounts the Formatting lane reads on that vendor (`bridge/src/config.rs`
+    // `agent_secret_accounts`), so the confirmation says so.
     let secretState =
       preview.secretsPresent
       ? String(
         localized:
           "Agent provider and MCP connector secrets are present and will be deleted permanently."
       )
+        + " "
+        + String(
+          localized:
+            "Vendor API keys (OpenAI, Anthropic, xAI, Libraxis) are shared with Formatting: if Formatting uses one of them, enter that key again afterwards.",
+          comment: "Agent reset confirmation: the deleted Keychain accounts are also read by the Formatting lane"
+        )
       : String(localized: "No Agent provider or MCP connector secrets are currently stored.")
     let moved = String(
       localized: "Moves \(threads) Agent threads and \(files) Agent files to Trash.",
@@ -2347,6 +2359,14 @@ final class SettingsViewModel: ObservableObject {
 
   func restoreDefaultTranscriptTagTemplate() {
     setTranscriptTagTemplate(defaultTranscriptTagTemplate)
+  }
+
+  /// A field chip in About appends its placeholder to the template. The edit
+  /// goes through the same persisted write as typing, so the preview, the
+  /// warning and the saved value stay one truth.
+  func insertTranscriptTagPlaceholder(_ placeholder: String) {
+    guard transcriptTagTemplatePlaceholders.contains(placeholder) else { return }
+    setTranscriptTagTemplate(settings.transcriptTagTemplate + placeholder)
   }
 
   // MARK: - Audio (live hardware + existing settings contract)

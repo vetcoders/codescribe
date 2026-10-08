@@ -598,10 +598,55 @@ Common overrides:
 - `CODESCRIBE_EMIT_WORDS_MAX`
 - `CODESCRIBE_BUFFERED_INTERIM_SEC`
 
+## About
+
+**Settings → About** (the last item under _Account_) describes the app and its
+data instead of a profile; Codescribe has no account.
+
+- **Running build** — version with build number, commit and the build date in
+  the interface language. **Details** keeps the raw `CSBuiltAt` timestamp and
+  the launch repair receipt for diagnostics.
+- **Configuration notice** — the launch repair receipt (see
+  [CONFIG.md](../CONFIG.md)) is shown as a sentence such as _An outdated
+  configuration setting was detected. It needs a review._ The original line and
+  the `.env` key names stay under **Details**. Nothing in About edits `.env`.
+- **Local data** — the app-data folder and the Transcripts folder, with a copy
+  button for each path.
+- **First dictation confirmation** — the opt-in for one anonymous event after
+  the first successful dictation. The line under the switch names the shipped
+  default (off) and the current choice. While the build ships without an
+  analytics domain (`ActivationPingConfiguration.production`), the switch is
+  disabled and the panel says that nothing is sent whatever the switch says.
+- **Transcript source markers** — the switch that wraps delivered dictation in
+  a source marker. **Template and preview** holds the editor, the field chips
+  (`{mode}`, `{lang}`, `{text}`, `{conf}`, `{flags}` — each chip appends its
+  field to the template), **Restore default template** and the rendered
+  **Template preview**. Saved templates and the marking mechanics do not change.
+- **Legal & docs** — Privacy Policy, Terms of Use and License, Codescribe
+  documentation.
+
 ## Reset / Fresh Start
 
+Both resets live at the foot of **Settings → About**. The card names the scope
+in one sentence; the confirmation sheet shows the live counts and the full scope
+before anything moves, and asks for a typed word.
+
+- **Reset Agent** (type `RESET AGENT`) — moves Agent conversations, MCP
+  configuration and tool state to Trash and deletes Agent provider keys and MCP
+  connector secrets from Keychain permanently. The deleted vendor accounts
+  (`LLM_OPENAI_API_KEY`, `LLM_ANTHROPIC_API_KEY`, `LLM_XAI_API_KEY`,
+  `LLM_LIBRAXIS_API_KEY`) are the same accounts the Formatting lane reads on
+  that vendor, so the confirmation says that Formatting on such a vendor needs
+  its key again afterwards. Recordings, transcripts, dictionary, prompts,
+  hotkeys, dictation settings, license and macOS permissions stay.
+- **Move app data to Trash** (type `RESET`) — moves recordings, transcripts,
+  conversations, logs, preferences and local configuration to Trash and
+  relaunches. Two opt-in checkboxes: _Also remove API keys from Keychain_ (not
+  recoverable from Trash) and _Also reset my base prompts_ — `assistive.txt`,
+  `formatting.txt`, `formatting-smart.txt` and `formatting-max.txt`, all four
+  named on the checkbox and in the confirmation.
 - **New agent context**: Chat Overlay → **New thread**
-- **Reset prompts**: Settings → **AI & Prompts** → **Reset**
+- **Reset prompts**: Settings → **Agent → Prompts** → **Restore default…**
 
 _Created by Vetcoders (c)2026_
 

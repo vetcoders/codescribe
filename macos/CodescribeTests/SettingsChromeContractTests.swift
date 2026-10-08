@@ -849,6 +849,64 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(panel.contains("Use \\(dictationShortcut) or choose Start recording."))
   }
 
+  /// Settings → About: the app, its data and the resets, in English and in
+  /// Polish. The resets keep their safeguards; only the copy got shorter.
+  func testAboutPaneReadsAsTheAppAndItsData() throws {
+    let panel = try XCTUnwrap(try settingsSources()["UserPanel.swift"])
+    XCTAssertTrue(panel.contains("String(localized: \"About the app and your data\")"))
+    XCTAssertTrue(
+      panel.contains(
+        "\"Check the Codescribe version, where your data lives and the privacy settings.\""))
+    XCTAssertTrue(panel.contains("infoRow(\"Built\", readableBuildDate)"))
+    XCTAssertTrue(panel.contains("\"Build timestamp: \\(model.buildInfo.builtAt)\""))
+    XCTAssertTrue(panel.contains("configRepairSummary().map(ConfigRepairNotice.init(raw:))"))
+    XCTAssertFalse(panel.contains("Text(summary)"), "the raw repair line is no longer the headline")
+    XCTAssertTrue(panel.contains("String(localized: \"App data\")"))
+    XCTAssertTrue(panel.contains("pathRow(String(localized: \"Transcripts\"), model.transcriptsPath)"))
+    XCTAssertTrue(panel.contains("String(localized: \"First dictation confirmation\")"))
+    XCTAssertTrue(panel.contains(".disabled(!availability.serviceEnabled)"))
+    XCTAssertTrue(panel.contains("String(localized: \"Transcript source markers\")"))
+    XCTAssertTrue(panel.contains("String(localized: \"Add markers to transcripts\""))
+    XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $showingTemplate)"))
+    XCTAssertTrue(panel.contains("model.insertTranscriptTagPlaceholder(placeholder)"))
+    XCTAssertTrue(panel.contains("Button(\"Restore default template\")"))
+    XCTAssertTrue(panel.contains("\"Terms of Use and License\""))
+    XCTAssertTrue(panel.contains("\"Codescribe documentation\""))
+    XCTAssertTrue(
+      panel.contains(
+        "\"Also reset my base prompts (assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt)\""
+      ))
+    // Safeguards stay: typed words, both checkboxes, the alerts.
+    XCTAssertTrue(panel.contains("model.resetConfirmationWord"))
+    XCTAssertTrue(panel.contains("model.resetAgentConfirmationWord"))
+    XCTAssertTrue(panel.contains("model.resetImpactDescription"))
+    XCTAssertTrue(panel.contains("model.resetAgentImpactDescription"))
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "About": "O aplikacji",
+      "About the app and your data": "O aplikacji i danych",
+      "Check the Codescribe version, where your data lives and the privacy settings.":
+        "Sprawdź wersję Codescribe, lokalizację danych i ustawienia prywatności.",
+      "An outdated configuration setting was detected. It needs a review.":
+        "Wykryto przestarzałe ustawienie konfiguracji. Wymaga sprawdzenia.",
+      "Setting to review: %@": "Ustawienie do sprawdzenia: %@",
+      "App data": "Dane aplikacji",
+      "Transcripts": "Transkrypcje",
+      "First dictation confirmation": "Potwierdzenie pierwszego dyktowania",
+      "Transcript source markers": "Znaczniki źródła transkrypcji",
+      "Add markers to transcripts": "Dodawaj znaczniki do transkrypcji",
+      "Template preview": "Podgląd szablonu",
+      "Restore default template": "Przywróć domyślny szablon",
+      "Privacy Policy": "Polityka prywatności",
+      "Terms of Use and License": "Warunki korzystania i licencja",
+      "Codescribe documentation": "Dokumentacja Codescribe",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+  }
+
   func testAvailabilityTintsUseSolidTerracotta() throws {
     let model = try XCTUnwrap(settingsSources()["SettingsViewModel.swift"])
     XCTAssertEqual(

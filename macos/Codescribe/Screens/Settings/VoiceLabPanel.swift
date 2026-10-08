@@ -707,7 +707,7 @@ struct VoiceLabPanel: View {
               .accessibilityLabel("Correction saved. \(note)")
           }
           HStack(spacing: 7) {
-            Text(row.action)
+            Text(QualityActionLabel.text(for: row.action))
               .foregroundStyle(CSColor.oliveLight)
             Text(verbatim: "·")
             Text("revision \(row.revision)")
@@ -857,7 +857,7 @@ struct VoiceLabPanel: View {
             .foregroundStyle(Color.primary)
             .textSelection(.enabled)
           Spacer(minLength: 0)
-          Text(row.source)
+          Text(LexiconSourceLabel.text(for: row.source))
             .font(CSFont.mono(10, .medium))
             .foregroundStyle(Color.secondary)
             .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.source)")
@@ -963,9 +963,12 @@ struct VoiceLabPanel: View {
       .settingsGroupedInset()
   }
 
+  /// Date and clock follow the interface language, not the system region, so
+  /// a Polish interface never shows "10:36 AM" under a Polish date.
   private func timestampLabel(_ timestampMs: UInt64) -> String {
-    Date(timeIntervalSince1970: Double(timestampMs) / 1000.0)
-      .formatted(date: .abbreviated, time: .shortened)
+    let locale = InterfaceLanguage.preferred(from: Bundle.main.preferredLocalizations).locale
+    return Date(timeIntervalSince1970: Double(timestampMs) / 1000.0)
+      .formatted(Date.FormatStyle(date: .abbreviated, time: .shortened, locale: locale))
   }
 
   private func fullTextBlock(_ title: LocalizedStringKey, text: String) -> some View {
