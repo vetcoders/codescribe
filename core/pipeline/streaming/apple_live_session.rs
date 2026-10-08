@@ -3874,6 +3874,7 @@ impl AppleSealState {
             // This return must not invent recovery debt over an admitted floor.
             self.window_plan_receipt(&job.request_identity.range, "failed");
             self.tail_patch_jobs_skipped = self.tail_patch_jobs_skipped.saturating_add(1);
+            self.settle_failed_window_members(ev_tx, &job.member_occurrences);
         }
         self.close_admission_horizon(ev_tx, self.window_plan.admission_horizon());
     }
@@ -4623,6 +4624,56 @@ impl AppleSealState {
         }
     }
 
+    /// A submitted, queued or still unplanned frame may yet return words for
+    /// this owner. A held window is future work even before transport enqueue.
+    fn whisper_work_may_cover(&self, owner: &OccurrenceIdentity) -> bool {
+        self.refinement_submitted.values().any(|job| {
+            job.request_identity.range.sample_start < owner.sample_end
+                && job.request_identity.range.sample_end > owner.sample_start
+        }) || self.refinement_pending.iter().any(|job| {
+            job.provider_request.identity.range.sample_start < owner.sample_end
+                && job.provider_request.identity.range.sample_end > owner.sample_start
+        }) || self.window_plan.admission_horizon() < owner.sample_end
+    }
+
+    /// A matched failure is the last frame some members can ever receive.
+    /// Without waiting for Stop, return the reservation of each labelled
+    /// member that has no Whisper return and no frame left to cover it, under
+    /// the code Stop records for "matched, then refused". The admitted label
+    /// stays; blank owners still owe a witness and keep their frontier open.
+    fn settle_failed_window_members(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        members: &[(u64, OccurrenceIdentity)],
+    ) {
+        for (id, owner) in members {
+            if self.whisper_work_may_cover(owner) {
+                continue;
+            }
+            let unanswered_label = {
+                let ledger = self
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                !ledger.is_sealed(owner)
+                    && ledger.frontier_of(owner).is_some_and(|frontier| {
+                        frontier
+                            .open_producers()
+                            .contains(&LedgerObservationProducer::Whisper)
+                    })
+                    && !ledger
+                        .layer_trail_for(owner)
+                        .any(|entry| entry.producer() == LedgerObservationProducer::Whisper)
+                    && ledger
+                        .text_of(owner)
+                        .is_some_and(|label| !label.trim().is_empty())
+            };
+            if unanswered_label {
+                self.fail_refinement(ev_tx, *id, owner, RefinementFailure::NotScheduled);
+            }
+        }
+    }
+
     /// Monotonic evidence about future window starts. A completed newer job
     /// cannot seal ahead of an older submitted or queued job that may own words.
     fn close_admission_horizon(
@@ -4638,15 +4689,7 @@ impl AppleSealState {
             if owner.sample_end > self.admission_horizon {
                 continue;
             }
-            let still_possible = self.refinement_submitted.values().any(|job| {
-                job.request_identity.range.sample_start < owner.sample_end
-                    && job.request_identity.range.sample_end > owner.sample_start
-            }) || self.refinement_pending.iter().any(|job| {
-                job.provider_request.identity.range.sample_start < owner.sample_end
-                    && job.provider_request.identity.range.sample_end > owner.sample_start
-            });
-            // A held window is future work even before transport enqueue.
-            if still_possible || self.window_plan.admission_horizon() < owner.sample_end {
+            if self.whisper_work_may_cover(&owner) {
                 continue;
             }
             let (is_open, has_return) = {
