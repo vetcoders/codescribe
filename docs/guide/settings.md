@@ -156,20 +156,23 @@ coloured card above the Save button; a note does not block and reads as a plain
 secondary footnote under it. The macOS Fn configuration message is a note: it
 says Codescribe may intercept the short press while dictation runs, and
 explicitly that it does not block saving. The technical identifier that came
-across the bridge is in the row's tooltip, not on screen.
+across the bridge is not shown; the save receipt and the bridge log keep it.
 
 **Dictation context** is its own section, below the gestures. Shift or Command
 during an already-started Fn hold attaches the selected text; it does not switch
-the take to the Agent. **Arm with** chooses Shift (default) or Command. The
-Fn+Shift-from-idle timing rules sit in the row's tooltip.
+the take to the Agent. **Arm with** chooses Shift (default) or Command.
+Fn+Shift from idle is dictation, not the Agent; further pulses during the same
+hold attach the next selections, and the take, the overlay and the destination
+do not change.
 
 **Extra gestures** holds the three input surfaces, each described in two
-sentences with the caveats in the row's tooltip: **Agent channel**
-(`Ctrl + digit`, or `Fn + digit`; the tooltip explains why Command is not
-offered), **Tap Fn to dictate** (one tap starts, the next stops, a longer hold
-records only while held; the tooltip asks to set the macOS Fn key action to
-_Do Nothing_) and **Middle mouse acts as Fn** (whose ordinary click can still
-reach the app in front). The Fn gesture is labelled plainly as **Hold Fn**.
+sentences and without tooltips: **Agent channel** (`Ctrl + digit`, or
+`Fn + digit`; Command is not offered because it collides with tab switching),
+**Tap Fn to dictate** (one tap starts, the next stops, a longer hold records
+only while held; set the macOS Fn key action to _Do Nothing_, otherwise macOS
+can claim a double press for its own dictation) and **Middle mouse acts as Fn**
+(whose ordinary click can still reach the app in front). The Fn gesture is
+labelled plainly as **Hold Fn**.
 
 **Automatic paste** keeps **Safe**, **Comfort** and **Off**, with the picker on
 its own full-width row and only the selected mode explained underneath. The

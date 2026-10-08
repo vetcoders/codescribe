@@ -262,13 +262,6 @@ struct ShortcutsPanel: View {
             .multilineTextAlignment(.trailing)
             .fixedSize(horizontal: false, vertical: true)
         }
-        // The timing rules stay in help, out of the main description.
-        .help(
-          String(
-            localized:
-              "Fn+Shift from idle is dictation, not the Agent. Further pulses during the same hold attach the next selections; the take, the overlay and the destination do not change."
-          )
-        )
 
         // Arm modifier is attach-only (default Shift; Cmd alternative).
         HStack(spacing: 8) {
@@ -378,8 +371,7 @@ struct ShortcutsPanel: View {
       VStack(alignment: .leading, spacing: 0) {
         inputSurfaceRow(
           title: "Agent channel",
-          detail: "Ctrl + digit switches an Agent channel. Choose Fn to use Fn + digit instead.",
-          help: "Command is not offered because it collides with tab switching."
+          detail: "Ctrl + digit switches an Agent channel. Choose Fn to use Fn + digit instead."
         ) {
           Picker("Agent channel modifier", selection: channelModifierBinding) {
             Text(verbatim: "Ctrl").tag("ctrl")
@@ -393,9 +385,7 @@ struct ShortcutsPanel: View {
         inputSurfaceRow(
           title: "Tap Fn to dictate",
           detail:
-            "One tap starts dictation and the next tap stops it. Holding records only while you hold.",
-          help:
-            "Set the macOS Fn key action to Do Nothing. Otherwise macOS can claim a double press for its own dictation."
+            "One tap starts dictation and the next tap stops it. Holding records only while you hold."
         ) {
           Toggle("Tap Fn to dictate", isOn: fnTapBinding)
             .labelsHidden()
@@ -420,13 +410,13 @@ struct ShortcutsPanel: View {
     }
   }
 
-  /// Two sentences on screen; anything longer, such as macOS caveats, goes to
-  /// `help` and shows as the row's tooltip (Founder, 2026-10-08).
+  /// Two sentences on screen and no tooltip: macOS caveats live in the user
+  /// guide, and a native tooltip only covers the control (Founder, 2026-10-08).
   private func inputSurfaceRow<Control: View>(
-    title: LocalizedStringKey, detail: LocalizedStringKey, help: LocalizedStringKey? = nil,
+    title: LocalizedStringKey, detail: LocalizedStringKey,
     @ViewBuilder control: () -> Control
   ) -> some View {
-    let row = HStack(alignment: .center, spacing: 12) {
+    HStack(alignment: .center, spacing: 12) {
       VStack(alignment: .leading, spacing: 3) {
         Text(title)
           .font(CSFont.ui(13.5, .semibold))
@@ -442,13 +432,6 @@ struct ShortcutsPanel: View {
     .padding(.horizontal, 16)
     .padding(.vertical, 14)
     .background(Color.primary.opacity(0.04))
-    return Group {
-      if let help {
-        row.help(help)
-      } else {
-        row
-      }
-    }
   }
 
   private var channelModifierBinding: Binding<String> {
@@ -638,7 +621,6 @@ struct ShortcutsPanel: View {
     }
     .padding(.horizontal, 14)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .help(entry.technical ?? entry.message)
   }
 
   private func validationRow(
@@ -669,8 +651,6 @@ struct ShortcutsPanel: View {
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(accent.opacity(0.2), lineWidth: 1)
     )
-    // Wire identifiers stay reachable in the tooltip whenever the sentence is ours.
-    .help(entry.technical ?? entry.message)
   }
 
   // MARK: Permission degradation
