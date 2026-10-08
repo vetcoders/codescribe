@@ -2048,11 +2048,12 @@ class NeutralTargetTests(unittest.TestCase):
 def require_loct() -> None:
     """The live classes below shell out to the Loctree CLI for fresh context.
     Where the binary is absent (GitHub-hosted runners), those classes skip
-    loudly and the pure AST/manifest classes keep their teeth; operator hosts
-    run the full suite. See the Makefile GATE LEDGER row for verify."""
+    loudly and the pure AST/manifest classes keep their teeth; any host with
+    loct on PATH runs the full suite. See the Makefile GATE LEDGER row for
+    verify."""
     if shutil.which("loct") is None:
         raise unittest.SkipTest(
-            "loct not on PATH -- live throne rows are an operator-host instrument"
+            "loct not on PATH -- live throne rows need the Loctree CLI"
         )
 
 

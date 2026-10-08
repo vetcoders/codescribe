@@ -15,7 +15,7 @@
 #
 # What CI does NOT run: the `class=operator ci=no` rows in the Makefile GATE LEDGER —
 # the parity bars (private fixture corpus), the 318 Swift front-end tests
-# (Xcode + a built ffi dylib), `smoke-macos27` (this host), and the #[ignore]
+# (Xcode + a built ffi dylib), `smoke-macos27` (needs a macOS 27 host), and the #[ignore]
 # real-API / model / audio-device tests. Those are bench instruments, host-local
 # by nature, and `make -s gate-ledger` prints the full classification.
 # (This block used to claim `make check` was the "full local gate incl. real-API
