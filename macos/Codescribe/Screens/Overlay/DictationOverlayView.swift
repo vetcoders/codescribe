@@ -328,6 +328,7 @@ struct DictationOverlayView: View {
           cloudRetranscribeConfigured: state.cloudRetranscribeConfigured,
           retranscribeUnavailableReason: state.retranscribeUnavailableReason,
           historyOpenRefusal: state.archiveOpenRefusal,
+          recoverSupersededLabel: state.supersededRecoveryActionLabel,
           admitHistoryOpen: { state.admitHistoryOpen() },
           onOpenArchive: { state.openArchivedTranscript($0, admission: $1) },
           onHistoryDismiss: { state.invalidateHistoryOpens() },
