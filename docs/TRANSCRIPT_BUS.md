@@ -296,11 +296,23 @@ current volume, and immutable bytes lacking a historical digest were not changed
 after boot. The active inode must have a pre-boot birth and content modification
 time; a later permission change may update ctime without invalidating those
 bytes. Growth since the manifest checkpoint remains valid if its content mtime
-predates boot. Actual post-boot content writes without a previously pinned UUID
-still refuse automatic admission. A successful admission pins the UUID for future restarts. Missing proof,
+predates boot. If compression replaced the original stream inode, the first
+closed generation must have a recorded compressed flag and historical digest;
+that digest is verified, and every linked file must have a pre-boot birth and
+content mtime, with every closed generation also retaining a pre-boot ctime.
+All recorded digests, physical inodes, lengths and the uniform device transition
+remain mandatory. Actual post-boot content writes without a previously pinned
+UUID still refuse automatic admission. A successful admission pins the UUID for
+future restarts. Missing proof,
 another volume, replaced inodes, digest mismatch, ambiguous pending rollover or
 superseded-copy cleanup refuse recovery and preserve the original receipt and
 bytes. Recovery never deletes the manifest or certifies a session as ended.
+
+App startup applies this same leased recovery to the main journal and existing
+managed regular `channel-*.jsonl` files under the authoritative agent bridge
+home's `buses` directory. It does not follow channel/receipt symlinks, create
+receipts for unmanaged files, or rewrite channel lifecycle events. A refused
+channel reports its path and remains unavailable rather than looking idle.
 
 An existing nonempty journal without a generation receipt is **undated**.
 Admission pins all its original bytes under `events/undated/`; it neither scans
