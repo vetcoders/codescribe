@@ -2835,13 +2835,13 @@
     "Apple on-device (experimental)" : {
       "shouldTranslate" : false
     },
-    "Apple on-device formatting is selected. Cloud requests still require this lane's credentials. %@" : {
+    "Apple on-device formatting handles Smart and Corrections without a cloud credential. This lane is used when Apple fails. %@" : {
       "comment" : "The placeholder is the resolved cloud lane availability",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Formatowanie działa lokalnie przez Apple. Funkcje chmurowe wymagają osobnych danych dostępowych. %@"
+            "value" : "Poziomy Smart i Korekta formatuje lokalnie Apple, bez danych dostępowych do chmury. Ta ścieżka działa, gdy Apple zawiedzie. %@"
           }
         }
       }
@@ -2877,7 +2877,7 @@
         }
       }
     },
-    "Applies to the next formatting pass. The on-device model runs first; any failure falls back to the cloud provider. A .env value overrides this toggle." : {
+    "Applies to Smart and Corrections from the next formatting pass. The on-device model runs first without a cloud credential; on failure the formatting provider is used when one is configured. Max always uses the Agent model. A .env value overrides this toggle." : {
       "shouldTranslate" : false
     },
     "Applies to the next recording. Adaptive buffering preserves phrase boundaries within bounded audio and wait limits." : {
@@ -8250,6 +8250,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Prompt Max"
+          }
+        }
+      }
+    },
+    "Max uses the Agent model and endpoint. This lane serves Smart and Corrections only." : {
+      "comment" : "Formatting lane usage while the Max level is selected",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Max korzysta z modelu i endpointu Agenta. Ta ścieżka obsługuje tylko poziomy Smart i Korekta."
+          }
+        }
+      }
+    },
+    "Max uses the Agent model. Set up the Agent endpoint to use Max." : {
+      "comment" : "Shown when the Max level is selected but the Agent lane is unavailable",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Max korzysta z modelu Agenta. Skonfiguruj endpoint Agenta, aby używać Max."
           }
         }
       }

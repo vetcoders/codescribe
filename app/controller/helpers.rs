@@ -550,11 +550,8 @@ fn initialize_agent_runtime(
 ) -> Result<AgentRuntime> {
     let registry = crate::agent::tools::configured_registry();
 
-    let provider = crate::agent::create_provider_for_lane(
-        runtime_settings.as_ref(),
-        codescribe_core::config::RuntimeLlmLaneKind::Assistive,
-    )
-    .context("Failed to create default agent provider")?;
+    let provider = crate::agent::create_agent_provider(runtime_settings.as_ref())
+        .context("Failed to create default agent provider")?;
     let (ui_tx, ui_rx) = mpsc::channel(AGENT_UI_CHANNEL_CAPACITY);
     let session = AgentSession::new(provider, Arc::new(registry), ui_tx);
 
@@ -565,59 +562,6 @@ fn initialize_agent_runtime(
         settings_snapshot_digest: runtime_settings.digest().clone(),
         reset_chain_on_next_send: false,
     })
-}
-
-/// Per-turn provider options. The model comes from live assistive lane truth
-/// rather than a cached value, and a non-positive `ai_assistive_max_tokens`
-/// resolves to `None` (provider default) instead of a zero-token request.
-/// `reset_chain` stays false here: only the retry path overrides it.
-fn build_agent_stream_options(
-    ai_assistive_max_tokens: i32,
-    use_assistive_persona: bool,
-    runtime_settings: &RuntimeSettingsSnapshot,
-) -> StreamOptions {
-    let assistive_lane = runtime_settings.llm_lanes().assistive();
-    let max_tokens = u32::try_from(ai_assistive_max_tokens)
-        .ok()
-        .filter(|tokens| *tokens > 0);
-
-    StreamOptions {
-        model: assistive_lane.model().to_string(),
-        system_prompt: Some(compose_agent_system_prompt(
-            use_assistive_persona,
-            runtime_settings
-                .ai_execution()
-                .formatter()
-                .assistive_prompt()
-                .composed_content(),
-        )),
-        max_tokens,
-        temperature: None,
-        // First-attempt default: preserve conversational chain. Session retry
-        // path will clone+override this to true for retry attempts only.
-        reset_chain: false,
-    }
-}
-
-/// Compose the agent system prompt.
-///
-/// - `use_assistive_persona=true` (act-on-selection lane): base is `assistive.txt`.
-/// - `use_assistive_persona=false` (voice-chat lane, W10-D): agent persona only —
-///   workspace + doctrine, no "text assistant" identity.
-fn compose_agent_system_prompt(use_assistive_persona: bool, assistive_prompt: &str) -> String {
-    let workspace = crate::agent::tools::workspace::workspace_prompt_section();
-    let doctrine = crate::agent::tools::doctrine::review_doctrine_prompt_section();
-    // Measured Responses/streaming contract facts + the answer-first rule —
-    // rides BOTH lanes so a spoken engine question gets substance, not a
-    // clarification questionnaire (operator incident 2026-08-14).
-    let api_truth = crate::agent::tools::api_truth::responses_api_prompt_section();
-    if use_assistive_persona {
-        format!("{assistive_prompt}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
-    } else {
-        format!(
-            "You are the Codescribe agent. Answer and act on the user's spoken request using the available tools when helpful.\n\n{workspace}\n\n{doctrine}\n\n{api_truth}"
-        )
-    }
 }
 
 /// Title-case a `snake_case` / `kebab-case` identifier into readable words.
@@ -1216,10 +1160,12 @@ async fn run_agent_send(
     use_assistive_persona: bool,
 ) {
     let _send_guard = AgentSendInFlightGuard::new();
-    let stream_options = build_agent_stream_options(
+    // The canonical Agent options owner: live Agent lane model, composed Agent
+    // prompt and token cap, shared with the bridge chat and Max.
+    let stream_options = crate::agent::agent_stream_options(
+        runtime_settings.as_ref(),
         ai_assistive_max_tokens,
         use_assistive_persona,
-        runtime_settings.as_ref(),
     );
     let agent_result = {
         let mut guard = runtime_state.lock().await;

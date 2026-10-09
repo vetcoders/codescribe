@@ -348,8 +348,7 @@ impl Config {
                 .or_else(|| registry.resolve(&ProviderRef::default()))
                 .expect("the default vendor is always registered");
             let api_key = Self::runtime_lane_api_key(&provider.key_account);
-            let signed_in = lane == RuntimeLlmLaneKind::Assistive
-                && provider.wire == WireFamily::OpenAiResponses
+            let signed_in = provider.wire == WireFamily::OpenAiResponses
                 && provider.oauth_vendor.is_some_and(|vendor| {
                     account_auth::provider_oauth_config(vendor)
                         .is_ok_and(|row| Self::signed_in_provider_account(row.tokens_account))
@@ -666,10 +665,14 @@ impl Config {
             .cloned()
             .unwrap_or_default();
         let api_key = captured.api_key;
-        let account_auth = lane == RuntimeLlmLaneKind::Assistive
-            && provider.wire == WireFamily::OpenAiResponses
+        // Account auth belongs to the provider, not to a lane: a formatter and
+        // the Agent pointed at the same signed-in vendor both ride its account.
+        // Only Responses vendors with an OAuth row qualify; an account token is
+        // never assumed to work on another protocol.
+        let account_auth = provider.wire == WireFamily::OpenAiResponses
             && provider.oauth_vendor.is_some()
             && captured.signed_in;
+        let configuration_fault = unavailable_reason.clone();
         let credentialed = api_key.is_some() || account_auth || !provider.key_required;
         if !credentialed && unavailable_reason.is_none() {
             unavailable_reason = Some(format!(
@@ -680,7 +683,6 @@ impl Config {
                 provider.key_account,
             ));
         }
-        let available = unavailable_reason.is_none();
         let credential =
             RuntimeLlmCredential::seal(provider.key_account.clone(), api_key, account_auth);
         RuntimeLlmLane::seal(
@@ -688,7 +690,7 @@ impl Config {
             provider,
             model,
             credential,
-            available,
+            configuration_fault,
             unavailable_reason,
         )
     }

@@ -1032,7 +1032,8 @@ impl CodescribeHotkeys {
                         msg: error.to_string(),
                     }
                 })?;
-            let lane = settings.llm_lanes().formatting();
+            // Max runs on the Agent lane; its model decides image support.
+            let lane = settings.llm_lanes().assistive();
             let attachments = attachment_paths
                 .into_iter()
                 .map(|path| crate::agent::CsAttachment { path })
@@ -1481,13 +1482,12 @@ impl CodescribeHotkeys {
         }
     }
 
-    /// True when the configured formatting provider can handle a user-triggered
-    /// overlay format action.
+    /// True when a user-triggered overlay format action has an engine: Max
+    /// needs the Agent lane; Smart/Corrections need Apple on-device (when
+    /// selected) or the configured formatting lane.
     pub fn is_formatting_available(&self) -> bool {
         Config::load_runtime_snapshot().is_ok_and(|runtime_settings| {
-            codescribe::ai_formatting::is_formatting_available(
-                runtime_settings.llm_lanes().formatting(),
-            )
+            codescribe::agent::formatting_unavailable_reason(&runtime_settings).is_none()
         })
     }
 
