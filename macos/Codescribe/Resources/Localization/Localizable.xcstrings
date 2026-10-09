@@ -4895,6 +4895,39 @@
         }
       }
     },
+    "Connection test failed: %@" : {
+      "comment" : "Placeholder is an error message",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Test połączenia nieudany: %@"
+          }
+        }
+      }
+    },
+    "Connection test passed — %@, not registered by the agent yet" : {
+      "comment" : "Placeholder is a tool count phrase",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Test połączenia udany — %@, agent jeszcze ich nie zarejestrował"
+          }
+        }
+      }
+    },
+    "Connection test passed — %@, not registered by the agent yet (server %@)" : {
+      "comment" : "First placeholder is a tool count phrase, second a server name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Test połączenia udany — %1$@, agent jeszcze ich nie zarejestrował (serwer %2$@)"
+          }
+        }
+      }
+    },
     "Consultation reset is unavailable." : {
       "localizations" : {
         "pl" : {
@@ -9678,6 +9711,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Niepołączone"
+          }
+        }
+      }
+    },
+    "Not detected (optional) — identity unknown for: %@" : {
+      "comment" : "Placeholder lists configured MCP server names whose identity is unknown until they are tested",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie wykryto (opcjonalne) — nieznana tożsamość: %@"
           }
         }
       }

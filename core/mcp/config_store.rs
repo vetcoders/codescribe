@@ -173,18 +173,12 @@ pub struct McpProbeSummary {
     pub tool_count: usize,
 }
 
-/// Spawn the named server, handshake, and return its identity + live tool count.
-/// Blocking: runs the async discovery on a dedicated thread + one-shot
-/// current-thread runtime so it is safe to call from a synchronous FFI context
-/// (and from within an already-running runtime). `timeout` bounds the whole
-/// handshake.
-pub fn probe_server_blocking(name: &str, timeout: Duration) -> Result<McpProbeSummary> {
-    probe_server_blocking_at(&default_mcp_config_path()?, name, timeout)
-}
-
-/// Path-explicit twin of [`probe_server_blocking`]. Uses the strict
-/// `McpConfigFile::load` (not `load_optional`): probing against a missing config
-/// is a hard error, since there is nothing to spawn.
+/// Path-explicit by-name probe for temp-dir tests. Production tests a server
+/// through the app's MCP evidence owner, which looks the entry up, probes it
+/// with [`probe_server_config_blocking`], and records the outcome against that
+/// exact entry. Uses the strict `McpConfigFile::load`: probing against a
+/// missing config is a hard error, since there is nothing to spawn.
+#[cfg(test)]
 fn probe_server_blocking_at(path: &Path, name: &str, timeout: Duration) -> Result<McpProbeSummary> {
     let config = McpConfigFile::load(path)?;
     let server = config
@@ -192,16 +186,10 @@ fn probe_server_blocking_at(path: &Path, name: &str, timeout: Duration) -> Resul
         .get(name)
         .with_context(|| format!("MCP server \"{name}\" not found"))?
         .clone();
-    run_probe_blocking(server, timeout)
+    probe_server_config_blocking(server, timeout)
 }
 
-/// Tool-count-only convenience over [`probe_server_blocking`], preserved for the
-/// simpler "how many tools" callers.
-pub fn test_server_blocking(name: &str, timeout: Duration) -> Result<usize> {
-    Ok(probe_server_blocking(name, timeout)?.tool_count)
-}
-
-/// Path-explicit twin of [`test_server_blocking`] for temp-dir integration tests.
+/// Tool-count-only twin of [`probe_server_blocking_at`] for temp-dir tests.
 #[cfg(test)]
 fn test_server_blocking_at(path: &Path, name: &str, timeout: Duration) -> Result<usize> {
     Ok(probe_server_blocking_at(path, name, timeout)?.tool_count)
@@ -209,14 +197,19 @@ fn test_server_blocking_at(path: &Path, name: &str, timeout: Duration) -> Result
 
 // --- internals ------------------------------------------------------------
 
-/// Run the async handshake to completion from a synchronous caller.
+/// Spawn one server entry, handshake, and return its identity + live tool
+/// count. Blocking: runs the async exchange to completion from a synchronous
+/// caller; `timeout` bounds the whole handshake.
 ///
 /// The dedicated thread is not optional: building a current-thread runtime
 /// inside an already-running tokio runtime panics, and this path is reached from
 /// the synchronous FFI surface as well as from async Settings code. Spawning
 /// isolates the new runtime from whatever the caller is standing in. A panic in
 /// the probe surfaces as an `Err` rather than unwinding into the caller.
-fn run_probe_blocking(server: McpServerConfig, timeout: Duration) -> Result<McpProbeSummary> {
+pub fn probe_server_config_blocking(
+    server: McpServerConfig,
+    timeout: Duration,
+) -> Result<McpProbeSummary> {
     std::thread::spawn(move || -> Result<McpProbeSummary> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

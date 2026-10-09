@@ -65,7 +65,7 @@ extension CsMcpStatusRow {
         localized: "Mismatch — \(detail)", comment: "Placeholder lists both folder sets")
     case .notConfigured:
       return String(localized: "Not configured (optional)")
-    case .live where facet == .prviewIntegration && !subject.isEmpty:
+    case .live where namesOperatorServer:
       return String(
         localized: "Live — \(toolCount) (server \(subject))",
         comment: "First placeholder is a tool count phrase, second a server name")
@@ -76,12 +76,29 @@ extension CsMcpStatusRow {
     case .disabled:
       return String(
         localized: "mcp.server.disabled", defaultValue: "Disabled", comment: "MCP server state")
-    case .configured where facet == .prviewIntegration && !subject.isEmpty:
+    case .configured where namesOperatorServer:
       return String(
         localized: "Configured — agent not started yet (server \(subject))",
         comment: "Placeholder is a server name")
     case .configured:
       return String(localized: "Configured — agent not started yet")
+    case .reachable where namesOperatorServer:
+      return String(
+        localized:
+          "Connection test passed — \(toolCount), not registered by the agent yet (server \(subject))",
+        comment: "First placeholder is a tool count phrase, second a server name")
+    case .reachable:
+      return String(
+        localized: "Connection test passed — \(toolCount), not registered by the agent yet",
+        comment: "Placeholder is a tool count phrase")
+    case .unreachable:
+      return String(
+        localized: "Connection test failed: \(detail)", comment: "Placeholder is an error message")
+    case .unverified:
+      return String(
+        localized: "Not detected (optional) — identity unknown for: \(detail)",
+        comment:
+          "Placeholder lists configured MCP server names whose identity is unknown until they are tested")
     case .error:
       return String(
         localized: "Configuration error: \(detail)", comment: "Placeholder is an error message")
@@ -93,6 +110,14 @@ extension CsMcpStatusRow {
       return String(
         localized: "mcp.json could not be read (optional): \(detail)",
         comment: "Placeholder is an error message")
+    }
+  }
+
+  /// Operator-tool rows name the configured server that supplied the evidence.
+  private var namesOperatorServer: Bool {
+    switch facet {
+    case .vibecraftedRuntime, .aicxMcp, .loctreeMcp, .prviewIntegration: return !subject.isEmpty
+    default: return false
     }
   }
 
