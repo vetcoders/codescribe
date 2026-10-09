@@ -5,7 +5,7 @@
 //! new vendor speaking an existing protocol needs no new client here.
 
 use anyhow::Result;
-use codescribe_core::agent::{AgentProvider, ContentBlock, Message, Role};
+use codescribe_core::agent::{AgentProvider, ContentBlock, Message, Role, StreamOptions};
 use codescribe_core::config::{FormattingPolicy, RuntimeLlmLane, RuntimeSettingsSnapshot};
 use codescribe_core::llm::provider::WireFamily;
 
@@ -78,6 +78,75 @@ pub fn formatting_unavailable_reason(runtime_settings: &RuntimeSettingsSnapshot)
 pub fn max_unavailable_reason(runtime_settings: &RuntimeSettingsSnapshot) -> Option<String> {
     assistive_unavailable_reason(runtime_settings.llm_lanes().assistive())
         .map(|reason| format!("Max uses the Agent model. {reason}"))
+}
+
+/// The Agent's canonical per-request configuration: the Agent lane model and
+/// the composed Agent system prompt from one immutable snapshot, plus the
+/// Agent token cap the caller already reads. The controller chat, the bridge
+/// chat and Max all take their options from here, so an Agent prompt or
+/// config edit reaches every Agent surface and no formatter prompt can. A
+/// non-positive `ai_assistive_max_tokens` resolves to `None` (provider
+/// default) instead of a zero-token request. `reset_chain` stays false: only
+/// retry paths override it.
+pub fn agent_stream_options(
+    runtime_settings: &RuntimeSettingsSnapshot,
+    ai_assistive_max_tokens: i32,
+    use_assistive_persona: bool,
+) -> StreamOptions {
+    StreamOptions {
+        model: runtime_settings.llm_lanes().assistive().model().to_string(),
+        system_prompt: Some(compose_agent_system_prompt(
+            use_assistive_persona,
+            runtime_settings
+                .ai_execution()
+                .formatter()
+                .assistive_prompt()
+                .composed_content(),
+        )),
+        max_tokens: u32::try_from(ai_assistive_max_tokens)
+            .ok()
+            .filter(|tokens| *tokens > 0),
+        temperature: None,
+        reset_chain: false,
+    }
+}
+
+/// Compose the Agent system prompt.
+///
+/// - `use_assistive_persona=true` (act-on-selection lane, bridge chat, Max):
+///   base is the configured Agent prompt (`assistive.txt`).
+/// - `use_assistive_persona=false` (voice-chat lane, W10-D): agent persona only,
+///   no "text assistant" identity.
+///
+/// Both carry the WORKSPACE section (project roots, resolve names via
+/// `list_projects`), the review-tool and connector doctrine, and the measured
+/// Responses/streaming API ground truth with the answer-first rule (operator
+/// incident 2026-08-14: a spoken engine question got a clarification
+/// questionnaire instead of an answer). Those sections describe the macOS tool
+/// surface and are absent where that surface does not exist.
+pub fn compose_agent_system_prompt(use_assistive_persona: bool, assistive_prompt: &str) -> String {
+    let base = if use_assistive_persona {
+        assistive_prompt
+    } else {
+        "You are the Codescribe agent. Answer and act on the user's spoken request using the available tools when helpful."
+    };
+    let mut sections = vec![base.to_string()];
+    sections.extend(agent_context_sections());
+    sections.join("\n\n")
+}
+
+#[cfg(target_os = "macos")]
+fn agent_context_sections() -> Vec<String> {
+    vec![
+        tools::workspace::workspace_prompt_section(),
+        tools::doctrine::review_doctrine_prompt_section(),
+        tools::api_truth::responses_api_prompt_section(),
+    ]
+}
+
+#[cfg(not(target_os = "macos"))]
+fn agent_context_sections() -> Vec<String> {
+    Vec::new()
 }
 
 /// In-memory user turn carrying one tool result.
