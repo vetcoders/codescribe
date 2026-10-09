@@ -490,8 +490,12 @@ mutation-granting observation, the ledger label and the document entry must
 still match, otherwise the version is kept as `stale_source` and never
 delivered. A formatter result never admits a ledger observation, relabels Raw,
 issues a seal or extends Stop; a slow, failed or absent formatter leaves PCM
-finality, terminal coverage and microphone release unchanged. Settings or
-lane availability alone do not schedule formatting. Smart/Corrections run on
+finality, terminal coverage and microphone release unchanged. Text jobs the
+take accepted outlive its acoustic session: when the session ends, the bounded
+queue and in-flight jobs move to one retained owner per take, bounded by two
+attempt timeouts, that delivers only to that take's own emitter and is never
+awaited by Stop. Settings or lane availability alone do not schedule
+formatting. Smart/Corrections run on
 Apple on-device when selected or on the formatting lane; Max is the Agent and
 runs on the Agent lane through grouped consultation.
 

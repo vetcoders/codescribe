@@ -642,6 +642,170 @@ async fn bound_formatter_reply(
         })
 }
 
+/// Build one bounded text job over an already sealed label. The policy and
+/// every provider knob come from the take's immutable settings generation; the
+/// reply is bounded by that generation's attempt timeout and a timeout keeps
+/// the raw label.
+fn formatter_job(
+    mut request: FormatterRequest,
+    runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    language: Option<String>,
+) -> BoxFuture<'static, FormatterCompletion> {
+    request.policy = runtime_settings.formatting_policy();
+    Box::pin(async move {
+        let deadline = runtime_settings
+            .ai_execution()
+            .request_timing()
+            .attempt_timeout();
+        let result = bound_formatter_reply(
+            &request.existing_label,
+            deadline,
+            format_text_with_status_for_policy(
+                &request.existing_label,
+                language.as_deref(),
+                runtime_settings.as_ref(),
+                None,
+            ),
+        )
+        .await;
+        FormatterCompletion::from_result(request, result)
+    })
+}
+
+/// Hand one completed text job to the take's PresentationEmitter. The emitter
+/// admits the derived text only against its exact sealed source (CAS); the
+/// seal worker is not involved because the occurrence was sealed before the
+/// job was scheduled. A completion whose proposal lost its PCM identity fails
+/// closed here.
+fn deliver_formatter_completion(
+    completion: FormatterCompletion,
+    event_sink: &dyn EventSink,
+    stream_log_path: Option<&std::path::Path>,
+) -> bool {
+    if !completion.carries_same_occurrence() {
+        let occurrence = &completion.occurrence;
+        warn!(
+            session = occurrence.session,
+            capture_epoch = occurrence.capture_epoch,
+            sample_start = occurrence.sample_start,
+            sample_end = occurrence.sample_end,
+            "Formatter completion refused — proposal changed exact PCM identity"
+        );
+        return false;
+    }
+    deliver_event(
+        &EngineEvent::OccurrenceLabelProposal {
+            proposal: completion.proposal,
+        },
+        event_sink,
+        stream_log_path,
+    );
+    true
+}
+
+/// Waves of text work a stopped take may still owe: at most one full queue
+/// already in flight plus one full queue accepted behind it.
+const RETAINED_FORMATTER_WAVES: u32 = 2;
+
+/// Text jobs a take accepted while it was live, carried past the end of its
+/// acoustic session.
+///
+/// Formatting is text processing over committed labels, so its lifetime is not
+/// the microphone's: Stop, PCM coverage and the terminal events never wait for
+/// it, and it never holds a seal or the frontier. It is still owned work, not
+/// a detached spawn: one task per stopped take, holding exactly the bounded
+/// queue (`FORMATTER_QUEUE_CAP` requests) and the jobs already in flight
+/// (`FORMATTER_QUEUE_CAP`), every reply bounded by the generation's attempt
+/// timeout and the whole owner by [`RETAINED_FORMATTER_WAVES`] of it. Results
+/// go only to this take's own emitter, whose reducer is the document
+/// authority and whose source CAS refuses a result after a user edit. A
+/// successor take has its own emitter, so a late result can never reach it or
+/// route a paste.
+struct RetainedFormatterJobs {
+    requests: mpsc::Receiver<FormatterRequest>,
+    jobs: FuturesOrdered<BoxFuture<'static, FormatterCompletion>>,
+    runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    language: Option<String>,
+    event_sink: Arc<dyn EventSink>,
+    stream_log_path: Option<PathBuf>,
+}
+
+impl RetainedFormatterJobs {
+    /// Start the owner when accepted work remains. Returns `None` when nothing
+    /// is queued or in flight, so a take without text work spawns nothing.
+    fn retain(mut self) -> Option<tokio::task::JoinHandle<()>> {
+        // The seal worker has finished scheduling. Closing refuses any later
+        // send while keeping every already accepted request drainable, so the
+        // owner never waits on a sender the worker thread has not dropped yet.
+        self.requests.close();
+        if self.jobs.is_empty() && self.requests.is_empty() {
+            return None;
+        }
+        let deadline = self
+            .runtime_settings
+            .ai_execution()
+            .request_timing()
+            .attempt_timeout()
+            .saturating_mul(RETAINED_FORMATTER_WAVES);
+        info!(
+            in_flight = self.jobs.len(),
+            queued = self.requests.len(),
+            deadline_ms = deadline.as_millis() as u64,
+            "Formatter text jobs retained beyond the acoustic session"
+        );
+        Some(tokio::spawn(self.run(deadline)))
+    }
+
+    async fn run(mut self, deadline: Duration) {
+        let mut delivered = 0u64;
+        let mut refused = 0u64;
+        let drained = tokio::time::timeout(deadline, async {
+            loop {
+                tokio::select! {
+                    Some(request) = self.requests.recv(), if self.jobs.len() < FORMATTER_QUEUE_CAP => {
+                        self.jobs.push_back(formatter_job(
+                            request,
+                            Arc::clone(&self.runtime_settings),
+                            self.language.clone(),
+                        ));
+                    }
+                    Some(completion) = self.jobs.next() => {
+                        if deliver_formatter_completion(
+                            completion,
+                            self.event_sink.as_ref(),
+                            self.stream_log_path.as_deref(),
+                        ) {
+                            delivered = delivered.saturating_add(1);
+                        } else {
+                            refused = refused.saturating_add(1);
+                        }
+                    }
+                    else => break,
+                }
+            }
+        })
+        .await
+        .is_ok();
+        // On the owner deadline the remaining provider futures are dropped,
+        // which cancels their requests; raw labels were never touched.
+        let abandoned = (self.jobs.len() + self.requests.len()) as u64;
+        if drained {
+            info!(
+                delivered,
+                refused,
+                "Retained formatter text jobs settled after the acoustic session"
+            );
+        } else {
+            warn!(
+                delivered,
+                refused,
+                abandoned,
+                "Retained formatter text jobs hit the owner deadline; raw labels kept"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod formatter_deadline_tests {
     use super::*;
@@ -1458,7 +1622,7 @@ pub(crate) async fn apple_stream_transcription_session(
                     );
                 }
             }
-            Some(mut request) = formatter_rx.recv(), if formatter_jobs.len() < FORMATTER_QUEUE_CAP => {
+            Some(request) = formatter_rx.recv(), if formatter_jobs.len() < FORMATTER_QUEUE_CAP => {
                 // The request channel is independent from `ev_rx`. Drain every
                 // already-enqueued ledger observation before provider work can
                 // complete, so a fast formatter cannot overtake the reducer
@@ -1470,43 +1634,18 @@ pub(crate) async fn apple_stream_transcription_session(
                         stream_log_path.as_deref(),
                     );
                 }
-                let runtime_settings = Arc::clone(&formatter_runtime_settings);
-                let language = formatter_language.clone();
-                request.policy = runtime_settings.formatting_policy();
-                formatter_jobs.push_back(Box::pin(async move {
-                    let deadline = runtime_settings.ai_execution().request_timing().attempt_timeout();
-                    let result = bound_formatter_reply(&request.existing_label, deadline, format_text_with_status_for_policy(
-                        &request.existing_label,
-                        language.as_deref(),
-                        runtime_settings.as_ref(),
-                        None,
-                    ))
-                    .await;
-                    FormatterCompletion::from_result(request, result)
-                }));
+                formatter_jobs.push_back(formatter_job(
+                    request,
+                    Arc::clone(&formatter_runtime_settings),
+                    formatter_language.clone(),
+                ));
             }
             Some(completion) = formatter_jobs.next() => {
-                if completion.carries_same_occurrence() {
-                    // PresentationEmitter admits the derived text only against
-                    // its exact sealed source (CAS). The seal worker is not
-                    // involved: the occurrence was sealed before this job.
-                    deliver_event(
-                        &EngineEvent::OccurrenceLabelProposal {
-                            proposal: completion.proposal,
-                        },
-                        event_sink.as_ref(),
-                        stream_log_path.as_deref(),
-                    );
-                } else {
-                    let occurrence = &completion.occurrence;
-                    warn!(
-                        session = occurrence.session,
-                        capture_epoch = occurrence.capture_epoch,
-                        sample_start = occurrence.sample_start,
-                        sample_end = occurrence.sample_end,
-                        "Formatter completion refused — proposal changed exact PCM identity"
-                    );
-                }
+                let _ = deliver_formatter_completion(
+                    completion,
+                    event_sink.as_ref(),
+                    stream_log_path.as_deref(),
+                );
             }
         }
         // C1: drain whatever the Layer 1 provider has ready. Partials stay
@@ -1543,6 +1682,21 @@ pub(crate) async fn apple_stream_transcription_session(
             break;
         }
     }
+
+    // The acoustic session is over; accepted text jobs are not. Every ledger
+    // event was delivered before `ev_rx` closed, so no result can overtake the
+    // revision that established its label. The owner runs beside the teardown
+    // below and is never awaited: microphone release, PCM coverage and
+    // SessionFinalised do not wait for a provider.
+    let _retained_formatter = RetainedFormatterJobs {
+        requests: formatter_rx,
+        jobs: formatter_jobs,
+        runtime_settings: Arc::clone(&formatter_runtime_settings),
+        language: formatter_language.clone(),
+        event_sink: Arc::clone(&event_sink),
+        stream_log_path: stream_log_path.clone(),
+    }
+    .retain();
 
     // Worker exited (event channel closed). If audio is still open, keep
     // consuming to EOF so upstream capture senders never hit a dropped
