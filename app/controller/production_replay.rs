@@ -136,14 +136,10 @@ fn project_ledger_truth(events: &[EngineEvent], ledger: &mut AcousticLedger) -> 
             } => reducer.apply_ledger_mutation(ledger, observation, receipt),
             EngineEvent::LedgerSeal { receipt } => reducer.apply_ledger_seal(receipt),
             EngineEvent::OccurrenceLabelProposal { proposal } => {
-                // `apply_occurrence_label_proposal` returns `(formatter_returned, revision)`.
-                // Offline replay projection tracks rendered document text updates via `revision`;
-                // `formatter_returned` (indicating an open Formatter slot was returned to permit sealing)
-                // is intentionally not used for real-time sealing in replay projection.
-                let (formatter_returned, revision) =
-                    reducer.apply_occurrence_label_proposal(ledger, proposal);
-                let _ = formatter_returned;
-                revision
+                // A formatter result is a derived version of sealed text; it
+                // never revises the Raw document this projection tracks.
+                let _ = reducer.apply_occurrence_label_proposal(ledger, proposal);
+                None
             }
             _ => None,
         };
