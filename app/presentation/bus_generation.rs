@@ -277,13 +277,14 @@ fn rebind_device_number(
         return Err(invalid());
     }
     let known_volume = manifest.volume_uuid.is_some();
+    let mut compressed_original = false;
     if known_volume {
         if manifest.volume_uuid != current_volume {
             return Err(invalid());
         }
     } else {
         // Older receipts lack a volume UUID. Admission requires independent
-        // reboot and original-file birthtime evidence, not just matching inodes.
+        // reboot and birthtime evidence, not just matching inodes.
         let boot = boot.ok_or_else(invalid)?;
         let receipt = fs::symlink_metadata(manifest_path(path))?;
         if !receipt.is_file()
@@ -293,15 +294,31 @@ fn rebind_device_number(
         {
             return Err(invalid());
         }
+        if !manifest
+            .stream_birthtime
+            .is_some_and(|created| created < boot)
+        {
+            return Err(invalid());
+        }
         let original = manifest
             .segments
             .iter()
             .chain(std::iter::once(&manifest.active))
-            .find(|segment| segment.ino == manifest.stream_inode)
-            .ok_or_else(invalid)?;
-        let meta = fs::symlink_metadata(&original.path)?;
-        if manifest.stream_birthtime.is_none() || manifest.stream_birthtime != birthtime(&meta) {
-            return Err(invalid());
+            .find(|segment| segment.ino == manifest.stream_inode);
+        if let Some(original) = original {
+            let meta = fs::symlink_metadata(&original.path)?;
+            if manifest.stream_birthtime != birthtime(&meta) {
+                return Err(invalid());
+            }
+        } else {
+            // Compression replaces the original physical inode. The pre-boot
+            // receipt's digest of the first compressed generation anchors its
+            // replacement; every remaining file must also predate this boot.
+            let first = manifest.segments.first().ok_or_else(invalid)?;
+            if !first.compressed || first.sha256.is_none() {
+                return Err(invalid());
+            }
+            compressed_original = true;
         }
     }
     let mut checked = Vec::new();
@@ -335,6 +352,16 @@ fn rebind_device_number(
             || segment.superseded.is_some()
         {
             return Err(invalid());
+        }
+        if compressed_original {
+            let boot = boot.ok_or_else(invalid)?;
+            let metadata = file.metadata()?;
+            if !birthtime(&metadata).is_some_and(|created| created < boot)
+                || before.modified as f64 + before.modified_ns as f64 / 1e9 >= boot
+                || (!active && before.changed as f64 + before.changed_ns as f64 / 1e9 >= boot)
+            {
+                return Err(invalid());
+            }
         }
         if let Some(digest) = &segment.sha256 {
             if digest_file(&segment.path)? != (segment.length, digest.clone()) {
@@ -1673,6 +1700,103 @@ mod integrator_generation_acceptance {
         assert_eq!(recovered.stream_id, stale.stream_id);
         assert_eq!(recovered.stream_dev, stale.stream_dev);
         assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn pre_uuid_compressed_original_recovers_with_strict_preboot_archive_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bus.jsonl");
+        let (_file, stale) = compressed_pre_uuid_fixture(&path);
+        let contents: Vec<_> = stale
+            .segments
+            .iter()
+            .map(|s| fs::read(&s.path).unwrap())
+            .collect();
+        let active = fs::read(&path).unwrap();
+        let recovered = rebind_device_number(&path, stale.clone(), Some(future_boot())).unwrap();
+        assert_eq!(recovered.stream_inode, stale.stream_inode);
+        assert_eq!(recovered.stream_dev, stale.stream_dev);
+        assert_eq!(recovered.stream_id, stale.stream_id);
+        assert_eq!(recovered.stream_birthtime, stale.stream_birthtime);
+        assert!(recovered.volume_uuid.is_some());
+        assert!(recovered.segments[0].compressed);
+        assert!(recovered.segments[1].sha256.is_none());
+        assert_eq!(fs::read(&path).unwrap(), active);
+        for (segment, original) in recovered.segments.iter().zip(contents) {
+            assert_eq!(fs::read(&segment.path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn pre_uuid_compressed_original_refuses_missing_or_changed_historical_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bus.jsonl");
+        let (_file, stale) = compressed_pre_uuid_fixture(&path);
+        for digest in [None, Some("0".repeat(64))] {
+            let mut mutant = stale.clone();
+            mutant.segments[0].sha256 = digest;
+            write_manifest(&path, &mutant).unwrap();
+            let before = fs::read(manifest_path(&path)).unwrap();
+            assert!(rebind_device_number(&path, mutant, Some(future_boot())).is_err());
+            assert_eq!(fs::read(manifest_path(&path)).unwrap(), before);
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn pre_uuid_compressed_original_refuses_postboot_undigested_archive_change() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bus.jsonl");
+        let (_file, stale) = compressed_pre_uuid_fixture(&path);
+        let receipt = fs::metadata(manifest_path(&path)).unwrap();
+        let receipt_time = receipt.mtime() as f64 + receipt.mtime_nsec() as f64 / 1e9;
+        fs::set_permissions(&stale.segments[1].path, fs::Permissions::from_mode(0o640)).unwrap();
+        let changed = fs::metadata(&stale.segments[1].path).unwrap();
+        let changed_time = changed.ctime() as f64 + changed.ctime_nsec() as f64 / 1e9;
+        let boot = (receipt_time + changed_time) / 2.0;
+        assert!(receipt_time < boot && boot < changed_time);
+        let before = fs::read(manifest_path(&path)).unwrap();
+        assert!(rebind_device_number(&path, stale, Some(boot)).is_err());
+        assert_eq!(fs::read(manifest_path(&path)).unwrap(), before);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn future_boot() -> f64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            + 60.0
+    }
+
+    #[cfg(target_os = "macos")]
+    fn compressed_pre_uuid_fixture(path: &Path) -> (File, Manifest) {
+        let old = b"compressible historical archive\n".repeat(10_000);
+        let mut file = pinned_previous_day(path, &old);
+        let id = prepare_append(path, &mut file).unwrap().unwrap();
+        file.write_all(b"later closed archive\n").unwrap();
+        file.sync_all().unwrap();
+        compress_segment(path, &id).unwrap();
+        let mut manifest = view(path).unwrap().unwrap();
+        assert!(manifest.segments[0].compressed);
+        assert_ne!(manifest.segments[0].ino, manifest.stream_inode);
+        manifest.active.day = Some("2026_0930".into());
+        write_manifest(path, &manifest).unwrap();
+        prepare_append(path, &mut file).unwrap();
+        file.write_all(b"active prefix\n").unwrap();
+        file.sync_all().unwrap();
+        let mut stale = view(path).unwrap().unwrap();
+        stale.volume_uuid = None;
+        stale.active.dev += 1;
+        for segment in &mut stale.segments {
+            segment.dev += 1;
+        }
+        stale.stream_dev = stale.active.dev;
+        write_manifest(path, &stale).unwrap();
+        (file, stale)
     }
 
     #[test]
