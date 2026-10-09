@@ -326,6 +326,9 @@ struct DictationOverlayView: View {
           palette: palette,
           formatLevel: state.autoFormatLevel,
           cloudRetranscribeConfigured: state.cloudRetranscribeConfigured,
+          retranscribeUnavailableReason: state.retranscribeUnavailableReason,
+          historyOpenRefusal: state.archiveOpenRefusal,
+          onOpenArchive: { state.openArchivedTranscript($0) },
           onIntent: state.relayIntent,
           onRetranscribe: { state.retranscribe(pass: $0) },
           onFormatOnce: { state.formatTranscript(at: $0) },
@@ -932,13 +935,16 @@ struct DictationOverlayView: View {
     if let error = state.transcriptStorageError ?? state.maxPreparationError {
       return error
     }
-    if let error = state.revisionCommitError ?? state.formatterError ?? state.recoveryFailure {
+    if let error = state.revisionCommitError ?? state.formatterError ?? state.archiveActionError
+      ?? state.recoveryFailure
+    {
       return error
     }
     if state.formatterCommitPending { return String(localized: "Formatting revision…") }
     if state.revisionCommitPending { return String(localized: "Committing revision…") }
     if state.isRevisionDraftDirty { return String(localized: "Draft · not committed") }
     if let notice = state.toast { return notice }
+    if let origin = state.archivedTranscriptOrigin { return origin }
     if let status = state.presentationStatus { return status.headline }
     if state.errorDiagnosticDetail != nil { return state.errorFooterSummary }
     if state.mode == .error {
@@ -966,7 +972,7 @@ struct DictationOverlayView: View {
       } detail: { _ in
         ScrollView {
           VStack(alignment: .leading, spacing: 8) {
-            if state.presentationStatus != nil {
+            if state.presentationStatus != nil && state.archivedTranscript == nil {
               transcriptStatus
             } else if state.errorDiagnosticDetail != nil || state.mode == .error {
               errorBody
@@ -1078,6 +1084,8 @@ struct DictationOverlayView: View {
       .accessibilityHint(
         livePaint != nil
           ? Text("Live preview. Uncommitted words may change.")
+          : state.archivedTranscript != nil
+            ? Text("Saved transcript from history. Click to edit; the saved file stays unchanged.")
           : state.isTranscriptEditable
             ? Text("Click to edit. Edits stay local until committed to the transcript ledger.")
             : Text(verbatim: "")

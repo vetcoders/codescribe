@@ -13,8 +13,8 @@ final class OverlayTranscriptHistoryTests: XCTestCase {
     let model = OverlayTranscriptHistoryModel(reader: reader)
     await model.load()
     XCTAssertEqual(model.entries.map(\.path), [today.path, yesterday.path])
-    XCTAssertNil(model.selected)
-    XCTAssertNil(model.text)
+    XCTAssertNil(model.opening)
+    XCTAssertNil(model.error)
   }
 
   func testHistoryCountUsesFullUnicodeTextRatherThanPreviewOrBytes() async throws {
@@ -78,37 +78,63 @@ final class OverlayTranscriptHistoryTests: XCTestCase {
     }
   }
 
-  func testSelectingAnArchiveLoadsItsFullTextNotItsPreview() async {
-    let item = entry("take.txt", timestamp: 1, preview: "First words")
-    let reader = HistoryReader(entries: [item], texts: [item.path: "First words\nWhole recording."])
+  func testOpeningAnArchiveCarriesItsFullTextAndItsOwnAudio() async throws {
+    let item = entry("a_raw.txt", timestamp: 1_000, preview: "First words")
+    let other = entry("b_raw.txt", timestamp: 2_000, preview: "Other")
+    let reader = HistoryReader(
+      entries: [item, other],
+      texts: [item.path: "First words\nWhole recording.", other.path: "Other take"],
+      audio: [item.path: "a_raw.m4a", other.path: "b_raw.m4a"])
     let model = OverlayTranscriptHistoryModel(reader: reader)
-    await model.select(item)
-    XCTAssertEqual(model.text, "First words\nWhole recording.")
-    XCTAssertFalse(model.reading)
+    let result = await model.open(item)
+    let opened = try XCTUnwrap(result)
+    XCTAssertEqual(opened.path, item.path)
+    XCTAssertEqual(opened.text, "First words\nWhole recording.")
+    XCTAssertEqual(opened.archivedText, opened.text)
+    XCTAssertEqual(opened.audioPath, "a_raw.m4a")
+    XCTAssertEqual(opened.recordedAt, Date(timeIntervalSince1970: 1))
+    XCTAssertNil(model.opening)
     XCTAssertNil(model.error)
   }
 
-  func testReturningToListRejectsAnInFlightTranscriptRead() async {
-    let item = entry("slow.txt", timestamp: 1, preview: "Slow")
-    let reader = DelayedHistoryReader()
-    let model = OverlayTranscriptHistoryModel(reader: reader)
-    let read = Task { await model.select(item) }
-    while !(await reader.started) { await Task.yield() }
-    model.back()
-    await reader.finish()
-    await read.value
-    XCTAssertNil(model.selected)
-    XCTAssertNil(model.text)
-    XCTAssertFalse(model.reading)
+  func testArchiveWithoutPairedAudioOpensWithoutBorrowingAnother() async throws {
+    let item = entry("a_raw.txt", timestamp: 1, preview: "A")
+    let reader = HistoryReader(
+      entries: [item], texts: [item.path: "Tekst A"], audio: ["b_raw.txt": "b_raw.m4a"])
+    let result = await OverlayTranscriptHistoryModel(reader: reader).open(item)
+    let opened = try XCTUnwrap(result)
+    XCTAssertNil(opened.audioPath)
   }
 
-  func testMissingArchiveShowsErrorWithoutKeepingPreviouslyReadText() async {
-    let item = entry("missing.txt", timestamp: 1, preview: "Missing")
-    let model = OverlayTranscriptHistoryModel(reader: HistoryReader(entries: []))
-    await model.select(item)
+  /// Rapid A → B: the slow read of A returns after B was chosen and is dropped.
+  func testLaterOpenSupersedesAnInFlightRead() async {
+    let slow = entry("slow.txt", timestamp: 1, preview: "Slow")
+    let fast = entry("fast.txt", timestamp: 2, preview: "Fast")
+    let reader = DelayedHistoryReader(slowPath: slow.path)
+    let model = OverlayTranscriptHistoryModel(reader: reader)
+    let first = Task { await model.open(slow) }
+    while !(await reader.started) { await Task.yield() }
+    let second = await model.open(fast)
+    await reader.finish()
+    let late = await first.value
+    XCTAssertNil(late, "a superseded read never reaches the canvas")
+    XCTAssertEqual(second?.path, fast.path)
+    XCTAssertEqual(second?.text, "Fast text")
+    XCTAssertNil(model.opening)
+  }
+
+  func testMissingOrEmptyArchiveIsReportedAndNeverOpened() async {
+    let missing = entry("missing.txt", timestamp: 1, preview: "Missing")
+    let empty = entry("empty.txt", timestamp: 2, preview: "")
+    let model = OverlayTranscriptHistoryModel(
+      reader: HistoryReader(entries: [], texts: [empty.path: "  \n"]))
+    let missingResult = await model.open(missing)
+    XCTAssertNil(missingResult)
     XCTAssertNotNil(model.error)
-    XCTAssertNil(model.text)
-    XCTAssertFalse(model.reading)
+    XCTAssertNil(model.opening)
+    let emptyResult = await model.open(empty)
+    XCTAssertNil(emptyResult)
+    XCTAssertNotNil(model.error)
   }
 
   private func entry(_ path: String, timestamp: Int64, preview: String) -> CsHistoryEntry {
@@ -119,11 +145,17 @@ final class OverlayTranscriptHistoryTests: XCTestCase {
 private struct HistoryReader: TranscriptHistoryReading {
   let saved: [CsHistoryEntry]
   let texts: [String: String]
+  let audio: [String: String]
 
-  init(entries: [CsHistoryEntry], texts: [String: String] = [:]) {
+  init(
+    entries: [CsHistoryEntry], texts: [String: String] = [:], audio: [String: String] = [:]
+  ) {
     saved = entries
     self.texts = texts
+    self.audio = audio
   }
+
+  func audioPath(forTranscript path: String) async -> String? { audio[path] }
 
   func entries() async -> [CsHistoryEntry] { saved }
   func text(at path: String) async throws -> String {
@@ -133,12 +165,16 @@ private struct HistoryReader: TranscriptHistoryReading {
 }
 
 private actor DelayedHistoryReader: TranscriptHistoryReading {
+  let slowPath: String
   private var continuation: CheckedContinuation<String, Never>?
   var started: Bool { continuation != nil }
+  init(slowPath: String) { self.slowPath = slowPath }
   func entries() async -> [CsHistoryEntry] { [] }
   func text(at path: String) async throws -> String {
-    await withCheckedContinuation { continuation = $0 }
+    guard path == slowPath else { return "Fast text" }
+    return await withCheckedContinuation { continuation = $0 }
   }
+  func audioPath(forTranscript path: String) async -> String? { nil }
   func finish() {
     continuation?.resume(returning: "Late text")
     continuation = nil

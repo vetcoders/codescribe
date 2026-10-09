@@ -242,6 +242,23 @@ private final class OverlayStateTestEngine: DictationEngine {
     if let transcriptionHandler { return try await transcriptionHandler(path) }
     return CsTranscription(text: transcriptionText, language: "pl")
   }
+  struct ArchivedFormatRequest: Equatable {
+    let archivePath: String
+    let text: String
+    let level: FormattingPolicyOption?
+  }
+  var archivedFormatRequests: [ArchivedFormatRequest] = []
+  var archivedFormatHandler: ((ArchivedFormatRequest) async throws -> CsArchivedFormat)?
+  func formatArchivedTranscript(
+    archivePath: String, text: String, level: FormattingPolicyOption?
+  ) async throws -> CsArchivedFormat {
+    let request = ArchivedFormatRequest(archivePath: archivePath, text: text, level: level)
+    archivedFormatRequests.append(request)
+    if let archivedFormatHandler { return try await archivedFormatHandler(request) }
+    return CsArchivedFormat(outcome: .applied, renderedText: "Sformatowane archiwum.")
+  }
+  var cloudConfigured = false
+  func cloudRetranscribeConfigured() -> Bool { cloudConfigured }
 }
 
 private final class OverlayStateTestClock {
@@ -6223,5 +6240,208 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.finalized)
     XCTAssertFalse(
       state.isTranscriptEditable, "new capture cannot inherit completed-take editing rights")
+  }
+}
+
+// MARK: - Transcript reopened from history
+
+extension OverlayStateTests {
+  private func archived(
+    _ path: String, text: String, audio: String?, timestampMs: Int64 = 1_759_000_000_000
+  ) -> OverlayArchivedTranscript {
+    OverlayArchivedTranscript(
+      entry: CsHistoryEntry(path: path, timestampMs: timestampMs, preview: text, kind: .raw),
+      text: text, audioPath: audio)
+  }
+
+  /// The visible take B is terminal; archive A goes on the canvas and every
+  /// action reads A — never B's text, B's session audio or B's reducer.
+  func testArchiveOnCanvasRoutesEveryActionToItsOwnSource() async throws {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    engine.lastSessionAudioPathValue = "/tmp/latest-b.wav"
+    engine.audioPathsBySession["take-b"] = "/tmp/take-b.wav"
+    engine.transcriptionText = "A transkrybowane ponownie"
+    state.engine = engine
+    state.insertCaretInCodescribeProbe = { false }
+    projectText(
+      "tekst B", to: state, canPaste: true, canCopy: true, canRetranscribe: true,
+      canFormat: true, terminal: true, sessionId: "take-b", reducerRevision: 3)
+    // B's own terminal probes B's audio availability; only archive actions are measured.
+    engine.requestedAudioSessionIds.removeAll()
+
+    XCTAssertNil(state.archiveOpenRefusal)
+    XCTAssertTrue(
+      state.openArchivedTranscript(
+        archived("/history/101500_a_raw.txt", text: "tekst A", audio: "/history/101500_a_raw.m4a")))
+
+    XCTAssertEqual(state.activeText, "tekst A")
+    XCTAssertEqual(state.canvasText, "tekst A")
+    XCTAssertEqual(state.mode, .formatted)
+    XCTAssertTrue(state.isTranscriptEditable)
+    XCTAssertNotNil(state.archivedTranscriptOrigin)
+    let intents = OverlayIntentRail.projectedIntents(for: state)
+    XCTAssertEqual(intents, [.insertPaste, .copy, .retranscribe, .format, .close])
+    XCTAssertNil(engine.pastedText, "opening history never pastes")
+    XCTAssertNil(engine.copiedTaggedText, "opening history never writes the clipboard")
+
+    let copied = expectation(description: "copy")
+    engine.onCopyTagged = { copied.fulfill() }
+    state.relayIntent(.copy)
+    await fulfillment(of: [copied], timeout: 2)
+    XCTAssertEqual(engine.copiedTaggedText, "tekst A")
+
+    let pasted = expectation(description: "insert")
+    engine.onPaste = { pasted.fulfill() }
+    state.relayIntent(.insertPaste)
+    await fulfillment(of: [pasted], timeout: 2)
+    XCTAssertEqual(engine.pastedText, "tekst A", "insert goes through the guarded paste route")
+
+    state.retranscribe(pass: .fullHq)
+    for _ in 0..<50 where state.archiveActionPending { await Task.yield() }
+    XCTAssertEqual(engine.transcribedPaths, ["hq:/history/101500_a_raw.m4a"])
+    XCTAssertTrue(engine.requestedAudioSessionIds.isEmpty, "B's session audio is never asked for")
+    XCTAssertTrue(engine.revisionRequests.isEmpty, "B's reducer is never revised")
+    XCTAssertEqual(state.activeText, "A transkrybowane ponownie")
+    XCTAssertTrue(state.canUndoRetranscribe)
+    state.undoRetranscribeIntent()
+    XCTAssertEqual(state.activeText, "tekst A")
+
+    state.close()
+    XCTAssertNil(state.archivedTranscript)
+    XCTAssertEqual(state.activeText, "tekst B", "leaving history returns the projected take")
+    XCTAssertTrue(state.canSendToAgent, "B's own capabilities come back unchanged")
+  }
+
+  /// Format sends A's path, A's text and the chosen level. A result that
+  /// returns after the user moved to archive C can never repaint C.
+  func testArchiveFormatResultCannotLandOnALaterSelection() async throws {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    var release: CheckedContinuation<Void, Never>?
+    let entered = expectation(description: "format entered")
+    engine.archivedFormatHandler = { _ in
+      await withCheckedContinuation { continuation in
+        release = continuation
+        entered.fulfill()
+      }
+      return CsArchivedFormat(outcome: .applied, renderedText: "Późny wynik A.")
+    }
+    XCTAssertTrue(
+      state.openArchivedTranscript(archived("/history/a_raw.txt", text: "tekst A", audio: nil)))
+    state.formatTranscript(at: .max)
+    await fulfillment(of: [entered], timeout: 2)
+    XCTAssertEqual(
+      engine.archivedFormatRequests,
+      [.init(archivePath: "/history/a_raw.txt", text: "tekst A", level: .max)])
+    XCTAssertNotNil(state.archiveOpenRefusal, "no second archive while A's format runs")
+
+    state.close()
+    XCTAssertTrue(
+      state.openArchivedTranscript(archived("/history/c_raw.txt", text: "tekst C", audio: nil)))
+    release?.resume()
+    for _ in 0..<20 { await Task.yield() }
+
+    XCTAssertEqual(state.archivedTranscript?.path, "/history/c_raw.txt")
+    XCTAssertEqual(state.activeText, "tekst C", "A's late result must not overwrite C")
+    XCTAssertFalse(state.archiveActionPending)
+    XCTAssertTrue(engine.formatterRequests.isEmpty, "no reducer formatter revision is requested")
+  }
+
+  func testArchiveFormatFailureKeepsTextAndStatesIt() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    engine.archivedFormatHandler = { _ in CsArchivedFormat(outcome: .failed, renderedText: "") }
+    state.openArchivedTranscript(archived("/history/a_raw.txt", text: "tekst A", audio: nil))
+    state.formatTranscript(at: .smart)
+    for _ in 0..<50 where state.archiveActionPending { await Task.yield() }
+    XCTAssertEqual(state.activeText, "tekst A")
+    XCTAssertNotNil(state.archiveActionError)
+    XCTAssertFalse(state.archiveActionPending)
+  }
+
+  /// Without its own audio, A is not transcribed again — not from B's
+  /// session, not from the last recording.
+  func testArchiveWithoutAudioNeverRetranscribesAnotherTake() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    engine.lastSessionAudioPathValue = "/tmp/latest-b.wav"
+    engine.audioPathsBySession["take-b"] = "/tmp/take-b.wav"
+    state.engine = engine
+    projectText(
+      "tekst B", to: state, canRetranscribe: true, terminal: true, sessionId: "take-b",
+      reducerRevision: 2)
+    engine.requestedAudioSessionIds.removeAll()
+    state.openArchivedTranscript(archived("/history/a_raw.txt", text: "tekst A", audio: nil))
+
+    XCTAssertNotNil(state.retranscribeUnavailableReason)
+    XCTAssertTrue(OverlayIntentRail.projectedIntents(for: state).contains(.retranscribe))
+    state.retranscribe(pass: .fullHq)
+    state.retranscribe(pass: .cloud)
+
+    XCTAssertTrue(engine.transcribedPaths.isEmpty)
+    XCTAssertTrue(engine.requestedAudioSessionIds.isEmpty)
+    XCTAssertEqual(state.archiveActionError, state.retranscribeUnavailableReason)
+    XCTAssertEqual(state.activeText, "tekst A")
+  }
+
+  /// History never takes the canvas from a live capture, and a capture that
+  /// starts over an open archive takes the canvas back.
+  func testLiveCaptureRefusesHistoryAndANewTakeLeavesTheArchive() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    XCTAssertNotNil(state.archiveOpenRefusal)
+    XCTAssertFalse(
+      state.openArchivedTranscript(archived("/history/a_raw.txt", text: "tekst A", audio: nil)))
+    XCTAssertNil(state.archivedTranscript)
+    XCTAssertTrue(state.recording, "opening history must not stop the take")
+
+    let idle = OverlayState()
+    idle.engine = engine
+    projectText("tekst B", to: idle, terminal: true, sessionId: "take-b", reducerRevision: 1)
+    XCTAssertTrue(
+      idle.openArchivedTranscript(archived("/history/a_raw.txt", text: "tekst A", audio: nil)))
+    idle.handleRecordingPreparing()
+    XCTAssertNil(idle.archivedTranscript, "a new take owns the canvas")
+    XCTAssertEqual(idle.mode, .listening)
+    XCTAssertEqual(idle.activeText, "")
+  }
+
+  /// An archive edit replaces only the canvas document of that archive; the
+  /// archived text and the take behind it stay untouched.
+  func testArchiveEditIsLocalToTheArchiveAndNeverRevisesTheTakeBehind() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    projectText("tekst B", to: state, terminal: true, sessionId: "take-b", reducerRevision: 4)
+    state.openArchivedTranscript(archived("/history/a_raw.txt", text: "tekst A", audio: nil))
+
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("tekst A poprawiony")
+    XCTAssertTrue(state.isRevisionDraftDirty)
+    XCTAssertNotNil(state.archiveOpenRefusal, "an unsaved edit is never stranded by history")
+    XCTAssertEqual(
+      OverlayIntentRail.projectedIntents(for: state), [.commitRevision, .discardRevision, .close])
+    state.commitRevisionDraft()
+
+    XCTAssertEqual(state.activeText, "tekst A poprawiony")
+    XCTAssertEqual(state.archivedTranscript?.archivedText, "tekst A")
+    XCTAssertTrue(engine.revisionRequests.isEmpty)
+    XCTAssertFalse(state.isRevisionDraftDirty)
+
+    // A late revision of B keeps the archive on the canvas; a new session takes it back.
+    projectText(
+      "tekst B2", to: state, terminal: true, sessionId: "take-b", reducerRevision: 5,
+      reducerAction: "apply_manual_edit")
+    XCTAssertEqual(state.activeText, "tekst A poprawiony")
+    XCTAssertEqual(state.mode, .formatted)
+    projectText("tekst D", to: state, terminal: true, sessionId: "take-d", reducerRevision: 1)
+    XCTAssertNil(state.archivedTranscript)
+    XCTAssertEqual(state.activeText, "tekst D")
   }
 }
