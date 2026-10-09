@@ -236,6 +236,61 @@ impl From<HistoryEntry> for CsHistoryEntry {
     }
 }
 
+/// Which explicit action a Swift-submitted archive revision came from. The
+/// formatter and restore commit inside Rust and are not offered here.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsArchiveRevisionKind {
+    UserEdit,
+    Retranscribe,
+}
+
+/// An archived transcript as its history owner holds it: the untouched
+/// original plus the accepted head of its revision chain. Swift paints this
+/// and addresses the next request with `path` + `revision`; it never decides
+/// which text is current.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsArchivedDocument {
+    pub path: String,
+    pub original_text: String,
+    pub revision: u64,
+    pub rendered_text: String,
+    /// `original` for revision 0, otherwise the head revision's provenance.
+    pub provenance: String,
+    /// Durable receipt of the head revision; empty for the original.
+    pub receipt_id: String,
+    /// The version Undo restores (what the last format or retranscription
+    /// replaced); `None` when there is nothing to undo.
+    pub undo_revision: Option<u64>,
+}
+
+impl CsArchivedDocument {
+    pub(crate) fn from_document(path: String, document: &history::ArchivedDocument) -> Self {
+        Self {
+            path,
+            original_text: document.original_text.clone(),
+            revision: document.head_revision(),
+            rendered_text: document.head_text().to_string(),
+            provenance: document
+                .head()
+                .map_or("original", |head| head.provenance.as_str())
+                .to_string(),
+            receipt_id: document
+                .head()
+                .map(|head| head.receipt_id.clone())
+                .unwrap_or_default(),
+            undo_revision: document.undo_revision(),
+        }
+    }
+
+    pub(crate) fn read(path: String) -> Result<Self, CsError> {
+        history::read_archived_document(std::path::Path::new(&path))
+            .map(|document| Self::from_document(path, &document))
+            .map_err(|error| CsError::Recording {
+                msg: format!("{error:#}"),
+            })
+    }
+}
+
 /// Thin handle to the codescribe thread store + transcript history.
 ///
 /// Stateless: every call constructs a fresh `ThreadStore` / `ThreadIndex` over
@@ -381,6 +436,60 @@ impl CodescribeThreads {
     pub fn history_audio_path(&self, path: String) -> Option<String> {
         history::paired_audio_for_transcript(std::path::Path::new(&path))
             .map(|audio| audio.to_string_lossy().into_owned())
+    }
+
+    /// The archived transcript at `path` with the accepted head of its
+    /// revision chain. Wraps `history::read_archived_document`.
+    pub fn history_document(&self, path: String) -> Result<CsArchivedDocument, CsError> {
+        CsArchivedDocument::read(path)
+    }
+
+    /// Commit an explicit edit or retranscription of the archived transcript
+    /// at `path` against `source_revision`. The archived text and audio stay
+    /// untouched; a moved head refuses instead of overwriting newer work.
+    pub fn commit_history_revision(
+        &self,
+        path: String,
+        source_revision: u64,
+        rendered_text: String,
+        kind: CsArchiveRevisionKind,
+    ) -> Result<CsArchivedDocument, CsError> {
+        let provenance = match kind {
+            CsArchiveRevisionKind::UserEdit => history::ArchiveRevisionProvenance::UserEdit,
+            CsArchiveRevisionKind::Retranscribe => {
+                history::ArchiveRevisionProvenance::Retranscribe
+            }
+        };
+        history::commit_archived_revision(
+            std::path::Path::new(&path),
+            source_revision,
+            &rendered_text,
+            provenance,
+            None,
+        )
+        .map_err(|error| CsError::Recording {
+            msg: format!("{error:#}"),
+        })?;
+        CsArchivedDocument::read(path)
+    }
+
+    /// Restore an earlier version of the archived transcript at `path` as a
+    /// new revision (Undo). The restored bytes are selected here, in Rust.
+    pub fn restore_history_revision(
+        &self,
+        path: String,
+        source_revision: u64,
+        restore_revision: u64,
+    ) -> Result<CsArchivedDocument, CsError> {
+        history::restore_archived_revision(
+            std::path::Path::new(&path),
+            source_revision,
+            restore_revision,
+        )
+        .map_err(|error| CsError::Recording {
+            msg: format!("{error:#}"),
+        })?;
+        CsArchivedDocument::read(path)
     }
 }
 

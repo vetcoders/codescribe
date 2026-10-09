@@ -336,6 +336,325 @@ pub fn paired_audio_for_transcript(transcript: &Path) -> Option<PathBuf> {
     existing_audio_for_stem(resolved.parent()?, stem)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Archived transcript revisions
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ARCHIVE_REVISION_SCHEMA: &str = "codescribe.archive-revision.v1";
+const ARCHIVE_REVISION_SUFFIX: &str = ".revisions.jsonl";
+
+/// One writer per process: the compare-and-swap below reads the chain head and
+/// appends under this lock, so two requests against one head cannot both land.
+static ARCHIVE_REVISION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// What produced one revision of an archived transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ArchiveRevisionProvenance {
+    UserEdit,
+    Formatter,
+    Retranscribe,
+    /// An earlier version restored as a new revision (undo).
+    Restore,
+}
+
+impl ArchiveRevisionProvenance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UserEdit => "user-edit",
+            Self::Formatter => "formatter",
+            Self::Retranscribe => "retranscribe",
+            Self::Restore => "restore",
+        }
+    }
+}
+
+/// One persisted revision of an archived transcript.
+///
+/// Revision 0 is the archived `.txt` itself and is never written here. Every
+/// line names the raw evidence it revises by digest, so a chain can never be
+/// read back over a different transcript.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ArchiveRevision {
+    pub schema: String,
+    pub revision: u64,
+    pub source_revision: u64,
+    pub provenance: ArchiveRevisionProvenance,
+    pub rendered_text: String,
+    pub receipt_id: String,
+    pub emitted_at: String,
+    pub evidence_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restored_revision: Option<u64>,
+    /// Formatter level or retranscription pass, for provenance display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// An archived transcript with its revision chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedDocument {
+    pub original_text: String,
+    pub revisions: Vec<ArchiveRevision>,
+}
+
+impl ArchivedDocument {
+    /// The accepted revision; 0 while the archive is unrevised.
+    pub fn head_revision(&self) -> u64 {
+        self.revisions.last().map_or(0, |revision| revision.revision)
+    }
+
+    pub fn head(&self) -> Option<&ArchiveRevision> {
+        self.revisions.last()
+    }
+
+    pub fn head_text(&self) -> &str {
+        self.head()
+            .map_or(self.original_text.as_str(), |revision| {
+                revision.rendered_text.as_str()
+            })
+    }
+
+    pub fn text_at(&self, revision: u64) -> Option<&str> {
+        if revision == 0 {
+            return Some(&self.original_text);
+        }
+        self.revisions
+            .iter()
+            .find(|entry| entry.revision == revision)
+            .map(|entry| entry.rendered_text.as_str())
+    }
+
+    /// The version an undo restores: what the latest format or
+    /// retranscription replaced. Edits and restores have no undo here.
+    pub fn undo_revision(&self) -> Option<u64> {
+        self.head()
+            .filter(|head| {
+                matches!(
+                    head.provenance,
+                    ArchiveRevisionProvenance::Formatter | ArchiveRevisionProvenance::Retranscribe
+                )
+            })
+            .map(|head| head.source_revision)
+    }
+}
+
+/// Admit one archived transcript: a `.txt` file inside the transcriptions bag.
+fn admit_archived_transcript(transcript: &Path) -> Result<PathBuf> {
+    anyhow::ensure!(
+        transcript.extension().and_then(|ext| ext.to_str()) == Some("txt"),
+        "not an archived transcript: {}",
+        transcript.display()
+    );
+    let resolved = transcript
+        .canonicalize()
+        .with_context(|| format!("archived transcript missing: {}", transcript.display()))?;
+    let root = transcriptions_base_dir()
+        .canonicalize()
+        .context("transcriptions folder unavailable")?;
+    anyhow::ensure!(
+        resolved.starts_with(&root) && resolved.is_file(),
+        "not an archived transcript: {}",
+        transcript.display()
+    );
+    Ok(resolved)
+}
+
+fn archive_revisions_path(transcript: &Path) -> PathBuf {
+    let mut name = transcript.as_os_str().to_os_string();
+    name.push(ARCHIVE_REVISION_SUFFIX);
+    PathBuf::from(name)
+}
+
+fn evidence_digest(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(text.as_bytes()))
+}
+
+#[cfg(unix)]
+fn no_follow(options: &mut fs::OpenOptions) -> &mut fs::OpenOptions {
+    use std::os::unix::fs::OpenOptionsExt;
+    options.custom_flags(libc::O_NOFOLLOW)
+}
+
+#[cfg(not(unix))]
+fn no_follow(options: &mut fs::OpenOptions) -> &mut fs::OpenOptions {
+    options
+}
+
+/// Read the archived transcript and every accepted revision of it.
+fn read_admitted_document(transcript: &Path) -> Result<ArchivedDocument> {
+    let original_text = fs::read_to_string(transcript)
+        .with_context(|| format!("Failed to read {}", transcript.display()))?;
+    let evidence = evidence_digest(&original_text);
+    let chain_path = archive_revisions_path(transcript);
+    let chain = match no_follow(fs::OpenOptions::new().read(true)).open(&chain_path) {
+        Ok(mut file) => {
+            let mut raw = String::new();
+            std::io::Read::read_to_string(&mut file, &mut raw)
+                .with_context(|| format!("Failed to read {}", chain_path.display()))?;
+            raw
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to open {}", chain_path.display()));
+        }
+    };
+    let complete = chain.ends_with('\n');
+    let lines: Vec<&str> = chain.lines().filter(|line| !line.trim().is_empty()).collect();
+    let mut revisions: Vec<ArchiveRevision> = Vec::with_capacity(lines.len());
+    for (index, line) in lines.iter().enumerate() {
+        let revision: ArchiveRevision = match serde_json::from_str(line) {
+            Ok(revision) => revision,
+            // A torn final append (crash mid-write) never became a receipt.
+            Err(_) if index + 1 == lines.len() && !complete => break,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("corrupt revision {} in {}", index + 1, chain_path.display())
+                });
+            }
+        };
+        let expected = revisions.len() as u64 + 1;
+        anyhow::ensure!(
+            revision.schema == ARCHIVE_REVISION_SCHEMA
+                && revision.revision == expected
+                && revision.source_revision.checked_add(1) == Some(expected),
+            "revision chain out of order in {}",
+            chain_path.display()
+        );
+        anyhow::ensure!(
+            revision.evidence_sha256 == evidence,
+            "archived transcript changed under its revision chain: {}",
+            transcript.display()
+        );
+        revisions.push(revision);
+    }
+    Ok(ArchivedDocument {
+        original_text,
+        revisions,
+    })
+}
+
+/// The archived transcript at `transcript` with its accepted revisions.
+pub fn read_archived_document(transcript: &Path) -> Result<ArchivedDocument> {
+    let transcript = admit_archived_transcript(transcript)?;
+    read_admitted_document(&transcript)
+}
+
+fn append_admitted_revision(
+    transcript: &Path,
+    document: &ArchivedDocument,
+    provenance: ArchiveRevisionProvenance,
+    rendered_text: &str,
+    restored_revision: Option<u64>,
+    detail: Option<String>,
+) -> Result<ArchiveRevision> {
+    use std::io::Write;
+    let source_revision = document.head_revision();
+    let revision = ArchiveRevision {
+        schema: ARCHIVE_REVISION_SCHEMA.to_string(),
+        revision: source_revision
+            .checked_add(1)
+            .context("archived transcript revision exhausted")?,
+        source_revision,
+        provenance,
+        rendered_text: rendered_text.to_string(),
+        receipt_id: format!("archive-{}-{}", provenance.as_str(), uuid::Uuid::new_v4()),
+        emitted_at: chrono::Utc::now().to_rfc3339(),
+        evidence_sha256: evidence_digest(&document.original_text),
+        restored_revision,
+        detail,
+    };
+    let mut line = serde_json::to_string(&revision)?;
+    line.push('\n');
+    let chain_path = archive_revisions_path(transcript);
+    let mut file = no_follow(fs::OpenOptions::new().create(true).append(true))
+        .open(&chain_path)
+        .with_context(|| format!("Failed to open {}", chain_path.display()))?;
+    file.write_all(line.as_bytes())
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("Failed to write {}", chain_path.display()))?;
+    Ok(revision)
+}
+
+/// Accept one revision of an archived transcript against `source_revision`.
+///
+/// The archived `.txt` and its audio are raw evidence and stay untouched; the
+/// revision is appended to `<base>.txt.revisions.jsonl` beside them, which no
+/// history listing treats as a transcript. A head that moved since the caller
+/// read it refuses the request instead of overwriting newer work.
+pub fn commit_archived_revision(
+    transcript: &Path,
+    source_revision: u64,
+    rendered_text: &str,
+    provenance: ArchiveRevisionProvenance,
+    detail: Option<String>,
+) -> Result<ArchiveRevision> {
+    anyhow::ensure!(
+        provenance != ArchiveRevisionProvenance::Restore,
+        "a restore names the version it restores"
+    );
+    anyhow::ensure!(
+        !rendered_text.trim().is_empty(),
+        "A transcript revision cannot be empty"
+    );
+    let transcript = admit_archived_transcript(transcript)?;
+    let _writer = ARCHIVE_REVISION_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let document = read_admitted_document(&transcript)?;
+    anyhow::ensure!(
+        document.head_revision() == source_revision,
+        "stale archived transcript revision: current {}, requested {}",
+        document.head_revision(),
+        source_revision
+    );
+    anyhow::ensure!(
+        document.head_text() != rendered_text,
+        "the revision does not change the transcript"
+    );
+    append_admitted_revision(&transcript, &document, provenance, rendered_text, None, detail)
+}
+
+/// Restore an earlier version of an archived transcript as a new revision.
+pub fn restore_archived_revision(
+    transcript: &Path,
+    source_revision: u64,
+    restore_revision: u64,
+) -> Result<ArchiveRevision> {
+    let transcript = admit_archived_transcript(transcript)?;
+    let _writer = ARCHIVE_REVISION_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let document = read_admitted_document(&transcript)?;
+    anyhow::ensure!(
+        document.head_revision() == source_revision,
+        "stale archived transcript revision: current {}, requested {}",
+        document.head_revision(),
+        source_revision
+    );
+    anyhow::ensure!(
+        restore_revision < source_revision,
+        "only an earlier version can be restored"
+    );
+    let restored = document
+        .text_at(restore_revision)
+        .context("restored version is not in this transcript's history")?
+        .to_string();
+    anyhow::ensure!(
+        restored != document.head_text(),
+        "the restored version matches the current transcript"
+    );
+    append_admitted_revision(
+        &transcript,
+        &document,
+        ArchiveRevisionProvenance::Restore,
+        &restored,
+        Some(restore_revision),
+        None,
+    )
+}
+
 /// Get the transcriptions base directory
 fn transcriptions_base_dir() -> PathBuf {
     // Use config_dir as the single source of truth for filesystem roots.
