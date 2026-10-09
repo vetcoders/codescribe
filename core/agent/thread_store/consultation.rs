@@ -1,6 +1,14 @@
 //! Crash boundary for consultation execution. Unfinished input is retained here;
 //! completed conversation history remains exclusively in ThreadStore. Pending
 //! means potentially executed, never permission to replay after a restart.
+//!
+//! A turn interrupted by a crash or a failure is therefore *abandoned*, not
+//! retained for recovery: the next `open` moves it into `abandoned`, drops the
+//! instructions still waiting behind it, and the conversation continues. The
+//! abandoned and completed identities are both permanently refused, so nothing
+//! is ever replayed and no tool effect is rolled back or retried. An
+//! unwritable journal is the only state that still blocks execution, because
+//! there the owner cannot prove what it recorded.
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -21,6 +29,61 @@ struct AdmissionState {
     pending: Option<String>,
     #[serde(default)]
     queued: Vec<QueuedInstruction>,
+    /// Turns that began and never completed. Refused for life exactly like
+    /// `completed`, but they left no history, so they are tracked separately.
+    #[serde(default)]
+    abandoned: BTreeSet<String>,
+}
+
+/// Characters of a dropped instruction kept to explain the gap to its reader.
+const DROPPED_PREVIEW_CHARS: usize = 120;
+
+/// One instruction dropped without being executed. The preview exists to
+/// explain the gap in the conversation; it is never an input for a replay.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DroppedInput {
+    pub turn_id: String,
+    pub text_preview: String,
+}
+
+/// What self-healing cost the conversation. Recording this is a note for the
+/// reader, never a retry: effects already executed stay exactly as they are.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ConsultationRecovery {
+    pub abandoned_turn_id: Option<String>,
+    pub dropped_inputs: Vec<DroppedInput>,
+    pub reason: String,
+}
+
+/// Source user text of a dropped instruction, whitespace-normalized and
+/// clipped by `char` so a multi-byte boundary cannot panic. Control blocks and
+/// images contribute nothing, so a turn without text yields an empty preview.
+fn dropped_input(entry: &QueuedInstruction) -> DroppedInput {
+    use crate::agent::{ContentBlock, Role};
+    let mut text_preview = String::new();
+    if entry.input.role == Role::User {
+        let words = entry
+            .input
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        text_preview = words
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(DROPPED_PREVIEW_CHARS)
+            .collect();
+    }
+    DroppedInput {
+        turn_id: entry.turn_id.clone(),
+        text_preview,
+    }
 }
 
 /// Recovery data, not an executable provider or permission grant. Never load
@@ -285,6 +348,7 @@ pub(crate) struct ConsultationJournal {
     path: PathBuf,
     state: AdmissionState,
     recovery_reason: Option<String>,
+    recovery: Option<ConsultationRecovery>,
     // Kernel ownership dies with the process; the lock file must not be unlinked.
     _owner: HeldExclusiveLock,
 }
@@ -294,14 +358,62 @@ impl ConsultationJournal {
         self.recovery_reason.as_deref()
     }
 
-    /// The persisted pending/queued records remain the restart authority.
-    /// This live gate stops new acceptance as soon as this owner observes failure.
+    /// Hand the self-heal performed by this journal to its owner exactly once,
+    /// so the gap can be explained in history. Taking it changes no durable
+    /// state; the abandoned identity is already refused on disk.
+    pub(crate) fn take_recovery(&mut self) -> Option<ConsultationRecovery> {
+        self.recovery.take()
+    }
+
+    /// Last resort for a journal that cannot be written: a failed turn now
+    /// self-heals through `abandon_unfinished`, so this gate is reached only
+    /// when the abandonment itself is unprovable. It stops all further
+    /// acceptance by this owner, because nothing it records can be trusted.
     pub(crate) fn require_recovery(&mut self, reason: String) {
         self.recovery_reason.get_or_insert(reason);
     }
 
+    /// Only completed turns wrote history, so only they can require it back.
+    /// An abandoned turn left none and must not make restoration refuse.
     pub(crate) fn has_completed_turns(&self) -> bool {
         !self.state.completed.is_empty()
+    }
+
+    /// Abandon the unfinished turn instead of blocking the consultation.
+    ///
+    /// The pending identity is retired into `abandoned` — refused for life, so
+    /// its possibly-executed effects are never repeated — and every waiting
+    /// instruction is dropped, because each is either that turn's own input or
+    /// an input whose execution never began. Returns `Ok(None)` when there was
+    /// nothing unfinished. A failed write restores the last durable shape and
+    /// leaves this owner requiring recovery: an unprovable journal must not
+    /// look healed.
+    pub(crate) fn abandon_unfinished(
+        &mut self,
+        reason: &str,
+    ) -> Result<Option<ConsultationRecovery>> {
+        if self.state.pending.is_none() && self.state.queued.is_empty() {
+            return Ok(None);
+        }
+        let abandoned_turn_id = self.state.pending.take();
+        let dropped = std::mem::take(&mut self.state.queued);
+        let dropped_inputs = dropped.iter().map(dropped_input).collect::<Vec<_>>();
+        if let Some(turn) = &abandoned_turn_id {
+            self.state.abandoned.insert(turn.clone());
+        }
+        if let Err(error) = self.persist() {
+            if let Some(turn) = &abandoned_turn_id {
+                self.state.abandoned.remove(turn);
+            }
+            self.state.queued = dropped;
+            self.state.pending = abandoned_turn_id;
+            return Err(error);
+        }
+        Ok(Some(ConsultationRecovery {
+            abandoned_turn_id,
+            dropped_inputs,
+            reason: reason.to_string(),
+        }))
     }
 
     pub(crate) fn open(store: &ThreadStore, id: &str) -> Result<Self> {
@@ -320,21 +432,18 @@ impl ConsultationJournal {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => AdmissionState::default(),
             Err(error) => return Err(error).context("read consultation admission state"),
         };
-        let journal = Self {
+        let mut journal = Self {
             path,
             state,
             recovery_reason: None,
+            recovery: None,
             _owner: owner,
         };
-        ensure!(
-            journal.state.pending.is_none(),
-            "consultation requires recovery; unresolved turn {:?}",
-            journal.state.pending
-        );
-        ensure!(
-            journal.state.queued.is_empty(),
-            "consultation requires recovery; retained waiting instructions"
-        );
+        // Self-heal before the owner serves anything. A journal that cannot
+        // record the abandonment stays closed: refusing to open is the only
+        // honest answer when the retirement of a started turn is unprovable.
+        let recovery = journal.abandon_unfinished("owner restarted before the turn finished")?;
+        journal.recovery = recovery;
         Ok(journal)
     }
 
@@ -349,6 +458,7 @@ impl ConsultationJournal {
         );
         ensure!(
             !self.state.completed.contains(&input.turn_id)
+                && !self.state.abandoned.contains(&input.turn_id)
                 && !self
                     .state
                     .queued
@@ -392,11 +502,11 @@ impl ConsultationJournal {
         );
         ensure!(
             self.state.pending.is_none(),
-            "consultation requires recovery"
+            "a consultation turn is already executing"
         );
         ensure!(
-            !self.state.completed.contains(turn),
-            "turn {turn} already completed; refusing replay"
+            !self.state.completed.contains(turn) && !self.state.abandoned.contains(turn),
+            "turn {turn} is already resolved; refusing replay"
         );
         ensure!(
             self.state
@@ -451,19 +561,21 @@ impl ConsultationJournal {
 mod tests {
     use super::*;
 
+    fn try_accept(journal: &mut ConsultationJournal, turn: &str) -> Result<()> {
+        journal.accept_input(QueuedInstruction {
+            turn_id: turn.into(),
+            input: crate::agent::Message::new(
+                crate::agent::Role::User,
+                vec![crate::agent::ContentBlock::Text("instruction".into())],
+            ),
+            provider_name: "fixture".into(),
+            options: serde_json::json!({}),
+            group: None,
+        })
+    }
+
     fn accept(journal: &mut ConsultationJournal, turn: &str) {
-        journal
-            .accept_input(QueuedInstruction {
-                turn_id: turn.into(),
-                input: crate::agent::Message::new(
-                    crate::agent::Role::User,
-                    vec![crate::agent::ContentBlock::Text("instruction".into())],
-                ),
-                provider_name: "fixture".into(),
-                options: serde_json::json!({}),
-                group: None,
-            })
-            .unwrap();
+        try_accept(journal, turn).unwrap();
     }
 
     #[test]
@@ -522,12 +634,30 @@ mod tests {
         assert_eq!(active.pending_turn_id.as_deref(), Some("interrupted"));
         assert_eq!(active.retained_inputs.len(), 1);
         drop(journal);
-        assert!(ConsultationJournal::open(&store, &id).is_err());
         assert_eq!(
             gateway.inspect_selected_max_consultation().unwrap(),
-            Some(active)
+            Some(active),
+            "a closed owner still leaves the interrupted turn readable"
         );
         assert_eq!(fs::read(&journal_path).unwrap(), before);
+        // Reopening heals: the interrupted turn is retired, never replayed.
+        let mut healed = ConsultationJournal::open(&store, &id).unwrap();
+        assert_eq!(
+            healed
+                .take_recovery()
+                .expect("reopen reports the abandoned turn")
+                .abandoned_turn_id
+                .as_deref(),
+            Some("interrupted")
+        );
+        let settled = gateway
+            .inspect_selected_max_consultation()
+            .unwrap()
+            .unwrap();
+        assert_eq!(settled.consultation_id, id);
+        assert!(settled.pending_turn_id.is_none());
+        assert!(settled.retained_inputs.is_empty());
+        drop(healed);
         assert_eq!(fs::read(&selection).unwrap(), selected_bytes);
         fs::write(&selection, b"{broken").unwrap();
         assert!(gateway.inspect_selected_max_consultation().is_err());
@@ -579,11 +709,11 @@ mod tests {
             gateway.inspect_consultation("inspect").unwrap(),
             Some(snapshot)
         );
-        assert!(
-            ConsultationJournal::open(&store, "inspect").is_err(),
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            before,
             "inspection must not resolve uncertainty"
         );
-        assert_eq!(fs::read(&path).unwrap(), before);
         fs::write(&path, b"{broken").unwrap();
         assert!(gateway.inspect_consultation("inspect").is_err());
         assert_eq!(fs::read(path).unwrap(), b"{broken");
@@ -631,13 +761,140 @@ mod tests {
             "acceptance is not completion"
         );
         let path = dir.path().join("consultations/waiting.json");
-        let before = fs::read(&path).unwrap();
         drop(journal);
-        assert!(ConsultationJournal::open(&store, "waiting").is_err());
+        let mut healed = ConsultationJournal::open(&store, "waiting").unwrap();
+        let recovery = healed
+            .take_recovery()
+            .expect("waiting inputs are reported as dropped");
+        assert!(
+            recovery.abandoned_turn_id.is_none(),
+            "nothing began, so nothing is abandoned"
+        );
         assert_eq!(
-            fs::read(path).unwrap(),
-            before,
-            "recovery refusal preserves every input"
+            recovery
+                .dropped_inputs
+                .iter()
+                .map(|dropped| (dropped.turn_id.as_str(), dropped.text_preview.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("one", "instruction"), ("two", "instruction")]
+        );
+        let state: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(state["pending"], serde_json::Value::Null);
+        assert!(state["queued"].as_array().unwrap().is_empty());
+        assert!(
+            state["abandoned"].as_array().unwrap().is_empty(),
+            "an input that never began is dropped, not retired"
+        );
+        // Never begun is never executed, so the same identity may be resubmitted.
+        accept(&mut healed, "one");
+        healed.begin("one").unwrap();
+    }
+
+    #[test]
+    fn never_begun_instruction_is_dropped_with_a_clipped_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(dir.path()).unwrap();
+        let mut journal = ConsultationJournal::open(&store, "preview").unwrap();
+        let long = "słowo ".repeat(60);
+        journal
+            .accept_input(QueuedInstruction {
+                turn_id: "wordy".into(),
+                input: crate::agent::Message::new(
+                    crate::agent::Role::User,
+                    vec![
+                        crate::agent::ContentBlock::Text(format!("  {long}\n")),
+                        crate::agent::ContentBlock::Image {
+                            data: vec![1, 2, 3],
+                            media_type: "image/png".into(),
+                        },
+                    ],
+                ),
+                provider_name: "fixture".into(),
+                options: serde_json::json!({}),
+                group: None,
+            })
+            .unwrap();
+        journal
+            .accept_input(QueuedInstruction {
+                turn_id: "wordless".into(),
+                input: crate::agent::Message::new(
+                    crate::agent::Role::User,
+                    vec![crate::agent::ContentBlock::Image {
+                        data: vec![4, 5],
+                        media_type: "image/png".into(),
+                    }],
+                ),
+                provider_name: "fixture".into(),
+                options: serde_json::json!({}),
+                group: None,
+            })
+            .unwrap();
+        let recovery = journal
+            .abandon_unfinished("explicit drop")
+            .unwrap()
+            .expect("waiting inputs are dropped");
+        assert_eq!(recovery.reason, "explicit drop");
+        assert!(recovery.abandoned_turn_id.is_none());
+        assert_eq!(recovery.dropped_inputs.len(), 2);
+        let wordy = &recovery.dropped_inputs[0].text_preview;
+        assert_eq!(wordy.chars().count(), DROPPED_PREVIEW_CHARS);
+        assert!(wordy.starts_with("słowo słowo"), "{wordy}");
+        assert_eq!(
+            recovery.dropped_inputs[1].text_preview, "",
+            "an image carries no explanation for the reader"
+        );
+        assert!(
+            journal.abandon_unfinished("again").unwrap().is_none(),
+            "a settled journal has nothing left to abandon"
+        );
+    }
+
+    #[test]
+    fn journal_without_the_abandoned_key_loads_and_still_heals() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(dir.path()).unwrap();
+        drop(ConsultationJournal::open(&store, "legacy").unwrap());
+        let path = dir.path().join("consultations/legacy.json");
+
+        fs::write(
+            &path,
+            br#"{"completed":["done"],"pending":null,"queued":[]}"#,
+        )
+        .unwrap();
+        let mut legacy = ConsultationJournal::open(&store, "legacy").unwrap();
+        assert!(
+            legacy.take_recovery().is_none(),
+            "nothing was unfinished, so nothing is reported"
+        );
+        assert!(legacy.has_completed_turns());
+        assert!(legacy.begin("done").is_err());
+        drop(legacy);
+
+        fs::write(
+            &path,
+            br#"{"completed":[],"pending":"interrupted","queued":[]}"#,
+        )
+        .unwrap();
+        let mut migrated = ConsultationJournal::open(&store, "legacy").unwrap();
+        assert_eq!(
+            migrated
+                .take_recovery()
+                .expect("an old-shape pending turn is retired")
+                .abandoned_turn_id
+                .as_deref(),
+            Some("interrupted")
+        );
+        assert!(
+            !migrated.has_completed_turns(),
+            "an abandoned turn wrote no history to require back"
+        );
+        assert!(migrated.begin("interrupted").is_err());
+        drop(migrated);
+
+        fs::write(&path, b"{broken").unwrap();
+        assert!(
+            ConsultationJournal::open(&store, "legacy").is_err(),
+            "an unreadable journal is not an empty consultation"
         );
     }
 
@@ -705,7 +962,16 @@ mod tests {
         assert_ne!(new, old);
         assert_eq!(selected_id(&store).unwrap(), new);
         assert_eq!(fs::read(&journal_path).unwrap(), before);
-        assert!(ConsultationJournal::open(&store, &old).is_err());
+        let mut reopened = ConsultationJournal::open(&store, &old).unwrap();
+        assert_eq!(
+            reopened
+                .take_recovery()
+                .expect("the old conversation heals when reopened")
+                .abandoned_turn_id
+                .as_deref(),
+            Some("unresolved")
+        );
+        drop(reopened);
         assert!(
             begin_new(&store, &old).is_err(),
             "stale reset cannot replace newer selection"
@@ -725,7 +991,37 @@ mod tests {
         drop(store);
         let reopened = ThreadStore::new_in(dir.path()).unwrap();
         assert_eq!(selected_id(&reopened).unwrap(), id);
-        assert!(ConsultationJournal::open(&reopened, &id).is_err());
+        let mut healed = ConsultationJournal::open(&reopened, &id).unwrap();
+        let recovery = healed
+            .take_recovery()
+            .expect("the selected conversation heals itself");
+        assert_eq!(recovery.abandoned_turn_id.as_deref(), Some("unresolved"));
+        assert_eq!(
+            recovery
+                .dropped_inputs
+                .iter()
+                .map(|dropped| dropped.turn_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["unresolved"]
+        );
+        assert!(healed.take_recovery().is_none(), "reported exactly once");
+        let path = dir.path().join(format!("consultations/{id}.json"));
+        let state: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(state["pending"], serde_json::Value::Null);
+        assert!(state["queued"].as_array().unwrap().is_empty());
+        assert!(state["completed"].as_array().unwrap().is_empty());
+        assert_eq!(state["abandoned"], serde_json::json!(["unresolved"]));
+        assert!(
+            healed.begin("unresolved").is_err(),
+            "an abandoned turn is never replayed"
+        );
+        assert!(
+            try_accept(&mut healed, "unresolved").is_err(),
+            "an abandoned turn is never re-admitted either"
+        );
+        accept(&mut healed, "next");
+        healed.begin("next").unwrap();
+        healed.complete("next").unwrap();
     }
 
     #[test]
@@ -745,7 +1041,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_is_exclusive_and_unfinished_turn_survives_reopen() {
+    fn owner_is_exclusive_and_unfinished_turn_is_abandoned_on_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let store = ThreadStore::new_in(dir.path()).unwrap();
         let mut journal = ConsultationJournal::open(&store, "a").unwrap();
@@ -753,6 +1049,19 @@ mod tests {
         accept(&mut journal, "one");
         journal.begin("one").unwrap();
         drop(journal);
+        let mut reopened = ConsultationJournal::open(&store, "a").unwrap();
+        assert_eq!(
+            reopened
+                .take_recovery()
+                .expect("reopen retires the unfinished turn")
+                .abandoned_turn_id
+                .as_deref(),
+            Some("one")
+        );
+        assert!(reopened.begin("one").is_err());
+        assert!(try_accept(&mut reopened, "one").is_err());
+        accept(&mut reopened, "two");
+        reopened.begin("two").unwrap();
         assert!(ConsultationJournal::open(&store, "a").is_err());
         assert!(ConsultationJournal::open(&store, "b").is_ok());
     }

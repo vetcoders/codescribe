@@ -9,6 +9,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 
+use super::thread_store::consultation::ConsultationRecovery;
 use super::{ContentBlock, Message, Role, Thread, ThreadMessage, ThreadStore};
 
 /// Placeholder title for a thread with nothing usable to derive one from.
@@ -20,6 +21,11 @@ const DEFAULT_THREAD_TITLE: &str = "Codescribe Agent Chat";
 /// Stored `Thread::mode` of a Max consultation; every lane that writes one
 /// must use exactly this label.
 pub const MAX_CONSULTATION_MODE: &str = "max";
+
+/// What the reader of a healed consultation is told about the turn it lost.
+/// The instruction text, when there is any, is quoted after a colon.
+const ABANDONED_TURN_NOTE: &str =
+    "An earlier Max instruction was interrupted before it finished and was not repeated";
 
 /// Completed-turn origin. It is intentionally a core delivery concept rather
 /// than UI state: callers use it for lifecycle evidence without logging content.
@@ -175,6 +181,54 @@ impl ThreadDeliveryGateway {
             .collect::<Result<Vec<_>>>()?;
         validate_consultation_tool_history(&messages)?;
         Ok(messages)
+    }
+
+    /// Explain an abandoned turn in the conversation its reader will open next.
+    ///
+    /// A note, never a replay: nothing here re-runs provider or tool work, and
+    /// the journal has already refused the abandoned identity for life. A
+    /// consultation with no thread file yet has nothing to annotate, so only
+    /// the warning is emitted. The instruction text stays out of the log.
+    pub(crate) fn record_consultation_recovery(
+        &self,
+        id: &str,
+        recovery: &ConsultationRecovery,
+    ) -> Result<()> {
+        let dropped_turn_ids = recovery
+            .dropped_inputs
+            .iter()
+            .map(|dropped| dropped.turn_id.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        tracing::warn!(
+            consultation_id = %id,
+            abandoned_turn_id = recovery.abandoned_turn_id.as_deref().unwrap_or("none"),
+            dropped_inputs = recovery.dropped_inputs.len(),
+            dropped_turn_ids = %dropped_turn_ids,
+            reason = %recovery.reason,
+            "Abandoned an unfinished Max consultation turn without replaying it"
+        );
+        let path = self.store.thread_file_path(id)?;
+        if !path.try_exists()? {
+            return Ok(());
+        }
+        let mut thread = self.store.load_thread(id)?;
+        let previews = recovery
+            .dropped_inputs
+            .iter()
+            .filter(|dropped| !dropped.text_preview.is_empty())
+            .collect::<Vec<_>>();
+        if previews.is_empty() {
+            thread.add_note(format!("{ABANDONED_TURN_NOTE}."), None);
+        } else {
+            for dropped in previews {
+                thread.add_note(
+                    format!("{ABANDONED_TURN_NOTE}: \"{}\"", dropped.text_preview),
+                    None,
+                );
+            }
+        }
+        self.store.save_thread(&thread)
     }
 
     /// Lock the same store's consultation admission state before executing tools.
@@ -666,6 +720,76 @@ mod tests {
         assert_eq!(gateway.restore_consultation("max-a", true)?.len(), 2);
         let stored = gateway.store.load_thread("max-a")?;
         assert_eq!(stored.mode, "max");
+        Ok(())
+    }
+
+    #[test]
+    fn consultation_recovery_notes_an_existing_thread_and_skips_a_missing_one() -> Result<()> {
+        use crate::agent::thread_store::consultation::DroppedInput;
+
+        let dir = TempDir::new()?;
+        let gateway = ThreadDeliveryGateway::new_in(dir.path())?;
+        let recovery = ConsultationRecovery {
+            abandoned_turn_id: Some("interrupted".into()),
+            dropped_inputs: vec![
+                DroppedInput {
+                    turn_id: "interrupted".into(),
+                    text_preview: "popraw nazwę pliku".into(),
+                },
+                DroppedInput {
+                    turn_id: "waiting".into(),
+                    text_preview: String::new(),
+                },
+            ],
+            reason: "owner restarted before the turn finished".into(),
+        };
+
+        // A consultation with no history yet has nothing to annotate.
+        gateway.record_consultation_recovery("max-missing", &recovery)?;
+        assert!(
+            !gateway
+                .store
+                .thread_file_path("max-missing")?
+                .try_exists()?,
+            "recording a recovery must not mint a thread"
+        );
+
+        let mut delivery = input(
+            "max-noted",
+            ThreadDeliverySource::MaxConsultation,
+            exchange(timestamp(1), "first", "answer"),
+            timestamp(1),
+        );
+        delivery.mode = MAX_CONSULTATION_MODE.into();
+        gateway.deliver(delivery)?;
+        gateway.record_consultation_recovery("max-noted", &recovery)?;
+        let stored = gateway.store.load_thread("max-noted")?;
+        assert_eq!(
+            stored.notes.len(),
+            1,
+            "only an instruction with readable text is quoted"
+        );
+        assert!(
+            stored.notes[0]
+                .text
+                .contains("was not repeated: \"popraw nazwę pliku\""),
+            "{}",
+            stored.notes[0].text
+        );
+        assert_eq!(stored.mode, MAX_CONSULTATION_MODE);
+        assert_eq!(stored.messages.len(), 2, "a note never rewrites history");
+        assert_single_thread_artifacts(dir.path())?;
+
+        // Nothing readable was dropped: one generic note explains the gap.
+        let silent = ConsultationRecovery {
+            abandoned_turn_id: Some("interrupted".into()),
+            dropped_inputs: Vec::new(),
+            reason: "turn interrupted: provider error".into(),
+        };
+        gateway.record_consultation_recovery("max-noted", &silent)?;
+        let stored = gateway.store.load_thread("max-noted")?;
+        assert_eq!(stored.notes.len(), 2);
+        assert_eq!(stored.notes[1].text, format!("{ABANDONED_TURN_NOTE}."));
         Ok(())
     }
 
