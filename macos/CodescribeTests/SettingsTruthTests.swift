@@ -383,14 +383,14 @@ final class SettingsTruthTests: XCTestCase {
   /// The prompt picker moved; prompt identity did not. Each segment still maps
   /// to the same storage level; the file name lives under File details only.
   func testPromptFilesKeepTheirStorageIdentity() {
-    XCTAssertEqual(PromptFile.allCases.map(\.formattingLevel), [.correction, .smart, .max, nil])
+    XCTAssertEqual(PromptFile.allCases.map(\.formattingLevel), [.correction, .smart, nil])
     XCTAssertEqual(
       PromptFile.allCases.compactMap(\.formattingLevel),
       FormattingPolicyOption.editablePrompts
     )
     XCTAssertEqual(
       PromptFile.allCases.map(\.editorTitle),
-      ["Correction prompt", "Smart prompt", "Max prompt", "Agent prompt"]
+      ["Correction prompt", "Smart prompt", "Agent prompt"]
     )
     for file in PromptFile.allCases {
       XCTAssertFalse(
@@ -1680,11 +1680,11 @@ final class SettingsTruthTests: XCTestCase {
 
     XCTAssertEqual(
       snapshots.map { URL(fileURLWithPath: $0.path).lastPathComponent },
-      ["formatting.txt", "formatting-smart.txt", "formatting-max.txt"]
+      ["formatting.txt", "formatting-smart.txt"]
     )
     XCTAssertEqual(
       snapshots.map(\.source),
-      ["custom_file", "built_in_fallback", "built_in_fallback"]
+      ["custom_file", "built_in_fallback"]
     )
   }
 

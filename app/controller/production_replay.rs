@@ -533,7 +533,7 @@ mod tests {
                 events, acoustic_ledger, layer1_armed: true,
                 streaming_engine_label: "live_apple".into(),
             };
-            let mut ledger = session.acoustic_ledger.lock().unwrap();
+            let ledger = session.acoustic_ledger.lock().unwrap();
             let mut reducer = TranscriptReducer::default();
             let mut seen_number = false;
             let mut regressions = 0;
@@ -543,8 +543,10 @@ mod tests {
                     EngineEvent::LedgerMutation { observation, receipt, .. } =>
                         reducer.apply_ledger_mutation(&ledger, observation, receipt),
                     EngineEvent::LedgerSeal { receipt } => reducer.apply_ledger_seal(receipt),
-                    EngineEvent::OccurrenceLabelProposal { proposal } =>
-                        reducer.apply_occurrence_label_proposal(&mut ledger, proposal).1,
+                    EngineEvent::OccurrenceLabelProposal { proposal } => {
+                        reducer.apply_occurrence_label_proposal(&ledger, proposal);
+                        None
+                    },
                     _ => None,
                 };
                 if let Some(revision) = revision {

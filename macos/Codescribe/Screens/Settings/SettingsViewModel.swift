@@ -151,7 +151,7 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
     }
   }
 
-  static let editablePrompts: [Self] = [.correction, .smart, .max]
+  static let editablePrompts: [Self] = [.correction, .smart]
 
   /// Next level in the tray's cycling control: Off → Correction → Smart → Max → Off.
   var next: Self {

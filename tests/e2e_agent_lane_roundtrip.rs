@@ -1,5 +1,5 @@
 //! Deterministic single-shot roundtrip through the real agent engine path — the
-//! same `create_provider_for_lane()` the Swift chat send uses via the bridge.
+//! same `create_agent_provider()` the Swift chat send uses via the bridge.
 //!
 //! The test owns an isolated config directory and a local Responses endpoint,
 //! so it runs in the ordinary workspace gate without a real API key. Run with:
@@ -12,7 +12,7 @@
 //! lane must resolve from CURRENT settings (lane_truth), a key-optional Custom
 //! provider must stream without auth headers, and the turn must finish cleanly.
 
-use codescribe::agent::create_provider_for_lane;
+use codescribe::agent::create_agent_provider;
 use codescribe_core::agent::{AgentEvent, ContentBlock, Message, Role, StreamOptions};
 use codescribe_core::config::{Config, UserSettings};
 use codescribe_core::llm::provider::{CustomProvider, WireFamily};
@@ -23,16 +23,16 @@ use tempfile::TempDir;
 #[tokio::test]
 #[serial]
 async fn assistive_lane_answers_one_single_shot_turn() {
-    selected_agent_lane_roundtrip(codescribe_core::config::RuntimeLlmLaneKind::Assistive).await;
+    selected_agent_lane_roundtrip(false).await;
 }
 
 #[tokio::test]
 #[serial]
-async fn max_uses_formatting_provider_and_model_not_chat_settings() {
-    selected_agent_lane_roundtrip(codescribe_core::config::RuntimeLlmLaneKind::Formatting).await;
+async fn max_uses_agent_provider_and_model_not_formatter_settings() {
+    selected_agent_lane_roundtrip(true).await;
 }
 
-async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlmLaneKind) {
+async fn selected_agent_lane_roundtrip(is_max: bool) {
     let data_dir = TempDir::new().expect("isolated Codescribe data directory");
     let mut server = mockito::Server::new_async().await;
     let endpoint = format!("{}/v1/responses", server.url());
@@ -67,13 +67,7 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
         .with_status(200)
         .with_header("content-type", "text/event-stream")
         .with_body(response_body.clone())
-        .expect(
-            if lane == codescribe_core::config::RuntimeLlmLaneKind::Formatting {
-                2
-            } else {
-                1
-            },
-        )
+        .expect(if is_max { 2 } else { 1 })
         .create_async()
         .await;
     let startup_mock = server
@@ -96,13 +90,7 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
                 .replace("pong", "READY")
                 .replace("resp_fixture", "resp_startup"),
         )
-        .expect(
-            if lane == codescribe_core::config::RuntimeLlmLaneKind::Formatting {
-                1
-            } else {
-                0
-            },
-        )
+        .expect(if is_max { 1 } else { 0 })
         .create_async()
         .await;
 
@@ -135,16 +123,8 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
     settings.llm_assistive_model = Some("wrong-model".into());
     settings.llm_formatting_provider = Some("custom:wrong-lane".into());
     settings.llm_formatting_model = Some("wrong-model".into());
-    match lane {
-        codescribe_core::config::RuntimeLlmLaneKind::Assistive => {
-            settings.llm_assistive_provider = Some("custom:fixture-box".into());
-            settings.llm_assistive_model = Some("fixture-model".into());
-        }
-        codescribe_core::config::RuntimeLlmLaneKind::Formatting => {
-            settings.llm_formatting_provider = Some("custom:fixture-box".into());
-            settings.llm_formatting_model = Some("fixture-model".into());
-        }
-    }
+    settings.llm_assistive_provider = Some("custom:fixture-box".into());
+    settings.llm_assistive_model = Some("fixture-model".into());
     settings.save().expect("persist lane settings");
     Config::default()
         .save_to_env("FORMATTING_LEVEL", "max")
@@ -169,7 +149,7 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
             .as_millis(),
         2_000
     );
-    if lane == codescribe_core::config::RuntimeLlmLaneKind::Formatting {
+    if is_max {
         use codescribe_core::agent::{ThreadDeliveryGateway, ToolRegistry};
         use std::sync::Arc;
         let consultation = codescribe::agent::max_consultation::MaxConsultation::start(
@@ -430,7 +410,7 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
         mock.assert_async().await;
         return;
     }
-    let provider = create_provider_for_lane(&runtime_settings, lane)
+    let provider = create_agent_provider(&runtime_settings)
         .expect("selected lane must be available (see the reported reason)");
 
     let messages = vec![Message::new(
@@ -505,8 +485,8 @@ fn group_fixture_mutation(
 
 #[tokio::test]
 #[serial]
-async fn formatting_agent_provider_requires_max_without_disabling_chat() {
-    use codescribe_core::config::{FormattingPolicy, RuntimeLlmLaneKind};
+async fn max_requires_agent_lane_independently_of_formatter_configuration() {
+    use codescribe_core::config::FormattingPolicy;
 
     let data_dir = TempDir::new().expect("isolated Max settings");
     let _data_dir = EnvGuard::set(
@@ -528,6 +508,8 @@ async fn formatting_agent_provider_requires_max_without_disabling_chat() {
     settings.add_custom_provider(row).expect("register fixture");
     settings.llm_formatting_provider = Some("custom:max-fixture".into());
     settings.llm_assistive_provider = Some("custom:max-fixture".into());
+    settings.llm_formatting_model = Some("formatter-control".into());
+    settings.llm_assistive_model = Some("agent-fixture".into());
     settings.save().expect("save fixture lanes");
 
     for policy in FormattingPolicy::ALL {
@@ -536,20 +518,21 @@ async fn formatting_agent_provider_requires_max_without_disabling_chat() {
             .expect("persist formatting policy");
         let snapshot = Config::load_runtime_snapshot().expect("seal policy");
         assert_eq!(snapshot.formatting_policy(), policy);
-        let formatting = create_provider_for_lane(&snapshot, RuntimeLlmLaneKind::Formatting);
-        if policy == FormattingPolicy::Max {
-            assert!(formatting.is_ok(), "Max must admit its configured provider");
-        } else {
-            let error = formatting
-                .err()
-                .expect("non-Max must refuse before provider construction");
-            assert!(error.to_string().contains("requires Max policy"));
-        }
         assert!(
-            create_provider_for_lane(&snapshot, RuntimeLlmLaneKind::Assistive).is_ok(),
-            "formatting policy must not disable the independent Agent chat"
+            create_agent_provider(&snapshot).is_ok(),
+            "formatting policy never disables the Agent"
+        );
+        assert!(
+            codescribe::agent::max_unavailable_reason(&snapshot).is_none(),
+            "Max availability comes from the same Agent lane"
         );
     }
+    let mut settings = UserSettings::load();
+    settings.llm_assistive_provider = Some("custom:missing-agent".into());
+    settings.save().unwrap();
+    let snapshot = Config::load_runtime_snapshot().unwrap();
+    assert!(create_agent_provider(&snapshot).is_err());
+    assert!(codescribe::agent::max_unavailable_reason(&snapshot).is_some());
 }
 
 use codescribe_core::test_isolation::EnvGuard;

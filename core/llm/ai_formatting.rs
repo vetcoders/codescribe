@@ -1837,7 +1837,12 @@ async fn call_llm_endpoint(
     let model = lane.model().to_string();
     let (api_key, bearer_only) = resolve_lane_auth(lane).await?;
     // The Codex backend only streams; JSON is never sent there.
-    if bearer_only && lane.vendor().and_then(account_auth::account_responses_route).is_some() {
+    if bearer_only
+        && lane
+            .vendor()
+            .and_then(account_auth::account_responses_route)
+            .is_some()
+    {
         anyhow::bail!(
             "The signed-in {} account accepts only streamed Responses requests",
             lane.provider_display_name()
@@ -1949,7 +1954,10 @@ async fn call_llm_endpoint_streaming(
     // Same account backend and headers as the Agent provider; a key-auth lane
     // keeps its own endpoint and chain.
     let account_route = bearer_only
-        .then(|| lane.vendor().and_then(account_auth::account_responses_route))
+        .then(|| {
+            lane.vendor()
+                .and_then(account_auth::account_responses_route)
+        })
         .flatten();
     let account_backend = account_route.is_some();
     let (endpoint, extra_headers) = match account_route {
@@ -2051,7 +2059,10 @@ pub fn text_formatting_unavailable_reason(settings: &RuntimeSettingsSnapshot) ->
     {
         return None;
     }
-    settings.llm_lanes().formatting().request_unavailable_reason()
+    settings
+        .llm_lanes()
+        .formatting()
+        .request_unavailable_reason()
 }
 
 /// Wire-contract and text-hygiene tests for the formatting module.
@@ -2177,6 +2188,7 @@ mod tests {
             input: vec![],
             instructions: chained_instructions("SYS", Some("resp_123")),
             previous_response_id: Some("resp_123".into()),
+            store: None,
             max_output_tokens: None,
             temperature: None,
             stream: false,
@@ -2710,6 +2722,91 @@ mod tests {
         }
         reset_conversation_for_mode(AiMode::Formatting);
         reset_conversation_for_mode(AiMode::Assistive);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn formatter_oauth_uses_account_backend_without_key_or_stored_chain() {
+        use crate::config::keychain::test_support::install_bundle;
+        use crate::llm::account_auth::{AccountTokens, OPENAI_ACCOUNT_TOKENS_ACCOUNT};
+        use crate::llm::provider::ProviderKind;
+        use crate::state::conversation::{
+            AiMode, reset_conversation_for_mode, set_response_id_for_mode,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let mut server = mockito::Server::new_async().await;
+        let mut env = TestEnv::clean();
+        env.set("CODESCRIBE_DATA_DIR", root.path().to_str().unwrap());
+        env.set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        env.set(
+            account_auth::CODEX_BACKEND_ENDPOINT_ENV,
+            &format!("{}/account/responses", server.url()),
+        );
+        for key in LANE_SELECTOR_ENV_KEYS {
+            env.guards.push(EnvGuard::remove(key));
+        }
+        env.guards.push(EnvGuard::remove("LLM_OPENAI_API_KEY"));
+        env.guards.push(EnvGuard::remove("OPENAI_API_KEY"));
+        let tokens = AccountTokens::new(
+            ProviderKind::OpenAiResponses,
+            "synthetic-account-access".into(),
+            None,
+            None,
+            None,
+            Some(3600),
+        );
+        let serialized = serde_json::to_string(&tokens).unwrap();
+        let _bundle = install_bundle(&[(OPENAI_ACCOUNT_TOKENS_ACCOUNT, &serialized)]);
+        let snapshot = Config::load_runtime_snapshot().unwrap();
+        let lane = snapshot.llm_lanes().formatting();
+        assert!(lane.credential().account_auth());
+        assert!(lane.credential().api_key().is_none());
+        let mock = server.mock("POST", "/account/responses")
+            .match_header("authorization", "Bearer synthetic-account-access")
+            .match_header("x-api-key", Matcher::Missing)
+            .match_header("originator", "codescribe")
+            .match_request(|request| {
+                let body: serde_json::Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+                body["stream"] == true && body["store"] == false
+                    && body.get("previous_response_id").is_none()
+                    && body.get("temperature").is_none()
+                    && body.get("max_output_tokens").is_none()
+                    && body["instructions"] == "format only"
+            })
+            .with_status(200).with_header("content-type", "text/event-stream")
+            .with_body(concat!(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"ephemeral\"}}\n\n",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Formatted.\"}\n\n",
+                "data: {\"type\":\"response.output_text.done\",\"text\":\"Formatted.\"}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"ephemeral\",\"status\":\"completed\"}}\n\n",
+                "data: [DONE]\n\n"))
+            .expect(1).create_async().await;
+        reset_conversation_for_mode(AiMode::Formatting);
+        set_response_id_for_mode(AiMode::Formatting, "must-not-be-sent".into());
+        let output = call_llm_endpoint_streaming(
+            "raw words",
+            "format only",
+            false,
+            lane,
+            StreamRequestContext {
+                callbacks: StreamCallbacks {
+                    assistant: None,
+                    reasoning: None,
+                },
+                initial_response_timeout: Duration::from_secs(2),
+                inter_chunk_timeout: Duration::from_secs(2),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.assistant_text, "Formatted.");
+        assert_eq!(
+            crate::state::conversation::get_previous_response_id_for_mode(AiMode::Formatting)
+                .as_deref(),
+            Some("must-not-be-sent")
+        );
+        mock.assert_async().await;
+        reset_conversation_for_mode(AiMode::Formatting);
     }
 
     #[tokio::test]

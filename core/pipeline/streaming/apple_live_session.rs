@@ -792,8 +792,7 @@ impl RetainedFormatterJobs {
         if drained {
             info!(
                 delivered,
-                refused,
-                "Retained formatter text jobs settled after the acoustic session"
+                refused, "Retained formatter text jobs settled after the acoustic session"
             );
         } else {
             warn!(
@@ -3445,17 +3444,21 @@ impl AppleSealState {
                 // A lexical trial may have been the last outstanding owner
                 // after ASR returned. The seal does not wait for formatting;
                 // formatting reads the label only once it is committed.
-                let seal = ledger.seal(&owner).cloned().ok();
+                ledger.seal(&owner).cloned().ok()
+            };
+            if let Some(receipt) = seal {
+                let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
+                let ledger = self
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 schedule_formatter_for_sealed_label(
                     &ledger,
                     self.formatter.as_ref(),
                     &mut self.formatter_requested,
                     &owner,
                 );
-                seal
-            };
-            if let Some(receipt) = seal {
-                let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
+                drop(ledger);
                 self.emit_pending_seal(ev_tx, id);
             }
         }
@@ -9024,7 +9027,7 @@ mod c13a_lifecycle_tests {
                     .open_producers()
                     .is_empty(),
             );
-            assert_eq!(state.formatter_awaiting_completion, 0);
+            assert!(state.formatter_requested.is_empty());
         }
         assert!(
             max_rx.try_recv().is_err(),
@@ -9102,22 +9105,15 @@ mod c13a_lifecycle_tests {
             ai_result(AiFormatStatus::Failed, "Surowe zdanie"),
         );
 
-        // PresentationEmitter synchronously returns the Formatter frontier,
-        // seals the raw occurrence, and may let another completion publish it
-        // before the worker receives this acknowledgement.
-        {
-            let mut ledger = state.acoustic_ledger.lock().expect("ledger");
-            assert!(ledger.note_frontier_return(&first, LedgerObservationProducer::Formatter,));
-            assert!(ledger.seal(&first).is_ok());
-        }
-        state.emit_pending_seal(&ev_tx, 1);
+        assert!(state.acoustic_ledger.lock().unwrap().is_sealed(&first));
         assert!(state.pending_events.is_empty());
-
+        let sink = crate::pipeline::sinks::CollectorEventSink::new();
+        assert!(deliver_formatter_completion(completion, &sink, None));
         assert!(
-            state.complete_formatter(&ev_tx, completion),
-            "a known formatter failure must be acknowledged even after raw publication",
+            matches!(sink.events().as_slice(), [EngineEvent::OccurrenceLabelProposal { proposal }]
+            if proposal.disposition == LabelProposalDisposition::Refuse)
         );
-        assert_eq!(state.formatter_awaiting_completion, 0);
+        assert_eq!(state.formatter_requested.len(), 1);
 
         // A later utterance proves that the live lane remained usable after
         // the formatter failure instead of terminating at the acknowledgement.
@@ -9158,12 +9154,13 @@ mod c13a_lifecycle_tests {
     }
 
     #[test]
-    fn formatter_waits_for_ledger_word_resolution() {
+    fn formatter_waits_for_ledger_word_trial_disposition() {
         use crate::pipeline::acoustic_ledger::WordPin;
         for resolved in [false, true] {
-            let (ev_tx, _ev_rx) = mpsc::unbounded_channel();
+            let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
             let (formatter_tx, mut formatter_rx) = mpsc::channel(FORMATTER_QUEUE_CAP);
             let mut state = state_for_session("formatter-settled-input");
+            state.capture_epoch = 1;
             state.formatter = Some(formatter_tx);
             let owner = OccurrenceIdentity::new(state.session_id.clone(), 1, 0, 160_000);
             let trial = {
@@ -9214,7 +9211,7 @@ mod c13a_lifecycle_tests {
                 formatter_rx.try_recv().is_err(),
                 "formatter must never adjudicate an open lexical dispute"
             );
-            assert_eq!(state.formatter_awaiting_completion, 0);
+            assert!(state.formatter_requested.is_empty());
             if resolved {
                 let mut ledger = state.acoustic_ledger.lock().unwrap();
                 assert!(ledger.word_trial_has_decode(
@@ -9233,8 +9230,9 @@ mod c13a_lifecycle_tests {
                 ledger.admit_word_trial(&trial, &observation, &words, &words);
                 assert_eq!(ledger.text_of(&owner), Some("1286"));
             } else {
-                // An inconclusive trial keeps the selected floor and alternative;
-                // it does not turn disputed words into a formatter's input.
+                // An inconclusive closed trial keeps the selected floor and
+                // alternative. Formatting may read that committed floor;
+                // it cannot select or adjudicate the alternative.
                 state
                     .acoustic_ledger
                     .lock()
@@ -9242,256 +9240,141 @@ mod c13a_lifecycle_tests {
                     .close_word_trial(&trial, "unresolved");
             }
             state.publish_resolved_word_seals(&ev_tx);
-            if resolved {
+            {
                 let request = formatter_rx
                     .try_recv()
-                    .expect("resolved words can now be formatted");
-                assert_eq!(request.existing_label, "1286");
+                    .expect("a committed floor can now be formatted");
+                assert_eq!(request.existing_label, if resolved { "1286" } else { "56" });
                 assert_eq!(request.occurrence, owner);
-                assert_eq!(state.formatter_awaiting_completion, 1);
+                assert!(
+                    std::iter::from_fn(|| ev_rx.try_recv().ok()).any(|event| {
+                        matches!(event, EngineEvent::LedgerSeal { receipt }
+                            if receipt.sealed_occurrences.contains(&owner))
+                    }),
+                    "the source seal reaches the emitter before a formatter can reply"
+                );
+                assert_eq!(state.formatter_requested.len(), 1);
                 state.publish_resolved_word_seals(&ev_tx);
                 assert!(
                     formatter_rx.try_recv().is_err(),
                     "one decision schedules only one formatter"
                 );
-            } else {
-                assert!(
-                    formatter_rx.try_recv().is_err(),
-                    "unresolved alternatives stay out of formatting"
-                );
             }
         }
     }
 
     #[test]
-    fn formatter_completion_during_word_trial_returns_job_without_forcing_seal() {
+    fn formatter_cannot_launch_or_close_an_open_word_trial() {
         use crate::pipeline::acoustic_ledger::{SealRefusal, WordPin};
-
-        for (status, stop_drain) in [
-            (AiFormatStatus::Applied, false),
-            (AiFormatStatus::AiNoop, false),
-            (AiFormatStatus::Failed, true),
-        ] {
-            let (ev_tx, _ev_rx) = mpsc::unbounded_channel();
-            let (formatter_tx, mut formatter_rx) = mpsc::channel(FORMATTER_QUEUE_CAP);
-            let mut state = state_for_session("formatter-pending-word-trial");
-            state.formatter = Some(formatter_tx);
-            let owner = OccurrenceIdentity::new(state.session_id.clone(), 1, 0, 160_000);
-            let (trial, request) = {
-                let mut ledger = state.acoustic_ledger.lock().expect("ledger");
-                let calibration = EnergyCalibration::new("formatter-trial", 1.0, 1);
-                assert!(
-                    ledger
-                        .qualify(
-                            &AcousticEvidence {
-                                occurrence: owner.clone(),
-                                duration_ms: 10_000.0,
-                                energy_integral: 100.0,
-                                mean_rms_dbfs: -20.0,
-                                peak_dbfs: -10.0,
-                                vad_open_sample: Some(0),
-                                vad_close_sample: Some(160_000),
-                                evidence_calibration_version: calibration.version.clone(),
-                            },
-                            &calibration
-                        )
-                        .is_qualified()
-                );
-                ledger.schedule_frontier(
-                    owner.clone(),
-                    [
-                        LedgerObservationProducer::Apple,
-                        LedgerObservationProducer::Whisper,
-                    ],
-                );
-                ledger.admit_word_slots(
-                    &LedgerObservationIdentity::new(
-                        LedgerObservationProducer::Apple,
-                        1,
-                        0,
-                        owner.clone(),
-                    ),
-                    &[WordPin::new(48_000, 64_000, "56")],
-                );
-                assert!(!ledger.note_frontier_return(&owner, LedgerObservationProducer::Apple));
-                drop(ledger);
-                // Already-launched work can meet a later dispute. Readiness
-                // prevents new launches; it cannot make old replies fatal.
-                state.finish_whisper_frontier(&ev_tx, &owner);
-                let request = formatter_rx.try_recv().expect("scheduled formatter job");
-                let mut ledger = state.acoustic_ledger.lock().expect("ledger");
-                ledger.admit_word_slots(
-                    &LedgerObservationIdentity::new(
-                        LedgerObservationProducer::Whisper,
-                        1,
-                        1,
-                        owner.clone(),
-                    ),
-                    &[WordPin::new(48_000, 64_000, "1286").with_decode_window(0, 128_000)],
-                );
-                let trial = ledger
-                    .next_word_trial(true)
-                    .expect("actual pending word trial");
-                (trial, request)
-            };
-            assert_eq!(state.formatter_awaiting_completion, 1);
-            let completion = FormatterCompletion::from_result(request, ai_result(status, "1286"));
-            assert!(
-                !state.complete_formatter(&ev_tx, completion.clone()),
-                "the emitter must return the exact obligation before acknowledgement"
-            );
-            let mut foreign = completion.clone();
-            foreign.occurrence.capture_epoch += 1;
-            foreign.proposal.capture_epoch += 1;
-            assert!(!state.complete_formatter(&ev_tx, foreign));
-            assert_eq!(state.formatter_awaiting_completion, 1);
-            {
-                let mut ledger = state.acoustic_ledger.lock().expect("ledger");
-                // The emitter returns its exact producer obligation, but the
-                // concurrent acoustic trial correctly prevents an occurrence seal.
-                assert!(ledger.note_frontier_return(&owner, LedgerObservationProducer::Formatter));
-                assert_eq!(ledger.seal(&owner).unwrap_err(), SealRefusal::FrontierOpen);
-            }
-            if stop_drain {
-                let (ack, done) = std_mpsc::channel();
-                ack.send(completion.clone()).unwrap();
-                drain_formatter_observers(
-                    &mut state,
-                    &ev_tx,
-                    &done,
-                    Instant::now() + Duration::from_secs(1),
-                );
-            } else {
-                assert!(
-                    state.complete_formatter(&ev_tx, completion.clone()),
-                    "formatter return must not terminate the PCM worker while a word trial remains open"
-                );
-            }
-            assert_eq!(state.formatter_awaiting_completion, 0);
-            assert!(state.formatter_in_flight.is_empty());
-            assert!(
-                !state.complete_formatter(&ev_tx, completion),
-                "duplicate return stays refused"
-            );
-            {
-                let mut ledger = state.acoustic_ledger.lock().expect("ledger");
-                assert_eq!(ledger.seal(&owner).unwrap_err(), SealRefusal::FrontierOpen);
-                assert_eq!(ledger.text_of(&owner), Some("56"));
-            }
-
-            // New speech still enters the same live ledger while the older
-            // trial is outstanding. Its independent occurrence can also seal.
-            state.formatter = None;
-            let later = OccurrenceIdentity::new(state.session_id.clone(), 1, 160_000, 176_000);
-            stage_pending_occurrence(&mut state, &ev_tx, 2, later.clone(), "Dalsza mowa");
-            return_lexicon(&mut state, &ev_tx, 2, &later);
+        let (ev_tx, _ev_rx) = mpsc::unbounded_channel();
+        let (formatter_tx, mut formatter_rx) = mpsc::channel(FORMATTER_QUEUE_CAP);
+        let mut state = state_for_session("formatter-pending-word-trial");
+        state.formatter = Some(formatter_tx);
+        let owner = OccurrenceIdentity::new(state.session_id.clone(), 1, 0, 160_000);
+        let trial = {
             let mut ledger = state.acoustic_ledger.lock().expect("ledger");
-            assert_eq!(ledger.text_of(&later), Some("Dalsza mowa"));
-            assert!(ledger.is_sealed(&later));
-            assert!(!ledger.is_sealed(&owner));
-            ledger.close_word_trial(&trial, "test_trial_finished");
+            let calibration = EnergyCalibration::new("formatter-trial", 1.0, 1);
             assert!(
-                ledger.seal(&owner).is_ok(),
-                "only the trial's own return permits sealing"
+                ledger
+                    .qualify(
+                        &AcousticEvidence {
+                            occurrence: owner.clone(),
+                            duration_ms: 10_000.0,
+                            energy_integral: 100.0,
+                            mean_rms_dbfs: -20.0,
+                            peak_dbfs: -10.0,
+                            vad_open_sample: Some(0),
+                            vad_close_sample: Some(160_000),
+                            evidence_calibration_version: calibration.version.clone(),
+                        },
+                        &calibration
+                    )
+                    .is_qualified()
             );
+            ledger.schedule_frontier(
+                owner.clone(),
+                [
+                    LedgerObservationProducer::Apple,
+                    LedgerObservationProducer::Whisper,
+                ],
+            );
+            ledger.admit_word_slots(
+                &LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Apple,
+                    1,
+                    0,
+                    owner.clone(),
+                ),
+                &[WordPin::new(48_000, 64_000, "56")],
+            );
+            assert!(!ledger.note_frontier_return(&owner, LedgerObservationProducer::Apple));
+            ledger.admit_word_slots(
+                &LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Whisper,
+                    1,
+                    1,
+                    owner.clone(),
+                ),
+                &[WordPin::new(48_000, 64_000, "1286").with_decode_window(0, 128_000)],
+            );
+            ledger
+                .next_word_trial(true)
+                .expect("actual pending word trial")
+        };
+        state.finish_whisper_frontier(&ev_tx, &owner);
+        assert!(formatter_rx.try_recv().is_err());
+        assert!(state.formatter_requested.is_empty());
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.seal(&owner), Err(SealRefusal::FrontierOpen));
+            assert_eq!(ledger.text_of(&owner), Some("56"));
         }
+        state.formatter = None;
+        let later = OccurrenceIdentity::new(state.session_id.clone(), 1, 160_000, 176_000);
+        stage_pending_occurrence(&mut state, &ev_tx, 2, later.clone(), "Dalsza mowa");
+        return_lexicon(&mut state, &ev_tx, 2, &later);
+        let mut ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.is_sealed(&later));
+        assert!(!ledger.is_sealed(&owner));
+        ledger.close_word_trial(&trial, "test_trial_finished");
+        assert!(
+            ledger.seal(&owner).is_ok(),
+            "only the acoustic trial permits sealing"
+        );
     }
 
     #[test]
-    fn formatter_protocol_refusals_are_local_and_stop_drain_is_bounded() {
-        for refusal in ["malformed", "foreign", "deadline", "disconnected"] {
-            let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
-            let (formatter_tx, mut formatter_rx) = mpsc::channel(FORMATTER_QUEUE_CAP);
-            let mut state = state_for_session("formatter-local-refusal");
-            state.formatter = Some(formatter_tx);
-            let owner = OccurrenceIdentity::new(state.session_id.clone(), 1, 0, 16_000);
-            stage_pending_occurrence(&mut state, &ev_tx, 1, owner.clone(), "Iwo");
-            return_lexicon(&mut state, &ev_tx, 1, &owner);
-            let request = formatter_rx.try_recv().expect("owned formatter request");
-            let completion = FormatterCompletion::from_result(
-                request,
-                ai_result(AiFormatStatus::Applied, "untrusted"),
-            );
-            while ev_rx.try_recv().is_ok() {}
-            let (ack, done) = std_mpsc::channel();
-            match refusal {
-                "malformed" => {
-                    let mut malformed = completion.clone();
-                    malformed.proposal.capture_epoch += 1;
-                    state.settle_formatter_completion(&ev_tx, malformed);
-                }
-                "foreign" => {
-                    let mut foreign = completion.clone();
-                    foreign.occurrence.capture_epoch += 1;
-                    foreign.proposal.capture_epoch += 1;
-                    state.settle_formatter_completion(&ev_tx, foreign);
-                    assert_eq!(
-                        state.formatter_awaiting_completion, 1,
-                        "foreign return cannot cancel our job"
-                    );
-                    assert!(ev_rx.try_recv().is_err());
-                    drain_formatter_observers(&mut state, &ev_tx, &done, Instant::now());
-                }
-                "deadline" => drain_formatter_observers(&mut state, &ev_tx, &done, Instant::now()),
-                "disconnected" => {
-                    drop(ack);
-                    drain_formatter_observers(
-                        &mut state,
-                        &ev_tx,
-                        &done,
-                        Instant::now() + Duration::from_secs(1),
-                    );
-                }
-                _ => unreachable!(),
-            }
-            assert_eq!(state.formatter_awaiting_completion, 0);
-            assert!(state.formatter_in_flight.is_empty());
-            let EngineEvent::OccurrenceLabelProposal { proposal } =
-                ev_rx.try_recv().expect("local refusal receipt")
-            else {
-                panic!("only a no-label refusal may leave the cancelled task");
-            };
-            assert_eq!(proposal.session, owner.session);
-            assert_eq!(proposal.capture_epoch, owner.capture_epoch);
-            assert_eq!(
-                (proposal.sample_start, proposal.sample_end),
-                (owner.sample_start, owner.sample_end)
-            );
-            assert_eq!(proposal.disposition, LabelProposalDisposition::Refuse);
-            assert!(proposal.proposed_label.is_empty());
-            assert!(ev_rx.try_recv().is_err());
-            // Cancelling a job does not itself grant a seal. The emitter's
-            // normal refusal corridor must still return this exact frontier.
-            {
-                let ledger = state.acoustic_ledger.lock().unwrap();
-                assert_eq!(ledger.text_of(&owner), Some("Iwo"));
-                assert!(!ledger.is_sealed(&owner));
-                assert!(
-                    ledger
-                        .frontier_of(&owner)
-                        .unwrap()
-                        .open_producers()
-                        .contains(&LedgerObservationProducer::Formatter)
-                );
-            }
-            state.settle_formatter_completion(&ev_tx, completion);
-            assert_eq!(state.formatter_awaiting_completion, 0);
-            assert!(
-                ev_rx.try_recv().is_err(),
-                "duplicate return emits no second refusal"
-            );
-            state.formatter = None;
-            let later = OccurrenceIdentity::new(state.session_id.clone(), 1, 16_000, 32_000);
-            stage_pending_occurrence(&mut state, &ev_tx, 2, later.clone(), "Dalsza mowa");
-            return_lexicon(&mut state, &ev_tx, 2, &later);
-            let ledger = state.acoustic_ledger.lock().unwrap();
-            assert_eq!(ledger.text_of(&later), Some("Dalsza mowa"));
-            assert!(ledger.is_sealed(&later));
-        }
+    fn formatter_protocol_identity_refusal_does_not_touch_the_seal() {
+        let (ev_tx, _ev_rx) = mpsc::unbounded_channel();
+        let (formatter_tx, mut formatter_rx) = mpsc::channel(FORMATTER_QUEUE_CAP);
+        let mut state = state_for_session("formatter-local-refusal");
+        state.formatter = Some(formatter_tx);
+        let owner = OccurrenceIdentity::new(state.session_id.clone(), 1, 0, 16_000);
+        stage_pending_occurrence(&mut state, &ev_tx, 1, owner.clone(), "Iwo");
+        return_lexicon(&mut state, &ev_tx, 1, &owner);
+        let completion = FormatterCompletion::from_result(
+            formatter_rx.try_recv().unwrap(),
+            ai_result(AiFormatStatus::Applied, "Iwo!"),
+        );
+        let mut malformed = completion;
+        malformed.proposal.capture_epoch += 1;
+        let sink = crate::pipeline::sinks::CollectorEventSink::new();
+        assert!(!deliver_formatter_completion(malformed, &sink, None));
+        assert!(sink.events().is_empty());
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+        assert!(ledger.is_sealed(&owner));
+        assert!(
+            ledger
+                .frontier_of(&owner)
+                .unwrap()
+                .open_producers()
+                .is_empty()
+        );
     }
 
     #[test]
-    fn five_equal_labels_keep_five_occurrence_jobs_and_exact_completion_debts() {
+    fn five_equal_labels_keep_five_text_jobs_and_seal_before_any_reply() {
         let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
         let (formatter_tx, mut formatter_rx) = mpsc::channel(FORMATTER_QUEUE_CAP);
         let mut state = state_for_session("formatter-five-iwo");
@@ -9506,89 +9389,48 @@ mod c13a_lifecycle_tests {
                 )
             })
             .collect::<Vec<_>>();
-
         for (index, occurrence) in occurrences.iter().enumerate() {
-            let utterance_id = index as u64 + 1;
-            let queued_before_stage = formatter_rx.len();
-            stage_pending_occurrence(&mut state, &ev_tx, utterance_id, occurrence.clone(), "Iwo");
+            stage_pending_occurrence(
+                &mut state,
+                &ev_tx,
+                index as u64 + 1,
+                occurrence.clone(),
+                "Iwo",
+            );
             assert_eq!(
                 formatter_rx.len(),
-                queued_before_stage,
-                "staging occurrence {utterance_id} must not dispatch formatting",
+                index,
+                "no formatting before final label"
             );
-            return_lexicon(&mut state, &ev_tx, utterance_id, occurrence);
-            assert_eq!(
-                formatter_rx.len(),
-                queued_before_stage + 1,
-                "returning Lexicon for occurrence {utterance_id} must enqueue exactly one request",
-            );
+            return_lexicon(&mut state, &ev_tx, index as u64 + 1, occurrence);
+            assert_eq!(formatter_rx.len(), index + 1);
         }
-
-        // Normal sender closure cannot discard accepted work: Tokio drains
-        // every buffered exact request before reporting disconnection.
         drop(state.formatter.take());
         let requests = (0..5)
-            .map(|_| formatter_rx.try_recv().expect("exact formatter request"))
+            .map(|_| formatter_rx.try_recv().unwrap())
             .collect::<Vec<_>>();
         assert!(matches!(
             formatter_rx.try_recv(),
-            Err(mpsc::error::TryRecvError::Disconnected),
+            Err(mpsc::error::TryRecvError::Disconnected)
         ));
-        assert_eq!(state.formatter_awaiting_completion, 5);
+        assert_eq!(state.formatter_requested.len(), 5);
         for (request, occurrence) in requests.iter().zip(&occurrences) {
             assert_eq!(&request.occurrence, occurrence);
             assert_eq!(request.existing_label, "Iwo");
-            let ledger = state.acoustic_ledger.lock().expect("ledger");
             assert_eq!(
+                request.source_observation.as_ref().unwrap().occurrence,
+                *occurrence
+            );
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.is_sealed(occurrence));
+            assert!(
                 ledger
                     .frontier_of(occurrence)
-                    .expect("frontier")
-                    .open_producers(),
-                vec![LedgerObservationProducer::Formatter],
+                    .unwrap()
+                    .open_producers()
+                    .is_empty()
             );
         }
-
-        let wrong_occurrence = OccurrenceIdentity::new("formatter-five-iwo", 1, 1, 16_001);
-        let wrong_completion = FormatterCompletion::from_result(
-            FormatterRequest {
-                occurrence: wrong_occurrence,
-                existing_label: "Iwo".to_string(),
-                source_observation: None,
-                policy: FormattingPolicy::Smart,
-            },
-            ai_result(AiFormatStatus::AiNoop, "Iwo"),
-        );
-        assert!(!state.complete_formatter(&ev_tx, wrong_completion));
-        assert_eq!(state.formatter_awaiting_completion, 5);
-
-        let mut mismatched_completion = FormatterCompletion::from_result(
-            requests[0].clone(),
-            ai_result(AiFormatStatus::AiNoop, "Iwo"),
-        );
-        mismatched_completion.proposal.sample_start = mismatched_completion
-            .proposal
-            .sample_start
-            .saturating_add(1);
-        assert!(!mismatched_completion.carries_same_occurrence());
-        assert!(!state.complete_formatter(&ev_tx, mismatched_completion));
-        assert_eq!(state.formatter_awaiting_completion, 5);
-
-        for request in requests {
-            let occurrence = request.occurrence.clone();
-            let completion =
-                FormatterCompletion::from_result(request, ai_result(AiFormatStatus::AiNoop, "Iwo"));
-            {
-                let mut ledger = state.acoustic_ledger.lock().expect("ledger");
-                assert!(
-                    ledger.note_frontier_return(&occurrence, LedgerObservationProducer::Formatter,)
-                );
-                assert!(ledger.seal(&occurrence).is_ok());
-            }
-            assert!(state.complete_formatter(&ev_tx, completion.clone()));
-            assert!(!state.complete_formatter(&ev_tx, completion));
-        }
-
-        assert_eq!(state.formatter_awaiting_completion, 0);
         assert!(state.pending_events.is_empty());
         let finals = std::iter::from_fn(|| ev_rx.try_recv().ok())
             .filter_map(|event| match event {
@@ -9600,14 +9442,132 @@ mod c13a_lifecycle_tests {
             .collect::<Vec<_>>();
         assert_eq!(
             finals,
-            vec![
-                (1, "Iwo".to_string()),
-                (2, "Iwo".to_string()),
-                (3, "Iwo".to_string()),
-                (4, "Iwo".to_string()),
-                (5, "Iwo".to_string()),
-            ],
+            (1..=5).map(|id| (id, "Iwo".into())).collect::<Vec<_>>()
         );
+        let sink = crate::pipeline::sinks::CollectorEventSink::new();
+        for request in requests {
+            assert!(deliver_formatter_completion(
+                FormatterCompletion::from_result(request, ai_result(AiFormatStatus::AiNoop, "Iwo")),
+                &sink,
+                None
+            ));
+        }
+        assert_eq!(sink.events().len(), 5);
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().rendered_text(),
+            "Iwo Iwo Iwo Iwo Iwo"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn retained_formatter_drains_queued_and_in_flight_work_after_stop() {
+        use crate::pipeline::sinks::CollectorEventSink;
+        use crate::test_isolation::EnvGuard;
+        let root = tempfile::tempdir().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path().to_str().unwrap());
+        let _policy = EnvGuard::set("FORMATTING_LEVEL", "off");
+        let settings =
+            Arc::new(crate::config::Config::load_runtime_snapshot_without_keychain().unwrap());
+        let (sender, requests) = mpsc::channel(FORMATTER_QUEUE_CAP);
+        let (release, waiting) = tokio::sync::oneshot::channel();
+        let first = FormatterRequest {
+            occurrence: OccurrenceIdentity::new("stopped-take", 1, 0, 16_000),
+            existing_label: "first".into(),
+            source_observation: None,
+            policy: FormattingPolicy::Smart,
+        };
+        let second = FormatterRequest {
+            occurrence: OccurrenceIdentity::new("stopped-take", 1, 16_000, 32_000),
+            existing_label: "second".into(),
+            source_observation: None,
+            policy: FormattingPolicy::Smart,
+        };
+        sender.send(second).await.unwrap();
+        let mut jobs = FuturesOrdered::<BoxFuture<'static, FormatterCompletion>>::new();
+        jobs.push_back(Box::pin(async move {
+            waiting.await.unwrap();
+            FormatterCompletion::from_result(first, ai_result(AiFormatStatus::Applied, "First!"))
+        }));
+        let sink = Arc::new(CollectorEventSink::new());
+        let next_take_sink = CollectorEventSink::new();
+        let retained = RetainedFormatterJobs {
+            requests,
+            jobs,
+            runtime_settings: settings,
+            language: None,
+            event_sink: sink.clone(),
+            stream_log_path: None,
+        }
+        .retain()
+        .expect("accepted text jobs must retain an owner");
+        // No sender or acoustic session is needed once Stop hands off work.
+        drop(sender);
+        tokio::task::yield_now().await;
+        assert!(!retained.is_finished());
+        assert!(sink.events().is_empty());
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), retained)
+            .await
+            .unwrap()
+            .unwrap();
+        let events = sink.events();
+        assert_eq!(events.len(), 2);
+        for (index, event) in events.iter().enumerate() {
+            let EngineEvent::OccurrenceLabelProposal { proposal } = event else {
+                panic!("text completion cannot manufacture an acoustic event");
+            };
+            assert_eq!(proposal.session, "stopped-take");
+            assert_eq!(proposal.sample_start, index as u64 * 16_000);
+        }
+        assert!(next_take_sink.events().is_empty());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn retained_formatter_owner_deadline_cancels_without_raw_events() {
+        use crate::test_isolation::EnvGuard;
+        use std::sync::atomic::Ordering;
+        struct CancelReceipt(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for CancelReceipt {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path().to_str().unwrap());
+        let _policy = EnvGuard::set("FORMATTING_LEVEL", "off");
+        let settings =
+            Arc::new(crate::config::Config::load_runtime_snapshot_without_keychain().unwrap());
+        let (_sender, requests) = mpsc::channel(FORMATTER_QUEUE_CAP);
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let guard = CancelReceipt(cancelled.clone());
+        let mut jobs = FuturesOrdered::<BoxFuture<'static, FormatterCompletion>>::new();
+        jobs.push_back(Box::pin(async move {
+            let _guard = guard;
+            std::future::pending::<FormatterCompletion>().await
+        }));
+        let sink = Arc::new(crate::pipeline::sinks::CollectorEventSink::new());
+        RetainedFormatterJobs {
+            requests,
+            jobs,
+            runtime_settings: settings,
+            language: None,
+            event_sink: sink.clone(),
+            stream_log_path: None,
+        }
+        .run(Duration::from_millis(10))
+        .await;
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert!(sink.events().is_empty());
+        let result = bound_formatter_reply(
+            "Raw survives",
+            Duration::from_millis(10),
+            std::future::pending::<AiFormatResult>(),
+        )
+        .await;
+        assert_eq!(result.status, AiFormatStatus::Failed);
+        assert_eq!(result.text, "Raw survives");
     }
 
     #[tokio::test]
@@ -14426,7 +14386,7 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn forensic_cloud_last_observer_schedules_formatter_before_sealing() {
+    fn forensic_cloud_last_observer_seals_before_scheduling_formatter() {
         let session = "cloud-last-formatter";
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = state(session, 0.0);
@@ -14487,24 +14447,23 @@ mod rc_w2_test_rehab {
             request.source_observation.unwrap().producer,
             LedgerObservationProducer::CloudLive
         );
-        assert_eq!(state.formatter_awaiting_completion, 1);
-        assert!(state.formatter_in_flight.contains(&owner));
+        assert!(state.formatter_requested.contains(&owner));
         let ledger = state.acoustic_ledger.lock().unwrap();
         assert!(
             ledger
                 .frontier_of(&owner)
                 .unwrap()
                 .open_producers()
-                .contains(&LedgerObservationProducer::Formatter)
+                .is_empty()
         );
-        assert!(!ledger.is_sealed(&owner));
+        assert!(ledger.is_sealed(&owner));
         assert_eq!(ledger.conservation().residue(), 0);
         drop(ledger);
         assert_eq!(state.session_conservation().residue(), 0);
         assert!(
             drain(&mut rx)
                 .iter()
-                .all(|event| !matches!(event, EngineEvent::LedgerSeal { .. }))
+                .any(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
         );
     }
 
@@ -19745,7 +19704,7 @@ mod live_refinement_admission_tests {
                 .frontier_of(&occurrence)
                 .unwrap()
                 .open_producers(),
-            vec![LedgerObservationProducer::Formatter]
+            Vec::<LedgerObservationProducer>::new()
         );
     }
 

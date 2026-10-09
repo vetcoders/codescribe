@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Prompt editor: edits the three user-owned formatting prompts and the Agent
+// Prompt editor: edits the two user-owned formatting prompts and the Agent
 // prompt. Each is loaded with source/path provenance, edited in a TextEditor,
 // and saved back through the core's atomic writer. Restore is explicit and per
 // prompt.
@@ -8,14 +8,14 @@ import SwiftUI
 // NOTE: these edit only the BASE files; the core may still append its
 // `*_tuning.txt` at runtime (not shown here).
 //
-// Lives on Agent › Prompts — the one home for every prompt file. The four files
-// used to be four sidebar rows; now a segmented picker switches the editor.
+// Lives on Agent › Prompts. A segmented picker switches between the three
+// editable prompt files; Max uses the Agent prompt.
 
 struct PromptPanel: View {
   @ObservedObject var model: SettingsViewModel
 
   /// Which prompt file the editor shows. View state: the Agent tab bar owns
-  /// the Prompts tab, this picks one of its four files.
+  /// the Prompts tab, this picks one of its three files.
   @State private var file: PromptFile = .correction
   @State private var drafts: [PromptFile: String] = [:]
   @State private var snapshots: [PromptFile: CsPromptSnapshot] = [:]
@@ -27,8 +27,7 @@ struct PromptPanel: View {
   /// failed restore is shown as a failure, never as a completed restore.
   @State private var failures: [PromptFile: PromptOperationFailure] = [:]
 
-  /// One prompt at a time. Four stacked TextEditors in a single scroll meant
-  /// every visit wheeled past prompts you did not come for.
+  /// One prompt at a time, with an independent draft for each file.
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       Picker("Prompt file", selection: $file) {
@@ -123,17 +122,14 @@ struct PromptPanel: View {
       model.formattingPromptSnapshot(level: .correction)
       ?? model.formattingPromptSnapshot()
     let smartLoaded = model.formattingPromptSnapshot(level: .smart)
-    let maxLoaded = model.formattingPromptSnapshot(level: .max)
     let assistiveLoaded = model.assistivePromptSnapshot()
     drafts = [
       .correction: formattingLoaded.content,
       .smart: smartLoaded?.content ?? "",
-      .max: maxLoaded?.content ?? "",
       .assistive: assistiveLoaded.content,
     ]
     snapshots = [.correction: formattingLoaded, .assistive: assistiveLoaded]
     snapshots[.smart] = smartLoaded
-    snapshots[.max] = maxLoaded
   }
 }
 
