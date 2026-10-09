@@ -1194,9 +1194,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.setPresentationMode(.mini)
     let text = state.activeText
     for (mode, symbol, label) in [
-      (OverlayPresentationMode.mini, "arrow.right", "Expand to compact widget"),
+      (OverlayPresentationMode.mini, "chevron.left", "Expand to compact widget"),
       (.midi, "chevron.down", "Expand transcript"),
-      (.expanded, "arrow.left", "Collapse widget"),
+      (.expanded, "arrow.up.right", "Collapse widget"),
     ] {
       state.setPresentationMode(mode)
       let controls = OverlayRecordingControls(
