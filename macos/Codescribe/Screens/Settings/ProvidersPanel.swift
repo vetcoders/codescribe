@@ -356,8 +356,14 @@ struct CustomProviderForm: View {
 
   private enum Field { case name, endpoint, key }
 
-  /// Sample values, not copy: they must read the same in every language.
-  private static let namePlaceholder = "e.g. Libraxis"
+  /// The example host is a proper name, but the abbreviation in front of it is
+  /// copy, so the placeholder is one localized string (PL-041).
+  private static var namePlaceholder: String {
+    String(
+      localized: "e.g. Libraxis",
+      comment: "Name field placeholder; Libraxis is a company name used as the example")
+  }
+  /// A URL, not copy: it reads the same in every language.
   private static let endpointPlaceholder = "https://api.example.com/v1/responses"
   private static let log = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
@@ -566,6 +572,24 @@ struct SttLaneCard: View {
     }
   }
 
+  /// What the lane accepts on the wire. The bridge sends the arguments only —
+  /// API paths, encodings and protocol ids — and the sentence around them is
+  /// written here, so a translation can reach it (PL-038).
+  static func accepts(for lane: CsSttLane) -> String {
+    switch lane.id {
+    case "file":
+      return String(
+        localized: "HTTPS: \(lane.accepts)",
+        comment: "Cloud transcription transport; the placeholder lists API paths and encodings")
+    case "live":
+      return String(
+        localized: "Live WebSocket connection (wss; \(lane.accepts))",
+        comment: "Cloud transcription transport; the placeholder lists protocol ids")
+    default:
+      return lane.accepts
+    }
+  }
+
   /// One sentence under the field when a save was rejected. The bridge names
   /// the transport the lane requires; anything else is shown as it came.
   static func saveMessage(for error: Error) -> String {
@@ -623,7 +647,7 @@ struct SttLaneCard: View {
       DisclosureGroup("Advanced") {
         VStack(alignment: .leading, spacing: 8) {
           if DeveloperSurface.isEnabled() {
-            Text(lane.accepts)
+            Text(Self.accepts(for: lane))
               .font(CSFont.mono(10.5, .medium))
               .fixedSize(horizontal: false, vertical: true)
           }

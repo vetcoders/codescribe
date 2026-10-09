@@ -32,12 +32,14 @@ extension CsMcpStatusRow {
     switch state {
     case .ready:
       return String(
-        localized: "Ready — \(subject) configured, access available, \(nativeToolCount)",
+        localized: "Ready — \(subject) configured, credentials available, \(nativeToolCount)",
         comment:
           "Diagnostics verdict; first placeholder is the provider name, second a tool count phrase")
     case .accessAvailable:
       return String(
-        localized: "\(subject) — access available", comment: "Placeholder is the provider name")
+        localized: "\(subject) — credentials available",
+        comment:
+          "Placeholder is the provider name; the credentials are stored, no request was made")
     case .accessUnavailable where facet == .readiness:
       return String(
         localized: "Not ready — no provider access (sign in or set \(detail))",
