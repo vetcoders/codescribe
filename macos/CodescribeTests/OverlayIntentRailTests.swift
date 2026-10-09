@@ -627,7 +627,8 @@ final class OverlayIntentRailTests: XCTestCase {
     let symbols =
       OverlayIntent.allCases.filter { $0 != .close && $0 != .undoFormat }.map(\.systemImage)
       + [
-        OverlayControlSymbols.history, OverlayControlSymbols.previousTake,
+        OverlayControlSymbols.history, OverlayControlSymbols.versions,
+        OverlayControlSymbols.previousTake,
         OverlayControlSymbols.actions, OverlayControlSymbols.placement,
         OverlayControlSymbols.miniToMidi, OverlayControlSymbols.midiToTranscript,
         OverlayControlSymbols.returnToMini, "pin.fill",

@@ -3790,11 +3790,144 @@ final class OverlayStateTests: XCTestCase {
       "first", to: state, terminal: true, lifecycleTerminal: false,
       sessionId: "overlay-state-tests", reducerRevision: 4,
       reducerAction: "apply_manual_edit", manualEditReceipt: "user-edit-test-4")
-    state.loadDocumentHistory()
+    // The landed restore re-reads the journal itself; no caller has to.
     await fulfillment(of: [refreshed], timeout: 1)
     XCTAssertEqual(state.formattedText, "first")
     XCTAssertEqual(state.documentHistory.map(\.revision), [1, 2, 3, 4])
     XCTAssertEqual(state.documentHistory.last?.provenance, "user-edit")
+  }
+
+  /// Founder 2026-10-10: the overlay lost its versions button. Raw and the
+  /// formatter versions come from journal entries; a pick reaches Rust and only
+  /// the reducer's projection repaints. Raw behind a formatted presentation is
+  /// a reducer refusal (`Unchanged`), so the control explains it, never sends it.
+  func testVersionsOfferRawAndFormattedFromHistoryAndOnlyReducerProjectionRepaints() async {
+    let derived: UInt64 = 1 << 63
+    let engine = OverlayStateTestEngine()
+    engine.historyEntries = [
+      CsDocumentHistoryEntry(
+        revision: 1, renderedText: "raw partial", provenance: "acoustic-ledger",
+        emittedAt: "2026-10-10T10:00:01Z"),
+      CsDocumentHistoryEntry(
+        revision: 2, renderedText: "raw final yyy", provenance: "acoustic-ledger",
+        emittedAt: "2026-10-10T10:00:02Z"),
+      CsDocumentHistoryEntry(
+        revision: derived | 1, renderedText: "Raw final.", provenance: "formatter-correction",
+        emittedAt: "2026-10-10T10:00:03Z"),
+      CsDocumentHistoryEntry(
+        revision: derived | 2, renderedText: "Final, smart.", provenance: "formatter-smart",
+        emittedAt: "2026-10-10T10:00:04Z"),
+    ]
+    let state = OverlayState()
+    state.engine = engine
+    let loaded = expectation(description: "journal read at the lifecycle terminal")
+    engine.onHistoryRead = { loaded.fulfill() }
+    projectText("raw final yyy", to: state, canCopy: true, terminal: true, reducerRevision: 2)
+    await fulfillment(of: [loaded], timeout: 1)
+    engine.onHistoryRead = nil
+    projectText(
+      "raw final yyy", to: state, canCopy: true, terminal: true, lifecycleTerminal: false,
+      reducerRevision: 2, reducerAction: "derived_projection",
+      label: "formatter-derived-overlay-state-tests-2-\(derived | 2)",
+      deliveryText: "Final, smart.")
+
+    var versions = state.transcriptVersions
+    XCTAssertTrue(versions.isVisible)
+    XCTAssertEqual(versions.options.map(\.revision), [2, derived | 1, derived | 2])
+    XCTAssertEqual(
+      versions.options.map(\.source),
+      [.raw, .formatted(.correction), .formatted(.smart)], "one Raw for the whole live run")
+    XCTAssertEqual(versions.current?.revision, derived | 2)
+    XCTAssertEqual(
+      versions.options.first?.refusal,
+      OverlayTranscriptVersionsPresentation.rawBehindFormattedRefusal)
+    XCTAssertEqual(versions.selectableRevisions, [derived | 1])
+    state.restoreDocumentRevision(2)
+    XCTAssertTrue(engine.restoredSelections.isEmpty, "a refused Raw never reaches Rust")
+
+    let requested = expectation(description: "selected version reached the reducer engine")
+    engine.onRestore = { requested.fulfill() }
+    state.restoreDocumentRevision(derived | 1)
+    state.restoreDocumentRevision(derived | 1)
+    await fulfillment(of: [requested], timeout: 1)
+    engine.onRestore = nil
+    XCTAssertEqual(engine.restoredSelections, [derived | 1], "a pending restore admits no twin")
+    XCTAssertEqual(state.formattedText, "Final, smart.", "an FFI receipt does not paint")
+    XCTAssertTrue(state.revisionCommitPending)
+    XCTAssertEqual(
+      state.transcriptVersions.blockedReason, OverlayTranscriptVersionsPresentation.pendingReason)
+    XCTAssertTrue(state.transcriptVersions.selectableRevisions.isEmpty)
+    XCTAssertTrue(OverlayIntentRail.projectedIntents(for: state).isEmpty)
+
+    let refreshed = expectation(description: "landed restore re-read the journal")
+    engine.onHistoryRead = { refreshed.fulfill() }
+    projectText(
+      "Raw final.", to: state, canCopy: true, terminal: true, lifecycleTerminal: false,
+      reducerRevision: 3, reducerAction: "apply_manual_edit",
+      manualEditReceipt: "user-edit-test-3")
+    await fulfillment(of: [refreshed], timeout: 1)
+    engine.onHistoryRead = nil
+    XCTAssertEqual(state.formattedText, "Raw final.", "the reducer projection repaints")
+    XCTAssertFalse(state.revisionCommitPending)
+
+    versions = state.transcriptVersions
+    XCTAssertEqual(versions.current?.revision, 3)
+    XCTAssertEqual(versions.current?.source, .restored(.formatted(.correction)))
+    XCTAssertEqual(versions.selectableRevisions, [2, derived | 2], "Raw is reachable again")
+
+    let raw = expectation(description: "Raw restore reached the reducer engine")
+    engine.onRestore = { raw.fulfill() }
+    state.restoreDocumentRevision(2)
+    await fulfillment(of: [raw], timeout: 1)
+    XCTAssertEqual(engine.restoredSelections, [derived | 1, 2])
+    XCTAssertEqual(state.formattedText, "Raw final.", "still the last projection")
+  }
+
+  func testVersionsRefuseDirtyDraftAndDropHistoryReplyForASupersededCapture() async {
+    let engine = OverlayStateTestEngine()
+    engine.historyEntries = [
+      CsDocumentHistoryEntry(
+        revision: 1, renderedText: "first take", provenance: "acoustic-ledger",
+        emittedAt: "2026-10-10T10:00:01Z"),
+      CsDocumentHistoryEntry(
+        revision: 2, renderedText: "first take, edited", provenance: "user-edit",
+        emittedAt: "2026-10-10T10:00:02Z"),
+    ]
+    let state = OverlayState()
+    state.engine = engine
+    let loaded = expectation(description: "journal read")
+    engine.onHistoryRead = { loaded.fulfill() }
+    projectText("first take, edited", to: state, terminal: true, reducerRevision: 2)
+    await fulfillment(of: [loaded], timeout: 1)
+    engine.onHistoryRead = nil
+    XCTAssertEqual(state.transcriptVersions.selectableRevisions, [1])
+    XCTAssertEqual(state.transcriptVersions.current?.source, .edited)
+
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("unsaved words")
+    XCTAssertTrue(state.isRevisionDraftDirty)
+    XCTAssertEqual(
+      state.transcriptVersions.blockedReason, OverlayTranscriptVersionsPresentation.dirtyReason)
+    XCTAssertTrue(state.transcriptVersions.selectableRevisions.isEmpty)
+    state.restoreDocumentRevision(1)
+    XCTAssertTrue(engine.restoredSelections.isEmpty, "a dirty draft is never replaced")
+    XCTAssertEqual(state.revisionDraft, "unsaved words")
+    state.relayIntent(.discardRevision)
+    state.endTranscriptEdit()
+    XCTAssertFalse(state.isRevisionDraftDirty)
+    XCTAssertNil(state.transcriptVersions.blockedReason)
+
+    // A read issued for this take answers after the next capture began.
+    let staleRead = expectation(description: "stale journal read answered")
+    engine.onHistoryRead = { staleRead.fulfill() }
+    state.loadDocumentHistory()
+    projectText("second take live", to: state, sessionId: "next-capture")
+    await fulfillment(of: [staleRead], timeout: 1)
+    await Task.yield()
+    XCTAssertTrue(state.documentHistory.isEmpty, "the old take's journal stays out")
+    XCTAssertFalse(state.transcriptVersions.isVisible)
+    state.restoreDocumentRevision(1)
+    XCTAssertTrue(engine.restoredSelections.isEmpty)
   }
 
   func testTerminalProjectionBurstReadsHistoryAtMostOnce() async {

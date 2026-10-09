@@ -3473,6 +3473,7 @@ final class OverlayState {
         revisionDraft = formattedText
       }
       pendingRevisionDraft = nil
+      loadDocumentHistory()
     } else if completesPendingFormatter {
       formatterCommitPending = false
       pendingRevisionSessionId = nil
@@ -3669,10 +3670,35 @@ final class OverlayState {
     }
   }
 
+  /// Versions of the projected take for the overlay's versions control. Built
+  /// from the read-only Bus history and the latest reducer projection only.
+  var transcriptVersions: OverlayTranscriptVersionsPresentation {
+    if archivedTranscript != nil { return .archivedTranscript() }
+    guard terminal, let projection = latestTranscriptProjection else { return .empty }
+    let blockedReason: String? =
+      revisionCommitPending || formatterCommitPending || archiveActionPending
+      ? OverlayTranscriptVersionsPresentation.pendingReason
+      : isRevisionDraftDirty ? OverlayTranscriptVersionsPresentation.dirtyReason : nil
+    return .make(
+      history: documentHistory,
+      currentRevision: projection.reducerRevision,
+      committedText: projection.renderedText,
+      shownText: formattedText,
+      showsDerivedPresentation: projection.reducerAction == "derived_projection",
+      blockedReason: blockedReason)
+  }
+
+  /// Opening the versions control re-reads the journal only when the shown
+  /// document is not in it yet (an edit or undo landed after the last read).
+  func refreshTranscriptVersionsIfStale() {
+    guard archivedTranscript == nil, transcriptVersions.currentMissing else { return }
+    loadDocumentHistory()
+  }
+
   func restoreDocumentRevision(_ selectedRevision: UInt64) {
     guard archivedTranscript == nil, terminal, !isRevisionDraftDirty, !revisionCommitPending,
       !formatterCommitPending, let projection = latestTranscriptProjection,
-      documentHistory.contains(where: { $0.revision == selectedRevision }),
+      transcriptVersions.selectableRevisions.contains(selectedRevision),
       selectedRevision != projection.reducerRevision, let engine
     else { return }
     revisionCommitPending = true
