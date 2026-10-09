@@ -2283,17 +2283,22 @@ impl TranscriptReducer {
         })
     }
 
-    /// Return the exact scheduled Formatter frontier and retain a source-bound
-    /// derived version. This corridor never admits a Formatter word observation,
-    /// changes Raw revision or relabels a ledger slot. Stale output stays refused
-    /// in derived history; only the existing acoustic frontier may issue a seal.
+    /// Retain a source-bound derived version of one sealed occurrence's
+    /// committed label. Formatting is text processing, not an acoustic
+    /// observer: this corridor never admits a Formatter word observation,
+    /// changes Raw revision, relabels a ledger slot, opens or closes a frontier,
+    /// or issues a seal. The compare-and-swap is the source itself — the last
+    /// mutation that produced the label, the ledger label and the document
+    /// entry must all still match; otherwise the result is kept as
+    /// `stale_source` and never delivered. Returns `true` when a derived
+    /// version was recorded; it never produces a Raw revision.
     pub fn apply_occurrence_label_proposal(
         &mut self,
-        ledger: &mut AcousticLedger,
+        ledger: &AcousticLedger,
         proposal: &OccurrenceLabelProposal,
-    ) -> (bool, Option<TranscriptRevision>) {
+    ) -> bool {
         if !proposal.binds_real_samples() {
-            return (false, None);
+            return false;
         }
         let occurrence = OccurrenceIdentity::new(
             proposal.session.clone(),
@@ -2301,16 +2306,25 @@ impl TranscriptReducer {
             proposal.sample_start,
             proposal.sample_end,
         );
-        if !ledger.is_qualified(&occurrence) || ledger.text_of(&occurrence).is_none() {
-            return (false, None);
+        // Only committed text is formatted; an unsealed label is still owned
+        // by its acoustic producers.
+        if !ledger.is_qualified(&occurrence)
+            || !ledger.is_sealed(&occurrence)
+            || ledger.text_of(&occurrence).is_none()
+        {
+            return false;
         }
-        let formatter_is_open = ledger.frontier_of(&occurrence).is_some_and(|frontier| {
-            frontier
-                .open_producers()
-                .contains(&ObservationProducer::Formatter)
-        });
-        if !formatter_is_open {
-            return (false, None);
+        let Some(source) = proposal.source_observation.as_ref() else {
+            return false;
+        };
+        // One derived version per source and mode: a repeated delivery of the
+        // same result mints no second projection or Bus row.
+        if self.derived_projections.iter().any(|projection| {
+            projection.source_observation.as_ref() == Some(source)
+                && projection.requested_mode == proposal.policy.as_str()
+                && projection.source_raw_text == proposal.source_text
+        }) {
+            return false;
         }
         let candidate_label = proposal.proposed_label.trim();
         let source_current = proposal.source_observation.as_ref().is_some_and(|source| {
@@ -2326,11 +2340,10 @@ impl TranscriptReducer {
                     .get(&occurrence)
                     .is_some_and(|entry| entry.label == proposal.source_text)
         });
-        if proposal.source_observation.is_some() {
-            let source_revision = proposal
-                .source_observation
-                .as_ref()
-                .and_then(|source| self.raw_revision_by_observation.get(source))
+        {
+            let source_revision = self
+                .raw_revision_by_observation
+                .get(source)
                 .copied()
                 .unwrap_or(0);
             let applied = proposal.disposition == LabelProposalDisposition::Propose
@@ -2361,8 +2374,7 @@ impl TranscriptReducer {
                     .expect("minted derived projection") = rejected;
             }
         }
-        let _ = ledger.note_frontier_return(&occurrence, ObservationProducer::Formatter);
-        (true, None)
+        true
     }
 
     /// Record one controller-authenticated context reference. The captured
@@ -4367,24 +4379,22 @@ impl EventSink for PresentationEmitter {
                     proposal.sample_end,
                 );
                 let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
-                let (proposal_revision, seal_revision, evidence_closed, derived_projection) = {
+                let (evidence_closed, derived_projection) = {
                     let mut reducer = self
                         .session_state
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
                     let before = reducer.unanchored_evidence.len();
                     let derived_before = reducer.derived_projections.len();
-                    let (formatter_returned, proposal_revision) =
-                        reducer.apply_occurrence_label_proposal(&mut ledger, proposal);
-                    let seal_revision = formatter_returned
-                        .then(|| ledger.seal(&occurrence).ok().cloned())
-                        .flatten()
-                        .and_then(|receipt| reducer.apply_ledger_seal(&receipt));
+                    // A formatter result never seals and never revises Raw: the
+                    // occurrence was sealed by its acoustic producers before the
+                    // job was scheduled, and the result is a derived version.
+                    let _ = reducer.apply_occurrence_label_proposal(&ledger, proposal);
                     let evidence_closed = reducer.unanchored_evidence.len() != before;
                     let derived = (reducer.derived_projections.len() > derived_before)
                         .then(|| reducer.derived_projections.last().cloned())
                         .flatten();
-                    (proposal_revision, seal_revision, evidence_closed, derived)
+                    (evidence_closed, derived)
                 };
                 if let (Some(bus), Some(projection)) = (&self.transcript_bus, derived_projection) {
                     bus.record_derived_projection(&projection);
@@ -4392,29 +4402,8 @@ impl EventSink for PresentationEmitter {
                 if evidence_closed {
                     self.repaint_cursor();
                 }
-                for (is_label_revision, revision) in
-                    [(true, proposal_revision), (false, seal_revision)]
-                        .into_iter()
-                        .filter_map(|(is_label_revision, revision)| {
-                            revision.map(|revision| (is_label_revision, revision))
-                        })
-                {
-                    if !self.authenticates_revision(&revision, &ledger) {
-                        continue;
-                    }
-                    if let Some(bus) = &self.transcript_bus {
-                        let events = bus.publish_revision(&revision, &ledger);
-                        if events.is_empty() {
-                            continue;
-                        }
-                        self.emit_overlay_events(&events);
-                    }
-                    if is_label_revision {
-                        self.send_committed_paint(revision.rendered_text);
-                    }
-                }
-                // Closing the formatter frontier can permit Raw shaping. This
-                // deterministic shape still describes the unchanged acoustic label.
+                // Raw shaping does not depend on formatting; this tick is an
+                // idempotent re-check of the unchanged acoustic label.
                 self.mint_incremental_light_plus(
                     &mut ledger,
                     std::slice::from_ref(&occurrence),

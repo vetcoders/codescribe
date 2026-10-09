@@ -59,6 +59,18 @@ struct CreatorPanel: View {
           .fixedSize()
           .disabled(!model.settings.aiFormattingEnabled)
         }
+        if model.maxAgentUnavailable {
+          Text(
+            String(
+              localized: "Max uses the Agent model. Set up the Agent endpoint to use Max.",
+              comment: "Shown when the Max level is selected but the Agent lane is unavailable"
+            )
+          )
+          .font(.caption)
+          .foregroundStyle(CSColor.terracotta)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .accessibilityIdentifier("settings-max-agent-unavailable")
+        }
         if model.maxConsultationEnabled {
           SettingsControlRow(
             title: String(localized: "Max consultation"),

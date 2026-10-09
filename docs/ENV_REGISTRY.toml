@@ -1048,7 +1048,7 @@ default = "https://chatgpt.com/backend-api/codex/responses"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Full Responses endpoint URL override for the Agent's signed-in OpenAI account (Codex backend) lane; does not affect the API-key lane endpoint. Read from the process environment on each account-lane stream request. Leading/trailing whitespace is trimmed; unset, empty or whitespace-only values use the default. Use only a trusted destination: the account bearer token is sent to this URL."
+description = "Full Responses endpoint URL override for a signed-in OpenAI account (Codex backend), used by both the Agent and the formatting lane when they ride that account; does not affect an API-key lane endpoint. Read from the process environment on each account-lane stream request. Leading/trailing whitespace is trimmed; unset, empty or whitespace-only values use the default. Use only a trusted destination: the account bearer token is sent to this URL."
 
 [vars.CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID]
 default = "1"

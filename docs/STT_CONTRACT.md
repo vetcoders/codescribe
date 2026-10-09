@@ -478,16 +478,26 @@ projection. Replayed observation identity, invalid ranges, missing identities,
 and late automatic completions are refused structurally. Identical words in
 disjoint PCM ranges remain distinct occurrences and survive.
 
-Automatic formatting is one occurrence-bound observer on the Apple live path,
-not a second transcript pass. It is scheduled only after a bounded execution
-permit owns the exact existing `(session, capture_epoch, sample_start, sample_end)` and every earlier scheduled automatic observer for that occurrence
-has returned. Its sole product route is `OccurrenceLabelProposal` ->
-`EngineEvent::OccurrenceLabelProposal` -> `PresentationEmitter` /
-`TranscriptReducer` -> `AcousticLedger::admit(Formatter)`. Applied rewrites
-propose a label; healthy no-ops and intentional skips preserve; provider or
-structural failures refuse. Every accepted job returns its exact frontier slot
-before occurrence and terminal sealing; settings or lane availability alone do
-not schedule Formatter.
+Automatic formatting is text processing on the Apple live path, not an
+acoustic observer and not a second transcript pass. It never joins an
+occurrence frontier: the occurrence seals when its acoustic producers return,
+and only then, once a bounded execution permit is held, is its committed label
+handed to the formatter, at most once per occurrence. Its sole product route is
+`OccurrenceLabelProposal` -> `EngineEvent::OccurrenceLabelProposal` ->
+`PresentationEmitter` / `TranscriptReducer`, which records a source-bound
+derived version. The compare-and-swap is the source itself: the last
+mutation-granting observation, the ledger label and the document entry must
+still match, otherwise the version is kept as `stale_source` and never
+delivered. A formatter result never admits a ledger observation, relabels Raw,
+issues a seal or extends Stop; a slow, failed or absent formatter leaves PCM
+finality, terminal coverage and microphone release unchanged. Text jobs the
+take accepted outlive its acoustic session: when the session ends, the bounded
+queue and in-flight jobs move to one retained owner per take, bounded by two
+attempt timeouts, that delivers only to that take's own emitter and is never
+awaited by Stop. Settings or lane availability alone do not schedule
+formatting. Smart/Corrections run on
+Apple on-device when selected or on the formatting lane; Max is the Agent and
+runs on the Agent lane through grouped consultation.
 
 `UtteranceFinal` is raw observation/telemetry only. Committed phrase identity
 travels through `LedgerMutation` / `LedgerSeal` receipts and the occurrence-

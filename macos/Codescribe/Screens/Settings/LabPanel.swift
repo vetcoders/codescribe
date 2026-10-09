@@ -48,7 +48,7 @@ struct LabPanel: View {
         Text("Apple on-device (experimental)").tag(true)
       }
       Text(
-        "Applies to the next formatting pass. The on-device model runs first; any failure falls back to the cloud provider. A .env value overrides this toggle."
+        "Applies to Smart and Corrections from the next formatting pass. The on-device model runs first without a cloud credential; on failure the formatting provider is used when one is configured. Max always uses the Agent model. A .env value overrides this toggle."
       )
       .font(.caption)
       .foregroundStyle(.secondary)
