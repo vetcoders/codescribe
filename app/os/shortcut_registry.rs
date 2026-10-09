@@ -3,8 +3,8 @@
 //! Reads the system SymbolicHotkeys registry and reports potential collisions
 //! with our modifier-only gestures (Fn/Ctrl/Option).
 
-use crate::config::{DeferredInsertShortcut, ShortcutBinding, UserSettings};
-use crate::os::hotkeys::ModeHotkeyBindings;
+use crate::config::{DeferredInsertShortcut, ShortcutBinding, UserSettings, WorkMode};
+use crate::os::hotkeys::{ModeHotkeyBindings, mode_binding_reachable};
 #[cfg(target_os = "macos")]
 use std::collections::HashSet;
 
@@ -36,6 +36,69 @@ impl HotkeyGesture {
             Self::ToggleDoubleRightOption => "Double-tap Right Option",
         }
     }
+
+    /// The gesture a binding performs; `Disabled` performs none.
+    fn from_binding(binding: ShortcutBinding) -> Option<Self> {
+        match binding {
+            ShortcutBinding::Disabled => None,
+            ShortcutBinding::HoldFn => Some(Self::HoldFn),
+            ShortcutBinding::HoldCtrl => Some(Self::HoldCtrl),
+            ShortcutBinding::HoldCtrlAlt => Some(Self::HoldCtrlAlt),
+            ShortcutBinding::HoldCtrlShift => Some(Self::HoldCtrlShift),
+            ShortcutBinding::HoldCtrlCmd => Some(Self::HoldCtrlCmd),
+            ShortcutBinding::DoubleCtrl => Some(Self::ToggleDoubleCtrl),
+            ShortcutBinding::DoubleLeftOption => Some(Self::ToggleDoubleLeftOption),
+            ShortcutBinding::DoubleRightOption => Some(Self::ToggleDoubleRightOption),
+        }
+    }
+}
+
+/// Every work mode, in the order Settings lists them.
+const WORK_MODES: [WorkMode; 3] = [
+    WorkMode::Dictation,
+    WorkMode::Formatting,
+    WorkMode::Assistive,
+];
+
+/// Why `binding` can never start `mode`, or `None` when the detector routes it.
+///
+/// Reachability is the detector's ([`mode_binding_reachable`]); this only
+/// names the mode the gesture does start, which is unique because the routed
+/// sets are disjoint. That makes the precedence explicit: Dictation and
+/// Formatting both on double-tap left Option reads "This gesture only starts
+/// Formatting", whether or not Formatting is bound to it. The sentences are
+/// wire values the Settings screen localizes; the bridge setter returns the
+/// same text when it refuses the write.
+pub fn unreachable_binding_message(
+    mode: WorkMode,
+    binding: ShortcutBinding,
+) -> Option<&'static str> {
+    if mode_binding_reachable(mode, binding) {
+        return None;
+    }
+    let owner = WORK_MODES
+        .into_iter()
+        .find(|&other| mode_binding_reachable(other, binding))?;
+    Some(match (owner, mode) {
+        (WorkMode::Dictation, WorkMode::Formatting) => {
+            "This gesture only starts Dictation, so Formatting would never start from it."
+        }
+        (WorkMode::Dictation, _) => {
+            "This gesture only starts Dictation, so Assistive would never start from it."
+        }
+        (WorkMode::Formatting, WorkMode::Dictation) => {
+            "This gesture only starts Formatting, so Dictation would never start from it."
+        }
+        (WorkMode::Formatting, _) => {
+            "This gesture only starts Formatting, so Assistive would never start from it."
+        }
+        (WorkMode::Assistive, WorkMode::Dictation) => {
+            "This gesture only starts Assistive, so Dictation would never start from it."
+        }
+        (WorkMode::Assistive, _) => {
+            "This gesture only starts Assistive, so Formatting would never start from it."
+        }
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,8 +219,28 @@ fn active_gestures(bindings: ModeHotkeyBindings) -> Vec<HotkeyGesture> {
 }
 
 /// Conflicts between Codescribe's own bindings, before macOS is consulted.
+///
+/// First every mode bound to a gesture the detector never routes to it —
+/// which also covers one gesture bound to two modes — then the pairwise
+/// precedence of double-tap Ctrl dictation over the Option toggles.
 fn detect_internal_conflicts(bindings: ModeHotkeyBindings) -> Vec<HotkeyConflict> {
     let mut conflicts = Vec::new();
+
+    for (mode, binding) in [
+        (WorkMode::Dictation, bindings.dictation),
+        (WorkMode::Formatting, bindings.formatting),
+        (WorkMode::Assistive, bindings.assistive),
+    ] {
+        if let (Some(message), Some(gesture)) = (
+            unreachable_binding_message(mode, binding),
+            HotkeyGesture::from_binding(binding),
+        ) {
+            conflicts.push(HotkeyConflict {
+                gesture,
+                message: message.to_string(),
+            });
+        }
+    }
 
     if bindings.dictation == ShortcutBinding::DoubleCtrl
         && bindings.formatting == ShortcutBinding::DoubleLeftOption
@@ -176,26 +259,6 @@ fn detect_internal_conflicts(bindings: ModeHotkeyBindings) -> Vec<HotkeyConflict
             gesture: HotkeyGesture::ToggleDoubleRightOption,
             message: "Dictation is set to Double Ctrl, so Right Option toggle is disabled."
                 .to_string(),
-        });
-    }
-
-    if bindings.assistive != ShortcutBinding::Disabled && bindings.dictation == bindings.assistive {
-        let gesture = match bindings.assistive {
-            ShortcutBinding::HoldFn => HotkeyGesture::HoldFn,
-            ShortcutBinding::HoldCtrl => HotkeyGesture::HoldCtrl,
-            ShortcutBinding::HoldCtrlAlt => HotkeyGesture::HoldCtrlAlt,
-            ShortcutBinding::HoldCtrlShift => HotkeyGesture::HoldCtrlShift,
-            ShortcutBinding::HoldCtrlCmd => HotkeyGesture::HoldCtrlCmd,
-            ShortcutBinding::DoubleCtrl => HotkeyGesture::ToggleDoubleCtrl,
-            ShortcutBinding::DoubleLeftOption => HotkeyGesture::ToggleDoubleLeftOption,
-            ShortcutBinding::DoubleRightOption => HotkeyGesture::ToggleDoubleRightOption,
-            ShortcutBinding::Disabled => HotkeyGesture::HoldFn,
-        };
-        conflicts.push(HotkeyConflict {
-            gesture,
-            message:
-                "Dictation and Assistive use the same binding; Assistive selection shortcut may not be reachable."
-                    .to_string(),
         });
     }
 
@@ -529,7 +592,113 @@ mod tests {
         assert!(conflicts.is_empty());
     }
 
-    /// Dictation and assistive sharing one hold binding must surface as a conflict.
+    /// P2-007 (linked: hotkeys-dead-binding-cells), the audited reproduction:
+    /// Dictation and Formatting both on double-tap left Option. The detector
+    /// starts Formatting only, so the draft must carry exactly one blocking
+    /// conflict naming that precedence, before any save.
+    #[test]
+    fn duplicate_left_option_names_formatting_precedence() {
+        let settings = settings_for(
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        let conflicts = detect_internal_conflicts(ModeHotkeyBindings::from_settings(&settings));
+        assert_eq!(
+            conflicts,
+            vec![HotkeyConflict {
+                gesture: HotkeyGesture::ToggleDoubleLeftOption,
+                message:
+                    "This gesture only starts Formatting, so Dictation would never start from it."
+                        .to_string(),
+            }]
+        );
+    }
+
+    /// A gesture no mode shares can still be unroutable for the mode it is on:
+    /// Formatting on Hold Ctrl is persisted today and then does nothing.
+    #[test]
+    fn unsupported_formatting_hold_is_blocking_without_a_duplicate() {
+        let settings = settings_for(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::HoldCtrl,
+            ShortcutBinding::DoubleRightOption,
+        );
+        let conflicts = detect_internal_conflicts(ModeHotkeyBindings::from_settings(&settings));
+        assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+        assert_eq!(conflicts[0].gesture, HotkeyGesture::HoldCtrl);
+        assert_eq!(
+            conflicts[0].message,
+            "This gesture only starts Dictation, so Formatting would never start from it."
+        );
+    }
+
+    /// Every mode × gesture cell: a message exactly when the detector does not
+    /// route the cell, and the supported matrix stays the documented eight.
+    #[test]
+    fn unreachable_message_covers_exactly_the_unrouted_cells() {
+        let gestures = [
+            ShortcutBinding::Disabled,
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::HoldCtrl,
+            ShortcutBinding::HoldCtrlAlt,
+            ShortcutBinding::HoldCtrlShift,
+            ShortcutBinding::HoldCtrlCmd,
+            ShortcutBinding::DoubleCtrl,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        ];
+        let mut refused = 0;
+        for mode in WORK_MODES {
+            for binding in gestures {
+                let message = unreachable_binding_message(mode, binding);
+                assert_eq!(
+                    message.is_none(),
+                    mode_binding_reachable(mode, binding),
+                    "{mode:?} × {binding:?}"
+                );
+                refused += usize::from(message.is_some());
+            }
+        }
+        assert_eq!(refused, 16, "27 cells − 3 Disabled − 8 routed");
+    }
+
+    /// The allowed default combinations validate clean.
+    #[test]
+    fn allowed_combinations_carry_no_internal_conflict() {
+        for (dictation, formatting, assistive) in [
+            (
+                ShortcutBinding::HoldFn,
+                ShortcutBinding::DoubleLeftOption,
+                ShortcutBinding::DoubleRightOption,
+            ),
+            (
+                ShortcutBinding::HoldCtrlCmd,
+                ShortcutBinding::DoubleLeftOption,
+                ShortcutBinding::DoubleRightOption,
+            ),
+            (
+                ShortcutBinding::DoubleCtrl,
+                ShortcutBinding::Disabled,
+                ShortcutBinding::Disabled,
+            ),
+            (
+                ShortcutBinding::Disabled,
+                ShortcutBinding::DoubleLeftOption,
+                ShortcutBinding::DoubleRightOption,
+            ),
+        ] {
+            let settings = settings_for(dictation, formatting, assistive);
+            let conflicts = detect_internal_conflicts(ModeHotkeyBindings::from_settings(&settings));
+            assert!(
+                conflicts.is_empty(),
+                "{dictation:?}/{formatting:?}/{assistive:?}: {conflicts:?}"
+            );
+        }
+    }
+
+    /// Assistive on the dictation hold: the detector never routes a hold to
+    /// Assistive, and Dictation owns that hold.
     #[test]
     fn internal_conflict_detects_assistive_dictation_binding_collision() {
         let settings = settings_for(
@@ -539,10 +708,10 @@ mod tests {
         );
         let conflicts = detect_internal_conflicts(ModeHotkeyBindings::from_settings(&settings));
         assert!(
-            conflicts
-                .iter()
-                .any(|c| c.gesture == HotkeyGesture::HoldCtrlCmd),
-            "shared dictation/assistive hold binding should be reported as conflict"
+            conflicts.iter().any(|c| c.gesture == HotkeyGesture::HoldCtrlCmd
+                && c.message
+                    == "This gesture only starts Dictation, so Assistive would never start from it."),
+            "shared dictation/assistive hold binding should be reported as conflict: {conflicts:?}"
         );
     }
 

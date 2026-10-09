@@ -172,8 +172,20 @@ private enum HotkeyConflictWire {
     "Dictation is set to Double Ctrl, so Left Option toggle is disabled."
   static let dictationDoubleCtrlBlocksRightOption =
     "Dictation is set to Double Ctrl, so Right Option toggle is disabled."
-  static let dictationSharesAssistiveBinding =
-    "Dictation and Assistive use the same binding; Assistive selection shortcut may not be reachable."
+  /// `unreachable_binding_message`: the detector routes this gesture to one
+  /// other mode only, so the mode it is bound to would never start.
+  static let onlyDictationNotFormatting =
+    "This gesture only starts Dictation, so Formatting would never start from it."
+  static let onlyDictationNotAssistive =
+    "This gesture only starts Dictation, so Assistive would never start from it."
+  static let onlyFormattingNotDictation =
+    "This gesture only starts Formatting, so Dictation would never start from it."
+  static let onlyFormattingNotAssistive =
+    "This gesture only starts Formatting, so Assistive would never start from it."
+  static let onlyAssistiveNotDictation =
+    "This gesture only starts Assistive, so Dictation would never start from it."
+  static let onlyAssistiveNotFormatting =
+    "This gesture only starts Assistive, so Formatting would never start from it."
   /// `format!("Conflicts with {} (macOS #{}).", …)` — the tail names the system
   /// shortcut and its numeric id, so it belongs in `technical`, not the sentence.
   static let macosSymbolicPrefix = "Conflicts with "
@@ -220,12 +232,42 @@ extension CsHotkeyConflict {
         localized: "settings.shortcuts.conflict.doubleCtrlBlocksRightOption",
         defaultValue: "Dictation uses 2× Ctrl, so the right Option gesture cannot start a take.",
         comment: "Shortcuts screen: blocking conflict between two gestures")
-    case HotkeyConflictWire.dictationSharesAssistiveBinding:
+    case HotkeyConflictWire.onlyDictationNotFormatting:
       return String(
-        localized: "settings.shortcuts.conflict.dictationSharesAgentGesture",
+        localized: "settings.shortcuts.conflict.onlyDictationNotFormatting",
         defaultValue:
-          "Dictation and the Agent share one gesture, so the Agent may stay unreachable.",
-        comment: "Shortcuts screen: blocking conflict between two work modes")
+          "This gesture starts only Dictation, so Formatting would never start. Formatting starts with 2× Left ⌥.",
+        comment: "Shortcuts screen: blocking conflict, the gesture is not available for this mode")
+    case HotkeyConflictWire.onlyDictationNotAssistive:
+      return String(
+        localized: "settings.shortcuts.conflict.onlyDictationNotAgent",
+        defaultValue:
+          "This gesture starts only Dictation, so the Agent would never start. The Agent starts with 2× Right ⌥.",
+        comment: "Shortcuts screen: blocking conflict, the gesture is not available for this mode")
+    case HotkeyConflictWire.onlyFormattingNotDictation:
+      return String(
+        localized: "settings.shortcuts.conflict.onlyFormattingNotDictation",
+        defaultValue:
+          "2× Left ⌥ starts only Formatting, so Dictation would never start. Dictation starts with a hold or 2× Ctrl.",
+        comment: "Shortcuts screen: blocking conflict, the gesture is not available for this mode")
+    case HotkeyConflictWire.onlyFormattingNotAssistive:
+      return String(
+        localized: "settings.shortcuts.conflict.onlyFormattingNotAgent",
+        defaultValue:
+          "2× Left ⌥ starts only Formatting, so the Agent would never start. The Agent starts with 2× Right ⌥.",
+        comment: "Shortcuts screen: blocking conflict, the gesture is not available for this mode")
+    case HotkeyConflictWire.onlyAssistiveNotDictation:
+      return String(
+        localized: "settings.shortcuts.conflict.onlyAgentNotDictation",
+        defaultValue:
+          "2× Right ⌥ starts only the Agent, so Dictation would never start. Dictation starts with a hold or 2× Ctrl.",
+        comment: "Shortcuts screen: blocking conflict, the gesture is not available for this mode")
+    case HotkeyConflictWire.onlyAssistiveNotFormatting:
+      return String(
+        localized: "settings.shortcuts.conflict.onlyAgentNotFormatting",
+        defaultValue:
+          "2× Right ⌥ starts only the Agent, so Formatting would never start. Formatting starts with 2× Left ⌥.",
+        comment: "Shortcuts screen: blocking conflict, the gesture is not available for this mode")
     default:
       guard message.hasPrefix(HotkeyConflictWire.macosSymbolicPrefix) else { return nil }
       return String(
