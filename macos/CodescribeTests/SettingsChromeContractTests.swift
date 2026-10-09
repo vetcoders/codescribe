@@ -263,12 +263,23 @@ final class SettingsChromeContractTests: XCTestCase {
       panel.contains("if model.providerAccessPending || model.providerMutationPending {"),
       "status spinner must not be conditionally inserted")
     XCTAssertTrue(panel.contains("ProviderAccessStatusSlot("))
-    // The wire line is a developer-build fact, and only under Advanced.
-    let accepts = try XCTUnwrap(panel.range(of: "Text(lane.accepts)"))
+    // The wire line is a developer-build fact, and only under Advanced. The
+    // bridge sends the transport arguments; the sentence is written here.
+    let accepts = try XCTUnwrap(panel.range(of: "Text(Self.accepts(for: lane))"))
     let gate = try XCTUnwrap(panel.range(of: "if DeveloperSurface.isEnabled() {"))
     XCTAssertLessThan(gate.lowerBound, accepts.lowerBound)
     XCTAssertLessThan(
       accepts.lowerBound.utf16Offset(in: panel) - gate.lowerBound.utf16Offset(in: panel), 80)
+    XCTAssertFalse(panel.contains("Text(lane.accepts)"), "bridge prose never reaches the UI")
+    // The validator admits plain http/ws on loopback, so the frame says so.
+    XCTAssertTrue(panel.contains("localized: \"Live WebSocket connection (ws(s); \\(lane.accepts))\""))
+    XCTAssertTrue(panel.contains("localized: \"HTTP(S): \\(lane.accepts)\""))
+    XCTAssertFalse(panel.contains("\"HTTPS: "))
+
+    // The example in the name field is copy, not a sample value: `e.g.` has to
+    // reach the catalog (PL-041).
+    XCTAssertTrue(panel.contains("String(\n      localized: \"e.g. Libraxis\","))
+    XCTAssertFalse(panel.contains("namePlaceholder = \"e.g. Libraxis\""))
 
     // Key row: label and state on one line, the editor behind the chip, no account name.
     let keyRow = try XCTUnwrap(rows.range(of: "struct KeyRow: View"))
@@ -326,6 +337,14 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(polish["File transcription"], "Transkrypcja plików")
     XCTAssertEqual(polish["Live transcription"], "Transkrypcja na żywo")
     XCTAssertEqual(polish["Connected as %@"], "Połączono jako %@")
+    // Lowercase on purpose: an abbreviation and a protocol name start these.
+    XCTAssertEqual(polish["e.g. Libraxis"], "np. Libraxis")
+    XCTAssertEqual(polish["HTTP(S): %@"], "HTTP(S): %@")
+    XCTAssertEqual(
+      polish["Live WebSocket connection (ws(s); %@)"],
+      "Połączenie na żywo przez WebSocket (ws(s); %@)")
+    XCTAssertNil(polish["HTTPS: %@"])
+    XCTAssertNil(polish["Live WebSocket connection (wss; %@)"])
     for retired in [
       "Providers.", "Refresh provider access", "factory endpoint",
       "Speech-to-text Cloud Service", "Advanced · OAuth client id…",
@@ -416,7 +435,9 @@ final class SettingsChromeContractTests: XCTestCase {
   /// saved prompt, and names the prompt a restore will replace.
   /// Round 3: the Workspace tab names folder access, not "projects", and the
   /// one list stays neutral because one setting feeds both the path policy and
-  /// the project scan.
+  /// the project scan. The boundary it promises is the one the code enforces:
+  /// `app/agent/tools/path_policy.rs` gates our own tools, and an MCP server is
+  /// a separate process that never passes through it (PL-028).
   func testWorkspaceTabNamesAgentAccessNotProjects() throws {
     let sources = try settingsSources()
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
@@ -424,8 +445,11 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(tab.contains("\"Workspace roots.\""))
     XCTAssertTrue(
       tab.contains(
-        "\"The Agent can read and write only inside these folders. It has no access outside them.\""
+        "\"The Agent's built-in file and terminal tools read and write only inside these folders, and so do the paths Codescribe hands to MCP tools it can check. What an MCP server does on its own is outside this list.\""
       ))
+    XCTAssertFalse(
+      tab.contains("It has no access outside them."),
+      "the description must not claim a boundary around every MCP process")
 
     let section = try XCTUnwrap(sources["WorkspaceRootsSection.swift"])
     XCTAssertTrue(section.contains("SettingsSectionLabel(String(localized: \"Allowed folders\"))"))
@@ -445,8 +469,8 @@ final class SettingsChromeContractTests: XCTestCase {
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Folders available to the Agent": "Foldery dostępne dla Agenta",
-      "The Agent can read and write only inside these folders. It has no access outside them.":
-        "Agent może odczytywać i zapisywać dane tylko w tych folderach. Poza nimi nie ma dostępu.",
+      "The Agent's built-in file and terminal tools read and write only inside these folders, and so do the paths Codescribe hands to MCP tools it can check. What an MCP server does on its own is outside this list.":
+        "Wbudowane narzędzia plikowe i terminalowe Agenta czytają i zapisują tylko w tych folderach; w nich zostają też ścieżki, które Codescribe przekazuje sprawdzanym narzędziom MCP. To, co serwer MCP robi samodzielnie, jest poza tą listą.",
       "Allowed folders": "Dozwolone foldery",
       "The Agent looks for projects and Git repositories in these folders. It also searches subfolders, but skips hidden folders and build directories.":
         "W tych folderach Agent szuka projektów i repozytoriów Git. Przeszukuje też podfoldery, ale pomija foldery ukryte i katalogi build.",
@@ -463,6 +487,8 @@ final class SettingsChromeContractTests: XCTestCase {
     }
     for retired in [
       "Workspace roots.", "Agent workspace roots", "Add root", "Save roots",
+      "The Agent can read and write only inside these folders. It has no access outside them.",
+      "The Agent's built-in file tools read and write only inside these folders. MCP servers have separate access rules.",
       "Directories the Agent may read and write. Everything outside them is out of reach.",
       "Directories the Agent scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped.",
     ] {
@@ -579,6 +605,16 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(section.contains("ToolPermissionLabels.ruleCaption(item.ruleSource)"))
     XCTAssertTrue(section.contains("if item.hasIndividualRule, let restoreInheritance {"))
     XCTAssertFalse(section.contains("Text(item.name)"), "the raw name is not the headline")
+    // Our own tools are named in the interface language; an MCP server's tools
+    // keep the vendor's spelling, so only `native:` rows reach the catalog.
+    XCTAssertTrue(
+      section.contains("ToolPermissionLabels.displayName(for: name, identity: identity)"))
+    XCTAssertTrue(section.contains("if identity.hasPrefix(\"native:\"), let own"))
+    XCTAssertTrue(
+      section.contains("localized: \"tools.native.read_file\", defaultValue: \"Read a file\""))
+    // Both lines truncate on purpose, so the pair stays readable in a tooltip.
+    XCTAssertTrue(section.contains("private var fullIdentification: String"))
+    XCTAssertTrue(section.contains(".help(fullIdentification)"))
 
     let serverTab = try XCTUnwrap(sources["ToolServerTab.swift"])
     XCTAssertTrue(serverTab.contains("Text(ToolPermissionLabels.source(server))"))
@@ -604,6 +640,10 @@ final class SettingsChromeContractTests: XCTestCase {
       "Individual rule": "Własna reguła",
       "Inherited from the category default": "Dziedziczone z ustawienia kategorii",
       "Restore inheritance": "Przywróć dziedziczenie",
+      "tools.native.read_file": "Odczytaj plik",
+      "tools.native.write_file": "Zapisz plik",
+      "tools.native.run_process": "Uruchom proces",
+      "tools.native.take_screenshot": "Zrób zrzut ekranu",
     ]
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)
@@ -656,6 +696,19 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(section.contains("Text(row.value)"), "English core values never reach the UI")
     XCTAssertFalse(section.contains("\"tool: \\(row.nativeTool)"), "mono detail is localized")
 
+    // A stored key is not a successful request: the verdict says what the app
+    // actually knows, so "access" never stands in for credentials on file.
+    let presentation = try XCTUnwrap(sources["AgentStatusPresentation.swift"])
+    XCTAssertTrue(
+      presentation.contains(
+        "\"Ready — \\(subject) configured, can send requests, \\(nativeToolCount)\""))
+    XCTAssertTrue(presentation.contains("\"\\(subject) — can send requests\""))
+    XCTAssertFalse(
+      presentation.contains("access available"), "readiness is never reported as a made request")
+    XCTAssertFalse(
+      presentation.contains("credentials available"),
+      "a key-optional provider is request-ready without stored credentials")
+
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Agent environment status": "Stan środowiska Agenta",
@@ -666,8 +719,9 @@ final class SettingsChromeContractTests: XCTestCase {
       "Native tools": "Narzędzia natywne",
       "VibeCrafted runtime": "Runtime VibeCrafted",
       "PRView integration": "Integracja PRView",
-      "Ready — %@ configured, access available, %@":
-        "Gotowy — skonfigurowano %1$@, dostęp dostępny, %2$@",
+      "Ready — %@ configured, can send requests, %@":
+        "Gotowy — skonfigurowano %1$@, może wysyłać żądania, %2$@",
+      "%@ — can send requests": "%@ — może wysyłać żądania",
       "Configured — agent not started yet": "Skonfigurowano — agent nie został jeszcze uruchomiony",
       "Not configured (optional)": "Nieskonfigurowane (opcjonalne)",
       "Detected installations and runtime": "Wykryte instalacje i runtime",
@@ -691,6 +745,8 @@ final class SettingsChromeContractTests: XCTestCase {
     for retired in [
       "Connection details", "Connection details.", "Capability matrix", "Per-server probe",
       "%lld configured", "not tested", "testing…", "fail: %@",
+      "Ready — %@ configured, access available, %@", "%@ — access available",
+      "Ready — %@ configured, credentials available, %@", "%@ — credentials available",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
@@ -839,6 +895,29 @@ final class SettingsChromeContractTests: XCTestCase {
       model.contains(
         "static func availabilityTint(for provider: CsProviderOption, lane: LLMLane = .assistive)"))
     XCTAssertFalse(model.contains("terracottaLight"))
+  }
+
+  /// Dictionary rule origins and our own tool names are copy, so the catalog
+  /// carries Polish for every one of them; an MCP server's tools are not ours
+  /// to translate and stay out of the catalog.
+  func testOwnNamesAndRuleOriginsAreTranslated() throws {
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "dictionary.rule.origin.correction": "Na podstawie poprawki",
+      "dictionary.rule.origin.manual": "Dodana ręcznie",
+      "dictionary.rule.origin.import": "Z importu",
+      "dictionary.rule.origin.unknown": "Źródło nieznane",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    let nativeNames = polish.keys.filter { $0.hasPrefix("tools.native.") }
+    XCTAssertEqual(nativeNames.count, 26, "every native tool is named in Polish")
+    for key in nativeNames {
+      let value = try XCTUnwrap(polish[key])
+      XCTAssertFalse(value.isEmpty, key)
+      XCTAssertFalse(value.contains("_"), "\(key) still reads as an identifier")
+    }
   }
 
   private func settingsSources() throws -> [String: String] {
