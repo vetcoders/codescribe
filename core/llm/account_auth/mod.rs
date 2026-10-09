@@ -572,6 +572,51 @@ pub fn account_id(provider: ProviderKind) -> Option<String> {
         .and_then(|tokens| account_id_from_tokens(&tokens))
 }
 
+/// The ChatGPT account's own Responses backend (codex-rs
+/// `model_provider_info.rs`: `https://chatgpt.com/backend-api/codex` under
+/// `AuthMode::Chatgpt`). Account tokens are refused by `api.openai.com`, so a
+/// signed-in OpenAI lane streams here. Env override for tests / proxies.
+pub const CODEX_BACKEND_RESPONSES_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
+/// Process env override for [`CODEX_BACKEND_RESPONSES_ENDPOINT`].
+pub const CODEX_BACKEND_ENDPOINT_ENV: &str = "CODESCRIBE_CODEX_BACKEND_ENDPOINT";
+/// `originator` header the Codex backend expects from every client.
+pub const CODEX_ORIGINATOR: &str = "codescribe";
+
+/// Where a signed-in account request must go when the vendor does not accept
+/// its account token at the lane's public endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountResponsesRoute {
+    /// Full Responses endpoint URL for the account backend.
+    pub endpoint: String,
+    /// Headers that backend requires on every request.
+    pub headers: Vec<(String, String)>,
+}
+
+/// The account backend for one Responses vendor, or `None` when the vendor's
+/// own lane endpoint serves its account bearer token. The Codex backend keeps
+/// no server-side chain: callers send `store: false`, no
+/// `previous_response_id`, no temperature or output ceiling, and stream.
+/// Shared by the Agent provider and the formatter so both lanes reach the same
+/// backend with the same headers.
+pub fn account_responses_route(provider: ProviderKind) -> Option<AccountResponsesRoute> {
+    if provider != ProviderKind::OpenAiResponses {
+        return None;
+    }
+    let mut headers = vec![("originator".to_string(), CODEX_ORIGINATOR.to_string())];
+    match account_id(provider) {
+        Some(account_id) => headers.push(("ChatGPT-Account-ID".to_string(), account_id)),
+        None => tracing::warn!(
+            "Codex backend route without a ChatGPT-Account-ID: the stored tokens carry no workspace claim"
+        ),
+    }
+    let endpoint = std::env::var(CODEX_BACKEND_ENDPOINT_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| CODEX_BACKEND_RESPONSES_ENDPOINT.to_string());
+    Some(AccountResponsesRoute { endpoint, headers })
+}
+
 /// Issuer base URL for `provider`: env override, else the provider default.
 pub fn issuer_for(provider: ProviderKind) -> String {
     let Ok(config) = provider_oauth_config(provider) else {

@@ -391,11 +391,16 @@ pub async fn generate_thread_title(
 /// by the loader and fails closed before a request is attempted.
 fn resolve_thread_title_provider(lane: &RuntimeLlmLane) -> Result<ThreadTitleProvider> {
     let api_key = lane.credential().request_api_key();
-    if !lane.request_available() {
+    if let Some(reason) = lane.request_unavailable_reason() {
+        anyhow::bail!("{reason}");
+    }
+    // Titles are a one-shot JSON call with key headers. A signed-in account
+    // lane without a stored key is not wired for this call; say so instead
+    // of sending an unauthenticated request.
+    if api_key.is_none() && lane.credential().account_auth() {
         anyhow::bail!(
-            "{}",
-            lane.unavailable_reason()
-                .unwrap_or("Formatting lane is unavailable")
+            "Thread titles need a stored API key on the formatting lane; the signed-in {} account serves formatting only",
+            lane.provider_display_name()
         );
     }
 
@@ -450,6 +455,7 @@ async fn request_responses_thread_title(
         instructions: Some(THREAD_TITLE_PROMPT.to_string()),
         max_output_tokens: Some(THREAD_TITLE_MAX_TOKENS),
         temperature: None,
+        store: None,
         stream: false,
     };
 
@@ -622,6 +628,9 @@ struct ResponsesRequest {
     max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    /// `Some(false)` only on an account backend that keeps no server chain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    store: Option<bool>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
 }
@@ -1413,6 +1422,14 @@ async fn request_format_text_with_status_channels_for_policy(
         } else {
             None
         };
+        if on_device_output.is_none()
+            && let Some(reason) = lane.request_unavailable_reason()
+        {
+            // No engine produced text and no cloud lane can: every further
+            // attempt would fail the same way. The caller keeps the text.
+            warn!(%reason, "no formatting engine available; preserving the source text");
+            break;
+        }
         let result_opt = if on_device_output.is_some() {
             on_device_output
         } else if should_stream {
@@ -1640,12 +1657,8 @@ async fn call_anthropic_messages(
     lane: &RuntimeLlmLane,
 ) -> Result<ProviderOutput> {
     let api_key = lane.credential().request_api_key().unwrap_or_default();
-    if !lane.request_available() {
-        anyhow::bail!(
-            "{}",
-            lane.unavailable_reason()
-                .unwrap_or("Anthropic lane is unavailable")
-        );
+    if let Some(reason) = lane.request_unavailable_reason() {
+        anyhow::bail!("{reason}");
     }
     call_anthropic_messages_resolved(
         user_message,
@@ -1771,6 +1784,7 @@ fn responses_chain_request(
     assistive: bool,
     model: String,
     stream: bool,
+    account_backend: bool,
 ) -> (
     crate::state::conversation::AiMode,
     Option<String>,
@@ -1781,9 +1795,18 @@ fn responses_chain_request(
     } else {
         crate::state::conversation::AiMode::Formatting
     };
-    let previous_response_id =
-        crate::state::conversation::get_previous_response_id_for_mode(ai_mode);
-    let temperature = get_temperature(assistive);
+    // An account backend stores nothing: each request carries its own prompt
+    // and no chain id, mirroring the Agent provider's body on that route.
+    let previous_response_id = if account_backend {
+        None
+    } else {
+        crate::state::conversation::get_previous_response_id_for_mode(ai_mode)
+    };
+    let temperature = if account_backend {
+        None
+    } else {
+        get_temperature(assistive)
+    };
     let request = ResponsesRequest {
         model,
         input: build_responses_input(
@@ -1795,6 +1818,7 @@ fn responses_chain_request(
         previous_response_id: previous_response_id.clone(),
         max_output_tokens: None,
         temperature,
+        store: account_backend.then_some(false),
         stream,
     };
     (ai_mode, previous_response_id, request)
@@ -1810,9 +1834,16 @@ async fn call_llm_endpoint(
     assistive: bool,
     lane: &RuntimeLlmLane,
 ) -> Result<ProviderOutput> {
-    let endpoint = lane.endpoint().to_string();
     let model = lane.model().to_string();
     let (api_key, bearer_only) = resolve_lane_auth(lane).await?;
+    // The Codex backend only streams; JSON is never sent there.
+    if bearer_only && lane.vendor().and_then(account_auth::account_responses_route).is_some() {
+        anyhow::bail!(
+            "The signed-in {} account accepts only streamed Responses requests",
+            lane.provider_display_name()
+        );
+    }
+    let endpoint = lane.endpoint().to_string();
     let temperature = get_temperature(assistive);
 
     trace!(
@@ -1830,7 +1861,7 @@ async fn call_llm_endpoint(
     );
 
     let (ai_mode, _previous_response_id, request) =
-        responses_chain_request(user_message, system_prompt, assistive, model, false);
+        responses_chain_request(user_message, system_prompt, assistive, model, false, false);
 
     // API keys use dual-header (Bearer + x-api-key). OAuth access tokens are
     // Bearer-only — OpenAI rejects account tokens posted as x-api-key.
@@ -1875,26 +1906,29 @@ async fn call_llm_endpoint(
     Ok(output)
 }
 
-/// Resolve assistive-lane auth: signed-in ChatGPT OAuth wins over a stored API key.
-/// Returns `(secret, bearer_only)` — OAuth tokens must not also go out as `x-api-key`.
+/// Resolve one lane's auth: a signed-in provider account wins over a stored
+/// API key (same order as the Agent provider). The token is fetched, and
+/// refreshed when near expiry, for this request only. Returns
+/// `(secret, bearer_only)` — account tokens must not also go out as `x-api-key`.
 async fn resolve_lane_auth(lane: &RuntimeLlmLane) -> Result<(String, bool)> {
+    if let Some(reason) = lane.request_unavailable_reason() {
+        anyhow::bail!("{reason}");
+    }
     if lane.credential().account_auth()
         && let Some(vendor) = lane.vendor()
     {
-        let token = account_auth::access_token(vendor)
-            .await
-            .map_err(|error| anyhow::anyhow!("Provider account authentication failed: {error}"))?;
+        let token = account_auth::access_token(vendor).await.map_err(|error| {
+            anyhow::anyhow!(
+                "{} account authentication failed: {error}",
+                vendor.display_name()
+            )
+        })?;
         return Ok((token, true));
     }
-    let api_key = lane.credential().request_api_key();
-    if api_key.is_none() && !lane.request_available() {
-        anyhow::bail!(
-            "{}",
-            lane.unavailable_reason()
-                .unwrap_or("LLM lane is unavailable")
-        );
-    }
-    Ok((api_key.unwrap_or_default(), false))
+    Ok((
+        lane.credential().request_api_key().unwrap_or_default(),
+        false,
+    ))
 }
 
 /// Call LLM endpoint with SSE streaming (Responses API) through the sealed lane.
@@ -1905,7 +1939,6 @@ async fn call_llm_endpoint_streaming(
     lane: &RuntimeLlmLane,
     stream_context: StreamRequestContext,
 ) -> Result<ProviderOutput> {
-    let endpoint = lane.endpoint().to_string();
     let model = lane.model().to_string();
     let (api_key, bearer_only) = resolve_lane_auth(lane).await?;
     let auth_header_mode = if bearer_only {
@@ -1913,7 +1946,21 @@ async fn call_llm_endpoint_streaming(
     } else {
         AuthHeaderMode::BearerAndApiKey
     };
-    let temperature = get_temperature(assistive);
+    // Same account backend and headers as the Agent provider; a key-auth lane
+    // keeps its own endpoint and chain.
+    let account_route = bearer_only
+        .then(|| lane.vendor().and_then(account_auth::account_responses_route))
+        .flatten();
+    let account_backend = account_route.is_some();
+    let (endpoint, extra_headers) = match account_route {
+        Some(route) => (route.endpoint, route.headers),
+        None => (lane.endpoint().to_string(), Vec::new()),
+    };
+    let temperature = if account_backend {
+        None
+    } else {
+        get_temperature(assistive)
+    };
 
     trace!(
         "SSE request chain: endpoint={}, model={}, mode={}, temp={:?}",
@@ -1929,8 +1976,14 @@ async fn call_llm_endpoint_streaming(
         temperature
     );
 
-    let (ai_mode, previous_response_id, request) =
-        responses_chain_request(user_message, system_prompt, assistive, model, true);
+    let (ai_mode, previous_response_id, request) = responses_chain_request(
+        user_message,
+        system_prompt,
+        assistive,
+        model,
+        true,
+        account_backend,
+    );
 
     let StreamRequestContext {
         callbacks,
@@ -1945,13 +1998,20 @@ async fn call_llm_endpoint_streaming(
         initial_response_timeout,
         inter_chunk_timeout,
     )
-    .with_auth_header_mode(auth_header_mode);
+    .with_auth_header_mode(auth_header_mode)
+    .with_extra_headers(extra_headers);
     let streamed = manager.stream(&request).await?;
     let output = ProviderOutput {
         assistant_text: streamed.assistant_text,
         reasoning_text: streamed.reasoning_text,
     };
-    if let Some(response_id) = streamed.response_id.filter(|id| !id.is_empty()) {
+    if account_backend {
+        // `store: false`: the id names nothing a later request may chain to.
+        debug!(
+            "SSE complete on the account backend for {}; no chain id retained",
+            if assistive { "assistive" } else { "formatting" }
+        );
+    } else if let Some(response_id) = streamed.response_id.filter(|id| !id.is_empty()) {
         crate::state::conversation::set_response_id_for_mode(ai_mode, response_id.clone());
         debug!(
             "SSE complete, response_id ({}): {}",
@@ -1975,9 +2035,23 @@ async fn call_llm_endpoint_streaming(
     Ok(output)
 }
 
-/// Check if AI formatting is available for report/test flows.
+/// Check if the cloud formatting lane can send a request now.
 pub fn is_formatting_available(lane: &RuntimeLlmLane) -> bool {
-    lane.request_available()
+    lane.request_unavailable_reason().is_none()
+}
+
+/// Whether a Smart/Corrections text pass has an engine under this generation:
+/// the selected Apple on-device formatter (host-registered, no credential),
+/// or the configured cloud formatting lane. Max is not a text pass; its
+/// availability is the Agent lane's (see the app's Max consultation).
+/// `None` means a request may be attempted; the text always comes from the
+/// caller, never from audio or a seal.
+pub fn text_formatting_unavailable_reason(settings: &RuntimeSettingsSnapshot) -> Option<String> {
+    if settings.values().format_on_device && crate::llm::on_device::on_device_formatter().is_some()
+    {
+        return None;
+    }
+    settings.llm_lanes().formatting().request_unavailable_reason()
 }
 
 /// Wire-contract and text-hygiene tests for the formatting module.
