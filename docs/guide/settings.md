@@ -396,7 +396,8 @@ dump.
   arguments, or server URL and an optional access token. The token goes to
   the macOS Keychain, never into `mcp.json`. Each field's caption is also its
   accessibility name, so VoiceOver reads "Server name" or "Access token
-  (optional)" rather than the placeholder or the typed text. A rejected add
+  (optional)" rather than the placeholder or the typed text. Add is live as
+  soon as anything is typed; the store does the checking. A rejected add
   keeps everything typed and says in plain words what to fix, under the field
   it names and with focus moved there: an unparseable or non-HTTP URL,
   credentials inside the URL, an empty command, a name with surrounding

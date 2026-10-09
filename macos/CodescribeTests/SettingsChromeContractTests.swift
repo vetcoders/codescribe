@@ -754,6 +754,12 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(section.contains("if let addError, Self.field(for: addError.field) == focus {"))
     XCTAssertTrue(section.contains("Text(verbatim: failure.message)"))
     XCTAssertTrue(section.contains("if let field = Self.field(for: addError?.field) { focusedField = field }"))
+    // The store is the one validator: the form no longer pre-filters the
+    // cases it now knows how to show, and the name reaches the store raw.
+    XCTAssertTrue(section.contains("!name.isEmpty || !(remote ? endpoint : command).isEmpty"))
+    XCTAssertFalse(section.contains("hasPrefix(\"http\")"))
+    XCTAssertTrue(section.contains("addError = onAdd(\n      name,\n"))
+    XCTAssertFalse(section.contains("name.trimmingCharacters(in: .whitespaces)"))
 
     // P1-002: Remove asks; the alert names the server and the consequence.
     XCTAssertTrue(section.contains("onRemove: { model.requestMcpServerRemoval(server.name) }"))

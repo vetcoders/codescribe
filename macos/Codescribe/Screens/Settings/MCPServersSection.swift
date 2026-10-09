@@ -407,11 +407,12 @@ private struct MCPAddServerForm: View {
     }
   }
 
+  /// Add is live as soon as the form has anything in it. The store is the one
+  /// validator (`core/mcp/config_store.rs` `validate_*`): a bad name, an empty
+  /// command or a non-HTTP endpoint come back as a refusal the form can show
+  /// under the right field, instead of a button that stays grey without a word.
   private var canAdd: Bool {
-    !name.trimmingCharacters(in: .whitespaces).isEmpty
-      && (remote
-        ? endpoint.trimmingCharacters(in: .whitespaces).hasPrefix("http")
-        : !command.trimmingCharacters(in: .whitespaces).isEmpty)
+    !name.isEmpty || !(remote ? endpoint : command).isEmpty
   }
 
   var body: some View {
@@ -523,8 +524,10 @@ private struct MCPAddServerForm: View {
       argsText
       .split(whereSeparator: { $0 == " " || $0 == "\t" })
       .map(String.init)
+    // The name goes through untouched: the store rejects surrounding
+    // whitespace rather than trimming it, and the form shows that refusal.
     addError = onAdd(
-      name.trimmingCharacters(in: .whitespaces),
+      name,
       remote ? "" : command.trimmingCharacters(in: .whitespaces),
       remote ? [] : args,
       remote ? endpoint.trimmingCharacters(in: .whitespaces) : "",
