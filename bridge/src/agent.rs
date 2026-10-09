@@ -246,12 +246,12 @@ impl CodescribeAgent {
 
     /// True when the assistive lane can reach its provider under the CURRENT
     /// settings (fresh reload). A key-optional local endpoint counts as
-    /// available.
+    /// available; a lane without a model or provider does not.
     pub fn is_available(&self) -> bool {
-        self.current_settings()
-            .llm_lanes()
-            .assistive()
-            .request_available()
+        codescribe::agent::assistive_unavailable_reason(
+            self.current_settings().llm_lanes().assistive(),
+        )
+        .is_none()
     }
 
     /// Availability of the assistive lane as one record: `available` mirrors
@@ -584,10 +584,7 @@ impl CodescribeAgent {
         let explicit_provider = hosted.as_ref().and_then(HostedSession::provider);
         let provider = match explicit_provider {
             Some(configuration) => configuration.build(settings.ai_execution().request_timing())?,
-            None => codescribe::agent::create_provider_for_lane(
-                settings.as_ref(),
-                codescribe_core::config::RuntimeLlmLaneKind::Assistive,
-            )?,
+            None => codescribe::agent::create_agent_provider(settings.as_ref())?,
         };
         let provider_label = explicit_provider
             .map(|p| p.wire.clone())
