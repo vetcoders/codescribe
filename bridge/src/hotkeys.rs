@@ -1363,6 +1363,38 @@ impl CodescribeHotkeys {
         .await?
     }
 
+    /// Format a transcript reopened from history with the production formatter
+    /// and an optional one-shot level. Nothing is committed to the reducer, the
+    /// Bus or the archive; Swift binds the result to the archive it asked about.
+    pub async fn format_archived_transcript(
+        &self,
+        archive_path: String,
+        text: String,
+        level: Option<String>,
+    ) -> Result<CsArchivedFormat, CsError> {
+        let level = level
+            .as_deref()
+            .map(codescribe_core::config::FormattingPolicy::parse)
+            .transpose()
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })?;
+        application_runtime::run(async move {
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "no recording controller for archived transcript formatting".to_string(),
+                })?;
+            controller
+                .format_archived_transcript(&archive_path, text, level)
+                .await
+                .map(CsArchivedFormat::from)
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
     /// Inspect retained source input even when unresolved work prevents Max from
     /// starting. No controller, microphone, provider or execution lease is opened.
     pub async fn inspect_selected_max_consultation(
@@ -1780,6 +1812,41 @@ impl From<codescribe::presentation::emitter::UserRevisionCommit> for CsUserRevis
             revision: value.revision,
             rendered_text: value.rendered_text,
             provenance_receipt: value.provenance_receipt,
+        }
+    }
+}
+
+/// How the production formatter settled a reopened archive transcript.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsArchivedFormatOutcome {
+    Applied,
+    Failed,
+    Unavailable,
+    Unchanged,
+}
+
+/// Formatter outcome for one archive source. `rendered_text` is the formatted
+/// text only when `outcome` is `Applied`; otherwise it is empty.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsArchivedFormat {
+    pub outcome: CsArchivedFormatOutcome,
+    pub rendered_text: String,
+}
+
+impl From<codescribe::controller::ArchivedFormatOutcome> for CsArchivedFormat {
+    fn from(value: codescribe::controller::ArchivedFormatOutcome) -> Self {
+        use codescribe::controller::ArchivedFormatOutcome;
+        let (outcome, rendered_text) = match value {
+            ArchivedFormatOutcome::Applied(text) => (CsArchivedFormatOutcome::Applied, text),
+            ArchivedFormatOutcome::Failed => (CsArchivedFormatOutcome::Failed, String::new()),
+            ArchivedFormatOutcome::Unavailable => {
+                (CsArchivedFormatOutcome::Unavailable, String::new())
+            }
+            ArchivedFormatOutcome::Unchanged => (CsArchivedFormatOutcome::Unchanged, String::new()),
+        };
+        Self {
+            outcome,
+            rendered_text,
         }
     }
 }

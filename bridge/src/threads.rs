@@ -374,6 +374,14 @@ impl CodescribeThreads {
     pub fn read_history_text(&self, path: String) -> Result<String, CsError> {
         Ok(fs::read_to_string(&path)?)
     }
+
+    /// Audio the daily archive wrote with the transcript at `path`, if it is
+    /// still on disk. Wraps `history::paired_audio_for_transcript`; `None`
+    /// means the take cannot be transcribed again, never "use another take".
+    pub fn history_audio_path(&self, path: String) -> Option<String> {
+        history::paired_audio_for_transcript(std::path::Path::new(&path))
+            .map(|audio| audio.to_string_lossy().into_owned())
+    }
 }
 
 /// Open the live thread index over the default on-disk data dir.

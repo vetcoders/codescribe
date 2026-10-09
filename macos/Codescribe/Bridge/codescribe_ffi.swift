@@ -2666,6 +2666,13 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func documentHistory(sessionId: String) async throws  -> [CsDocumentHistoryEntry]
 
     /**
+     * Format a transcript reopened from history with the production formatter
+     * and an optional one-shot level. Nothing is committed to the reducer, the
+     * Bus or the archive; Swift binds the result to the archive it asked about.
+     */
+    func formatArchivedTranscript(archivePath: String, text: String, level: String?) async throws  -> CsArchivedFormat
+
+    /**
      * Current per-mode bindings (Dictation / Formatting / Assistive), normalized
      * against defaults so every mode is always present. Reads on-disk truth.
      */
@@ -3299,6 +3306,28 @@ open func documentHistory(sessionId: String)async throws  -> [CsDocumentHistoryE
             completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterSequenceTypeCsDocumentHistoryEntry.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * Format a transcript reopened from history with the production formatter
+     * and an optional one-shot level. Nothing is committed to the reducer, the
+     * Bus or the archive; Swift binds the result to the archive it asked about.
+     */
+open func formatArchivedTranscript(archivePath: String, text: String, level: String?)async throws  -> CsArchivedFormat  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_format_archived_transcript(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(archivePath),FfiConverterString.lower(text),FfiConverterOptionString.lower(level)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsArchivedFormat_lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
 }
@@ -4581,6 +4610,13 @@ public protocol CodescribeThreadsProtocol: AnyObject, Sendable {
     func generateThreadId()  -> String
 
     /**
+     * Audio the daily archive wrote with the transcript at `path`, if it is
+     * still on disk. Wraps `history::paired_audio_for_transcript`; `None`
+     * means the take cannot be transcribed again, never "use another take".
+     */
+    func historyAudioPath(path: String)  -> String?
+
+    /**
      * List indexed thread summaries, newest first, optionally filtered.
      * Wraps `ThreadIndex::list` (`thread_index.rs:195`).
      */
@@ -4734,6 +4770,20 @@ open func generateThreadId() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_method_codescribethreads_generate_thread_id(
             self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Audio the daily archive wrote with the transcript at `path`, if it is
+     * still on disk. Wraps `history::paired_audio_for_transcript`; `None`
+     * means the take cannot be transcribed again, never "use another take".
+     */
+open func historyAudioPath(path: String) -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribethreads_history_audio_path(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(path),$0
     )
 })
 }
@@ -8670,6 +8720,62 @@ public func FfiConverterTypeCsApplicationRuntimeSnapshot_lift(_ buf: RustBuffer)
 #endif
 public func FfiConverterTypeCsApplicationRuntimeSnapshot_lower(_ value: CsApplicationRuntimeSnapshot) -> RustBuffer {
     return FfiConverterTypeCsApplicationRuntimeSnapshot.lower(value)
+}
+
+
+/**
+ * Formatter outcome for one archive source. `rendered_text` is the formatted
+ * text only when `outcome` is `Applied`; otherwise it is empty.
+ */
+public struct CsArchivedFormat: Equatable, Hashable {
+    public var outcome: CsArchivedFormatOutcome
+    public var renderedText: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(outcome: CsArchivedFormatOutcome, renderedText: String) {
+        self.outcome = outcome
+        self.renderedText = renderedText
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsArchivedFormat: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsArchivedFormat: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsArchivedFormat {
+        return
+            try CsArchivedFormat(
+                outcome: FfiConverterTypeCsArchivedFormatOutcome.read(from: &buf),
+                renderedText: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsArchivedFormat, into buf: inout [UInt8]) {
+        FfiConverterTypeCsArchivedFormatOutcome.write(value.outcome, into: &buf)
+        FfiConverterString.write(value.renderedText, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsArchivedFormat_lift(_ buf: RustBuffer) throws -> CsArchivedFormat {
+    return try FfiConverterTypeCsArchivedFormat.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsArchivedFormat_lower(_ value: CsArchivedFormat) -> RustBuffer {
+    return FfiConverterTypeCsArchivedFormat.lower(value)
 }
 
 
@@ -15316,6 +15422,88 @@ public func FfiConverterTypeCsApiKeyProbeStatus_lower(_ value: CsApiKeyProbeStat
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * How the production formatter settled a reopened archive transcript.
+ */
+
+public enum CsArchivedFormatOutcome: Equatable, Hashable {
+
+    case applied
+    case failed
+    case unavailable
+    case unchanged
+
+
+
+}
+
+#if compiler(>=6)
+extension CsArchivedFormatOutcome: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsArchivedFormatOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = CsArchivedFormatOutcome
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsArchivedFormatOutcome {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .applied
+
+        case 2: return .failed
+
+        case 3: return .unavailable
+
+        case 4: return .unchanged
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsArchivedFormatOutcome, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .applied:
+            writeInt(&buf, Int32(1))
+
+
+        case .failed:
+            writeInt(&buf, Int32(2))
+
+
+        case .unavailable:
+            writeInt(&buf, Int32(3))
+
+
+        case .unchanged:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsArchivedFormatOutcome_lift(_ buf: RustBuffer) throws -> CsArchivedFormatOutcome {
+    return try FfiConverterTypeCsArchivedFormatOutcome.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsArchivedFormatOutcome_lower(_ value: CsArchivedFormatOutcome) -> RustBuffer {
+    return FfiConverterTypeCsArchivedFormatOutcome.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * Typed outcome of a conditional stop. Every variant is a state the caller can
  * act on; none of them is an error string to match. A failed transport may
  * retry the same handle to join/retrieve the retained controller operation.
@@ -19843,6 +20031,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_document_history() != 45148) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_format_archived_transcript() != 61417) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_get_mode_bindings() != 18882) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -20009,6 +20200,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribethreads_generate_thread_id() != 7905) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribethreads_history_audio_path() != 56280) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribethreads_list_threads() != 47480) {

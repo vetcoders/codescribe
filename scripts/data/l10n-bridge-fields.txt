@@ -28,6 +28,7 @@ data  CsAgentArchiveRequest.bridgeHome
 data  CsAgenticReadiness.configPathDisplay
 data  CsAnnotationKind.kind
 prose CsAnnotationKind.label
+data  CsArchivedFormat.renderedText
 data  CsApiKeyProbeResult.account
 prose CsApiKeyProbeResult.message
 data  CsApiKeyProbeResult.probedEndpoint
