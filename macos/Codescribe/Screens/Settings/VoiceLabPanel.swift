@@ -867,7 +867,7 @@ struct VoiceLabPanel: View {
     } else {
       VStack(spacing: 8) {
         let safeIndex = min(lexiconIndex, model.customLexiconEntries.count - 1)
-        let row = model.customLexiconEntries[safeIndex]
+        let row = customLexiconRows(model.customLexiconEntries)[safeIndex]
         HStack(spacing: 10) {
           Text(row.variant)
             .font(CSFont.mono(11.5, .medium))
