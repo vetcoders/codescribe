@@ -376,3 +376,187 @@ async fn canonical_stdio_entries_stay_truthful_and_multiple_matches_are_explaine
     );
     assert_core_gate_alone_decides(&path, &store);
 }
+
+// --- Registration vs later connection test (root review of P2-001) ----------
+
+/// Self-contained stdio MCP server advertising `loctree` with two tools. It
+/// exits before `initialize` while a `down` file sits next to it, so a test can
+/// flip reachability without touching the `mcp.json` entry.
+const TOGGLED_SERVER: &str = r#"import json, os, sys
+if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "down")):
+    sys.exit(0)
+for raw in sys.stdin:
+    message = json.loads(raw)
+    method, request_id = message.get("method"), message.get("id")
+    if method == "initialize":
+        result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "loctree", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "t1", "inputSchema": {"type": "object"}},
+                            {"name": "t2", "inputSchema": {"type": "object"}}]}
+    else:
+        continue
+    print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}), flush=True)
+"#;
+
+/// One unchanged `loctree-mcp` stdio entry plus the switch that takes it down.
+struct ToggledServer {
+    _temp: tempfile::TempDir,
+    path: std::path::PathBuf,
+    down: std::path::PathBuf,
+}
+
+impl ToggledServer {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let script = temp.path().join("toggled_mcp.py");
+        fs::write(&script, TOGGLED_SERVER).expect("write fixture");
+        let path = temp.path().join("mcp.json");
+        write_config(
+            &path,
+            json!({ "loctree-mcp": {"command": "python3", "args": [script], "timeout_seconds": 5} }),
+        );
+        let down = temp.path().join("down");
+        Self {
+            _temp: temp,
+            path,
+            down,
+        }
+    }
+
+    fn set_up(&self, up: bool) {
+        if up {
+            let _ = fs::remove_file(&self.down);
+        } else {
+            fs::write(&self.down, "").expect("mark down");
+        }
+    }
+
+    fn register(&self, store: &Mutex<McpEvidence>) -> usize {
+        register_mcp_tools_into(&mut ToolRegistry::new(), &self.path, store).expect("register")
+    }
+
+    fn test(&self, store: &Mutex<McpEvidence>) -> bool {
+        test_configured_server_at(store, &self.path, "loctree-mcp", TEST_TIMEOUT).is_ok()
+    }
+
+    fn loctree(&self, store: &Mutex<McpEvidence>) -> McpStatusRow {
+        let report = readiness(&self.path, store, true);
+        let row = row(&report, McpStatusFacet::LoctreeMcp);
+        McpStatusRow {
+            label: row.label.clone(),
+            value: row.value.clone(),
+            tone: row.tone,
+            facet: row.facet,
+            state: row.state,
+            count: row.count,
+            subject: row.subject.clone(),
+            detail: row.detail.clone(),
+        }
+    }
+}
+
+/// Registration failed, then the user's Settings Test passed on the same
+/// entry: Diagnostics must show the newer passing test without claiming the
+/// agent registered anything. A newer registration then supersedes both.
+#[test]
+fn passing_test_after_failed_registration_is_shown_without_claiming_registration() {
+    let server = ToggledServer::new();
+    let store = Mutex::new(McpEvidence::default());
+
+    server.set_up(false);
+    assert_eq!(server.register(&store), 0);
+    assert_eq!(server.loctree(&store).state, McpStatusState::Failed);
+
+    server.set_up(true);
+    assert!(server.test(&store), "test passes once the server is up");
+    let row = server.loctree(&store);
+    assert!(
+        row.value.contains("last connection test passed"),
+        "the newer test is visible: {}",
+        row.value
+    );
+    assert!(
+        row.value.contains("registration failed"),
+        "the registration fact stays visible: {}",
+        row.value
+    );
+    assert_ne!(
+        row.state,
+        McpStatusState::Live,
+        "a test never registers tools"
+    );
+    assert_eq!(row.state, McpStatusState::FailedLastTestPassed);
+    assert_eq!(row.count, Some(2), "count is the tested tool count");
+    assert!(
+        row.detail.contains("closed stdout"),
+        "detail keeps the registration failure: {}",
+        row.detail
+    );
+    assert_eq!(row.tone, McpRowTone::Warn);
+    let evidence = store.lock().expect("evidence").clone();
+    let server_row = probe_mcp_status_with(&server.path, &evidence);
+    assert_eq!(
+        server_row.summary_rows()[0].state,
+        McpStatusState::FailedLastTestPassed,
+        "the MCP server table reports the same facts"
+    );
+    assert_core_gate_alone_decides(&server.path, &store);
+
+    // A registration recorded after the test is now the newest fact.
+    assert_eq!(server.register(&store), 2);
+    let row = server.loctree(&store);
+    assert_eq!(row.state, McpStatusState::Live, "got {}", row.value);
+    assert!(!row.value.contains("connection test"), "got {}", row.value);
+}
+
+/// Tools were registered, then the user's Settings Test failed on the same
+/// entry: Diagnostics must keep the registered tools and show the newer
+/// failure. An older failed test does not override a newer registration.
+#[test]
+fn failing_test_after_registration_is_shown_without_hiding_registered_tools() {
+    let server = ToggledServer::new();
+    let store = Mutex::new(McpEvidence::default());
+
+    // Older failed test, newer registration: registration is the latest fact.
+    server.set_up(false);
+    assert!(!server.test(&store));
+    server.set_up(true);
+    assert_eq!(server.register(&store), 2);
+    let row = server.loctree(&store);
+    assert_eq!(row.state, McpStatusState::Live, "got {}", row.value);
+    assert!(!row.value.contains("connection test"), "got {}", row.value);
+
+    // Newer failed test: shown next to the tools the agent still holds.
+    server.set_up(false);
+    assert!(!server.test(&store));
+    let row = server.loctree(&store);
+    assert!(
+        row.value.contains("last connection test failed"),
+        "the newer failure is visible: {}",
+        row.value
+    );
+    assert_eq!(row.count, Some(2), "registered tools are not erased");
+    assert_eq!(row.state, McpStatusState::LiveLastTestFailed);
+    assert!(
+        row.detail.contains("closed stdout"),
+        "detail is the test failure: {}",
+        row.detail
+    );
+    assert_eq!(row.tone, McpRowTone::Warn);
+    assert_core_gate_alone_decides(&server.path, &store);
+
+    // A later passing test agrees with the registration: plain Live again.
+    server.set_up(true);
+    assert!(server.test(&store));
+    let row = server.loctree(&store);
+    assert_eq!(row.state, McpStatusState::Live, "got {}", row.value);
+    assert_eq!(row.count, Some(2));
+
+    // An edited entry still drops both kinds of evidence.
+    let edited = fs::read_to_string(&server.path)
+        .expect("read config")
+        .replace("\"timeout_seconds\":5", "\"timeout_seconds\":6");
+    fs::write(&server.path, edited).expect("edit config");
+    assert_eq!(server.loctree(&store).state, McpStatusState::Configured);
+}

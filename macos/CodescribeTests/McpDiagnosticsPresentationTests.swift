@@ -37,6 +37,26 @@ final class McpDiagnosticsPresentationTests: XCTestCase {
       "Connection test failed: Connection refused")
   }
 
+  func testRegistrationAndANewerDisagreeingTestAreBothPainted() {
+    XCTAssertEqual(
+      row(
+        facet: .loctreeMcp, state: .liveLastTestFailed, count: 12, subject: "loctree-http",
+        detail: "Connection refused"
+      ).localizedValue,
+      "Live — 12 tools registered; last connection test failed: Connection refused (server loctree-http)"
+    )
+    XCTAssertEqual(
+      row(
+        facet: .aicxMcp, state: .failedLastTestPassed, count: 7, subject: "aicx",
+        detail: "command not found"
+      ).localizedValue,
+      "Registration failed: command not found; last connection test passed — 7 tools (server aicx)")
+    XCTAssertEqual(
+      row(facet: .mcpServer, state: .liveLastTestFailed, count: 2, subject: "x", detail: "timeout")
+        .localizedValue,
+      "Live — 2 tools registered; last connection test failed: timeout")
+  }
+
   func testUnknownIdentityIsUncertaintyNotAbsence() {
     XCTAssertEqual(
       row(facet: .loctreeMcp, state: .unverified, detail: "memory-box").localizedValue,
