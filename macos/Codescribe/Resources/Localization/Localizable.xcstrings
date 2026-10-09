@@ -315,7 +315,7 @@
       }
     },
     "%@ — can send requests" : {
-      "comment" : "Placeholder is the provider name; the credentials are stored, no request was made",
+      "comment" : "Placeholder is the provider name; a request may go out under the credentials that exist now (a key-optional provider counts), no request was made",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -6856,7 +6856,7 @@
       }
     },
     "HTTP(S): %@" : {
-      "comment" : "Cloud transcription transport; the placeholder lists API paths and encodings",
+      "comment" : "Cloud transcription transport; plain HTTP is allowed on loopback only; the placeholder lists API paths and encodings",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7655,7 +7655,7 @@
       }
     },
     "Live WebSocket connection (ws(s); %@)" : {
-      "comment" : "Cloud transcription transport; the placeholder lists protocol ids",
+      "comment" : "Cloud transcription transport; plain ws is allowed on loopback only; the placeholder lists protocol ids",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
