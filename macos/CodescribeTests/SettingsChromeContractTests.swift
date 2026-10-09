@@ -919,7 +919,9 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(panel.contains("dictionarySubtitle("), "no repeated provenance subtitle")
     XCTAssertTrue(panel.contains("dictionaryCounters("))
     XCTAssertTrue(panel.contains("String(localized: \"Learn from corrections…\""))
-    XCTAssertTrue(panel.contains("Text(learnScopeMessage(corrections: corrections.count))"))
+    XCTAssertTrue(
+      panel.contains(
+        "Text(learnScopeMessage(corrections: Int(clamping: model.totalQualityCorrections)))"))
     XCTAssertFalse(panel.contains("Button(\"Teach\") {\n            model.teachDictionaryFromStore()"))
     XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $showingDiagnostics)"))
     XCTAssertTrue(panel.contains("\"Differences between versions\""))
@@ -936,8 +938,20 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("model.customLexiconEntries.count <= dictionaryRuleListLimit"))
     XCTAssertTrue(panel.contains("if corrections.count > 1 {"))
     XCTAssertTrue(panel.contains("if model.ruleCandidates.count > 1 {"))
-    XCTAssertTrue(panel.contains(".disabled(retranscribeReason != nil)"))
-    XCTAssertTrue(panel.contains("archivedAudioLookup(configDir: lease.rootDirectory(), rawText: row.rawText)"))
+    // The archive walk never runs inside the view body or on the main actor
+    // (review, 2026-10-09): the card pairs its audio in a task and caches it.
+    XCTAssertFalse(panel.contains("let audioLookup = archivedAudioLookup("))
+    XCTAssertTrue(panel.contains("let audioLookup = audioLookups[row.id]"))
+    XCTAssertTrue(panel.contains(".task(id: [row.id, String(audioLookupGeneration)]) {"))
+    XCTAssertTrue(panel.contains(".disabled(retranscribeReason != nil || audioLookup == nil)"))
+    XCTAssertTrue(
+      panel.contains("await pairedArchivedAudio(\n          configDir: lease.rootDirectory(), rawText: row.rawText)"))
+    XCTAssertFalse(panel.contains("archivedAudioURL(configDir: lease.rootDirectory()"))
+    // Learn and the counters quote the corpus, not the capped page.
+    XCTAssertTrue(
+      panel.contains("learnScopeMessage(corrections: Int(clamping: model.totalQualityCorrections))"))
+    XCTAssertTrue(panel.contains("corrections: Int(clamping: model.totalQualityCorrections),"))
+    XCTAssertFalse(panel.contains("learnScopeMessage(corrections: corrections.count)"))
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
