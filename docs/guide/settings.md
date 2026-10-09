@@ -228,11 +228,11 @@ transcript is sent 5 seconds after the take ends unless you start editing it.
 
 ### Agent → Prompts
 
-One segmented picker (**Correction**, **Smart**, **Max**, **Agent**) opens one
+One segmented picker (**Correction**, **Smart**, **Agent**) opens one
 base prompt at a time; the headers read **Correction prompt**, **Smart prompt**,
-**Max prompt** and **Agent prompt**. Each has a single plain sentence under it.
+and **Agent prompt**. Each has a single plain sentence under it.
 The Agent prompt is the base of the system prompt for Agent turns that act on a
-dictated request; voice chat carries its own persona and does not read it.
+dictated request and for Max consultations; voice chat carries its own persona.
 Codescribe may append further instructions at runtime, so the editor shows the
 base text, not the full prompt a provider receives.
 

@@ -108,6 +108,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn a_registered_formatter_is_shared_and_replaceable() {
         register_on_device_formatter(Arc::new(Fixed("first")));
         let first = on_device_formatter().expect("registered");
@@ -116,5 +117,83 @@ mod tests {
         register_on_device_formatter(Arc::new(Fixed("second")));
         let second = on_device_formatter().expect("still registered");
         assert_eq!(second.format("i", "u").await.unwrap(), "second");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn apple_formats_text_without_cloud_audio_or_seal_and_off_refuses_missing_cloud() {
+        use crate::config::{Config, UserSettings};
+        use crate::llm::ai_formatting::{AiFormatStatus, format_text_with_status_for_policy};
+        use crate::test_isolation::EnvGuard;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Host(Arc<AtomicUsize>);
+        #[async_trait::async_trait]
+        impl OnDeviceFormatter for Host {
+            async fn format(
+                &self,
+                instructions: &str,
+                user_message: &str,
+            ) -> Result<String, OnDeviceFormatError> {
+                assert!(!instructions.is_empty());
+                assert!(user_message.contains("please preserve every word in this sentence"));
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok("Please preserve every word in this sentence.".into())
+            }
+        }
+        struct Restore(Option<Arc<dyn OnDeviceFormatter>>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                *shared_formatter().write().unwrap() = self.0.take();
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path().to_str().unwrap());
+        let _keychain = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        let _selectors = [
+            "LLM_FORMATTING_PROVIDER",
+            "LLM_FORMATTING_MODEL",
+            "LLM_ASSISTIVE_PROVIDER",
+            "LLM_ASSISTIVE_MODEL",
+        ]
+        .map(EnvGuard::remove);
+        let _apple = EnvGuard::remove(FORMAT_ON_DEVICE_ENV);
+        let _restore = Restore(shared_formatter().write().unwrap().take());
+        let calls = Arc::new(AtomicUsize::new(0));
+        register_on_device_formatter(Arc::new(Host(calls.clone())));
+        let mut settings = UserSettings {
+            llm_formatting_provider: Some("custom:unconfigured-formatter".into()),
+            llm_assistive_provider: Some("custom:unconfigured-agent".into()),
+            ..Default::default()
+        };
+        let raw = "please preserve every word in this sentence";
+        for policy in ["correction", "smart"] {
+            settings.format_on_device = Some(true);
+            settings.save().unwrap();
+            let _policy = EnvGuard::set("FORMATTING_LEVEL", policy);
+            let snapshot = Config::load_runtime_snapshot().unwrap();
+            assert!(!snapshot.llm_lanes().formatting().request_available());
+            assert!(
+                snapshot
+                    .llm_lanes()
+                    .formatting()
+                    .credential()
+                    .api_key()
+                    .is_none()
+            );
+            assert!(
+                crate::llm::ai_formatting::text_formatting_unavailable_reason(&snapshot).is_none()
+            );
+            let output = format_text_with_status_for_policy(raw, Some("en"), &snapshot, None).await;
+            assert_eq!(output.status, AiFormatStatus::Applied);
+            assert_eq!(output.text, "Please preserve every word in this sentence.");
+            settings.format_on_device = Some(false);
+            settings.save().unwrap();
+            let snapshot = Config::load_runtime_snapshot().unwrap();
+            let output = format_text_with_status_for_policy(raw, Some("en"), &snapshot, None).await;
+            assert_eq!(output.status, AiFormatStatus::Failed);
+            assert!(output.text.to_lowercase().contains(raw));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

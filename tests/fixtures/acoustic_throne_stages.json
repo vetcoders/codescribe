@@ -1971,7 +1971,7 @@
               "required_code": [
                 "apply_ledger_mutation(&ledger, observation, receipt)",
                 "apply_ledger_seal(receipt)",
-                "apply_occurrence_label_proposal(&mut ledger, proposal)",
+                "apply_occurrence_label_proposal(&ledger, proposal)",
                 "bus.publish_revision(&revision, &ledger)",
                 "self.emit_overlay_events(&events)"
               ]

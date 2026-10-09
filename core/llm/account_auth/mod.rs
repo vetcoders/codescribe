@@ -576,7 +576,8 @@ pub fn account_id(provider: ProviderKind) -> Option<String> {
 /// `model_provider_info.rs`: `https://chatgpt.com/backend-api/codex` under
 /// `AuthMode::Chatgpt`). Account tokens are refused by `api.openai.com`, so a
 /// signed-in OpenAI lane streams here. Env override for tests / proxies.
-pub const CODEX_BACKEND_RESPONSES_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
+pub const CODEX_BACKEND_RESPONSES_ENDPOINT: &str =
+    "https://chatgpt.com/backend-api/codex/responses";
 /// Process env override for [`CODEX_BACKEND_RESPONSES_ENDPOINT`].
 pub const CODEX_BACKEND_ENDPOINT_ENV: &str = "CODESCRIBE_CODEX_BACKEND_ENDPOINT";
 /// `originator` header the Codex backend expects from every client.

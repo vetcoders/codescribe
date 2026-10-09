@@ -2327,19 +2327,22 @@ impl TranscriptReducer {
             return false;
         }
         let candidate_label = proposal.proposed_label.trim();
-        let source_current = proposal.source_observation.as_ref().is_some_and(|source| {
-            source.occurrence == occurrence
-                && ledger
-                    .layer_trail_for(&occurrence)
-                    .filter(|decision| decision.decision.grants_mutation())
-                    .last()
-                    .is_some_and(|decision| decision.observation == *source)
-                && ledger.text_of(&occurrence) == Some(proposal.source_text.as_str())
-                && self
-                    .document_by_occurrence
-                    .get(&occurrence)
-                    .is_some_and(|entry| entry.label == proposal.source_text)
-        });
+        // A whole-document human edit leaves acoustic occurrence labels intact;
+        // those labels alone therefore cannot authenticate a late formatter.
+        let source_current = !self.raw_human_revision
+            && proposal.source_observation.as_ref().is_some_and(|source| {
+                source.occurrence == occurrence
+                    && ledger
+                        .layer_trail_for(&occurrence)
+                        .filter(|decision| decision.decision.grants_mutation())
+                        .last()
+                        .is_some_and(|decision| decision.observation == *source)
+                    && ledger.text_of(&occurrence) == Some(proposal.source_text.as_str())
+                    && self
+                        .document_by_occurrence
+                        .get(&occurrence)
+                        .is_some_and(|entry| entry.label == proposal.source_text)
+            });
         {
             let source_revision = self
                 .raw_revision_by_observation
@@ -9196,7 +9199,9 @@ mod tests {
         assert_eq!(first.entries.len(), 1);
     }
 
-    fn open_formatter_frontier() -> (AcousticLedger, TranscriptReducer, OccurrenceIdentity) {
+    fn unsealed_formatter_source(
+        label: &str,
+    ) -> (AcousticLedger, TranscriptReducer, OccurrenceIdentity) {
         let occurrence = OccurrenceIdentity::new("formatter-session", 9, 0, 16_000);
         let calibration = EnergyCalibration {
             version: "formatter-emitter-test".to_string(),
@@ -9220,7 +9225,7 @@ mod tests {
             [ObservationProducer::Apple, ObservationProducer::Lexicon],
         );
         let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, occurrence.clone());
-        let apple_receipt = ledger.admit(&apple, "Iwo");
+        let apple_receipt = ledger.admit(&apple, label);
         assert!(!ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
         let mut reducer = TranscriptReducer::default();
         assert!(
@@ -9231,9 +9236,17 @@ mod tests {
 
         let lexicon =
             ObservationIdentity::new(ObservationProducer::Lexicon, 1, 0, occurrence.clone());
-        let _ = ledger.admit(&lexicon, "Iwo");
-        assert!(ledger.schedule_observer(occurrence.clone(), ObservationProducer::Formatter,));
-        assert!(!ledger.note_frontier_return(&occurrence, ObservationProducer::Lexicon));
+        let _ = ledger.admit(&lexicon, label);
+        assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Lexicon));
+        (ledger, reducer, occurrence)
+    }
+
+    fn sealed_formatter_source(
+        label: &str,
+    ) -> (AcousticLedger, TranscriptReducer, OccurrenceIdentity) {
+        let (mut ledger, mut reducer, occurrence) = unsealed_formatter_source(label);
+        let seal = ledger.seal(&occurrence).unwrap().clone();
+        assert!(reducer.apply_ledger_seal(&seal).is_some());
         (ledger, reducer, occurrence)
     }
 
@@ -9245,7 +9258,7 @@ mod tests {
     /// means the controller issues no provider call.
     #[test]
     fn terminal_formatter_request_is_one_exact_cas_pair_for_a_nonempty_turn() {
-        let (_ledger, mut reducer, _occurrence) = open_formatter_frontier();
+        let (_ledger, mut reducer, _occurrence) = sealed_formatter_source("Iwo");
 
         assert!(
             reducer.terminal_formatter_request().is_none(),
@@ -9285,7 +9298,15 @@ mod tests {
             (LabelProposalDisposition::Refuse, ""),
             (LabelProposalDisposition::Propose, "   "),
         ] {
-            let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
+            let (ledger, mut reducer, occurrence) = sealed_formatter_source("Iwo");
+            let raw_revision = reducer.revision;
+            let source = ledger
+                .layer_trail_for(&occurrence)
+                .filter(|decision| decision.decision.grants_mutation())
+                .last()
+                .unwrap()
+                .observation
+                .clone();
             let trail_before = ledger.layer_trail_for(&occurrence).count();
             let proposal = OccurrenceLabelProposal::for_existing_occurrence(
                 occurrence.session.clone(),
@@ -9294,22 +9315,21 @@ mod tests {
                 occurrence.sample_end,
                 proposed_label,
                 disposition,
-            );
+            )
+            .with_source(source, "Iwo".into(), FormattingPolicy::Smart);
 
-            let (formatter_returned, revision) =
-                reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
-            assert!(formatter_returned);
-            assert!(revision.is_none());
+            assert!(reducer.apply_occurrence_label_proposal(&ledger, &proposal));
+            assert_eq!(reducer.revision, raw_revision);
             assert_eq!(ledger.layer_trail_for(&occurrence).count(), trail_before);
             assert_eq!(ledger.text_of(&occurrence), Some("Iwo"));
-            assert!(ledger.seal(&occurrence).is_ok());
+            assert!(ledger.is_sealed(&occurrence));
             assert_eq!(reducer.committed_rendered_text(), "Iwo");
         }
     }
 
     #[test]
     fn formatter_proposal_derives_without_relabeling_any_occurrence() {
-        let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
+        let (ledger, mut reducer, occurrence) = sealed_formatter_source("Iwo");
         let raw_revision = reducer.revision;
         let source = ledger
             .layer_trail_for(&occurrence)
@@ -9329,10 +9349,7 @@ mod tests {
         )
         .with_source(source, "Iwo".into(), FormattingPolicy::Smart);
 
-        let (formatter_returned, revision) =
-            reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
-        assert!(formatter_returned);
-        assert!(revision.is_none());
+        assert!(reducer.apply_occurrence_label_proposal(&ledger, &proposal));
         assert_eq!(reducer.revision, raw_revision);
         assert_eq!(reducer.derived_projections()[0].rendered_text, "Iwo!");
         assert_eq!(reducer.committed_rendered_text(), "Iwo");
@@ -9344,13 +9361,11 @@ mod tests {
         assert_eq!(ledger.text_of(&occurrence), Some("Iwo"));
         assert_eq!(ledger.qualified_occurrences().count(), qualified_before);
         assert_eq!(reducer.document_by_occurrence.len(), 1);
-        assert!(ledger.seal(&occurrence).is_ok());
+        assert!(ledger.is_sealed(&occurrence));
 
         let trail_after_seal = ledger.layer_trail_for(&occurrence).count();
-        let (formatter_returned, revision) =
-            reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
-        assert!(!formatter_returned);
-        assert!(revision.is_none());
+        assert!(!reducer.apply_occurrence_label_proposal(&ledger, &proposal));
+        assert_eq!(reducer.revision, raw_revision);
         assert_eq!(
             ledger.layer_trail_for(&occurrence).count(),
             trail_after_seal
@@ -9362,7 +9377,7 @@ mod tests {
 
     #[test]
     fn corrections_losing_a_word_mints_a_floor_without_changing_raw() {
-        let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
+        let (ledger, mut reducer, occurrence) = sealed_formatter_source("Iwo");
         let raw_revision = reducer.revision;
         let pins = ledger.committed_word_pin_ranges(&occurrence);
         let source = ledger
@@ -9372,6 +9387,7 @@ mod tests {
             .unwrap()
             .observation
             .clone();
+        let source_revision = reducer.raw_revision_by_observation[&source];
         let proposal = OccurrenceLabelProposal::for_existing_occurrence(
             occurrence.session.clone(),
             occurrence.capture_epoch,
@@ -9381,14 +9397,11 @@ mod tests {
             LabelProposalDisposition::Propose,
         )
         .with_source(source, "Iwo".into(), FormattingPolicy::Correction);
-        assert_eq!(
-            reducer.apply_occurrence_label_proposal(&mut ledger, &proposal),
-            (true, None)
-        );
+        assert!(reducer.apply_occurrence_label_proposal(&ledger, &proposal));
         let derived = &reducer.derived_projections()[0];
         assert_eq!(derived.status, "corrections_words_rejected");
         assert_eq!(derived.rendered_text, "Iwo");
-        assert_eq!(derived.source_raw_revision, raw_revision);
+        assert_eq!(derived.source_raw_revision, source_revision);
         assert_eq!(reducer.revision, raw_revision);
         assert_eq!(reducer.committed_rendered_text(), "Iwo");
         assert_eq!(ledger.committed_word_pin_ranges(&occurrence), pins);
@@ -9401,7 +9414,7 @@ mod tests {
 
     #[test]
     fn old_smart_source_is_kept_as_refused_history_without_overwriting_correction() {
-        let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
+        let (mut ledger, mut reducer, occurrence) = unsealed_formatter_source("Iwo");
         let source = ledger
             .layer_trail_for(&occurrence)
             .filter(|decision| decision.decision.grants_mutation())
@@ -9424,8 +9437,10 @@ mod tests {
         reducer
             .apply_ledger_mutation(&ledger, &correction, &receipt)
             .unwrap();
+        let seal = ledger.seal(&occurrence).unwrap().clone();
+        reducer.apply_ledger_seal(&seal).unwrap();
         let corrected_revision = reducer.revision;
-        reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
+        reducer.apply_occurrence_label_proposal(&ledger, &proposal);
         assert_eq!(reducer.derived_projections()[0].status, "stale_source");
         assert_eq!(reducer.revision, corrected_revision);
         assert_eq!(reducer.committed_rendered_text(), "Iwona");
@@ -9434,7 +9449,8 @@ mod tests {
 
     #[test]
     fn relay_acceptance_stale_smart_cannot_overwrite_manual_human() {
-        let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
+        let (mut ledger, mut reducer, occurrence) = sealed_formatter_source("Iwo");
+        reducer.mark_terminal_lifecycle();
         let source = ledger
             .layer_trail_for(&occurrence)
             .filter(|decision| decision.decision.grants_mutation())
@@ -9451,16 +9467,21 @@ mod tests {
             LabelProposalDisposition::Propose,
         )
         .with_source(source, "Iwo".into(), FormattingPolicy::Smart);
-        let human =
-            ObservationIdentity::new(ObservationProducer::ManualHuman, 9, 9, occurrence.clone());
-        let receipt = ledger.admit(&human, "Iwona");
-        assert!(receipt.grants_mutation());
+        let source_revision = reducer.revision;
         reducer
-            .apply_ledger_mutation(&ledger, &human, &receipt)
+            .apply_user_revision(
+                &mut ledger,
+                &UserRevisionIntent {
+                    session_id: occurrence.session.clone(),
+                    source_revision,
+                    rendered_text: "Iwona".into(),
+                    provenance: DocumentRevisionProvenance::UserEdit,
+                },
+            )
             .unwrap();
         let revision = reducer.revision;
         let slots = ledger.slots_of(&occurrence).unwrap().to_vec();
-        reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
+        reducer.apply_occurrence_label_proposal(&ledger, &proposal);
         assert_eq!(
             reducer.derived_projections().last().unwrap().status,
             "stale_source"
@@ -12129,13 +12150,15 @@ mod tests {
     }
     #[test]
     fn w0_falsifier_live_formatter_cannot_drop_a_word() {
-        let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
-        let whisper =
-            ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, occurrence.clone());
-        let receipt = ledger.admit(&whisper, "Iwo plan");
-        reducer
-            .apply_ledger_mutation(&ledger, &whisper, &receipt)
-            .unwrap();
+        let (ledger, mut reducer, occurrence) = sealed_formatter_source("Iwo plan");
+        let source = ledger
+            .layer_trail_for(&occurrence)
+            .filter(|decision| decision.decision.grants_mutation())
+            .last()
+            .unwrap()
+            .observation
+            .clone();
+        let source_revision = reducer.raw_revision_by_observation[&source];
         assert_eq!(reducer.committed_rendered_text(), "Iwo plan");
         let raw_revision = reducer.revision;
         let slots = ledger.slots_of(&occurrence).unwrap().to_vec();
@@ -12147,12 +12170,12 @@ mod tests {
             "Iwo",
             LabelProposalDisposition::Propose,
         )
-        .with_source(whisper, "Iwo plan".into(), FormattingPolicy::Smart);
-        reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
+        .with_source(source, "Iwo plan".into(), FormattingPolicy::Smart);
+        reducer.apply_occurrence_label_proposal(&ledger, &proposal);
         let derived = reducer.derived_projections().last().unwrap();
         assert_eq!(derived.status, "applied", "exercise an accepted proposal");
         assert_eq!(derived.rendered_text, "Iwo");
-        assert_eq!(derived.source_raw_revision, raw_revision);
+        assert_eq!(derived.source_raw_revision, source_revision);
         assert_eq!(reducer.committed_rendered_text(), "Iwo plan");
         assert_eq!(reducer.revision, raw_revision);
         assert_eq!(ledger.slots_of(&occurrence).unwrap(), slots);

@@ -8244,16 +8244,6 @@
         }
       }
     },
-    "Max prompt" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Prompt Max"
-          }
-        }
-      }
-    },
     "Max uses the Agent model and endpoint. This lane serves Smart and Corrections only." : {
       "comment" : "Formatting lane usage while the Max level is selected",
       "localizations" : {
@@ -14723,16 +14713,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Plik istnieje, ale jest pusty, dlatego używany jest wbudowany prompt."
-          }
-        }
-      }
-    },
-    "The fullest polish of the text." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Najpełniejsze dopracowanie tekstu."
           }
         }
       }

@@ -2434,7 +2434,7 @@ mod tests {
     /// read env and sealed `account_auth=false` for every signed-in operator.
     #[test]
     #[serial]
-    fn assistive_lane_seals_account_auth_from_bundle_tokens_without_env() {
+    fn both_llm_lanes_seal_account_auth_from_bundle_tokens_without_env() {
         let _tmp = setup_isolated_data_dir();
         let _env = clear_llm_lane_env();
         let tokens = account_auth::AccountTokens::new(
@@ -2451,20 +2451,24 @@ mod tests {
         )]);
 
         let snapshot = seal_lanes();
-        let lane = snapshot.llm_lanes().assistive();
-        assert_eq!(lane.vendor(), Some(ProviderKind::OpenAiResponses));
-        assert_eq!(lane.endpoint(), "https://api.openai.com/v1/responses");
-        assert!(
-            lane.credential().api_key().is_none(),
-            "no API key may take part in this witness"
-        );
-        assert!(
-            lane.credential().account_auth(),
-            "bundle-only sign-in must seal as account auth"
-        );
-        assert!(lane.available(), "signed-in lane must be available");
-        assert!(lane.request_available());
-        assert_eq!(lane.unavailable_reason(), None);
+        for lane in [
+            snapshot.llm_lanes().assistive(),
+            snapshot.llm_lanes().formatting(),
+        ] {
+            assert_eq!(lane.vendor(), Some(ProviderKind::OpenAiResponses));
+            assert_eq!(lane.endpoint(), "https://api.openai.com/v1/responses");
+            assert!(
+                lane.credential().api_key().is_none(),
+                "no API key may take part in this witness"
+            );
+            assert!(
+                lane.credential().account_auth(),
+                "bundle-only sign-in must seal as account auth"
+            );
+            assert!(lane.available(), "signed-in lane must be available");
+            assert!(lane.request_available());
+            assert_eq!(lane.unavailable_reason(), None);
+        }
     }
 
     /// Negative control for the witness above: same env, a bundle without a

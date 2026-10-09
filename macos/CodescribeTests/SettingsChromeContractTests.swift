@@ -525,7 +525,6 @@ final class SettingsChromeContractTests: XCTestCase {
       "Correction": "Korekta",
       "Correction prompt": "Prompt korekty",
       "Smart prompt": "Prompt Smart",
-      "Max prompt": "Prompt Max",
       "Agent prompt": "Prompt Agenta",
       "Source: Built-in prompt": "Źródło: Wbudowany prompt",
       "Source: Custom prompt": "Źródło: Własny prompt",

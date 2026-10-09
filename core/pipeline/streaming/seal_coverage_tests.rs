@@ -96,12 +96,11 @@ fn stop_does_not_equate_a_sealed_prefix_with_returned_whisper_work() {
         "Whisper has not returned yet"
     );
     state.refinement_submitted.clear();
-    state.formatter_in_flight.insert(occurrence.clone());
+    state.formatter_requested.insert(occurrence.clone());
     assert!(
-        !state.stop_document_settled(),
-        "a formatter callback is still owned"
+        state.stop_document_settled(),
+        "text work cannot hold acoustic Stop"
     );
-    state.formatter_in_flight.clear();
     state.cloud_uncommitted.insert(occurrence);
     assert!(
         !state.stop_document_settled(),
@@ -298,7 +297,7 @@ fn overlapping_pad_occurrences_project_each_apple_word() {
 }
 
 #[test]
-fn recovery_new_gap_formatter_work_prevents_terminal_seal() {
+fn recovery_new_gap_formatter_work_does_not_hold_terminal_seal() {
     let mut state = state();
     state.audio.push(&vec![0.25; 16_000]);
     let (formatter, mut requests) = mpsc::channel(FORMATTER_QUEUE_CAP);
@@ -306,14 +305,14 @@ fn recovery_new_gap_formatter_work_prevents_terminal_seal() {
     let (tx, _) = mpsc::unbounded_channel();
     assert!(observe(&mut state, &tx, 0, 16_000, 1).is_some());
     assert!(requests.try_recv().is_ok());
-    assert_eq!(state.formatter_awaiting_completion, 1);
+    assert_eq!(state.formatter_requested.len(), 1);
     assert!(
         state
             .acoustic_ledger
             .lock()
             .unwrap()
             .seal_terminal(&state.session_id, 1)
-            .is_err()
+            .is_ok()
     );
 }
 
@@ -353,7 +352,7 @@ fn recovery_closed_occurrence_submits_owned_tail_job() {
 }
 
 #[test]
-fn recovery_formatter_created_by_gap_closes_before_coverage_and_terminal_seal() {
+fn recovery_gap_coverage_and_terminal_seal_precede_formatter_reply() {
     let mut state = state();
     state.audio.push(&vec![0.25; 16_000]);
     let mut fusion = SileroIngress::new(16_000, state.session_id.clone(), 1);
@@ -376,15 +375,12 @@ fn recovery_formatter_created_by_gap_closes_before_coverage_and_terminal_seal() 
         publish_terminal_coverage(&state, &tx).status,
         SealCoverageStatus::Complete
     );
-    assert!(
-        state
-            .acoustic_ledger
-            .lock()
-            .unwrap()
-            .seal_terminal(&state.session_id, 1)
-            .is_err(),
-        "coverage is not formatter finality"
-    );
+    state
+        .acoustic_ledger
+        .lock()
+        .unwrap()
+        .seal_terminal(&state.session_id, 1)
+        .unwrap();
     let request = requests.try_recv().unwrap();
     let occurrence = request.occurrence.clone();
     let completion = FormatterCompletion::from_result(
@@ -395,35 +391,15 @@ fn recovery_formatter_created_by_gap_closes_before_coverage_and_terminal_seal() 
             status: AiFormatStatus::Skipped,
         },
     );
-    // Model the emitter's synchronous no-change return before its worker ACK.
-    {
-        let mut ledger = state.acoustic_ledger.lock().unwrap();
-        assert!(ledger.note_frontier_return(&occurrence, LedgerObservationProducer::Formatter));
-        ledger.seal(&occurrence).unwrap();
-    }
-    let (ack, done) = std_mpsc::channel();
-    ack.send(completion.clone()).unwrap();
-    drain_formatter_observers(
-        &mut state,
-        &tx,
-        &done,
-        Instant::now() + Duration::from_secs(1),
-    );
-    assert!(
-        !state.complete_formatter(&tx, completion),
-        "duplicate completion cannot close twice"
-    );
+    let sink = crate::pipeline::sinks::CollectorEventSink::new();
+    assert!(deliver_formatter_completion(completion, &sink, None));
+    assert_eq!(sink.events().len(), 1);
+    assert!(state.acoustic_ledger.lock().unwrap().is_sealed(&occurrence));
     assert_eq!(
         publish_terminal_coverage(&state, &tx).status,
         SealCoverageStatus::Complete
     );
-    state
-        .acoustic_ledger
-        .lock()
-        .unwrap()
-        .seal_terminal(&state.session_id, 1)
-        .unwrap();
-    assert_eq!(state.formatter_awaiting_completion, 0);
+    assert_eq!(state.formatter_requested.len(), 1);
 }
 
 #[tokio::test]

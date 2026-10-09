@@ -430,6 +430,94 @@ async fn collect_readiness(
 }
 
 #[cfg(test)]
+mod configuration_tests {
+    use super::*;
+    use codescribe_core::config::{Config, UserSettings};
+    use codescribe_core::llm::provider::{CustomProvider, WireFamily};
+    use codescribe_core::test_isolation::EnvGuard;
+
+    #[test]
+    #[serial_test::serial]
+    fn max_options_and_seal_follow_only_the_agent_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path().to_str().unwrap());
+        let _config = EnvGuard::set("CODESCRIBE_CONFIG_DIR", root.path().to_str().unwrap());
+        let _keychain = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        let _policy = EnvGuard::set("FORMATTING_LEVEL", "max");
+        let _selectors = [
+            "LLM_ASSISTIVE_PROVIDER",
+            "LLM_ASSISTIVE_MODEL",
+            "LLM_FORMATTING_PROVIDER",
+            "LLM_FORMATTING_MODEL",
+        ]
+        .map(EnvGuard::remove);
+        let mut settings = UserSettings::default();
+        settings
+            .add_custom_provider(
+                CustomProvider::new(
+                    "Agent fixture",
+                    WireFamily::OpenAiResponses,
+                    "http://127.0.0.1:9/agent/v1/responses",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        settings
+            .add_custom_provider(
+                CustomProvider::new(
+                    "Formatter fixture",
+                    WireFamily::OpenAiResponses,
+                    "http://127.0.0.1:9/formatter/v1/responses",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        settings.llm_assistive_provider = Some("custom:agent-fixture".into());
+        settings.llm_assistive_model = Some("agent-model".into());
+        settings.llm_formatting_provider = Some("custom:formatter-fixture".into());
+        settings.llm_formatting_model = Some("formatter-model".into());
+        settings.save().unwrap();
+        let agent_prompt = codescribe_core::config::get_assistive_prompt_path();
+        std::fs::create_dir_all(agent_prompt.parent().unwrap()).unwrap();
+        std::fs::write(&agent_prompt, "AGENT instructions owned here").unwrap();
+        let first = Config::load_runtime_snapshot_without_keychain().unwrap();
+        let max = stream_options(&first).unwrap();
+        let chat = crate::agent::agent_stream_options(
+            &first,
+            first.values().ai_assistive_max_tokens,
+            true,
+        );
+        assert_eq!(max.model, chat.model);
+        assert_eq!(max.model, "agent-model");
+        assert_eq!(max.system_prompt, chat.system_prompt);
+        assert!(
+            max.system_prompt
+                .as_ref()
+                .unwrap()
+                .contains("AGENT instructions owned here")
+        );
+        assert_eq!(max.max_tokens, chat.max_tokens);
+        assert_eq!(max.temperature, chat.temperature);
+        assert_eq!(max.reset_chain, chat.reset_chain);
+        let seal = admitted_provider(&first).unwrap().seal;
+        settings.llm_formatting_model = Some("unrelated-formatter-edit".into());
+        settings.save().unwrap();
+        let second = Config::load_runtime_snapshot_without_keychain().unwrap();
+        assert_eq!(admitted_provider(&second).unwrap().seal, seal);
+        std::fs::write(&agent_prompt, "CHANGED Agent instructions").unwrap();
+        let third = Config::load_runtime_snapshot_without_keychain().unwrap();
+        assert_ne!(admitted_provider(&third).unwrap().seal, seal);
+        assert!(
+            stream_options(&third)
+                .unwrap()
+                .system_prompt
+                .unwrap()
+                .contains("CHANGED Agent instructions")
+        );
+    }
+}
+
+#[cfg(test)]
 mod readiness_tests {
     use super::collect_readiness;
     use codescribe_core::agent::AgentEvent;
