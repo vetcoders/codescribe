@@ -175,6 +175,14 @@ impl ArchivedFormatOutcome {
     }
 }
 
+/// The formatter's verdict for one archived transcript and, when it applied,
+/// the revision the history owner accepted for exactly that archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedFormatReceipt {
+    pub outcome: ArchivedFormatOutcome,
+    pub revision: Option<codescribe_core::state::history::ArchiveRevision>,
+}
+
 #[cfg(test)]
 mod archived_format_outcome_tests {
     use super::ArchivedFormatOutcome;
@@ -2390,24 +2398,41 @@ impl RecordingController {
         Ok(receipt)
     }
 
-    /// Format a reopened archive transcript through the same settings
+    /// Format one revision of an archived transcript through the same settings
     /// generation, level resolution, Max consultation and production formatter
-    /// as [`Self::apply_formatter_revision_from_overlay`]. An archive has no
-    /// live session, so nothing is minted into the reducer, published on the
-    /// Bus or written back over the archived text: the caller receives the
-    /// outcome for the one source it asked about.
+    /// as [`Self::apply_formatter_revision_from_overlay`].
+    ///
+    /// The archive path and its revision are the compare-and-swap boundary,
+    /// exactly as session and revision are for a live take: the source text is
+    /// read here from the history owner, never accepted from Swift, and an
+    /// applied result is committed to that archive's revision chain only. The
+    /// reducer, the Bus and the latest take are not touched, so nothing is
+    /// re-delivered and a later take can never receive this result.
     pub async fn format_archived_transcript(
         &self,
-        archive_path: &str,
-        text: String,
+        archive_path: String,
+        source_revision: u64,
         requested_level: Option<FormattingPolicy>,
-    ) -> Result<ArchivedFormatOutcome> {
+    ) -> Result<ArchivedFormatReceipt> {
+        use codescribe_core::state::history;
         anyhow::ensure!(
             self.current_state().await == State::Idle,
             "archived transcript formatting refused while recording is active"
         );
+        let read_path = archive_path.clone();
+        let document = tokio::task::spawn_blocking(move || {
+            history::read_archived_document(std::path::Path::new(&read_path))
+        })
+        .await??;
         anyhow::ensure!(
-            !text.trim().is_empty(),
+            document.head_revision() == source_revision,
+            "stale archived transcript revision: current {}, requested {}",
+            document.head_revision(),
+            source_revision
+        );
+        let source = document.head_text().to_string();
+        anyhow::ensure!(
+            !source.trim().is_empty(),
             "archived transcript has no text to format"
         );
         let runtime_settings = self.formatter_revision_settings(requested_level).await;
@@ -2417,11 +2442,14 @@ impl RecordingController {
         let consultation = self
             .selected_max_consultation(runtime_settings.as_ref())
             .await?;
-        // One turn per request: the archive path names the source, the uuid
-        // keeps a second pass over the same archive from reusing a Max turn.
-        let turn_id = format!("archive:{archive_path}:{}", Uuid::new_v4());
+        // The archive and its revision name the source, as session and revision
+        // do for a live take; the uuid keeps a retry from reusing a Max turn.
+        let turn_id = format!(
+            "archive:{archive_path}:revision:{source_revision}:{}",
+            Uuid::new_v4()
+        );
         let result = format_text_with_status_for_policy(
-            &text,
+            &source,
             language.whisper_hint(),
             runtime_settings.as_ref(),
             consultation.as_deref().map(|agent| {
@@ -2432,14 +2460,35 @@ impl RecordingController {
             }),
         )
         .await;
-        let outcome = ArchivedFormatOutcome::from_result(&text, result);
+        let outcome = ArchivedFormatOutcome::from_result(&source, result);
+        let revision = match &outcome {
+            ArchivedFormatOutcome::Applied(text) => {
+                let text = text.clone();
+                let level = format_level.as_str().to_string();
+                Some(
+                    tokio::task::spawn_blocking(move || {
+                        history::commit_archived_revision(
+                            std::path::Path::new(&archive_path),
+                            source_revision,
+                            &text,
+                            history::ArchiveRevisionProvenance::Formatter,
+                            Some(level),
+                        )
+                    })
+                    .await??,
+                )
+            }
+            _ => None,
+        };
         info!(
             format_level = format_level.as_str(),
             source = level_source,
             outcome = outcome.label(),
+            source_revision,
+            revision = revision.as_ref().map(|revision| revision.revision),
             "archived transcript formatting settled"
         );
-        Ok(outcome)
+        Ok(ArchivedFormatReceipt { outcome, revision })
     }
 
     async fn formatter_revision_settings(

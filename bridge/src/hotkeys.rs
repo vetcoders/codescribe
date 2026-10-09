@@ -1363,13 +1363,15 @@ impl CodescribeHotkeys {
         .await?
     }
 
-    /// Format a transcript reopened from history with the production formatter
-    /// and an optional one-shot level. Nothing is committed to the reducer, the
-    /// Bus or the archive; Swift binds the result to the archive it asked about.
+    /// Format one revision of a transcript reopened from history with the
+    /// production formatter and an optional one-shot level. The source text is
+    /// read in Rust from the archive's revision chain; an applied result is
+    /// committed to that archive only, never to the reducer, the Bus or the
+    /// latest take.
     pub async fn format_archived_transcript(
         &self,
         archive_path: String,
-        text: String,
+        source_revision: u64,
         level: Option<String>,
     ) -> Result<CsArchivedFormat, CsError> {
         let level = level
@@ -1384,13 +1386,28 @@ impl CodescribeHotkeys {
                 current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
                     msg: "no recording controller for archived transcript formatting".to_string(),
                 })?;
-            controller
-                .format_archived_transcript(&archive_path, text, level)
+            let receipt = controller
+                .format_archived_transcript(archive_path.clone(), source_revision, level)
                 .await
-                .map(CsArchivedFormat::from)
                 .map_err(|error| CsError::Recording {
-                    msg: error.to_string(),
-                })
+                    msg: format!("{error:#}"),
+                })?;
+            let document = match receipt.revision {
+                Some(_) => Some(
+                    tokio::task::spawn_blocking(move || {
+                        crate::threads::CsArchivedDocument::read(archive_path)
+                    })
+                    .await
+                    .map_err(|error| CsError::Recording {
+                        msg: error.to_string(),
+                    })??,
+                ),
+                None => None,
+            };
+            Ok(CsArchivedFormat {
+                outcome: (&receipt.outcome).into(),
+                document,
+            })
         })
         .await?
     }
@@ -1825,28 +1842,23 @@ pub enum CsArchivedFormatOutcome {
     Unchanged,
 }
 
-/// Formatter outcome for one archive source. `rendered_text` is the formatted
-/// text only when `outcome` is `Applied`; otherwise it is empty.
+/// Formatter outcome for one archived transcript. `document` is the archive
+/// as its history owner holds it after an applied format committed a new
+/// revision; it is `None` for every other outcome, which changed nothing.
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct CsArchivedFormat {
     pub outcome: CsArchivedFormatOutcome,
-    pub rendered_text: String,
+    pub document: Option<crate::threads::CsArchivedDocument>,
 }
 
-impl From<codescribe::controller::ArchivedFormatOutcome> for CsArchivedFormat {
-    fn from(value: codescribe::controller::ArchivedFormatOutcome) -> Self {
+impl From<&codescribe::controller::ArchivedFormatOutcome> for CsArchivedFormatOutcome {
+    fn from(value: &codescribe::controller::ArchivedFormatOutcome) -> Self {
         use codescribe::controller::ArchivedFormatOutcome;
-        let (outcome, rendered_text) = match value {
-            ArchivedFormatOutcome::Applied(text) => (CsArchivedFormatOutcome::Applied, text),
-            ArchivedFormatOutcome::Failed => (CsArchivedFormatOutcome::Failed, String::new()),
-            ArchivedFormatOutcome::Unavailable => {
-                (CsArchivedFormatOutcome::Unavailable, String::new())
-            }
-            ArchivedFormatOutcome::Unchanged => (CsArchivedFormatOutcome::Unchanged, String::new()),
-        };
-        Self {
-            outcome,
-            rendered_text,
+        match value {
+            ArchivedFormatOutcome::Applied(_) => Self::Applied,
+            ArchivedFormatOutcome::Failed => Self::Failed,
+            ArchivedFormatOutcome::Unavailable => Self::Unavailable,
+            ArchivedFormatOutcome::Unchanged => Self::Unchanged,
         }
     }
 }
