@@ -135,9 +135,10 @@ impl<'ast> Visit<'ast> for PasteSites {
     }
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
-        if *node.func == parse_quote!(clipboard::paste_and_restore) {
+        let unguarded_transport = *node.func == parse_quote!(clipboard::paste_and_restore);
+        if unguarded_transport || *node.func == parse_quote!(clipboard::paste_to_stop_target) {
             self.sites += 1;
-            if !self.focus || !self.preflight || self.deferred {
+            if unguarded_transport || !self.focus || !self.preflight || self.deferred {
                 self.violations += 1;
             }
         }
@@ -420,7 +421,7 @@ mod tests {
         let evidence = sites(parse_quote!({
             if focus_confirmed {
                 if preflight.can_post_events() {
-                    clipboard::paste_and_restore(&text);
+                    clipboard::paste_to_stop_target(&text, &target);
                 }
             }
         }));
@@ -432,7 +433,7 @@ mod tests {
         let evidence = sites(parse_quote!({
             if focus_confirmed && preflight.can_post_events() {
             } else {
-                clipboard::paste_and_restore(&text);
+                clipboard::paste_to_stop_target(&text, &target);
             }
         }));
         assert_eq!((evidence.sites, evidence.violations), (1, 1));
@@ -442,7 +443,7 @@ mod tests {
     fn closure_cannot_borrow_enclosing_guard() {
         let evidence = sites(parse_quote!({
             if focus_confirmed && preflight.can_post_events() {
-                let later = || clipboard::paste_and_restore(&text);
+                let later = || clipboard::paste_to_stop_target(&text, &target);
             }
         }));
         assert_eq!((evidence.sites, evidence.violations), (1, 1));
@@ -452,9 +453,9 @@ mod tests {
     fn duplicate_effect_and_or_condition_are_visible() {
         let evidence = sites(parse_quote!({
             if focus_confirmed || preflight.can_post_events() {
-                clipboard::paste_and_restore(&text);
+                clipboard::paste_to_stop_target(&text, &target);
             }
-            clipboard::paste_and_restore(&text);
+            clipboard::paste_to_stop_target(&text, &target);
         }));
         assert_eq!((evidence.sites, evidence.violations), (2, 2));
     }
@@ -465,6 +466,16 @@ mod tests {
             let text = "clipboard::paste_and_restore(&text)";
         }));
         assert_eq!(evidence.sites, 0);
+    }
+
+    #[test]
+    fn raw_transport_cannot_bypass_target_capability_even_under_focus_guard() {
+        let evidence = sites(parse_quote!({
+            if focus_confirmed && preflight.can_post_events() {
+                clipboard::paste_and_restore(&text);
+            }
+        }));
+        assert_eq!((evidence.sites, evidence.violations), (1, 1));
     }
 
     #[test]

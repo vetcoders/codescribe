@@ -8,6 +8,9 @@ final class AgentVoiceTargetTests: XCTestCase {
   private final class RoutingEngine: ChatEngineFixture {
     var targets: [String?] = []
     var sentThreadIDs: [String] = []
+    var continuedTurns: [(String, String)] = []
+    var onContinuation: (() -> Void)?
+    var continuationError: Error?
 
     func setAssistiveTargetThread(backendId: String?) { targets.append(backendId) }
     func acceptReply(
@@ -15,6 +18,14 @@ final class AgentVoiceTargetTests: XCTestCase {
     ) async throws -> String {
       sentThreadIDs.append(threadId)
       return "Composer reply"
+    }
+    func consultationReply(
+      _: String, threadId: String, turnID: String, attachmentPaths _: [String]
+    ) async throws -> String {
+      continuedTurns.append((threadId, turnID))
+      onContinuation?()
+      if let continuationError { throw continuationError }
+      return "Continued consultation"
     }
   }
 
@@ -98,6 +109,67 @@ final class AgentVoiceTargetTests: XCTestCase {
     f.store.endDictationSession()
 
     XCTAssertEqual(f.engine.targets, before)
+  }
+
+  func testContinueOpensExactMaxWithoutResendingOrMovingAgentTarget() {
+    let consultation = row("t_completed_max", mode: "max")
+    let f = fixture([row("t_agent"), consultation, row("t_other_max", mode: "max")])
+    defer { f.store.invalidate() }
+    let targets = f.engine.targets
+    XCTAssertTrue(f.store.openMaxConsultation(backendID: "t_completed_max"))
+    XCTAssertEqual(f.store.currentThread?.backendId, "t_completed_max")
+    XCTAssertEqual(f.engine.targets, targets)
+    XCTAssertTrue(f.engine.sentThreadIDs.isEmpty)
+    XCTAssertTrue(f.engine.continuedTurns.isEmpty)
+    XCTAssertFalse(f.store.openMaxConsultation(backendID: "t_agent"))
+    XCTAssertEqual(f.store.currentThread?.backendId, "t_completed_max")
+  }
+
+  func testTypedMaxContinuationUsesAcceptedIdentityAndItsOwner() async {
+    let consultation = row("t_completed_max", mode: "max")
+    let f = fixture([row("t_agent"), consultation])
+    defer { f.store.invalidate() }
+    XCTAssertTrue(f.store.openMaxConsultation(backendID: "t_completed_max"))
+    let called = expectation(description: "retained Max owner receives a typed turn")
+    f.engine.onContinuation = { called.fulfill() }
+    f.store.draft = "Continue this consultation"
+    f.store.send(origin: .button)
+    await fulfillment(of: [called], timeout: 2)
+    XCTAssertEqual(f.engine.continuedTurns.count, 1)
+    XCTAssertEqual(f.engine.continuedTurns.first?.0, "t_completed_max")
+    XCTAssertNotNil(f.engine.continuedTurns.first.flatMap { UUID(uuidString: $0.1) })
+    XCTAssertTrue(f.engine.sentThreadIDs.isEmpty, "Max cannot enter a second Agent session")
+  }
+
+  func testTypedMaxFailureSettlesTheComposerAndAllowsAnotherAcceptedTurn() async {
+    let consultation = row("t_max_failure_" + UUID().uuidString, mode: "max")
+    let f = fixture([row("t_agent"), consultation])
+    defer { f.store.invalidate() }
+    XCTAssertTrue(f.store.openMaxConsultation(backendID: consultation.backendId!))
+    f.engine.continuationError = NSError(
+      domain: "MaxFixture", code: 1,
+      userInfo: [NSLocalizedDescriptionKey: "Consultation owner refused the turn"])
+    f.store.draft = "First typed continuation"
+    f.store.send(origin: .button)
+    await f.store.waitForComposerTurns(in: consultation.id)
+
+    XCTAssertFalse(f.store.isThinking)
+    XCTAssertFalse(f.store.isStreaming)
+    XCTAssertTrue(
+      f.store.currentThread?.messages.last?.text.contains("Consultation owner refused the turn")
+        == true)
+    XCTAssertEqual(f.engine.continuedTurns.count, 1)
+    let refusedID = f.engine.continuedTurns.first?.1
+
+    f.engine.continuationError = nil
+    f.store.draft = "Second typed continuation"
+    f.store.send(origin: .button)
+    await f.store.waitForComposerTurns(in: consultation.id)
+    XCTAssertEqual(f.engine.continuedTurns.count, 2)
+    XCTAssertNotEqual(f.engine.continuedTurns.last?.1, refusedID)
+    XCTAssertFalse(f.store.isThinking)
+    XCTAssertFalse(f.store.isStreaming)
+    XCTAssertTrue(f.engine.sentThreadIDs.isEmpty)
   }
 
   func testSelectingAgentAfterBrowsingMaxPublishesThatAgent() {
@@ -209,8 +281,8 @@ final class AgentVoiceTargetTests: XCTestCase {
     f.store.draft = "Continue this consultation"
     f.store.send()
     await f.store.waitForComposerTurns(in: consultation.id)
-    XCTAssertEqual(f.engine.sentThreadIDs, [consultation.backendId!])
-    XCTAssertEqual(f.store.currentThread?.messages.last?.text, "Composer reply")
+    XCTAssertTrue(f.engine.sentThreadIDs.isEmpty)
+    XCTAssertEqual(f.engine.continuedTurns.map { $0.0 }, [consultation.backendId!])
     XCTAssertEqual(f.engine.targets, before)
   }
 

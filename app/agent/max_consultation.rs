@@ -4,8 +4,8 @@
 
 use anyhow::{Context, Result, ensure};
 use codescribe_core::agent::consultation::{
-    ConsultationAnswer, ConsultationEvents, ConsultationRuntime, ConsultationTurn,
-    PreparedConsultationGroup, SealedConsultationInput,
+    AdmittedConsultationProvider, ConsultationAnswer, ConsultationEvents, ConsultationPreparation,
+    ConsultationRuntime, ConsultationTurn, PreparedConsultationGroup, SealedConsultationInput,
 };
 use codescribe_core::agent::{
     AgentSession, ImageAttachment, StreamOptions, ThreadDeliveryGateway, ToolApprovalHandler,
@@ -71,8 +71,9 @@ impl MaxConsultation {
         })
     }
 
-    /// Bind the selected Max identity at capture admission. Tool discovery and
-    /// provider construction run only when a consultation first needs them.
+    /// Bind the selected Max identity without blocking capture admission.
+    /// Application startup calls `prepare` on a background worker; this also
+    /// remains safe for an explicit new consultation selected after launch.
     pub fn start_deferred(
         id: String,
         settings: &RuntimeSettingsSnapshot,
@@ -151,6 +152,22 @@ impl MaxConsultation {
         &self.id
     }
 
+    /// Restore locally, then establish remote readiness with no tools before
+    /// the first formatting request. Historic instructions remain reference
+    /// data. Pending effects and missing completed history are reported now.
+    pub async fn prepare(
+        self: &Arc<Self>,
+        settings: &RuntimeSettingsSnapshot,
+    ) -> Result<ConsultationPreparation> {
+        let consultation = Arc::clone(self);
+        let runtime = tokio::task::spawn_blocking(move || consultation.runtime())
+            .await
+            .context("Max consultation preparation worker stopped")??;
+        runtime
+            .prepare_provider(admitted_provider(settings)?, stream_options(settings)?)
+            .await
+    }
+
     /// A reset must await this acknowledgement before changing selection.
     pub async fn close_if_idle(&self) -> Result<()> {
         let ready = {
@@ -195,14 +212,10 @@ impl MaxConsultation {
             "Max consultation is not selected"
         );
         let options = stream_options(settings)?;
-        // Construct from this turn's seal. A cached "last enqueued generation"
-        // would be wrong if that entry were later rejected as a duplicate.
-        // Local history preserves continuity; provider response chains are
-        // deliberately reset when this request reaches the owner.
-        let replacement_provider = Some(super::create_provider_for_lane(
-            settings,
-            RuntimeLlmLaneKind::Formatting,
-        )?);
+        // Compare this seal only when the FIFO owner executes the admitted
+        // turn. A rejected duplicate cannot change the selected provider, and
+        // the provider prepared at launch survives for an unchanged snapshot.
+        let replacement_provider = Some(admitted_provider(settings)?);
         Ok(ConsultationTurn {
             id: turn_id,
             policy: settings.formatting_policy(),
@@ -218,6 +231,27 @@ impl MaxConsultation {
             replacement_provider,
         })
     }
+}
+
+fn admitted_provider(settings: &RuntimeSettingsSnapshot) -> Result<AdmittedConsultationProvider> {
+    use std::hash::{Hash, Hasher};
+    let lane = settings.llm_lanes().formatting();
+    // Credentials stay at the request boundary. This in-memory fingerprint
+    // invalidates a prepared chain when the key behind the sealed account is
+    // rotated; neither the key nor this fingerprint is persisted or logged.
+    let mut credential = std::collections::hash_map::DefaultHasher::new();
+    lane.credential().request_api_key().hash(&mut credential);
+    if let Some(vendor) = lane.vendor() {
+        codescribe_core::llm::account_auth::account_id(vendor).hash(&mut credential);
+    }
+    Ok(AdmittedConsultationProvider {
+        seal: format!(
+            "{}:{:016x}",
+            settings.digest().as_str(),
+            credential.finish()
+        ),
+        provider: super::create_provider_for_lane(settings, RuntimeLlmLaneKind::Formatting)?,
+    })
 }
 
 #[async_trait::async_trait]
@@ -242,7 +276,8 @@ impl codescribe_core::ai_formatting::FormattingAgent for MaxConsultation {
              Output exactly one token: COMPLETE or CONTINUE. Do not answer the user or use tools."
                 .into(),
         );
-        options.max_tokens = Some(64);
+        // Preserve the selected model budget: reasoning models may consume
+        // their allowance before emitting the short classification verdict.
         options.reset_chain = true;
         // A fresh request client cannot alter the retained consultation's
         // provider chain or history. It has no tool registry or approval broker.

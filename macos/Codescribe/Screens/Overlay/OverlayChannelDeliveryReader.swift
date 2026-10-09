@@ -743,11 +743,13 @@ actor OverlayChannelDeliveryReader {
       let bytes = try handle.read(upToCount: (4 << 20) + 1) ?? Data()
       guard bytes.count <= 4 << 20,
         let manifest = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-        Set(manifest.keys)
+        Set(manifest.keys).subtracting(["volume_uuid"])
           == Set([
             "schema", "root", "stream_id", "stream_inode", "stream_dev", "stream_birthtime",
             "segments", "active", "pending",
           ]),
+        (manifest["volume_uuid"] == nil || manifest["volume_uuid"] is NSNull
+          || (manifest["volume_uuid"] as? String).flatMap { UUID(uuidString: $0) } != nil),
         manifest["schema"] as? String == "codescribe.bus-generations.v1",
         manifest["root"] as? String == root.path,
         let stream = manifest["stream_inode"] as? NSNumber,

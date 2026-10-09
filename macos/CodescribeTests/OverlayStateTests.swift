@@ -25,7 +25,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   var pastedText: String?
   var onStopRecording: (() -> Void)?
   var pasteCallCount = 0
-  var pasteOutcome: CsPasteOutcome = .pasted
+  var pasteOutcome: CsPasteOutcome = .pasteRequested
   var pasteFrontmostAppNameValue: String?
   var deferredText: String?
   var deferOutcome: CsPasteOutcome = .deferredInsertArmed
@@ -1874,6 +1874,54 @@ final class OverlayStateTests: XCTestCase {
 
     state.teachUncertainWord(word, canonical: "   ")
     XCTAssertEqual(engine.teachRequests.count, 1, "an empty correction teaches nothing")
+  }
+
+  func testContinueMaxChatUsesOnlyCompletedReceiptAndNeverResendsTranscript() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    var opened: [String] = []
+    state.onContinueMaxConsultation = { opened.append($0); return true }
+    let receipt = CsProjectedConsultationPresentation(
+      receiptId: "receipt-owned", consultationId: "max-owned-thread", turnId: "completed-turn",
+      sourceRevision: 1, revision: 2, members: [], renderedText: "Finished answer")
+    projectText("Live answer", to: state, consultationPresentations: [receipt])
+    XCTAssertNil(state.completedMaxConsultationID)
+    state.continueMaxConsultationInChat()
+    XCTAssertTrue(opened.isEmpty)
+    projectText("Finished answer", to: state, terminal: true, consultationPresentations: [receipt])
+    XCTAssertEqual(state.completedMaxConsultationID, "max-owned-thread")
+    state.continueMaxConsultationInChat()
+    XCTAssertEqual(opened, ["max-owned-thread"])
+    XCTAssertTrue(engine.sentAssistiveTexts.isEmpty)
+    XCTAssertEqual(engine.pasteCallCount, 0)
+    projectText("Another take", to: state, terminal: true, sessionId: "next-take")
+    XCTAssertNil(state.completedMaxConsultationID)
+  }
+
+  func testStorageReadinessFailureSurvivesNewTakeAndClearsOnlyOnRecovery() {
+    let state = OverlayState()
+    state.setTranscriptStorageError("unverified bus storage linkage")
+    let failure = state.transcriptStorageError
+    XCTAssertNotNil(failure)
+    state.prepareForExternalStart()
+    XCTAssertEqual(state.transcriptStorageError, failure)
+    state.setTranscriptStorageError(nil)
+    XCTAssertNil(state.transcriptStorageError)
+  }
+
+  func testPostedPasteEventsDoNotClaimConfirmedInsertion() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    state.insertCaretInCodescribeProbe = { false }
+    projectText("Retained text", to: state, canPaste: true, canInsert: true, terminal: true)
+    let requested = expectation(description: "paste dispatched")
+    engine.onPaste = { requested.fulfill() }
+    state.relayIntent(.insertPaste)
+    await fulfillment(of: [requested], timeout: 1)
+    XCTAssertEqual(state.toast, String(localized: "Paste requested"))
+    XCTAssertEqual(state.formattedText, "Retained text")
   }
 
   func testLiveConsultationProjectionPreservesGroupEvidenceWithoutEndingCapture() {

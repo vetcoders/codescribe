@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- Insert and automatic paste, including Comfort, require an enabled editable input and the same retained process and AX element immediately before posting. Unknown, read-only and changed recipients keep the text copied. The widget reports “Paste requested” instead of claiming confirmed insertion.
+- Max prepares its selected conversation at app startup with exact retained history, bounded related-thread context and a tool-free provider request. A forgotten Responses chain can be replaced before tool execution without dropping local history.
+- A completed Max answer offers “Continue in chat”, opening that exact consultation without resending the transcript. Typed replies use its retained owner and durable acceptance identity.
+- Transcript storage recovers verified macOS device-number changes after reboot without changing logical stream identity or cursors. Startup reports storage failures before a new take; Swift and Python readers accept the stable volume identity receipt.
+
 - The Shortcuts settings separate the two things that happen when you change something: the three mode gestures are saved with their own button, which now reports what actually reached disk and which mode was refused, while every other control on the page still applies immediately. Attaching a selection, the extra gestures, automatic paste, paste on demand and the indicator states each sit in their own section, no mode promises a paste any more, and the macOS Fn note reads as a note instead of an error that blocks saving.
 
 - Settings uses the same "Open widget" entry as the Tray: it shows the widget

@@ -173,6 +173,59 @@ impl ThreadDeliveryGateway {
         Ok(messages)
     }
 
+    /// Bounded, local read-only retrieval for rebuilding a disposable provider
+    /// chain. These excerpts supplement context; they never substitute for the
+    /// exact conversation, establish completion, or authorize tool execution.
+    pub(crate) fn consultation_recovery_context(
+        &self,
+        id: &str,
+        history: &[Message],
+    ) -> Result<Option<String>> {
+        let Some(input) = history
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::User)
+        else {
+            return Ok(None);
+        };
+        let query = input
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .flat_map(str::split_whitespace)
+            .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()))
+            .filter(|word| word.chars().count() >= 5)
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if query.is_empty() {
+            return Ok(None);
+        }
+        let index = super::ThreadIndex::load_or_create(self.store.threads_dir())?;
+        let matches = index
+            .search(&query)
+            .into_iter()
+            .filter(|thread| thread.id != id)
+            .take(3)
+            .map(|thread| {
+                serde_json::json!({
+                    "thread_id": thread.id,
+                    "updated_at": thread.updated_at.to_rfc3339(),
+                    "excerpt": thread.summary.as_deref()
+                        .or(thread.latest_message.as_deref()).unwrap_or("")
+                        .chars().take(320).collect::<String>(),
+                })
+            })
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::to_string(&matches)?))
+    }
+
     /// Lock the same store's consultation admission state before executing tools.
     pub(crate) fn open_consultation(
         &self,
@@ -645,6 +698,53 @@ mod tests {
         delivery.mode = "assistive".into();
         gateway.deliver(delivery)?;
         assert!(gateway.restore_consultation("max-a", true).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn startup_retrieval_is_bounded_attributed_and_does_not_replace_exact_history() -> Result<()> {
+        let dir = TempDir::new()?;
+        let gateway = ThreadDeliveryGateway::new_in(dir.path())?;
+        for index in 0..5 {
+            gateway.deliver(input(
+                &format!("related-{index}"),
+                ThreadDeliverySource::Composer,
+                exchange(
+                    timestamp(1),
+                    "repair formatter startup",
+                    &"context ".repeat(100),
+                ),
+                timestamp(1),
+            ))?;
+        }
+        let history = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("repair formatter startup".into())],
+        )];
+        let result = gateway
+            .consultation_recovery_context("selected", &history)?
+            .unwrap();
+        let excerpts: Vec<serde_json::Value> = serde_json::from_str(&result)?;
+        assert_eq!(excerpts.len(), 3);
+        for excerpt in excerpts {
+            assert!(
+                excerpt["thread_id"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("related-")
+            );
+            assert!(excerpt["updated_at"].as_str().is_some());
+            assert!(excerpt["excerpt"].as_str().unwrap().chars().count() <= 320);
+        }
+        assert!(
+            gateway.restore_consultation("selected", true).is_err(),
+            "related excerpts cannot fabricate missing completed history"
+        );
+        assert!(
+            gateway
+                .consultation_recovery_context("selected", &[])?
+                .is_none()
+        );
         Ok(())
     }
 

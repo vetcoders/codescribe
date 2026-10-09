@@ -252,6 +252,12 @@ final class OverlayController: ObservableObject {
       AppModel.shared.tray.onIntent(.revealChat)
       self?.hide()
     }
+    state.onContinueMaxConsultation = { [weak self] backendID in
+      guard AppModel.shared.chat.openMaxConsultation(backendID: backendID) else { return false }
+      AppModel.shared.tray.onIntent(.openChat)
+      self?.hide()
+      return true
+    }
     state.onPlacementChanged = { [weak self] in self?.applyPlacement() }
     state.attach()
   }

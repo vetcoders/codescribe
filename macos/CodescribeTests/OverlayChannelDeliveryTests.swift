@@ -1613,7 +1613,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     }
   }
 
-  private func pinSyntheticGeneration(_ fixture: Fixture, day: String? = "2026_1002") throws {
+  private func pinSyntheticGeneration(
+    _ fixture: Fixture, day: String? = "2026_1002", volumeUUID: Any? = nil
+  ) throws {
     let attributes = try FileManager.default.attributesOfItem(atPath: fixture.bus.path)
     let inode = try XCTUnwrap(attributes[.systemFileNumber] as? NSNumber)
     let dev = try XCTUnwrap(attributes[.systemNumber] as? NSNumber)
@@ -1635,13 +1637,71 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "ino": try XCTUnwrap(current[.systemFileNumber] as? NSNumber), "day": "2026_1003",
       "compressed": false, "sha256": NSNull(), "superseded": NSNull(),
     ]
-    try fixture.write(
-      [
+    var manifest: [String: Any] = [
         "schema": "codescribe.bus-generations.v1", "root": fixture.bus.path,
         "stream_id": "synthetic-stream", "stream_inode": inode, "stream_dev": dev,
         "stream_birthtime": NSNull(), "segments": [closed], "active": active, "pending": NSNull(),
-      ],
+      ]
+    if let volumeUUID { manifest["volume_uuid"] = volumeUUID }
+    try fixture.write(
+      manifest,
       to: URL(fileURLWithPath: fixture.bus.path + ".generations.json"))
+  }
+
+  func testManagedReceiptAcceptsOptionalVolumeUUIDAndRetainsClosedTranscript() async throws {
+    for volume in [NSNull(), "41b7ff38-c1d7-48cd-bf70-373435ecf99a"] as [Any] {
+      let fixture = try Fixture()
+      defer { fixture.remove() }
+      try fixture.append(fixture.open())
+      try fixture.append(fixture.seal(1))
+      let before = try Data(contentsOf: fixture.bus)
+      try pinSyntheticGeneration(fixture, volumeUUID: volume)
+      let reader = OverlayChannelDeliveryReader(root: fixture.root)
+      let observed = try await reader.read()
+      XCTAssertEqual(observed.first?.stage, .sent)
+      let archive = fixture.root.appendingPathComponent("events/2026_1002/closed.jsonl")
+      XCTAssertEqual(try Data(contentsOf: archive), before)
+      XCTAssertEqual(try fixture.busSize(), 0)
+    }
+  }
+
+  func testManagedReceiptRefusesMalformedVolumeUUID() async throws {
+    for volume in ["not-a-uuid", 23, true, ["uuid": "invalid"]] as [Any] {
+      let fixture = try Fixture()
+      defer { fixture.remove() }
+      try fixture.append(fixture.open())
+      try pinSyntheticGeneration(fixture, volumeUUID: volume)
+      let reader = OverlayChannelDeliveryReader(root: fixture.root)
+      do {
+        _ = try await reader.read()
+        XCTFail("a malformed volume identity must not admit the storage receipt")
+      } catch {
+        XCTAssertFalse(
+          FileManager.default.fileExists(
+            atPath: OverlayDeliveryCursorStore.url(root: fixture.root).path))
+      }
+    }
+  }
+
+  func testManagedReceiptStillRefusesUnknownFieldsWithVolumeUUID() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.open())
+    try pinSyntheticGeneration(fixture, volumeUUID: "41b7ff38-c1d7-48cd-bf70-373435ecf99a")
+    let receipt = URL(fileURLWithPath: fixture.bus.path + ".generations.json")
+    var manifest = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
+    manifest["unrecognized"] = true
+    try fixture.write(manifest, to: receipt)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    do {
+      _ = try await reader.read()
+      XCTFail("an optional volume UUID must not loosen unknown-field validation")
+    } catch {
+      XCTAssertFalse(
+        FileManager.default.fileExists(
+          atPath: OverlayDeliveryCursorStore.url(root: fixture.root).path))
+    }
   }
 
   func testManagedColdMonitorSeesNewestSpeechAfterAnUndatedPrefix() async throws {
