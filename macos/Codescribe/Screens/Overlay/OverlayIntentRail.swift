@@ -134,7 +134,11 @@ struct OverlayIntentRail: View {
   var retranscribeUnavailableReason: String?
   /// Why history cannot be opened onto the canvas right now; nil allows it.
   var historyOpenRefusal: String?
-  var onOpenArchive: (OverlayArchivedTranscript) -> Bool = { _ in false }
+  var admitHistoryOpen: () -> UInt64 = { 0 }
+  var onOpenArchive: (OverlayArchivedTranscript, UInt64) -> OverlayArchiveOpenOutcome = { _, _ in
+    .superseded
+  }
+  var onHistoryDismiss: () -> Void = {}
   let onIntent: (OverlayIntent) -> Void
   var onRetranscribe: (OverlayRetranscribePass) -> Void = { _ in }
   var onFormatOnce: (FormattingPolicyOption) -> Void = { _ in }
@@ -153,10 +157,12 @@ struct OverlayIntentRail: View {
       } detail: { close in
         OverlayTranscriptHistory(
           openRefusal: historyOpenRefusal,
-          onOpen: { archived in
+          admitOpen: admitHistoryOpen,
+          onOpen: { archived, admission in
             onInteraction()
-            return onOpenArchive(archived)
+            return onOpenArchive(archived, admission)
           },
+          onDismiss: onHistoryDismiss,
           onOpened: close)
       }
       if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
@@ -287,15 +293,18 @@ struct OverlayIntentRail: View {
   /// An archive reopened from history has no reducer projection, so its rail
   /// is the formatted table with the archive's own facts: Insert still passes
   /// the Rust paste route's target checks, Retranscribe states its own
-  /// unavailability, and nothing is sent to Agent from history.
+  /// unavailability, Send to Agent is the same explicit click, and Undo
+  /// restores the version the archive's last format or retranscription
+  /// replaced in its own revision chain.
   static func archivedIntents(for state: OverlayState) -> [OverlayIntent] {
     if state.isRevisionDraftDirty {
       return recoveryIntents(for: state) + [.commitRevision, .discardRevision, .close]
     }
     return recoveryIntents(for: state)
-      + (state.canUndoRetranscribe ? [.undoRetranscribe] : [])
+      + (state.archivedUndoIntent.map { [$0] } ?? [])
       + [.insertPaste, .copy, .retranscribe]
       + (state.engine == nil ? [] : [.format])
+      + (state.canSendToAgent ? [.sendToAgent] : [])
       + [.close]
   }
 
@@ -395,6 +404,7 @@ extension OverlayIntent {
     case .insertPaste: String(localized: "Insert transcript")
     case .retranscribe: String(localized: "Transcribe this take again")
     case .undoRetranscribe: String(localized: "Undo retranscribe")
+    case .undoFormat: String(localized: "Undo format")
     case .format: String(localized: "Format transcript")
     case .sendToAgent: String(localized: "Send transcript to Agent")
     case .recoverSuperseded: String(localized: "Copy previous take to clipboard")
@@ -416,6 +426,8 @@ extension OverlayIntent {
     case .retranscribe: String(localized: "Requests another transcription of this recording")
     case .undoRetranscribe:
       String(localized: "Restores the transcript this retranscribe replaced, as a new revision")
+    case .undoFormat:
+      String(localized: "Restores the transcript this format replaced, as a new revision")
     case .format: String(localized: "Requests formatting between takes")
     case .sendToAgent: String(localized: "Sends the accepted transcript to Agent")
     case .recoverSuperseded:
@@ -438,6 +450,7 @@ extension OverlayIntent {
     case .insertPaste: "arrow.down.doc"
     case .retranscribe: "arrow.clockwise"
     case .undoRetranscribe: "arrow.uturn.backward"
+    case .undoFormat: "arrow.uturn.backward"
     case .format: "textformat"
     case .sendToAgent: "paperplane"
     case .recoverSuperseded: "arrow.up.doc"

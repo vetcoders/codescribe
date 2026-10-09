@@ -5446,12 +5446,34 @@
         }
       }
     },
+    "Couldn't save the edit to this transcript: %@" : {
+      "comment" : "The placeholder is the engine's own failure text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zapisać edycji tej transkrypcji: %@"
+          }
+        }
+      }
+    },
     "Couldn't save the key on this Mac. Try again." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Nie udało się zapisać klucza na tym Macu. Spróbuj ponownie."
+          }
+        }
+      }
+    },
+    "Couldn't save the new transcription: %@" : {
+      "comment" : "The placeholder is the engine's own failure text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zapisać nowej transkrypcji: %@"
           }
         }
       }
@@ -5504,6 +5526,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się cofnąć ponownej transkrypcji: %@"
+          }
+        }
+      }
+    },
+    "Couldn't undo: %@" : {
+      "comment" : "The placeholder is the engine's own failure text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się cofnąć: %@"
           }
         }
       }
@@ -6230,17 +6263,6 @@
         }
       }
     },
-    "Edit applied. The saved transcript is unchanged." : {
-      "comment" : "Footer after editing a transcript reopened from history",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Edycja zastosowana. Zapisana transkrypcja pozostaje bez zmian."
-          }
-        }
-      }
-    },
     "Edit correction for %@" : {
       "localizations" : {
         "pl" : {
@@ -6277,6 +6299,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Edytuj wiadomość w kolejce"
+          }
+        }
+      }
+    },
+    "Edit saved to this transcript. The original text is kept." : {
+      "comment" : "Footer after an edit of a transcript reopened from history was saved",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edycja zapisana w tej transkrypcji. Oryginalny tekst jest zachowany."
           }
         }
       }
@@ -6956,6 +6989,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Z historii · %@"
+          }
+        }
+      }
+    },
+    "From history · %@ · version %lld" : {
+      "comment" : "Footer under a revised transcript reopened from history; the placeholders are its date and the version shown",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Z historii · %@ · wersja %lld"
           }
         }
       }
@@ -12131,6 +12175,16 @@
         }
       }
     },
+    "Restores the transcript this format replaced, as a new revision" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywraca transkrypcję sprzed formatowania jako nową wersję"
+          }
+        }
+      }
+    },
     "Restores the transcript this retranscribe replaced, as a new revision" : {
       "localizations" : {
         "pl" : {
@@ -12486,12 +12540,12 @@
         }
       }
     },
-    "Saved transcript from history. Click to edit; the saved file stays unchanged." : {
+    "Saved transcript from history. Click to edit; changes are saved as new versions and the original is kept." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zapisana transkrypcja z historii. Kliknij, aby edytować; zapisany plik pozostaje bez zmian."
+            "value" : "Zapisana transkrypcja z historii. Kliknij, aby edytować; zmiany zapisują się jako nowe wersje, a oryginał zostaje zachowany."
           }
         }
       }
@@ -14930,17 +14984,6 @@
         }
       }
     },
-    "The overlay is busy. Try again when the current take is done." : {
-      "comment" : "History entry could not be placed on the overlay canvas",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nakładka jest zajęta. Spróbuj ponownie po zakończeniu bieżącego nagrania."
-          }
-        }
-      }
-    },
     "The provider returned no models. Enter a model ID below." : {
       "localizations" : {
         "pl" : {
@@ -15724,6 +15767,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Niesklasyfikowane narzędzia"
+          }
+        }
+      }
+    },
+    "Undo format" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cofnij formatowanie"
           }
         }
       }
@@ -17337,6 +17390,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "formatowanie niedostępne"
+          }
+        }
+      }
+    },
+    "format undone" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "cofnięto formatowanie"
           }
         }
       }
