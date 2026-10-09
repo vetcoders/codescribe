@@ -4259,6 +4259,17 @@
         }
       }
     },
+    "Cloud transcription is not set up. Use the local pass or configure it in Settings." : {
+      "comment" : "Cloud retranscription requested without a configured cloud provider",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcja w chmurze nie jest skonfigurowana. Użyj transkrypcji lokalnej albo skonfiguruj chmurę w Ustawieniach."
+          }
+        }
+      }
+    },
     "Codescribe - %@" : {
       "comment" : "Menu bar tooltip; Codescribe is the product name, %@ is a status phrase",
       "localizations" : {
@@ -4556,6 +4567,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Commit"
+          }
+        }
+      }
+    },
+    "Commit or discard your edit before opening a saved transcript." : {
+      "comment" : "History is disabled while the canvas holds an unsaved edit",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zatwierdź lub odrzuć edycję, zanim otworzysz zapisaną transkrypcję."
           }
         }
       }
@@ -5424,12 +5446,34 @@
         }
       }
     },
+    "Couldn't save the edit to this transcript: %@" : {
+      "comment" : "The placeholder is the engine's own failure text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zapisać edycji tej transkrypcji: %@"
+          }
+        }
+      }
+    },
     "Couldn't save the key on this Mac. Try again." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Nie udało się zapisać klucza na tym Macu. Spróbuj ponownie."
+          }
+        }
+      }
+    },
+    "Couldn't save the new transcription: %@" : {
+      "comment" : "The placeholder is the engine's own failure text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zapisać nowej transkrypcji: %@"
           }
         }
       }
@@ -5482,6 +5526,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się cofnąć ponownej transkrypcji: %@"
+          }
+        }
+      }
+    },
+    "Couldn't undo: %@" : {
+      "comment" : "The placeholder is the engine's own failure text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się cofnąć: %@"
           }
         }
       }
@@ -6248,6 +6303,17 @@
         }
       }
     },
+    "Edit saved to this transcript. The original text is kept." : {
+      "comment" : "Footer after an edit of a transcript reopened from history was saved",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edycja zapisana w tej transkrypcji. Oryginalny tekst jest zachowany."
+          }
+        }
+      }
+    },
     "Edit the raw markdown" : {
       "localizations" : {
         "pl" : {
@@ -6672,6 +6738,17 @@
         }
       }
     },
+    "Finish the current take before opening a saved transcript." : {
+      "comment" : "History is disabled while a take is being recorded or finished",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dokończ bieżące nagranie, zanim otworzysz zapisaną transkrypcję."
+          }
+        }
+      }
+    },
     "Finish the current turn before changing the thread search." : {
       "localizations" : {
         "pl" : {
@@ -6800,12 +6877,34 @@
         }
       }
     },
+    "Formatting failed. The transcript is unchanged." : {
+      "comment" : "The formatting provider failed for a transcript reopened from history",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie nie powiodło się. Transkrypcja pozostaje bez zmian."
+          }
+        }
+      }
+    },
     "Formatting is disabled. This lane is not required for readiness." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Formatowanie jest wyłączone. Nie wpływa to na pracę Agenta."
+          }
+        }
+      }
+    },
+    "Formatting is not available for this level. The transcript is unchanged." : {
+      "comment" : "The formatter skipped the request, for example formatting is off",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie nie jest dostępne dla tego poziomu. Transkrypcja pozostaje bez zmian."
           }
         }
       }
@@ -6826,6 +6925,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Formatowanie ograniczone do poprawek."
+          }
+        }
+      }
+    },
+    "Formatting made no changes." : {
+      "comment" : "The formatter returned the transcript unchanged",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie niczego nie zmieniło."
           }
         }
       }
@@ -6868,6 +6978,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Swobodne przesuwanie"
+          }
+        }
+      }
+    },
+    "From history · %@" : {
+      "comment" : "Footer under a transcript reopened from history; the placeholder is its date",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Z historii · %@"
+          }
+        }
+      }
+    },
+    "From history · %@ · version %lld" : {
+      "comment" : "Footer under a revised transcript reopened from history; the placeholders are its date and the version shown",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Z historii · %@ · wersja %lld"
           }
         }
       }
@@ -9976,6 +10108,16 @@
         }
       }
     },
+    "Opens this transcript on the overlay to edit, format, transcribe again or insert" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwiera tę transkrypcję w nakładce, aby ją edytować, sformatować, retranskrybować lub wstawić"
+          }
+        }
+      }
+    },
     "Operating lane" : {
       "comment" : "Setup step eyebrow",
       "localizations" : {
@@ -11690,6 +11832,17 @@
         }
       }
     },
+    "Reopen unsaved work on its transcript" : {
+      "comment" : "Recovery puts retained work back on the saved transcript it was written for",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć niezapisaną pracę do jej transkrypcji"
+          }
+        }
+      }
+    },
     "Replace a manually installed Codescribe skill?" : {
       "localizations" : {
         "pl" : {
@@ -12045,6 +12198,16 @@
         }
       }
     },
+    "Restores the transcript this format replaced, as a new revision" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywraca transkrypcję sprzed formatowania jako nową wersję"
+          }
+        }
+      }
+    },
     "Restores the transcript this retranscribe replaced, as a new revision" : {
       "localizations" : {
         "pl" : {
@@ -12396,6 +12559,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "zapisano notatkę"
+          }
+        }
+      }
+    },
+    "Saved transcript from history. Click to edit; changes are saved as new versions and the original is kept." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisana transkrypcja z historii. Kliknij, aby edytować; zmiany zapisują się jako nowe wersje, a oryginał zostaje zachowany."
           }
         }
       }
@@ -13072,16 +13245,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż ikonę"
-          }
-        }
-      }
-    },
-    "Show in Finder" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż w Finderze"
           }
         }
       }
@@ -14572,6 +14735,17 @@
         }
       }
     },
+    "The audio for this saved transcript is no longer available." : {
+      "comment" : "Transcribe again is impossible: the archived take has no audio file",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dźwięk tej zapisanej transkrypcji nie jest już dostępny."
+          }
+        }
+      }
+    },
     "The bundled agent bridge failed checksum verification: %@" : {
       "comment" : "The placeholder is a technical diagnostic produced by the installer",
       "localizations" : {
@@ -15077,6 +15251,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ta odpowiedź nie zawiera tekstu do odczytania."
+          }
+        }
+      }
+    },
+    "This saved transcript is empty." : {
+      "comment" : "History entry whose archived text file has no words",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta zapisana transkrypcja jest pusta."
           }
         }
       }
@@ -15599,6 +15784,16 @@
         }
       }
     },
+    "Undo format" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cofnij formatowanie"
+          }
+        }
+      }
+    },
     "Undo needs the recording engine" : {
       "localizations" : {
         "pl" : {
@@ -15987,6 +16182,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Głośność"
+          }
+        }
+      }
+    },
+    "Wait for the current change to finish before opening a saved transcript." : {
+      "comment" : "History is disabled while a revision, format or retranscription runs",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poczekaj na zakończenie bieżącej zmiany, zanim otworzysz zapisaną transkrypcję."
           }
         }
       }
@@ -17197,6 +17403,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "formatowanie niedostępne"
+          }
+        }
+      }
+    },
+    "format undone" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "cofnięto formatowanie"
           }
         }
       }
@@ -19348,6 +19564,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "odrzucono niezapisaną zmianę"
+          }
+        }
+      }
+    },
+    "unsaved work reopened" : {
+      "comment" : "Footer after retained work was put back on its saved transcript",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "przywrócono niezapisaną pracę"
           }
         }
       }

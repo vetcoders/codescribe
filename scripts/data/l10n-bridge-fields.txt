@@ -28,6 +28,11 @@ data  CsAgentArchiveRequest.bridgeHome
 data  CsAgenticReadiness.configPathDisplay
 data  CsAnnotationKind.kind
 prose CsAnnotationKind.label
+data  CsArchivedDocument.path
+data  CsArchivedDocument.originalText
+data  CsArchivedDocument.renderedText
+data  CsArchivedDocument.provenance
+data  CsArchivedDocument.receiptId
 data  CsApiKeyProbeResult.account
 prose CsApiKeyProbeResult.message
 data  CsApiKeyProbeResult.probedEndpoint
