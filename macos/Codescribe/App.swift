@@ -182,7 +182,8 @@ struct CodescribeApp: App {
       agentStatus: RealAgentStatusEngine(),
       mcpAdmin: RealMCPAdminEngine(),
       hotkeys: RealHotkeysEngine(),
-      licenseService: LicenseService.shared
+      licenseService: LicenseService.shared,
+      configurationInvalidation: AppModel.shared.configurationInvalidation
     )
     let delegate = appDelegate
     model.onApplyInterfaceLanguage = { beforeTermination in

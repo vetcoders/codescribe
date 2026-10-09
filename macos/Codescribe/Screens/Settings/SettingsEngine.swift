@@ -423,6 +423,8 @@ struct MockSettingsEngine: SettingsEngine {
   /// Preview seed for the local-Whisper picker; the observer records selections.
   var whisperCatalog: CsWhisperModelCatalog = .sample
   var selectLocalWhisperModelObserver: ((String) async throws -> CsWhisperModelSwitch)?
+  /// Live catalog reads for residency transitions; nil serves `whisperCatalog`.
+  var whisperCatalogLoader: (() -> CsWhisperModelCatalog)?
   var voiceLabEditObserver: ((String, String) throws -> CsVoiceLabSaveResult)?
   var ruleCandidates: [CsRuleCandidate] = []
   var ruleCandidatesLoader: (() throws -> [CsRuleCandidate])?
@@ -469,7 +471,9 @@ struct MockSettingsEngine: SettingsEngine {
   func resetAudioInputDevice() throws {
     try resetAudioInputDeviceObserver?()
   }
-  func loadWhisperModelCatalog() -> CsWhisperModelCatalog { whisperCatalog }
+  func loadWhisperModelCatalog() -> CsWhisperModelCatalog {
+    whisperCatalogLoader?() ?? whisperCatalog
+  }
   func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch {
     if let selectLocalWhisperModelObserver {
       return try await selectLocalWhisperModelObserver(reference)
