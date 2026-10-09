@@ -16,6 +16,7 @@ struct AgentLanesTab: View {
 
       SettingsSectionLabel(String(localized: "Automatic send to the Agent"))
         .padding(.top, CSSpace.section)
+        .padding(.bottom, 8)
       // Mirrors `OverlayState`: armed in Agent mode only, fires after
       // `autoHideDelaySeconds`, cancelled the moment the transcript is edited.
       SettingsControlRow(

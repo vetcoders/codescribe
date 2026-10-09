@@ -36,8 +36,11 @@
   with a plain relaunch intent: the choice is saved the moment it is picked, the
   row shows “Restart now” while the saved choice differs from the running
   language, and the relaunched app comes back with the tray in the new language
-  without reopening Settings or the wizard. The same busy and unavailable
-  messages apply; the row never relaunches on its own.
+  without reopening Settings or the wizard. The restart explanation, the button
+  and the busy or unavailable messages are rendered in the chosen language
+  (`LocalizedStringResource(locale:)` on `InterfaceLanguage.locale`), so the row
+  already reads the way the app will after the relaunch; the row never
+  relaunches on its own.
   The initial step occupies resume slot zero. Setup has nine semantic chapters;
   Rust writes v3 resume markers and maps v2 and bare markers into the matching
   chapter. All permissions share chapter two; the optional local-model chapter

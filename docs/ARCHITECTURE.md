@@ -334,7 +334,7 @@ share three contracts:
   menu present the same `ThreadDeleteConfirmation`; the dialog names the
   thread and Cancel keeps it. There is no undo path, and the copy says so.
 - **Markdown export reports its outcome.** The toolbar menu names the fixed
-  destination (the Transcripts folder from Settings › User › Local data) in a
+  destination (the Transcripts folder from Settings › About › Local data) in a
   section header; there is no file chooser. After the write, an alert shows
   the file name and folder with "Reveal in Finder" and "Open" buttons, or an
   "Export failed" alert naming the thread and the folder to check. Finder is

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- The Shortcuts settings separate the two things that happen when you change something: the three mode gestures are saved with their own button, which now reports what actually reached disk and which mode was refused, while every other control on the page still applies immediately. Attaching a selection, the extra gestures, automatic paste, paste on demand and the indicator states each sit in their own section, no mode promises a paste any more, and the macOS Fn note reads as a note instead of an error that blocks saving.
+
 - Settings uses the same "Open widget" entry as the Tray: it shows the widget
   without starting or toggling a recording.
 - The widget button cycles through MINI, MIDI and regular transcript views.

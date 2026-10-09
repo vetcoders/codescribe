@@ -90,6 +90,15 @@ private struct LLMLaneEditor: View {
     laneModel.repeatsDiscoveryFailure(of: model.llmLane(.assistive))
   }
 
+  /// Where the model name comes from: a stored override or the provider default.
+  private var modelSourceCaption: String {
+    hasOverride
+      ? String(localized: "Set manually", comment: "Model field caption: an override is stored")
+      : String(
+        localized: "Provider default model",
+        comment: "Model field caption: no override, the provider default resolves")
+  }
+
   private var discoveryDotColor: Color {
     switch laneModel.discovery.status {
     case "fresh": return CSColor.olive
@@ -144,7 +153,9 @@ private struct LLMLaneEditor: View {
         .accessibilityValue(laneModel.providerDisplayName)
       }
 
-      SettingsControlRow(title: String(localized: "Model")) {
+      // The source caption sits under the row title: a third line under the
+      // field made the card tall for one short word.
+      SettingsControlRow(title: String(localized: "Model"), subtitle: modelSourceCaption) {
         VStack(alignment: .trailing, spacing: 8) {
           // Discovery state ("discovering…", cached, failed) is the footer line below.
           if laneModel.usesDiscoveredPicker {
@@ -196,17 +207,6 @@ private struct LLMLaneEditor: View {
             .accessibilityLabel("Reset \(lane.title) model")
           }
 
-          Text(
-            hasOverride
-              ? String(
-                localized: "Set manually", comment: "Model field caption: an override is stored")
-              : String(
-                localized: "Provider default model",
-                comment: "Model field caption: no override, the provider default resolves")
-          )
-          .font(CSFont.ui(10.5))
-          .foregroundStyle(Color.secondary)
-          .accessibilityLabel("\(lane.title) model source")
         }
         .frame(width: 440)
         .onAppear { modelDraft = laneModel.configuredModel }
