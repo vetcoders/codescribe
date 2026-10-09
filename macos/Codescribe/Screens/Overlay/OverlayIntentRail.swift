@@ -105,6 +105,7 @@ struct OverlayActionsSurface: ViewModifier {
 /// Symbols shared by the rendered controls and their collision census.
 enum OverlayControlSymbols {
   static let history = "clock.arrow.circlepath"
+  static let versions = "square.stack"
   static let previousTake = "tray.and.arrow.up"
   static let actions = "ellipsis"
   static let closeActions = "xmark"
@@ -141,6 +142,11 @@ struct OverlayIntentRail: View {
     .superseded
   }
   var onHistoryDismiss: () -> Void = {}
+  /// Versions of the take on the canvas; shown only when there is a choice
+  /// or a limit to explain.
+  var versions: OverlayTranscriptVersionsPresentation = .empty
+  var onVersionsOpened: () -> Void = {}
+  var onRestoreVersion: (UInt64) -> Void = { _ in }
   let onIntent: (OverlayIntent) -> Void
   var onRetranscribe: (OverlayRetranscribePass) -> Void = { _ in }
   var onFormatOnce: (FormattingPolicyOption) -> Void = { _ in }
@@ -166,6 +172,24 @@ struct OverlayIntentRail: View {
           },
           onDismiss: onHistoryDismiss,
           onOpened: close)
+      }
+      if versions.isVisible {
+        OverlayHoverControl(
+          id: Self.versionsControlID, title: Self.versionsTitle(versions),
+          palette: palette,
+          presented: $presented
+        ) {
+          Image(systemName: OverlayControlSymbols.versions).frame(width: 24, height: 24)
+        } detail: { close in
+          OverlayTranscriptVersionsMenu(
+            versions: versions,
+            onRestore: { revision in
+              onInteraction()
+              onRestoreVersion(revision)
+            },
+            close: close)
+        }
+        .accessibilityValue(versions.current?.title ?? "")
       }
       if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
         OverlayHoverControl(
@@ -257,6 +281,7 @@ struct OverlayIntentRail: View {
     .onChange(of: presented) { _, value in
       onPresentationChange(value != nil)
       if value != nil { onInteraction() }
+      if value == Self.versionsControlID { onVersionsOpened() }
     }
     .onDisappear { onPresentationChange(false) }
     .onExitCommand {
@@ -373,6 +398,21 @@ struct OverlayIntentRail: View {
     case .noSpeech:
       (canRetranscribe ? [.retranscribe] : []) + [.close]
     }
+  }
+
+  static let versionsControlID = "overlay-versions-menu"
+
+  /// Names the shown version, so the control says which one is active.
+  static func versionsTitle(_ versions: OverlayTranscriptVersionsPresentation) -> String {
+    guard let current = versions.current else {
+      return String(
+        localized: "overlay.versions.control", defaultValue: "Transcript versions",
+        comment: "Overlay control listing the versions of the take on the canvas")
+    }
+    return String(
+      localized: "overlay.versions.control.current",
+      defaultValue: "Transcript versions · shown: \(current.title)",
+      comment: "Overlay control title; the placeholder names the version on the canvas")
   }
 
   static func accessibilityValue(for phase: String) -> String {
