@@ -24,7 +24,7 @@ final class OverlayChromeV3Tests: XCTestCase {
     XCTAssertTrue(close.contains("size: 9"))
     XCTAssertFalse(close.contains("compact ?"), "Close size must not depend on header width")
     XCTAssertFalse(close.contains("state.mode"), "Close must not signal engine state")
-    XCTAssertTrue(close.contains(".scaleEffect(closeDotHovered ? 1.15 : 1)"))
+    XCTAssertTrue(close.contains(".scaleEffect(closeDotHovered ? 10.0 / 7.0 : 1)"))
     XCTAssertTrue(close.contains("if closeDotHovered {"))
     XCTAssertTrue(close.contains("OverlayCloseCross()"))
     XCTAssertTrue(close.contains(".onHover {"))

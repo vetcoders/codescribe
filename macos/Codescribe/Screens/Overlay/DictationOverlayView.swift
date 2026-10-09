@@ -731,7 +731,7 @@ struct DictationOverlayView: View {
               .accessibilityHidden(true)
           }
         }
-        .scaleEffect(closeDotHovered ? 1.15 : 1)
+        .scaleEffect(closeDotHovered ? 10.0 / 7.0 : 1)
         .contentShape(Circle().inset(by: -7.5))
     }
     .buttonStyle(.plain)
