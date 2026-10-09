@@ -573,6 +573,37 @@ final class VoiceLabTests: XCTestCase {
     XCTAssertEqual(msg, "No new rules: everything eligible is already in My rules · 1 active rule")
   }
 
+  /// With more corrections than the page loads, Learn and the counters must
+  /// still quote the whole store (review, 2026-10-09).
+  func testVoiceLabRefreshKeepsTheCorpusSizeBeyondThePageCap() {
+    let records = (0..<60).map { index in
+      CsQualityRecord(
+        id: "corr-\(index)",
+        revision: 1,
+        rawText: "raw \(index)",
+        variant: "raw \(index)",
+        editedText: "edited \(index)",
+        action: "copy",
+        editProvenance: nil,
+        timestampMs: UInt64(1_700_000_000_000 + index),
+        avgLogprob: nil,
+        speechPct: nil,
+        confidenceFlags: []
+      )
+    }
+    let engine = MockSettingsEngine(qualityRecords: records, lexiconEntries: [])
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+
+    model.refreshVoiceLab()
+
+    XCTAssertEqual(model.qualityRecords.count, 50, "the page stays capped")
+    XCTAssertEqual(model.totalQualityCorrections, 60, "the corpus count is not")
+    XCTAssertEqual(
+      learnScopeMessage(corrections: Int(clamping: model.totalQualityCorrections)),
+      "Codescribe reviews all 60 saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to My rules. Existing rules, corrections and their history stay as they are."
+    )
+  }
+
   func testVoiceLabRefreshLoadsRuleCandidates() {
     let candidate = CsRuleCandidate(
       target: "Vibecrafted",

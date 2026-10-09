@@ -252,6 +252,15 @@ func archivedAudioLookup(configDir: String, rawText: String) -> ArchivedAudioLoo
   }
 }
 
+/// The same pairing, run off the main actor. The walk reads every archived
+/// transcript, so neither a view body nor a UI task may call the sync walker
+/// directly (review, 2026-10-09).
+func pairedArchivedAudio(configDir: String, rawText: String) async -> ArchivedAudioLookup {
+  await Task.detached(priority: .userInitiated) {
+    archivedAudioLookup(configDir: configDir, rawText: rawText)
+  }.value
+}
+
 /// The archived recording when exactly one take matches; see `archivedAudioLookup`.
 func archivedAudioURL(configDir: String, rawText: String) -> URL? {
   archivedAudioLookup(configDir: configDir, rawText: rawText).url
@@ -307,6 +316,13 @@ struct VoiceLabPanel: View {
   @State private var playbackDelegate = VoiceLabPlaybackDelegate()
   @State private var confirmingLearn = false
   @State private var showingDiagnostics = false
+  /// Archived-audio pairing per correction id, computed once off the main
+  /// actor. The walk reads every archived transcript, so it must not run
+  /// inside the view body (review, 2026-10-09).
+  @State private var audioLookups: [String: ArchivedAudioLookup] = [:]
+  /// Bumped when the records reload so a card whose id did not change still
+  /// pairs its audio again.
+  @State private var audioLookupGeneration = 0
 
   private var corrections: [VoiceLabCorrectionRow] {
     qualityCorrectionRows(model.qualityRecords)
@@ -366,7 +382,7 @@ struct VoiceLabPanel: View {
             }
             Button("Cancel", role: .cancel) {}
           } message: {
-            Text(learnScopeMessage(corrections: corrections.count))
+            Text(learnScopeMessage(corrections: Int(clamping: model.totalQualityCorrections)))
           }
           Button("Refresh") {
             model.refreshVoiceLab()
@@ -444,7 +460,7 @@ struct VoiceLabPanel: View {
       ForEach(
         Array(
           dictionaryCounters(
-            corrections: corrections.count,
+            corrections: Int(clamping: model.totalQualityCorrections),
             unchangedTakes: Int(clamping: model.unchangedQualityTakes),
             activeRules: activeRulesCount
           ).enumerated()), id: \.offset
@@ -471,9 +487,13 @@ struct VoiceLabPanel: View {
       VStack(spacing: 8) {
         let safeIndex = min(correctionIndex, corrections.count - 1)
         let row = corrections[safeIndex]
-        let audioLookup = archivedAudioLookup(configDir: model.configDir, rawText: row.rawText)
-        let retranscribeReason = retranscribeUnavailableReason(
-          asrMode: model.asrModeId, lookup: audioLookup, pending: helperPending)
+        let audioLookup = audioLookups[row.id]
+        // Nil while the archive walk is still running: the button stays
+        // disabled without claiming that the recording is missing.
+        let retranscribeReason: String? = audioLookup.flatMap {
+          retranscribeUnavailableReason(
+            asrMode: model.asrModeId, lookup: $0, pending: helperPending)
+        }
         VStack(alignment: .leading, spacing: 12) {
           HStack(spacing: 8) {
             Text(
@@ -533,7 +553,7 @@ struct VoiceLabPanel: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(retranscribeReason != nil)
+            .disabled(retranscribeReason != nil || audioLookup == nil)
             .accessibilityLabel("Retranscribe this take on the helper engine")
             .help(retranscribeReason ?? "")
             if let helperText, !helperText.isEmpty {
@@ -723,6 +743,16 @@ struct VoiceLabPanel: View {
         // to the static header, not to the mixed AppKit/SwiftUI container.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("dictionary-correction-card")
+        .task(id: [row.id, String(audioLookupGeneration)]) {
+          guard audioLookups[row.id] == nil else { return }
+          let lookup = await pairedArchivedAudio(configDir: model.configDir, rawText: row.rawText)
+          guard !Task.isCancelled else { return }
+          audioLookups[row.id] = lookup
+        }
+        .onChange(of: model.qualityRecords) {
+          audioLookups = [:]
+          audioLookupGeneration += 1
+        }
         if corrections.count > 1 {
           HStack {
             Button("Previous") { correctionIndex = max(0, safeIndex - 1) }
@@ -804,7 +834,10 @@ struct VoiceLabPanel: View {
         let lease = try await CodescribeHotkeys().acquireAudioReadLease()
         defer { lease.release() }
         try Task.checkCancellation()
-        let archived = archivedAudioURL(configDir: lease.rootDirectory(), rawText: row.rawText)
+        let archived = await pairedArchivedAudio(
+          configDir: lease.rootDirectory(), rawText: row.rawText
+        ).url
+        try Task.checkCancellation()
         switch HelperFilePass.request(asrMode: model.asrModeId, archivedAudio: archived) {
         case .failure(.noHelper):
           helperText = nil
@@ -846,7 +879,9 @@ struct VoiceLabPanel: View {
         var retainedForPlayback = false
         defer { if !retainedForPlayback { lease.release() } }
         guard !Task.isCancelled, playingRowID == row.id else { return }
-        let lookup = archivedAudioLookup(configDir: lease.rootDirectory(), rawText: row.rawText)
+        let lookup = await pairedArchivedAudio(
+          configDir: lease.rootDirectory(), rawText: row.rawText)
+        guard !Task.isCancelled, playingRowID == row.id else { return }
         if case .ambiguous(let count) = lookup {
           stopPlayback()
           playbackMessage = String(
