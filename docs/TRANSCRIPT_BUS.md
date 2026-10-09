@@ -1162,6 +1162,53 @@ provider submission identity stays `unresolved`; no unrelated entry is removed.
 The mailbox, transcript journal, original ACK marker and retained audio remain
 independent of pending provider queue removal.
 
+## Unexpected listener loss and recovery
+
+A listening session has four layers. Each is observed by a different component,
+and only some can be recovered by the helper:
+
+| Layer                                                                    | Observed by                                               | Recovered by                                            |
+| ------------------------------------------------------------------------ | --------------------------------------------------------- | ------------------------------------------------------- |
+| Follower process (lease owner, mailbox writer)                           | the session's `--watch`                                   | the same `--watch`, through owned recovery below        |
+| Watch process                                                            | the provider's monitor (exit notification) and `--status` | the agent only: it restarts `--watch` under its monitor |
+| Provider notification window (for example a bounded exec/monitor window) | the provider only                                         | the agent, by renewing the window                       |
+| Provider conversation                                                    | the provider only                                         | not recoverable by the helper                           |
+
+The helper cannot see a provider's notification window or conversation. A
+window ending while the watch keeps running is not a disconnect, and the helper
+does not claim to notify through an expired window.
+
+A watch started with `--provider/--session` checks its follower every two
+seconds. A follower counts as lost only when two consecutive checks find no
+live follower process, the lease lock is free, and the channel binding still
+names this exact provider session. Quiet time, a stale heartbeat and a renewed
+watch are not losses. A held lease lock means a handover is in progress.
+
+Recovery runs under the canonical binding lock, in the same order as attach,
+detach and archive. It starts one follower with the recorded name, channel, bus,
+wakeup and hook through the same launch and readiness path as `--attach`. The
+replacement acquires the same lease and resumes its cursor and unread mailbox.
+Recovery writes no acknowledgment, resubmits no accepted queue copy and replays
+no transcript. Each lost follower incarnation (pid plus start time) is handled
+at most once. Detach, archive and takeover remove or replace the binding, so
+nothing they ended is revived. A session that does not own the binding cannot
+recover it. Forks need their own session ID.
+
+The watch reports recovery on its own stdout as a single
+`codescribe.agent-bridge.lifecycle-notice.v1` line (`notice: "Codescribe listener lifecycle"`). It is independent of the lost follower. Events are
+`follower_recovered`, `recovery_failed`, `recovery_suspended`, `unrecoverable`
+and `listener_ended`, after which the watch exits. A notice has no
+`delivery_id` and no transcript text. It is never in the mailbox and is never
+acknowledged.
+
+Two consecutive losses without a newly queued message suspend automatic
+recovery (Founder decision, 2026-10-10). A suspended session stays visible as
+`listener.recovery_suspended` in `--status`. For Codex, the suspension notice is
+also submitted once through the native queue, so a later turn learns of it after
+the watch has ended. A newly queued terminal message or an explicit `--attach`
+resets the streak. Bookkeeping lives in `runtime/followers/<lease>.lifecycle.json`;
+the watch registers in `<lease>.watch.json` for `--status`.
+
 ## Disconnected agent archive
 
 The overlay drawer offers **Remove from list and move to archive** only for a

@@ -110,6 +110,13 @@ TAKEOVER_RECEIPT_SCHEMA = "codescribe.agent-bridge.takeover-receipt.v1"
 #: channel; the other two mean the previous reader is still sitting on it.
 HANDOVER_CLEAR_STATES = ("stopped", "not_running")
 STATUS_SCHEMA = "codescribe.agent-bridge.status.v1"
+LIFECYCLE_SCHEMA = "codescribe.agent-bridge.listener-lifecycle.v1"
+LIFECYCLE_NOTICE_SCHEMA = "codescribe.agent-bridge.lifecycle-notice.v1"
+#: Founder 2026-10-10: after two consecutive follower losses with no newly
+#: received message between them, stop reconnecting and say so.
+LIFECYCLE_SUSPEND_AFTER = 2
+#: How often a watch looks at its follower; a loss needs two observations.
+LISTENER_CHECK_SECONDS = 2.0
 DEFAULT_LEASE_TTL_SECONDS = 120.0
 PLAYBACK_WAIT_SECONDS = 120.0
 TAKE_WAIT_SECONDS = 120.0
@@ -2376,6 +2383,8 @@ class SessionLease:
             )
         self.pending[delivery_id] = payload
         self.persist(active=True)
+        if payload.get("kind") in TERMINAL_KINDS:
+            lifecycle_message_received(self.root, self.lease_id)
         return True
 
     def _drafts_of(self, key: tuple[Any, Any]) -> list[str]:
@@ -4498,6 +4507,310 @@ def live_follower_pid(root: Path, lease_id: str) -> int | None:
     return None
 
 
+def lifecycle_paths(root: Path, lease_id: str) -> tuple[Path, Path]:
+    base = root / "runtime" / "followers" / lease_id
+    return base.with_suffix(".lifecycle.json"), base.with_suffix(".lifecycle.lock")
+
+
+def watch_record_path(root: Path, lease_id: str) -> Path:
+    return (root / "runtime" / "followers" / lease_id).with_suffix(".watch.json")
+
+
+@contextlib.contextmanager
+def listener_lifecycle(root: Path, lease_id: str) -> Iterator[dict[str, Any]]:
+    """The loss streak's only writer: one lock, written back only on change.
+
+    Lifecycle state is diagnostics and recovery bookkeeping. It never holds a
+    transcript, a delivery or a cursor; the lease stays the mailbox authority.
+    """
+    path, lock_path = lifecycle_paths(root, lease_id)
+    lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with open(lock_path, "a+b") as lock:
+        os.fchmod(lock.fileno(), 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        state = read_json(path)
+        if path.exists() and (not isinstance(state, dict)
+                              or state.get("schema") != LIFECYCLE_SCHEMA
+                              or state.get("lease_id") != lease_id):
+            raise OSError("listener lifecycle state is unreadable; preserved")
+        state = state or {"schema": LIFECYCLE_SCHEMA, "lease_id": lease_id,
+                          "consecutive_losses": 0, "suspended": False, "losses": []}
+        before = json.dumps(state, sort_keys=True)
+        yield state
+        if json.dumps(state, sort_keys=True) != before:
+            state["updated_at"] = utc_now()
+            atomic_json(path, state)
+
+
+def reset_listener_streak(root: Path, lease_id: str, reason: str) -> None:
+    """A received message or an explicit attach ends the loss streak."""
+    current = read_json(lifecycle_paths(root, lease_id)[0])
+    if not current or (not current.get("consecutive_losses") and not current.get("suspended")):
+        return
+    try:
+        with listener_lifecycle(root, lease_id) as state:
+            state.update(consecutive_losses=0, suspended=False, reset_at=utc_now(), reset_by=reason)
+    except OSError:
+        pass  # Bookkeeping never blocks a delivery or an attachment.
+
+
+def lifecycle_message_received(root: Path, lease_id: str) -> None:
+    reset_listener_streak(root, lease_id, "message_received")
+
+
+def follower_command(root: Path, *, provider: str, session: str, name: str, channel: str,
+                     bus: str, wakeup: str, on_seal: str | None) -> list[str]:
+    _, events_path = follower_paths(root, lease_identifier(provider, session))
+    command = [sys.executable, os.path.abspath(__file__),
+               "--bus", bus, "--bridge-home", str(root.resolve()),
+               "--provider", provider, "--session", session,
+               "--name", name, "--drafts", "--follow", "--coalesce",
+               "--follower-events", str(events_path),
+               "--follower-channel", str(channel),
+               "--wakeup", wakeup]
+    if on_seal:
+        command += ["--on-seal", on_seal]
+    return command
+
+
+def launch_follower(root: Path, command: list[str]) -> Any:
+    """Start one detached follower writing the lease's log and error files."""
+    import subprocess
+
+    lease_id = lease_identifier(command[command.index("--provider") + 1],
+                                command[command.index("--session") + 1])
+    log_path, _ = follower_paths(root, lease_id)
+    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with contextlib.ExitStack() as outputs:
+        handles = []
+        for path in (log_path, log_path.with_suffix(".errors.log")):
+            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            handle = outputs.enter_context(os.fdopen(descriptor, "ab"))
+            os.fchmod(handle.fileno(), 0o600)
+            handles.append(handle)
+        return subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                                stdout=handles[0], stderr=handles[1], start_new_session=True)
+
+
+def confirm_follower(root: Path, lease_id: str, session: str, bus: str,
+                     child: Any, configuration: dict[str, Any]) -> None:
+    """Record the child and wait until it verifiably owns the lease."""
+    log_path, events_path = follower_paths(root, lease_id)
+    errors_path = log_path.with_suffix(".errors.log")
+    lease_path = root / "leases" / f"{lease_id}.json"
+    atomic_json(follower_pidfile(root, lease_id), {
+        "lease_id": lease_id, "pid": child.pid, "started_at": utc_now(),
+        "configuration": configuration,
+    })
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if child.poll() is not None:
+            raise OSError(f"follower exited during startup; see {errors_path}")
+        state = read_json(lease_path) or {}
+        if (state.get("schema") == LEASE_SCHEMA and state.get("pid") == child.pid
+                and state.get("lease_id") == lease_id
+                and state.get("active") is True and state.get("bus") == bus
+                and events_path.exists()
+                and verified_follower(root, lease_id, session, child.pid)
+                and child.poll() is None):
+            return
+        time.sleep(0.1)
+    raise OSError(f"follower readiness timed out; see {errors_path}")
+
+
+def recover_follower(root: Path, provider: str, session: str) -> dict[str, Any]:
+    """Restore one unexpectedly lost follower on its own lease, at most once.
+
+    Runs under the binding lock in the order attach, detach and archive use,
+    so a handover in progress finishes first and is observed, never raced.
+    The channel binding is the only proof that this session still intends to
+    listen: detach, archive and takeover remove or replace it, and nothing
+    without it is revived. The replacement resumes the same lease, cursor and
+    unread mailbox; nothing is acknowledged, resubmitted or replayed here.
+    """
+    provider = provider.casefold()
+    lease_id = lease_identifier(provider, session)
+    report: dict[str, Any] = {"schema": LIFECYCLE_NOTICE_SCHEMA, "kind": "listener_lifecycle",
+                              "lease_id": lease_id, "provider": provider,
+                              "provider_session_id": session}
+    lease_path = root / "leases" / f"{lease_id}.json"
+    with channel_bindings(root) as bindings:
+        owned = sorted((slot, entry) for slot, entry in bindings.items()
+                       if isinstance(entry, dict) and entry.get("provider") == provider
+                       and entry.get("provider_session_id") == session)
+        if not owned:
+            return {**report, "event": "listener_ended",
+                    "reason": "this session owns no channel; detached or handed over"}
+        slot, entry = owned[0]
+        report.update(channel=str(slot), name=entry.get("audience"))
+        pid = live_follower_pid(root, lease_id)
+        if pid is not None:
+            return {**report, "event": "alive", "follower_pid": pid}
+        descriptor = os.open(root / "leases" / f"{lease_id}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {**report, "event": "busy"}
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+        lease_state = read_json(lease_path)
+        if (not isinstance(lease_state, dict) or lease_state.get("schema") != LEASE_SCHEMA
+                or lease_state.get("lease_id") != lease_id
+                or lease_state.get("provider_session_id") != session
+                or lease_state.get("bus") != entry.get("bus")):
+            return {**report, "event": "unrecoverable",
+                    "reason": "lease recovery state is missing or belongs elsewhere; preserved"}
+        identity = lease_state.get("process_identity")
+        started = identity.get("started") if isinstance(identity, dict) else None
+        incarnation = f"{lease_state.get('pid')}@{started}"
+        report["lost_follower_pid"] = lease_state.get("pid")
+        with listener_lifecycle(root, lease_id) as state:
+            if any(loss.get("incarnation") == incarnation for loss in state["losses"]):
+                return {**report, "event": "already_handled", "suspended": state["suspended"]}
+            losses = int(state.get("consecutive_losses") or 0) + 1
+            loss = {"layer": "follower", "incarnation": incarnation,
+                    "lost_follower_pid": lease_state.get("pid"), "observed_at": utc_now()}
+            state["consecutive_losses"] = losses
+            state["losses"] = (state["losses"] + [loss])[-16:]
+            report.update(consecutive_losses=losses,
+                          notice_id=_identity(("listener_lifecycle", lease_id, incarnation)))
+            if losses >= LIFECYCLE_SUSPEND_AFTER:
+                state["suspended"] = True
+                loss["outcome"] = "recovery_suspended"
+                return {**report, "event": "recovery_suspended", "suspended": True}
+            loss["outcome"] = "recovering"
+        recorded = (read_json(follower_pidfile(root, lease_id)) or {}).get("configuration") \
+            or lease_state.get("wakeup_configuration") or {}
+        wakeup = recorded.get("wakeup") if recorded.get("wakeup") in ("codex-queue", "off") else "off"
+        on_seal = recorded.get("on_seal") if isinstance(recorded.get("on_seal"), str) else None
+        configuration = {"wakeup": wakeup, "on_seal": on_seal,
+                         "helper_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+        child = None
+        try:
+            child = launch_follower(root, follower_command(
+                root, provider=provider, session=session, name=str(entry.get("audience")),
+                channel=str(slot), bus=str(entry.get("bus")), wakeup=wakeup, on_seal=on_seal))
+            confirm_follower(root, lease_id, session, str(entry.get("bus")), child, configuration)
+            outcome: dict[str, Any] = {"event": "follower_recovered", "follower_pid": child.pid}
+        except OSError as error:
+            if child is not None and child.poll() is None:
+                child.terminate()
+            outcome = {"event": "recovery_failed", "reason": str(error)}
+        with listener_lifecycle(root, lease_id) as state:
+            for item in state["losses"]:
+                if item.get("incarnation") == incarnation:
+                    item["outcome"] = outcome["event"]
+        return {**report, **outcome, "suspended": False}
+
+
+def submit_lifecycle_notice(root: Path, notice: dict[str, Any]) -> str:
+    """Wake a Codex conversation about a suspended listener, never as a delivery.
+
+    The watch printing the notice may itself end with the turn; the native
+    queue reaches a later turn. The text carries no transcript and no
+    delivery id, so nothing about it can be acknowledged or executed.
+    """
+    import shutil
+    import subprocess
+
+    executable = shutil.which("codex")
+    message = (
+        f"Codescribe lifecycle · {notice.get('name') or 'agent'}/{notice.get('channel') or '?'}\n"
+        f"Bus listener lost {notice.get('consecutive_losses')} times without a new message; "
+        "automatic reconnection is suspended. No transcript is attached. "
+        "Re-run cs-bus --attach for this session and restart cs-bus --watch to resume; "
+        "unread messages stay in cs-bus --read-pending."
+    )
+    if executable is None:
+        disposition = "unavailable"
+    else:
+        try:
+            result = subprocess.run(
+                [executable, "queue", "--thread", str(notice["provider_session_id"]), "--message", message],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+            )
+            disposition = "provider_accepted" if result.returncode == 0 else "rejected"
+        except subprocess.TimeoutExpired:
+            disposition = "uncertain"
+        except OSError:
+            disposition = "unavailable"
+    try:
+        with listener_lifecycle(root, str(notice["lease_id"])) as state:
+            state["suspension_queue_notice"] = {"notice_id": notice.get("notice_id"),
+                                                "disposition": disposition, "at": utc_now()}
+    except OSError:
+        pass
+    return disposition
+
+
+class ListenerSupervisor:
+    """A watch's view of its own follower: observe twice, then recover once.
+
+    Quiet time is never a loss: only a follower process that is gone, with its
+    lease lock free and its channel binding still naming this session, is.
+    The watch's stdout is the notice path, independent of the lost follower.
+    """
+
+    NOTICE_EVENTS = ("follower_recovered", "recovery_failed", "recovery_suspended",
+                     "unrecoverable", "listener_ended")
+
+    def __init__(self, root: Path, provider: str, session: str,
+                 interval: float = LISTENER_CHECK_SECONDS):
+        self.root = root
+        self.provider = provider.casefold()
+        self.session = session
+        self.lease_id = lease_identifier(provider, session)
+        self.interval = interval
+        self.last_check: float | None = None
+        self.missing_since: float | None = None
+        self.follower_seen = False
+        self.reported: set[str] = set()
+
+    def check(self, now: float) -> dict[str, Any] | None:
+        if self.last_check is not None and now - self.last_check < self.interval:
+            return None
+        self.last_check = now
+        if live_follower_pid(self.root, self.lease_id) is not None:
+            self.follower_seen = True
+            self.missing_since = None
+            return None
+        if self.missing_since is None:
+            self.missing_since = now
+            return None
+        self.missing_since = None
+        try:
+            outcome = recover_follower(self.root, self.provider, self.session)
+        except OSError as error:
+            # Unreadable bindings or lifecycle state are preserved, not repaired.
+            outcome = {"schema": LIFECYCLE_NOTICE_SCHEMA, "kind": "listener_lifecycle",
+                       "lease_id": self.lease_id, "provider": self.provider,
+                       "provider_session_id": self.session,
+                       "event": "unrecoverable", "reason": str(error)}
+        event = outcome.get("event")
+        if event == "listener_ended" and not self.follower_seen:
+            return None  # A watch started before its attachment waits for it.
+        if event in ("unrecoverable", "listener_ended"):
+            if event in self.reported:
+                return None
+            self.reported.add(event)
+        if event not in self.NOTICE_EVENTS:
+            return None
+        if event == "follower_recovered":
+            self.follower_seen = True
+        if event == "recovery_suspended" and self.provider == "codex":
+            outcome["queue_notice"] = submit_lifecycle_notice(self.root, outcome)
+        outcome["instructions"] = {
+            "follower_recovered": "Same lease, cursor and mailbox; unread messages follow as usual. Do not ACK this notice.",
+            "recovery_failed": "Automatic recovery did not start a reader; re-run cs-bus --attach for this session.",
+            "recovery_suspended": "Two losses without a new message; reconnection is off until cs-bus --attach.",
+            "unrecoverable": "Lease state could not be resumed and was preserved; inspect cs-bus --status.",
+            "listener_ended": "This session no longer owns the channel; nothing is revived. The watch exits.",
+        }[event]
+        return outcome
+
+
 @contextlib.contextmanager
 def channel_bindings(root: Path) -> Iterator[dict[str, Any]]:
     """The binding file's only writer: one lock, one validation, one write.
@@ -5064,7 +5377,6 @@ def attach_command(args: argparse.Namespace) -> int:
     resumed = lease_path.exists()
     configuration = wakeup_configuration(args)
     log_path, events_path = follower_paths(root, lease_id)
-    errors_path = log_path.with_suffix(".errors.log")
     try:
         # Old lease locks outlive the binding commit; the child owns its own
         # distinct lease. No competing attach can observe a half-started owner.
@@ -5108,50 +5420,14 @@ def attach_command(args: argparse.Namespace) -> int:
                             atomic_json(lease_path, lease_state)
                     pid = None
                 if pid is None:
-                    command = [sys.executable, os.path.abspath(__file__),
-                               "--bus", resolved_bus, "--bridge-home", str(root.resolve()),
-                               "--provider", args.provider, "--session", args.session,
-                               "--name", name, "--drafts", "--follow", "--coalesce",
-                               "--follower-events", str(events_path),
-                               "--follower-channel", str(args.channel),
-                               "--wakeup", configuration["wakeup"]]
-                    if args.on_seal:
-                        command += ["--on-seal", args.on_seal]
-                    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    with contextlib.ExitStack() as outputs:
-                        for path in (log_path, errors_path):
-                            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-                            handle = outputs.enter_context(os.fdopen(descriptor, "ab"))
-                            os.fchmod(handle.fileno(), 0o600)
-                            if path == log_path:
-                                log = handle
-                            else:
-                                errors = handle
-                        child = subprocess.Popen(command, stdin=subprocess.DEVNULL,
-                                                 stdout=log, stderr=errors, start_new_session=True)
+                    child = launch_follower(root, follower_command(
+                        root, provider=args.provider, session=args.session, name=name,
+                        channel=str(args.channel), bus=resolved_bus,
+                        wakeup=configuration["wakeup"], on_seal=args.on_seal))
                     pid = child.pid
                     child_state = "starting"
-                    atomic_json(follower_pidfile(root, lease_id), {
-                        "lease_id": lease_id, "pid": pid, "started_at": utc_now(),
-                        "configuration": configuration,
-                    })
-                    deadline = time.monotonic() + 5.0
-                    while time.monotonic() < deadline:
-                        if child.poll() is not None:
-                            child_state = "exited"
-                            raise OSError(f"follower exited during startup; see {errors_path}")
-                        state = read_json(lease_path) or {}
-                        if (state.get("schema") == LEASE_SCHEMA and state.get("pid") == pid
-                                and state.get("lease_id") == lease_id
-                                and state.get("active") is True and state.get("bus") == resolved_bus
-                                and events_path.exists()
-                                and verified_follower(root, lease_id, args.session, pid)
-                                and child.poll() is None):
-                            child_state = "ready"
-                            break
-                        time.sleep(0.1)
-                    else:
-                        raise OSError(f"follower readiness timed out; see {errors_path}")
+                    confirm_follower(root, lease_id, args.session, resolved_bus, child, configuration)
+                    child_state = "ready"
                 if persist_voice:
                     write_voice_profile(root, name, voice=args.voice, speed=args.speed, vendor=args.tts_vendor)
                 if previous is not None:
@@ -5186,6 +5462,8 @@ def attach_command(args: argparse.Namespace) -> int:
         suffix = "unchanged" if unchanged else "state uncertain"
         sys.stderr.write(f"bus-demux: attach failed: {error}; channel {args.channel} {suffix}\n")
         return 3
+    # An explicit attachment is the agent's own decision to listen again.
+    reset_listener_streak(root, lease_id, "attach")
     state = read_json(lease_path) or {}
     emit({
         "schema": ATTACH_RECEIPT_SCHEMA, "kind": "attach_receipt",
@@ -5244,10 +5522,24 @@ def status_command(args: argparse.Namespace) -> int:
                 channel = str(slot)
                 break
     name = state.get("name") if isinstance(state, dict) else None
+    lifecycle = read_json(lifecycle_paths(root, lease_id)[0]) or {}
+    watch = read_json(watch_record_path(root, lease_id)) or {}
+    watch_pid = watch.get("pid")
+    watch_alive = (isinstance(watch_pid, int) and process_is_alive(watch_pid)
+                   and process_identity(watch_pid) == watch.get("process_identity"))
     emit(
         {
             "schema": STATUS_SCHEMA,
             "kind": "status",
+            # The helper sees the follower and the watch process; a provider's
+            # notification window and its conversation are visible only to it.
+            "listener": {
+                "consecutive_losses": lifecycle.get("consecutive_losses", 0),
+                "recovery_suspended": lifecycle.get("suspended") is True,
+                "last_loss": (lifecycle.get("losses") or [None])[-1],
+                "watch_alive": watch_alive if watch else None,
+                "watch_pid": watch_pid if watch_alive else None,
+            },
             "wakeup": (state or {}).get("wakeup_configuration", {}).get("wakeup", "unrecorded"),
             "wakeup_receipts": str(root / "wakeups" / lease_id),
             "pending_wakeups": [
@@ -5421,16 +5713,34 @@ def watch_command(args: argparse.Namespace) -> int:
         except FileNotFoundError:
             offset = 0
     sys.stderr.write(f"bus-demux: watching {source}\n")
+    # A session watch also looks after its own follower. It is the one
+    # process the provider monitors, so its stdout reaches the conversation
+    # even when the follower it observes has died.
+    supervisor = (ListenerSupervisor(args.bridge_home, args.provider, args.session)
+                  if lease_id and args.from_file is None else None)
+    record = watch_record_path(args.bridge_home, lease_id) if supervisor else None
+    if record is not None:
+        atomic_json(record, {"lease_id": lease_id, "pid": os.getpid(),
+                             "process_identity": process_identity(os.getpid()),
+                             "started_at": utc_now()})
     trigger = BusEventTrigger(source, args.interval)
     try:
         while True:
             entries, offset = iter_new_lines(source, offset)
             pump(entries)
+            notice = supervisor.check(time.monotonic()) if supervisor else None
+            if notice is not None:
+                emit({"notice": "Codescribe listener lifecycle", **notice})
+                if notice["event"] == "listener_ended":
+                    return 0
             trigger.wait(timeout=1.0)
     except KeyboardInterrupt:
         return 130
     finally:
         trigger.close()
+        if record is not None and (read_json(record) or {}).get("pid") == os.getpid():
+            with contextlib.suppress(OSError):
+                record.unlink()
 
 
 def main() -> int:
