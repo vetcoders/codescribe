@@ -123,7 +123,7 @@ final class SettingsInterfaceLanguageTests: XCTestCase {
       XCTAssertEqual(preferences.stringArray(forKey: InterfaceLanguagePreference.key), ["pl"])
       XCTAssertEqual(
         settings.interfaceLanguageNotice,
-        InterfaceLanguageRestartError.busy.message(locale: Locale.current))
+        InterfaceLanguageRestartError.busy.message(locale: InterfaceLanguage.polish.locale))
       settings.selectInterfaceLanguage(.polish)
       XCTAssertNil(settings.interfaceLanguageNotice, "A new choice clears the stale notice")
     }
@@ -137,8 +137,24 @@ final class SettingsInterfaceLanguageTests: XCTestCase {
       XCTAssertFalse(settings.applyingInterfaceLanguage)
       XCTAssertEqual(
         settings.interfaceLanguageNotice,
-        InterfaceLanguageRestartError.unavailable.message(locale: Locale.current))
+        InterfaceLanguageRestartError.unavailable.message(locale: InterfaceLanguage.polish.locale))
       XCTAssertEqual(preferences.stringArray(forKey: InterfaceLanguagePreference.key), ["pl"])
+    }
+  }
+
+  /// The restart row speaks the language the user just chose, in both directions.
+  func testRestartCopySpeaksTheChosenLanguage() async throws {
+    try await withPreferences { preferences, _ in
+      let english = model(preferences: preferences, processLanguage: .english)
+      english.selectInterfaceLanguage(.polish)
+      XCTAssertEqual(english.interfaceLanguageRestartTitle, "Uruchom ponownie")
+      XCTAssertTrue(
+        english.interfaceLanguageRestartExplanation.hasPrefix("Codescribe uruchomi się"))
+
+      let polish = model(preferences: preferences, processLanguage: .polish)
+      polish.selectInterfaceLanguage(.english)
+      XCTAssertEqual(polish.interfaceLanguageRestartTitle, "Restart now")
+      XCTAssertTrue(polish.interfaceLanguageRestartExplanation.hasPrefix("Codescribe will restart"))
     }
   }
 

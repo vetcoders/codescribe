@@ -413,7 +413,9 @@ final class SettingsTruthTests: XCTestCase {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
     model.reloadToolPermissions()
+    XCTAssertTrue(model.toolCatalogLoading, "discovery is in flight until the surface lands")
     for _ in 0..<100 where model.toolCapabilities.isEmpty { await Task.yield() }
+    XCTAssertFalse(model.toolCatalogLoading)
 
     XCTAssertEqual(model[toolLevel: "loctree-mcp:search"], "allow")
     XCTAssertEqual(model[toolLevel: "ghost:tool"], "", "an unknown identity selects nothing")
@@ -462,7 +464,7 @@ final class SettingsTruthTests: XCTestCase {
       (.voiceLab, "voiceLab", "Dictionary", .dictionary),
       (.lab, "lab", "Lab", .lab),
       (.license, "license", "License", .license),
-      (.user, "user", "User", .user),
+      (.user, "user", "About", .user),
     ]
 
     XCTAssertEqual(SettingsSection.allCases.count, expectations.count)
@@ -559,7 +561,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(inherited.identity, "native:apply_patch")
     XCTAssertFalse(inherited.hasIndividualRule)
     XCTAssertEqual(
-      ToolPermissionLabels.ruleCaption(inherited.ruleSource), "Inherited from the category default")
+      ToolPermissionLabels.ruleCaption(inherited.ruleSource), "Category default")
     let individual = ToolPermissionItem(
       capability: CsToolCapability(
         name: "search", identity: "loctree-mcp:search", origin: "mcp:loctree-mcp",
@@ -567,7 +569,7 @@ final class SettingsTruthTests: XCTestCase {
         requiresApprovalFlag: false))
     XCTAssertTrue(individual.hasIndividualRule)
     XCTAssertEqual(ToolPermissionLabels.ruleCaption("tool"), "Individual rule")
-    XCTAssertEqual(ToolPermissionLabels.ruleCaption("server"), "Inherited from the server rule")
+    XCTAssertEqual(ToolPermissionLabels.ruleCaption("server"), "Server rule")
   }
 
   /// P0-9 residual: permissions hierarchy groups server→tool, filters by query,
@@ -1467,7 +1469,8 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(
       model.resetImpactDescription(includeKeys: false, includePrompts: false),
       "Moves 5,000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
-        + "Your assistive.txt and three formatting prompt files will be preserved. "
+        + "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt "
+        + "prompts will be preserved. "
         + "Codescribe will relaunch as a fresh install."
     )
     XCTAssertTrue(resetConfirmationMatches("RESET"))
@@ -1714,8 +1717,34 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(calls.map(\.prompts), [false, true])
     XCTAssertTrue(
       model.resetImpactDescription(includeKeys: false, includePrompts: true)
-        .contains("assistive.txt and three formatting prompt files will also move to Trash")
+        .contains(
+          "assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt prompts will also move to Trash"
+        )
     )
+  }
+
+  /// The chips under the template are real editing controls: each appends its
+  /// field through the persisted write, and an unknown field is refused.
+  func testTemplateFieldChipAppendsThroughThePersistedWrite() {
+    // Like settings.json, the mock serves back the template it was handed.
+    var stored = CsSettings.sample
+    stored.transcriptTagTemplate = "<codescribe lang=\""
+    var writes: [(key: String, value: String)] = []
+    let engine = MockSettingsEngine(
+      settingsLoader: { stored },
+      updateConfigObserver: { key, value in
+        writes.append((key, value))
+        if key == "TRANSCRIPT_TAG_TEMPLATE" { stored.transcriptTagTemplate = value }
+      })
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    XCTAssertEqual(model.settings.transcriptTagTemplate, "<codescribe lang=\"")
+
+    model.insertTranscriptTagPlaceholder("{lang}")
+    model.insertTranscriptTagPlaceholder("{bogus}")
+
+    XCTAssertEqual(writes.map(\.key), ["TRANSCRIPT_TAG_TEMPLATE"], "the unknown field writes nothing")
+    XCTAssertEqual(writes.last?.value, "<codescribe lang=\"{lang}")
+    XCTAssertEqual(model.settings.transcriptTagTemplate, "<codescribe lang=\"{lang}")
   }
 
   func testAgentResetIsSeparatelyConfirmedAndNamesPreservedSurfaces() throws {
@@ -1739,6 +1768,9 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertFalse(resetAgentConfirmationMatches("reset agent"))
     XCTAssertTrue(model.resetAgentImpactDescription().contains("Recordings, transcriptions"))
     XCTAssertTrue(model.resetAgentImpactDescription().contains("license"))
+    // The deleted vendor accounts are the ones Formatting reads on that
+    // vendor; the confirmation must say so while secrets are present.
+    XCTAssertTrue(model.resetAgentImpactDescription().contains("shared with Formatting"))
 
     try engine.resetAgentData()
     XCTAssertEqual(calls, 1)

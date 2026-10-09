@@ -311,6 +311,34 @@ HotkeyInput { key_type: Toggle, action: Press, assistive: false } // Left Option
 HotkeyInput { key_type: Toggle, action: Press, assistive: true }  // Right Option
 ```
 
+### Settings picker vs routed combinations
+
+The Shortcuts tab offers one flat gesture catalog for all three modes:
+`available_bindings()` returns every `ShortcutBinding` regardless of mode
+(`bridge/src/hotkeys.rs`). The tables above are the complete set the detector
+actually routes, so the picker is wider than the runtime:
+
+| Work mode  | Routed gestures                | Routing site                                                                                                          |
+| ---------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| Dictation  | all five `Hold*`, `DoubleCtrl` | `app/os/hotkeys/detector.rs:1049` (hold combo), `:622` (raw toggle)                                                   |
+| Formatting | `DoubleLeftOption` only        | `app/os/hotkeys/detector.rs:624` — the only read of `mode_bindings.formatting` in the repo                            |
+| Assistive  | `DoubleRightOption` only       | `app/os/hotkeys/detector.rs:626`; `assistive_hold_binding` returns `None` for every hold variant (`detector.rs:1081`) |
+
+Two consequences the UI must not hide:
+
+- `Assistive` + any `Hold*` is refused by the setter (`set_mode_binding` in
+  `bridge/src/hotkeys.rs`) and never reaches disk. Settings reports the refusal
+  per mode and snaps that picker back to the persisted gesture.
+- `Formatting=HoldCtrl`, `Dictation=DoubleLeftOption` and the other unrouted
+  pairs ARE accepted and persisted, and then do nothing. A binding present in
+  `settings.json` is not evidence that the gesture fires.
+
+Filtering the picker per mode cannot be done on the Swift side today: the
+`HotkeysEngine` seam exposes only the flat, mode-agnostic catalog, and encoding
+the routing table in Swift would create a second owner of a truth that lives in
+the detector. The gap closes by narrowing `available_bindings()` to a per-mode
+query, not by hiding options in the UI.
+
 ### Capture and transcript ownership
 
 Every speech mode enters one `RecordingController`:

@@ -29,7 +29,8 @@ Settings → **Creator** → **Interface language** switches the app between
 Polski and English. The choice is saved at once as Codescribe's per-app macOS
 language preference (the same one System Settings › General › Language & Region
 › Applications shows); it never touches `settings.json` or the dictation
-language. The running app keeps its language until you press **Restart now**:
+language. The running app keeps its language until you press **Restart now**
+(the restart note and button already appear in the language you just chose):
 Codescribe waits for an idle moment (no recording, no agent turn) and relaunches
 in the chosen language. If a take or an agent turn is in progress, the row keeps
 your choice and asks you to try again. The setup wizard's first screen offers
@@ -130,19 +131,68 @@ writes `CODESCRIBE_CLOUD_CONSENT=granted` together with the mode.
 
 Open **Settings → Modes & Shortcuts**.
 
-This tab owns the global shortcut model:
+The tab holds two different save contracts, and the header says so: the three
+mode gestures are a draft and need **Save mode shortcuts**; every other control
+on the page writes as soon as you change it.
 
-- **Dictation**
-- **Formatting**
-- **Assistive**
+**Mode gestures.** One gesture per work mode — **Dictation** (turns speech into
+text), **Formatting** (dictation with AI formatting) and **Agent** (passes the
+recognized text to the Agent). None of the three promises a paste: where the
+transcript goes is **Automatic paste** below, and `PASTE_MODE=off` means nowhere.
+The gesture pill shows the chord (`2× Left ⌥ (Option)`); VoiceOver reads the
+spelled-out form, so the left and right Option gestures stay distinguishable.
 
-Each mode gets one binding. You can customize or disable it.
+**Save mode shortcuts** / **Restore default mode shortcuts** sit directly under
+the three rows. The screen reports a blocking conflict that refuses the save,
+otherwise unsaved changes; underneath, and independently of either line, what
+the last save actually persisted. The confirmation is a re-read from disk, not
+an echo of the picker: the bridge can refuse one mode while accepting another
+in the same save, so a refused gesture is named and its picker snaps back to
+the gesture it still holds. That snap-back can itself land in a conflict (a
+refused Agent hold returns to Double Right Option, which Double Ctrl dictation
+disables); the conflict line and the receipt then show together. The receipt
+says **Saved**, not "in effect": a binding present in `settings.json` is not
+proof that the gesture fires — see **Settings picker vs routed combinations**
+in `docs/HOTKEYS_CONTRACT.md`. Mode names in the receipt are joined in the
+interface language, not the macOS region.
 
-The same tab also owns:
+**Conflicts** and notes are separate. A conflict blocks the save and sits in a
+coloured card above the Save button; a note does not block and sits under it as
+a quiet grey field with a globe symbol and secondary text. The macOS Fn configuration message is a note: it
+says Codescribe may intercept the short press while dictation runs, and
+explicitly that it does not block saving. The technical identifier that came
+across the bridge is not shown; the save receipt and the bridge log keep it.
 
-- `Hold delay`
-- `Double-tap interval`
-- hotkey conflict detection / details
+**Dictation context** is its own section, below the gestures. Shift or Command
+during an already-started Fn hold attaches the selected text; it does not switch
+the take to the Agent. **Arm with** chooses Shift (default) or Command.
+Fn+Shift from idle is dictation, not the Agent; further pulses during the same
+hold attach the next selections, and the take, the overlay and the destination
+do not change.
+
+**Extra gestures** holds the three input surfaces, each described in two
+sentences and without tooltips: **Agent channel** (`Ctrl + digit`, or
+`Fn + digit`; Command is not offered because it collides with tab switching),
+**Tap Fn to dictate** (one tap starts, the next stops, a longer hold records
+only while held; set the macOS Fn key action to _Do Nothing_, otherwise macOS
+can claim a double press for its own dictation) and **Middle mouse acts as Fn**
+(whose ordinary click can still reach the app in front). The Fn gesture is
+labelled plainly as **Hold Fn**.
+
+**Automatic paste** keeps **Safe**, **Comfort** and **Off**, with the picker on
+its own full-width row and only the selected mode explained underneath. The
+terminal, command and password-field safeguards are unchanged.
+
+**Deferred insert** holds **Paste transcript**: the shortcut that pastes a
+transcript waiting to be inserted. The target app may handle the same chord.
+
+**Indicator states** names the three dot states in full — Recording, Agent,
+Processing — and sets the pointer indicator size (Off / 4px / 8px / 12px; the
+Agent indicator stays proportionally larger).
+
+`HOLD_START_DELAY_MS` and `DOUBLE_TAP_INTERVAL_MS` govern the same gestures but
+have no control on this tab; they are settings keys
+(`docs/ENV_REGISTRY.toml`, `docs/HOTKEYS_CONTRACT.md`).
 
 ## Providers and Agent
 
@@ -328,12 +378,15 @@ asking (Allow), when it needs approval (Ask), and when it must refuse (Deny).
   always refused, and an Allow never silently covers a path that may hold
   secrets (`.env`, key material): that call asks first.
 - **Per-tool permissions · N** — N is the whole tool catalog, not the number
-  of individual rules. Tool sources down the left (Native plus every MCP
+  of individual rules. Opening the tab discovers the catalog by starting every
+  configured MCP server and asking it for its tools, so the list appears a few
+  seconds after the defaults; a "Discovering tools from the MCP servers…" row
+  stands in until then. Tool sources down the left (Native plus every MCP
   server, names verbatim), the selected source's tools on the right. Each row
   shows a readable name above the raw identity, the source and localized risk
-  class, and whether the level is an individual rule or inherited (from the
-  server rule or the category default). "Restore inheritance" removes an
-  individual rule; the row then shows the inherited level again.
+  class, and where the level comes from: "Individual rule", "Server rule" or
+  "Category default". "Remove rule" drops an individual rule; the row then
+  shows the server rule or the category default again.
 - The level a row shows is the level the gate applies to the tool's next call:
   Settings and the runtime read the same resolver, so a category default
   changed here takes effect without an explicit rule per tool.
@@ -545,10 +598,93 @@ Common overrides:
 - `CODESCRIBE_EMIT_WORDS_MAX`
 - `CODESCRIBE_BUFFERED_INTERIM_SEC`
 
+## Dictionary
+
+**Settings → Dictionary** shows what was corrected, what the app actually
+learned, and where the active rules come from.
+
+- **Counters** — three separate values: corrections (takes whose text
+  changed), unchanged takes (kept for their confidence telemetry only) and
+  active rules (every variant → canonical pair the engine applies). A
+  vocabulary correction is not a learned rule; nothing here implies otherwise.
+- **Recent corrections** — one card per correction. **Differences between
+  versions** compares the stages that actually changed: _Formatting changed
+  (raw STT → delivered)_ when Smart/Max rewrote the raw text, and _Your
+  correction (delivered → corrected)_ for the manual edit, so a formatter's
+  rewrite is never charged to the engine's hearing. Each span is labelled
+  **Added**, **Removed** or **Replaced**; replaced fragments can span several
+  words. Minor casing and punctuation changes stay collapsed. **Full
+  comparison · X → Y characters** opens the raw STT, the text after
+  formatting and the text after your correction. The footer reads _Version N ·
+  date_ in the interface language. **Diagnostic details** holds the count of
+  records without confidence telemetry; it describes the records, not the
+  engine.
+- **Play original / Retranscribe** — the archived take is paired by its exact
+  raw transcript. When several archived recordings share that transcript the
+  pairing is ambiguous and both actions refuse, saying so; the panel also
+  explains the other reasons Retranscribe is unavailable (no archived
+  recording, no helper engine in Apple-only mode, a pass still running).
+- **Learn from corrections…** — reviews every saved correction and the
+  suggested rules, then adds the new vocabulary rules it can derive. The
+  confirmation states that scope first; the result line reports the real
+  growth of the rules list (_Added 2 rules from corrections · 9 active
+  rules_, or _No new rules_ when everything eligible was already learned).
+  Corrections, their revision history and the extraction safeguards are
+  unchanged by learning.
+- **My rules** — the active rules with their provenance (_from a correction_
+  or _added by hand_); up to five rules read as a list, more are paged.
+  Rules cannot be edited or removed from the app yet; see
+  [CONFIG.md](../CONFIG.md) for the lexicon files.
+
+## About
+
+**Settings → About** (the last item under _Account_) describes the app and its
+data instead of a profile; Codescribe has no account.
+
+- **Running build** — version with build number, commit and the build date in
+  the interface language. **Details** keeps the raw `CSBuiltAt` timestamp and
+  the launch repair receipt for diagnostics.
+- **Configuration notice** — the launch repair receipt (see
+  [CONFIG.md](../CONFIG.md)) is shown as a sentence such as _An outdated
+  configuration setting was detected. It needs a review._ The original line and
+  the `.env` key names stay under **Details**. Nothing in About edits `.env`.
+- **Local data** — the app-data folder and the Transcripts folder, with a copy
+  button for each path.
+- **First dictation confirmation** — the opt-in for one anonymous event after
+  the first successful dictation. The line under the switch names the shipped
+  default (off) and the current choice. While the build ships without an
+  analytics domain (`ActivationPingConfiguration.production`), the switch is
+  disabled and the panel says that nothing is sent whatever the switch says.
+- **Transcript source markers** — the switch that wraps delivered dictation in
+  a source marker. **Template and preview** holds the editor, the field chips
+  (`{mode}`, `{lang}`, `{text}`, `{conf}`, `{flags}` — each chip appends its
+  field to the template), **Restore default template** and the rendered
+  **Template preview**. Saved templates and the marking mechanics do not change.
+- **Legal & docs** — Privacy Policy, Terms of Use and License, Codescribe
+  documentation.
+
 ## Reset / Fresh Start
 
+Both resets live at the foot of **Settings → About**. The card names the scope
+in one sentence; the confirmation sheet shows the live counts and the full scope
+before anything moves, and asks for a typed word.
+
+- **Reset Agent** (type `RESET AGENT`) — moves Agent conversations, MCP
+  configuration and tool state to Trash and deletes Agent provider keys and MCP
+  connector secrets from Keychain permanently. The deleted vendor accounts
+  (`LLM_OPENAI_API_KEY`, `LLM_ANTHROPIC_API_KEY`, `LLM_XAI_API_KEY`,
+  `LLM_LIBRAXIS_API_KEY`) are the same accounts the Formatting lane reads on
+  that vendor, so the confirmation says that Formatting on such a vendor needs
+  its key again afterwards. Recordings, transcripts, dictionary, prompts,
+  hotkeys, dictation settings, license and macOS permissions stay.
+- **Move app data to Trash** (type `RESET`) — moves recordings, transcripts,
+  conversations, logs, preferences and local configuration to Trash and
+  relaunches. Two opt-in checkboxes: _Also remove API keys from Keychain_ (not
+  recoverable from Trash) and _Also reset my base prompts_ — `assistive.txt`,
+  `formatting.txt`, `formatting-smart.txt` and `formatting-max.txt`, all four
+  named on the checkbox and in the confirmation.
 - **New agent context**: Chat Overlay → **New thread**
-- **Reset prompts**: Settings → **AI & Prompts** → **Reset**
+- **Reset prompts**: Settings → **Agent → Prompts** → **Restore default…**
 
 _Created by Vetcoders (c)2026_
 

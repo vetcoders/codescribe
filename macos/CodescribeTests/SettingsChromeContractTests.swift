@@ -138,13 +138,19 @@ final class SettingsChromeContractTests: XCTestCase {
   /// window wider than the screen whenever Agent › Tools opened (Founder,
   /// 2026-10-07). Tool-permission pickers sit at their own width, one default
   /// per row; every picker that keeps a fixed frame is measured against its
-  /// Polish labels here.
+  /// Polish labels here. A SwiftUI segmented picker gives every segment the
+  /// width of its widest label, so the measurement distributes segments
+  /// equally: proportional sizing passed `Off · Correction · Smart · Max` at
+  /// 330 pt while the real control spilled `Max` past the card in both
+  /// languages (Founder, 2026-10-08).
   @MainActor
   func testSegmentedPickersFitTheirFramesInEnglishAndPolish() throws {
     let sources = try settingsSources()
     let polish = try polishCatalog()
     func width(_ titles: [String]) -> CGFloat {
-      SettingsTabSegments.control(titles: titles).fittingSize.width
+      let control = SettingsTabSegments.control(titles: titles)
+      control.segmentDistribution = .fillEqually
+      return control.fittingSize.width
     }
 
     let tools = try XCTUnwrap(sources["ToolPermissionsSection.swift"])
@@ -155,7 +161,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(tools.components(separatedBy: "defaultRow(title: \"").count, 4)
     let levels = ["Allow", "Ask", "Deny"]
     let polishLevels = try levels.map { try XCTUnwrap(polish[$0]) }
-    XCTAssertEqual(polishLevels, ["Zezwalaj", "Pytaj o zgodę", "Blokuj"])
+    XCTAssertEqual(polishLevels, ["Zezwalaj", "Pytaj", "Blokuj"])
     // The tools column at the minimum window: the detail column minus the pane
     // padding, the 190 pt server column, the gap between them and the row's
     // own padding. A row keeps at least 96 pt for the tool name.
@@ -168,15 +174,17 @@ final class SettingsChromeContractTests: XCTestCase {
       XCTAssertLessThanOrEqual(picker + 8 + 96, column, "\(titles)")
     }
 
+    // The formatting level picker sizes to its labels; no frame to outgrow.
+    let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
+    let formatting = try XCTUnwrap(
+      creator.range(of: "Picker(\"\", selection: formattingLevelBinding)"))
+    let formattingTail = String(creator[formatting.upperBound...].prefix(400))
+    XCTAssertTrue(formattingTail.contains(".fixedSize()"))
+    XCTAssertNil(fixedFrameWidth(in: formattingTail))
+
     // Pickers that keep a fixed frame hold their Polish labels.
     let fixed: [(file: String, picker: String, titles: [String?])] = [
-      (
-        "CreatorPanel.swift", "Picker(\"\", selection: formattingLevelBinding)",
-        [
-          polish["settings.formatting.level.off"], polish["Correction"], polish["Smart"],
-          polish["Max"],
-        ]
-      ),
+      ("CreatorPanel.swift", "Picker(\"\", selection: selection)", ["Polski", "English"]),
       ("ShortcutsPanel.swift", "Picker(\"Arm modifier\"", ["Shift", "Command"]),
       (
         "ShortcutsPanel.swift", "Picker(\"Pointer indicator\"",
@@ -578,6 +586,13 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(section.contains("ToolPermissionLabels.risk(item.risk)"))
     XCTAssertTrue(section.contains("ToolPermissionLabels.ruleCaption(item.ruleSource)"))
     XCTAssertTrue(section.contains("if item.hasIndividualRule, let restoreInheritance {"))
+    XCTAssertTrue(
+      section.contains("if model.toolCatalogLoading {"),
+      "MCP discovery takes seconds: the tab says so instead of showing an empty catalog")
+    XCTAssertFalse(
+      section.contains("HStack(spacing: 8) {\n          Text(ToolPermissionLabels.ruleCaption"),
+      "the rule caption and the restore link stack vertically so the narrow column never splits a word"
+    )
     XCTAssertFalse(section.contains("Text(item.name)"), "the raw name is not the headline")
 
     let serverTab = try XCTUnwrap(sources["ToolServerTab.swift"])
@@ -602,8 +617,10 @@ final class SettingsChromeContractTests: XCTestCase {
       "Changes": "Zmiany",
       "Network": "Sieć",
       "Individual rule": "Własna reguła",
-      "Inherited from the category default": "Dziedziczone z ustawienia kategorii",
-      "Restore inheritance": "Przywróć dziedziczenie",
+      "Category default": "Ustawienie kategorii",
+      "Server rule": "Reguła serwera",
+      "Remove rule": "Usuń regułę",
+      "Discovering tools from the MCP servers…": "Wykrywanie narzędzi z serwerów MCP…",
     ]
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)
@@ -611,6 +628,7 @@ final class SettingsChromeContractTests: XCTestCase {
     for retired in [
       "Tool permissions.", "Allow, ask, or deny — per tool. Deny wins over everything.",
       "Tool overrides · %lld", "Read-only", "Side effects", "Global / unknown", "%lld servers",
+      "Inherited from the category default", "Inherited from the server rule", "Restore inheritance",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
@@ -829,6 +847,117 @@ final class SettingsChromeContractTests: XCTestCase {
       ))
     XCTAssertTrue(panel.contains("func recordingStartHint(_ dictationShortcut: String?) -> String"))
     XCTAssertFalse(panel.contains("Use \\(dictationShortcut) or choose Start recording."))
+  }
+
+  /// Settings → About: the app, its data and the resets, in English and in
+  /// Polish. The resets keep their safeguards; only the copy got shorter.
+  func testAboutPaneReadsAsTheAppAndItsData() throws {
+    let panel = try XCTUnwrap(try settingsSources()["UserPanel.swift"])
+    XCTAssertTrue(panel.contains("String(localized: \"About the app and your data\""))
+    XCTAssertTrue(
+      panel.contains(
+        "\"Check the Codescribe version, where your data lives and the privacy settings.\""))
+    XCTAssertTrue(panel.contains("infoRow(\"Built\", readableBuildDate)"))
+    XCTAssertTrue(panel.contains("\"Build timestamp: \\(model.buildInfo.builtAt)\""))
+    XCTAssertTrue(panel.contains("configRepairSummary().map(ConfigRepairNotice.init(raw:))"))
+    XCTAssertFalse(panel.contains("Text(summary)"), "the raw repair line is no longer the headline")
+    XCTAssertTrue(panel.contains("String(localized: \"App data\""))
+    XCTAssertTrue(panel.contains("pathRow(String(localized: \"Transcripts\"), model.transcriptsPath)"))
+    XCTAssertTrue(panel.contains("String(localized: \"First dictation confirmation\""))
+    XCTAssertTrue(panel.contains(".disabled(!availability.serviceEnabled)"))
+    XCTAssertTrue(panel.contains("String(localized: \"Transcript source markers\""))
+    XCTAssertTrue(panel.contains("String(localized: \"Add markers to transcripts\""))
+    XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $showingTemplate)"))
+    XCTAssertTrue(panel.contains("model.insertTranscriptTagPlaceholder(placeholder)"))
+    XCTAssertTrue(panel.contains("Button(String(localized: \"Restore default template\""))
+    XCTAssertTrue(panel.contains("\"Terms of Use and License\""))
+    XCTAssertTrue(panel.contains("\"Codescribe documentation\""))
+    XCTAssertTrue(
+      panel.contains(
+        "\"Also reset my base prompts (assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt)\""
+      ))
+    // Safeguards stay: typed words, both checkboxes, the alerts.
+    XCTAssertTrue(panel.contains("Type \\(resetConfirmationWord) to continue"))
+    XCTAssertTrue(panel.contains("Type \\(resetAgentConfirmationWord) to continue"))
+    XCTAssertTrue(panel.contains("model.resetImpactDescription"))
+    XCTAssertTrue(panel.contains("model.resetAgentImpactDescription"))
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "About": "O aplikacji",
+      "About the app and your data": "O aplikacji i danych",
+      "Check the Codescribe version, where your data lives and the privacy settings.":
+        "Sprawdź wersję Codescribe, lokalizację danych i ustawienia prywatności.",
+      "An outdated configuration setting was detected. It needs a review.":
+        "Wykryto przestarzałe ustawienie konfiguracji. Wymaga sprawdzenia.",
+      "Setting to review: %@": "Ustawienie do sprawdzenia: %@",
+      "App data": "Dane aplikacji",
+      "Transcripts": "Transkrypcje",
+      "First dictation confirmation": "Potwierdzenie pierwszego dyktowania",
+      "Transcript source markers": "Znaczniki źródła transkrypcji",
+      "Add markers to transcripts": "Dodawaj znaczniki do transkrypcji",
+      "Template preview": "Podgląd szablonu",
+      "Restore default template": "Przywróć domyślny szablon",
+      "Privacy Policy": "Polityka prywatności",
+      "Terms of Use and License": "Warunki korzystania i licencja",
+      "Codescribe documentation": "Dokumentacja Codescribe",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+  }
+
+  /// Settings → Dictionary: a fixed header, three honest counters, versions
+  /// compared stage by stage, and a Learn action that states its scope first.
+  func testDictionaryPaneReadsAsCorrectionsAndRules() throws {
+    let panel = try XCTUnwrap(try settingsSources()["VoiceLabPanel.swift"])
+    XCTAssertTrue(panel.contains("String(localized: \"Dictionary and corrections\")"))
+    XCTAssertTrue(
+      panel.contains(
+        "\"Browse corrected transcripts and the rules that help recognize your vocabulary.\""))
+    XCTAssertFalse(panel.contains("dictionaryHeadline("), "no dynamic multi-line headline")
+    XCTAssertFalse(panel.contains("dictionarySubtitle("), "no repeated provenance subtitle")
+    XCTAssertTrue(panel.contains("dictionaryCounters("))
+    XCTAssertTrue(panel.contains("String(localized: \"Learn from corrections…\""))
+    XCTAssertTrue(panel.contains("Text(learnScopeMessage(corrections: corrections.count))"))
+    XCTAssertFalse(panel.contains("Button(\"Teach\") {\n            model.teachDictionaryFromStore()"))
+    XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $showingDiagnostics)"))
+    XCTAssertTrue(panel.contains("\"Differences between versions\""))
+    XCTAssertFalse(panel.contains("Text(\"Changed\""))
+    XCTAssertTrue(panel.contains("stageDiffBlock(stage, index: stageIndex, showTitle: stages.count > 1)"))
+    XCTAssertTrue(panel.contains("Text(diffSpanKind(span).label)"))
+    XCTAssertTrue(panel.contains("fullComparisonLabel("))
+    XCTAssertTrue(panel.contains("\"Corrected text\""))
+    XCTAssertFalse(panel.contains("\"Corrected original\""))
+    XCTAssertTrue(panel.contains("correctionFooter("))
+    XCTAssertFalse(panel.contains("Text(\"revision \\(row.revision)\")"))
+    XCTAssertTrue(panel.contains("String(localized: \"My rules · \\(model.customLexiconEntries.count)\")"))
+    XCTAssertTrue(panel.contains("lexiconProvenanceLine("))
+    XCTAssertTrue(panel.contains("model.customLexiconEntries.count <= dictionaryRuleListLimit"))
+    XCTAssertTrue(panel.contains("if corrections.count > 1 {"))
+    XCTAssertTrue(panel.contains("if model.ruleCandidates.count > 1 {"))
+    XCTAssertTrue(panel.contains(".disabled(retranscribeReason != nil)"))
+    XCTAssertTrue(panel.contains("archivedAudioLookup(configDir: lease.rootDirectory(), rawText: row.rawText)"))
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "Dictionary and corrections": "Słownik i poprawki",
+      "Browse corrected transcripts and the rules that help recognize your vocabulary.":
+        "Przeglądaj poprawione transkrypcje i reguły, które pomagają rozpoznawać Twoje słownictwo.",
+      "Differences between versions": "Różnice między wersjami",
+      "Corrected text": "Poprawiony tekst",
+      "Learn from corrections…": "Ucz słownik z poprawek…",
+      "Diagnostic details": "Szczegóły diagnostyczne",
+      "from a correction": "Na podstawie poprawki",
+      "added by hand": "Dodano ręcznie",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    XCTAssertEqual(polish["My rules · %lld"], "Moje reguły · %lld")
+    XCTAssertEqual(polish["Version %llu"], "Wersja %llu")
+    XCTAssertEqual(
+      polish["Full comparison · %lld → %lld characters"], "Pełne porównanie · %1$lld → %2$lld znaków")
   }
 
   func testAvailabilityTintsUseSolidTerracotta() throws {

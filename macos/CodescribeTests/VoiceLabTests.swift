@@ -232,18 +232,31 @@ final class VoiceLabTests: XCTestCase {
   /// (e) The headline counts real corrections, vocabulary corrections,
   /// unchanged takes, and rules as separate numbers; missing telemetry is one
   /// aggregate list line.
-  func testDictionaryHeadlineCountsCorrectionsUnchangedTakesAndRules() {
+  func testDictionaryCountersAreThreeSeparateInflectedValues() {
     XCTAssertEqual(
-      dictionaryHeadline(
-        corrections: 0, vocabularyCorrections: 0, unchangedTakes: 0, rulesLearned: 0),
-      "0 corrections (0 vocabulary) · 0 unchanged takes · 0 rules in dictionary"
-    )
+      dictionaryCounters(corrections: 0, unchangedTakes: 0, activeRules: 0),
+      ["0 corrections", "0 unchanged takes", "0 active rules"])
     XCTAssertEqual(
-      dictionaryHeadline(
-        corrections: 4, vocabularyCorrections: 3, unchangedTakes: 46, rulesLearned: 7),
-      "4 corrections (3 vocabulary) · 46 unchanged takes · 7 rules in dictionary"
-    )
+      dictionaryCounters(corrections: 1, unchangedTakes: 1, activeRules: 1),
+      ["1 correction", "1 unchanged take", "1 active rule"])
+    XCTAssertEqual(
+      dictionaryCounters(corrections: 4, unchangedTakes: 46, activeRules: 7),
+      ["4 corrections", "46 unchanged takes", "7 active rules"])
+  }
 
+  func testRuleProvenanceLineNamesOnlyTheSourcesThatExist() {
+    XCTAssertNil(lexiconProvenanceLine(fromCorrections: 0, addedByHand: 0, other: 0))
+    XCTAssertEqual(
+      lexiconProvenanceLine(fromCorrections: 3, addedByHand: 0, other: 0), "3 from corrections")
+    XCTAssertEqual(
+      lexiconProvenanceLine(fromCorrections: 1, addedByHand: 1, other: 0),
+      "1 from correction · 1 added by hand")
+    XCTAssertEqual(
+      lexiconProvenanceLine(fromCorrections: 0, addedByHand: 2, other: 5),
+      "2 added by hand · 5 from earlier versions")
+  }
+
+  func testTelemetryCoverageLineCountsRecordsWithoutTelemetry() {
     let withTelemetry = VoiceLabCorrectionRow(
       id: "a",
       revision: 1,
@@ -313,6 +326,27 @@ final class VoiceLabTests: XCTestCase {
         .resolvingSymlinksInPath().path,
       audio.resolvingSymlinksInPath().path
     )
+  }
+
+  func testArchivedAudioLookupRefusesToGuessBetweenIdenticalTakes() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let day = root.appendingPathComponent("transcriptions/2026-10-08", isDirectory: true)
+    try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    for stem in ["090000_first_raw", "110000_second_raw"] {
+      try "test test".write(
+        to: day.appendingPathComponent("\(stem).txt"), atomically: true, encoding: .utf8)
+      try Data([0, 1, 2]).write(to: day.appendingPathComponent("\(stem).m4a"))
+    }
+    // A numbered text twin of the same take is one take, not two.
+    try "test test".write(
+      to: day.appendingPathComponent("090000_first_raw_1.txt"), atomically: true, encoding: .utf8)
+
+    XCTAssertEqual(archivedAudioLookup(configDir: root.path, rawText: "test test"), .ambiguous(2))
+    XCTAssertNil(archivedAudioURL(configDir: root.path, rawText: "test test"))
+    XCTAssertEqual(archivedAudioLookup(configDir: root.path, rawText: "nothing"), .missing)
   }
 
   func testSuccessfulVoiceLabEditRefreshesResolvedProjection() {
@@ -433,62 +467,87 @@ final class VoiceLabTests: XCTestCase {
     XCTAssertTrue(model.voiceLabEditPending.isEmpty)
   }
 
-  func testDictionaryHeadlineInflectsEachCountIndependently() {
-    let cases: [(Int, Int, Int, Int, String)] = [
-      (1, 1, 1, 1, "1 correction (1 vocabulary) · 1 unchanged take · 1 rule in dictionary"),
-      (1, 2, 3, 4, "1 correction (2 vocabulary) · 3 unchanged takes · 4 rules in dictionary"),
-      (2, 1, 3, 4, "2 corrections (1 vocabulary) · 3 unchanged takes · 4 rules in dictionary"),
-      (2, 3, 1, 4, "2 corrections (3 vocabulary) · 1 unchanged take · 4 rules in dictionary"),
-      (2, 3, 4, 1, "2 corrections (3 vocabulary) · 4 unchanged takes · 1 rule in dictionary"),
-    ]
-    for (corrections, vocabulary, takes, rules, expected) in cases {
-      XCTAssertEqual(
-        dictionaryHeadline(
-          corrections: corrections, vocabularyCorrections: vocabulary,
-          unchangedTakes: takes, rulesLearned: rules), expected)
-    }
+  func testStageDiffsSeparateFormattingFromTheManualCorrection() {
+    // Smart/Max rewrote the raw STT; the human then fixed one word. Neither
+    // stage is charged to the other.
+    let stages = correctionStageDiffs(
+      raw: "no to jedziemy z koksem",
+      delivered: "No to jedziemy z koksem.",
+      edited: "No to jedziemy z Codescribe.")
+    XCTAssertEqual(stages.map(\.stage), [.formatting, .manual])
+    XCTAssertTrue(stages[0].spans.allSatisfy { !$0.tier.isMajor }, "formatting only recased")
+    XCTAssertEqual(stages[1].spans.map(\.raw), ["koksem."])
+    XCTAssertEqual(stages[1].spans.map(\.edited), ["Codescribe."])
+
+    // Formatting off: delivered equals raw, so the only stage is the correction.
+    XCTAssertEqual(
+      correctionStageDiffs(raw: "uni agentka", delivered: "uni agentka", edited: "Junie")
+        .map(\.stage), [.manual])
+    // A pure formatter rewrite without a manual edit is not a recognition error.
+    XCTAssertEqual(
+      correctionStageDiffs(raw: "raw words", delivered: "Raw words.", edited: "Raw words.")
+        .map(\.stage), [.formatting])
+    // Whitespace is not a stage.
+    XCTAssertTrue(correctionStageDiffs(raw: "a  b", delivered: "a b", edited: "a b").isEmpty)
   }
 
-  func testDictionarySubtitleInflectsEachCountIndependently() {
-    let cases: [(Int, Int, Int, String)] = [
-      (1, 1, 1, "1 live rule (variant→canonical) · 1 with correction provenance · 1 store row."),
-      (1, 2, 3, "1 live rule (variant→canonical) · 2 with correction provenance · 3 store rows."),
-      (2, 1, 3, "2 live rules (variant→canonical) · 1 with correction provenance · 3 store rows."),
-      (2, 3, 1, "2 live rules (variant→canonical) · 3 with correction provenance · 1 store row."),
-      (2, 0, 0, "2 live rules (variant→canonical) · 0 with correction provenance · 0 store rows."),
-    ]
-    for (rules, corrections, rows, expected) in cases {
-      XCTAssertEqual(
-        dictionarySubtitle(
-          correctionsRecorded: 10, rulesLearned: rules,
-          taughtFromCorrections: corrections, totalEntries: rows), expected)
-    }
+  func testDiffSpanKindNamesAdditionRemovalAndReplacement() {
+    let spans = voiceLabDiffSpans(raw: "one two three four", edited: "one 2 three four five")
+    let kinds = spans.map(diffSpanKind)
+    XCTAssertTrue(kinds.contains(.replaced), "\(spans)")
+    XCTAssertTrue(kinds.contains(.added), "\(spans)")
+    XCTAssertEqual(
+      voiceLabDiffSpans(raw: "keep this word", edited: "keep word").map(diffSpanKind), [.removed])
+    XCTAssertEqual(DiffSpanKind.added.label, "Added")
+    XCTAssertEqual(DiffSpanKind.removed.label, "Removed")
+    XCTAssertEqual(DiffSpanKind.replaced.label, "Replaced")
   }
 
-  func testDictionaryHeadlineHonestyForCorrectionSource() {
-    XCTAssertTrue(
-      dictionarySubtitle(
-        correctionsRecorded: 74,
-        rulesLearned: 3,
-        taughtFromCorrections: 3,
-        totalEntries: 5
-      )
-      .contains("3 with correction provenance")
+  func testCorrectionLabelsReadAsVersionsAndCharacters() {
+    XCTAssertEqual(
+      fullComparisonLabel(rawCount: 120, editedCount: 118), "Full comparison · 120 → 118 characters")
+    XCTAssertEqual(
+      correctionFooter(action: "revision", revision: 3, timestamp: "8 Oct 2026, 13:50"),
+      "Version 3 · 8 Oct 2026, 13:50")
+    XCTAssertEqual(
+      correctionFooter(action: "copy", revision: 1, timestamp: "8 Oct 2026, 13:50"),
+      "copied · Version 1 · 8 Oct 2026, 13:50")
+    XCTAssertEqual(LexiconSourceLabel.text(for: "correction"), "from a correction")
+    XCTAssertEqual(LexiconSourceLabel.text(for: "manual"), "added by hand")
+  }
+
+  func testLearnMessagesNameTheScopeAndTheRealGrowth() {
+    XCTAssertEqual(
+      learnScopeMessage(corrections: 12),
+      "Codescribe reviews all 12 saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to My rules. Existing rules, corrections and their history stay as they are."
     )
     XCTAssertEqual(
-      dictionarySubtitle(
-        correctionsRecorded: 10,
-        rulesLearned: 0,
-        taughtFromCorrections: 0,
-        totalEntries: 0
-      ),
-      "10 corrections on disk · dictionary empty — Teach explicitly promotes eligible store pairs now."
-    )
-    XCTAssertFalse(
-      dictionaryHeadline(
-        corrections: 1, vocabularyCorrections: 0, unchangedTakes: 0, rulesLearned: 0
-      )
-      .contains("voice taught")
+      learnResultMessage(added: 2, fromSuggestions: 0, activeRules: 9),
+      "Added 2 rules from corrections · 9 active rules")
+    XCTAssertEqual(
+      learnResultMessage(added: 1, fromSuggestions: 1, activeRules: 1),
+      "Added 1 rule from corrections and suggestions · 1 active rule")
+    XCTAssertEqual(
+      learnResultMessage(added: 0, fromSuggestions: 3, activeRules: 9),
+      "No new rules: everything eligible is already in My rules · 9 active rules")
+  }
+
+  func testRetranscribeReasonExplainsEveryDisabledState() {
+    let url = URL(fileURLWithPath: "/tmp/take.m4a")
+    XCTAssertNil(
+      retranscribeUnavailableReason(asrMode: "local_power", lookup: .found(url), pending: false))
+    XCTAssertEqual(
+      retranscribeUnavailableReason(asrMode: "local_power", lookup: .found(url), pending: true),
+      "Retranscribing…")
+    XCTAssertEqual(
+      retranscribeUnavailableReason(asrMode: "apple_only", lookup: .found(url), pending: false),
+      "Retranscribe needs the Local power or Cloud mode.")
+    XCTAssertEqual(
+      retranscribeUnavailableReason(asrMode: "cloud", lookup: .missing, pending: false),
+      "No archived recording for this correction.")
+    XCTAssertEqual(
+      retranscribeUnavailableReason(asrMode: "cloud", lookup: .ambiguous(2), pending: false),
+      "2 archived recordings share this exact transcript, so Codescribe cannot tell which one is this take."
     )
   }
 
@@ -510,8 +569,8 @@ final class VoiceLabTests: XCTestCase {
       RunLoop.main.run(until: Date().addingTimeInterval(0.01))
     }
     let msg = try XCTUnwrap(model.voiceLabTeachMessage)
-    XCTAssertTrue(msg.contains("1 live rule "), "expected live-rules count, got: \(msg)")
-    XCTAssertTrue(msg.hasPrefix("Taught"), "expected Taught status, got: \(msg)")
+    // The mock reports the same rule before and after: nothing new was learned.
+    XCTAssertEqual(msg, "No new rules: everything eligible is already in My rules · 1 active rule")
   }
 
   func testVoiceLabRefreshLoadsRuleCandidates() {

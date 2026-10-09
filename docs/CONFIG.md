@@ -12,8 +12,8 @@ The replacement uses the existing atomic write. Failed backup or validation
 prevents replacement. Unknown schema versions and unsupported field types are
 reported as `ConfigUnrepairable`, leaving the original file untouched.
 
-The launch snapshot carries a `repair_receipt()` and Settings → User displays
-its summary. The bridge also exposes the full structured receipt as JSON.
+The launch snapshot carries a `repair_receipt()` and Settings → About displays
+its summary as a sentence, with the original line under Details. The bridge also exposes the full structured receipt as JSON.
 An unresolved repair refusal takes priority in the summary. Otherwise, the
 repair summary lists the environment key names needing review, never their
 values. It appends `(backup <paths>)` only when the receipt contains backups,
