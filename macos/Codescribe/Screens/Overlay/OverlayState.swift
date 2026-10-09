@@ -62,6 +62,10 @@ protocol DictationEngine: AnyObject {
   func copyTaggedTranscript(text: String) async throws
   func pasteTargetAppName() async -> String?
   func sendAssistiveTranscript(text: String) async throws -> Bool
+  /// Send a transcript reopened from history to Agent. Unlike
+  /// `sendAssistiveTranscript` it never takes the live take's pending
+  /// assistive context; route and destination are resolved by Rust.
+  func sendArchivedTranscript(text: String) async throws -> Bool
   func lastSessionAudioPath() -> String?
   func sessionAudioPath(sessionId: String) -> String?
   /// Export one word's PCM from the retained take audio as a temp WAV clip
@@ -84,9 +88,10 @@ protocol DictationEngine: AnyObject {
   ) async throws -> CsArchivedFormat
   /// Commit an explicit edit or retranscription of one archive against the
   /// revision the canvas shows. The archived text and audio stay untouched.
+  /// `detail` names how a retranscription was produced (its pass).
   func commitArchivedRevision(
     archivePath: String, sourceRevision: UInt64, renderedText: String,
-    kind: CsArchiveRevisionKind
+    kind: CsArchiveRevisionKind, detail: String?
   ) async throws -> CsArchivedDocument
   /// Restore an earlier version of one archive as a new revision (Undo).
   func restoreArchivedRevision(
@@ -137,9 +142,14 @@ extension DictationEngine {
   }
   func commitArchivedRevision(
     archivePath _: String, sourceRevision _: UInt64, renderedText _: String,
-    kind _: CsArchiveRevisionKind
+    kind _: CsArchiveRevisionKind, detail _: String?
   ) async throws -> CsArchivedDocument {
     throw NSError(domain: "Archived transcript revisions unavailable", code: 1)
+  }
+  /// No fallback to `sendAssistiveTranscript`: that path consumes the live
+  /// take's context, which an archive send must never do.
+  func sendArchivedTranscript(text _: String) async throws -> Bool {
+    throw NSError(domain: "Archived transcript delivery unavailable", code: 1)
   }
   func restoreArchivedRevision(
     archivePath _: String, sourceRevision _: UInt64, restoreRevision _: UInt64
@@ -203,6 +213,9 @@ struct OverlaySupersededTake: Equatable, Identifiable {
   /// `renderedText`. `nil` means nothing was unsaved — the document itself is
   /// still ledger-authoritative and reproducible.
   let unsavedDraft: String?
+  /// Set when `unsavedDraft` is an archive retranscription the chain did not
+  /// accept, byte for byte: a retry keeps its retranscribe provenance.
+  let generated: OverlayArchiveGeneratedWork?
 
   var id: String {
     if let archive { return "archive:\(archive.path)#\(reducerRevision)" }
@@ -219,14 +232,19 @@ struct OverlaySupersededTake: Equatable, Identifiable {
     self.renderedText = renderedText
     self.reducerRevision = reducerRevision
     self.unsavedDraft = unsavedDraft
+    generated = nil
   }
 
-  init(archive: OverlaySupersededArchive, renderedText: String, revision: UInt64, unsavedDraft: String) {
+  init(
+    archive: OverlaySupersededArchive, renderedText: String, revision: UInt64,
+    unsavedDraft: String, generated: OverlayArchiveGeneratedWork? = nil
+  ) {
     sessionId = nil
     self.archive = archive
     self.renderedText = renderedText
     reducerRevision = revision
     self.unsavedDraft = unsavedDraft
+    self.generated = generated?.text.utf8.elementsEqual(unsavedDraft.utf8) == true ? generated : nil
   }
 }
 
@@ -234,6 +252,20 @@ struct OverlaySupersededTake: Equatable, Identifiable {
 struct OverlaySupersededArchive: Equatable {
   let path: String
   let recordedAt: Date
+  /// The archive as the canvas showed it when the work was set aside, so a
+  /// recovery can put the work back on that archive rather than on a
+  /// clipboard. Nil only when no canvas source is known.
+  var source: OverlayArchivedTranscript? = nil
+}
+
+/// Words a retranscription of one archive produced that its chain has not
+/// accepted yet. While the draft stays byte-equal to `text`, committing it is
+/// still that retranscription; any human change makes it a user edit.
+struct OverlayArchiveGeneratedWork: Equatable {
+  let text: String
+  let sourceRevision: UInt64
+  /// How the words were produced, recorded as the revision's detail.
+  let detail: String
 }
 
 /// How a sibling presentation status addresses the receiver's current capture.
@@ -436,6 +468,8 @@ final class OverlayState {
   private(set) var archivedTranscript: OverlayArchivedTranscript?
   /// Editor payload for the archive, the twin of `revisionDraft`.
   private var archiveDraft = ""
+  /// The unaccepted retranscription `archiveDraft` was filled with, if any.
+  private var archiveGeneratedWork: OverlayArchiveGeneratedWork?
   private(set) var archiveActionPending = false
   private(set) var archiveActionError: String?
   /// Fence for archive presentation: bumped on every open, leave and action,
@@ -2488,6 +2522,7 @@ final class OverlayState {
     guard !revisionCommitPending, !formatterCommitPending else { return }
     if let archivedTranscript {
       archiveDraft = archivedTranscript.text
+      archiveGeneratedWork = nil
       revisionCommitError = nil
       if !isEditingTranscript { restartAutoHideCountdown() }
       return
@@ -3772,6 +3807,7 @@ final class OverlayState {
   /// exists to prevent, reintroduced one line lower.
   func recoverSupersededTake() {
     guard let take = supersededTakes.first else { return }
+    if reopenRetainedArchiveWork(take) { return }
     guard recoveryClipboardWriter(take.recoverableText) else {
       recoveryFailure =
         take.hasUnsavedEdits
@@ -4172,6 +4208,9 @@ final class ControllerDictationEngine: DictationEngine {
   func sendAssistiveTranscript(text: String) async throws -> Bool {
     try await hotkeys.sendAssistiveTranscript(text: text)
   }
+  func sendArchivedTranscript(text: String) async throws -> Bool {
+    try await hotkeys.sendArchivedTranscript(text: text)
+  }
   func lastSessionAudioPath() -> String? {
     hotkeys.lastSessionAudioPath()
   }
@@ -4208,12 +4247,12 @@ final class ControllerDictationEngine: DictationEngine {
   }
   func commitArchivedRevision(
     archivePath: String, sourceRevision: UInt64, renderedText: String,
-    kind: CsArchiveRevisionKind
+    kind: CsArchiveRevisionKind, detail: String?
   ) async throws -> CsArchivedDocument {
     try await Task.detached {
       try CodescribeThreads().commitHistoryRevision(
         path: archivePath, sourceRevision: sourceRevision, renderedText: renderedText,
-        kind: kind)
+        kind: kind, detail: detail)
     }.value
   }
   func restoreArchivedRevision(
@@ -4355,6 +4394,7 @@ extension OverlayState {
     archiveGeneration &+= 1
     archivedTranscript = archived
     archiveDraft = archived.text
+    archiveGeneratedWork = nil
     archiveActionPending = false
     archiveActionError = nil
     isEditingTranscript = false
@@ -4385,11 +4425,12 @@ extension OverlayState {
   func leaveArchivedTranscript() {
     guard let archived = archivedTranscript else { return }
     if isRevisionDraftDirty {
-      retainArchivedWork(archived, unsavedDraft: archiveDraft)
+      retainArchivedWork(archived, unsavedDraft: archiveDraft, generated: archiveGeneratedWork)
     }
     archiveGeneration &+= 1
     archivedTranscript = nil
     archiveDraft = ""
+    archiveGeneratedWork = nil
     archiveActionPending = false
     archiveActionError = nil
     isEditingTranscript = false
@@ -4409,16 +4450,56 @@ extension OverlayState {
 
   /// Retain archive text the chain did not accept, for explicit recovery or
   /// discard through the one superseded-work owner.
-  fileprivate func retainArchivedWork(_ archived: OverlayArchivedTranscript, unsavedDraft: String) {
+  fileprivate func retainArchivedWork(
+    _ archived: OverlayArchivedTranscript, unsavedDraft: String,
+    generated: OverlayArchiveGeneratedWork? = nil
+  ) {
     guard !unsavedDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     let take = OverlaySupersededTake(
-      archive: OverlaySupersededArchive(path: archived.path, recordedAt: archived.recordedAt),
+      archive: OverlaySupersededArchive(
+        path: archived.path, recordedAt: archived.recordedAt, source: archived),
       renderedText: archived.text,
       revision: archived.revision,
-      unsavedDraft: unsavedDraft)
+      unsavedDraft: unsavedDraft,
+      generated: generated)
     guard !supersededTakes.contains(take) else { return }
     supersededTakes.append(take)
     showFooterNotice(supersededRecoveryNotice)
+  }
+
+  /// Whether recovering the oldest retained work reopens it on its own
+  /// archive instead of copying it to the clipboard.
+  var supersededRecoveryReopensArchive: Bool {
+    pendingSupersededTake?.archive?.source != nil && engine != nil && archiveOpenRefusal == nil
+  }
+
+  /// Label for the recovery action, naming what it will actually do.
+  var supersededRecoveryActionLabel: String {
+    supersededRecoveryReopensArchive
+      ? String(
+        localized: "Reopen unsaved work on its transcript",
+        comment: "Recovery puts retained work back on the saved transcript it was written for")
+      : OverlayIntent.recoverSuperseded.accessibilityLabel
+  }
+
+  /// Put retained archive work back on that archive's canvas, as the same
+  /// unsaved draft with the same provenance, so it can be committed against
+  /// the revision it was written for (Rust refuses a stale one) or discarded.
+  /// Returns false, changing nothing, when the canvas cannot take it now.
+  fileprivate func reopenRetainedArchiveWork(_ take: OverlaySupersededTake) -> Bool {
+    guard supersededRecoveryReopensArchive, let source = take.archive?.source,
+      openArchivedTranscript(source)
+    else { return false }
+    archiveDraft = take.recoverableText
+    archiveGeneratedWork = take.generated
+    recoveryFailure = nil
+    supersededTakes.removeAll { $0 == take }
+    cancelAutoHide()
+    showFooterNotice(
+      String(
+        localized: "unsaved work reopened",
+        comment: "Footer after retained work was put back on its saved transcript"))
+    return true
   }
 
   fileprivate var projectedChrome: OverlayProjectedChrome {
@@ -4469,6 +4550,11 @@ extension OverlayState {
       revisionCommitError = String(localized: "Transcript revision authority is unavailable")
       return
     }
+    // Unchanged bytes of an unaccepted retranscription are still that
+    // retranscription; anything the user changed is their edit.
+    let generated = archiveGeneratedWork.flatMap {
+      $0.sourceRevision == source.revision && $0.text.utf8.elementsEqual(proposed.utf8) ? $0 : nil
+    }
     revisionCommitError = nil
     archiveActionPending = true
     archiveActionError = nil
@@ -4481,7 +4567,7 @@ extension OverlayState {
         outcome = .success(
           try await engine.commitArchivedRevision(
             archivePath: source.path, sourceRevision: source.revision, renderedText: proposed,
-            kind: .userEdit))
+            kind: generated == nil ? .userEdit : .retranscribe, detail: generated?.detail))
       } catch {
         outcome = .failure(error)
       }
@@ -4500,11 +4586,14 @@ extension OverlayState {
       case .success(let document):
         // The draft is the accepted text, so it is clean before painting.
         self.archiveDraft = self.archivedTranscript?.text ?? proposed
+        self.archiveGeneratedWork = nil
         self.acceptArchivedDocument(document)
         self.showFooterNotice(
-          String(
-            localized: "Edit saved to this transcript. The original text is kept.",
-            comment: "Footer after an edit of a transcript reopened from history was saved"))
+          generated == nil
+            ? String(
+              localized: "Edit saved to this transcript. The original text is kept.",
+              comment: "Footer after an edit of a transcript reopened from history was saved")
+            : String(localized: "retranscribed"))
       case .failure(let error):
         // The draft stays dirty on the canvas: commit again or discard.
         self.archiveActionError = String(
@@ -4612,6 +4701,7 @@ extension OverlayState {
       showFooterNotice(String(localized: "retranscribe unavailable"))
       return
     }
+    let passDetail = "pass=\(pass.rawValue)"
     let passEngine =
       pass == .cloud
       ? String(localized: "cloud", comment: "Retranscribe pass: the cloud engine")
@@ -4642,7 +4732,7 @@ extension OverlayState {
           committed = .success(
             try await engine.commitArchivedRevision(
               archivePath: source.path, sourceRevision: source.revision, renderedText: text,
-              kind: .retranscribe))
+              kind: .retranscribe, detail: passDetail))
         } catch {
           committed = .failure(error)
         }
@@ -4655,8 +4745,12 @@ extension OverlayState {
         case (_, .success(let document)?):
           self.acceptArchivedDocument(document)
         case (.success(let text), .failure?):
-          // Not accepted and A is no longer on the canvas: keep the words.
-          self.retainArchivedWork(source, unsavedDraft: text)
+          // Not accepted and A is no longer on the canvas: keep the words
+          // with what produced them.
+          self.retainArchivedWork(
+            source, unsavedDraft: text,
+            generated: OverlayArchiveGeneratedWork(
+              text: text, sourceRevision: source.revision, detail: passDetail))
         default:
           break
         }
@@ -4684,8 +4778,10 @@ extension OverlayState {
             : String(localized: "retranscribed"))
       case (.success(let text), .failure(let error)?):
         // Not accepted: the new words stay on the canvas as an unsaved draft
-        // the user can commit again or discard.
+        // the user can commit again (still a retranscription) or discard.
         self.archiveDraft = text
+        self.archiveGeneratedWork = OverlayArchiveGeneratedWork(
+          text: text, sourceRevision: source.revision, detail: passDetail)
         self.archiveActionError = String(
           localized: "Couldn't save the new transcription: \(String(describing: error))",
           comment: "The placeholder is the engine's own failure text")
@@ -4766,7 +4862,9 @@ extension OverlayState {
     return Task { @MainActor [weak self] in
       let outcome: Result<Bool, Error>
       do {
-        outcome = .success(try await engine.sendAssistiveTranscript(text: text))
+        // Never `sendAssistiveTranscript`: that consumes the live take's
+        // pending context, which belongs to whatever take is live now.
+        outcome = .success(try await engine.sendArchivedTranscript(text: text))
       } catch {
         outcome = .failure(error)
       }

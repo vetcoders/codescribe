@@ -134,6 +134,8 @@ struct OverlayIntentRail: View {
   var retranscribeUnavailableReason: String?
   /// Why history cannot be opened onto the canvas right now; nil allows it.
   var historyOpenRefusal: String?
+  /// What the recovery action will do for the oldest retained work.
+  var recoverSupersededLabel = OverlayIntent.recoverSuperseded.accessibilityLabel
   var admitHistoryOpen: () -> UInt64 = { 0 }
   var onOpenArchive: (OverlayArchivedTranscript, UInt64) -> OverlayArchiveOpenOutcome = { _, _ in
     .superseded
@@ -175,7 +177,7 @@ struct OverlayIntentRail: View {
         } detail: { close in
           VStack(alignment: .leading, spacing: 8) {
             if intents.contains(.recoverSuperseded) {
-              Button(OverlayIntent.recoverSuperseded.accessibilityLabel) {
+              Button(recoverSupersededLabel) {
                 close()
                 dispatch(.recoverSuperseded)
               }

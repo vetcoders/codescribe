@@ -11820,6 +11820,17 @@
         }
       }
     },
+    "Reopen unsaved work on its transcript" : {
+      "comment" : "Recovery puts retained work back on the saved transcript it was written for",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć niezapisaną pracę do jej transkrypcji"
+          }
+        }
+      }
+    },
     "Replace a manually installed Codescribe skill?" : {
       "localizations" : {
         "pl" : {
@@ -19551,6 +19562,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "odrzucono niezapisaną zmianę"
+          }
+        }
+      }
+    },
+    "unsaved work reopened" : {
+      "comment" : "Footer after retained work was put back on its saved transcript",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "przywrócono niezapisaną pracę"
           }
         }
       }
