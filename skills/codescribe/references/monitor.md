@@ -71,6 +71,41 @@ original envelope, including acoustic evidence. It refuses an already acknowledg
 delivery even before the follower sweeps its mailbox. A later bell must not
 repeat the completed task or speak a second answer for an acknowledged delivery.
 
+## Listener loss and recovery
+
+A session watch also supervises its follower. If the follower dies unexpectedly
+while this session still owns the channel, the watch starts one replacement on
+the same lease, cursor and mailbox. It then prints a single line:
+
+```json
+{"notice": "Codescribe listener lifecycle", "event": "follower_recovered", "consecutive_losses": 1, ...}
+```
+
+A lifecycle notice is not a message. It has no `delivery_id` and no text.
+Never ACK it, reply to it or treat it as a task. Unread messages continue
+through the usual bell or `--read-pending` → `--ack` flow.
+
+- `follower_recovered`: no action is needed.
+- `recovery_failed` or `unrecoverable`: report it, inspect `cs-bus --status`,
+  and re-run the same `--attach` once.
+- `recovery_suspended`: two losses happened without a new message. The helper
+  stops reconnecting. Tell the user, and re-attach only on purpose. An explicit
+  `--attach` resets the streak, as does a newly queued message. Codex also gets
+  this notice once through the native queue.
+- `listener_ended`: the session was detached, archived or taken over, and the
+  watch exits. Do not re-attach just to undo it.
+
+These boundaries are yours to watch. The helper cannot observe them:
+
+- **Watch exit.** The provider monitor reports it. Restart `--watch` under the
+  monitor. `--status` shows `listener.watch_alive`.
+- **Notification-window expiry.** The watch may still be running. Renew the
+  window. Do not call it a disconnect, and do not re-attach for it.
+- **Ended provider conversation.** Nothing in the helper can wake it.
+
+Do not start a second follower or watch to "make sure". The lease lock admits
+one reader, and recovery has already used it.
+
 ## Select the execution mechanism for other providers
 
 Inspect tools available in this provider session before launching a listener.
