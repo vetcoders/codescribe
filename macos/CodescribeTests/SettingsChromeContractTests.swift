@@ -627,7 +627,8 @@ final class SettingsChromeContractTests: XCTestCase {
     for retired in [
       "Tool permissions.", "Allow, ask, or deny — per tool. Deny wins over everything.",
       "Tool overrides · %lld", "Read-only", "Side effects", "Global / unknown", "%lld servers",
-      "Inherited from the category default", "Inherited from the server rule", "Restore inheritance",
+      "Inherited from the category default", "Inherited from the server rule",
+      "Restore inheritance",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
@@ -753,11 +754,67 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(section.components(separatedBy: "labeledField(").count, 6)
     XCTAssertTrue(section.contains("fieldLabel(\"Access token (optional)\")"))
     XCTAssertTrue(
-      section.contains("guard addError == nil else { return }"),
+      section.contains("guard addError == nil else {"),
       "a failed add keeps the typed fields")
+
+    // P2-006: the caption is the field's accessibility name, not the
+    // placeholder or the typed text; the token field has a name at all.
+    XCTAssertTrue(section.contains("TextField(title, text: text, prompt: Text(placeholder))"))
+    XCTAssertFalse(section.contains("TextField(placeholder, text: text)"))
+    XCTAssertTrue(
+      section.contains(
+        "SecureField(text: $token, prompt: nil) { Text(\"Access token (optional)\") }"))
+    XCTAssertFalse(section.contains("SecureField(text: $token, prompt: nil) { EmptyView() }"))
+
+    // P2-005: the form renders the translated refusal under its field and
+    // never the store's `Config(msg: …)` text.
+    XCTAssertTrue(section.contains(") -> MCPAddFailure?"))
+    XCTAssertTrue(section.contains("@State private var addError: MCPAddFailure?"))
+    XCTAssertTrue(
+      section.contains(
+        "if let addError, Self.field(for: addError.visibleField(remote: remote)) == focus {"))
+    XCTAssertTrue(section.contains("Text(verbatim: failure.message)"))
+    XCTAssertTrue(
+      section.contains(
+        "if let field = Self.field(for: addError?.visibleField(remote: remote)) {"
+      ))
+    XCTAssertTrue(section.contains("focusedField = field"))
+    XCTAssertTrue(
+      section.contains(
+        "if let addError, Self.field(for: addError.visibleField(remote: remote)) == nil {"))
+    XCTAssertTrue(section.contains(")?.forTransport(remote: remote, endpoint: endpoint)"))
+    // The store is the one validator: the form no longer pre-filters the
+    // cases it now knows how to show, and the name reaches the store raw.
+    XCTAssertTrue(section.contains("!name.isEmpty || !(remote ? endpoint : command).isEmpty"))
+    XCTAssertFalse(section.contains("hasPrefix(\"http\")"))
+    XCTAssertTrue(section.contains("addError = onAdd(\n      name,\n"))
+    XCTAssertFalse(section.contains("name.trimmingCharacters(in: .whitespaces)"))
+
+    // P1-002: Remove asks; the alert names the server and the consequence.
+    XCTAssertTrue(section.contains("onRemove: { model.requestMcpServerRemoval(server.name) }"))
+    XCTAssertFalse(section.contains("onRemove: { model.removeMcpServer("))
+    XCTAssertTrue(section.contains("presenting: model.mcpRemovalCandidate"))
+    XCTAssertTrue(
+      section.contains("Text(\"Remove \\(model.mcpRemovalCandidate ?? \"\") from MCP servers?\")"))
+    XCTAssertTrue(
+      section.contains("Button(\"Cancel\", role: .cancel) { model.cancelMcpServerRemoval() }"))
+    XCTAssertTrue(
+      section.contains(
+        "Button(\"Remove server\", role: .destructive) { model.confirmMcpServerRemoval(name) }"))
+    XCTAssertTrue(section.contains(".help(\"Remove this server from mcp.json…\")"))
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
+      "Remove %@ from MCP servers?": "Usunąć %@ z serwerów MCP?",
+      "Remove server": "Usuń serwer",
+      "Removes %@ from mcp.json and deletes its Keychain token. The Agent loses this server's tools until you add it again.":
+        "Usuwa %@ z pliku mcp.json i kasuje jego token z pęku kluczy. Agent traci narzędzia tego serwera, dopóki nie dodasz go ponownie.",
+      "Remove this server from mcp.json…": "Usuń ten serwer z pliku mcp.json…",
+      "The server URL is invalid. Enter a full HTTP or HTTPS URL with a hostname.":
+        "Adres serwera jest nieprawidłowy. Wpisz pełny adres HTTP lub HTTPS z nazwą hosta.",
+      "A server with this name already exists. Choose another name.":
+        "Serwer o tej nazwie już istnieje. Wybierz inną nazwę.",
+      "Enter the command that starts the server.": "Wpisz polecenie, które uruchamia serwer.",
       "MCP servers": "Serwery MCP",
       "Add MCP servers and manage the tools the Agent may use.":
         "Dodawaj serwery MCP i zarządzaj narzędziami, z których może korzystać Agent.",
@@ -788,6 +845,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "disconnected — disabled", "connecting…", "degraded — %@",
       "remote · no authentication · policy: ask", "remote · token in Keychain · policy: ask",
       "Clear MCP configuration…", "name (e.g. prview)", "endpoint (https://…/mcp)",
+      "Remove this server from mcp.json",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
@@ -861,7 +919,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("configRepairSummary().map(ConfigRepairNotice.init(raw:))"))
     XCTAssertFalse(panel.contains("Text(summary)"), "the raw repair line is no longer the headline")
     XCTAssertTrue(panel.contains("String(localized: \"App data\""))
-    XCTAssertTrue(panel.contains("pathRow(String(localized: \"Transcripts\"), model.transcriptsPath)"))
+    XCTAssertTrue(
+      panel.contains("pathRow(String(localized: \"Transcripts\"), model.transcriptsPath)"))
     XCTAssertTrue(panel.contains("String(localized: \"First dictation confirmation\""))
     XCTAssertTrue(panel.contains(".disabled(!availability.serviceEnabled)"))
     XCTAssertTrue(panel.contains("String(localized: \"Transcript source markers\""))
@@ -919,24 +978,28 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("dictionaryCounters("))
     XCTAssertTrue(panel.contains("String(localized: \"Learn from corrections…\""))
     XCTAssertTrue(panel.contains("Text(learnScopeMessage(corrections: corrections.count))"))
-    XCTAssertFalse(panel.contains("Button(\"Teach\") {\n            model.teachDictionaryFromStore()"))
+    XCTAssertFalse(
+      panel.contains("Button(\"Teach\") {\n            model.teachDictionaryFromStore()"))
     XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $showingDiagnostics)"))
     XCTAssertTrue(panel.contains("\"Differences between versions\""))
     XCTAssertFalse(panel.contains("Text(\"Changed\""))
-    XCTAssertTrue(panel.contains("stageDiffBlock(stage, index: stageIndex, showTitle: stages.count > 1)"))
+    XCTAssertTrue(
+      panel.contains("stageDiffBlock(stage, index: stageIndex, showTitle: stages.count > 1)"))
     XCTAssertTrue(panel.contains("Text(diffSpanKind(span).label)"))
     XCTAssertTrue(panel.contains("fullComparisonLabel("))
     XCTAssertTrue(panel.contains("\"Corrected text\""))
     XCTAssertFalse(panel.contains("\"Corrected original\""))
     XCTAssertTrue(panel.contains("correctionFooter("))
     XCTAssertFalse(panel.contains("Text(\"revision \\(row.revision)\")"))
-    XCTAssertTrue(panel.contains("String(localized: \"My rules · \\(model.customLexiconEntries.count)\")"))
+    XCTAssertTrue(
+      panel.contains("String(localized: \"My rules · \\(model.customLexiconEntries.count)\")"))
     XCTAssertTrue(panel.contains("lexiconProvenanceLine("))
     XCTAssertTrue(panel.contains("model.customLexiconEntries.count <= dictionaryRuleListLimit"))
     XCTAssertTrue(panel.contains("if corrections.count > 1 {"))
     XCTAssertTrue(panel.contains("if model.ruleCandidates.count > 1 {"))
     XCTAssertTrue(panel.contains(".disabled(retranscribeReason != nil)"))
-    XCTAssertTrue(panel.contains("archivedAudioLookup(configDir: lease.rootDirectory(), rawText: row.rawText)"))
+    XCTAssertTrue(
+      panel.contains("archivedAudioLookup(configDir: lease.rootDirectory(), rawText: row.rawText)"))
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
@@ -956,7 +1019,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(polish["My rules · %lld"], "Moje reguły · %lld")
     XCTAssertEqual(polish["Version %llu"], "Wersja %llu")
     XCTAssertEqual(
-      polish["Full comparison · %lld → %lld characters"], "Pełne porównanie · %1$lld → %2$lld znaków")
+      polish["Full comparison · %lld → %lld characters"],
+      "Pełne porównanie · %1$lld → %2$lld znaków")
   }
 
   func testAvailabilityTintsUseSolidTerracotta() throws {

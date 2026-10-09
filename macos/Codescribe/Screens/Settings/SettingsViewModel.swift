@@ -1752,13 +1752,14 @@ final class SettingsViewModel: ObservableObject {
 
   /// Add a server from the form. `args` is already split into tokens. On success
   /// the list + readiness re-probe so the panel reflects the new state and the
-  /// result is nil; on failure the store's error comes back so the form can
-  /// show it next to the fields it keeps.
+  /// result is nil; on failure the store's refusal comes back translated for
+  /// the form (user sentence, the field it points at, the store's words as
+  /// detail) so the form can show it under the field it keeps.
   @discardableResult
   func addMcpServer(
     name: String, command: String, args: [String],
     endpoint: String = "", token: String = ""
-  ) -> String? {
+  ) -> MCPAddFailure? {
     guard let mcpAdmin else { return nil }
     do {
       try mcpAdmin.addServer(
@@ -1771,10 +1772,31 @@ final class SettingsViewModel: ObservableObject {
       refreshAgentStatus()
       return nil
     } catch {
-      let message = String(describing: error)
-      lastError = message
-      return message
+      let failure = MCPAddFailure(error)
+      lastError = failure.detail
+      return failure
     }
+  }
+
+  /// The server the Remove button asked about. While it is set the alert is
+  /// up and nothing has been deleted: Cancel, Escape or closing the alert
+  /// clears it, only the alert's destructive button removes.
+  @Published var mcpRemovalCandidate: String?
+
+  func requestMcpServerRemoval(_ name: String) {
+    mcpRemovalCandidate = name
+  }
+
+  func cancelMcpServerRemoval() {
+    mcpRemovalCandidate = nil
+  }
+
+  /// Remove the named server after the alert confirmed it. The name comes
+  /// from the alert itself so the order in which SwiftUI runs the action and
+  /// drops the presentation does not matter.
+  func confirmMcpServerRemoval(_ name: String) {
+    mcpRemovalCandidate = nil
+    removeMcpServer(name)
   }
 
   /// Flip a server's `enabled` flag, preserving its command / args / env. The

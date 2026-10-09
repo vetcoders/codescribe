@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- Settings › Agent › MCP: removing a server now asks first. The alert names the server and says that its `mcp.json` entry and Keychain token go with it; Cancel and Escape change nothing. A rejected add no longer shows the store's `Config(msg: …)` text: the form says in plain words what to fix, under the field it names (invalid or non-HTTP URL, credentials in the URL, empty command, bad or taken name), moves focus there and keeps the store's wording as a tooltip. Every field in the add form carries its caption as its accessibility name, including the access token (audit P1-002, P2-005, P2-006; `docs/guide/settings.md`).
 - Insert and automatic paste, including Comfort, require an enabled editable input and the same retained process and AX element immediately before posting. Unknown, read-only and changed recipients keep the text copied. The widget reports “Paste requested” instead of claiming confirmed insertion.
 - Max prepares its selected conversation at app startup with exact retained history, bounded related-thread context and a tool-free provider request. A forgotten Responses chain can be replaced before tool execution without dropping local history.
 - A completed Max answer offers “Continue in chat”, opening that exact consultation without resending the transcript. Typed replies use its retained owner and durable acceptance identity.

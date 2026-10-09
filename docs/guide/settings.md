@@ -429,7 +429,10 @@ dump.
 
 - **Server card** — the name, the configured state as a flag button (Enabled /
   Disabled flips `enabled` in `mcp.json`; it never connects or disconnects
-  anything), the last handshake, and the Test / Remove actions. "Details"
+  anything), the last handshake, and the Test / Remove actions. Remove only
+  asks: an alert names the server and what goes with it (its entry in
+  `mcp.json` and its Keychain token); Cancel, Escape or closing the alert
+  leaves the configuration as it was, and only "Remove server" removes. "Details"
   folds the transport, the launch command or server URL, environment keys,
   authentication (token in Keychain or none), the server-wide permission rule
   read from the live policy, the identity the server advertised (name,
@@ -444,14 +447,22 @@ dump.
 - **Add server** — a segmented choice between a local process and an HTTP
   connection, then labelled fields: server name, launch command and command
   arguments, or server URL and an optional access token. The token goes to
-  the macOS Keychain, never into `mcp.json`. A rejected add shows the store's
-  message under the fields and keeps everything typed.
+  the macOS Keychain, never into `mcp.json`. Each field's caption is also its
+  accessibility name, so VoiceOver reads "Server name" or "Access token
+  (optional)" rather than the placeholder or the typed text. Add is live as
+  soon as anything is typed; the store does the checking. A rejected add
+  keeps everything typed and says in plain words what to fix, under the field
+  it names and with focus moved there: an unparseable or non-HTTP URL,
+  credentials inside the URL, an empty command, a name with surrounding
+  spaces or unsupported characters, a name already taken. The store's own
+  message stays available as a tooltip on that line; it never appears raw on
+  the screen.
 - **Technical details** — the on-disk note (hand edits and unknown fields are
   preserved), the file path, and "Move MCP configuration to Trash…", which
   after confirmation moves only `mcp.json` to Trash.
 
-Removing a single server also deletes its Keychain token without a separate
-confirmation; the row's Remove action is the confirmation.
+Removing a single server also deletes its Keychain token; the alert says so,
+and there is no undo after it.
 
 The Settings window carries the title "Settings" for Mission Control, App
 Exposé and the Window menu while the toolbar shows the wordmark instead.
