@@ -135,8 +135,10 @@ func correctionFooter(action: String, revision: UInt64, timestamp: String) -> St
 
 // MARK: - Archived audio
 
-/// Result of pairing a correction with its archived recording.
-enum ArchivedAudioLookup: Equatable {
+/// Result of pairing a correction with its archived recording. The lookup
+/// walks the whole `transcriptions` archive, so callers run it off the main
+/// actor and the value crosses back as a Sendable.
+enum ArchivedAudioLookup: Equatable, Sendable {
   case found(URL)
   case missing
   /// Several archived takes carry this exact raw transcript. Nothing in the

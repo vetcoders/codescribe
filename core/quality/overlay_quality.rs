@@ -312,6 +312,10 @@ fn assert_test_data_dir_isolated(caller: &str) {
 pub struct QualityListing {
     pub corrections: Vec<QualityRecord>,
     pub unchanged_takes: u64,
+    /// Every correction in the store, including the ones past `limit`:
+    /// Learn replays the whole store, so the UI must not quote the capped
+    /// page as the corpus size.
+    pub total_corrections: u64,
 }
 
 /// Filtered read for product surfaces. Writes are untouched: no-op records
@@ -319,9 +323,11 @@ pub struct QualityListing {
 /// lives here so every client shares one truth.
 pub fn recent_quality_listing(limit: usize) -> Result<QualityListing> {
     let mut unchanged_takes = 0u64;
+    let mut total_corrections = 0u64;
     let mut corrections = Vec::new();
     for (_, record) in read_collapsed_quality_records()? {
         if record.is_correction() {
+            total_corrections += 1;
             if corrections.len() < limit {
                 corrections.push(record);
             }
@@ -332,6 +338,7 @@ pub fn recent_quality_listing(limit: usize) -> Result<QualityListing> {
     Ok(QualityListing {
         corrections,
         unchanged_takes,
+        total_corrections,
     })
 }
 
@@ -2697,7 +2704,7 @@ mod tests {
     /// Correction-level edits, so every raw-level fix — the least reworded,
     /// safest teaching signal there is — was silently skipped and no candidate
     /// ever reached the gate. Shaped on the 2026-09-28 receipt:
-    /// "Cloud już" → "Klaudiusz" (a 2→1 replace run). Smart/Max stay out.
+    /// "Cloud już" → "Ada" (a 2→1 replace run). Smart/Max stay out.
     #[test]
     #[serial]
     fn off_level_edits_teach_while_smart_and_max_stay_out() {
@@ -2710,7 +2717,7 @@ mod tests {
             body.push_str("tekst ");
         }
         let heard = format!("{body}a Cloud już ogarnia bus");
-        let meant = format!("{body}a Klaudiusz ogarnia bus");
+        let meant = format!("{body}a Ada ogarnia bus");
         let lines = [
             replay_record(1, "off", &heard, &heard, &meant),
             replay_record(2, "smart", "x", "smart var", "Smart Canon"),
@@ -2725,7 +2732,7 @@ mod tests {
             "the raw-level fix extracts; smart/max edits never enter: {table:?}"
         );
         assert_eq!(table[0].variant, "Cloud już");
-        assert_eq!(table[0].canonical, "Klaudiusz");
+        assert_eq!(table[0].canonical, "Ada");
     }
 
     /// Commit under DATA_DIR isolation writes quality + meta and may teach pairs.
@@ -3353,6 +3360,7 @@ mod tests {
         let listing = recent_quality_listing(10).expect("listing");
         assert_eq!(listing.unchanged_takes, 1);
         assert_eq!(listing.corrections.len(), 2);
+        assert_eq!(listing.total_corrections, 2);
         assert_eq!(
             listing.corrections[0].confidence_flags,
             vec!["speech_gap".to_string()],
@@ -3381,6 +3389,7 @@ mod tests {
     fn recent_quality_records_limit_counts_only_real_corrections() {
         let _fixture = QualityFixture::new("temp quality root");
 
+        seed_voice_lab_record("wajprawter", "Vibecrafted");
         seed_voice_lab_record("uni agentka", "Junie");
         save_quality_record(&QualityRecord {
             correction_id: String::new(),
@@ -3406,6 +3415,10 @@ mod tests {
         let listing = recent_quality_listing(1).expect("limited listing");
         assert_eq!(listing.corrections.len(), 1);
         assert_eq!(listing.unchanged_takes, 1);
+        assert_eq!(
+            listing.total_corrections, 2,
+            "the cap bounds the page, not the corpus count"
+        );
     }
 
     /// One committed record inside an isolated data dir; returns its logical ID.

@@ -614,10 +614,11 @@ Common overrides:
 **Settings → Dictionary** shows what was corrected, what the app actually
 learned, and where the active rules come from.
 
-- **Counters** — three separate values: corrections (takes whose text
-  changed), unchanged takes (kept for their confidence telemetry only) and
-  active rules (every variant → canonical pair the engine applies). A
-  vocabulary correction is not a learned rule; nothing here implies otherwise.
+- **Counters** — three separate values: corrections (every take whose text
+  changed, not only the recent ones shown below), unchanged takes (kept for
+  their confidence telemetry only) and active rules (every variant → canonical
+  pair the engine applies). A vocabulary correction is not a learned rule;
+  nothing here implies otherwise.
 - **Recent corrections** — one card per correction. **Differences between
   versions** compares the stages that actually changed: _Formatting changed
   (raw STT → delivered)_ when Smart/Max rewrote the raw text, and _Your
@@ -631,7 +632,9 @@ learned, and where the active rules come from.
   records without confidence telemetry; it describes the records, not the
   engine.
 - **Play original / Retranscribe** — the archived take is paired by its exact
-  raw transcript. When several archived recordings share that transcript the
+  raw transcript; the pairing runs in the background when a card opens, and
+  Retranscribe stays disabled until it is known. When several archived
+  recordings share that transcript the
   pairing is ambiguous and both actions refuse, saying so; the panel also
   explains the other reasons Retranscribe is unavailable (no archived
   recording, no helper engine in Apple-only mode, a pass still running).

@@ -487,7 +487,8 @@ struct MockSettingsEngine: SettingsEngine {
     let records = try qualityRecordsLoader?() ?? qualityRecords
     return CsQualityListing(
       records: Array(records.prefix(Int(clamping: limit))),
-      unchangedTakes: unchangedQualityTakes
+      unchangedTakes: unchangedQualityTakes,
+      totalCorrections: UInt64(records.count)
     )
   }
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
