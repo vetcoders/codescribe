@@ -856,7 +856,7 @@ struct LLMLaneModel {
 
   /// Both lanes on one provider share one discovery record, so its failure
   /// would print twice. The Formatting footer defers to the Agent's line then;
-  /// availability stays per lane (an account authorizes Assistive only).
+  /// availability stays per lane (each lane seals its own credential truth).
   func repeatsDiscoveryFailure(of other: LLMLaneModel) -> Bool {
     lane == .formatting && other.lane == .assistive && providerId == other.providerId
       && discoveryFailed && other.discoveryFailed
@@ -2087,10 +2087,22 @@ final class SettingsViewModel: ObservableObject {
     )
   }
 
-  /// Enabled Formatting still exposes cloud requests even with on-device execution selected.
+  /// The formatting lane is required only for Smart/Corrections without Apple
+  /// on-device. Max runs on the Agent lane (its readiness is the Agent's), and
+  /// Apple needs no cloud credential.
   var cloudFormattingRequired: Bool {
-    settings.aiFormattingEnabled
-      && FormattingPolicyOption(storedValue: settings.formattingLevel) != .off
+    guard settings.aiFormattingEnabled, !settings.formatOnDevice else { return false }
+    switch FormattingPolicyOption(storedValue: settings.formattingLevel) {
+    case .correction, .smart: return true
+    case .off, .max, nil: return false
+    }
+  }
+
+  /// Max is selected but the Agent lane cannot serve it. Max never borrows the
+  /// formatting lane or Apple, so this is shown instead of a working Max.
+  var maxAgentUnavailable: Bool {
+    maxConsultationEnabled && providerAccessResolved && providerAccessError == nil
+      && !llmLane(.assistive).runtime.available
   }
 
   func laneUsageDescription(_ lane: LLMLane) -> String {
@@ -2100,10 +2112,16 @@ final class SettingsViewModel: ObservableObject {
     {
       return String(localized: "Formatting is disabled. This lane is not required for readiness.")
     }
+    if FormattingPolicyOption(storedValue: settings.formattingLevel) == .max {
+      return String(
+        localized:
+          "Max uses the Agent model and endpoint. This lane serves Smart and Corrections only.",
+        comment: "Formatting lane usage while the Max level is selected")
+    }
     if settings.formatOnDevice {
       return String(
         localized:
-          "Apple on-device formatting is selected. Cloud requests still require this lane's credentials. \(llmLane(lane).availabilityDescription)",
+          "Apple on-device formatting handles Smart and Corrections without a cloud credential. This lane is used when Apple fails. \(llmLane(lane).availabilityDescription)",
         comment: "The placeholder is the resolved cloud lane availability")
     }
     return llmLane(lane).availabilityDescription
@@ -2132,8 +2150,7 @@ final class SettingsViewModel: ObservableObject {
         ?? CsModelDiscovery.sample(for: runtime.providerId),
       credentialAccessResolved: providerAccessResolved,
       credentialAccessError: providerAccessError
-        ?? (lane == .assistive && !runtime.keyPresent
-          ? providerAccountErrors[runtime.providerId] : nil)
+        ?? (!runtime.keyPresent ? providerAccountErrors[runtime.providerId] : nil)
     )
   }
 
