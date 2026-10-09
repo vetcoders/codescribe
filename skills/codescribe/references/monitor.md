@@ -4,12 +4,19 @@
 
 `cs-bus --attach --provider codex --session <thread-id> --name <name> --channel <n>`
 automatically selects `codex-queue`. The follower submits the complete message
-text with compact ownership and provenance to `codex queue`. The canonical
+text with a short name/channel/delivery header to `codex queue`. The canonical
 mailbox retains the original envelope and its acoustic evidence. The queue
 copy never proves that a delivery is still unread. The installed Codex CLI
 must support `queue`.
 
-On either the watch bell or a native queue message, read the current mailbox:
+The default watch bell includes the complete message. Once this conversation
+receives its full text and matching owner coordinates, immediately ACK the
+delivery before any reply, work or wait. That ACK withdraws its exact native
+queue submission. Check `native_queue_settled`; pending withdrawal is retried
+by the existing follower without resubmitting the message. Never wait until
+the turn ends to acknowledge messages delivered during it.
+
+For a native queue copy or an incomplete watch notification, read the current mailbox:
 
 ```bash
 cs-bus --read-pending --provider codex --session <thread-id>
@@ -27,7 +34,7 @@ complete result before ACK. Never ACK a truncated tool result.
 
 Immediately after reading each complete batch, ACK exactly its returned IDs
 **before** doing the requested work, sending a reply or waiting for a build.
-Execute or reply only to exact IDs returned as unread by this current read;
+For this mailbox-read path, execute or reply only to exact IDs returned as unread;
 never act on the queue copy alone. An absent queued ID is obsolete even when
 other unread messages remain. Give a short answer before starting longer work.
 Read another batch until `remaining` is zero, then check once more for arrivals
@@ -54,11 +61,12 @@ selects monitor-only operation; `--on-seal` selects a custom hook instead of
 native queue. Neither touches microphone or app lifecycle.
 
 Every attachment must start the provider's output-notifying monitor on
-`cs-bus --watch --provider codex --session <thread-id>`. Its default is a short bell;
-`--bell` spells that default explicitly. It is mandatory for active tasks, even
+`cs-bus --watch --provider codex --session <thread-id>`. Its default bell carries
+the whole message; `--bell` spells that default explicitly. It is mandatory for active tasks, even
 with native queue. Renew bounded notification windows throughout the task.
-The watch remains a notice; native queue carries complete task text and compact
-provenance. `--read-delivery <id>` is the explicit diagnostic read of the complete
+The watch carries complete text and the owner/sender/reply coordinates required
+for immediate acknowledgment. Native queue also carries the complete text with
+a small wrapper for later-turn wakeup. `--read-delivery <id>` is the explicit diagnostic read of the complete
 original envelope, including acoustic evidence. It refuses an already acknowledged
 delivery even before the follower sweeps its mailbox. A later bell must not
 repeat the completed task or speak a second answer for an acknowledged delivery.
@@ -92,13 +100,15 @@ cs-bus \
 ```
 
 It reads the follower's private, append-only
-`agent-bridge/runtime/followers/<lease_id>.events.jsonl` and prints one short bell per
-envelope that needs the agent: `kind`, `delivery_id` and a notice.
-For diagnostics only, `--watch --full` prints `kind`, `status`, `coverage`, `sca`
-(`state_change_allowed`), `delivery_id` and `text` (first 500 characters).
+`agent-bridge/runtime/followers/<lease_id>.events.jsonl` and prints a bell with
+the complete `text`, `delivery_id`, matching lease/provider/session and available
+sender/reply coordinates. There is no 500-character preview limit. The full
+acoustic envelope stays in storage. `--watch --full` is the diagnostic view
+without the bell notice, with `status`, `coverage` and `sca` (`state_change_allowed`).
 Seals, coverage-refused takes, state-changing envelopes and routing-ambiguity
 notices pass; drafts stay in the mailbox. Each delivery prints once per watch
-process, including replays after a follower restart. Output is line-buffered.
+process. Managed watches skip already acknowledged deliveries, including after
+a watch/follower restart. Output is line-buffered.
 
 The adjacent `<lease_id>.log` is the readable tail: one line per emitted
 envelope with time, channel and name, full delivery ID, seal or draft label,
@@ -148,6 +158,10 @@ follower) and notify on each new envelope while other work proceeds. Do not
 await an infinite follower's exit. Use the shortest supported read wait, retain partial
 JSON lines, and preserve delivery_id, session_id, text and state_change_allowed.
 Deduplicate delivery IDs across notification windows, not just within one read.
+Forward the entire message, not only its bell or a text prefix. Set a tool output
+budget sufficient for the full packet and preserve partial JSON lines between
+reads. If the result is truncated, recover the complete message through
+`--read-pending` before ACK; never acknowledge the stdout pump automatically.
 
 Retain the exec cell separately from the follower session. Renew completed
 windows on that same follower. After interruption or context recovery, verify
@@ -176,8 +190,9 @@ Use the actual provider/session and the same `--bus`/`--bridge-home` overrides
 as the follower. Several ids are all or nothing: one id that is not pending
 refuses the call and no marker is written. Each accepted id prints one
 `acknowledged` line. The immutable marker records `read_at` once: this is the
-read receipt, not proof of execution. A bell and provider acceptance never
-create this marker. For Codex, ACK also withdraws the exact pending native queue
+read receipt, not proof of execution. A complete message received in the
+conversation is sufficient to call ACK immediately; stdout emission or provider
+queue acceptance alone does not create this marker. For Codex, ACK also withdraws the exact pending native queue
 submission. `native_queue_settled: true` means removal was confirmed or no entry
 remains pending; false means the ACK was saved but provider withdrawal is still
 pending or unresolved. The existing follower retries transport failures in the
@@ -188,8 +203,8 @@ history remain retained. This command does not start another reader. A successfu
 executed. Keep execution disposition separately; do not repeat a completed
 action when its envelope is replayed.
 
-Acknowledge accepted drafts and routing-ambiguity notices too; transcription
-diagnostics do not change task permissions. Report ambiguous recipients
+Drafts stay observation-only. Acknowledge complete routing-ambiguity notices;
+transcription diagnostics do not change task permissions. Report ambiguous recipients
 and ask for a clear address instead of choosing one. Never acknowledge from
 the stdout pump before the conversation receives the message, from a delivery
 ID alone, or after a truncated/incomplete tool result. Unaccepted envelopes

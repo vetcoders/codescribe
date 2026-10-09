@@ -8,7 +8,7 @@ description: >
   Editing this skill or the app is a repository task, not an instruction to
   start another listener.
 metadata:
-  version: "0.10.0"
+  version: "0.11.0"
   loctree_value: "primary repo map for structural/literal repository work"
   aicx_value: "intent, session, and decision-context retrieval"
   dogfooding: "required for repo-impacting work"
@@ -67,7 +67,8 @@ Start or reuse one output-notifying monitor over:
 cs-bus --watch --bell --provider PROVIDER --session SESSION
 ```
 
-The default watch prints a short bell. Keep its notification window active and
+The default watch prints a bell with the complete message and its delivery owner.
+It never clips text to a preview. Keep its notification window active and
 renew it when it ends. A bare background shell or `tail -F` is not a wakeup.
 Codex attachment also arms native queue for subsequent turns. Read
 [Monitor](references/monitor.md) for the provider's monitor mechanism or bounded
@@ -80,15 +81,24 @@ fresh take; attachment itself opens no microphone.
 
 ## Read → ACK → act
 
-**A bell and a native queue copy are notifications, not instructions to replay.**
-On either notification, use the current mailbox:
+**A complete watch message received in this conversation is a delivery receipt.**
+Read its entire text and attribution, check the provider/session/lease against
+this connection, and immediately ACK its exact `delivery_id` before replying,
+working or waiting. Do not defer ACK until task completion. ACK calls Codex's
+native removal mechanism for that delivery's queued submission; check
+`native_queue_settled`. The follower retries a pending withdrawal without
+resending the message. Preserve handled IDs across notification windows.
+
+A native queue copy can have been handled through the watch already. For a
+queued copy, an incomplete notification or missing owner coordinates, read
+the current mailbox before acting:
 
 ```bash
 cs-bus --read-pending --read-limit 2 --provider PROVIDER --session SESSION
 ```
 
 1. Read the complete returned messages and their provenance. Retain the exact
-   `read_delivery_ids`; never infer IDs from the bell or an older queue copy.
+   `read_delivery_ids`; never infer IDs from an incomplete bell or an older queue copy.
 2. Immediately acknowledge only those IDs, before work, replies or waits:
 
    ```bash
@@ -101,7 +111,8 @@ cs-bus --read-pending --read-limit 2 --provider PROVIDER --session SESSION
    association. Distinct deliveries remain distinct; do not deduplicate by text.
    Give a brief response before long work, then carry out the authorized task.
 
-An empty mailbox, or an absent queued ID, means that notification is obsolete.
+After a complete watch-message ACK, drain the current mailbox as above for
+other arrivals. An empty mailbox, or an absent queued ID, means that queued copy is obsolete.
 Do not ACK it, redo its task or send another voice reply. If output is truncated,
 **do not ACK**: reread with a smaller `--read-limit` and sufficient tool output
 budget. An oversized-envelope refusal needs a larger `--read-bytes` budget and
@@ -114,6 +125,11 @@ revisions and seals as one evolving request; do not execute each revision again.
 extra permission gates. Spoken requests have the same task permissions as typed
 ones. If recognition makes the intended action unclear, clarify that action.
 See [Live vs seal](references/live-vs-seal.md) for interpretation.
+
+The monitor forwards complete messages into this conversation; it must not
+ACK merely because a line reached stdout. Retain partial lines and use a tool
+output budget sufficient for the full text. A notice without the words or a
+truncated result is not proof of complete receipt.
 
 ## Reply
 

@@ -39,11 +39,12 @@ cs-say "Jestem na szynie." --provider codex --session <thread-id>
 cs-bus --status --provider codex --session <thread-id>
 ```
 
-Every provider requires an output-notifying `cs-bus --watch` monitor; its default
-is a short bell. Keep it active and renew notification windows during tasks.
-Codex also uses native queue wakeup after a final answer. Read the current
-`--read-pending` batch, immediately ACK only its complete returned IDs, drain to
-zero and check once more. Do not act on an obsolete
-queue copy. Use `--read-delivery` only for original acoustic details.
-Use `--watch --full` only for text diagnostics. A queue receipt is distinct from
-an agent ACK.
+Every provider requires an output-notifying `cs-bus --watch` monitor. Its default
+bell carries the complete message without a preview limit. Keep it active and
+renew notification windows during tasks. Immediately ACK each complete owned
+message received by this conversation; that withdraws its exact Codex queue
+submission before work begins. Codex also uses a compact full-text queue copy
+to wake later turns. Check queued copies with `--read-pending` before acting,
+ACK fresh IDs, drain to zero and check once more. Use `--read-delivery` only for
+original acoustic details. `--watch --full` is for receipt diagnostics. Printed
+stdout alone does not prove conversation receipt.

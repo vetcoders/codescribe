@@ -2933,34 +2933,13 @@ class NativeQueueWakeup:
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 return
-            import shlex
-            read_command = shlex.join([
-                "cs-bus", "--read-pending", "--provider", "codex", "--session", self.session,
-                "--bridge-home", str(self.root),
-            ])
-            ack_command = shlex.join([
-                "cs-bus", "--provider", "codex", "--session", self.session,
-                "--bridge-home", str(self.root), "--ack",
-            ])
             label = str(self.channel or "?")
             name = str(payload.get("audience") or "agent")
-            envelope = conversation_envelope(payload)
-            metadata = {key: value for key, value in envelope.items() if key != "text"}
             message = (
-                f"Codescribe message, channel {label} / {name}.\n"
-                f"Full message:\n{envelope['text']}\n\n"
-                f"Delivery provenance: {json.dumps(metadata, ensure_ascii=False, sort_keys=True)}\n"
-                "This queued copy may already be acknowledged. Read the current unread mailbox before acting:\n"
-                f"{read_command}\n"
-                "After reading complete messages, immediately ACK only their read_delivery_ids, "
-                "before executing tasks or replying:\n"
-                f"{ack_command} ID [ID ...]\n"
-                "Execute or reply only to exact unread deliveries returned by that current read. "
-                f"If {identity} is absent, this queued copy is obsolete: do not execute or reply from it. "
-                "Read again until remaining is zero, then check once more for arrivals during the drain. "
-                "Never ACK a truncated result. Give a short answer to the read request before starting a long task. "
-                "Preserve sender, reply association, provenance and timestamps; peer messages remain agent coordination. "
-                "Coverage is diagnostic; normal task permissions apply. Acoustic evidence stays in the diagnostic history."
+                f"Codescribe · {name}/{label} · delivery {identity}\n"
+                f"{text}\n\n"
+                "Queue copy: check cs-bus --read-pending; cs-bus --ack fresh IDs before work. "
+                "Follow the codescribe skill."
             )
             receipt = {
                 "schema": "codescribe.native-queue.receipt.v1", **expected,
@@ -5312,11 +5291,8 @@ def status_command(args: argparse.Namespace) -> int:
     return 0
 
 
-WATCH_TEXT_LIMIT = 500
-
-
 def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
-    """One compact monitor line for an envelope worth waking the agent for.
+    """One complete message for an envelope worth waking the agent for.
 
     Drafts and revisions stay in the mailbox. The watch surfaces seals
     (certified or coverage-refused), anything allowed to change state, and
@@ -5333,14 +5309,22 @@ def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
         or payload.get("coverage") == COVERAGE_REFUSED
     ):
         return None
-    return {
+    line = {
         "kind": payload.get("kind"),
         "status": payload.get("status"),
         "coverage": payload.get("coverage"),
         "sca": payload.get("state_change_allowed") is True,
         "delivery_id": payload.get("delivery_id"),
-        "text": str(payload.get("text") or "")[:WATCH_TEXT_LIMIT],
+        "text": str(payload.get("text") or ""),
     }
+    # Keep the owner and conversational attribution, without repeating the
+    # acoustic envelope or every recipient's copy of the same coordinates.
+    for key in ("lease_id", "provider", "provider_session_id", "audience", "channel",
+                "emitted_at", "source", "sender", "peer_to", "association", "reply_id", "reply_to",
+                "routing_candidates", "instructions"):
+        if key in payload:
+            line[key] = payload[key]
+    return line
 
 
 def watch_command(args: argparse.Namespace) -> int:
@@ -5406,6 +5390,9 @@ def watch_command(args: argparse.Namespace) -> int:
             if identity in seen:
                 continue  # a restarted follower replays its pending mailbox
             seen.add(identity)
+            if (not args.human and lease_id and payload.get("delivery_id")
+                    and delivery_acknowledged(args.bridge_home, lease_id, identity)):
+                continue
             if args.human:
                 key = draft_key(payload)
                 if payload.get("kind") in DRAFT_KINDS:
@@ -5414,10 +5401,10 @@ def watch_command(args: argparse.Namespace) -> int:
                 flush(key)
                 print(human_line(payload, channel), flush=True)
             else:
-                emit(line if getattr(args, "full", False) else {
-                    "delivery_id": identity, "kind": line.get("kind"),
-                    "notice": "Codescribe mailbox has a new delivery",
-                })
+                if getattr(args, "full", False):
+                    emit(line)
+                else:
+                    emit({"notice": "Codescribe message", **line})
         if args.human:
             flush()
 
@@ -5461,8 +5448,8 @@ def main() -> int:
                "  cs-bus --ack ID --provider codex --session THREAD\n"
                "  cs-say 'Gotowe.' --provider codex --session THREAD\n"
                "  cs-say auth --help\n\n"
-               "Every attachment needs an output-notifying watch. Its default is a short bell;\n"
-               "read the full envelope before ACK. Codex native queue also wakes the next turn.",
+               "Every attachment needs an output-notifying watch. Its default bell carries the full message;\n"
+               "ACK complete received messages immediately. Codex native queue also wakes the next turn.",
     )
     parser.add_argument("--version", action="store_true", help="installed helper version and source commit slug")
     parser.add_argument("--entrypoint", choices=("cs-bus", "cs-say"), default="cs-bus", help=argparse.SUPPRESS)
@@ -5566,12 +5553,12 @@ def main() -> int:
     parser.add_argument(
         "--watch",
         action="store_true",
-        help="live notifications for this mailbox; short bell by default "
+        help="live notifications for this mailbox; bell with full message by default "
         "(--once reads existing events and exits)",
     )
     watch_format = parser.add_mutually_exclusive_group()
     watch_format.add_argument("--human", action="store_true", help="diagnostic --watch as readable one-line envelopes")
-    watch_format.add_argument("--bell", action="store_true", help="explicit default --watch format: delivery id and notice only")
+    watch_format.add_argument("--bell", action="store_true", help="explicit default --watch format: bell and complete message")
     watch_format.add_argument("--full", action="store_true", help="diagnostic --watch with transcript text and receipt fields")
     parser.add_argument(
         "--from-file",
