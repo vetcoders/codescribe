@@ -736,11 +736,47 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(section.components(separatedBy: "labeledField(").count, 6)
     XCTAssertTrue(section.contains("fieldLabel(\"Access token (optional)\")"))
     XCTAssertTrue(
-      section.contains("guard addError == nil else { return }"),
+      section.contains("guard addError == nil else {"),
       "a failed add keeps the typed fields")
+
+    // P2-006: the caption is the field's accessibility name, not the
+    // placeholder or the typed text; the token field has a name at all.
+    XCTAssertTrue(section.contains("TextField(title, text: text, prompt: Text(placeholder))"))
+    XCTAssertFalse(section.contains("TextField(placeholder, text: text)"))
+    XCTAssertTrue(
+      section.contains("SecureField(text: $token, prompt: nil) { Text(\"Access token (optional)\") }"))
+    XCTAssertFalse(section.contains("SecureField(text: $token, prompt: nil) { EmptyView() }"))
+
+    // P2-005: the form renders the translated refusal under its field and
+    // never the store's `Config(msg: …)` text.
+    XCTAssertTrue(section.contains(") -> MCPAddFailure?"))
+    XCTAssertTrue(section.contains("@State private var addError: MCPAddFailure?"))
+    XCTAssertTrue(section.contains("if let addError, Self.field(for: addError.field) == focus {"))
+    XCTAssertTrue(section.contains("Text(verbatim: failure.message)"))
+    XCTAssertTrue(section.contains("if let field = Self.field(for: addError?.field) { focusedField = field }"))
+
+    // P1-002: Remove asks; the alert names the server and the consequence.
+    XCTAssertTrue(section.contains("onRemove: { model.requestMcpServerRemoval(server.name) }"))
+    XCTAssertFalse(section.contains("onRemove: { model.removeMcpServer("))
+    XCTAssertTrue(section.contains("presenting: model.mcpRemovalCandidate"))
+    XCTAssertTrue(section.contains("Text(\"Remove \\(model.mcpRemovalCandidate ?? \"\") from MCP servers?\")"))
+    XCTAssertTrue(section.contains("Button(\"Cancel\", role: .cancel) { model.cancelMcpServerRemoval() }"))
+    XCTAssertTrue(
+      section.contains("Button(\"Remove server\", role: .destructive) { model.confirmMcpServerRemoval(name) }"))
+    XCTAssertTrue(section.contains(".help(\"Remove this server from mcp.json…\")"))
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
+      "Remove %@ from MCP servers?": "Usunąć %@ z serwerów MCP?",
+      "Remove server": "Usuń serwer",
+      "Removes %@ from mcp.json and deletes its Keychain token. The Agent loses this server's tools until you add it again.":
+        "Usuwa %@ z pliku mcp.json i kasuje jego token z pęku kluczy. Agent traci narzędzia tego serwera, dopóki nie dodasz go ponownie.",
+      "Remove this server from mcp.json…": "Usuń ten serwer z pliku mcp.json…",
+      "The server URL is invalid. Enter a full HTTP or HTTPS URL with a hostname.":
+        "Adres serwera jest nieprawidłowy. Wpisz pełny adres HTTP lub HTTPS z nazwą hosta.",
+      "A server with this name already exists. Choose another name.":
+        "Serwer o tej nazwie już istnieje. Wybierz inną nazwę.",
+      "Enter the command that starts the server.": "Wpisz polecenie, które uruchamia serwer.",
       "MCP servers": "Serwery MCP",
       "Add MCP servers and manage the tools the Agent may use.":
         "Dodawaj serwery MCP i zarządzaj narzędziami, z których może korzystać Agent.",
@@ -771,6 +807,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "disconnected — disabled", "connecting…", "degraded — %@",
       "remote · no authentication · policy: ask", "remote · token in Keychain · policy: ask",
       "Clear MCP configuration…", "name (e.g. prview)", "endpoint (https://…/mcp)",
+      "Remove this server from mcp.json",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
