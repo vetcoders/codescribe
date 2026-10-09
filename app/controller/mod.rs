@@ -2079,6 +2079,47 @@ impl RecordingController {
         Ok(selected.clone())
     }
 
+    /// Prepare the selected Max conversation before the first formatting turn.
+    pub async fn prepare_max_consultation(
+        &self,
+    ) -> Result<Option<codescribe_core::agent::consultation::ConsultationPreparation>> {
+        let settings = self.runtime_settings_arc().await;
+        if let Some(consultation) = self.selected_max_consultation(&settings).await? {
+            return consultation.prepare(&settings).await.map(Some);
+        }
+        Ok(None)
+    }
+
+    /// Typed chat turns share the selected consultation owner and its durable
+    /// accepted-turn identity. Reopening chat never resends an old transcript.
+    pub async fn continue_max_consultation(
+        &self,
+        expected_id: &str,
+        turn_id: String,
+        text: String,
+        attachments: Vec<codescribe_core::agent::ImageAttachment>,
+    ) -> Result<String> {
+        let settings = self.runtime_settings_arc().await;
+        let lane = settings.llm_lanes().formatting();
+        anyhow::ensure!(
+            attachments.is_empty() || lane.supports_vision(lane.model()),
+            "The selected Max model does not support images"
+        );
+        let consultation = self
+            .selected_max_consultation(&settings)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Max consultation is not selected"))?;
+        anyhow::ensure!(
+            consultation.id() == expected_id,
+            "The selected Max consultation changed"
+        );
+        let answer = consultation
+            .enqueue(turn_id, text, attachments, &settings)?
+            .await
+            .context("Max consultation owner stopped before replying")??;
+        Ok(answer.text)
+    }
+
     /// Subscribe to invalidations; the broker remains the pending-state owner.
     pub fn subscribe_max_approval_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.max_approvals.subscribe_changes()
@@ -2626,7 +2667,21 @@ impl RecordingController {
     /// Install one already-sealed generation. Callers must own `serial_lock`;
     /// keeping the single write site here preserves the one-generation fence.
     async fn install_runtime_settings_generation(&self, runtime_settings: RuntimeSettingsSnapshot) {
-        *self.runtime_settings.write().await = Arc::new(runtime_settings);
+        let settings = Arc::new(runtime_settings);
+        *self.runtime_settings.write().await = Arc::clone(&settings);
+        // Selecting Max after launch also prepares its provider. Do not make the
+        // next capture wait under serial_lock for tool discovery/history I/O.
+        match self.selected_max_consultation(&settings).await {
+            Ok(Some(consultation)) => {
+                tokio::spawn(async move {
+                    if let Err(error) = consultation.prepare(&settings).await {
+                        warn!(%error, "Max preparation after settings change requires attention");
+                    }
+                });
+            }
+            Ok(None) => {}
+            Err(error) => warn!(%error, "Max selection after settings change requires attention"),
+        }
     }
 
     /// Reload the just-persisted calibration into the controller before the
@@ -2856,23 +2911,11 @@ impl RecordingController {
     pub async fn paste_text_from_overlay(&self, text: String) -> Result<OverlayPasteResult> {
         let trimmed = text.trim();
         let target_app = self.pre_overlay_frontmost_app.read().await.clone();
-        let intent = DeliveryIntent::OverlayInsert;
-        let decision =
-            resolve_delivery_route(intent, overlay_insert_facts(!trimmed.is_empty(), false));
-        info!(
-            "{}",
-            format_delivery_route_line(intent, decision, target_app.as_deref())
-        );
-        if trimmed.is_empty() || decision.route == DeliveryRoute::ArchiveOnly {
+        if trimmed.is_empty() {
             return Ok(OverlayPasteResult::noop());
         }
         let config = self.get_config().await;
         let payload = self.delivery_tagger.render(trimmed, &config, None);
-        if decision.route == DeliveryRoute::DeferredInsert {
-            return self
-                .arm_overlay_text(&payload, target_app, Some("Codescribe".to_string()))
-                .await;
-        }
 
         self.execute_clipboard_paste(payload, target_app, "Overlay paste")
             .await
@@ -2896,6 +2939,7 @@ impl RecordingController {
         target_app: Option<String>,
         context: &'static str,
     ) -> Result<OverlayPasteResult> {
+        let config = self.get_config().await;
         let focus_confirmed = target_app
             .as_deref()
             .map(str::trim)
@@ -2908,6 +2952,7 @@ impl RecordingController {
                             Duration::from_millis(250),
                         ))
             });
+        let target = clipboard::StopPasteTarget::capture();
         let frontmost = crate::os::selection::current_frontmost_app_name();
         let target_observed_frontmost = matches!(
             (target_app.as_deref(), frontmost.as_deref()),
@@ -2932,20 +2977,41 @@ impl RecordingController {
         // follow the external frontmost app.
         let focus_confirmed = delivery_route::clipboard_paste_may_post(
             target_app.is_some(),
-            focus_confirmed,
+            focus_confirmed && target_observed_frontmost,
             target_observed_frontmost,
             frontmost_is_external,
-        );
+        ) && frontmost
+            .as_deref()
+            .is_some_and(|name| target.matches_app_name(name));
 
-        let config = self.get_config().await;
         let preflight = clipboard::synthetic_paste_preflight();
+        let mut facts = overlay_insert_facts(!paste_text.is_empty(), false);
+        facts.paste_target = helpers::observe_paste_target(frontmost.as_deref());
+        facts.executable_payload = looks_executable(&paste_text);
+        let decision = resolve_delivery_route(DeliveryIntent::OverlayInsert, facts);
+        info!(
+            "{}",
+            format_delivery_route_line(
+                DeliveryIntent::OverlayInsert,
+                decision,
+                target_app.as_deref()
+            )
+        );
 
         let mut deferred_insert_shortcut = None;
         let mut deferred_insert_failure = None;
-        let delivery = if focus_confirmed && preflight.can_post_events() {
-            clipboard::paste_and_restore(&paste_text)
-                .with_context(|| format!("{context}: failed to paste"))?;
-            OverlayPasteDelivery::Pasted
+        let delivery = if decision.route == DeliveryRoute::ClipboardHold {
+            clipboard::set_clipboard(&paste_text)?;
+            OverlayPasteDelivery::CopiedToClipboard
+        } else if focus_confirmed && preflight.can_post_events() {
+            let receipt = clipboard::paste_to_stop_target(&paste_text, &target)
+                .with_context(|| format!("{context}: failed to request paste"))?;
+            match receipt.delivery {
+                clipboard::StopPasteDelivery::Pasted => OverlayPasteDelivery::PasteRequested,
+                clipboard::StopPasteDelivery::CopiedTargetChanged => {
+                    OverlayPasteDelivery::CopiedToClipboard
+                }
+            }
         } else {
             warn!(
                 target_app = ?target_app,
@@ -3171,7 +3237,7 @@ impl RecordingController {
                                 "stop paste delivery receipt");
                                 match receipt.delivery {
                                     clipboard::StopPasteDelivery::Pasted => {
-                                        OverlayPasteDelivery::Pasted
+                                        OverlayPasteDelivery::PasteRequested
                                     }
                                     clipboard::StopPasteDelivery::CopiedTargetChanged => {
                                         OverlayPasteDelivery::CopiedToClipboard
@@ -3651,7 +3717,7 @@ impl RecordingController {
             Ok(result) => {
                 // A declined payload or missing permission is not acceptance.
                 let disposition = match result.delivery {
-                    OverlayPasteDelivery::Pasted => TranscriptDelivery::SinkAccepted,
+                    OverlayPasteDelivery::PasteRequested => TranscriptDelivery::SinkAccepted,
                     OverlayPasteDelivery::CopiedToClipboard => {
                         TranscriptDelivery::CopiedToClipboard
                     }
@@ -7207,7 +7273,7 @@ mod terminal_delivery_target_falsifiers {
                         assert_eq!(payload.matches("<codescribe").count(), 1);
                         Ok(OverlayPasteResult {
                             delivery: if route == DeliveryRoute::ClipboardPaste {
-                                OverlayPasteDelivery::Pasted
+                                OverlayPasteDelivery::PasteRequested
                             } else {
                                 OverlayPasteDelivery::DeferredInsertArmed
                             },
@@ -7302,7 +7368,7 @@ mod terminal_delivery_target_falsifiers {
                 |_, text, _| async move {
                     assert_eq!(text, "last words");
                     Ok(OverlayPasteResult {
-                        delivery: OverlayPasteDelivery::Pasted,
+                        delivery: OverlayPasteDelivery::PasteRequested,
                         target_app_name: None,
                         frontmost_app_name: None,
                         deferred_insert_shortcut: None,
@@ -7339,7 +7405,7 @@ mod terminal_delivery_target_falsifiers {
                     assert_eq!(route, DeliveryRoute::ClipboardPaste);
                     assert_eq!(text, "all committed words");
                     Ok(OverlayPasteResult {
-                        delivery: OverlayPasteDelivery::Pasted,
+                        delivery: OverlayPasteDelivery::PasteRequested,
                         target_app_name: None,
                         frontmost_app_name: None,
                         deferred_insert_shortcut: None,
@@ -7879,7 +7945,7 @@ mod refusal_recovery_tests {
                     assert_eq!(payload, expected);
                     calls.fetch_add(1, Ordering::SeqCst);
                     Ok(OverlayPasteResult {
-                        delivery: OverlayPasteDelivery::Pasted,
+                        delivery: OverlayPasteDelivery::PasteRequested,
                         target_app_name: None,
                         frontmost_app_name: None,
                         deferred_insert_shortcut: None,
@@ -8100,7 +8166,7 @@ mod refusal_recovery_tests {
         // Target copy/deferred outcomes require committed text; preemption retains it.
         for (outcome, frontmost, preempted, expected, receipt) in [
             (
-                OverlayPasteDelivery::Pasted,
+                OverlayPasteDelivery::PasteRequested,
                 Some("original-editor"),
                 false,
                 TranscriptDelivery::SinkAccepted,
@@ -9490,7 +9556,7 @@ mod refusal_recovery_tests {
     async fn hold_refusal_routes_once_to_original_sink_with_exact_disposition() {
         for (delivery, expected) in [
             (
-                OverlayPasteDelivery::Pasted,
+                OverlayPasteDelivery::PasteRequested,
                 TranscriptDelivery::SinkAccepted,
             ),
             (

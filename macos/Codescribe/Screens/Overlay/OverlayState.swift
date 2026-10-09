@@ -362,6 +362,8 @@ final class OverlayState {
   private(set) var revisionCommitError: String?
   private(set) var formatterCommitPending = false
   private(set) var formatterError: String?
+  private(set) var maxPreparationError: String?
+  private(set) var transcriptStorageError: String?
   /// Read-only projection of this take's Bus journal revisions.
   private(set) var documentHistory: [CsDocumentHistoryEntry] = []
   private var historyReadSessionId: String?
@@ -484,6 +486,7 @@ final class OverlayState {
   /// Handoff to the agent surface — wired by the orchestrator (routes the text
   /// into AgentChat, which streams it through `CodescribeAgent.streamReply`).
   var onSendToAgent: ((String) -> Void)?
+  var onContinueMaxConsultation: ((String) -> Bool)?
   /// Dismiss the floating window when the overlay's own lifecycle ends
   /// (auto-hide, warmup watchdog, agent delivery) — wired by the orchestrator,
   /// which keeps an open agent channel on screen against it.
@@ -1873,8 +1876,8 @@ final class OverlayState {
         case .accessibilityPermissionNeeded:
           self.showFooterNotice(
             String(localized: "no ax", comment: "Footer notice: no Accessibility permission"))
-        case .pasted:
-          self.showFooterNotice(String(localized: "inserted"))
+        case .pasteRequested:
+          self.showFooterNotice(String(localized: "Paste requested"))
         case .noop:
           self.showFooterNotice(String(localized: "no insert"))
         }
@@ -1884,6 +1887,32 @@ final class OverlayState {
           comment: "The placeholder is the engine's own failure text")
         self.showFooterNotice(String(localized: "no paste"))
       }
+    }
+  }
+
+  /// Startup diagnostics are projections of the Rust owners, independent of
+  /// the current take. Starting a new recording must not hide storage failure.
+  func setMaxPreparationError(_ message: String?) {
+    maxPreparationError = message == nil ? nil
+      : String(localized: "Max could not prepare its conversation.")
+  }
+
+  func setTranscriptStorageError(_ message: String?) {
+    transcriptStorageError = message == nil ? nil
+      : String(localized: "Transcript history is unavailable. Your text remains visible.")
+  }
+
+  var completedMaxConsultationID: String? {
+    guard terminal, let receipt = latestTranscriptProjection?.consultationPresentations.last,
+      !receipt.consultationId.isEmpty
+    else { return nil }
+    return receipt.consultationId
+  }
+
+  func continueMaxConsultationInChat() {
+    guard let backendID = completedMaxConsultationID else { return }
+    if onContinueMaxConsultation?(backendID) != true {
+      showFooterNotice(String(localized: "This consultation is unavailable in chat."))
     }
   }
 

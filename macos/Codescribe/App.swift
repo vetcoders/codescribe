@@ -438,6 +438,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     startHotkeys()
     installSystemSleepWakeObserver()
     registerVoiceDelivery()
+    prepareTranscriptHistoryStorage()
+    prepareMaxConsultation()
     prewarmRecordingController()
     NotificationCenter.default.addObserver(
       self,
@@ -1087,6 +1089,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       } catch {
         appLogger.error(
           "Codescribe hotkeys unavailable: \(String(describing: error), privacy: .public)")
+      }
+    }
+  }
+
+  private func prepareMaxConsultation() {
+    // Independent of STT warmup: local consultation recovery must not wait for
+    // model loading or for the first formatting request. The Rust owner treats
+    // retained instructions only as reference data and offers no tools.
+    Task { [hotkeys, model] in
+      do {
+        let readiness = try await hotkeys.prepareMaxConsultation()
+        model.overlay.state.setMaxPreparationError(nil)
+        switch readiness {
+        case .disabled: break
+        case .storedChain: appLogger.info("Codescribe Max startup Responses chain ready")
+        case .replayOnly: appLogger.info("Codescribe Max provider ready; protocol uses full-history replay")
+        }
+      } catch {
+        model.overlay.state.setMaxPreparationError(String(describing: error))
+        appLogger.error(
+          "Codescribe Max preparation requires attention: \(String(describing: error), privacy: .public)")
+      }
+    }
+  }
+
+  private func prepareTranscriptHistoryStorage() {
+    Task { [model] in
+      do {
+        let recovered = try await prepareTranscriptStorage()
+        model.overlay.state.setTranscriptStorageError(nil)
+        appLogger.info("Codescribe transcript storage ready; device recovery: \(recovered)")
+      } catch {
+        model.overlay.state.setTranscriptStorageError(String(describing: error))
+        appLogger.error(
+          "Codescribe transcript storage preparation failed: \(String(describing: error), privacy: .public)")
       }
     }
   }

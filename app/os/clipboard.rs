@@ -146,7 +146,19 @@ where
 /// Consume the armed transcript and run the classic snapshot → set → Cmd+V →
 /// restore path at the moment the user presses the global command.
 pub fn deliver_deferred_insert() -> Result<DeferredInsertDelivery> {
-    deliver_deferred_insert_at(Instant::now(), paste_and_restore)
+    let target = StopPasteTarget::capture();
+    if target.field != crate::os::hold_badge::FocusedInputField::Text || !target.readable() {
+        anyhow::bail!(
+            "Select an editable text field before inserting. The transcript remains available."
+        );
+    }
+    deliver_deferred_insert_at(Instant::now(), |text| {
+        let receipt = paste_to_stop_target(text, &target)?;
+        if receipt.delivery == StopPasteDelivery::CopiedTargetChanged {
+            anyhow::bail!("The text field changed. The transcript is on your clipboard.");
+        }
+        Ok(())
+    })
 }
 
 /// Permission truth required before posting a synthetic Cmd+V.
@@ -199,26 +211,54 @@ pub(crate) fn synthetic_paste_preflight() -> SyntheticPastePreflight {
 #[derive(Debug)]
 pub(crate) struct StopPasteTarget {
     pid: Option<i32>,
+    field: crate::os::hold_badge::FocusedInputField,
     #[cfg(target_os = "macos")]
     element: Option<stop_target_identity::Identity>,
 }
 
 impl StopPasteTarget {
+    /// Relate the retained process to the app observation that authorized this
+    /// request. A later frontmost label cannot rebind an earlier AX identity.
+    pub(crate) fn matches_app_name(&self, expected: &str) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.pid
+                .and_then(stop_target_identity::app_name)
+                .is_some_and(|name| name.trim().eq_ignore_ascii_case(expected.trim()))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = expected;
+            false
+        }
+    }
+
     /// Keep the foreground process even when its focused AX element is unreadable.
     pub(crate) fn capture() -> Self {
         #[cfg(target_os = "macos")]
         {
             let captured_pid = stop_target_identity::frontmost_pid();
             let element = captured_pid.and_then(stop_target_identity::Identity::capture);
+            let field = element
+                .as_ref()
+                .map(|identity| identity.field())
+                .unwrap_or(crate::os::hold_badge::FocusedInputField::Unobserved);
             // AX can time out while focus moves. Retain the latest process read,
             // and never attach the earlier element to a different process.
             let pid = stop_target_identity::frontmost_pid();
             let element = if pid == captured_pid { element } else { None };
-            Self { pid, element }
+            Self {
+                pid,
+                field,
+                element,
+            }
         }
         #[cfg(not(target_os = "macos"))]
         {
-            Self { pid: None }
+            Self {
+                pid: None,
+                field: crate::os::hold_badge::FocusedInputField::Unobserved,
+            }
         }
     }
 
@@ -238,13 +278,16 @@ impl StopPasteTarget {
         let current = Self::capture();
         #[cfg(target_os = "macos")]
         {
-            compare_stop_targets(
+            let mut check = compare_stop_targets(
                 self.pid,
                 self.element.as_ref(),
                 current.pid,
                 current.element.as_ref(),
                 stop_target_identity::Identity::same_element,
-            )
+            );
+            check.changed |= self.field != crate::os::hold_badge::FocusedInputField::Text
+                || current.field != crate::os::hold_badge::FocusedInputField::Text;
+            check
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -260,7 +303,8 @@ struct StopTargetCheck {
     readable_at_paste: bool,
 }
 
-/// Missing identity is not evidence of a destination change.
+/// Posting requires positive identity at both observations. Unknown identity
+/// retains text on the clipboard instead of sending keys into an arbitrary UI.
 fn compare_stop_targets<E>(
     stopped_pid: Option<i32>,
     stopped_element: Option<&E>,
@@ -268,10 +312,10 @@ fn compare_stop_targets<E>(
     current_element: Option<&E>,
     same_element: impl FnOnce(&E, &E) -> bool,
 ) -> StopTargetCheck {
-    let pid_changed = matches!((stopped_pid, current_pid), (Some(a), Some(b)) if a != b);
+    let pid_changed = !matches!((stopped_pid, current_pid), (Some(a), Some(b)) if a == b);
     let element_changed = match (stopped_element, current_element) {
         (Some(stopped), Some(current)) => !same_element(stopped, current),
-        _ => false,
+        _ => true,
     };
     StopTargetCheck {
         changed: pid_changed || element_changed,
@@ -289,6 +333,32 @@ mod stop_target_identity {
     use objc::{msg_send, sel, sel_impl};
     use std::ffi::c_void;
     use std::ptr::NonNull;
+
+    pub(super) fn app_name(pid: i32) -> Option<String> {
+        // SAFETY: read-only NSRunningApplication/NSString access, borrowed for
+        // this call. The copied Rust string outlives no Objective-C pointer.
+        unsafe {
+            let class = Class::get("NSRunningApplication")?;
+            let app: *mut objc::runtime::Object =
+                msg_send![class, runningApplicationWithProcessIdentifier: pid];
+            if app.is_null() {
+                return None;
+            }
+            let name: *mut objc::runtime::Object = msg_send![app, localizedName];
+            if name.is_null() {
+                return None;
+            }
+            let bytes: *const std::ffi::c_char = msg_send![name, UTF8String];
+            if bytes.is_null() {
+                return None;
+            }
+            Some(
+                std::ffi::CStr::from_ptr(bytes)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        }
+    }
 
     #[link(name = "ApplicationServices", kind = "framework")]
     unsafe extern "C" {
@@ -338,6 +408,11 @@ mod stop_target_identity {
     }
 
     impl Identity {
+        pub(super) fn field(&self) -> crate::os::hold_badge::FocusedInputField {
+            // SAFETY: this object owns the retained AX identity for this call.
+            unsafe { crate::os::hold_badge::input_field_for_element(self.element.as_ptr()) }
+        }
+
         pub(super) fn capture(pid: i32) -> Option<Self> {
             // SAFETY: both AX Create/Copy results are owned and released exactly
             // once. Output pointers are valid; failed reads never become identity.
@@ -421,8 +496,8 @@ fn write_stop_paste(
     Ok((receipt, epoch))
 }
 
-/// Paste into the frontmost app unless known pids or readable AX elements differ.
-/// An unreadable element alone does not suppress delivery.
+/// Request paste only while the same positively identified editable input has
+/// focus. Missing capability or identity leaves the complete text copied.
 pub(crate) fn paste_to_stop_target(
     text: &str,
     target: &StopPasteTarget,
@@ -943,11 +1018,11 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_stop_target_without_a_known_change_posts_paste_once() {
+    fn unreadable_stop_target_never_posts_keyboard_events() {
         use std::cell::Cell;
 
         // None represents an unreadable AX element (including timeout), or a
-        // pid capture that failed. Neither is evidence of a target switch.
+        // pid capture that failed. Neither authorizes posting keyboard events.
         for (stop_pid, stop_element, paste_pid, paste_element) in [
             (Some(17), Some(1), Some(17), None),
             (Some(17), None, Some(17), Some(1)),
@@ -973,13 +1048,13 @@ mod tests {
                     key_posts.set(key_posts.get() + 1);
                     Ok(())
                 },
-                |_| panic!("unreadable identity alone cannot prove a change"),
+                |_| {},
             )
-            .expect("paste with unreadable identity");
-            assert_eq!(receipt.delivery, StopPasteDelivery::Pasted);
+            .expect("copy with unreadable identity");
+            assert_eq!(receipt.delivery, StopPasteDelivery::CopiedTargetChanged);
             assert_eq!(receipt.target_readable_at_stop, stop_element.is_some());
             assert_eq!(receipt.target_readable_at_paste, paste_element.is_some());
-            assert_eq!(key_posts.get(), 1);
+            assert_eq!(key_posts.get(), 0);
         }
     }
 

@@ -14,4 +14,10 @@ unsafe extern "C" {
         attribute: AXId,
         value: *mut AXId,
     ) -> i32;
+    /// Query write capability without changing the receiving element.
+    pub(crate) fn AXUIElementIsAttributeSettable(
+        element: AXId,
+        attribute: AXId,
+        settable: *mut u8,
+    ) -> i32;
 }

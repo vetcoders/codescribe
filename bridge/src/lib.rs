@@ -132,6 +132,28 @@ pub fn agent_conversation_bus_path() -> String {
         .into_owned()
 }
 
+/// Validate and recover managed journal linkage before the first take. The
+/// potentially expensive archive verification never runs on the UI thread.
+#[uniffi::export]
+pub async fn prepare_transcript_storage() -> Result<bool, CsError> {
+    application_runtime::run(async {
+        tokio::task::spawn_blocking(|| {
+            let path = codescribe::presentation::transcript_bus::transcript_bus_path();
+            codescribe::presentation::transcript_bus_maintenance::generation::recover_device_number(
+                &path,
+            )
+        })
+        .await
+        .map_err(|error| CsError::Recording {
+            msg: error.to_string(),
+        })?
+        .map_err(|error| CsError::Recording {
+            msg: format!("Transcript storage unavailable: {error}"),
+        })
+    })
+    .await?
+}
+
 /// Start the one process-owned async runtime. Idempotent while running; once
 /// shut down it cannot be restarted in the same process.
 #[uniffi::export]

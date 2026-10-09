@@ -64,6 +64,11 @@ protocol AgentChatEngine: AnyObject {
     onToolResult:
       @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
   ) async throws -> String
+  /// Max replies stay on the consultation's retained owner. The acceptance id
+  /// is a durable replay guard, not a fresh id generated on each UI retry.
+  func consultationReply(
+    _ text: String, threadId: String, turnID: String, attachmentPaths: [String]
+  ) async throws -> String
   /// Abort the engine-side turn running for `threadId` (safe no-op when idle).
   /// Cancelling the Swift `Task` that awaits `streamReply` is NOT enough: the
   /// generated UniFFI bindings poll the Rust future to completion, so without
@@ -90,6 +95,13 @@ protocol AgentChatEngine: AnyObject {
 }
 
 extension AgentChatEngine {
+  func consultationReply(
+    _ text: String, threadId: String, turnID: String, attachmentPaths: [String]
+  ) async throws -> String {
+    throw NSError(
+      domain: "Codescribe.Max", code: 1,
+      userInfo: [NSLocalizedDescriptionKey: "Max consultation is unavailable."])
+  }
   func speechAvailability() -> String? { "Speech is unavailable in this preview." }
   func speak(text: String) async throws {
     throw NSError(
@@ -1476,6 +1488,12 @@ final class AgentChatStore: ObservableObject {
 
   var isCancelling: Bool { selectedComposerTurnPhase == .cancelling }
 
+  /// A Max turn belongs to its retained owner, not the cancellable composer
+  /// registry. Do not advertise cancellation while tool effects may continue.
+  var canStopSelectedTurn: Bool {
+    !(activeComposerTurn?.threadID == selectedThreadID && currentThread?.isMaxConsultation == true)
+  }
+
   var currentToolApprovals: [PendingToolApproval] {
     guard let backendID = currentThread?.backendId else { return [] }
     return pendingToolApprovals.filter { $0.threadID == backendID }
@@ -1666,6 +1684,20 @@ final class AgentChatStore: ObservableObject {
   func select(_ id: UUID) {
     selectedThreadID = id
     loadMessagesIfNeeded(id)
+  }
+
+  /// Explicit navigation to a completed consultation. Reading and selecting
+  /// this exact backend identity cannot resend its transcript or execute tools.
+  @discardableResult
+  func openMaxConsultation(backendID: String) -> Bool {
+    if !threadSearchQuery.isEmpty { searchThreads("") }
+    refreshThreads()
+    guard let thread = threads.first(where: {
+      $0.backendId == backendID && $0.isMaxConsultation
+    }) else { return false }
+    select(thread.id)
+    requestComposerFocus()
+    return true
   }
 
   func toggleFavorite(_ thread: ChatThread) {
@@ -2004,6 +2036,9 @@ final class AgentChatStore: ObservableObject {
     let text = queued.text
     let staged = queued.attachments
     let attachmentPaths = staged.map { $0.url.path }
+    let isMaxConsultation = restoredSearchRows().first {
+      $0.backendId == backendId
+    }?.isMaxConsultation == true
     let userTurnIndex = currentUserTurnCount(in: threadID)
 
     // Carry the staged attachments onto the You bubble so the sender sees a
@@ -2047,7 +2082,7 @@ final class AgentChatStore: ObservableObject {
       }
       // Graceful unavailable path — the engine reports WHAT is missing
       // (lane, endpoint or key) so the reply is actionable, not generic.
-      if let unavailableDetail = engine.availabilityDetail() {
+      if !isMaxConsultation, let unavailableDetail = engine.availabilityDetail() {
         finishTitleGenerationWithoutRequest(for: threadID)
         finish(assistantID, in: threadID, text: unavailableDetail)
         return
@@ -2063,7 +2098,13 @@ final class AgentChatStore: ObservableObject {
       let start = Date()
       do {
         // REAL streaming: tokens land live as the agent emits them.
-        let finalText = try await engine.streamReply(
+        let finalText: String
+        if isMaxConsultation {
+          finalText = try await engine.consultationReply(
+            text, threadId: backendId, turnID: turnID.uuidString,
+            attachmentPaths: attachmentPaths)
+        } else {
+          finalText = try await engine.streamReply(
           text,
           threadId: backendId,
           attachmentPaths: attachmentPaths,
@@ -2104,7 +2145,8 @@ final class AgentChatStore: ObservableObject {
               name: name, callID: id, isError: isError, reason: reason,
               before: assistantID, in: threadID)
           }
-        )
+          )
+        }
         settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
         titleStreamSettled = true
         // The thread may have been deleted mid-stream; drop the late
@@ -2308,6 +2350,7 @@ final class AgentChatStore: ObservableObject {
   /// first because it has no Swift waiter and must never touch the composer
   /// registry. Composer ordering remains deliberate: waiter first, Rust second.
   func stopActiveTurn() {
+    guard canStopSelectedTurn else { return }
     if let threadID = voiceTurnThreadID,
       threadID == selectedThreadID,
       let phase = voiceTurnPhase,

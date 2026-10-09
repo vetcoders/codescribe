@@ -1699,27 +1699,86 @@
                 "route: DeliveryRoute::DeferredInsert",
                 "reason: \"refuse_paste_into_self\"",
                 "route: DeliveryRoute::ClipboardPaste",
-                "reason: \"explicit_insert\""
+                "reason: \"explicit_insert\"",
+                "paste_gate(",
+                "facts.paste_target",
+                "facts.executable_payload",
+                "gate.route == DeliveryRoute::ClipboardPaste"
               ]
             },
             {
-              "symbol": "paste_and_restore",
+              "symbol": "paste_to_stop_target",
               "file": "app/os/clipboard.rs",
               "required_code": [
-                "pub fn paste_and_restore(text: &str) -> Result<()>",
-                "paste_text_smart(text, true)"
+                "write_stop_paste(",
+                "set_clipboard_with_epoch",
+                "|| target.check_current()",
+                "simulate_cmd_v",
+                "if receipt.delivery == StopPasteDelivery::Pasted",
+                "schedule_clipboard_restore(snapshot, epoch, get_restore_delay())"
               ]
             },
             {
-              "symbol": "paste_text_smart",
+              "symbol": "write_stop_paste",
               "file": "app/os/clipboard.rs",
               "required_code": [
-                "if text.is_empty()",
-                "let snapshot = if restore",
-                "set_clipboard_with_epoch(text)",
-                "simulate_cmd_v()",
-                "if let Some(snapshot) = snapshot",
-                "schedule_clipboard_restore(snapshot, paste_epoch, delay)"
+                "let epoch = write(text)?",
+                "let target = check_target()",
+                "if target.changed",
+                "target_changed(receipt)",
+                "return Ok((receipt, epoch))",
+                "post_paste()?"
+              ]
+            },
+            {
+              "symbol": "check_current",
+              "file": "app/os/clipboard.rs",
+              "signature_contains": "fn check_current(&self) -> StopTargetCheck",
+              "required_code": [
+                "let current = Self::capture()",
+                "compare_stop_targets(",
+                "stop_target_identity::Identity::same_element",
+                "self.field != crate::os::hold_badge::FocusedInputField::Text",
+                "current.field != crate::os::hold_badge::FocusedInputField::Text"
+              ]
+            },
+            {
+              "symbol": "compare_stop_targets",
+              "file": "app/os/clipboard.rs",
+              "required_code": [
+                "!matches!((stopped_pid, current_pid), (Some(a), Some(b)) if a == b)",
+                "(Some(stopped), Some(current)) => !same_element(stopped, current)",
+                "_ => true",
+                "changed: pid_changed || element_changed"
+              ]
+            },
+            {
+              "symbol": "field",
+              "file": "app/os/clipboard.rs",
+              "signature_contains": "pub(super) fn field(&self)",
+              "required_code": [
+                "crate::os::hold_badge::input_field_for_element(self.element.as_ptr())"
+              ]
+            },
+            {
+              "symbol": "input_field_for_element",
+              "file": "app/os/hold_badge.rs",
+              "signature_contains": "pub(crate) unsafe fn input_field_for_element(element: AXId)",
+              "required_code": [
+                "if IsSecureEventInputEnabled() != 0",
+                "copy_string_attribute(element, AX_ROLE_ATTRIBUTE)",
+                "CFBoolean",
+                "AXUIElementIsAttributeSettable(",
+                "super::classify_input_capability(&role, subrole.as_deref(), enabled, writable)"
+              ]
+            },
+            {
+              "symbol": "classify_input_capability",
+              "file": "app/os/hold_badge.rs",
+              "required_code": [
+                "FocusedInputField::Secure => FocusedInputField::Secure",
+                "FocusedInputField::Text if enabled && writable && role != \"AXWebArea\"",
+                "_ => FocusedInputField::NotText"
               ]
             }
           ],
@@ -1797,14 +1856,14 @@
             {
               "callee": "overlay_insert_facts",
               "callee_file": "app/controller/delivery_route.rs",
-              "caller": "paste_text_from_overlay",
+              "caller": "execute_clipboard_paste",
               "caller_file": "app/controller/mod.rs",
               "minimum_count": 1
             },
             {
               "callee": "resolve_delivery_route",
               "callee_file": "app/controller/delivery_route.rs",
-              "caller": "paste_text_from_overlay",
+              "caller": "execute_clipboard_paste",
               "caller_file": "app/controller/mod.rs",
               "minimum_count": 1
             },
@@ -1816,17 +1875,10 @@
               "minimum_count": 1
             },
             {
-              "callee": "paste_and_restore",
+              "callee": "paste_to_stop_target",
               "callee_file": "app/os/clipboard.rs",
               "caller": "execute_clipboard_paste",
               "caller_file": "app/controller/mod.rs",
-              "minimum_count": 1
-            },
-            {
-              "callee": "paste_text_smart",
-              "callee_file": "app/os/clipboard.rs",
-              "caller": "paste_and_restore",
-              "caller_file": "app/os/clipboard.rs",
               "minimum_count": 1
             },
             {
@@ -1841,6 +1893,41 @@
               "callee_file": "app/presentation/emitter.rs",
               "caller": "on_event",
               "caller_file": "app/presentation/emitter.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "paste_to_stop_target",
+              "caller_file": "app/os/clipboard.rs",
+              "callee": "write_stop_paste",
+              "callee_file": "app/os/clipboard.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "paste_to_stop_target",
+              "caller_file": "app/os/clipboard.rs",
+              "callee": "check_current",
+              "callee_file": "app/os/clipboard.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "check_current",
+              "caller_file": "app/os/clipboard.rs",
+              "callee": "compare_stop_targets",
+              "callee_file": "app/os/clipboard.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "field",
+              "caller_file": "app/os/clipboard.rs",
+              "callee": "input_field_for_element",
+              "callee_file": "app/os/hold_badge.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "input_field_for_element",
+              "caller_file": "app/os/hold_badge.rs",
+              "callee": "classify_input_capability",
+              "callee_file": "app/os/hold_badge.rs",
               "minimum_count": 1
             }
           ]

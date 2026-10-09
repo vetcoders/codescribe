@@ -113,7 +113,7 @@ struct Composer: View {
           )
         }
         .csFocusRing()
-        .disabled(!primaryAction.isEnabled)
+        .disabled(!primaryAction.isEnabled || (primaryAction == .stop && !store.canStopSelectedTurn))
         .opacity(primaryAction == .stopping ? 0.72 : 1)
         .help(primaryAction.accessibilityLabel)
         .accessibilityIdentifier(ComposerActionAccessibility.identifier)

@@ -227,8 +227,14 @@ def generation_sources(path: Path) -> tuple[list[dict[str, Any]], int, int, floa
     if len(raw) > 4 << 20:
         raise ValueError("oversized generation receipt")
     value = json.loads(raw)
-    if set(value) != {"schema", "root", "stream_id", "stream_inode", "stream_dev", "stream_birthtime", "segments", "active", "pending"} or value.get("schema") != "codescribe.bus-generations.v1" or value.get("root") != str(path):
+    required = {"schema", "root", "stream_id", "stream_inode", "stream_dev", "stream_birthtime", "segments", "active", "pending"}
+    if not isinstance(value, dict) or set(value) - {"volume_uuid"} != required or value.get("schema") != "codescribe.bus-generations.v1" or value.get("root") != str(path):
         raise ValueError("unknown generation receipt")
+    volume = value.get("volume_uuid")
+    if volume is not None and (not isinstance(volume, str) or re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", volume
+    ) is None):
+        raise ValueError("invalid generation volume UUID")
     segments = list(value["segments"])
     active = dict(value["active"])
     pending = value.get("pending")

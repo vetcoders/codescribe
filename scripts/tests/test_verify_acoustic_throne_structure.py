@@ -2221,6 +2221,30 @@ class NeutralAstTests(unittest.TestCase):
                 self.assertTrue(any("non-complete receipt" in failure
                                     for failure in contract["failures"]), contract)
 
+    def test_paste_requires_capability_current_focus_and_retained_identity(self):
+        positive = self.run_payload(self.payload)
+        self.assertTrue(positive["accepted"], "mutants require an accepted control")
+        cases = [
+            ("retained_target_removed", "let target = clipboard::StopPasteTarget::capture();", ""),
+            ("retained_process_check_removed", "target.matches_app_name(name)", "true"),
+            ("capability_hold_bypassed", "decision.route == DeliveryRoute::ClipboardHold", "false"),
+            ("capability_observation_forged", "helpers::observe_paste_target(frontmost.as_deref())",
+             "PasteTarget::UNOBSERVED"),
+            ("identity_transport_replaced", "clipboard::paste_to_stop_target(&paste_text, &target)",
+             "clipboard::paste_and_restore(&paste_text)"),
+            ("await_after_target_observation", "let target = clipboard::StopPasteTarget::capture();",
+             "let target = clipboard::StopPasteTarget::capture(); self.get_config().await;"),
+            ("request_claimed_without_effect", "let receipt = clipboard::paste_to_stop_target(&paste_text, &target)",
+             "let receipt = fake_paste_receipt()"),
+        ]
+        for name, old, new in cases:
+            with self.subTest(mutation=name):
+                evidence = self.run_payload(self.mutate("execute_clipboard_paste", old, new))
+                contract = next(row for row in evidence["contracts"]
+                                if row["symbol"] == "execute_clipboard_paste")
+                self.assertFalse(contract["accepted"], name)
+                self.assertFalse(evidence["accepted"], name)
+
     def test_terminal_finality_authority_mutants_rejected(self):
         cases = [
             ("stop_mints_seal", "finish", ".terminal_finality(session, self.capture_epoch)", ".seal_terminal(session, self.capture_epoch)"),
@@ -2245,9 +2269,9 @@ class NeutralAstTests(unittest.TestCase):
     def test_control_scope_and_unknown_syntax_counterexamples(self):
         cases = [
             ("else_effect", "execute_clipboard_paste", "self.arm_or_copy_deferred_payload(", "clipboard::paste_and_restore(&paste_text)?; self.arm_or_copy_deferred_payload("),
-            ("duplicate_guarded_effect", "execute_clipboard_paste", "OverlayPasteDelivery::Pasted", "clipboard::paste_and_restore(&paste_text)?; OverlayPasteDelivery::Pasted"),
-            ("nested_false", "execute_clipboard_paste", "clipboard::paste_and_restore(&paste_text)", "if false { clipboard::paste_and_restore(&paste_text)?; } Ok::<(), Error>(())"),
-            ("closure_effect", "execute_clipboard_paste", "clipboard::paste_and_restore(&paste_text)", "(|| clipboard::paste_and_restore(&paste_text))()"),
+            ("duplicate_guarded_effect", "execute_clipboard_paste", "OverlayPasteDelivery::PasteRequested", "clipboard::paste_and_restore(&paste_text)?; OverlayPasteDelivery::PasteRequested"),
+            ("nested_false", "execute_clipboard_paste", "clipboard::paste_to_stop_target(&paste_text, &target)", "if false { clipboard::paste_to_stop_target(&paste_text, &target)?; } Ok::<_, Error>(fake_receipt)"),
+            ("closure_effect", "execute_clipboard_paste", "clipboard::paste_to_stop_target(&paste_text, &target)", "(|| clipboard::paste_to_stop_target(&paste_text, &target))()"),
             ("closure_refusal", "finish", "Err(anyhow::Error::new(TerminalSealRefused {", "|| Err(anyhow::Error::new(TerminalSealRefused {"),
             ("unreachable_shutdown", "finish", "self.lifecycle_handle = None;", "return Err(anyhow::anyhow!(\"early\")); self.lifecycle_handle = None;"),
             ("question_mark_stop", "stop", "self.close_capture().await", "self.close_capture().await?"),
@@ -2423,7 +2447,7 @@ class NeutralAstTests(unittest.TestCase):
             contracts.append({"name": corridor["name"], "hops": hops,
                 "required_invocations": [row for row in corridor["required_invocations"]
                     if row["caller"] in VERIFIER.AST_BODIES and row["callee"] in
-                    {"execute_clipboard_paste", "paste_and_restore", "finish", "terminal_finality"}]})
+                    {"execute_clipboard_paste", "paste_to_stop_target", "finish", "terminal_finality"}]})
         return contracts
 
     def test_overlay_noop_constructor_is_proven_by_its_body_not_its_name(self):
@@ -2440,17 +2464,17 @@ class NeutralAstTests(unittest.TestCase):
         self.assertIn("only empty/archive early success is Noop", overlay["events"])
         noop = next(row for row in evidence["contracts"] if row["symbol"] == "noop")
         self.assertTrue(noop["accepted"], noop)
-        inline_paste = ("OverlayPasteResult { delivery: OverlayPasteDelivery::Pasted, "
+        inline_paste = ("OverlayPasteResult { delivery: OverlayPasteDelivery::PasteRequested, "
                         "target_app_name: None, frontmost_app_name: None, "
                         "deferred_insert_shortcut: None, deferred_insert_failure: None, }")
         cases = [
-            ("noop_claims_paste", "noop", "OverlayPasteDelivery::Noop", "OverlayPasteDelivery::Pasted"),
+            ("noop_claims_paste", "noop", "OverlayPasteDelivery::Noop", "OverlayPasteDelivery::PasteRequested"),
             ("noop_reports_target", "noop", "target_app_name: None", "target_app_name: Some(String::new())"),
             ("noop_public_surface", "noop", "pub(crate) fn noop", "pub fn noop"),
             ("renamed_constructor", "paste_text_from_overlay", "OverlayPasteResult::noop()", "OverlayPasteResult::pasted()"),
             ("inline_transport_result", "paste_text_from_overlay", "OverlayPasteResult::noop()", inline_paste),
             ("widened_guard", "paste_text_from_overlay",
-             "trimmed.is_empty() || decision.route == DeliveryRoute::ArchiveOnly", "true"),
+             "trimmed.is_empty()", "true"),
         ]
         for name, symbol, old, new in cases:
             with self.subTest(mutation=name):
@@ -2461,7 +2485,7 @@ class NeutralAstTests(unittest.TestCase):
 
     def test_overlay_hop_refuses_when_only_the_noop_constructor_is_refused(self):
         refused = self.run_payload(self.mutate(
-            "noop", "OverlayPasteDelivery::Noop", "OverlayPasteDelivery::Pasted"))
+            "noop", "OverlayPasteDelivery::Noop", "OverlayPasteDelivery::PasteRequested"))
         overlay = next(row for row in refused["contracts"]
                        if row["symbol"] == "paste_text_from_overlay")
         self.assertTrue(overlay["accepted"], overlay)
@@ -2478,7 +2502,7 @@ class NeutralAstTests(unittest.TestCase):
         observed, failures = VERIFIER.verify_code_corridors(live, contracts)
         self.assertFalse(failures, failures)
         self.assertEqual(sum(len(row["invocations"]) for row in observed.values()), 4)
-        for symbol in ("execute_clipboard_paste", "paste_and_restore", "finish", "terminal_finality"):
+        for symbol in ("execute_clipboard_paste", "paste_to_stop_target", "finish", "terminal_finality"):
             original = live.occurrences(symbol)
             missing = copy.deepcopy(original)
             missing["occurrences"] = [row for row in missing["occurrences"] if row.get("match_role") != "reference"]

@@ -964,7 +964,7 @@ fn explicit_provider_supports_vision(configuration: &CsDocumentProvider) -> bool
 /// user chose to attach. Any failure returns a readable [`CsError`] naming the
 /// offending files so the composer surfaces it instead of sending a quietly
 /// degraded message. Also gates on the selected model's vision capability.
-fn validate_composer_attachments(
+pub(crate) fn validate_composer_attachments(
     attachments: &[CsAttachment],
     supports_vision: bool,
 ) -> Result<Vec<ImageAttachment>, CsError> {

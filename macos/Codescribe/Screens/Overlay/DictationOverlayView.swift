@@ -569,6 +569,16 @@ struct DictationOverlayView: View {
             // The AppKit edge intercept and existing header/body drag regions stay in place.
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.horizontal, OverlayResizeChrome.actionsBottomInset)
+            if state.completedMaxConsultationID != nil {
+              Button("Continue in chat", systemImage: "bubble.left") {
+                state.continueMaxConsultationInChat()
+              }
+              .buttonStyle(.plain)
+              .csMono(10, .medium)
+              .foregroundStyle(palette.primaryText.color)
+              .padding(.vertical, 2)
+              .accessibilityIdentifier("overlay-continue-max-chat")
+            }
             if footerMessage != nil || bottomChromeSlots.showsCoverageWarning {
               footerMessageRow
                 .frame(height: 18)
@@ -919,6 +929,9 @@ struct DictationOverlayView: View {
 
   /// One message slot below the floating tools; details never grow the footer.
   private var footerMessage: String? {
+    if let error = state.transcriptStorageError ?? state.maxPreparationError {
+      return error
+    }
     if let error = state.revisionCommitError ?? state.formatterError ?? state.recoveryFailure {
       return error
     }

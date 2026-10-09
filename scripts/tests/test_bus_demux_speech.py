@@ -973,6 +973,65 @@ class LifecycleForensicsTests(unittest.TestCase):
 
 
 
+class GenerationReceiptTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.bus = Path(temporary.name).resolve() / "events.jsonl"
+        self.bus.write_bytes(b"retained transcript\n")
+        metadata = self.bus.stat()
+        self.manifest = {
+            "schema": "codescribe.bus-generations.v1", "root": str(self.bus),
+            "stream_id": "stream", "stream_inode": metadata.st_ino,
+            "stream_dev": metadata.st_dev, "stream_birthtime": None,
+            "segments": [], "pending": None,
+            "active": {
+                "id": "active", "path": str(self.bus), "start": 0,
+                "length": metadata.st_size, "dev": metadata.st_dev, "ino": metadata.st_ino,
+                "day": None, "compressed": False, "sha256": None, "superseded": None,
+            },
+        }
+
+    def write_manifest(self):
+        Path(str(self.bus) + ".generations.json").write_text(json.dumps(self.manifest))
+
+    def test_volume_uuid_is_optional_and_preserves_stream_identity_and_bytes(self):
+        identity = self.bus.stat()
+        for value in [None, "41b7ff38-c1d7-48cd-bf70-373435ecf99a"]:
+            self.manifest["volume_uuid"] = value
+            self.write_manifest()
+            segments, dev, ino, _ = DEMUX.generation_sources(self.bus)
+            self.assertEqual((dev, ino), (identity.st_dev, identity.st_ino))
+            self.assertEqual(segments[-1]["length"], identity.st_size)
+            with DEMUX.GenerationFile(self.bus) as reader:
+                self.assertEqual(reader.read(256), b"retained transcript\n")
+        del self.manifest["volume_uuid"]
+        self.write_manifest()
+        self.assertEqual(DEMUX.generation_sources(self.bus)[1:3], (identity.st_dev, identity.st_ino))
+
+    def test_malformed_uuid_and_unknown_receipt_fields_are_refused(self):
+        for value in [False, 1, {}, "not-a-uuid", "41b7ff38c1d748cdbf70373435ecf99a"]:
+            with self.subTest(value=value):
+                self.manifest["volume_uuid"] = value
+                self.write_manifest()
+                with self.assertRaises(ValueError):
+                    DEMUX.generation_sources(self.bus)
+        self.manifest["volume_uuid"] = "41b7ff38-c1d7-48cd-bf70-373435ecf99a"
+        self.manifest["unrecognized"] = True
+        self.write_manifest()
+        with self.assertRaises(ValueError):
+            DEMUX.generation_sources(self.bus)
+
+    def test_volume_uuid_does_not_bypass_physical_linkage_validation(self):
+        self.manifest["volume_uuid"] = "41b7ff38-c1d7-48cd-bf70-373435ecf99a"
+        self.manifest["active"]["dev"] += 1
+        self.write_manifest()
+        before = self.bus.read_bytes()
+        with self.assertRaises(ValueError):
+            DEMUX.generation_sources(self.bus)
+        self.assertEqual(self.bus.read_bytes(), before)
+
+
 class InstallCheckpointTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

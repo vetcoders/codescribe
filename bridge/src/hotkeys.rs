@@ -785,6 +785,13 @@ pub struct CsMaxConsultationSnapshot {
     pub retained_inputs: Vec<CsMaxRetainedInput>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum CsMaxPreparation {
+    Disabled,
+    StoredChain,
+    ReplayOnly,
+}
+
 impl From<codescribe_core::agent::thread_delivery::ConsultationRecoverySnapshot>
     for CsMaxConsultationSnapshot
 {
@@ -981,6 +988,66 @@ impl CodescribeHotkeys {
                     msg: format!("STT prewarm failed: {error}"),
                 })?;
             Ok(())
+        })
+        .await?
+    }
+
+    /// Prepare the retained Max owner and send a tool-free startup request.
+    /// Recording and historic tools never execute; unresolved effects refuse.
+    pub async fn prepare_max_consultation(&self) -> Result<CsMaxPreparation, CsError> {
+        application_runtime::run(async move {
+            let controller = ensure_controller(&shared_controller(), Handle::current());
+            controller
+                .prepare_max_consultation()
+                .await
+                .map(|ready| match ready {
+                    None => CsMaxPreparation::Disabled,
+                    Some(
+                        codescribe_core::agent::consultation::ConsultationPreparation::StoredChain,
+                    ) => CsMaxPreparation::StoredChain,
+                    Some(
+                        codescribe_core::agent::consultation::ConsultationPreparation::ReplayOnly,
+                    ) => CsMaxPreparation::ReplayOnly,
+                })
+                .map_err(|error| CsError::Recording {
+                    msg: format!("Max preparation failed: {error:#}"),
+                })
+        })
+        .await?
+    }
+
+    /// Continue an exact Max thread through its retained execution owner. The
+    /// accepted turn identity survives restart, preventing duplicate effects.
+    pub async fn continue_max_consultation(
+        &self,
+        text: String,
+        thread_id: String,
+        turn_id: String,
+        attachment_paths: Vec<String>,
+    ) -> Result<String, CsError> {
+        application_runtime::run(async move {
+            let settings =
+                codescribe_core::config::Config::load_runtime_snapshot().map_err(|error| {
+                    CsError::Config {
+                        msg: error.to_string(),
+                    }
+                })?;
+            let lane = settings.llm_lanes().formatting();
+            let attachments = attachment_paths
+                .into_iter()
+                .map(|path| crate::agent::CsAttachment { path })
+                .collect::<Vec<_>>();
+            let images = crate::agent::validate_composer_attachments(
+                &attachments,
+                lane.supports_vision(lane.model()),
+            )?;
+            let controller = ensure_controller(&shared_controller(), Handle::current());
+            controller
+                .continue_max_consultation(&thread_id, turn_id, text, images)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: format!("Max continuation failed: {error:#}"),
+                })
         })
         .await?
     }
@@ -1656,7 +1723,7 @@ impl CodescribeHotkeys {
 /// clipboard copy.
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsPasteOutcome {
-    Pasted,
+    PasteRequested,
     CopiedToClipboard,
     AccessibilityPermissionNeeded,
     DeferredInsertArmed,
@@ -1667,7 +1734,7 @@ impl From<codescribe::controller::OverlayPasteDelivery> for CsPasteOutcome {
     /// Map core overlay paste delivery into the UniFFI `CsPasteOutcome` enum.
     fn from(value: codescribe::controller::OverlayPasteDelivery) -> Self {
         match value {
-            codescribe::controller::OverlayPasteDelivery::Pasted => Self::Pasted,
+            codescribe::controller::OverlayPasteDelivery::PasteRequested => Self::PasteRequested,
             codescribe::controller::OverlayPasteDelivery::CopiedToClipboard => {
                 Self::CopiedToClipboard
             }

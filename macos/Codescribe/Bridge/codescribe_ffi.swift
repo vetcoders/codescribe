@@ -2640,6 +2640,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func commitUserRevision(sessionId: String, sourceRevision: UInt64, renderedText: String) async throws  -> CsUserRevisionResult
 
     /**
+     * Continue an exact Max thread through its retained execution owner. The
+     * accepted turn identity survives restart, preventing duplicate effects.
+     */
+    func continueMaxConsultation(text: String, threadId: String, turnId: String, attachmentPaths: [String]) async throws  -> String
+
+    /**
      * Copy the tagged transcript to the clipboard without a synthetic paste.
      * Swift calls this when the caret already sits inside Codescribe, where a
      * synthetic Cmd+V would paste the transcript back into the overlay itself.
@@ -2719,6 +2725,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * this read must never construct a recorder to populate a settings view.
      */
     func pendingMaxToolApprovals() async throws  -> [CsToolApprovalRequest]
+
+    /**
+     * Prepare the retained Max owner and send a tool-free startup request.
+     * Recording and historic tools never execute; unresolved effects refuse.
+     */
+    func prepareMaxConsultation() async throws  -> CsMaxPreparation
 
     /**
      * Prompt-free warmup for the shared recording controller.
@@ -3206,6 +3218,27 @@ open func commitUserRevision(sessionId: String, sourceRevision: UInt64, rendered
 }
 
     /**
+     * Continue an exact Max thread through its retained execution owner. The
+     * accepted turn identity survives restart, preventing duplicate effects.
+     */
+open func continueMaxConsultation(text: String, threadId: String, turnId: String, attachmentPaths: [String])async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_continue_max_consultation(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(text),FfiConverterString.lower(threadId),FfiConverterString.lower(turnId),FfiConverterSequenceString.lower(attachmentPaths)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
      * Copy the tagged transcript to the clipboard without a synthetic paste.
      * Swift calls this when the caret already sits inside Codescribe, where a
      * synthetic Cmd+V would paste the transcript back into the overlay itself.
@@ -3444,6 +3477,27 @@ open func pendingMaxToolApprovals()async throws  -> [CsToolApprovalRequest]  {
             completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterSequenceTypeCsToolApprovalRequest.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * Prepare the retained Max owner and send a tool-free startup request.
+     * Recording and historic tools never execute; unresolved effects refuse.
+     */
+open func prepareMaxConsultation()async throws  -> CsMaxPreparation  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_prepare_max_consultation(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsMaxPreparation_lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
 }
@@ -16183,6 +16237,78 @@ public func FfiConverterTypeCsLlmLane_lower(_ value: CsLlmLane) -> RustBuffer {
 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum CsMaxPreparation: Equatable, Hashable {
+
+    case disabled
+    case storedChain
+    case replayOnly
+
+
+
+}
+
+#if compiler(>=6)
+extension CsMaxPreparation: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsMaxPreparation: FfiConverterRustBuffer {
+    typealias SwiftType = CsMaxPreparation
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsMaxPreparation {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .disabled
+
+        case 2: return .storedChain
+
+        case 3: return .replayOnly
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsMaxPreparation, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .disabled:
+            writeInt(&buf, Int32(1))
+
+
+        case .storedChain:
+            writeInt(&buf, Int32(2))
+
+
+        case .replayOnly:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMaxPreparation_lift(_ buf: RustBuffer) throws -> CsMaxPreparation {
+    return try FfiConverterTypeCsMaxPreparation.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMaxPreparation_lower(_ value: CsMaxPreparation) -> RustBuffer {
+    return FfiConverterTypeCsMaxPreparation.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Visual tone for one status row, mirrored 1:1 from the core [`McpRowTone`] so
  * the Settings layer maps it to concrete colors without depending on agent
@@ -16787,7 +16913,7 @@ public func FfiConverterTypeCsPasteMode_lower(_ value: CsPasteMode) -> RustBuffe
 
 public enum CsPasteOutcome: Equatable, Hashable {
 
-    case pasted
+    case pasteRequested
     case copiedToClipboard
     case accessibilityPermissionNeeded
     case deferredInsertArmed
@@ -16811,7 +16937,7 @@ public struct FfiConverterTypeCsPasteOutcome: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        case 1: return .pasted
+        case 1: return .pasteRequested
 
         case 2: return .copiedToClipboard
 
@@ -16829,7 +16955,7 @@ public struct FfiConverterTypeCsPasteOutcome: FfiConverterRustBuffer {
         switch value {
 
 
-        case .pasted:
+        case .pasteRequested:
             writeInt(&buf, Int32(1))
 
 
@@ -19104,6 +19230,24 @@ public func modelDirectories()throws  -> [CsModelDirectory]  {
 })
 }
 /**
+ * Validate and recover managed journal linkage before the first take. The
+ * potentially expensive archive verification never runs on the UI thread.
+ */
+public func prepareTranscriptStorage()async throws  -> Bool  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_func_prepare_transcript_storage(
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_i8,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_i8,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_i8,
+            liftFunc: FfiConverterBool.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+/**
  * Tiered word-level diff between the raw STT text and the human-edited text.
  */
 public func qualityDiffSpans(raw: String, edited: String) -> [CsDiffSpan]  {
@@ -19361,6 +19505,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_model_directories() != 32805) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_prepare_transcript_storage() != 29140) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_quality_diff_spans() != 11032) {
@@ -19684,6 +19831,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_commit_user_revision() != 37560) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_continue_max_consultation() != 34094) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_copy_text_tagged() != 1762) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -19721,6 +19871,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_pending_max_tool_approvals() != 30855) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_prepare_max_consultation() != 6032) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_prewarm_recording() != 27979) {

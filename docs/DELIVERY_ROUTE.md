@@ -13,7 +13,7 @@
    second king.
 3. **The Codescribe overlay canvas is never a legal Cmd+V target.** Its caret
    parks Paste Here. For an explicit Insert, a positively latched Agent
-   composer, a terminal, Notes, or another foreign caret is legal; choosing the
+   composer, Notes, or another foreign caret is legal only after its editable input is positively established; choosing the
    Agent route remains an explicit action. Automatic paste obeys the paste mode
    below. Assistive delivers as a first-class Agent message rather than
    synthesizing a focus-derived paste.
@@ -31,13 +31,13 @@
 One persisted choice replaces the old Auto Paste on/off. Settings › Shortcuts
 shows it as a Safe / Comfort / Off segmented control; the tray Quick settings
 row cycles the same value. It governs only automatic Orient paste; explicit
-Insert and To Agent are the user's own confirmation.
+Insert is explicit intent, and still requires a confirmed editable recipient. To Agent uses its explicit first-class route.
 
-| Mode      | Automatic paste                                                                     | Held (`ClipboardHold`)                                                         |
-| --------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `safe`    | into a focused editable field (AX text role); into a terminal when the guard passes | no or unreadable text field; password field; command-shaped text in a terminal |
-| `comfort` | wherever the caret is, terminals included                                           | password field; command-shaped text in a terminal                              |
-| `off`     | never: `ArchiveOnly`, `reason=paste_mode_off`, pasteboard untouched                 | —                                                                              |
+| Mode      | Automatic paste                                                        | Held (`ClipboardHold`)                                                             |
+| --------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `safe`    | into a focused enabled text input with writable AX value/selected text | no or unreadable editable input; password field; command-shaped text in a terminal |
+| `comfort` | into a positively established editable input                           | the same capability and terminal guards as Safe                                    |
+| `off`     | never: `ArchiveOnly`, `reason=paste_mode_off`, pasteboard untouched    | —                                                                                  |
 
 - **Password guard** (`hold_secure_field`): `AXSecureTextField` or macOS secure
   event input (a password prompt owns the keyboard). Holds in every mode.
@@ -548,3 +548,9 @@ Insert and does not create a second text authority.
   best-effort until that throne is cut.
 
 Stacked on `fix/engine-routing`.
+
+## Recipient capability and honest receipts (2026-10-09)
+
+Manual Insert, automatic paste (including Comfort), and the deferred global insertion command never post Cmd+V solely because an application is active. AXWebArea, disabled/read-only text, missing identity, and an unreadable recipient retain the text. Immediately before posting, the process and retained AX element must still match and the input must still be editable. A terminal without a positively supported input receives only a clipboard copy.
+
+The clipboard transport acknowledges only posted keyboard events. `PasteRequested` projects as “Paste requested”, never “inserted”: there is no recipient acknowledgement in CGEvent. Changed/unavailable targets report a copy and leave the full text on the clipboard. No Return or navigation keys are posted.

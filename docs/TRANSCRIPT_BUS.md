@@ -280,6 +280,28 @@ refresh under the same lease. Pending swaps recover only matching original
 identities; incomplete trailing rows refuse rollover. Existing archive names
 are never implicitly overwritten.
 
+Device numbers (`st_dev`) are physical mount coordinates, not durable volume
+identity. On macOS the receipt pins the volume UUID. At startup, a reader or an
+appender may recover a uniform device-number change under the same generation
+lease, after checking volume UUID, every inode, archive length and recorded
+archive SHA-256. The ordered chain is validated again before an atomic receipt
+replacement. Only segment device coordinates change: stream ID, original logical
+stream device/inode, offsets and all journal bytes remain intact. An active file
+may have legitimately grown since its recorded checkpoint; shrinking is refused.
+
+Receipts written before volume UUID pinning need independent reboot evidence:
+the receipt predates the current boot, the original stream inode retains its
+recorded birthtime, every linked file moved from the same old device to the same
+current volume, and immutable bytes lacking a historical digest were not changed
+after boot. The active inode must have a pre-boot birth and content modification
+time; a later permission change may update ctime without invalidating those
+bytes. Growth since the manifest checkpoint remains valid if its content mtime
+predates boot. Actual post-boot content writes without a previously pinned UUID
+still refuse automatic admission. A successful admission pins the UUID for future restarts. Missing proof,
+another volume, replaced inodes, digest mismatch, ambiguous pending rollover or
+superseded-copy cleanup refuse recovery and preserve the original receipt and
+bytes. Recovery never deletes the manifest or certifies a session as ended.
+
 An existing nonempty journal without a generation receipt is **undated**.
 Admission pins all its original bytes under `events/undated/`; it neither scans
 nor compresses that mixed-day source, and never invents a day from mtime. A

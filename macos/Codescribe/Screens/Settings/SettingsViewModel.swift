@@ -263,7 +263,7 @@ extension CsPasteMode {
     switch self {
     case .safe: return String(localized: "Safe", comment: "Paste policy: cautious destinations")
     case .comfort:
-      return String(localized: "Comfort", comment: "Paste policy: paste wherever the caret is")
+      return String(localized: "Comfort", comment: "Paste policy: verified editable destinations")
     case .off:
       return String(
         localized: "settings.paste.policy.off", defaultValue: "Off",
@@ -277,12 +277,12 @@ extension CsPasteMode {
     case .safe:
       return String(
         localized:
-          "Pastes only into a text field; terminals only when it doesn't look like a command."
+          "Pastes into a verified editable text field. Unreadable fields and terminal commands stay copied."
       )
     case .comfort:
       return String(
         localized:
-          "Pastes wherever the caret is, terminals too; commands and password fields are held."
+          "Pastes into a verified editable text field. Without one, the transcript is copied for you to paste."
       )
     case .off:
       return String(localized: "Never pastes automatically; the transcript stays on the overlay.")

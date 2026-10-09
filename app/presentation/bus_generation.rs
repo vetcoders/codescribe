@@ -50,8 +50,9 @@ fn lock_path(path: &Path) -> PathBuf {
 }
 
 /// All cooperating appenders take this same OS lease before descriptor refresh.
-/// The leased section performs metadata and append work, never compression or
-/// a history scan. Concurrent appenders retain their original publication order.
+/// The leased section performs metadata and append work, never compression.
+/// Remount recovery also verifies recorded archive digests once before rebinding.
+/// Concurrent appenders retain their original publication order.
 pub struct Lease(File);
 impl Lease {
     pub fn acquire(path: &Path) -> io::Result<Self> {
@@ -115,6 +116,9 @@ pub struct Manifest {
     pub stream_inode: u64,
     pub stream_dev: u64,
     pub stream_birthtime: Option<f64>,
+    /// Stable volume identity; unlike st_dev, the macOS volume UUID survives reboot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_uuid: Option<String>,
     pub segments: Vec<Segment>,
     pub active: Segment,
     pub pending: Option<Pending>,
@@ -151,6 +155,224 @@ pub fn write_manifest(path: &Path, manifest: &Manifest) -> io::Result<()> {
 fn same_file(path: &Path, segment: &Segment) -> io::Result<bool> {
     let meta = fs::metadata(path)?;
     Ok(meta.dev() == segment.dev && meta.ino() == segment.ino)
+}
+
+#[cfg(target_os = "macos")]
+fn volume_uuid(file: &File) -> Option<String> {
+    let mut attributes = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: 0,
+        volattr: libc::ATTR_VOL_INFO | libc::ATTR_VOL_UUID,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: 0,
+    };
+    #[repr(C)]
+    struct VolumeAttributes {
+        length: u32,
+        uuid: [u8; 16],
+    }
+    let mut result = VolumeAttributes {
+        length: 0,
+        uuid: [0; 16],
+    };
+    // fgetattrlist binds the UUID to the opened descriptor, not a second path lookup.
+    let status = unsafe {
+        libc::fgetattrlist(
+            file.as_raw_fd(),
+            std::ptr::from_mut(&mut attributes).cast(),
+            std::ptr::from_mut(&mut result).cast(),
+            std::mem::size_of::<VolumeAttributes>(),
+            0,
+        )
+    };
+    (status == 0
+        && result.length as usize == std::mem::size_of::<VolumeAttributes>()
+        && result.uuid != [0; 16])
+        .then(|| Uuid::from_bytes(result.uuid).to_string())
+}
+#[cfg(not(target_os = "macos"))]
+fn volume_uuid(_file: &File) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn boot_time() -> Option<f64> {
+    let mut time = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
+    let mut length = std::mem::size_of::<libc::timeval>();
+    let status = unsafe {
+        libc::sysctlbyname(
+            c"kern.boottime".as_ptr(),
+            std::ptr::from_mut(&mut time).cast(),
+            &mut length,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (status == 0 && length == std::mem::size_of::<libc::timeval>() && time.tv_sec > 0)
+        .then_some(time.tv_sec as f64 + time.tv_usec as f64 / 1_000_000.0)
+}
+#[cfg(not(target_os = "macos"))]
+fn boot_time() -> Option<f64> {
+    None
+}
+
+fn birthtime(meta: &fs::Metadata) -> Option<f64> {
+    meta.created()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs_f64())
+}
+
+/// Recover only a proven physical-device renumbering. The logical stream clock
+/// and identity remain unchanged, so existing cursors and ACKs keep their meaning.
+/// This is also callable during startup, before constructing persistent publishers.
+pub fn recover_device_number(path: &Path) -> io::Result<bool> {
+    let _lease = Lease::acquire(path)?;
+    recover_device_number_leased(path)
+}
+
+fn recover_device_number_leased(path: &Path) -> io::Result<bool> {
+    let Some(manifest) = read_manifest(path)? else {
+        return Ok(false);
+    };
+    if let Ok(mut effective) = resolved(path, manifest.clone()) {
+        if effective.volume_uuid.is_none() {
+            effective.volume_uuid = volume_uuid(&File::open(path)?);
+            if effective.volume_uuid.is_some() {
+                write_manifest(path, &effective)?;
+            }
+        }
+        return Ok(false);
+    }
+    let recovered = rebind_device_number(path, manifest, boot_time())?;
+    write_manifest(path, &recovered)?;
+    tracing::info!("bus storage device number recovered; logical stream identity retained");
+    Ok(true)
+}
+
+fn rebind_device_number(
+    path: &Path,
+    mut manifest: Manifest,
+    boot: Option<f64>,
+) -> io::Result<Manifest> {
+    // A simultaneously interrupted rollover needs its own pinned transaction
+    // recovery. Device drift must never guess which side of a pending swap won.
+    if manifest.pending.is_some() || manifest.active.path != absolute(path)? {
+        return Err(invalid());
+    }
+    let old_dev = manifest.active.dev;
+    let active_file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    let current_dev = active_file.metadata()?.dev();
+    let current_volume = volume_uuid(&active_file);
+    if old_dev == current_dev {
+        return Err(invalid());
+    }
+    let known_volume = manifest.volume_uuid.is_some();
+    if known_volume {
+        if manifest.volume_uuid != current_volume {
+            return Err(invalid());
+        }
+    } else {
+        // Older receipts lack a volume UUID. Admission requires independent
+        // reboot and original-file birthtime evidence, not just matching inodes.
+        let boot = boot.ok_or_else(invalid)?;
+        let receipt = fs::symlink_metadata(manifest_path(path))?;
+        if !receipt.is_file()
+            || receipt.mtime() as f64 + receipt.mtime_nsec() as f64 / 1e9 >= boot
+            || current_volume.is_none()
+            || manifest.stream_dev != old_dev
+        {
+            return Err(invalid());
+        }
+        let original = manifest
+            .segments
+            .iter()
+            .chain(std::iter::once(&manifest.active))
+            .find(|segment| segment.ino == manifest.stream_inode)
+            .ok_or_else(invalid)?;
+        let meta = fs::symlink_metadata(&original.path)?;
+        if manifest.stream_birthtime.is_none() || manifest.stream_birthtime != birthtime(&meta) {
+            return Err(invalid());
+        }
+    }
+    let mut checked = Vec::new();
+    let events = absolute(path)?.parent().ok_or_else(invalid)?.join("events");
+    for segment in manifest
+        .segments
+        .iter_mut()
+        .chain(std::iter::once(&mut manifest.active))
+    {
+        let active = segment.path == absolute(path)?;
+        if !active
+            && (!segment.path.starts_with(&events)
+                || segment
+                    .path
+                    .components()
+                    .any(|component| matches!(component, std::path::Component::ParentDir)))
+        {
+            return Err(invalid());
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&segment.path)?;
+        let before = source_identity(&file.metadata()?);
+        if segment.dev != old_dev
+            || before.dev != current_dev
+            || before.ino != segment.ino
+            || (!active && before.length != segment.length)
+            || (active && before.length < segment.length)
+            || current_volume != volume_uuid(&file)
+            || segment.superseded.is_some()
+        {
+            return Err(invalid());
+        }
+        if let Some(digest) = &segment.sha256 {
+            if digest_file(&segment.path)? != (segment.length, digest.clone()) {
+                return Err(invalid());
+            }
+        } else if !known_volume {
+            let boot = boot.ok_or_else(invalid)?;
+            let unchanged_content = if active {
+                // Opening the active writer can chmod the existing inode before
+                // append preparation fails. That updates ctime without changing
+                // content. Its pre-boot birth and content mtime still establish
+                // continuity, including growth since the receipt's checkpoint.
+                birthtime(&file.metadata()?).is_some_and(|created| created < boot)
+                    && before.modified as f64 + before.modified_ns as f64 / 1e9 < boot
+            } else {
+                before.changed as f64 + before.changed_ns as f64 / 1e9 < boot
+            };
+            if !unchanged_content {
+                // No historical digest exists. A post-boot content write cannot
+                // be distinguished from replacement of the original prefix.
+                return Err(invalid());
+            }
+        }
+        if source_identity(&file.metadata()?) != before {
+            return Err(invalid());
+        }
+        checked.push((segment.path.clone(), before));
+        segment.dev = current_dev;
+    }
+    manifest.volume_uuid = current_volume;
+    // Reuse the ordinary ordered-chain/path/length validation before publication.
+    let effective = resolved(path, manifest)?;
+    for (path, before) in checked {
+        if source_identity(&fs::symlink_metadata(path)?) != before {
+            return Err(invalid());
+        }
+    }
+    Ok(effective)
 }
 fn resolved(path: &Path, mut manifest: Manifest) -> io::Result<Manifest> {
     if let Some(pending) = manifest.pending.clone() {
@@ -218,7 +440,13 @@ pub fn prepare_append(path: &Path, file: &mut File) -> io::Result<Option<String>
     }
     let today = Local::now().format("%Y_%m%d").to_string();
     let mut manifest = if let Some(original) = read_manifest(&path)? {
-        let effective = resolved(&path, original.clone())?;
+        let effective = match resolved(&path, original.clone()) {
+            Ok(effective) => effective,
+            Err(_) => {
+                recover_device_number_leased(&path)?;
+                resolved(&path, read_manifest(&path)?.ok_or_else(invalid)?)?
+            }
+        };
         if original.pending.is_some() && effective.pending.is_none() {
             write_manifest(&path, &effective)?;
         }
@@ -232,11 +460,8 @@ pub fn prepare_append(path: &Path, file: &mut File) -> io::Result<Option<String>
             stream_id: Uuid::new_v4().to_string(),
             stream_inode: meta.ino(),
             stream_dev: meta.dev(),
-            stream_birthtime: meta
-                .created()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs_f64()),
+            stream_birthtime: birthtime(&meta),
+            volume_uuid: volume_uuid(file),
             segments: Vec::new(),
             active: new_segment(&path, 0, day)?,
             pending: None,
@@ -494,7 +719,13 @@ pub struct Reader {
 }
 impl Reader {
     pub fn open(path: &Path) -> io::Result<Self> {
-        let manifest = view(path)?;
+        let manifest = match view(path) {
+            Ok(manifest) => manifest,
+            Err(_) => {
+                recover_device_number(path)?;
+                view(path)?
+            }
+        };
         let segments = if let Some(value) = &manifest {
             let mut segments = value.segments.clone();
             segments.push(value.active.clone());
@@ -1283,6 +1514,189 @@ mod integrator_generation_acceptance {
         manifest.active.day = Some("2026_0930".into());
         write_manifest(path, &manifest).unwrap();
         file
+    }
+
+    #[cfg(target_os = "macos")]
+    fn device_drift_fixture(path: &Path) -> (File, Manifest, (u64, u64)) {
+        let mut file = pinned_previous_day(path, b"original archive\n");
+        prepare_append(path, &mut file).unwrap();
+        file.write_all(b"active prefix\n").unwrap();
+        file.sync_all().unwrap();
+        let mut manifest = view(path).unwrap().unwrap();
+        assert!(manifest.volume_uuid.is_some());
+        manifest.segments[0].sha256 = Some(digest_file(&manifest.segments[0].path).unwrap().1);
+        let identity = (manifest.stream_dev, manifest.stream_inode);
+        // Simulate a recorded device number from a previous mount, retaining
+        // all real inode, volume, digest and logical stream evidence.
+        manifest.active.dev += 1;
+        for segment in &mut manifest.segments {
+            segment.dev += 1;
+        }
+        write_manifest(path, &manifest).unwrap();
+        (file, manifest, identity)
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn device_drift_reader_recovers_without_changing_bytes_or_cursor_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bus.jsonl");
+        let (_file, stale, identity) = device_drift_fixture(&path);
+        let archive = fs::read(&stale.segments[0].path).unwrap();
+        let active = fs::read(&path).unwrap();
+        let mut reader = Reader::open(&path).unwrap();
+        assert_eq!(reader.identity(), identity);
+        assert_eq!(reader.manifest.as_ref().unwrap().stream_id, stale.stream_id);
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, [archive.as_slice(), active.as_slice()].concat());
+        assert_eq!(fs::read(&stale.segments[0].path).unwrap(), archive);
+        assert_eq!(fs::read(&path).unwrap(), active);
+        let receipt = fs::read(manifest_path(&path)).unwrap();
+        // A new reader/process observes the durable fix, with no second rewrite.
+        assert_eq!(Reader::open(&path).unwrap().identity(), identity);
+        assert!(!recover_device_number(&path).unwrap());
+        assert_eq!(fs::read(manifest_path(&path)).unwrap(), receipt);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn device_drift_append_refreshes_under_existing_lease_and_preserves_active_growth() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bus.jsonl");
+        let (mut file, _, identity) = device_drift_fixture(&path);
+        // Manifest length is a checkpoint, not a prohibition on legitimate appends.
+        file.write_all(b"appended before recovery\n").unwrap();
+        file.sync_all().unwrap();
+        let lease = Lease::acquire(&path).unwrap();
+        prepare_append(&path, &mut file).unwrap();
+        file.write_all(b"appended after recovery\n").unwrap();
+        file.sync_all().unwrap();
+        drop(lease);
+        assert_eq!(Reader::open(&path).unwrap().identity(), identity);
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"active prefix\nappended before recovery\nappended after recovery\n"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn device_drift_refuses_replaced_file_and_does_not_rewrite_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bus.jsonl");
+        let (_file, stale, _) = device_drift_fixture(&path);
+        let receipt = fs::read(manifest_path(&path)).unwrap();
+        let replacement = path.with_extension("replacement");
+        fs::write(&replacement, fs::read(&stale.segments[0].path).unwrap()).unwrap();
+        fs::rename(replacement, &stale.segments[0].path).unwrap();
+        assert!(recover_device_number(&path).is_err());
+        assert_eq!(fs::read(manifest_path(&path)).unwrap(), receipt);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn device_drift_refuses_same_inode_same_length_archive_tampering() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bus.jsonl");
+        let (_file, stale, _) = device_drift_fixture(&path);
+        let receipt = fs::read(manifest_path(&path)).unwrap();
+        let original = fs::read(&stale.segments[0].path).unwrap();
+        fs::write(&stale.segments[0].path, vec![b'x'; original.len()]).unwrap();
+        assert!(recover_device_number(&path).is_err());
+        assert_eq!(fs::read(manifest_path(&path)).unwrap(), receipt);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn device_drift_refuses_different_volume_or_partial_transition() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bus.jsonl");
+        let (_file, stale, _) = device_drift_fixture(&path);
+        let mut foreign = stale.clone();
+        foreign.volume_uuid = Some(Uuid::new_v4().to_string());
+        write_manifest(&path, &foreign).unwrap();
+        assert!(recover_device_number(&path).is_err());
+        let mut partial = stale.clone();
+        partial.segments[0].dev -= 1;
+        write_manifest(&path, &partial).unwrap();
+        assert!(recover_device_number(&path).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn pre_uuid_device_drift_requires_reboot_and_original_birthtime_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bus.jsonl");
+        let (_file, mut stale, _) = device_drift_fixture(&path);
+        stale.volume_uuid = None;
+        stale.stream_dev = stale.active.dev;
+        write_manifest(&path, &stale).unwrap();
+        assert!(rebind_device_number(&path, stale.clone(), None).is_err());
+        let future_boot = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            + 60.0;
+        let recovered = rebind_device_number(&path, stale.clone(), Some(future_boot)).unwrap();
+        assert!(recovered.volume_uuid.is_some());
+        assert_eq!(recovered.stream_dev, stale.stream_dev);
+        stale.stream_birthtime = stale.stream_birthtime.map(|time| time - 1.0);
+        assert!(rebind_device_number(&path, stale, Some(future_boot)).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn pre_uuid_recovery_allows_postboot_chmod_with_preboot_active_content_growth() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bus.jsonl");
+        let (mut file, mut stale, _) = device_drift_fixture(&path);
+        stale.volume_uuid = None;
+        stale.stream_dev = stale.active.dev;
+        let checkpoint = stale.active.length;
+        file.write_all(b"more preboot content\n").unwrap();
+        file.sync_all().unwrap();
+        write_manifest(&path, &stale).unwrap();
+        let receipt = fs::metadata(manifest_path(&path)).unwrap();
+        let receipt_time = receipt.mtime() as f64 + receipt.mtime_nsec() as f64 / 1e9;
+        let before = fs::read(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        let after = file.metadata().unwrap();
+        let changed = after.ctime() as f64 + after.ctime_nsec() as f64 / 1e9;
+        let boot = (receipt_time + changed) / 2.0;
+        assert!(receipt_time < boot && boot < changed);
+        let recovered = rebind_device_number(&path, stale.clone(), Some(boot)).unwrap();
+        assert!(recovered.active.length > checkpoint);
+        assert_eq!(recovered.active.length, before.len() as u64);
+        assert_eq!(recovered.stream_id, stale.stream_id);
+        assert_eq!(recovered.stream_dev, stale.stream_dev);
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn pre_uuid_recovery_still_refuses_postboot_active_content_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bus.jsonl");
+        let (mut file, mut stale, _) = device_drift_fixture(&path);
+        stale.volume_uuid = None;
+        stale.stream_dev = stale.active.dev;
+        write_manifest(&path, &stale).unwrap();
+        let receipt = fs::metadata(manifest_path(&path)).unwrap();
+        let receipt_time = receipt.mtime() as f64 + receipt.mtime_nsec() as f64 / 1e9;
+        file.write_all(b"postboot content\n").unwrap();
+        file.sync_all().unwrap();
+        let after = file.metadata().unwrap();
+        let modified = after.mtime() as f64 + after.mtime_nsec() as f64 / 1e9;
+        let boot = (receipt_time + modified) / 2.0;
+        assert!(receipt_time < boot && boot < modified);
+        let original_receipt = fs::read(manifest_path(&path)).unwrap();
+        let original_content = fs::read(&path).unwrap();
+        assert!(rebind_device_number(&path, stale, Some(boot)).is_err());
+        assert_eq!(fs::read(manifest_path(&path)).unwrap(), original_receipt);
+        assert_eq!(fs::read(&path).unwrap(), original_content);
     }
 
     #[test]

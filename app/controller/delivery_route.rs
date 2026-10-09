@@ -63,7 +63,8 @@ pub enum DeliveryRoute {
 /// selection still belongs exclusively to [`resolve_delivery_route`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayPasteDelivery {
-    Pasted,
+    /// Keyboard events were posted; the recipient has not acknowledged insertion.
+    PasteRequested,
     CopiedToClipboard,
     AccessibilityPermissionNeeded,
     DeferredInsertArmed,
@@ -325,8 +326,8 @@ fn orient_route(facts: DeliveryFacts) -> DeliveryDecision {
 ///   dictation never lands in a secret field (Founder s03-028).
 /// - A terminal gets Cmd+V only when the text does not look executable; a
 ///   command-shaped take is held for the user's own ⌘V (Founder s04-036).
-/// - Safe pastes into anything else only when an editable text field is
-///   observed; Comfort pastes wherever the caret is (Founder s04-023).
+/// - Both automatic modes require an observed editable input. App focus or a
+///   text-shaped role alone never authorizes a keyboard shortcut.
 ///
 /// The gate can only answer `ClipboardPaste` or `ClipboardHold`.
 fn paste_gate(mode: PasteMode, target: PasteTarget, executable: bool) -> DeliveryDecision {
@@ -337,16 +338,13 @@ fn paste_gate(mode: PasteMode, target: PasteTarget, executable: bool) -> Deliver
     if target.field == FocusedInputField::Secure {
         return hold("hold_secure_field");
     }
-    if target.terminal {
-        if executable {
-            return hold("hold_executable");
-        }
-    } else if mode == PasteMode::Safe {
-        match target.field {
-            FocusedInputField::Text | FocusedInputField::Secure => {}
-            FocusedInputField::NotText => return hold("hold_no_text_field"),
-            FocusedInputField::Unobserved => return hold("hold_field_unobserved"),
-        }
+    if target.terminal && executable {
+        return hold("hold_executable");
+    }
+    match target.field {
+        FocusedInputField::Text | FocusedInputField::Secure => {}
+        FocusedInputField::NotText => return hold("hold_no_text_field"),
+        FocusedInputField::Unobserved => return hold("hold_field_unobserved"),
     }
     DeliveryDecision {
         route: DeliveryRoute::ClipboardPaste,
@@ -662,9 +660,18 @@ fn overlay_insert_route(facts: DeliveryFacts) -> DeliveryDecision {
             reason: "refuse_paste_into_self",
         };
     }
-    DeliveryDecision {
-        route: DeliveryRoute::ClipboardPaste,
-        reason: "explicit_insert",
+    let gate = paste_gate(
+        PasteMode::Safe,
+        facts.paste_target,
+        facts.executable_payload,
+    );
+    if gate.route == DeliveryRoute::ClipboardPaste {
+        DeliveryDecision {
+            route: DeliveryRoute::ClipboardPaste,
+            reason: "explicit_insert",
+        }
+    } else {
+        gate
     }
 }
 
@@ -822,15 +829,29 @@ mod tests {
             (Safe, false, Secure, false, Hold, "hold_secure_field"),
             // Executable text into a non-terminal field is not a shell.
             (Safe, false, Text, true, Paste, "paste_safe"),
-            // Terminals rarely expose an AX text role; the guard decides.
-            (Safe, true, Unobserved, false, Paste, "paste_safe"),
+            // Unobserved terminal input is retained, even for ordinary prose.
+            (Safe, true, Unobserved, false, Hold, "hold_field_unobserved"),
             (Safe, true, Text, true, Hold, "hold_executable"),
             (Safe, true, Secure, false, Hold, "hold_secure_field"),
             (Comfort, false, Text, false, Paste, "paste_comfort"),
-            (Comfort, false, NotText, false, Paste, "paste_comfort"),
-            (Comfort, false, Unobserved, false, Paste, "paste_comfort"),
+            (Comfort, false, NotText, false, Hold, "hold_no_text_field"),
+            (
+                Comfort,
+                false,
+                Unobserved,
+                false,
+                Hold,
+                "hold_field_unobserved",
+            ),
             (Comfort, false, Secure, false, Hold, "hold_secure_field"),
-            (Comfort, true, Unobserved, false, Paste, "paste_comfort"),
+            (
+                Comfort,
+                true,
+                Unobserved,
+                false,
+                Hold,
+                "hold_field_unobserved",
+            ),
             (Comfort, true, Unobserved, true, Hold, "hold_executable"),
             (Comfort, true, Secure, true, Hold, "hold_secure_field"),
         ];
@@ -1076,6 +1097,25 @@ mod tests {
         let decision = resolve_delivery_route(DeliveryIntent::OverlayInsert, facts(|_| {}));
         assert_eq!(decision.route, DeliveryRoute::ClipboardPaste);
         assert_eq!(decision.reason, "explicit_insert");
+    }
+
+    #[test]
+    fn explicit_insert_requires_editable_input_in_every_app() {
+        for terminal in [false, true] {
+            for field in [
+                FocusedInputField::NotText,
+                FocusedInputField::Unobserved,
+                FocusedInputField::Secure,
+            ] {
+                let decision = resolve_delivery_route(
+                    DeliveryIntent::OverlayInsert,
+                    facts(|f| {
+                        f.paste_target = PasteTarget { terminal, field };
+                    }),
+                );
+                assert_eq!(decision.route, DeliveryRoute::ClipboardHold);
+            }
+        }
     }
 
     #[test]

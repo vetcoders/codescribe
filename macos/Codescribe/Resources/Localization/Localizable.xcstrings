@@ -4874,6 +4874,16 @@
         }
       }
     },
+    "Continue in chat" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kontynuuj w czacie"
+          }
+        }
+      }
+    },
     "Copied" : {
       "comment" : "Tray banner: the transcript was copied",
       "localizations" : {
@@ -8214,6 +8224,16 @@
         }
       }
     },
+    "Max could not prepare its conversation." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Max nie mógł przygotować swojej rozmowy."
+          }
+        }
+      }
+    },
     "Max permissions" : {
       "localizations" : {
         "pl" : {
@@ -10143,6 +10163,16 @@
         }
       }
     },
+    "Paste requested" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Żądanie wklejenia"
+          }
+        }
+      }
+    },
     "Paste transcript" : {
       "localizations" : {
         "pl" : {
@@ -10153,22 +10183,22 @@
         }
       }
     },
-    "Pastes only into a text field; terminals only when it doesn't look like a command." : {
+    "Pastes into a verified editable text field. Unreadable fields and terminal commands stay copied." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wkleja tylko do pól tekstowych. W terminalu pomija tekst wyglądający jak polecenie."
+            "value" : "Wkleja do potwierdzonego edytowalnego pola tekstowego. Gdy pola nie da się odczytać lub tekst jest poleceniem terminala, pozostaje w schowku."
           }
         }
       }
     },
-    "Pastes wherever the caret is, terminals too; commands and password fields are held." : {
+    "Pastes into a verified editable text field. Without one, the transcript is copied for you to paste." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wkleja przy kursorze, także w terminalu. Pomija polecenia i pola haseł."
+            "value" : "Wkleja do potwierdzonego edytowalnego pola tekstowego. Jeśli takiego pola nie ma, kopiuje transkrypcję do samodzielnego wklejenia."
           }
         }
       }
@@ -14997,6 +15027,16 @@
         }
       }
     },
+    "This consultation is unavailable in chat." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta konsultacja jest niedostępna w czacie."
+          }
+        }
+      }
+    },
     "This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available." : {
       "comment" : "Setup API key editor note shown while provider access is unavailable",
       "localizations" : {
@@ -15275,6 +15315,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Formatowanie transkrypcji jest teraz niedostępne."
+          }
+        }
+      }
+    },
+    "Transcript history is unavailable. Your text remains visible." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Historia transkrypcji jest niedostępna. Twój tekst pozostaje widoczny."
           }
         }
       }

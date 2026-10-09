@@ -345,7 +345,22 @@ pub struct ConsultationTurn {
     pub provider_name: String,
     /// Supply a newly admitted provider on settings changes only. It is
     /// installed inside the queue, never while an earlier turn is executing.
-    pub replacement_provider: Option<Box<dyn AgentProvider>>,
+    pub replacement_provider: Option<AdmittedConsultationProvider>,
+}
+
+/// A provider admitted from one immutable formatting snapshot. The owner alone
+/// compares seals, so rejected queued turns cannot advance provider selection.
+pub struct AdmittedConsultationProvider {
+    pub seal: String,
+    pub provider: Box<dyn AgentProvider>,
+}
+
+/// A clean tool-free startup request completed. Some protocols intentionally
+/// store no server chain and must replay the authoritative local history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsultationPreparation {
+    StoredChain,
+    ReplayOnly,
 }
 
 /// Answer plus durable history receipt. Presentation must still admit this
@@ -440,6 +455,12 @@ struct QueuedTurn {
 
 enum OwnerCommand {
     Turn(Box<QueuedTurn>),
+    Prepare {
+        provider: AdmittedConsultationProvider,
+        options: StreamOptions,
+        reply: oneshot::Sender<Result<ConsultationPreparation>>,
+        pending: PendingTurn,
+    },
     Close(oneshot::Sender<()>),
 }
 
@@ -486,6 +507,12 @@ impl ConsultationRuntime {
         );
         let journal = gateway.open_consultation(&id)?;
         let history = gateway.restore_consultation(&id, journal.has_completed_turns())?;
+        // Retrieval is advisory. An unavailable index must not erase a readable
+        // exact history or prevent a fresh provider from using that history.
+        match gateway.consultation_recovery_context(&id, &history) {
+            Ok(context) => session.set_retrieved_context(context),
+            Err(error) => tracing::warn!(%error, "Max startup thread retrieval unavailable"),
+        }
         session.restore_messages(history);
         session.bind_execution_thread(id.clone());
         let journal = Arc::new(std::sync::Mutex::new(journal));
@@ -511,6 +538,41 @@ impl ConsultationRuntime {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// Establish remote readiness before the first user instruction. The FIFO
+    /// owner performs this tool-free request under the same exclusive lease.
+    /// No accepted instruction, journal completion or synthetic message is made.
+    pub async fn prepare_provider(
+        &self,
+        provider: AdmittedConsultationProvider,
+        options: StreamOptions,
+    ) -> Result<ConsultationPreparation> {
+        let reply = {
+            let admission = self
+                .admission
+                .lock()
+                .map_err(|_| anyhow!("consultation admission lock poisoned"))?;
+            ensure!(!admission.closed, "consultation is closing or closed");
+            let permit = self
+                .tx
+                .try_reserve()
+                .map_err(|error| anyhow!("consultation preparation admission failed: {error}"))?;
+            let (reply_tx, reply_rx) = oneshot::channel();
+            admission
+                .pending
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            permit.send(OwnerCommand::Prepare {
+                provider,
+                options,
+                reply: reply_tx,
+                pending: PendingTurn(Arc::clone(&admission.pending)),
+            });
+            reply_rx
+        };
+        reply
+            .await
+            .context("consultation owner stopped during preparation")?
     }
 
     /// Persist a candidate off the capture thread. Bind sealed source to its
@@ -667,6 +729,8 @@ async fn run_owner(owner: ConsultationOwner) {
         mut rx,
         install_lease_path,
     } = owner;
+    let mut provider_seal = None;
+    let mut preparation = None;
     while let Some(command) = rx.recv().await {
         let QueuedTurn {
             turn,
@@ -675,6 +739,26 @@ async fn run_owner(owner: ConsultationOwner) {
             authorization,
         } = match command {
             OwnerCommand::Turn(turn) => *turn,
+            OwnerCommand::Prepare {
+                provider,
+                options,
+                reply,
+                pending,
+            } => {
+                let result = prepare_owner_provider(
+                    &mut session,
+                    &journal,
+                    &install_lease_path,
+                    &mut provider_seal,
+                    &mut preparation,
+                    provider,
+                    options,
+                )
+                .await;
+                drop(pending);
+                let _ = reply.send(result);
+                continue;
+            }
             OwnerCommand::Close(reply) => {
                 drop(session);
                 drop(journal);
@@ -743,15 +827,28 @@ async fn run_owner(owner: ConsultationOwner) {
             continue;
         }
         let turn_id = turn.id.clone();
-        let result = run_turn(&id, &mut session, &mut ui_rx, &gateway, &events, turn)
-            .await
-            .and_then(|answer| {
-                journal
-                    .lock()
-                    .map_err(|_| anyhow!("consultation journal lock poisoned"))?
-                    .complete(&turn_id)?;
-                Ok(answer)
-            });
+        if let Some(provider) = turn.replacement_provider.as_ref()
+            && provider_seal.as_ref() != Some(&provider.seal)
+        {
+            preparation = None;
+        }
+        let result = run_turn(
+            &id,
+            &mut session,
+            &mut provider_seal,
+            &mut ui_rx,
+            &gateway,
+            &events,
+            turn,
+        )
+        .await
+        .and_then(|answer| {
+            journal
+                .lock()
+                .map_err(|_| anyhow!("consultation journal lock poisoned"))?
+                .complete(&turn_id)?;
+            Ok(answer)
+        });
         if let Err(error) = &result {
             // Do not roll back successful tool effects or automatically retry a
             // partially executed instruction. The host must resolve this state.
@@ -767,16 +864,72 @@ async fn run_owner(owner: ConsultationOwner) {
     }
 }
 
+async fn prepare_owner_provider(
+    session: &mut AgentSession,
+    journal: &std::sync::Mutex<ConsultationJournal>,
+    install_lease_path: &std::path::Path,
+    provider_seal: &mut Option<String>,
+    preparation: &mut Option<(String, ConsultationPreparation)>,
+    admitted: AdmittedConsultationProvider,
+    options: StreamOptions,
+) -> Result<ConsultationPreparation> {
+    {
+        let journal = journal
+            .lock()
+            .map_err(|_| anyhow!("consultation journal lock poisoned"))?;
+        ensure!(
+            journal.recovery_reason().is_none(),
+            "consultation requires recovery before provider preparation"
+        );
+    }
+    if let Some((seal, ready)) = preparation.as_ref()
+        && seal == &admitted.seal
+    {
+        return Ok(*ready);
+    }
+    let _install_lease = crate::config::acquire_agent_turn_lease_at(install_lease_path)?;
+    if provider_seal.as_ref() != Some(&admitted.seal) {
+        session.replace_provider(admitted.provider).await;
+        *provider_seal = Some(admitted.seal.clone());
+    }
+    let result = session
+        .prepare_provider_context(&options)
+        .await
+        .map(|stored| {
+            if stored {
+                ConsultationPreparation::StoredChain
+            } else {
+                ConsultationPreparation::ReplayOnly
+            }
+        });
+    match result {
+        Ok(ready) => {
+            *preparation = Some((admitted.seal, ready));
+            Ok(ready)
+        }
+        Err(error) => {
+            *preparation = None;
+            *provider_seal = None;
+            session.provider.restore_response_chain(None).await;
+            Err(error)
+        }
+    }
+}
+
 async fn run_turn(
     id: &str,
     session: &mut AgentSession,
+    provider_seal: &mut Option<String>,
     ui_rx: &mut mpsc::Receiver<AgentUiEvent>,
     gateway: &ThreadDeliveryGateway,
     events: &ConsultationEvents,
     turn: ConsultationTurn,
 ) -> Result<ConsultationAnswer> {
-    if let Some(provider) = turn.replacement_provider {
-        session.replace_provider(provider).await;
+    if let Some(admitted) = turn.replacement_provider
+        && provider_seal.as_ref() != Some(&admitted.seal)
+    {
+        session.replace_provider(admitted.provider).await;
+        *provider_seal = Some(admitted.seal);
     }
     let history_start = session.messages().len();
     {
@@ -1574,6 +1727,380 @@ mod tests {
             provider_name: "observed".into(),
             replacement_provider: None,
         }
+    }
+
+    struct StartupObservation {
+        label: &'static str,
+        model: String,
+        max_tokens: Option<u32>,
+        messages: Vec<Message>,
+        tools: usize,
+        previous_chain: Option<String>,
+        reset: bool,
+    }
+
+    struct StartupProvider {
+        label: &'static str,
+        requests: Arc<Mutex<Vec<StartupObservation>>>,
+        chain: Mutex<Option<String>>,
+        store_chain: bool,
+    }
+
+    #[async_trait]
+    impl AgentProvider for StartupProvider {
+        async fn stream(
+            &self,
+            messages: &[Message],
+            tools: &[ToolDefinition],
+            options: &StreamOptions,
+        ) -> Result<mpsc::Receiver<AgentEvent>> {
+            self.requests.lock().unwrap().push(StartupObservation {
+                label: self.label,
+                model: options.model.clone(),
+                max_tokens: options.max_tokens,
+                messages: messages.to_vec(),
+                tools: tools.len(),
+                previous_chain: self.chain.lock().unwrap().clone(),
+                reset: options.reset_chain,
+            });
+            if self.store_chain {
+                *self.chain.lock().unwrap() = Some(format!("{}-chain", self.label));
+            }
+            let (tx, rx) = mpsc::channel(4);
+            tx.send(AgentEvent::TextDone(
+                if options.reset_chain {
+                    "READY"
+                } else {
+                    "answer"
+                }
+                .into(),
+            ))
+            .await
+            .unwrap();
+            tx.send(AgentEvent::ResponseDone {
+                response_id: Some("remote-response".into()),
+                clean: true,
+            })
+            .await
+            .unwrap();
+            Ok(rx)
+        }
+        fn build_tool_result(
+            &self,
+            id: &str,
+            content: Vec<ContentBlock>,
+            is_error: bool,
+        ) -> Message {
+            Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: id.into(),
+                    content,
+                    is_error,
+                }],
+            )
+        }
+        fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
+            ContentBlock::Image {
+                data: data.to_vec(),
+                media_type: media_type.into(),
+            }
+        }
+        fn name(&self) -> &str {
+            self.label
+        }
+        async fn response_chain_id(&self) -> Option<String> {
+            self.chain.lock().unwrap().clone()
+        }
+        async fn restore_response_chain(&self, id: Option<String>) {
+            *self.chain.lock().unwrap() = id;
+        }
+    }
+
+    fn startup_provider(
+        label: &'static str,
+        seal: &str,
+        store_chain: bool,
+        requests: &Arc<Mutex<Vec<StartupObservation>>>,
+    ) -> AdmittedConsultationProvider {
+        AdmittedConsultationProvider {
+            seal: seal.into(),
+            provider: Box::new(StartupProvider {
+                label,
+                requests: Arc::clone(requests),
+                chain: Mutex::new(None),
+                store_chain,
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_opens_remote_chain_once_and_retains_it_for_the_same_seal() {
+        let dir = tempfile::tempdir().unwrap();
+        let gateway = ThreadDeliveryGateway::new_in(dir.path()).unwrap();
+        gateway
+            .deliver(ThreadDeliveryInput {
+                backend_id: "remote-startup".into(),
+                messages: vec![
+                    ThreadMessage::from(&Message::new(
+                        Role::User,
+                        vec![ContentBlock::Text("historical instruction".into())],
+                    )),
+                    ThreadMessage::from(&Message::new(
+                        Role::Assistant,
+                        vec![ContentBlock::Text("completed answer".into())],
+                    )),
+                ],
+                provider: "startup".into(),
+                model: "test".into(),
+                source: ThreadDeliverySource::MaxConsultation,
+                mode: "max".into(),
+                tags: vec!["max-consultation".into()],
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = mpsc::channel(4);
+        let initial = startup_provider("unused-initial", "initial", true, &requests);
+        let session = AgentSession::new(initial.provider, Arc::new(ToolRegistry::new()), tx);
+        let runtime = ConsultationRuntime::start(
+            "remote-startup".into(),
+            session,
+            rx,
+            gateway.clone(),
+            Arc::new(|_, _, _| {}),
+            dir.path().join("agent-turn.lock"),
+        )
+        .unwrap();
+        let ready = runtime
+            .prepare_provider(
+                startup_provider("prepared", "seal-a", true, &requests),
+                StreamOptions {
+                    model: "selected-reasoning-model".into(),
+                    max_tokens: Some(32_768),
+                    ..StreamOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(ready, ConsultationPreparation::StoredChain);
+        assert_eq!(
+            gateway
+                .restore_consultation("remote-startup", true)
+                .unwrap()
+                .len(),
+            2,
+            "READY and synthetic bootstrap input cannot enter durable conversation history"
+        );
+        {
+            let observed = requests.lock().unwrap();
+            assert_eq!(
+                observed.len(),
+                1,
+                "remote readiness precedes the first user formatting turn"
+            );
+            assert_eq!(observed[0].tools, 0);
+            assert_eq!(observed[0].model, "selected-reasoning-model");
+            assert_eq!(observed[0].max_tokens, Some(32_768));
+            assert!(observed[0].reset);
+            assert_eq!(observed[0].messages.len(), 3);
+            assert!(
+                matches!(&observed[0].messages[1].content[0], ContentBlock::Text(text) if text == "completed answer")
+            );
+        }
+        runtime
+            .prepare_provider(
+                startup_provider("discarded-duplicate", "seal-a", true, &requests),
+                StreamOptions::default(),
+            )
+            .await
+            .unwrap();
+        let mut continuation = turn("first-typed-turn", "continue");
+        continuation.replacement_provider = Some(startup_provider(
+            "discarded-same-seal",
+            "seal-a",
+            true,
+            &requests,
+        ));
+        runtime
+            .enqueue(continuation)
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap();
+        {
+            let observed = requests.lock().unwrap();
+            assert_eq!(observed.len(), 2);
+            assert_eq!(observed[1].label, "prepared");
+            assert_eq!(
+                observed[1].previous_chain.as_deref(),
+                Some("prepared-chain")
+            );
+            assert_eq!(
+                observed[1].messages.len(),
+                3,
+                "local history contains only real conversation plus current input"
+            );
+        }
+        assert_eq!(
+            runtime
+                .prepare_provider(
+                    startup_provider("changed-lane", "seal-b", false, &requests),
+                    StreamOptions::default()
+                )
+                .await
+                .unwrap(),
+            ConsultationPreparation::ReplayOnly
+        );
+        let mut next = turn("second-typed-turn", "follow up");
+        next.replacement_provider = Some(startup_provider(
+            "discarded-new-seal",
+            "seal-b",
+            false,
+            &requests,
+        ));
+        runtime.enqueue(next).unwrap().await.unwrap().unwrap();
+        {
+            let observed = requests.lock().unwrap();
+            assert_eq!(observed.len(), 4);
+            assert_eq!(observed[2].label, "changed-lane");
+            assert_eq!(observed[2].tools, 0);
+            assert_eq!(observed[3].label, "changed-lane");
+            assert!(
+                observed[3].previous_chain.is_none(),
+                "store:false protocol remains replay-only"
+            );
+        }
+        runtime.close_if_idle().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_restores_exact_history_without_provider_work_and_guards_chat_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let gateway = ThreadDeliveryGateway::new_in(dir.path()).unwrap();
+        let retained = vec![
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text("existing instruction".into())],
+            ),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("completed answer".into())],
+            ),
+        ];
+        gateway
+            .deliver(ThreadDeliveryInput {
+                backend_id: "startup-max".into(),
+                messages: retained.iter().map(ThreadMessage::from).collect(),
+                provider: "observed".into(),
+                model: "test".into(),
+                source: ThreadDeliverySource::MaxConsultation,
+                mode: "max".into(),
+                tags: vec!["max-consultation".into()],
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (ui_tx, ui_rx) = mpsc::channel(2);
+        let session = AgentSession::new(
+            Box::new(ObservedProvider {
+                requests: Arc::clone(&requests),
+                entered: Arc::new(Semaphore::new(0)),
+                release: Arc::new(Semaphore::new(1)),
+                fail: false,
+            }),
+            Arc::new(ToolRegistry::new()),
+            ui_tx,
+        );
+        let runtime = ConsultationRuntime::start(
+            "startup-max".into(),
+            session,
+            ui_rx,
+            gateway.clone(),
+            Arc::new(|_, _, _| {}),
+            dir.path().join("agent-turn.lock"),
+        )
+        .unwrap();
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "startup cannot execute a historic turn"
+        );
+        assert!(
+            gateway.open_consultation("startup-max").is_err(),
+            "one owner holds the lease"
+        );
+        runtime
+            .enqueue(turn("accepted-chat-uuid", "continue"))
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap();
+        {
+            let observed = requests.lock().unwrap();
+            assert_eq!(observed.len(), 1);
+            for (restored, original) in observed[0][..2].iter().zip(&retained) {
+                assert_eq!(restored.role, original.role);
+                assert_eq!(restored.content, original.content);
+            }
+        }
+        assert!(
+            runtime
+                .enqueue(turn("accepted-chat-uuid", "continue"))
+                .is_err(),
+            "restarting a UI waiter cannot repeat completed effects"
+        );
+        runtime.close_if_idle().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_reports_unresolved_effects_without_calling_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let gateway = ThreadDeliveryGateway::new_in(dir.path()).unwrap();
+        let mut journal = gateway.open_consultation("interrupted-max").unwrap();
+        journal
+            .accept_input(QueuedInstruction {
+                turn_id: "potential-effect".into(),
+                input: Message::new(Role::User, vec![ContentBlock::Text("do something".into())]),
+                provider_name: "observed".into(),
+                options: serde_json::json!({}),
+                group: None,
+            })
+            .unwrap();
+        journal.begin("potential-effect").unwrap();
+        drop(journal);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (ui_tx, ui_rx) = mpsc::channel(2);
+        let session = AgentSession::new(
+            Box::new(ObservedProvider {
+                requests: Arc::clone(&requests),
+                entered: Arc::new(Semaphore::new(0)),
+                release: Arc::new(Semaphore::new(0)),
+                fail: false,
+            }),
+            Arc::new(ToolRegistry::new()),
+            ui_tx,
+        );
+        assert!(
+            ConsultationRuntime::start(
+                "interrupted-max".into(),
+                session,
+                ui_rx,
+                gateway.clone(),
+                Arc::new(|_, _, _| {}),
+                dir.path().join("agent-turn.lock"),
+            )
+            .is_err()
+        );
+        assert!(requests.lock().unwrap().is_empty());
+        assert_eq!(
+            gateway
+                .inspect_consultation("interrupted-max")
+                .unwrap()
+                .unwrap()
+                .pending_turn_id
+                .as_deref(),
+            Some("potential-effect")
+        );
     }
 
     #[tokio::test]
