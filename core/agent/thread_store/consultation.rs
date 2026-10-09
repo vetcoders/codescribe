@@ -58,6 +58,7 @@ pub(crate) struct ConsultationRecovery {
 /// Source user text of a dropped instruction, whitespace-normalized and
 /// clipped by `char` so a multi-byte boundary cannot panic. Control blocks and
 /// images contribute nothing, so a turn without text yields an empty preview.
+/// The clip is trimmed because the note quotes this preview verbatim.
 fn dropped_input(entry: &QueuedInstruction) -> DroppedInput {
     use crate::agent::{ContentBlock, Role};
     let mut text_preview = String::new();
@@ -72,13 +73,14 @@ fn dropped_input(entry: &QueuedInstruction) -> DroppedInput {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        text_preview = words
+        let clipped = words
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
             .chars()
             .take(DROPPED_PREVIEW_CHARS)
-            .collect();
+            .collect::<String>();
+        text_preview = clipped.trim_end().to_string();
     }
     DroppedInput {
         turn_id: entry.turn_id.clone(),
@@ -837,8 +839,10 @@ mod tests {
         assert!(recovery.abandoned_turn_id.is_none());
         assert_eq!(recovery.dropped_inputs.len(), 2);
         let wordy = &recovery.dropped_inputs[0].text_preview;
-        assert_eq!(wordy.chars().count(), DROPPED_PREVIEW_CHARS);
-        assert!(wordy.starts_with("słowo słowo"), "{wordy}");
+        // 20 whole words fit the clip; the 120th character is the separator
+        // after them, and a quoted preview must not end in whitespace.
+        assert_eq!(wordy.chars().count(), DROPPED_PREVIEW_CHARS - 1);
+        assert_eq!(*wordy, ["słowo"; 20].join(" "));
         assert_eq!(
             recovery.dropped_inputs[1].text_preview, "",
             "an image carries no explanation for the reader"
