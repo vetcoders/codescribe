@@ -181,29 +181,29 @@ impl ThreadDeliveryGateway {
         id: &str,
         history: &[Message],
     ) -> Result<Option<String>> {
-        let Some(input) = history
+        let Some(query) = history
             .iter()
             .rev()
-            .find(|message| message.role == Role::User)
+            .filter(|message| message.role == Role::User)
+            .find_map(|message| {
+                let query = message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text(text) => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .flat_map(str::split_whitespace)
+                    .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()))
+                    .filter(|word| word.chars().count() >= 5)
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (!query.is_empty()).then_some(query)
+            })
         else {
             return Ok(None);
         };
-        let query = input
-            .content
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Text(text) => Some(text.as_str()),
-                _ => None,
-            })
-            .flat_map(str::split_whitespace)
-            .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()))
-            .filter(|word| word.chars().count() >= 5)
-            .take(3)
-            .collect::<Vec<_>>()
-            .join(" ");
-        if query.is_empty() {
-            return Ok(None);
-        }
         let index = super::ThreadIndex::load_or_create(self.store.threads_dir())?;
         let matches = index
             .search(&query)
@@ -726,6 +726,41 @@ mod tests {
             .unwrap();
         let excerpts: Vec<serde_json::Value> = serde_json::from_str(&result)?;
         assert_eq!(excerpts.len(), 3);
+        let mut tool_history = history.clone();
+        tool_history.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: "completed-search".into(),
+                name: "search_threads".into(),
+                input: serde_json::json!({"query": "repair formatter startup"}),
+            }],
+        ));
+        tool_history.push(Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "completed-search".into(),
+                content: vec![ContentBlock::Text("already retrieved context".into())],
+                is_error: false,
+            }],
+        ));
+        tool_history.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::Text("completed answer".into())],
+        ));
+        assert_eq!(
+            gateway.consultation_recovery_context("selected", &tool_history)?,
+            Some(result.clone()),
+            "tool-result envelopes must not hide the last searchable instruction"
+        );
+        tool_history.push(Message::new(
+            Role::User,
+            vec![ContentBlock::Text("ok".into())],
+        ));
+        assert_eq!(
+            gateway.consultation_recovery_context("selected", &tool_history)?,
+            Some(result.clone()),
+            "a later unsearchable acknowledgement must not erase retrieval context"
+        );
         for excerpt in excerpts {
             assert!(
                 excerpt["thread_id"]

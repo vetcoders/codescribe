@@ -626,13 +626,21 @@ pub(crate) fn resolve_transcript_projection_availability(
     );
     let insert_route_is_legal = matches!(
         insert.route,
-        DeliveryRoute::ClipboardPaste | DeliveryRoute::DeferredInsert
+        DeliveryRoute::ClipboardPaste
+            | DeliveryRoute::ClipboardHold
+            | DeliveryRoute::DeferredInsert
     );
 
+    // A historical projection cannot observe today's caret. Keep the explicit
+    // action available so its executor can inspect the retained target; this
+    // flag never authorizes posting keyboard events.
     TranscriptProjectionAvailability {
         can_paste: !take_in_progress
             && has_latched_target
-            && matches!(insert.route, DeliveryRoute::ClipboardPaste),
+            && matches!(
+                insert.route,
+                DeliveryRoute::ClipboardPaste | DeliveryRoute::ClipboardHold
+            ),
         can_insert: !take_in_progress && insert_route_is_legal,
         can_copy: has_text,
         can_retranscribe: !take_in_progress && session_wav_exists,
@@ -891,10 +899,17 @@ mod tests {
         assert_eq!(live.route, DeliveryRoute::ArchiveOnly);
     }
 
-    /// The explicit Insert click is the user's confirmation: neither the paste
-    /// mode nor the executable guard applies to it.
+    /// Explicit Insert bypasses automatic mode Off, but still needs a writable
+    /// non-secret field and refuses executable text in a terminal.
     #[test]
-    fn explicit_insert_is_not_gated_by_paste_mode_or_guard() {
+    fn explicit_insert_bypasses_mode_off_but_keeps_input_and_terminal_guards() {
+        let confirmed_input = resolve_delivery_route(
+            DeliveryIntent::OverlayInsert,
+            facts(|f| f.paste_mode = PasteMode::Off),
+        );
+        assert_eq!(confirmed_input.route, DeliveryRoute::ClipboardPaste);
+        assert_eq!(confirmed_input.reason, "explicit_insert");
+
         let decision = resolve_delivery_route(
             DeliveryIntent::OverlayInsert,
             facts(|f| {
@@ -906,8 +921,19 @@ mod tests {
                 f.executable_payload = true;
             }),
         );
-        assert_eq!(decision.route, DeliveryRoute::ClipboardPaste);
-        assert_eq!(decision.reason, "explicit_insert");
+        assert_eq!(decision.route, DeliveryRoute::ClipboardHold);
+        assert_eq!(decision.reason, "hold_secure_field");
+
+        let executable = resolve_delivery_route(
+            DeliveryIntent::OverlayInsert,
+            facts(|f| {
+                f.paste_mode = PasteMode::Off;
+                f.paste_target.terminal = true;
+                f.executable_payload = true;
+            }),
+        );
+        assert_eq!(executable.route, DeliveryRoute::ClipboardHold);
+        assert_eq!(executable.reason, "hold_executable");
     }
 
     #[test]
@@ -1154,6 +1180,22 @@ mod tests {
         assert!(click.latched_target_is_self);
         let decision = resolve_delivery_route(DeliveryIntent::OverlayInsert, click);
         assert_eq!(decision.route, DeliveryRoute::DeferredInsert);
+    }
+
+    #[test]
+    fn projection_offers_explicit_target_check_without_authorizing_a_shortcut() {
+        let projection = resolve_transcript_projection_availability(true, false, true, true, false);
+        assert!(projection.can_insert);
+        assert!(projection.can_paste);
+        let unobserved = resolve_delivery_route(
+            DeliveryIntent::OverlayInsert,
+            overlay_insert_facts(true, false),
+        );
+        assert_eq!(unobserved.route, DeliveryRoute::ClipboardHold);
+        assert_eq!(unobserved.reason, "hold_field_unobserved");
+        let no_target = resolve_transcript_projection_availability(true, false, true, false, false);
+        assert!(no_target.can_insert);
+        assert!(!no_target.can_paste);
     }
 
     #[test]

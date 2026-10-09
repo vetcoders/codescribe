@@ -66,12 +66,41 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
         })
         .with_status(200)
         .with_header("content-type", "text/event-stream")
-        .with_body(response_body)
+        .with_body(response_body.clone())
         .expect(
             if lane == codescribe_core::config::RuntimeLlmLaneKind::Formatting {
                 2
             } else {
                 1
+            },
+        )
+        .create_async()
+        .await;
+    let startup_mock = server
+        .mock("POST", "/v1/responses")
+        .match_header("authorization", Matcher::Missing)
+        .match_request(|request| {
+            let body: serde_json::Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+            body["model"] == "fixture-model"
+                && body["instructions"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("Prepare this conversation context")
+                && body.get("tools").is_none()
+                && body.get("previous_response_id").is_none()
+        })
+        .with_status(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(
+            response_body
+                .replace("pong", "READY")
+                .replace("resp_fixture", "resp_startup"),
+        )
+        .expect(
+            if lane == codescribe_core::config::RuntimeLlmLaneKind::Formatting {
+                1
+            } else {
+                0
             },
         )
         .create_async()
@@ -280,7 +309,9 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
                         .starts_with("Classify whether")
                     && body.get("tools").is_none()
                     && body.get("previous_response_id").is_none()
-                    && body["max_output_tokens"] == 64
+                    // Preserve the provider/model output budget; a tiny cap can
+                    // be exhausted by reasoning before emitting COMPLETE.
+                    && body.get("max_output_tokens").is_none()
                     && body["input"].as_array().is_some_and(|messages| {
                         messages.len() == 1
                             && messages[0]["content"][0]["text"]
@@ -436,6 +467,7 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
     assert!(clean_done, "turn must end on a clean terminal");
     assert_eq!(text.trim(), "pong");
     mock.assert_async().await;
+    startup_mock.assert_async().await;
     eprintln!("agent replied: {text}");
 }
 

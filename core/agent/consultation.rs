@@ -733,7 +733,7 @@ async fn run_owner(owner: ConsultationOwner) {
     let mut preparation = None;
     while let Some(command) = rx.recv().await {
         let QueuedTurn {
-            turn,
+            mut turn,
             reply,
             pending,
             authorization,
@@ -795,7 +795,37 @@ async fn run_owner(owner: ConsultationOwner) {
             })));
             continue;
         }
-        // Refuse before any provider or tool work if installation already owns
+        // A first turn or settings change can race the host's asynchronous
+        // startup preparation. The FIFO owner establishes the admitted seal
+        // before beginning this instruction, without executing historical tools.
+        // Unsealed core sessions retain their caller-owned provider lifecycle.
+        if let Some(provider) = turn.replacement_provider.take() {
+            let prepared = prepare_owner_provider(
+                &mut session,
+                &journal,
+                &install_lease_path,
+                &mut provider_seal,
+                &mut preparation,
+                provider,
+                turn.options.clone(),
+            )
+            .await;
+            if let Err(error) = prepared {
+                let discarded = journal
+                    .lock()
+                    .map_err(|_| anyhow!("consultation journal lock poisoned"))
+                    .and_then(|mut journal| journal.discard_unstarted(&turn.id));
+                if let Err(ref failure) = discarded
+                    && let Ok(mut journal) = journal.lock()
+                {
+                    journal.require_recovery(format!("{failure:#}"));
+                }
+                drop(pending);
+                let _ = reply.send(Err(discarded.err().unwrap_or(error)));
+                continue;
+            }
+        }
+        // Refuse before instruction execution if installation already owns
         // the file. Hold through history/journal settlement and the final reply.
         let _install_lease = match crate::config::acquire_agent_turn_lease_at(&install_lease_path) {
             Ok(lease) => lease,
@@ -827,28 +857,15 @@ async fn run_owner(owner: ConsultationOwner) {
             continue;
         }
         let turn_id = turn.id.clone();
-        if let Some(provider) = turn.replacement_provider.as_ref()
-            && provider_seal.as_ref() != Some(&provider.seal)
-        {
-            preparation = None;
-        }
-        let result = run_turn(
-            &id,
-            &mut session,
-            &mut provider_seal,
-            &mut ui_rx,
-            &gateway,
-            &events,
-            turn,
-        )
-        .await
-        .and_then(|answer| {
-            journal
-                .lock()
-                .map_err(|_| anyhow!("consultation journal lock poisoned"))?
-                .complete(&turn_id)?;
-            Ok(answer)
-        });
+        let result = run_turn(&id, &mut session, &mut ui_rx, &gateway, &events, turn)
+            .await
+            .and_then(|answer| {
+                journal
+                    .lock()
+                    .map_err(|_| anyhow!("consultation journal lock poisoned"))?
+                    .complete(&turn_id)?;
+                Ok(answer)
+            });
         if let Err(error) = &result {
             // Do not roll back successful tool effects or automatically retry a
             // partially executed instruction. The host must resolve this state.
@@ -919,18 +936,11 @@ async fn prepare_owner_provider(
 async fn run_turn(
     id: &str,
     session: &mut AgentSession,
-    provider_seal: &mut Option<String>,
     ui_rx: &mut mpsc::Receiver<AgentUiEvent>,
     gateway: &ThreadDeliveryGateway,
     events: &ConsultationEvents,
     turn: ConsultationTurn,
 ) -> Result<ConsultationAnswer> {
-    if let Some(admitted) = turn.replacement_provider
-        && provider_seal.as_ref() != Some(&admitted.seal)
-    {
-        session.replace_provider(admitted.provider).await;
-        *provider_seal = Some(admitted.seal);
-    }
     let history_start = session.messages().len();
     {
         let send = session.send(turn.text, turn.attachments, &turn.options);
@@ -1832,6 +1842,117 @@ mod tests {
                 store_chain,
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn failed_bootstrap_discards_unstarted_turn_and_allows_explicit_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let gateway = ThreadDeliveryGateway::new_in(dir.path()).unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let startup_requests = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = mpsc::channel(4);
+        let initial = startup_provider("unused-initial", "initial", true, &startup_requests);
+        let session = AgentSession::new(initial.provider, Arc::new(ToolRegistry::new()), tx);
+        let runtime = ConsultationRuntime::start(
+            "failed-bootstrap".into(),
+            session,
+            rx,
+            gateway.clone(),
+            Arc::new(|_, _, _| {}),
+            dir.path().join("agent-turn.lock"),
+        )
+        .unwrap();
+        let mut input = turn("unstarted-instruction", "continue");
+        input.replacement_provider = Some(AdmittedConsultationProvider {
+            seal: "failing-lane".into(),
+            provider: Box::new(ObservedProvider {
+                requests: Arc::clone(&requests),
+                entered: Arc::new(Semaphore::new(0)),
+                release: Arc::new(Semaphore::new(1)),
+                fail: true,
+            }),
+        });
+        assert!(runtime.enqueue(input).unwrap().await.unwrap().is_err());
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        assert!(
+            gateway
+                .inspect_consultation("failed-bootstrap")
+                .unwrap()
+                .unwrap()
+                .pending_turn_id
+                .is_none()
+        );
+        let mut retry = turn("unstarted-instruction", "continue");
+        retry.replacement_provider = Some(startup_provider(
+            "working-lane",
+            "new-seal",
+            true,
+            &startup_requests,
+        ));
+        runtime.enqueue(retry).unwrap().await.unwrap().unwrap();
+        assert_eq!(startup_requests.lock().unwrap().len(), 2);
+        assert_eq!(
+            gateway
+                .restore_consultation("failed-bootstrap", true)
+                .unwrap()
+                .len(),
+            2
+        );
+        runtime.close_if_idle().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn admitted_turn_cannot_outrun_startup_or_changed_settings_preparation() {
+        let dir = tempfile::tempdir().unwrap();
+        let gateway = ThreadDeliveryGateway::new_in(dir.path()).unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = mpsc::channel(4);
+        let initial = startup_provider("unused-initial", "initial", true, &requests);
+        let session = AgentSession::new(initial.provider, Arc::new(ToolRegistry::new()), tx);
+        let runtime = ConsultationRuntime::start(
+            "startup-race".into(),
+            session,
+            rx,
+            gateway.clone(),
+            Arc::new(|_, _, _| {}),
+            dir.path().join("agent-turn.lock"),
+        )
+        .unwrap();
+        for (id, label, seal) in [
+            ("first-immediate-turn", "first-lane", "seal-a"),
+            ("changed-settings-turn", "changed-lane", "seal-b"),
+        ] {
+            let mut input = turn(id, "continue");
+            input.replacement_provider = Some(startup_provider(label, seal, true, &requests));
+            runtime.enqueue(input).unwrap().await.unwrap().unwrap();
+        }
+        {
+            let observed = requests.lock().unwrap();
+            assert_eq!(observed.len(), 4);
+            for (probe, execution) in [(0, 1), (2, 3)] {
+                assert!(observed[probe].reset);
+                assert_eq!(observed[probe].tools, 0);
+                assert!(!observed[execution].reset);
+                assert_eq!(observed[probe].label, observed[execution].label);
+                assert!(observed[execution].previous_chain.is_some());
+            }
+        }
+        runtime
+            .prepare_provider(
+                startup_provider("late-startup-task", "seal-b", true, &requests),
+                StreamOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 4);
+        assert_eq!(
+            gateway
+                .restore_consultation("startup-race", true)
+                .unwrap()
+                .len(),
+            4
+        );
+        runtime.close_if_idle().await.unwrap();
     }
 
     #[tokio::test]
