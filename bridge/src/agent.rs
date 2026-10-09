@@ -634,9 +634,9 @@ impl CodescribeAgent {
         }
 
         // Honor the same assistive system prompt + token cap the in-app
-        // controller path uses (build_agent_stream_options), so a Swift chat send
-        // is not stripped of the WORKSPACE-augmented assistive prompt and the
-        // configured `ai_assistive_max_tokens`.
+        // controller path uses (the canonical `agent_stream_options` owner), so
+        // a Swift chat send is not stripped of the WORKSPACE-augmented
+        // assistive prompt and the configured `ai_assistive_max_tokens`.
         let options = if let Some(system_prompt) = system_prompt {
             StreamOptions {
                 model: model.clone(),
@@ -648,9 +648,10 @@ impl CodescribeAgent {
                 reset_chain: false,
             }
         } else {
-            build_bridge_stream_options(
-                settings.values().ai_assistive_max_tokens,
+            codescribe::agent::agent_stream_options(
                 settings.as_ref(),
+                settings.values().ai_assistive_max_tokens,
+                true,
             )
         };
 
@@ -896,46 +897,6 @@ impl Drop for TurnGuard {
         self.abort.abort();
         self.registry.deregister(&self.thread_id, self.token);
     }
-}
-
-/// Build the assistive stream options for a bridge chat send, honoring the same
-/// assistive system prompt and token cap the in-app controller path uses
-/// (`app/controller/helpers.rs::build_agent_stream_options`).
-fn build_bridge_stream_options(
-    ai_assistive_max_tokens: i32,
-    runtime_settings: &RuntimeSettingsSnapshot,
-) -> StreamOptions {
-    let max_tokens = u32::try_from(ai_assistive_max_tokens)
-        .ok()
-        .filter(|tokens| *tokens > 0);
-    StreamOptions {
-        model: runtime_settings.llm_lanes().assistive().model().to_string(),
-        system_prompt: Some(compose_agent_system_prompt(
-            runtime_settings
-                .ai_execution()
-                .formatter()
-                .assistive_prompt()
-                .composed_content(),
-        )),
-        max_tokens,
-        temperature: None,
-        reset_chain: false,
-    }
-}
-
-/// Compose the agent system prompt exactly like the controller path
-/// (`app/controller/helpers.rs::compose_agent_system_prompt`): the base assistive
-/// prompt, the WORKSPACE section (6238ca1) that pins project roots and tells the
-/// model to resolve names via `list_projects` instead of guessing paths, the
-/// review-tool + connector doctrine for long-running MCP review calls and
-/// GitHub-connector fallback, and the measured Responses/streaming API ground
-/// truth with the answer-first rule (operator incident 2026-08-14: a spoken
-/// engine question got a clarification questionnaire instead of an answer).
-fn compose_agent_system_prompt(assistive_prompt: &str) -> String {
-    let workspace = codescribe::agent::tools::workspace::workspace_prompt_section();
-    let doctrine = codescribe::agent::tools::doctrine::review_doctrine_prompt_section();
-    let api_truth = codescribe::agent::tools::api_truth::responses_api_prompt_section();
-    format!("{assistive_prompt}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
 }
 
 /// Vision gate for an explicit scoped-session provider: the declared wire

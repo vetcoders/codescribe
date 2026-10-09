@@ -2,8 +2,9 @@
 //! existing Agent tool registry. This owns settings selection, not a second
 //! conversation history or model/tool loop.
 //!
-//! Max is the Agent: provider, endpoint, model, account and token cap all come
-//! from the sealed Agent (assistive) lane. The formatting lane and Apple serve
+//! Max is the Agent: provider, endpoint, model, account, system prompt and token
+//! cap all come from the sealed Agent (assistive) lane and the canonical Agent
+//! options owner. The formatting lane and Apple serve
 //! Smart/Corrections only, and their settings never reach this module.
 
 use anyhow::{Context, Result, ensure};
@@ -239,9 +240,10 @@ impl MaxConsultation {
 
 /// The provider seal covers only what Max actually executes on: the Agent
 /// lane's provider, wire, endpoint, model, credential account and account
-/// mode, the Max prompt, the Agent token cap and request timing. A formatter
-/// edit leaves it unchanged, so the prepared provider and its chain survive;
-/// an Agent edit changes it and the FIFO owner re-prepares before the next turn.
+/// mode, the composed Agent prompt, the Agent token cap and request timing. A
+/// formatter edit leaves it unchanged, so the prepared provider and its chain
+/// survive; an Agent prompt or config edit changes it and the FIFO owner
+/// re-prepares before the next turn.
 fn admitted_provider(settings: &RuntimeSettingsSnapshot) -> Result<AdmittedConsultationProvider> {
     use std::hash::{Hash, Hasher};
     let lane = settings.llm_lanes().assistive();
@@ -361,22 +363,14 @@ fn stream_options(settings: &RuntimeSettingsSnapshot) -> Result<StreamOptions> {
     if let Some(reason) = super::max_unavailable_reason(settings) {
         anyhow::bail!("{reason}");
     }
-    let lane = settings.llm_lanes().assistive();
-    let prompt = settings
-        .ai_execution()
-        .formatter()
-        .formatting_prompt()
-        .context("Max consultation prompt unavailable")?;
-    Ok(StreamOptions {
-        model: lane.model().to_string(),
-        system_prompt: Some(prompt.composed_content().to_string()),
-        // The Agent's own token cap; non-positive means the provider default.
-        max_tokens: u32::try_from(settings.values().ai_assistive_max_tokens)
-            .ok()
-            .filter(|tokens| *tokens > 0),
-        temperature: None,
-        reset_chain: false,
-    })
+    // Max IS the Agent: the canonical Agent options owner supplies the model,
+    // the composed Agent prompt (Agent persona plus workspace, doctrine and API
+    // truth) and the Agent token cap. No formatter prompt selects a persona.
+    Ok(super::agent_stream_options(
+        settings,
+        settings.values().ai_assistive_max_tokens,
+        true,
+    ))
 }
 
 /// Require the provider's clean terminal and channel closure. Partial tokens,
