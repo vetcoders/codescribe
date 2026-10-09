@@ -5,11 +5,20 @@ struct OverlayTranscriptHistory: View {
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.locale) private var locale
   @State private var model = OverlayTranscriptHistoryModel()
+  @State private var openTask: Task<Void, Never>?
   /// Why the canvas cannot take an archive right now (live take, unsaved
   /// edit, revision in flight). Nil when opening is allowed.
   var openRefusal: String?
-  /// Hands the archive to the overlay canvas; false when the canvas refused.
-  var onOpen: (OverlayArchivedTranscript) -> Bool = { _ in false }
+  /// Issues the canvas admission ticket for one open request. The canvas
+  /// owns the counter, so a ticket from a dismissed list stays stale even
+  /// when a new list instance is showing.
+  var admitOpen: () -> UInt64 = { 0 }
+  /// Hands the archive to the overlay canvas under its ticket.
+  var onOpen: (OverlayArchivedTranscript, UInt64) -> OverlayArchiveOpenOutcome = { _, _ in
+    .superseded
+  }
+  /// The list went away: no request it started may land afterwards.
+  var onDismiss: () -> Void = {}
   /// Dismisses the history popover after a successful open.
   var onOpened: () -> Void = {}
 
@@ -41,20 +50,29 @@ struct OverlayTranscriptHistory: View {
     }
     .frame(width: 260)
     .task { await model.load() }
+    .onDisappear {
+      openTask?.cancel()
+      openTask = nil
+      model.cancelOpen()
+      onDismiss()
+    }
     .accessibilityIdentifier("overlay-transcription-history")
   }
 
   private func open(_ entry: CsHistoryEntry) {
-    Task {
-      guard let archived = await model.open(entry) else { return }
-      if onOpen(archived) {
+    openTask?.cancel()
+    let admission = admitOpen()
+    openTask = Task {
+      guard let archived = await model.open(entry), !Task.isCancelled else { return }
+      switch onOpen(archived, admission) {
+      case .opened:
         onOpened()
-      } else {
-        model.refuseOpen(
-          openRefusal
-            ?? String(
-              localized: "The overlay is busy. Try again when the current take is done.",
-              comment: "History entry could not be placed on the overlay canvas"))
+      case .refused(let reason):
+        model.refuseOpen(reason)
+      case .superseded:
+        // A newer request, a new take or a dismissal took over. Nothing here
+        // may repaint the canvas or reopen the list.
+        break
       }
     }
   }

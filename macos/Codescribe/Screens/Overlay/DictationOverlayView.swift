@@ -328,7 +328,9 @@ struct DictationOverlayView: View {
           cloudRetranscribeConfigured: state.cloudRetranscribeConfigured,
           retranscribeUnavailableReason: state.retranscribeUnavailableReason,
           historyOpenRefusal: state.archiveOpenRefusal,
-          onOpenArchive: { state.openArchivedTranscript($0) },
+          admitHistoryOpen: { state.admitHistoryOpen() },
+          onOpenArchive: { state.openArchivedTranscript($0, admission: $1) },
+          onHistoryDismiss: { state.invalidateHistoryOpens() },
           onIntent: state.relayIntent,
           onRetranscribe: { state.retranscribe(pass: $0) },
           onFormatOnce: { state.formatTranscript(at: $0) },
@@ -1085,7 +1087,9 @@ struct DictationOverlayView: View {
         livePaint != nil
           ? Text("Live preview. Uncommitted words may change.")
           : state.archivedTranscript != nil
-            ? Text("Saved transcript from history. Click to edit; the saved file stays unchanged.")
+            ? Text(
+              "Saved transcript from history. Click to edit; changes are saved as new versions and the original is kept."
+            )
           : state.isTranscriptEditable
             ? Text("Click to edit. Edits stay local until committed to the transcript ledger.")
             : Text(verbatim: "")
