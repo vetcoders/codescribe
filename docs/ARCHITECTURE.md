@@ -384,6 +384,19 @@ Guards:
 - Stop cannot abort an admitted Max instruction: the owner never replays or
   rolls back tool effects. The window settles its bubble; the answer still
   lands in history and appears on the next refresh.
+- A turn interrupted by a crash or a failure is **abandoned**, not retained for
+  recovery. The journal (`core/agent/thread_store/consultation.rs`) retires
+  that identity into `abandoned` on the next `ConsultationJournal::open` — or
+  immediately, when this owner observes the failure — drops the instructions
+  still waiting behind it, and the conversation continues. An abandoned
+  identity is refused for life exactly like a completed one, so nothing is
+  replayed and no tool effect is rolled back or retried. The gap is explained
+  in history as a thread note
+  (`ThreadDeliveryGateway::record_consultation_recovery`); a consultation with
+  no thread file yet is only logged. "New consultation" is never required to
+  get a consultation working again. The one state that still blocks execution
+  is a journal that cannot be written, because then the owner cannot prove
+  what it retired.
 
 ### Restored tool inspector metadata
 
