@@ -909,7 +909,7 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertEqual(routedIntents, [.finish])
     XCTAssertTrue(previewCollapsed)
     XCTAssertEqual(expanded.previewAccessibilityLabel, "Collapse widget")
-    XCTAssertEqual(expanded.previewSymbol, "arrow.left")
+    XCTAssertEqual(expanded.previewSymbol, "arrow.up.right")
 
     let collapsed = OverlayRecordingControls(
       canFinish: true,
@@ -921,7 +921,7 @@ final class OverlayIntentRailTests: XCTestCase {
     )
     XCTAssertTrue(collapsed.showsStop)
     XCTAssertEqual(collapsed.previewAccessibilityLabel, "Expand to compact widget")
-    XCTAssertEqual(collapsed.previewSymbol, "arrow.right", "click opens MIDI")
+    XCTAssertEqual(collapsed.previewSymbol, "chevron.left", "click opens MIDI")
 
     let unavailable = OverlayRecordingControls(
       canFinish: false,
