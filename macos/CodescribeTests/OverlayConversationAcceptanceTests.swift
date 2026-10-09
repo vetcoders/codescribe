@@ -8,6 +8,47 @@ import XCTest
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
   @MainActor
+  func testConversationNamePillExposesChannelAtNormalAndLargeTextSizes() throws {
+    func elements(_ object: Any) -> [any NSAccessibilityProtocol] {
+      guard let element = object as? any NSAccessibilityProtocol else { return [] }
+      let native = (object as? NSView)?.subviews ?? []
+      return [element] + ((element.accessibilityChildren() ?? []) + native).flatMap(elements)
+    }
+    for channel in ["0", "2", "7"] {
+      let conversationOwner = OverlayConversationOwner(row: owner(leaseA, channel: channel))
+      let conversation = OverlayConversation(
+        id: "pill-\(channel)", channel: channel, name: "Lena",
+        owner: channel == "0" ? nil : conversationOwner, messages: [])
+      let expected = channel == "0" ? String(localized: "0 · All") : "\(channel) · Lena"
+      for scale in [CGFloat(1), CGFloat(1.6)] {
+        let view = OverlayConversationView(
+          conversation: conversation, palette: .dark, topInset: 50, bottomInset: 20,
+          pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+          draft: .constant(""), sending: false, sendError: nil, onSend: {})
+        let host = NSHostingView(rootView: view.environment(\.csTextScale, scale))
+        host.sizingOptions = []
+        host.frame = NSRect(x: 0, y: 0, width: 360, height: 400)
+        let window = NSWindow(
+          contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        window.orderFrontRegardless()
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        host.layoutSubtreeIfNeeded()
+        let pill = try XCTUnwrap(
+          elements(host).first { $0.accessibilityIdentifier() == "overlay-conversation-name" })
+        let text = [pill.accessibilityLabel(), pill.accessibilityValue() as? String]
+          .compactMap { $0 }.joined(separator: " ")
+        XCTAssertTrue(text.contains(expected), "channel=\(channel) scale=\(scale): \(text)")
+        XCTAssertGreaterThan(pill.accessibilityFrame().width, 0)
+        XCTAssertLessThanOrEqual(pill.accessibilityFrame().width, host.bounds.width)
+      }
+    }
+  }
+
+  @MainActor
   func testBusMarkdownUsesChatCodeWellAndKeepsResizeMarginAcrossZoom() throws {
     let raw = """
       ## Wynik pracy

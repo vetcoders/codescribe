@@ -159,11 +159,14 @@ struct OverlayConversationView: View {
       if conversation.channel == "0" {
         Text("0 · All")
       } else {
-        Text(verbatim: conversation.name)
-          .help(
-            Text(
-              verbatim: conversation.owner.map { "\($0.provider) · \($0.providerSessionID)" }
-                ?? ""))
+        Text(
+          verbatim: conversation.channel.isEmpty
+            ? conversation.name : "\(conversation.channel) · \(conversation.name)"
+        )
+        .help(
+          Text(
+            verbatim: conversation.owner.map { "\($0.provider) · \($0.providerSessionID)" }
+              ?? ""))
         if let descriptor = agentDescriptor ?? conversation.owner?.provider, !descriptor.isEmpty {
           Text(verbatim: descriptor)
             .font(.system(size: 11 * textScale, weight: .regular))
