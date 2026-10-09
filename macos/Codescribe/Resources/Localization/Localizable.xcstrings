@@ -1721,6 +1721,16 @@
         }
       }
     },
+    "A server with this name already exists. Choose another name." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Serwer o tej nazwie już istnieje. Wybierz inną nazwę."
+          }
+        }
+      }
+    },
     "A transcript revision cannot be empty" : {
       "localizations" : {
         "pl" : {
@@ -2920,6 +2930,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pytaj"
+          }
+        }
+      }
+    },
+    "Asks for confirmation before removing the server from mcp.json." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przed usunięciem serwera z pliku mcp.json prosi o potwierdzenie."
           }
         }
       }
@@ -6437,6 +6457,16 @@
         }
       }
     },
+    "Enter a server name without spaces at the start or end." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wpisz nazwę serwera bez spacji na początku i na końcu."
+          }
+        }
+      }
+    },
     "Enter an HTTP or HTTPS URL with a host, such as https://api.example.com." : {
       "localizations" : {
         "pl" : {
@@ -6453,6 +6483,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wprowadź klucz licencyjny"
+          }
+        }
+      }
+    },
+    "Enter the command that starts the server." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wpisz polecenie, które uruchamia serwer."
           }
         }
       }
@@ -7904,6 +7944,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pozostaw puste, aby zachować zapisany klucz"
+          }
+        }
+      }
+    },
+    "Leave the username and password out of the server URL. Put the token in the access token field; it goes to the Keychain." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie wpisuj nazwy użytkownika ani hasła w adresie serwera. Token wpisz w polu tokena dostępu; trafi do pęku kluczy."
           }
         }
       }
@@ -11623,6 +11673,16 @@
         }
       }
     },
+    "Remove %@ from MCP servers?" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usunąć %@ z serwerów MCP?"
+          }
+        }
+      }
+    },
     "Remove %@?" : {
       "localizations" : {
         "pl" : {
@@ -11709,6 +11769,16 @@
         }
       }
     },
+    "Remove server" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usuń serwer"
+          }
+        }
+      }
+    },
     "Remove the stored %@ account tokens" : {
       "localizations" : {
         "pl" : {
@@ -11729,12 +11799,12 @@
         }
       }
     },
-    "Remove this server from mcp.json" : {
+    "Remove this server from mcp.json…" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Usuń ten serwer z mcp.json"
+            "value" : "Usuń ten serwer z pliku mcp.json…"
           }
         }
       }
@@ -11746,6 +11816,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Usunięto"
+          }
+        }
+      }
+    },
+    "Removes %@ from mcp.json and deletes its Keychain token. The Agent loses this server's tools until you add it again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usuwa %@ z pliku mcp.json i kasuje jego token z pęku kluczy. Agent traci narzędzia tego serwera, dopóki nie dodasz go ponownie."
           }
         }
       }
@@ -15039,6 +15119,16 @@
         }
       }
     },
+    "The server URL is invalid. Enter a full HTTP or HTTPS URL with a hostname." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Adres serwera jest nieprawidłowy. Wpisz pełny adres HTTP lub HTTPS z nazwą hosta."
+          }
+        }
+      }
+    },
     "The shared recorder is preparing this take." : {
       "localizations" : {
         "pl" : {
@@ -16036,6 +16126,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Użyj wyniku procesu pomocnicznego jako poprawki"
+          }
+        }
+      }
+    },
+    "Use only letters, digits, '_' or '-' in the server name." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "W nazwie serwera użyj tylko liter, cyfr, „_” lub „-”."
           }
         }
       }

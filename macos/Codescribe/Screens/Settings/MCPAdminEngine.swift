@@ -60,6 +60,93 @@ extension MCPAdminEngine {
   }
 }
 
+// MARK: - Rejected add, translated for the form
+
+/// What the form shows when the store refuses an add: one sentence the user can
+/// act on, the field it belongs under, and the store's own words kept as the
+/// technical detail. The store speaks in typed messages (`core/mcp/config_store.rs`
+/// `validate_*`); this is the one place that turns them into interface copy, so
+/// `Config(msg: …)` never reaches the screen.
+struct MCPAddFailure: Equatable {
+  enum Field: Equatable { case name, command, endpoint }
+
+  let message: String
+  let field: Field?
+  /// The store's message verbatim. Equal to `message` when no translation
+  /// applied, so the form can decide whether a detail is worth showing.
+  let detail: String
+
+  init(message: String, field: Field?, detail: String) {
+    self.message = message
+    self.field = field
+    self.detail = detail
+  }
+
+  /// The bridge flattens every store error into `CsError.Config(msg:)`; mocks
+  /// throw plain errors. Either way the message is what the store said.
+  init(_ error: Error) {
+    if case CsError.Config(let msg) = error {
+      self.init(storeMessage: msg)
+    } else {
+      self.init(storeMessage: String(describing: error))
+    }
+  }
+
+  init(storeMessage detail: String) {
+    self.detail = detail
+    if detail.hasPrefix("Invalid remote MCP endpoint")
+      || detail.hasPrefix("Remote MCP endpoint must use http or https")
+    {
+      message = String(
+        localized: "The server URL is invalid. Enter a full HTTP or HTTPS URL with a hostname.")
+      field = .endpoint
+    } else if detail.hasPrefix("Remote MCP credentials must be stored in Keychain") {
+      message = String(
+        localized:
+          "Leave the username and password out of the server URL. Put the token in the access token field; it goes to the Keychain."
+      )
+      field = .endpoint
+    } else if detail.hasPrefix("MCP server command is empty") {
+      message = String(localized: "Enter the command that starts the server.")
+      field = .command
+    } else if detail.hasPrefix("MCP server name is empty")
+      || detail.hasPrefix("MCP server name must not have surrounding whitespace")
+    {
+      message = String(localized: "Enter a server name without spaces at the start or end.")
+      field = .name
+    } else if detail.contains("contains unsupported characters") {
+      message = String(
+        localized: "Use only letters, digits, '_' or '-' in the server name.")
+      field = .name
+    } else if detail.contains("already exists") {
+      message = String(localized: "A server with this name already exists. Choose another name.")
+      field = .name
+    } else {
+      message = detail
+      field = nil
+    }
+  }
+
+  /// The bridge represents an empty remote endpoint as a missing endpoint,
+  /// so the store's command refusal needs the form's selected transport.
+  func forTransport(remote: Bool, endpoint: String) -> MCPAddFailure {
+    guard remote, field == .command,
+      endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { return self }
+    return MCPAddFailure(
+      message: String(
+        localized: "The server URL is invalid. Enter a full HTTP or HTTPS URL with a hostname."),
+      field: .endpoint, detail: detail)
+  }
+
+  /// After a transport switch, an error for a hidden field belongs under the
+  /// form rather than disappearing or focusing an absent control.
+  func visibleField(remote: Bool) -> Field? {
+    if (remote && field == .command) || (!remote && field == .endpoint) { return nil }
+    return field
+  }
+}
+
 // MARK: - Real engine (UniFFI bridge adapter)
 
 final class RealMCPAdminEngine: MCPAdminEngine {
