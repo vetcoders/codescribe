@@ -18,8 +18,9 @@
 //!
 //! Both read one evidence owner, [`McpEvidence`]: the last runtime discovery
 //! (what the agent registered) and the last Settings connection test per
-//! server (what answered when the operator pressed Test). The two never merge,
-//! and each is pinned to the exact `mcp.json` entry it was gathered against.
+//! server (what answered when the user pressed Test). The two never merge,
+//! each is pinned to the exact `mcp.json` entry it was gathered against, and
+//! each carries the evidence sequence number that orders them.
 //! Contract: `docs/MCP_DIAGNOSTICS.md`.
 
 use std::collections::BTreeMap;
@@ -67,6 +68,8 @@ struct RuntimeEvidence {
     outcome: ServerRuntime,
     /// `serverInfo.name` from the handshake, when the server sent one.
     advertised: Option<String>,
+    /// [`McpEvidence::events`] value when this pass was recorded.
+    seq: u64,
 }
 
 /// The last Settings connection test of one server, pinned to the config
@@ -76,6 +79,8 @@ struct RuntimeEvidence {
 struct TestEvidence {
     config: McpServerConfig,
     outcome: std::result::Result<McpProbeSummary, String>,
+    /// [`McpEvidence::events`] value when this test was recorded.
+    seq: u64,
 }
 
 /// The one owner of MCP connection evidence, keyed by server name. Runtime
@@ -86,6 +91,10 @@ struct TestEvidence {
 struct McpEvidence {
     runtime: BTreeMap<String, RuntimeEvidence>,
     tests: BTreeMap<String, TestEvidence>,
+    /// Count of recorded discovery passes and tests. Each record takes the
+    /// next value under the store lock, so `seq` orders evidence by when it
+    /// was recorded — no clock involved.
+    events: u64,
 }
 
 impl McpEvidence {
@@ -116,27 +125,48 @@ impl McpEvidence {
             .filter(|identity| !identity.trim().is_empty())
     }
 
+    /// Next evidence sequence number.
+    fn next_seq(&mut self) -> u64 {
+        self.events += 1;
+        self.events
+    }
+
     /// One server's state from the evidence that still holds for its entry.
-    /// Precedence: config `enabled: false`, then runtime registration (what the
-    /// agent actually has), then the last connection test, else configured.
+    ///
+    /// `enabled: false` wins. Registration (what the agent holds) is always
+    /// reported when it exists; a connection test recorded after it is
+    /// reported alongside when the two disagree — a later failed test never
+    /// hides registered tools, and a later passing test never claims a
+    /// registration that failed. A test older than the registration is
+    /// superseded by it. Without registration the last test decides.
     fn server_state(&self, name: &str, config: &McpServerConfig) -> ServerState {
         if !config.enabled.unwrap_or(true) {
             return ServerState::Disabled;
         }
-        if let Some(evidence) = self.runtime_for(name, config) {
-            return match &evidence.outcome {
-                ServerRuntime::Tools(count) => ServerState::Live(*count),
-                ServerRuntime::Failed(reason) => ServerState::Failed(reason.clone()),
-                ServerRuntime::Disabled => ServerState::Disabled,
-            };
-        }
-        match self
+        let runtime = self.runtime_for(name, config);
+        let test = self
             .test_for(name, config)
-            .map(|evidence| &evidence.outcome)
-        {
-            Some(Ok(summary)) => ServerState::Reachable(summary.tool_count),
-            Some(Err(reason)) => ServerState::Unreachable(reason.clone()),
-            None => ServerState::Configured,
+            .filter(|test| runtime.is_none_or(|runtime| test.seq > runtime.seq))
+            .map(|test| &test.outcome);
+        match (runtime.map(|runtime| &runtime.outcome), test) {
+            (Some(ServerRuntime::Disabled), _) => ServerState::Disabled,
+            (Some(ServerRuntime::Tools(tools)), Some(Err(reason))) => {
+                ServerState::LiveLastTestFailed {
+                    tools: *tools,
+                    reason: reason.clone(),
+                }
+            }
+            (Some(ServerRuntime::Tools(tools)), _) => ServerState::Live(*tools),
+            (Some(ServerRuntime::Failed(reason)), Some(Ok(summary))) => {
+                ServerState::FailedLastTestPassed {
+                    reason: reason.clone(),
+                    tools: summary.tool_count,
+                }
+            }
+            (Some(ServerRuntime::Failed(reason)), _) => ServerState::Failed(reason.clone()),
+            (None, Some(Ok(summary))) => ServerState::Reachable(summary.tool_count),
+            (None, Some(Err(reason))) => ServerState::Unreachable(reason.clone()),
+            (None, None) => ServerState::Configured,
         }
     }
 }
@@ -146,6 +176,17 @@ impl McpEvidence {
 enum ServerState {
     /// Registered by the agent with this many tools.
     Live(usize),
+    /// Registered `tools`, but a later connection test failed (`reason`).
+    LiveLastTestFailed {
+        tools: usize,
+        reason: String,
+    },
+    /// Registration failed (`reason`), but a later connection test answered
+    /// with `tools`; the agent still holds none of them.
+    FailedLastTestPassed {
+        reason: String,
+        tools: usize,
+    },
     /// Connection test answered with this many tools; not registered yet.
     Reachable(usize),
     /// No evidence for the current entry yet.
@@ -163,11 +204,12 @@ impl ServerState {
     fn rank(&self) -> u8 {
         match self {
             Self::Live(_) => 0,
-            Self::Reachable(_) => 1,
-            Self::Configured => 2,
-            Self::Failed(_) => 3,
-            Self::Unreachable(_) => 4,
-            Self::Disabled => 5,
+            Self::LiveLastTestFailed { .. } => 1,
+            Self::Reachable(_) | Self::FailedLastTestPassed { .. } => 2,
+            Self::Configured => 3,
+            Self::Failed(_) => 4,
+            Self::Unreachable(_) => 5,
+            Self::Disabled => 6,
         }
     }
 
@@ -175,6 +217,8 @@ impl ServerState {
     fn describe(&self) -> &'static str {
         match self {
             Self::Live(_) => "live",
+            Self::LiveLastTestFailed { .. } => "live, last connection test failed",
+            Self::FailedLastTestPassed { .. } => "registration failed, last connection test passed",
             Self::Reachable(_) => "connection test passed",
             Self::Configured => "configured",
             Self::Failed(_) => "failed",
@@ -202,11 +246,13 @@ fn evidence_snapshot(store: &Mutex<McpEvidence>) -> McpEvidence {
 /// Replace the runtime ledger with the outcome of one discovery pass. A
 /// whole-map replacement, so servers dropped from the config do not linger as
 /// stale rows. Connection tests are untouched.
-fn record_runtime(store: &Mutex<McpEvidence>, snapshot: BTreeMap<String, RuntimeEvidence>) {
-    store
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .runtime = snapshot;
+fn record_runtime(store: &Mutex<McpEvidence>, mut snapshot: BTreeMap<String, RuntimeEvidence>) {
+    let mut evidence = store.lock().unwrap_or_else(|poison| poison.into_inner());
+    let seq = evidence.next_seq();
+    for entry in snapshot.values_mut() {
+        entry.seq = seq;
+    }
+    evidence.runtime = snapshot;
 }
 
 /// Test one configured server from the Settings Test action and record the
@@ -236,17 +282,17 @@ fn test_configured_server_at(
         Ok(summary) => Ok(summary.clone()),
         Err(error) => Err(anyhow_root_cause(error)),
     };
-    store
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .tests
-        .insert(
-            name.to_string(),
-            TestEvidence {
-                config: server,
-                outcome: recorded,
-            },
-        );
+    let mut evidence = store.lock().unwrap_or_else(|poison| poison.into_inner());
+    let seq = evidence.next_seq();
+    evidence.tests.insert(
+        name.to_string(),
+        TestEvidence {
+            config: server,
+            outcome: recorded,
+            seq,
+        },
+    );
+    drop(evidence);
     outcome
 }
 
@@ -325,6 +371,12 @@ pub enum McpStatusState {
     /// Last connection test failed (`detail` = root cause); the agent has not
     /// registered this server either.
     Unreachable,
+    /// The agent registered tools (`count`), and a connection test recorded
+    /// after that registration failed (`detail` = root cause).
+    LiveLastTestFailed,
+    /// Registration failed (`detail` = root cause), and a connection test
+    /// recorded after it answered (`count` = tools); nothing is registered.
+    FailedLastTestPassed,
     /// No server is identified as this operator tool, but configured servers
     /// without identity evidence could be it (`detail` = their names).
     Unverified,
@@ -515,6 +567,22 @@ fn probe_mcp_status_with(path: &Path, evidence: &McpEvidence) -> McpStatusReport
                 McpStatusState::Live,
                 Some(count as u32),
                 String::new(),
+            ),
+            ServerState::LiveLastTestFailed { tools, reason } => (
+                format!("{tools} tool(s); last connection test failed: {reason}"),
+                McpRowTone::Warn,
+                McpStatusState::LiveLastTestFailed,
+                Some(tools as u32),
+                reason,
+            ),
+            ServerState::FailedLastTestPassed { reason, tools } => (
+                format!(
+                    "registration failed: {reason}; last connection test passed — {tools} tool(s)"
+                ),
+                McpRowTone::Warn,
+                McpStatusState::FailedLastTestPassed,
+                Some(tools as u32),
+                reason,
             ),
             ServerState::Reachable(count) => (
                 format!(
@@ -920,6 +988,22 @@ fn classify_operator_tool(
             Some(*count as u32),
             String::new(),
         ),
+        ServerState::LiveLastTestFailed { tools, reason } => (
+            McpStatusState::LiveLastTestFailed,
+            format!("{tools} tool(s) live; last connection test failed: {reason} {why}"),
+            McpRowTone::Warn,
+            Some(*tools as u32),
+            reason.clone(),
+        ),
+        ServerState::FailedLastTestPassed { reason, tools } => (
+            McpStatusState::FailedLastTestPassed,
+            format!(
+                "registration failed: {reason}; last connection test passed — {tools} tool(s) {why}"
+            ),
+            McpRowTone::Warn,
+            Some(*tools as u32),
+            reason.clone(),
+        ),
         ServerState::Reachable(count) => (
             McpStatusState::Reachable,
             format!(
@@ -989,8 +1073,10 @@ fn classify_prview(config: &McpConfigFile, evidence: &McpEvidence) -> McpStatusR
     let facet = McpStatusFacet::PrviewIntegration;
     let label = "PRView integration:";
     let (value, tone, state, count, detail) = match detected {
+        // PRView keeps reporting registration alone; its last-test detail is
+        // out of scope for this row.
         Some((name, cfg)) => match evidence.server_state(name, cfg) {
-            ServerState::Live(count) => (
+            ServerState::Live(count) | ServerState::LiveLastTestFailed { tools: count, .. } => (
                 format!("ready — {count} tool(s) live (via \"{name}\")"),
                 McpRowTone::Good,
                 McpStatusState::Live,
@@ -1006,7 +1092,7 @@ fn classify_prview(config: &McpConfigFile, evidence: &McpEvidence) -> McpStatusR
                 Some(count as u32),
                 String::new(),
             ),
-            ServerState::Failed(reason) => (
+            ServerState::Failed(reason) | ServerState::FailedLastTestPassed { reason, .. } => (
                 format!("failed: {reason}"),
                 McpRowTone::Warn,
                 McpStatusState::Failed,
@@ -1858,6 +1944,8 @@ fn discover_mcp_tools_blocking(
                             config: server_config,
                             outcome,
                             advertised,
+                            // Stamped by `record_runtime` under the store lock.
+                            seq: 0,
                         },
                     );
                 }

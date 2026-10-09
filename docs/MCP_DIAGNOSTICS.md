@@ -25,13 +25,28 @@ Both evidence kinds are process-local, like the agent registry they describe.
 
 ## 2. Server state
 
-For one configured server, the first applicable rule wins:
+Every recorded discovery pass and connection test takes the next value of one
+evidence sequence, under the same lock that stores it. "Later" below means a
+higher sequence number: the order in which results were recorded, not a clock
+and not an assumption that discovery is newer.
+
+For one configured server:
 
 1. `enabled: false` → **Disabled**.
-2. Runtime discovery for this entry → **Live** (tool count) or **Failed** (reason).
-3. Connection test for this entry → **Reachable** (tool count, "not registered by
-   the agent yet") or **Unreachable** (reason).
+2. Runtime discovery for this entry exists → its outcome is always reported:
+   - **Live** (registered tool count). When a connection test recorded later
+     failed → **Live, last test failed** (registered tool count + test reason).
+     The registered tools are never hidden by a later failed test.
+   - **Failed** (reason). When a connection test recorded later passed →
+     **Registration failed, last test passed** (registration reason + tested
+     tool count). A passing test never turns into a registration.
+   - A test recorded before the discovery pass is superseded by it.
+3. No runtime discovery → the last connection test decides: **Reachable**
+   (tool count, "not registered by the agent yet") or **Unreachable** (reason).
 4. Otherwise → **Configured** ("agent not started yet").
+
+Both facts are painted in the row text of Agent › Diagnostics and in the status
+column of the MCP server list. PRView keeps reporting registration alone.
 
 ## 3. Operator-tool identity (Vibecrafted, AICX, Loctree)
 

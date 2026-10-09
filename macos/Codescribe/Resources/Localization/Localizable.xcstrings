@@ -8243,6 +8243,28 @@
         }
       }
     },
+    "Live — %@ registered; last connection test failed: %@" : {
+      "comment" : "First placeholder is a tool count phrase, second an error message",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Działa — %1$@ w agencie; ostatni test połączenia nieudany: %2$@"
+          }
+        }
+      }
+    },
+    "Live — %@ registered; last connection test failed: %@ (server %@)" : {
+      "comment" : "First placeholder is a tool count phrase, second an error message, third a server name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Działa — %1$@ w agencie; ostatni test połączenia nieudany: %2$@ (serwer %3$@)"
+          }
+        }
+      }
+    },
     "Load helper text into the correction editor without saving" : {
       "localizations" : {
         "pl" : {
@@ -11714,6 +11736,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odrzucony"
+          }
+        }
+      }
+    },
+    "Registration failed: %@; last connection test passed — %@" : {
+      "comment" : "First placeholder is an error message, second a tool count phrase",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rejestracja nieudana: %1$@; ostatni test połączenia udany — %2$@"
+          }
+        }
+      }
+    },
+    "Registration failed: %@; last connection test passed — %@ (server %@)" : {
+      "comment" : "First placeholder is an error message, second a tool count phrase, third a server name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rejestracja nieudana: %1$@; ostatni test połączenia udany — %2$@ (serwer %3$@)"
           }
         }
       }

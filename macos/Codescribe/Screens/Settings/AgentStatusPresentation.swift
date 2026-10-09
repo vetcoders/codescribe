@@ -94,6 +94,26 @@ extension CsMcpStatusRow {
     case .unreachable:
       return String(
         localized: "Connection test failed: \(detail)", comment: "Placeholder is an error message")
+    case .liveLastTestFailed where namesOperatorServer:
+      return String(
+        localized:
+          "Live — \(toolCount) registered; last connection test failed: \(detail) (server \(subject))",
+        comment:
+          "First placeholder is a tool count phrase, second an error message, third a server name")
+    case .liveLastTestFailed:
+      return String(
+        localized: "Live — \(toolCount) registered; last connection test failed: \(detail)",
+        comment: "First placeholder is a tool count phrase, second an error message")
+    case .failedLastTestPassed where namesOperatorServer:
+      return String(
+        localized:
+          "Registration failed: \(detail); last connection test passed — \(toolCount) (server \(subject))",
+        comment:
+          "First placeholder is an error message, second a tool count phrase, third a server name")
+    case .failedLastTestPassed:
+      return String(
+        localized: "Registration failed: \(detail); last connection test passed — \(toolCount)",
+        comment: "First placeholder is an error message, second a tool count phrase")
     case .unverified:
       return String(
         localized: "Not detected (optional) — identity unknown for: \(detail)",
