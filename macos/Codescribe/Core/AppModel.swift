@@ -105,6 +105,10 @@ final class OverlayController: ObservableObject {
   /// a single read at finalize would race it. Mid-hold upgrades (Fn → Fn+Shift)
   /// flip the tray status while recording, so every lifecycle hook re-polls.
   private var sessionWasAssistive = false
+  /// Ordered front by `show`, out by `orderOut` or a completed handoff fade.
+  /// A hidden panel holds the automatic collapse; its wake cannot act.
+  private var panelPresented = false
+  private let transientInteractions = OverlayTransientInteractionMonitor()
 
   init(
     state: OverlayState? = nil,
@@ -259,7 +263,19 @@ final class OverlayController: ObservableObject {
       return true
     }
     state.onPlacementChanged = { [weak self] in self?.applyPlacement() }
+    state.autoCollapseExternalHold = { [weak self] in self?.windowHoldsAutoCollapse ?? false }
+    transientInteractions.onInteractionEnded = { [weak state] in
+      state?.noteAutoCollapseActivity()
+    }
     state.attach()
+  }
+
+  /// Window-side interactions the state cannot see: a hidden panel, an edge
+  /// resize or window drag in progress, an open menu or popover.
+  private var windowHoldsAutoCollapse: Bool {
+    let floating = panel as? FloatingOverlayPanel
+    return !panelPresented || floating?.isUserResizing == true
+      || floating?.isUserDragging == true || transientInteractions.isActive
   }
 
   func prepareForRecordingStart() {
@@ -340,6 +356,7 @@ final class OverlayController: ObservableObject {
       }
       floating.onUserResizeEnded = { [weak self] in
         guard let self else { return }
+        self.state.noteAutoCollapseActivity()
         if self.state.freeMotion, let floating = self.panel as? FloatingOverlayPanel {
           OverlayPlacement.persistOrigin(floating.originForPersistence)
         }
@@ -370,8 +387,10 @@ final class OverlayController: ObservableObject {
     // A pending fade-out must not leave a freshly shown panel invisible.
     panel.alphaValue = 1
     applyPlacement()
+    panelPresented = true
     orderPanelFront(panel)
     resizeForProjectedContent()
+    state.noteAutoCollapseActivity()
   }
 
   /// True while we `setFrame` from prefs. AppKit still fires `windowDidMove`
@@ -546,6 +565,8 @@ final class OverlayController: ObservableObject {
   }
 
   private func orderOut() {
+    panelPresented = false
+    state.suspendAutoCollapse()
     placementAfterTransition = false
     placementAfterUserResize = false
     contentSizeAfterUserResize = false
@@ -596,6 +617,10 @@ final class OverlayController: ObservableObject {
         // no longer current is an orphan and is ordered out either way.
         if self.panel === fadedPanel, self.state.captureGeneration != generation {
           return
+        }
+        if self.panel === fadedPanel {
+          self.panelPresented = false
+          self.state.suspendAutoCollapse()
         }
         self.orderPanelOut(fadedPanel)
       }
